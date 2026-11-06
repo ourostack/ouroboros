@@ -399,4 +399,53 @@ describe("prompt budget arbiter", () => {
       contextWindowTokens: 100,
     })).toThrow("must be immediately before")
   })
+
+  it("preserves a distinct provider user message by identity", async () => {
+    const { applyPromptBudget } = await import("../../mind/prompt-budget")
+    const providerUser = msg("user", "provider-only image projection target")
+    const current = msg("user", "current request")
+    const result = applyPromptBudget({
+      messages: [
+        msg("system", "core"),
+        providerUser,
+        msg("assistant", long("optional history", 400)),
+        current,
+      ],
+      requiredPromptEvidence: { currentUserMessage: current },
+      requiredProviderUserMessage: providerUser,
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+      contextWindowTokens: 80,
+    })
+
+    expect(result.messages).toContain(providerUser)
+    expect(result.messages).toContain(current)
+    expect(result.messages.find((message) => message === providerUser)).toBe(providerUser)
+  })
+
+  it("validates provider user role and identity invariants", async () => {
+    const { applyPromptBudget } = await import("../../mind/prompt-budget")
+    const budget = (
+      messages: ChatCompletionMessageParam[],
+      requiredProviderUserMessage: ChatCompletionMessageParam,
+    ) => () => applyPromptBudget({
+      messages,
+      requiredProviderUserMessage,
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+      contextWindowTokens: 100,
+    })
+
+    const wrongRole = msg("assistant", "not a provider user")
+    expect(budget([wrongRole], wrongRole))
+      .toThrow("required provider user message must have role=user")
+
+    const missing = msg("user", "missing provider user")
+    expect(budget([msg("user", "different object")], missing))
+      .toThrow("required provider user message is not present by identity")
+
+    const duplicated = msg("user", "duplicated provider user")
+    expect(budget([duplicated, duplicated], duplicated))
+      .toThrow("required provider user message must appear exactly once by identity")
+  })
 })

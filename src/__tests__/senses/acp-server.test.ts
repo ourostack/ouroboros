@@ -1,5 +1,41 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { PassThrough } from "node:stream"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+const identityState = vi.hoisted(() => ({ agentRoot: "" }))
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, accessSync: vi.fn(actual.accessSync) }
+})
+
+vi.mock("../../heart/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/identity")>()
+  return { ...actual, getAgentRoot: () => identityState.agentRoot }
+})
+
+import { getAttachment, readRecentAttachments } from "../../heart/attachments/store"
+import { minimalImages, pngBytes } from "../fixtures/minimal-images"
+
+const tempDirs: string[] = []
+const realAccessSync = vi.mocked(fs.accessSync).getMockImplementation()!
+
+function makeAgentRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "acp-attachments-"))
+  tempDirs.push(dir)
+  identityState.agentRoot = dir
+  return dir
+}
+
+afterEach(() => {
+  vi.mocked(fs.accessSync).mockReset().mockImplementation(realAccessSync)
+  vi.unstubAllEnvs()
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 class FakeFrontendClient {
   requests: Array<{ method: string; params: any }> = []
@@ -9,11 +45,13 @@ class FakeFrontendClient {
   loadResult: any = { events: [], lastSequence: 0, hasMore: false, degraded: false, incompleteTurnIds: [] }
   failMethod: string | null = null
   failure: unknown = null
+  promptCapabilities: any = { image: true }
 
   async request(method: string, params: any): Promise<any> {
     this.requests.push({ method, params })
     if (method === this.failMethod) throw this.failure
     if (method === "session.load") return this.loadResult
+    if (method === "agent.prompt-capabilities") return this.promptCapabilities
     if (method === "turn.cancel") return { cancelled: true }
     return { accepted: true }
   }
@@ -80,7 +118,189 @@ async function setup(overrides: Record<string, unknown> = {}) {
   return { input, output, client, server, messages: collect(output) }
 }
 
+let sessionRequestId = 1000
+
+async function newSession(input: PassThrough, messages: any[]): Promise<string> {
+  const id = sessionRequestId += 1
+  input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "session/new", params: { cwd: "/tmp", mcpServers: [] } })}\n`)
+  return (await waitFor(messages, (message) => message.id === id)).result.sessionId
+}
+
 describe("Ouro ACP server", () => {
+  it.each(["initialize", "capability resolution", "ingress"])("requires ACP-local decoder availability at %s even when the daemon supports images", async (boundary) => {
+    const agentRoot = makeAgentRoot()
+    const daemonDirectory = path.resolve("/opt/local/bin")
+    const decoder = path.join(daemonDirectory, process.platform === "win32" ? "magick.exe" : "magick")
+    const guiPath = [path.resolve("/usr/bin"), path.resolve("/bin")].join(path.delimiter)
+    vi.mocked(fs.accessSync).mockImplementation((candidate, mode) => {
+      if (String(candidate) === decoder) return
+      if (path.basename(String(candidate)) === path.basename(decoder)) throw Object.assign(new Error("decoder not found"), { code: "ENOENT" })
+      return realAccessSync(candidate, mode)
+    })
+    const { imageValidationAvailable } = await import("../../heart/attachments/image-normalize")
+    vi.stubEnv("PATH", daemonDirectory)
+    const daemonCapability = { image: imageValidationAvailable() }
+    expect(daemonCapability.image).toBe(true)
+    const { input, client, server, messages } = await setup()
+    client.promptCapabilities = daemonCapability
+    try {
+      if (boundary === "initialize") vi.stubEnv("PATH", guiPath)
+      if (boundary === "capability resolution") {
+        const request = client.request.bind(client)
+        client.request = async (method, params) => {
+          const reply = await request(method, params)
+          if (method === "agent.prompt-capabilities") vi.stubEnv("PATH", guiPath)
+          return reply
+        }
+      }
+      input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+      const initialized = await waitFor(messages, (message) => message.id === 1)
+      expect(initialized.result.agentCapabilities.promptCapabilities.image).toBe(boundary === "ingress")
+      const sessionId = await newSession(input, messages)
+      vi.stubEnv("PATH", guiPath)
+      expect(imageValidationAvailable()).toBe(false)
+      expect(client.promptCapabilities.image).toBe(true)
+      input.write(`${JSON.stringify({
+        jsonrpc: "2.0", id: 3, method: "session/prompt",
+        params: { sessionId, prompt: [
+          { type: "text", text: "do not silently send this without its image" },
+          { type: "image", mimeType: "image/png", data: pngBytes().toString("base64") },
+        ] },
+      })}\n`)
+      expect(await waitFor(messages, (message) => message.id === 3)).toMatchObject({
+        error: { code: -32602, message: expect.stringContaining("decoder") },
+      })
+      expect(client.requests.some((request) => request.method.startsWith("turn.start"))).toBe(false)
+      expect(fs.existsSync(path.join(agentRoot, "state", "attachments"))).toBe(false)
+
+      input.write(`${JSON.stringify({
+        jsonrpc: "2.0", id: 4, method: "session/prompt",
+        params: { sessionId, prompt: [{ type: "text", text: "ordinary text still works" }] },
+      })}\n`)
+      const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+      expect(started.params).toMatchObject({ message: "ordinary text still works", attachmentIds: [] })
+      client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: started.params.turnId })
+      expect((await waitFor(messages, (message) => message.id === 4)).result.stopReason).toBe("end_turn")
+    } finally {
+      server.stop()
+    }
+  })
+
+  it("withholds images on unavailable model capability while keeping text turns usable", async () => {
+    const { input, client, server, messages } = await setup()
+    client.failMethod = "agent.prompt-capabilities"
+    client.failure = new Error("capability unavailable")
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    expect((await waitFor(messages, (message) => message.id === 1)).result.agentCapabilities.promptCapabilities.image).toBe(false)
+    const sessionId = await newSession(input, messages)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "hello" }] } })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: started.params.turnId })
+    expect((await waitFor(messages, (message) => message.id === 3)).result.stopReason).toBe("end_turn")
+    server.stop()
+  })
+
+  it.each([{}, { image: false }, { image: "true" }, null])("requires positive daemon model capability before advertising images: %j", async (capabilities) => {
+    const { input, client, server, messages } = await setup()
+    client.promptCapabilities = capabilities
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    const initialized = await waitFor(messages, (message) => message.id === 1)
+    server.stop()
+    expect(initialized.result.agentCapabilities.promptCapabilities.image).toBe(false)
+  })
+
+  it("revalidates daemon model capability before storing an image prompt", async () => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    expect((await waitFor(messages, (message) => message.id === 1)).result.agentCapabilities.promptCapabilities.image).toBe(true)
+    const sessionId = await newSession(input, messages)
+    client.promptCapabilities = { image: false }
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 3, method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "image", mimeType: "image/png", data: pngBytes().toString("base64") }] },
+    })}\n`)
+    await vi.waitFor(() => expect(messages.some((message) => message.id === 3) || client.requests.some((request) => request.method === "turn.start")).toBe(true))
+    const started = client.requests.find((request) => request.method === "turn.start")
+    if (started) client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: started.params.turnId })
+    const reply = await waitFor(messages, (message) => message.id === 3)
+    server.stop()
+    expect(reply.error?.message).toMatch(/model.*image/)
+    expect(reply.error?.message).toContain("decoder")
+    expect(started).toBeUndefined()
+    expect(fs.existsSync(path.join(agentRoot, "state", "attachments"))).toBe(false)
+  })
+
+  it.each([false, true])("rolls back only new uploads after a confirmed busy-session rejection (reused=%s)", async (reuse) => {
+    const agentRoot = makeAgentRoot()
+    const { ingestInlinePromptImages } = await import("../../heart/attachments/inline-image")
+    const existing = reuse ? ingestInlinePromptImages("boss", [{ data: pngBytes("existing").toString("base64"), mimeType: "image/png" }]) : []
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const { SocketFrontendClient } = await import("../../heart/frontend-socket-client")
+    const service = new FrontendSessionService({ getProviderRuntime: async () => ({ model: "gpt-5.4" }) as never, runner: async () => ({
+      response: "ok", turnOutcome: "settled", ponderDeferred: false, deliveries: [], deliveryFailures: [],
+    }) })
+    const frontend = await startFrontendSocketServer({ socketPath: path.join(agentRoot, "frontend.sock"), service })
+    const { input, server, messages } = await setup({ createFrontendClient: async () => new SocketFrontendClient(frontend.socketPath) })
+    const sessionId = await newSession(input, messages)
+    const occupied = service.prepareTurn({
+      turnId: "occupied", agent: "boss", friendId: "local-ari", channel: "mcp", sessionKey: sessionId, message: "busy",
+    })
+    try {
+      input.write(`${JSON.stringify({
+        jsonrpc: "2.0", id: 3, method: "session/prompt",
+        params: { sessionId, prompt: [...(reuse ? ["existing"] : []), "new"].map((label) => ({
+          type: "image", mimeType: "image/png", data: pngBytes(label).toString("base64"),
+        })) },
+      })}\n`)
+      expect((await waitFor(messages, (message) => message.id === 3)).error.message).toContain("active turn")
+      expect(readRecentAttachments("boss", agentRoot).map((record) => record.id)).toEqual(existing.map((record) => record.id))
+      for (const record of existing) expect(fs.readFileSync(record.sourceData.path)).toEqual(pngBytes("existing"))
+      const inline = path.join(agentRoot, "state", "attachments", "inline")
+      const images = fs.existsSync(inline) ? fs.readdirSync(inline, { recursive: true }).filter((file) => String(file).endsWith(".png")) : []
+      expect(images).toHaveLength(existing.length)
+    } finally {
+      await service.runPreparedTurn(occupied)
+      server.stop()
+      await frontend.stop()
+    }
+  })
+
+  it("cancels before admission without submitting a turn or retaining uploads", async () => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const sessionId = await newSession(input, messages)
+    input.write([
+      { jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "image", mimeType: "image/png", data: pngBytes().toString("base64") }] } },
+      { jsonrpc: "2.0", method: "session/cancel", params: { sessionId } },
+    ].map((frame) => JSON.stringify(frame)).join("\n") + "\n")
+    await vi.waitFor(() => expect(messages.some((message) => message.id === 3) || client.requests.some((request) => request.method === "turn.start")).toBe(true))
+    const started = client.requests.find((request) => request.method === "turn.start")
+    if (started) client.emit({ event: "turn.cancelled", sessionKey: sessionId, turnId: started.params.turnId })
+    expect((await waitFor(messages, (message) => message.id === 3)).result).toEqual({ stopReason: "cancelled" })
+    server.stop()
+    expect(started).toBeUndefined()
+    expect(readRecentAttachments("boss", agentRoot)).toEqual([])
+  })
+
+  it("retains uploads when admission is uncertain after a transport failure", async () => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const sessionId = await newSession(input, messages)
+    client.failMethod = "turn.start"
+    client.failure = new Error("frontend socket closed")
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 3, method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "image", mimeType: "image/png", data: pngBytes().toString("base64") }] },
+    })}\n`)
+    expect((await waitFor(messages, (message) => message.id === 3)).error.message).toBe("frontend socket closed")
+    server.stop()
+    const records = readRecentAttachments("boss", agentRoot)
+    expect(records).toHaveLength(1)
+    expect(fs.readFileSync((records[0]!.sourceData as any).path)).toEqual(pngBytes())
+  })
+
   it("initializes, creates a session, streams a turn, and returns end_turn", async () => {
     const runtimeMcpServers = {
       ouro_workbench: { command: "/Applications/OuroWorkbenchMCP", args: [] },
@@ -90,7 +310,13 @@ describe("Ouro ACP server", () => {
     expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
       jsonrpc: "2.0",
       id: 1,
-      result: { protocolVersion: 1 },
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: {
+          loadSession: true,
+          promptCapabilities: { image: true },
+        },
+      },
     })
 
     input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
@@ -145,6 +371,235 @@ describe("Ouro ACP server", () => {
       "tool_call_update",
       "plan",
     ])
+    server.stop()
+    expect(started.params.attachmentIds).toEqual([])
+  })
+
+  it("advertises image prompt capability during initialization", async () => {
+    const { input, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: {
+          loadSession: true,
+          promptCapabilities: { image: true },
+        },
+      },
+    })
+    server.stop()
+  })
+
+  it("withholds image prompt capability and rejects image content in observe-only mode", async () => {
+    makeAgentRoot()
+    const { input, client, server, messages } = await setup({ disableTools: true })
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+
+    expect((await waitFor(messages, (message) => message.id === 1)).result).toEqual({
+      protocolVersion: 1,
+      agentCapabilities: {
+        loadSession: false,
+        promptCapabilities: { image: false },
+      },
+    })
+
+    const sessionId = await newSession(input, messages)
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "image", data: "QQ==", mimeType: "image/png" }] },
+    })}\n`)
+
+    expect(await waitFor(messages, (message) => message.id === 3)).toEqual({
+      jsonrpc: "2.0",
+      id: 3,
+      error: { code: -32602, message: "image prompt content is unavailable in observe-only mode" },
+    })
+    expect(client.requests.some((request) => request.method.startsWith("turn.start"))).toBe(false)
+    server.stop()
+  })
+
+  it("accepts image-only and text+image prompts as canonical attachment turns", async () => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const sessionId = await newSession(input, messages)
+    const png = pngBytes("acp-image-only").toString("base64")
+
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "image", data: png, mimeType: "image/png", name: "screenshot.png" }] },
+    })}\n`)
+    const imageOnly = await waitFor(client.requests, (request) => request.method === "turn.start")
+
+    expect(imageOnly.params.message).toContain("[attachments]")
+    expect(imageOnly.params.message).toContain("| image | screenshot.png | image/png |")
+    expect(imageOnly.params.attachmentIds).toEqual([expect.stringMatching(/^attachment:cli-local-file:/)])
+    expect(imageOnly.params.requireImageSupport).toBe(true)
+    expect(JSON.stringify(imageOnly.params)).not.toContain(png)
+    expect(fs.readFileSync(
+      (getAttachment("boss", imageOnly.params.attachmentIds[0], agentRoot) as any).sourceData.path,
+    )).toEqual(pngBytes("acp-image-only"))
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: imageOnly.params.turnId })
+    await waitFor(messages, (message) => message.id === 3)
+
+    const second = minimalImages["image/jpeg"].toString("base64")
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "session/prompt",
+      params: {
+        sessionId,
+        prompt: [
+          { type: "text", text: "what is " },
+          { type: "text", text: "this?" },
+          { type: "image", data: second, mimeType: "image/jpeg" },
+        ],
+      },
+    })}\n`)
+    const withText = await waitFor(
+      client.requests,
+      (request) => request.method === "turn.start" && request.params.turnId !== imageOnly.params.turnId,
+    )
+
+    expect(withText.params.message.startsWith("what is this?\n\n[attachments]")).toBe(true)
+    expect(withText.params.attachmentIds).toHaveLength(1)
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: withText.params.turnId })
+    await waitFor(messages, (message) => message.id === 4)
+    server.stop()
+  })
+
+  it("collapses duplicate prompt images into one scoped attachment", async () => {
+    makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const sessionId = await newSession(input, messages)
+    const data = pngBytes("acp-duplicate").toString("base64")
+
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: {
+        sessionId,
+        prompt: [
+          { type: "image", data, mimeType: "image/png", name: "a.png" },
+          { type: "image", data, mimeType: "image/png", name: "b.png" },
+        ],
+      },
+    })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+
+    expect(started.params.attachmentIds).toHaveLength(1)
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: started.params.turnId })
+    await waitFor(messages, (message) => message.id === 3)
+    server.stop()
+  })
+
+  it("rejects malformed, unknown, and invalid image content without starting a turn", async () => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const sessionId = await newSession(input, messages)
+    const cases: Array<[number, unknown, string]> = [
+      [10, "not-an-array", "prompt must be an array"],
+      [11, [null], "prompt content block must be an object"],
+      [12, [["text"]], "prompt content block must be an object"],
+      [13, [{ type: "text" }], "text content block must include text"],
+      [14, [{ type: "audio", data: "AAAA" }], "unsupported prompt content block: audio"],
+      [15, [{}], "unsupported prompt content block: missing type"],
+      [16, [{ type: "image", mimeType: "image/png" }], "image content block must include data and mimeType"],
+      [17, [{ type: "image", data: "QQ==", mimeType: "image/tiff" }], "unsupported image mime type: image/tiff"],
+      [18, [{ type: "image", data: "not base64!!", mimeType: "image/png" }], "image data must be strict base64"],
+      [19, [{ type: "image", data: "", mimeType: "image/png" }], "image data must not be empty"],
+      [20, [{ type: "text", text: "  " }], "prompt must contain text"],
+      [
+        21,
+        Array.from({ length: 5 }, (_unused, index) => ({
+          type: "image",
+          data: pngBytes(`too-many-${index}`).toString("base64"),
+          mimeType: "image/png",
+        })),
+        "prompt supports at most 4 images",
+      ],
+    ]
+
+    for (const [id, prompt, message] of cases) {
+      input.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "session/prompt", params: { sessionId, prompt } })}\n`)
+      expect(await waitFor(messages, (candidate) => candidate.id === id)).toEqual({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message },
+      })
+    }
+
+    expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
+    expect(readRecentAttachments("boss", agentRoot)).toEqual([])
+    server.stop()
+  })
+
+  it.each([
+    ["invalid base64", { type: "image", mimeType: "image/png", data: "not base64!" }],
+    ["incomplete image", { type: "image", mimeType: "image/png", data: pngBytes().subarray(0, 24).toString("base64") }],
+    ["malformed text", { type: "text" }],
+  ])("validates the complete ACP prompt before storage or admission: %s", async (_label, invalid) => {
+    const agentRoot = makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    try {
+      const sessionId = await newSession(input, messages)
+      input.write(`${JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "session/prompt",
+        params: { sessionId, prompt: [
+          { type: "image", mimeType: "image/png", data: pngBytes().toString("base64") },
+          invalid,
+        ] },
+      })}\n`)
+      expect((await waitFor(messages, (message) => message.id === 1)).error?.code).toBe(-32602)
+      expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
+      expect(fs.existsSync(path.join(agentRoot, "state", "attachments"))).toBe(false)
+    } finally {
+      server.stop()
+    }
+  })
+
+  it("replays an attachment-bearing user turn as reference text without image bytes", async () => {
+    makeAgentRoot()
+    const { input, client, server, messages } = await setup()
+    const data = pngBytes("acp-replayed-image").toString("base64")
+    const sessionId = await newSession(input, messages)
+
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "read it" }, { type: "image", data, mimeType: "image/png", name: "note.png" }] },
+    })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start")
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: started.params.turnId })
+    await waitFor(messages, (message) => message.id === 3)
+
+    client.loadResult = {
+      events: [{
+        type: "user_message",
+        data: { text: started.params.message, attachmentIds: started.params.attachmentIds },
+        turnId: started.params.turnId,
+      }],
+      lastSequence: 1,
+      hasMore: false,
+      degraded: false,
+      incompleteTurnIds: [],
+    }
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "session/load", params: { sessionId: "replayed-session", cwd: "/tmp", mcpServers: [] } })}\n`)
+    await waitFor(messages, (message) => message.id === 4)
+
+    const replayed = messages.filter((message) => message.method === "session/update")
+      .filter((message) => message.params.sessionId === "replayed-session")
+    expect(replayed).toHaveLength(1)
+    expect(replayed[0].params.update.content.text).toContain(started.params.attachmentIds[0])
+    expect(JSON.stringify(replayed)).not.toContain(data)
     server.stop()
   })
 
@@ -528,7 +983,7 @@ describe("Ouro ACP server", () => {
     expect(messages.find((message) => message.id === 3)?.error).toEqual({ code: -32602, message: "params must be an object" })
     expect(messages.find((message) => message.id === 4)?.error).toEqual({ code: -32001, message: "unknown session: missing" })
     expect(messages.find((message) => message.id === 6)?.error).toEqual({ code: -32602, message: "prompt must contain text" })
-    expect(messages.find((message) => message.id === 7)?.error).toEqual({ code: -32602, message: "prompt must contain text" })
+    expect(messages.find((message) => message.id === 7)?.error).toEqual({ code: -32602, message: "image content block must include data and mimeType" })
     expect(messages.find((message) => message.id === 10)?.error).toEqual({ code: -32602, message: "prompt must be an array" })
     expect(messages.find((message) => message.id === 9)?.error).toEqual({ code: -32002, message: "session already has an active prompt" })
 
@@ -607,5 +1062,42 @@ describe("Ouro ACP server", () => {
       code: -32000,
       message: "ACP server stopped",
     })
+  })
+
+  it("separates client-fixable rejections from storage faults and hostile throws", async () => {
+    const cases: Array<[number, unknown, number, string]> = [
+      [3, () => { throw new Error("attachment catalog is read-only") }, -32603, "attachment catalog is read-only"],
+      [4, () => { throw "hostile ingestion failure" }, -32603, "hostile ingestion failure"],
+    ]
+
+    for (const [id, thrower, code, message] of cases) {
+      vi.resetModules()
+      vi.doMock("../../heart/attachments/inline-image", () => ({
+        InlinePromptImageRejection: class extends Error {},
+        prepareInlinePromptImages: thrower,
+      }))
+      try {
+        makeAgentRoot()
+        const { input, client, server, messages } = await setup()
+        const sessionId = await newSession(input, messages)
+        input.write(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "session/prompt",
+          params: { sessionId, prompt: [{ type: "image", data: pngBytes().toString("base64"), mimeType: "image/png" }] },
+        })}\n`)
+
+        expect(await waitFor(messages, (candidate) => candidate.id === id)).toEqual({
+          jsonrpc: "2.0",
+          id,
+          error: { code, message },
+        })
+        expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
+        server.stop()
+      } finally {
+        vi.doUnmock("../../heart/attachments/inline-image")
+        vi.resetModules()
+      }
+    }
   })
 })

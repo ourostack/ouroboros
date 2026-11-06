@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { SANCTUARY_OWNER_ADDITIONS } from "../../fixtures/sanctuary-containment"
 
 const durabilityProbe = vi.hoisted(() => ({
   descriptors: new Map<number, string>(),
@@ -66,7 +67,7 @@ vi.mock("node:fs", async (importOriginal) => {
   }
 })
 
-import { readStewardPolicy } from "../../../heart/steward-policy"
+import { consumeRoutineActionGrant, readRoutineActionReceipts, readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
   SANCTUARY_PACKAGE_MANAGED_FILES,
@@ -176,6 +177,35 @@ afterEach(() => {
 })
 
 describe("Sanctuary package-managed bundle migration", () => {
+  it("converges the real owner v8 profile and identity through the existing managed-file transaction", () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const profiles = JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8"))
+    profiles.profiles["sanctuary-owner"].version = 7
+    profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => !SANCTUARY_OWNER_ADDITIONS.includes(name))
+    write(agentRoot, "tool-profiles.json", profiles)
+    const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
+    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, operatorNote: "keep" })
+    write(agentRoot, "state/policy/steward.json", emptyPackagedPolicy())
+    write(agentRoot, "state/sessions/owner.json", "private history\n")
+    const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
+    const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(8)
+    expect(result.managedFilesUpdated).toBe(2)
+    for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
+      expect(fs.readFileSync(path.join(agentRoot, relative), "utf8")).toBe(fs.readFileSync(path.join(packageRoot, relative), "utf8"))
+      expect(fs.statSync(path.join(agentRoot, relative)).mode & 0o777).toBe(0o600)
+    }
+    expect(fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")).toBe(tacit)
+    expect(fs.readFileSync(path.join(agentRoot, "state/sessions/owner.json"), "utf8")).toBe("private history\n")
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state/policy/steward.json"), "utf8"))).toEqual(emptyPackagedPolicy())
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "bundle-meta.json"), "utf8"))).toMatchObject({
+      ...JSON.parse(fs.readFileSync(path.join(packageRoot, "bundle-meta.json"), "utf8")), operatorNote: "keep",
+    })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot }).managedFilesUpdated).toBe(0)
+  })
+
   it("updates only package-managed files and bundle versions while preserving live policy bytes", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live")
@@ -214,6 +244,45 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "bundle-meta.json"), "utf8"))).toEqual({
       runtimeVersion: "0.1.0-alpha.743", bundleSchemaVersion: 3, lastUpdated: "2026-08-30T00:00:00.000Z", operatorNote: "keep",
     })
+  })
+
+  it("preserves applied v2 policy, linked audit and reserved action receipts through repeated migration", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-live-a006")
+    const now = "2026-09-14T00:00:00.000Z"
+    const actor = {
+      friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-owner",
+      authorization: { profileId: "sanctuary-owner", profileVersion: 8, requestId: "owner-request", sessionKey: "telegram-owner", receiptId: "owner-authorization" },
+    }
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0, actor, now,
+      mutation: { kind: "set_desired_state", key: "container:jellyfin", value: "on", provenance: "stated", source: "current owner fixture" },
+    })
+    const applied = updateStewardPolicy(agentRoot, {
+      expectedVersion: 1, actor, now,
+      mutation: {
+        kind: "grant_routine_action", key: "unraid.restart:jellyfin", action: "unraid.container.restart", targets: ["jellyfin"],
+        maxCount: 2, windowMs: 1800000, verificationRequired: true, exclusions: [], provenance: "stated",
+        expiresAt: "2027-09-14T00:00:00.000Z",
+      },
+    })
+    const receipt = consumeRoutineActionGrant(agentRoot, {
+      key: "unraid.restart:jellyfin", target: "jellyfin", action: "unraid.container.restart", now,
+      expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2,
+      authorizationReceiptId: "current-action-authorization", authorizationVersion: 8,
+      requester: {
+        kind: "owner", friendId: actor.friendId, profileId: "sanctuary-owner", requestId: actor.authorization.requestId,
+        sessionEventId: actor.sessionEventId, origin: { friendId: actor.friendId, channel: "telegram", key: actor.authorization.sessionKey },
+      },
+    })
+    const files = ["steward.json", "policy-audit.ndjson", "action-receipts.ndjson"]
+    const before = files.map((name) => fs.readFileSync(path.join(agentRoot, "state", "policy", name)))
+    expect(before[1]!.toString("utf8").trim().split("\n")).toHaveLength(2)
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot }).managedFilesUpdated).toBe(0)
+    expect(files.map((name) => fs.readFileSync(path.join(agentRoot, "state", "policy", name)))).toEqual(before)
+    expect(readStewardPolicy(agentRoot)).toEqual(applied)
+    expect(readRoutineActionReceipts(agentRoot)).toEqual([receipt])
   })
 
   it("does not install packaged policy authority", () => {

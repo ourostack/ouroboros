@@ -27,7 +27,6 @@ const EXPECTED_MOUNTS = [
 ] as const
 
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
-const PREPACKAGE_ALPHA797_IMAGE = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
 const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
@@ -46,7 +45,7 @@ export interface SanctuaryContainerAuditOptions {
   expectedEnvironment: readonly string[]
   expectedImageReference?: string
   expectedIcon?: string
-  mountContract?: "canonical" | "legacy-alpha742" | "prepackage-alpha797"
+  mountContract?: "canonical" | "legacy-alpha742"
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -95,8 +94,8 @@ export function auditSanctuaryContainerSpec(
   } else {
     if (!EXACT_IMAGE.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
     const mountContract = options.mountContract ?? "canonical"
+    if (mountContract !== "canonical" && mountContract !== "legacy-alpha742") violations.push("unsupported mount contract")
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
-    if (mountContract === "prepackage-alpha797" && options.expectedImage !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source exception requires the pinned alpha.797 image ID")
     const expectedMounts = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_MOUNTS : EXPECTED_MOUNTS
     const expectedArgs = mountContract === "canonical" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
     const expectedEntrypoint = mountContract === "canonical" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
@@ -124,14 +123,7 @@ export function auditSanctuaryContainerSpec(
     if (host.PublishAllPorts !== false) violations.push("container must not publish all exposed ports")
     if (!isEmptyRecord(network?.Ports)) violations.push("effective network ports must be empty")
     if (mountContract === "canonical" && root.Name !== `/${EXPECTED_NAME}`) violations.push("container name must be /ouro-butler")
-    if (mountContract === "prepackage-alpha797" && root.Name !== `/${EXPECTED_NAME}` && root.Name !== "/ouro-butler-staging") violations.push("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
-    if (mountContract === "prepackage-alpha797") {
-      if (config.Image !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source configured image must equal the pinned alpha.797 image ID")
-      const labels = record(config.Labels)
-      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.managed")) violations.push("pre-package-managed source must not carry a DockerMan managed label")
-      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.icon")) violations.push("pre-package-managed source must not carry a DockerMan icon label")
-      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.webui")) violations.push("pre-package-managed source must not carry a DockerMan WebUI label")
-    } else if (mountContract === "canonical") {
+    if (mountContract === "canonical") {
       if (!options.expectedImageReference || !VERSION_REFERENCE.test(options.expectedImageReference)) violations.push("expected image reference must be the canonical package-version tag")
       if (config.Image !== options.expectedImageReference) violations.push("configured image must equal the canonical package-version tag")
       if (options.expectedIcon !== EXPECTED_ICON) violations.push("expected icon must equal the canonical template icon")

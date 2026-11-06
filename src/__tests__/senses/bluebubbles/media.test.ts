@@ -94,6 +94,10 @@ describe("BlueBubbles media hydration", () => {
 
   it("falls back to a generic image content type when BlueBubbles does not return one", async () => {
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const bytes = Buffer.alloc(24)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+    bytes.writeUInt32BE(1, 16)
+    bytes.writeUInt32BE(1, 20)
     const result = await hydrateBlueBubblesAttachments(
       [
         {
@@ -112,7 +116,7 @@ describe("BlueBubbles media hydration", () => {
         requestTimeoutMs: 30000,
       },
       {
-        fetchImpl: vi.fn().mockResolvedValue(new Response(Buffer.from("image-bytes"), { status: 200 })),
+        fetchImpl: vi.fn().mockResolvedValue(new Response(bytes, { status: 200 })),
       },
     )
 
@@ -121,7 +125,7 @@ describe("BlueBubbles media hydration", () => {
         {
           type: "image_url",
           image_url: {
-            url: `data:application/octet-stream;base64,${Buffer.from("image-bytes").toString("base64")}`,
+            url: `data:image/png;base64,${bytes.toString("base64")}`,
             detail: "auto",
           },
         },
@@ -1531,9 +1535,20 @@ describe("BlueBubbles media hydration", () => {
 })
 
 describe("BlueBubbles media hydration — capability-aware image routing", () => {
-  const pngBytes = Buffer.from("png-bytes")
+  const pngBytes = Buffer.alloc(24)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBytes)
+  pngBytes.writeUInt32BE(1, 16)
+  pngBytes.writeUInt32BE(1, 20)
   const pngBase64 = pngBytes.toString("base64")
   const pngDataUrl = `data:image/png;base64,${pngBase64}`
+  const webpBytes = Buffer.alloc(30)
+  webpBytes.write("RIFF", 0, "ascii")
+  webpBytes.write("WEBP", 8, "ascii")
+  webpBytes.write("VP8X", 12, "ascii")
+  const jpegBytes = Buffer.from([
+    0xff, 0xd8,
+    0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01, 0x00, 0x01,
+  ])
 
   function baseConfig() {
     return {
@@ -1556,7 +1571,11 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     })
   }
   function gifResponse() {
-    return new Response(Buffer.from("gif-bytes"), {
+    const bytes = Buffer.alloc(10)
+    bytes.write("GIF89a", 0, "ascii")
+    bytes.writeUInt16LE(1, 6)
+    bytes.writeUInt16LE(1, 8)
+    return new Response(bytes, {
       status: 200,
       headers: { "content-type": "image/gif" },
     })
@@ -1578,12 +1597,173 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       },
     )
     expect(vlmDescribe).not.toHaveBeenCalled()
+  })
+
+  it("vision-capable chat model converts non-native image formats before provider delivery", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "converted.jpg")
+    fs.writeFileSync(normalizedPath, jpegBytes)
+    const normalizeImageForVision = vi.fn().mockResolvedValue({
+      path: normalizedPath,
+      mimeType: "image/jpeg",
+      byteCount: jpegBytes.length,
+    })
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision,
+    }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "tiff-guid", mimeType: "image/tiff", transferName: "scan.tiff" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("raw-tiff"), {
+            status: 200,
+            headers: { "content-type": "image/tiff" },
+          }),
+        ),
+        chatModel: "gpt-5.4",
+        vlmDescribe,
+      },
+    )
+
+    expect(normalizeImageForVision).toHaveBeenCalled()
+    expect(vlmDescribe).not.toHaveBeenCalled()
+    expect(result.inputParts).toEqual([{
+      type: "image_url",
+      image_url: {
+        url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}`,
+        detail: "auto",
+      },
+    }])
+  })
+
+  it("falls back to description when normalized provider bytes are unsupported", async () => {
+    vi.resetModules()
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = path.join(agentRoot, "unsupported.bin")
+    fs.writeFileSync(normalizedPath, "not-an-image")
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE: 32 * 1024 * 1024,
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({
+        path: normalizedPath,
+        mimeType: "image/jpeg",
+        byteCount: 12,
+      }),
+    }))
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "fallback description")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "tiff-guid", mimeType: "image/tiff", transferName: "scan.tiff" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(
+          new Response(Buffer.from("raw-tiff"), {
+            status: 200,
+            headers: { "content-type": "image/tiff" },
+          }),
+        ),
+        chatModel: "gpt-5.4",
+        vlmDescribe,
+      },
+    )
+
+    expect(vlmDescribe).toHaveBeenCalled()
+    expect(result.inputParts).toEqual([
+      { type: "text", text: "[image description: fallback description]" },
+    ])
+  })
+
+  it.each([
+    ["oversized bytes", 1, 1, 5 * 1024 * 1024 + 1],
+    ["oversized width", 8_001, 1, 24],
+    ["oversized height", 1, 8_001, 24],
+    ["safe dimensions", 1, 1, 24],
+  ] as const)("handles a vision image without durable storage: %s", async (_label, width, height, size) => {
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/store", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/attachments/store")>(
+        "../../../heart/attachments/store",
+      )
+      return {
+        ...actual,
+        cacheRecentAttachment: vi.fn(() => null),
+      }
+    })
+    const bytes = Buffer.alloc(size)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+    bytes.writeUInt32BE(width, 16)
+    bytes.writeUInt32BE(height, 20)
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g1", mimeType: "image/png", transferName: "screen.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(new Response(bytes, {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        })),
+        chatModel: "gpt-5.4",
+        vlmDescribe,
+      },
+    )
+
+    if (size <= 5 * 1024 * 1024 && width <= 8_000 && height <= 8_000) {
+      expect(result.inputParts).toEqual([{
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${bytes.toString("base64")}`, detail: "auto" },
+      }])
+    } else {
+      expect(vlmDescribe).not.toHaveBeenCalled()
+      expect(result.inputParts).toEqual([
+        { type: "text", text: "[image description failed: image attachment could not be persisted for normalization]" },
+      ])
+    }
+    vi.doUnmock("../../../heart/attachments/store")
+  })
+
+  it("vision-capable chat model uses the sniffed format when transport MIME is generic", async () => {
+    const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
+    const vlmDescribe = vi.fn(async () => "should not be called")
+    const result = await hydrateBlueBubblesAttachments(
+      [{ guid: "g-octet", mimeType: "application/octet-stream", transferName: "shot.png" }],
+      baseConfig(),
+      baseChannel(),
+      {
+        fetchImpl: vi.fn().mockResolvedValue(new Response(pngBytes, {
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+        })),
+        chatModel: "gpt-5.4",
+        vlmDescribe,
+      },
+    )
+
+    expect(result.inputParts).toEqual([{
+      type: "image_url",
+      image_url: { url: pngDataUrl, detail: "auto" },
+    }])
+    expect(vlmDescribe).not.toHaveBeenCalled()
     expect(result.inputParts).toEqual([
       {
         type: "image_url",
         image_url: { url: pngDataUrl, detail: "auto" },
       },
     ])
+    const { readRecentAttachments } = await import("../../../heart/attachments/store")
+    expect(readRecentAttachments("testagent", testState.agentRoot)[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/png",
+    })
   })
 
   it("non-vision chat model: fires VLM and replaces image_url with a text part", async () => {
@@ -1803,7 +1983,13 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       {
         type: "image_url",
         image_url: {
-          url: `data:image/gif;base64,${Buffer.from("gif-bytes").toString("base64")}`,
+          url: `data:image/gif;base64,${(() => {
+            const bytes = Buffer.alloc(10)
+            bytes.write("GIF89a", 0, "ascii")
+            bytes.writeUInt16LE(1, 6)
+            bytes.writeUInt16LE(1, 8)
+            return bytes.toString("base64")
+          })()}`,
           detail: "auto",
         },
       },
@@ -1987,7 +2173,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       baseChannel(),
       {
         fetchImpl: vi.fn().mockResolvedValue(
-          new Response(Buffer.from("webp-bytes"), {
+          new Response(webpBytes, {
             status: 200,
             headers: { "content-type": "image/webp" },
           }),
@@ -2011,7 +2197,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
       baseChannel(),
       {
         fetchImpl: vi.fn().mockResolvedValue(
-          new Response(Buffer.from("jpeg-bytes"), {
+          new Response(jpegBytes, {
             status: 200,
             headers: { "content-type": "image/jpeg" },
           }),

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as path from "path"
+import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
+
+afterEach(shutdownMcpFixtures)
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -165,6 +168,7 @@ describe("execTool", () => {
     const authorizeTool = vi.fn(() => ({ allowed: false as const, reason: "relationship capability was revoked" }))
     const result = await execTool("read_file", { path: "/tmp/private.txt" }, {
       signin: async () => undefined,
+      agentName: "testagent", agentRoot: "/mock/repo/testagent",
       relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["read_file"], authorizeTool },
     })
     expect(result).toContain("relationship capability was revoked")
@@ -176,6 +180,7 @@ describe("execTool", () => {
     const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship was revoked" }))
     const result = await execTool("read_file", { path: "/tmp/nope" }, {
       signin: async () => undefined,
+      agentName: "testagent", agentRoot: "/mock/repo/testagent",
       relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["read_file"], authorizeTool },
     })
     expect(result).toContain("relationship was revoked")
@@ -240,24 +245,22 @@ describe("execTool", () => {
   it("orientation hold respects blockedMutationKinds instead of blocking every high-risk tool", async () => {
     const tools = await import("../../repertoire/tools")
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
-    const mcpManager = {
-      listAllTools: () => [{
+    const mcpManager = makeMcpView([{
         server: "calendar",
         tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
-      }],
-      callTool,
-    }
+      }])
+    vi.spyOn(mcpManager.manager, "callTool").mockImplementation(callTool)
 
-    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+    const toolSelection = tools.selectToolsForChannel(undefined, undefined, undefined, undefined, mcpManager)
 
     const result = await execTool(
       "calendar_create_event",
       { title: "external write allowed by this narrow policy" },
-      orientationHoldCtx(["durable_state_write"]),
+      { ...orientationHoldCtx(["durable_state_write"]), ...MCP_CONTEXT, toolSelection },
     )
 
     expect(result).toBe("created")
-    expect(callTool).toHaveBeenCalledWith("calendar", "create_event", { title: "external write allowed by this narrow policy" })
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ ...MCP_OWNER, server: "calendar", rawName: "create_event" }), { title: "external write allowed by this narrow policy" }, MCP_OWNER)
   })
 
   it("obvious mutation tool definitions declare high-risk correction-hold metadata", async () => {
@@ -421,17 +424,15 @@ describe("execTool", () => {
   it("orientation hold blocks first-class MCP tools before external calls run", async () => {
     const tools = await import("../../repertoire/tools")
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
-    const mcpManager = {
-      listAllTools: () => [{
+    const mcpManager = makeMcpView([{
         server: "calendar",
         tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
-      }],
-      callTool,
-    }
+      }])
+    vi.spyOn(mcpManager.manager, "callTool").mockImplementation(callTool)
 
-    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+    const toolSelection = tools.selectToolsForChannel(undefined, undefined, undefined, undefined, mcpManager)
 
-    const result = await execTool("calendar_create_event", { title: "wrong referent" }, orientationHoldCtx())
+    const result = await execTool("calendar_create_event", { title: "wrong referent" }, { ...orientationHoldCtx(), ...MCP_CONTEXT, toolSelection })
 
     expect(result).toContain("orientation hold")
     expect(callTool).not.toHaveBeenCalled()
@@ -1211,8 +1212,9 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("graph_mutate")
     expect(names).not.toContain("ado_query")
     expect(names).not.toContain("ado_mutate")
-    // Same length as base tools minus capability-gated tools (set_reasoning_effort excluded without providerCapabilities)
-    expect(result.length).toBe(tools.length - 1)
+    expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
+    // Native tools minus the unsupported reasoning capability, plus the three engine schemas.
+    expect(result.length).toBe(tools.length - 1 + 3)
   })
 
   it("returns base + ado + graph tools for Teams capabilities", async () => {
@@ -1258,8 +1260,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).toContain("ado_validate_structure")
     expect(names).toContain("ado_preview_changes")
     expect(names).toContain("teams_send_message")
-    // base tools + 8 teams tools + 11 semantic ado tools + 1 teams_send_message
-    expect(result.length).toBe(baseCount + 20)
+    expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
+    expect(result.length).toBe(baseCount + 20 + 3)
   })
 
   it("returns base + graph-only tools when only graph integration", async () => {
@@ -1288,8 +1290,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("ado_mutate")
     expect(names).not.toContain("ado_work_items")
     expect(names).not.toContain("ado_docs")
-    // base tools + 4 graph tools + 1 teams_send_message
-    expect(result.length).toBe(baseCount + 5)
+    expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
+    expect(result.length).toBe(baseCount + 5 + 3)
   })
 
   it("returns base + ado-only tools when only ado integration", async () => {
@@ -1320,8 +1322,8 @@ describe("getToolsForChannel with ChannelCapabilities", () => {
     expect(names).not.toContain("graph_docs")
     // Should have semantic ado tools
     expect(names).toContain("ado_backlog_list")
-    // base tools + 4 ado tools + 11 semantic ado tools + 1 teams_send_message
-    expect(result.length).toBe(baseCount + 16)
+    expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
+    expect(result.length).toBe(baseCount + 16 + 3)
   })
 })
 
@@ -2408,8 +2410,8 @@ describe("getToolsForChannel includes docs tools", () => {
     // All base tools now present (no channel-level blocking)
     expect(names).toContain("read_file")
     expect(names).toContain("shell")
-    // base tools + 8 teams tools (4 generic + 2 aliases + 2 docs) + 11 semantic ado tools + 1 teams_send_message
-    expect(teamsTools.length).toBe(baseCount + 20)
+    expect(names).toEqual(expect.arrayContaining(["ponder", "observe", "settle"]))
+    expect(teamsTools.length).toBe(baseCount + 20 + 3)
   })
 
   it("cli channel does NOT include graph_docs or ado_docs", async () => {

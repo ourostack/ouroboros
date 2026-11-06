@@ -30,7 +30,7 @@ vi.mock("../../heart/provider-credentials", () => ({
 import { getToolsForChannel } from "../../repertoire/tools"
 import { attachmentToolDefinitions } from "../../repertoire/tools-attachments"
 import { getChannelCapabilities } from "@ouro.bot/friends"
-import { cacheRecentAttachment } from "../../heart/attachments/store"
+import { cacheRecentAttachment, readRecentAttachments } from "../../heart/attachments/store"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
 import * as materializeModule from "../../heart/attachments/materialize"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
@@ -194,6 +194,48 @@ describe("attachment tool handlers", () => {
     expect(JSON.stringify(currentIngress)).not.toContain(other.id)
     expect(JSON.parse(await materialize.handler({ attachment_id: other.id, variant: "original" }, { attachmentIds: [attachment.id] } as any))).toMatchObject({ ok: false, friction: { signature: "materialize_attachment:attachment-not-found" } })
     expect(JSON.parse(await describe.handler({ attachment_id: other.id, prompt: "what is this?" }, { attachmentIds: [attachment.id] } as any))).toMatchObject({ ok: false, friction: { signature: "describe_image:attachment-not-found" } })
+  })
+
+  it("resolves scoped attachments from the durable catalog after recency-cache eviction", async () => {
+    const agentRoot = makeAgentRoot()
+    const scopedPath = writeFile(agentRoot, "scoped.png", "scoped-bytes")
+    const scoped = cacheRecentAttachment("testagent", buildCliLocalFileAttachmentRecord({ path: scopedPath, mimeType: "image/png", byteCount: 12 }, 1), agentRoot)
+    for (let index = 0; index < 105; index += 1) {
+      cacheRecentAttachment(
+        "testagent",
+        buildCliLocalFileAttachmentRecord({ path: writeFile(agentRoot, `newer-${index}.png`, `newer-${index}`), mimeType: "image/png", byteCount: 8 }, index + 2),
+        agentRoot,
+      )
+    }
+    const list = attachmentToolDefinitions.find((def) => def.tool.function.name === "list_recent_attachments")!
+    const materialize = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+
+    expect(readRecentAttachments("testagent", agentRoot).some((entry) => entry.id === scoped.id)).toBe(false)
+    expect(JSON.parse(await list.handler({}, { attachmentIds: [scoped.id] } as any)).data)
+      .toEqual([expect.objectContaining({ id: scoped.id })])
+    expect(JSON.parse(await list.handler({ kind: "audio" }, { attachmentIds: [scoped.id] } as any)).data).toEqual([])
+    expect(JSON.parse(await list.handler({}, { attachmentIds: [scoped.id, "attachment:cli-local-file:gone"] } as any)).data)
+      .toEqual([expect.objectContaining({ id: scoped.id })])
+    expect(JSON.parse(await materialize.handler({ attachment_id: scoped.id, variant: "original" }, { attachmentIds: [scoped.id] } as any)))
+      .toMatchObject({ ok: true, data: { path: scopedPath } })
+  })
+
+  it("reports an explicit expired-artifact friction when the stored bytes are gone", async () => {
+    const agentRoot = makeAgentRoot()
+    const expiredPath = writeFile(agentRoot, "expired.png", "expired-bytes")
+    const expired = cacheRecentAttachment("testagent", buildCliLocalFileAttachmentRecord({ path: expiredPath, mimeType: "image/png", byteCount: 13 }), agentRoot)
+    fs.rmSync(expiredPath, { force: true })
+    const materialize = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const describe = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+
+    const materialized = JSON.parse(await materialize.handler({ attachment_id: expired.id, variant: "original" }, { attachmentIds: [expired.id] } as any))
+    expect(materialized).toMatchObject({
+      ok: false,
+      friction: { signature: "materialize_attachment:attachment-bytes-missing", recoverability: "blocked" },
+    })
+    expect(materialized.friction.summary).toContain("no longer available")
+    expect(JSON.parse(await describe.handler({ attachment_id: expired.id, prompt: "what is this?" }, { attachmentIds: [expired.id] } as any)))
+      .toMatchObject({ ok: false, friction: { signature: "describe_image:attachment-bytes-missing" } })
   })
 
   it("returns structured friction when materialize_attachment is missing an attachment id", async () => {

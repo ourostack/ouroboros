@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   advanceExternalEventsFromAwait,
@@ -29,6 +29,7 @@ function root(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -230,6 +231,148 @@ describe("external event attention lifecycle", () => {
     expect(reconcileExternalEvent(first.recordPath, { now: () => "2026-08-29T18:00:01.100Z" })).toEqual(renewed)
     expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker-b", expectedGeneration: 1 })).toThrow(/claim owner/u)
     expect(renewed.version).toBeGreaterThan(claimed.version)
+  })
+
+  describe("bounded claim callback", () => {
+    function claimed() {
+      const first = recordExternalEvent({
+        agent: "sanctuary", source: "sanctuary-health", eventType: "health.observed",
+        eventId: "container:Docker:jellyfin:availability", observationRevision: "stopped-1", transition: "opened",
+      }, { root: root() })
+      return claimExternalEvent(first.recordPath, { owner: "worker-a", expectedVersion: first.version, expectedGeneration: 1 })
+    }
+
+    it("holds the existing record lock across the callback and leaves disposition and reclaim busy until release", async () => {
+      const first = claimed()
+      const timeout = vi.spyOn(AbortSignal, "timeout")
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const operation = vi.fn(async (record: ReturnType<typeof readExternalEventRecord>, signal: AbortSignal) => {
+        expect(record.claimOwner).toBe("worker-a")
+        expect(record.version).toBe(first.version + 1)
+        expect(record.claimExpiresAt).toBe(readExternalEventRecord(first.recordPath).claimExpiresAt)
+        expect(signal.aborted).toBe(false)
+        await gate
+        return "effect settled"
+      })
+      const pending = renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }, operation)
+      try {
+        expect(operation).toHaveBeenCalledOnce()
+        expect(timeout).toHaveBeenCalledExactlyOnceWith(25_000)
+        expect(operation.mock.calls[0]![1]).toBe(timeout.mock.results[0]!.value)
+        const current = readExternalEventRecord(first.recordPath)
+        expect(() => commitExternalEventDisposition(first.recordPath, {
+          owner: "worker-a", expectedVersion: current.version, expectedGeneration: 1,
+          disposition: {
+            classifiedRevision: "stopped-1", classification: "actionable", stewardPolicy: { kind: "none" },
+            decision: "silent", reason: "Handled by the current turn.", nextWake: { kind: "on_change" },
+            careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
+          },
+        })).toThrow("busy")
+        expect(() => claimExternalEvent(first.recordPath, {
+          owner: "worker-b", expectedVersion: current.version, expectedGeneration: 1,
+          now: () => new Date(Date.parse(current.claimExpiresAt!) + 1).toISOString(),
+        })).toThrow("busy")
+      } finally {
+        release()
+        await pending
+      }
+      await expect(pending).resolves.toBe("effect settled")
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+      const current = readExternalEventRecord(first.recordPath)
+      const successor = claimExternalEvent(first.recordPath, {
+        owner: "worker-b", expectedVersion: current.version, expectedGeneration: 1,
+        now: () => new Date(Date.parse(current.claimExpiresAt!) + 1).toISOString(),
+      })
+      expect(successor.claimOwner).toBe("worker-b")
+      expect(commitExternalEventDisposition(first.recordPath, {
+        owner: "worker-b", expectedVersion: successor.version, expectedGeneration: 1,
+        disposition: {
+          classifiedRevision: "stopped-1", classification: "actionable", stewardPolicy: { kind: "none" },
+          decision: "silent", reason: "Handled by the successor.", nextWake: { kind: "on_change" },
+          careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
+        },
+      }).executionState).toBe("handled")
+    })
+
+    it("releases the same lock after an asynchronous callback rejects", async () => {
+      const first = claimed()
+      const operation = vi.fn(async () => { throw new Error("effect receipt failed") })
+      const pending = renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }, operation)
+      expect(operation).toHaveBeenCalledOnce()
+      await expect(pending).rejects.toThrow("effect receipt failed")
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+      expect(renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }).claimOwner).toBe("worker-a")
+    })
+
+    it("releases the same lock after a synchronous callback throws", () => {
+      const first = claimed()
+      expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }, () => {
+        throw new Error("final validation failed")
+      })).toThrow("final validation failed")
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+    })
+
+    it("never removes a successor lock after the asynchronous owner loses its fence", async () => {
+      const first = claimed()
+      const ownerPath = path.join(`${first.recordPath}.lock`, "owner")
+      const operation = vi.fn(async () => {
+        fs.writeFileSync(ownerPath, "successor-owner")
+        await Promise.resolve()
+        return "settled"
+      })
+      const pending = renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }, operation)
+      expect(operation).toHaveBeenCalledOnce()
+      await expect(pending).resolves.toBe("settled")
+      expect(fs.readFileSync(ownerPath, "utf8")).toBe("successor-owner")
+    })
+
+    it("rejects an expired claim before callback renewal without changing its bytes", () => {
+      const first = claimed()
+      const before = fs.readFileSync(first.recordPath, "utf8")
+      const operation = vi.fn(async () => undefined)
+      expect(() => renewExternalEventClaim(first.recordPath, {
+        owner: "worker-a", expectedGeneration: 1, now: () => first.claimExpiresAt!,
+      }, operation)).toThrow("expired")
+      expect(operation).not.toHaveBeenCalled()
+      expect(fs.readFileSync(first.recordPath, "utf8")).toBe(before)
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+    })
+
+    it("does not renew a callback claim whose expiry is absent", () => {
+      const first = claimed()
+      fs.writeFileSync(first.recordPath, JSON.stringify({ ...first, claimExpiresAt: null }))
+      const before = fs.readFileSync(first.recordPath, "utf8")
+      const operation = vi.fn(async () => undefined)
+      expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 }, operation)).toThrow("expired")
+      expect(operation).not.toHaveBeenCalled()
+      expect(fs.readFileSync(first.recordPath, "utf8")).toBe(before)
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+    })
+
+    it.each([
+      [{ owner: "worker-b", expectedGeneration: 1 }, "owner mismatch"],
+      [{ owner: "worker-a", expectedGeneration: 2 }, "generation mismatch"],
+      [{ owner: "worker-a", expectedGeneration: 1, leaseMs: 0 }, "renewal is invalid"],
+    ])("keeps callback admission fail-closed for %j", (input, reason) => {
+      const first = claimed()
+      const before = fs.readFileSync(first.recordPath, "utf8")
+      const operation = vi.fn(async () => undefined)
+      expect(() => renewExternalEventClaim(first.recordPath, input, operation)).toThrow(reason)
+      expect(operation).not.toHaveBeenCalled()
+      expect(fs.readFileSync(first.recordPath, "utf8")).toBe(before)
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+    })
+
+    it("preserves synchronous renewal without creating a callback deadline", () => {
+      const first = claimed()
+      const timeout = vi.spyOn(AbortSignal, "timeout")
+      const renewed = renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1 })
+      expect(renewed).toMatchObject({ claimOwner: "worker-a", version: first.version + 1 })
+      expect(renewed).not.toBeInstanceOf(Promise)
+      expect(timeout).not.toHaveBeenCalled()
+      expect(fs.existsSync(`${first.recordPath}.lock`)).toBe(false)
+    })
   })
 
   it("rejects unbounded event input before writing a receipt", () => {

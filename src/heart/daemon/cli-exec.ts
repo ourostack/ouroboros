@@ -8667,9 +8667,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       throw new Error("Workbench MCP runtime coordinates are unavailable")
     }
     const daemonResult = deps.ensureDaemonForFrontend
-      ? await deps.ensureDaemonForFrontend(command.agent)
+      ? await deps.ensureDaemonForFrontend(command.agent, commandSocketPath)
       : await ensureDaemonRunning({
         ...deps,
+        socketPath: commandSocketPath,
         startDaemonProcess: (socketPath) => deps.startDaemonForFrontend
           ? deps.startDaemonForFrontend(socketPath, command.agent)
           : deps.startDaemonProcess(socketPath),

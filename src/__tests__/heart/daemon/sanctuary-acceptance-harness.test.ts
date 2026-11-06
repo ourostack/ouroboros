@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as ts from "typescript"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { sanctuaryContainmentBoundariesFixture } from "../../fixtures/sanctuary-containment"
 
 import {
   createSanctuaryAcceptanceHarnessDependencies,
@@ -159,11 +160,10 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16d-1-space": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: 0, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-2-unknown-admission": return { acknowledgementSent: true, agentTurnCount: 0, distinctAccount: true, mutationCount: 0, ownerCardSent: true, providerInvocationCount: 0, quarantined: true, responseCount: 0, workItemCount: 0 }
       case "unit-16e-containment-audit": return {
-        schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
-        telegramToolCount: 25, telegramProfileDigest: "a".repeat(64), telegramSchemaDigest: "b".repeat(64), privateToolCount: 17, privateProfileDigest: "c".repeat(64), privateSchemaDigest: "d".repeat(64), resolvedHandlerCount: 42, relationshipProfilesExact: true, handlersExact: true,
-        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
+        schemaVersion: "sanctuary-containment-audit-v2", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
+        profileBoundaries: sanctuaryContainmentBoundariesFixture(),
         auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 3, publishedPortCount: 0, networkMode: "host", readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "e".repeat(64), writeApprovalPolicyExact: true, sensitiveMaterialObserved: false, mutationCount: 0,
       }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { attemptCount: 1, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
@@ -317,32 +317,118 @@ describe("Sanctuary acceptance harness", () => {
     expect(new Set(livePhaseCursors).size).toBe(livePhaseCursors.length)
   })
 
+  it.each([true, false])("accepts exact Unit-16e v2 role evidence with provider filtering enabled=%s", (reasoning) => {
+    const value = { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: sanctuaryContainmentBoundariesFixture(reasoning ? ["reasoning-effort"] : []) }
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).not.toThrow()
+  })
+
+  it("accepts the current phase-annotation capability without advertising unsupported reasoning", () => {
+    const value = { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: sanctuaryContainmentBoundariesFixture(["phase-annotation"]) }
+    expect(value.profileBoundaries["sanctuary-owner"].schemaToolNames).not.toContain("set_reasoning_effort")
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).not.toThrow()
+  })
+
+  it.each(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])("refuses Unit-16e evidence when the packaged %s version is stale", async (id) => {
+    const value = validAssertions("unit-16e-containment-audit")
+    const profiles = await import("../../../repertoire/relationship-authorization")
+    const registry = profiles.loadRelationshipCapabilityRegistry(path.resolve("deploy/unraid/sanctuary.ouro"))
+    registry.profiles[id].version -= 1
+    const load = vi.spyOn(profiles, "loadRelationshipCapabilityRegistry").mockReturnValue(registry)
+    try {
+      expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).toThrow("canonical contract")
+    } finally { load.mockRestore() }
+  })
+
+  it("requires a genuinely resolvable exclusion even when the reported zero count is truthful", async () => {
+    const profileBoundaries = sanctuaryContainmentBoundariesFixture()
+    profileBoundaries["sanctuary-owner"].globallyResolvableExcludedToolCount = 0
+    const value = { ...validAssertions("unit-16e-containment-audit"), profileBoundaries }
+    const tools = await import("../../../repertoire/tools")
+    const resolve = tools.resolveToolDefinition
+    const resolver = vi.spyOn(tools, "resolveToolDefinition").mockImplementation((name, context) => ["vault_get", "mcp_call", "exec", "credential_get"].includes(name) ? undefined : resolve(name, context))
+    try {
+      expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).toThrow("canonical contract")
+    } finally { resolver.mockRestore() }
+  })
+
+  it("rejects historical Unit-16e v1 evidence even when its former flat checks all pass", () => {
+    const value = {
+      ...validAssertions("unit-16e-containment-audit"), schemaVersion: "sanctuary-containment-audit-v1",
+      telegramToolCount: 25, telegramProfileDigest: "a".repeat(64), telegramSchemaDigest: "b".repeat(64),
+      privateToolCount: 17, privateProfileDigest: "c".repeat(64), privateSchemaDigest: "d".repeat(64), resolvedHandlerCount: 42,
+      relationshipProfilesExact: true, handlersExact: true, excludedToolCount: 7, excludedSchemaIntersectionCount: 0,
+      fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7,
+      excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
+    }
+    Reflect.deleteProperty(value, "profileBoundaries")
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).toThrow()
+  })
+
+  it.each(["sanctuary-owner", "sanctuary-household", "sanctuary-event"] as const)("rejects forged Unit-16e v2 evidence for %s", (id) => {
+    const baseline = sanctuaryContainmentBoundariesFixture()
+    const selected = baseline[id]
+    const changes: Record<string, unknown>[] = [
+      { profileId: "other" }, { profileVersion: selected.profileVersion - 1 }, { profileDigest: "0".repeat(64) },
+      { profileToolNames: [...selected.profileToolNames, selected.profileToolNames[0]] },
+      { profileToolNames: selected.profileToolNames.slice(1) }, { profileToolNames: [...selected.profileToolNames, "credential_get"] },
+      { providerCapabilities: ["unsupported"] }, { providerCapabilities: ["reasoning-effort", "reasoning-effort"] }, { providerCapabilities: null }, { providerCapabilities: {} },
+      { schemaDigest: "0".repeat(64) }, { schemaToolNames: [...selected.schemaToolNames, selected.schemaToolNames[0]] },
+      { schemaToolNames: selected.schemaToolNames.slice(1) }, { schemaToolNames: [...selected.schemaToolNames, "credential_get"] },
+      { ordinaryDefinitionCount: 0 }, { engineSchemaCount: 0 }, { profileExact: false }, { schemasExact: false }, { handlersExact: false },
+      { poisonedSchemaIntersectionCount: 1 }, { excludedSchemaIntersectionCount: 1 }, { fabricatedHandlerInvocationCount: 1 },
+      { excludedToolNames: [...selected.excludedToolNames.slice(1), selected.excludedToolNames[1]] },
+      { excludedToolAttemptCount: selected.excludedToolAttemptCount - 1 }, { excludedToolRejectedCount: selected.excludedToolRejectedCount - 1 },
+      { excludedToolInvokedCount: 1 }, { excludedToolSideEffectCount: 1 }, { globallyResolvableExcludedToolCount: 0 }, { unexpected: true },
+    ]
+    for (const change of changes) {
+      const boundaries = structuredClone(baseline)
+      Object.assign(boundaries[id], change)
+      expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: boundaries }), JSON.stringify(change)).toThrow()
+    }
+    for (const bad of [null, [], {}, { ...baseline, extra: selected }, { ...baseline, [id]: null }, { ...baseline, [id]: [] }]) {
+      expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: bad })).toThrow()
+    }
+    const missing = structuredClone(baseline)
+    Reflect.deleteProperty(missing, id)
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: missing })).toThrow()
+  })
+
   it("rejects every material semantic failure instead of accepting self-attestation", () => {
     const reject = (label: string, patch: Record<string, unknown>, pattern: RegExp) => expect(() => validateSanctuaryUnit16EvidenceAssertions(
       label as Parameters<typeof validateSanctuaryUnit16EvidenceAssertions>[0],
       { ...validAssertions(label), ...patch },
     )).toThrow(pattern)
+    const ownerBoundary = (patch: Record<string, unknown>) => {
+      const profileBoundaries = sanctuaryContainmentBoundariesFixture()
+      Object.assign(profileBoundaries["sanctuary-owner"], patch)
+      return { profileBoundaries }
+    }
     reject("unit-12c-1-opaque-identity", { identityBound: false }, /must be true/u)
     reject("unit-15c-1-no-callback-terminalization", { elapsedMs: 59_999 }, /reach ttlMs/u)
     reject("unit-16b-runtime-vault-containment", { manualAuthRequired: true }, /must be false/u)
     reject("unit-16b-runtime-vault-containment", { mountCount: 2 }, /must equal 4/u)
     reject("unit-16d-whats-up", { responseCount: 0 }, /must equal 1/u)
-    reject("unit-16e-containment-audit", { fabricatedHandlerInvocationCount: 1 }, /must equal 0/u)
-    reject("unit-16e-containment-audit", { excludedToolAttemptCount: 6 }, /must equal 7/u)
-    reject("unit-16e-containment-audit", { excludedToolRejectedCount: 6 }, /must equal 7/u)
-    reject("unit-16e-containment-audit", { excludedToolInvokedCount: 1 }, /must equal 0/u)
-    reject("unit-16e-containment-audit", { excludedToolSideEffectCount: 1 }, /must equal 0/u)
-    reject("unit-16e-containment-audit", { globallyResolvableExcludedToolCount: 0 }, /globallyResolvable/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ fabricatedHandlerInvocationCount: 1 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ excludedToolAttemptCount: 3 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ excludedToolRejectedCount: 3 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ excludedToolInvokedCount: 1 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ excludedToolSideEffectCount: 1 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ globallyResolvableExcludedToolCount: 0 }), /profileBoundaries/u)
     reject("unit-16e-containment-audit", { schemaVersion: "wrong" }, /schemaVersion/u)
     reject("unit-16e-containment-audit", { auditRecordCount: 1 }, /safe integer/u)
     reject("unit-16e-containment-audit", { auditLifecyclePairCount: 0 }, /safe integer/u)
     reject("unit-16e-containment-audit", { liveProcessUser: "0:0" }, /identity/u)
     reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
     reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
-    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 4/u)
-    reject("unit-16e-containment-audit", { relationshipProfilesExact: false }, /must be true/u)
-    reject("unit-16e-containment-audit", { resolvedHandlerCount: 41 }, /handler/u)
-    reject("unit-16e-containment-audit", { handlersExact: false }, /must be true/u)
+    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 3/u)
+    reject("unit-16e-containment-audit", { mountCount: 4 }, /must equal 3/u)
+    reject("unit-16e-containment-audit", { readOnlyRoot: true }, /readOnlyRoot must be false/u)
+    for (const readOnlyRoot of [null, undefined, 0, "false"]) {
+      reject("unit-16e-containment-audit", { readOnlyRoot }, /readOnlyRoot must be boolean/u)
+    }
+    reject("unit-16e-containment-audit", ownerBoundary({ profileExact: false }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ ordinaryDefinitionCount: 41 }), /profileBoundaries/u)
+    reject("unit-16e-containment-audit", ownerBoundary({ handlersExact: false }), /profileBoundaries/u)
     reject("unit-16e-containment-audit", { writeApprovalPolicyExact: false }, /must be true/u)
     reject("unit-16e-containment-audit", { readScopeDigest: "e".repeat(64) }, /readScopeDigest/u)
     reject("unit-16h-acceptance-delivery-probe", { firedWithinMs: 960_001 }, /16-minute/u)
@@ -2660,6 +2746,11 @@ describe("Sanctuary acceptance harness", () => {
     fs.writeFileSync(nervesPath, "exports.emitNervesEvent = () => {};\n")
     fs.writeFileSync(telegramPath, "exports.loadTelegramSenseCredentials = () => ({ botToken: '1:x', authorizedUserId: '1', authorizedChatId: '1' }); exports.telegramBotIdFromToken = () => '1';\n")
     fs.writeFileSync(runtimeCredentialsPath, "exports.refreshRuntimeCredentialConfig = async () => ({ ok: true, config: {} });\n")
+    for (const unusedSelectionModule of ["node_modules/@ouro.bot/friends/index.js", "repertoire/relationship-authorization.js", "repertoire/tools.js"]) {
+      const modulePath = path.join(compiledRoot, unusedSelectionModule)
+      fs.mkdirSync(path.dirname(modulePath), { recursive: true })
+      fs.writeFileSync(modulePath, "module.exports = {};\n")
+    }
     const evidencePath = path.join(dir, "claim.json")
     const mutationPath = path.join(dir, "mutations.log")
     const runnerPath = path.join(dir, "runner.cjs")
@@ -2697,13 +2788,16 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
 }).then(() => process.exit(0), () => process.exit(17))
 `)
     const markerBase = path.join(dir, "barrier")
+    const errors: string[] = []
     const run = (suffix: string) => new Promise<number>((resolve, reject) => {
-      const child = spawn(process.execPath, [runnerPath, harnessPath, dir, evidencePath, mutationPath, `${markerBase}-${suffix}`], { stdio: "ignore" })
+      const child = spawn(process.execPath, [runnerPath, harnessPath, dir, evidencePath, mutationPath, `${markerBase}-${suffix}`], { stdio: ["ignore", "ignore", "pipe"] })
+      child.stderr.setEncoding("utf8")
+      child.stderr.on("data", (text: string) => errors.push(text))
       child.once("error", reject)
       child.once("exit", (code) => resolve(code ?? -1))
     })
     const statuses = await Promise.all([run("a"), run("b")])
-    expect(statuses.sort()).toEqual([0, 17])
+    expect(statuses.sort(), errors.join("\n")).toEqual([0, 17])
     expect(fs.readFileSync(mutationPath, "utf8").trim().split("\n")).toHaveLength(1)
     expect(evidence(evidencePath)).toMatchObject({ operation: "reboot", phase: "requested" })
   })

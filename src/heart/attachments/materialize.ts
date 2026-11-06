@@ -2,7 +2,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentRoot } from "../identity"
 import { normalizeImageForVision } from "./image-normalize"
-import { getRecentAttachment } from "./store"
+import { getAttachment } from "./store"
 import { getAttachmentSourceAdapter } from "./sources"
 import type { AttachmentRecord, AttachmentVariant, MaterializedAttachment } from "./types"
 
@@ -31,7 +31,23 @@ async function materializeOriginalAttachment(
   agentRoot: string,
 ): Promise<MaterializedAttachment> {
   const adapter = getAttachmentSourceAdapter(attachment.source)
-  const materialized = await adapter.materializeOriginal({ agentName, attachment, agentRoot })
+  let materialized: MaterializedAttachment
+  try {
+    materialized = await adapter.materializeOriginal({ agentName, attachment, agentRoot })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    emitNervesEvent({
+      level: "warn",
+      component: "engine",
+      event: "engine.attachment_bytes_missing",
+      message: "attachment metadata resolved but its stored bytes are gone",
+      meta: {
+        attachmentId: attachment.id,
+        source: attachment.source,
+      },
+    })
+    throw new Error(`Attachment bytes are missing or expired: ${attachment.id}`)
+  }
 
   emitNervesEvent({
     component: "engine",
@@ -54,7 +70,7 @@ export async function materializeAttachment(
 ): Promise<MaterializedAttachment> {
   const agentRoot = options.agentRoot ?? getAgentRoot(agentName)
   const variant = options.variant ?? "original"
-  const attachment = getRecentAttachment(agentName, attachmentId, agentRoot)
+  const attachment = getAttachment(agentName, attachmentId, agentRoot)
   if (!attachment) {
     throw new Error(`Attachment not found: ${attachmentId}`)
   }

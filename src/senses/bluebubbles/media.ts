@@ -6,7 +6,12 @@ import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentName, getAgentRoot, getAgentToolsRoot } from "../../heart/identity"
 import { getModelCapabilities } from "../../heart/model-capabilities"
-import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
+import {
+  MAX_VLM_IMAGE_BYTES,
+  MAX_VLM_IMAGE_EDGE,
+  normalizeImageForVision,
+} from "../../heart/attachments/image-normalize"
+import { probeImageBuffer } from "../../heart/attachments/image-format"
 import { cacheRecentAttachment } from "../../heart/attachments/store"
 import {
   buildBlueBubblesAttachmentRecord,
@@ -326,42 +331,77 @@ export async function hydrateBlueBubblesAttachments(
       const downloaded = await downloadBlueBubblesAttachment(attachment, config, channelConfig, fetchImpl)
       const base64 = downloaded.buffer.toString("base64")
       const byteCount = downloaded.buffer.length
+      const detectedImage = probeImageBuffer(downloaded.buffer)
       const persistedRecord = initialRecord && initialRecord.source === "bluebubbles"
         ? await persistBlueBubblesAttachmentSource(
             agentName,
             initialRecord,
             {
               buffer: downloaded.buffer,
-              mimeType: downloaded.contentType,
+              mimeType: detectedImage?.mimeType ?? downloaded.contentType,
               byteCount,
             },
             agentRoot,
           )
         : null
 
-      if (isBlueBubblesImageAttachment(attachment, downloaded.contentType)) {
-        const mimeType = downloaded.contentType ?? "application/octet-stream"
-        if (visionCapable) {
-          inputParts.push({
-            type: "image_url",
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-              detail: "auto",
-            },
-          })
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_media_hydrate",
-            message: "bluebubbles media hydrate",
-            meta: {
-              attachmentGuid: attachment.guid,
-              mimeType,
-              byteCount,
-              hydrationPath: "native-passthrough",
-            },
-          })
-          continue
+      if (detectedImage || isBlueBubblesImageAttachment(attachment, downloaded.contentType)) {
+        const declaredMimeType = downloaded.contentType?.trim().toLowerCase()
+        const nativeMimeType = detectedImage?.mimeType
+          ?? (!chatModel && declaredMimeType && ["image/gif", "image/jpeg", "image/png", "image/webp"].includes(declaredMimeType)
+            ? declaredMimeType
+            : undefined)
+        const legacyNativePassthrough = !chatModel && !detectedImage && nativeMimeType !== undefined
+        const mimeType = detectedImage?.mimeType ?? downloaded.contentType ?? "application/octet-stream"
+        if (visionCapable && (nativeMimeType || persistedRecord?.sourceData.localPath)) {
+          try {
+            let providerBytes = downloaded.buffer
+            let providerMimeType = nativeMimeType ?? mimeType
+            if (!legacyNativePassthrough) {
+              if (persistedRecord?.sourceData.localPath) {
+                const normalized = await normalizeImageForVision({
+                  attachment: persistedRecord,
+                  sourcePath: persistedRecord.sourceData.localPath,
+                  agentName,
+                  agentRoot,
+                })
+                providerBytes = await fs.readFile(normalized.path)
+                const normalizedFormat = probeImageBuffer(providerBytes)
+                if (!normalizedFormat) {
+                  throw new Error("Normalized BlueBubbles image has an unsupported format")
+                }
+                providerMimeType = normalizedFormat.mimeType
+              } else if (
+                byteCount > MAX_VLM_IMAGE_BYTES
+                || detectedImage!.pixelWidth > MAX_VLM_IMAGE_EDGE
+                || detectedImage!.pixelHeight > MAX_VLM_IMAGE_EDGE
+              ) {
+                throw new Error("image requires normalization but has no persisted source")
+              }
+            }
+            inputParts.push({
+              type: "image_url",
+              image_url: {
+                url: `data:${providerMimeType};base64,${providerBytes.toString("base64")}`,
+                detail: "auto",
+              },
+            })
+            emitNervesEvent({
+              level: "warn",
+              component: "senses",
+              event: "senses.bluebubbles_media_hydrate",
+              message: "bluebubbles media hydrate",
+              meta: {
+                attachmentGuid: attachment.guid,
+                mimeType: providerMimeType,
+                byteCount: providerBytes.length,
+                hydrationPath: "native-passthrough",
+              },
+            })
+            continue
+          } catch {
+            // Fall through to the existing VLM description path.
+          }
         }
 
         try {

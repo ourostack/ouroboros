@@ -94,6 +94,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // source registry are pure support seams. The orchestrator/adapters that
   // call them own the observability.
   "heart/attachments/originals",
+  "heart/attachments/image-format",
   "heart/attachments/sources/index",
   "heart/attachments/sources/cli-local-file",
   // Browser-safe Mailbox contract helpers: shared types/formatting helpers

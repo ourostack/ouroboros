@@ -17,10 +17,15 @@ import {
 } from "node:fs"
 import { constants as fsConstants } from "node:fs"
 import * as path from "node:path"
+import { isDeepStrictEqual } from "node:util"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { loadTelegramSenseCredentials, telegramBotIdFromToken, type TelegramSenseCredentials } from "../../senses/telegram"
 import { mergeRuntimeCredentialConfig, refreshRuntimeCredentialConfig, type RuntimeCredentialConfigReadResult } from "../runtime-credentials"
+import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
+import { SANCTUARY_OWNER_ADDITIONS, resolveToolDefinition, selectToolsForChannel, toolSelectionSchemas } from "../../repertoire/tools"
+import type { ProviderCapability } from "../core"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
 const DEFAULT_ADAPTER_TIMEOUT_MS = 240_000
@@ -30,6 +35,41 @@ const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
 type FixedEvidenceSchema = "telegram-cursor-v1" | "postboot-health-v1"
 
 type JsonObject = Record<string, unknown>
+
+export function exactSanctuaryContainmentProfileBoundaries(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const boundaries = value as JsonObject
+  const versions = { "sanctuary-owner": 8, "sanctuary-household": 5, "sanctuary-event": 4 }
+  if (!isDeepStrictEqual(Object.keys(boundaries).sort(), Object.keys(versions).sort())) return false
+  const packageRoot = path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro")
+  const registry = loadRelationshipCapabilityRegistry(packageRoot)
+  const digest = (input: unknown) => createHash("sha256").update(JSON.stringify(input)).digest("hex")
+  return Object.entries(versions).every(([id, version]) => {
+    const raw = boundaries[id]
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false
+    const boundary = raw as JsonObject
+    const capabilities = boundary.providerCapabilities
+    if (!Array.isArray(capabilities) || !capabilities.every((entry): entry is ProviderCapability => entry === "reasoning-effort" || entry === "phase-annotation")
+      || new Set(capabilities).size !== capabilities.length) return false
+    const profile = registry.profiles[id]!
+    if (profile.version !== version) return false
+    const selection = selectToolsForChannel(getChannelCapabilities(id === "sanctuary-event" ? "inner" : "telegram"), undefined, undefined, new Set(capabilities), undefined, undefined, {
+      agentName: "sanctuary", relationshipAuthorization: { profileId: id, advertisedToolNames: profile.toolNames },
+    })
+    const schemas = toolSelectionSchemas(selection)
+    const excludedToolNames = ["vault_get", "mcp_call", "exec", "credential_get", ...(id === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)]
+    const globallyResolvableExcludedToolCount = excludedToolNames.filter((name) => resolveToolDefinition(name)).length
+    return globallyResolvableExcludedToolCount > 0 && isDeepStrictEqual(boundary, {
+      profileId: id, profileVersion: version, profileDigest: digest(profile), profileToolNames: profile.toolNames,
+      providerCapabilities: capabilities, schemaDigest: digest(schemas), schemaToolNames: schemas.map((tool) => tool.function.name),
+      ordinaryDefinitionCount: selection.ordinary.length, engineSchemaCount: selection.engine.length,
+      profileExact: true, schemasExact: true, handlersExact: true, poisonedSchemaIntersectionCount: 0,
+      excludedToolNames, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+      excludedToolAttemptCount: excludedToolNames.length, excludedToolRejectedCount: excludedToolNames.length,
+      excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount,
+    })
+  })
+}
 
 export interface AcceptanceHarnessDependencies {
   readSecret(): string
@@ -456,14 +496,13 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
     case "unit-16e-containment-audit":
       exact([
         "schemaVersion", "keyCount", "keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "keyRoleAssignmentCount",
-        "telegramToolCount", "telegramProfileDigest", "telegramSchemaDigest", "privateToolCount", "privateProfileDigest", "privateSchemaDigest", "resolvedHandlerCount", "relationshipProfilesExact", "handlersExact",
-        "excludedToolCount", "excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolAttemptCount", "excludedToolRejectedCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "globallyResolvableExcludedToolCount",
+        "profileBoundaries",
         "auditPathDigest", "auditLedgerDigest", "auditRecordCount", "auditLifecyclePairCount",
         "containerUser", "liveProcessUser", "mountCount", "publishedPortCount", "networkMode", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled", "writableKeyExposure",
         "rawWriteMaterialFieldCount", "typedWriteExecutorCount", "writeApprovalPolicyDigest", "writeApprovalPolicyExact", "sensitiveMaterialObserved", "mutationCount",
       ])
-      if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v1") throw new Error(`${label} schemaVersion is invalid`)
-      for (const key of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramProfileDigest", "telegramSchemaDigest", "privateProfileDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"]) opaqueDigest(value[key], `${label} ${key}`)
+      if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v2") throw new Error(`${label} schemaVersion is invalid`)
+      for (const key of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"]) opaqueDigest(value[key], `${label} ${key}`)
       for (const [key, expected] of Object.entries({
         readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e",
         writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec",
@@ -471,22 +510,17 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       })) if (value[key] !== expected) throw new Error(`${label} ${key} does not match the canonical contract`)
       requiredInteger(value, "keyCount", 2, label)
       requiredInteger(value, "keyRoleAssignmentCount", 0, label)
-      const telegramToolCount = integer(value.telegramToolCount, `${label} telegramToolCount`, 1)
-      const privateToolCount = integer(value.privateToolCount, `${label} privateToolCount`, 1)
-      if (integer(value.resolvedHandlerCount, `${label} resolvedHandlerCount`, 1) !== telegramToolCount + privateToolCount) throw new Error(`${label} handler count does not match the live relationship profiles`)
-      requiredInteger(value, "excludedToolCount", 7, label)
-      requiredInteger(value, "excludedToolAttemptCount", 7, label)
-      requiredInteger(value, "excludedToolRejectedCount", 7, label)
-      integer(value.globallyResolvableExcludedToolCount, `${label} globallyResolvableExcludedToolCount`, 1)
-      allZero(["excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
+      if (!exactSanctuaryContainmentProfileBoundaries(value.profileBoundaries)) throw new Error(`${label} profileBoundaries do not match the canonical contract`)
+      allZero(["publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
       requiredFalse(value, "sensitiveMaterialObserved", label)
       requiredFalse(value, "writableKeyExposure", label)
+      requiredFalse(value, "readOnlyRoot", label)
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 4, label)
+      requiredInteger(value, "mountCount", 3, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
-      allTrue(["relationshipProfilesExact", "handlersExact", "writeApprovalPolicyExact", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])
+      allTrue(["writeApprovalPolicyExact", "mountsExact", "securityExact", "updaterDisabled"])
       break
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial":

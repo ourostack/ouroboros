@@ -9,9 +9,11 @@ import { saveSession, loadSession } from "../../mind/context"
 import { getChannelCapabilities, FriendResolver, FileFriendStore } from "@ouro.bot/friends"
 import type { FriendRecord, IdentityProvider, ResolvedContext } from "@ouro.bot/friends"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
-import { getSharedMcpManager } from "../../repertoire/mcp-manager"
-import { execTool, getToolsForChannel } from "../../repertoire/tools"
-import type { ToolContext } from "../../repertoire/tools-base"
+import { getSharedMcpManager, type McpOwner, type McpTurnView } from "../../repertoire/mcp-manager"
+import { execTool, selectToolsForChannel } from "../../repertoire/tools"
+import type { ToolContext, ToolSelection } from "../../repertoire/tools-base"
+import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
+import type { JsonObject } from "../../heart/approval-store"
 import { sanitizeKey } from "../../heart/config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeVoicePlaybackArtifact } from "./playback"
@@ -1409,7 +1411,6 @@ class TwilioMediaStreamSession {
 }
 /* v8 ignore stop */
 
-const REALTIME_TOOL_FLOW_NAMES = new Set(["speak", "settle", "rest", "observe", "ponder"])
 const OPENAI_REALTIME_DEFAULT_MODEL = "gpt-realtime-2"
 const OPENAI_REALTIME_DEFAULT_VOICE = "cedar"
 const OPENAI_REALTIME_DEFAULT_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
@@ -1486,7 +1487,6 @@ interface OpenAISipPhoneSessionRegistry {
   getByOutboundId(outboundId: string): OpenAISipPhoneSession | undefined
 }
 
-const OPENAI_SIP_UNSUPPORTED_TOOL_NAMES = new Set<string>()
 const OPENAI_SIP_DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
 const OPENAI_SIP_DEFAULT_WEBSOCKET_BASE_URL = "wss://api.openai.com/v1/realtime"
 
@@ -1705,13 +1705,36 @@ function realtimeOutputAudioConfig(
   }
 }
 
-function realtimeToolsFromChatTools(
-  tools: OpenAI.ChatCompletionFunctionTool[],
-  excludedToolNames: Set<string> = new Set(),
-): Array<{ type: "function"; name: string; description?: string; parameters?: unknown }> {
-  return tools
-    .filter((tool) => !REALTIME_TOOL_FLOW_NAMES.has(tool.function.name) && !excludedToolNames.has(tool.function.name))
-    .map((tool) => ({
+/* v8 ignore stop */
+type RealtimeToolContext = ToolContext & McpOwner & { readonly toolSelection: ToolSelection }
+
+function selectRealtimeToolContext(context: ToolContext & McpOwner, mcpManager?: McpTurnView): RealtimeToolContext {
+  const selectCurrentTools = (): ToolSelection => {
+    const selected = selectToolsForChannel(
+      getChannelCapabilities("voice"), context.context?.friend.toolPreferences, context.context,
+      undefined, mcpManager, undefined, context,
+    )
+    return Object.freeze({ ordinary: selected.ordinary, engine: Object.freeze([]) })
+  }
+  return { ...context, toolSelection: selectCurrentTools(), selectCurrentTools }
+}
+
+async function prepareRealtimeToolContext(context: RealtimeToolContext): Promise<RealtimeToolContext> {
+  let mcpManager: McpTurnView | undefined
+  try {
+    mcpManager = await getSharedMcpManager({ agentName: context.agentName, agentRoot: context.agentRoot }) ?? undefined
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn", component: "senses", event: "senses.voice_mcp_discovery_error",
+      message: "MCP discovery failed; keeping native voice tools",
+      meta: { agentName: context.agentName, error: errorMessage(error) },
+    })
+  }
+  return selectRealtimeToolContext(context, mcpManager)
+}
+
+function realtimeToolsFromSelection(selection: ToolSelection): Array<{ type: "function"; name: string; description?: string; parameters?: unknown }> {
+  return selection.ordinary.map(({ tool }) => ({
       type: "function" as const,
       name: tool.function.name,
       ...(tool.function.description ? { description: tool.function.description } : {}),
@@ -1719,6 +1742,7 @@ function realtimeToolsFromChatTools(
     }))
 }
 
+/* v8 ignore start -- unchanged transport route parsing @preserve */
 function mediaStreamRequestedConversationEngine(url: string | undefined): TwilioPhoneConversationEngine | undefined {
   if (!url) return undefined
   try {
@@ -1730,23 +1754,16 @@ function mediaStreamRequestedConversationEngine(url: string | undefined): Twilio
   }
 }
 
-function parseToolArguments(raw: string): Record<string, string> {
-  if (!raw.trim()) return {}
-  const parsed = JSON.parse(raw) as unknown
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
-  const args: Record<string, string> = {}
-  for (const [key, value] of Object.entries(parsed)) {
-    if (typeof value === "string") {
-      args[key] = value
-    } else if (value === undefined) {
-      args[key] = ""
-    } else {
-      args[key] = JSON.stringify(value)
-    }
-  }
-  return args
+/* v8 ignore stop */
+function parseToolArguments(raw: unknown, name: string, selection: ToolSelection): JsonObject {
+  if (typeof raw !== "string") throw new Error("invalid tool arguments: expected a JSON object string")
+  const schema = selection.ordinary.find((definition) => definition.tool.function.name === name)?.tool.function.parameters ?? {}
+  const validation = validateAdvertisedToolArguments(raw, schema)
+  if (!validation.ok) throw new Error(`invalid tool arguments: ${validation.reason}`)
+  return validation.value.arguments
 }
 
+/* v8 ignore start -- unchanged transcript and provider instruction helpers @preserve */
 function transcriptMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
   const recent = messages
     .filter((message) => message.role === "user" || message.role === "assistant")
@@ -1838,10 +1855,6 @@ function realtimeBootstrapInstructions(agentName: string, voiceStyle?: string): 
   ].filter(Boolean).join(" ")
 }
 
-function realtimeBootstrapTools(): Array<{ type: "function"; name: string; description?: string; parameters?: unknown }> {
-  return realtimeToolsFromChatTools(getToolsForChannel(getChannelCapabilities("voice")))
-}
-
 function timeoutAfter(ms: number): Promise<undefined> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(undefined), ms)
@@ -1893,7 +1906,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private hangupRequested = false
   private pendingAudioPayloads: string[] = []
   private openaiWs: WebSocket | null = null
-  private toolContext: ToolContext | undefined
+  private toolContext!: RealtimeToolContext
   private friendStore: FileFriendStore | undefined
   private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
@@ -2046,18 +2059,25 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     }
   }
 
+  /* v8 ignore stop */
   private async startOpenAIRealtimeSession(): Promise<void> {
     const realtime = this.options.openaiRealtime
     if (!realtime?.apiKey?.trim()) {
       throw new Error("OpenAI Realtime API key is not configured")
     }
 
-    this.ensureVoiceToolContext()
+    const bootstrapContext = this.ensureVoiceToolContext()
     const instructionsPromise = this.buildInstructions()
       .catch(() => realtimeBootstrapInstructions(this.options.agentName))
-    const toolsPromise = this.buildRealtimeTools()
-      .then((tools) => realtimeToolsFromChatTools(tools))
-      .catch(() => realtimeBootstrapTools())
+    const toolsPromise = prepareRealtimeToolContext(bootstrapContext).catch((error) => {
+      emitNervesEvent({
+        level: "error", component: "senses", event: "senses.voice_twilio_realtime_tool_config_error",
+        message: "Realtime tool configuration failed",
+        meta: { agentName: this.options.agentName, error: errorMessage(error) },
+      })
+      this.end()
+      return null
+    })
     const ws = new WebSocket(openAIRealtimeWebSocketUrl(realtime), {
       headers: {
         Authorization: `Bearer ${realtime.apiKey.trim()}`,
@@ -2102,43 +2122,53 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private async configureOpenAIRealtimeSession(
     realtime: OpenAIRealtimeTwilioOptions,
     instructionsPromise: Promise<string>,
-    toolsPromise: Promise<Array<{ type: "function"; name: string; description?: string; parameters?: unknown }>>,
+    toolsPromise: Promise<RealtimeToolContext | null>,
   ): Promise<void> {
     const ready = await Promise.race([
       Promise.all([instructionsPromise, toolsPromise] as const),
       timeoutAfter(OPENAI_REALTIME_BOOTSTRAP_TIMEOUT_MS),
     ])
     const usedBootstrap = ready === undefined
-    const [instructions, tools] = ready ?? [
+    const [instructions, toolContext] = ready ?? [
       realtimeBootstrapInstructions(this.options.agentName, realtime.voiceStyle),
-      realtimeBootstrapTools(),
+      this.ensureVoiceToolContext(),
     ]
-    this.sendOpenAIRealtimeSessionUpdate(realtime, instructions, tools)
+    if (!toolContext || this.closed) return
+    this.sendOpenAIRealtimeSessionUpdate(realtime, instructions, toolContext)
     this.flushPendingAudio()
     this.sendInitialGreeting()
 
     if (!usedBootstrap) return
     Promise.all([instructionsPromise, toolsPromise] as const)
-      .then(([fullInstructions, fullTools]) => {
-        if (this.closed) return
+      .then(([fullInstructions, fullContext]) => {
+        if (!fullContext || this.closed) return
+        this.toolContext = fullContext
         this.sendOpenAI({
           type: "session.update",
           session: {
             type: "realtime",
             instructions: fullInstructions,
-            tools: fullTools,
+            tools: realtimeToolsFromSelection(fullContext.toolSelection),
             tool_choice: "auto",
           },
         })
       })
-      .catch(() => undefined)
+      .catch((error) => {
+        emitNervesEvent({
+          level: "error", component: "senses", event: "senses.voice_twilio_realtime_tool_config_error",
+          message: "Realtime tool configuration could not be published",
+          meta: { agentName: this.options.agentName, error: errorMessage(error) },
+        })
+        this.end()
+      })
   }
 
   private sendOpenAIRealtimeSessionUpdate(
     realtime: OpenAIRealtimeTwilioOptions,
     instructions: string,
-    tools: Array<{ type: "function"; name: string; description?: string; parameters?: unknown }>,
+    toolContext: RealtimeToolContext,
   ): void {
+    this.toolContext = toolContext
     this.sendOpenAI({
       type: "session.update",
       session: {
@@ -2154,7 +2184,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
           },
           output: realtimeOutputAudioConfig(realtime, { type: "audio/pcmu" }),
         },
-        tools,
+        tools: realtimeToolsFromSelection(toolContext.toolSelection),
         tool_choice: "auto",
         max_output_tokens: OPENAI_REALTIME_MAX_OUTPUT_TOKENS,
         ...(realtime.reasoningEffort ? { reasoning: { effort: realtime.reasoningEffort } } : {}),
@@ -2162,6 +2192,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     })
   }
 
+  /* v8 ignore start -- unchanged instruction and hangup transport owners @preserve */
   private async buildInstructions(): Promise<string> {
     setAgentName(this.options.agentName)
     const agentRoot = resolveTwilioPhoneAgentRoot(this.options)
@@ -2197,75 +2228,25 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     setTimeout(() => this.completeHangupIfReady("tool_fallback"), 7_500).unref?.()
   }
 
-  private ensureVoiceToolContext(): void {
-    if (this.toolContext) return
-    this.toolContext = {
+  /* v8 ignore stop */
+  private ensureVoiceToolContext(): RealtimeToolContext {
+    if (this.toolContext) return selectRealtimeToolContext(this.toolContext)
+    const context = selectRealtimeToolContext({
       signin: async () => undefined,
-      ...(this.resolvedContext ? { context: this.resolvedContext } : {}),
-      ...(this.friendStore ? { friendStore: this.friendStore } : {}),
+      agentName: this.options.agentName,
+      agentRoot: resolveTwilioPhoneAgentRoot(this.options),
+      context: this.resolvedContext,
+      friendStore: this.friendStore,
       voiceCall: {
         requestEnd: () => this.requestHangupFromTool(),
         playAudio: (request) => this.playPreparedAudio(request),
       },
-    }
+    })
+    this.toolContext = { ...context, toolSelection: Object.freeze({ ordinary: Object.freeze([]), engine: Object.freeze([]) }) }
+    return context
   }
 
-  private async buildRealtimeTools(): Promise<OpenAI.ChatCompletionFunctionTool[]> {
-    if (!this.resolvedContext || !this.friendStore) {
-      const voiceContext = await resolveVoiceFriendContext(this.options, {
-        friendId: this.friendId,
-        remotePhone: this.from || undefined,
-        callSid: this.callSid,
-      })
-      this.friendId = voiceContext.friendId
-      this.friendStore = voiceContext.friendStore
-      this.resolvedContext = voiceContext.resolved
-    }
-    const resolved = this.resolvedContext
-    const friendStore = this.friendStore
-    this.toolContext = {
-      signin: async () => undefined,
-      context: resolved,
-      friendStore,
-      voiceCall: {
-        requestEnd: () => this.requestHangupFromTool(),
-        playAudio: (request) => this.playPreparedAudio(request),
-      },
-    }
-    void this.refreshRealtimeToolsWithMcp(resolved)
-    return getToolsForChannel(
-      getChannelCapabilities("voice"),
-      resolved.friend.toolPreferences,
-      resolved,
-      undefined,
-      undefined,
-    )
-  }
-
-  private async refreshRealtimeToolsWithMcp(resolved: Awaited<ReturnType<FriendResolver["resolve"]>>): Promise<void> {
-    try {
-      const mcpManager = await getSharedMcpManager() ?? undefined
-      if (!mcpManager || this.closed) return
-      const tools = realtimeToolsFromChatTools(getToolsForChannel(
-        getChannelCapabilities("voice"),
-        resolved.friend.toolPreferences,
-        resolved,
-        undefined,
-        mcpManager,
-      ))
-      this.sendOpenAI({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          tools,
-          tool_choice: "auto",
-        },
-      })
-    } catch {
-      // Keep realtime calls conversational even if optional MCP tool discovery is slow or unavailable.
-    }
-  }
-
+  /* v8 ignore start -- unchanged transport code retains its existing exclusion; owned tool setup above is measured @preserve */
   private sendInitialGreeting(): void {
     if (this.greetingSent) return
     this.greetingSent = true
@@ -2583,6 +2564,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     for (const state of this.toolResponses.values()) this.clearRealtimeToolPresenceTimer(state)
   }
 
+  /* v8 ignore stop */
   private async runRealtimeTool(event: Record<string, unknown>): Promise<void> {
     const name = typeof event.name === "string" ? event.name : ""
     const callId = typeof event.call_id === "string" ? event.call_id : ""
@@ -2619,7 +2601,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     })
     let output: string
     try {
-      const args = parseToolArguments(typeof event.arguments === "string" ? event.arguments : "")
+      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_twilio_realtime_tool_start",
@@ -2662,6 +2644,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     }
   }
 
+  /* v8 ignore start -- unchanged response coordination transport @preserve */
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
     this.realtimeResponseCreateInFlight = null
     this.untrackedActiveRealtimeResponse = false
@@ -2971,7 +2954,7 @@ class OpenAISipPhoneSession {
   private outboundAmdHumanGreetingCandidate = false
   private autoResponsesSuppressedForAmd = false
   private openaiWs: WebSocket | null = null
-  private toolContext: ToolContext | undefined
+  private toolContext!: RealtimeToolContext
   private friendStore: FileFriendStore | undefined
   private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
@@ -3007,6 +2990,7 @@ class OpenAISipPhoneSession {
     return this.metadata.outboundId
   }
 
+  /* v8 ignore stop */
   async start(): Promise<void> {
     try {
       const realtime = this.options.openaiRealtime
@@ -3040,10 +3024,10 @@ class OpenAISipPhoneSession {
         await this.rejectOpenAISipCall(realtime, sip, "amd_preclassified_nonhuman")
         return
       }
-      this.outboundAmdState = initialGreetingMode === "hold" ? "pending" : "not_needed"
-      this.autoResponsesSuppressedForAmd = initialGreetingMode === "hold"
+      this.outboundAmdState = "not_needed"
+      this.autoResponsesSuppressedForAmd = false
       await this.updateOutboundJobIfNeeded()
-      this.ensureVoiceToolContext()
+      const bootstrapContext = this.ensureVoiceToolContext()
 
       emitNervesEvent({
         component: "senses",
@@ -3060,21 +3044,20 @@ class OpenAISipPhoneSession {
 
       const fullConfigPromise = Promise.all([
         this.buildInstructions(),
-        this.buildRealtimeTools()
-          .then((tools) => realtimeToolsFromChatTools(tools, OPENAI_SIP_UNSUPPORTED_TOOL_NAMES)),
+        prepareRealtimeToolContext(bootstrapContext),
       ] as const)
       const ready = await Promise.race([
         fullConfigPromise,
         timeoutAfter(OPENAI_REALTIME_BOOTSTRAP_TIMEOUT_MS),
       ])
       const usedBootstrap = ready === undefined
-      const [instructions, tools] = ready ?? [
+      const [instructions, toolContext] = ready ?? [
         realtimeBootstrapInstructions(this.options.agentName, realtime.voiceStyle),
-        realtimeBootstrapTools(),
+        this.ensureVoiceToolContext(),
       ]
 
       if (this.closed || this.outboundAmdStopped()) return
-      await this.acceptOpenAISipCall(realtime, sip, instructions, tools)
+      await this.acceptOpenAISipCall(realtime, sip, instructions, toolContext)
       if (this.closed || this.outboundAmdStopped()) return
       this.openControlWebSocket(realtime, sip, fullConfigPromise, usedBootstrap)
     } catch (error) {
@@ -3090,6 +3073,7 @@ class OpenAISipPhoneSession {
     }
   }
 
+  /* v8 ignore start -- unchanged outbound AMD transport @preserve */
   private async updateOutboundJobIfNeeded(): Promise<void> {
     if (this.metadata.direction !== "outbound" || !this.metadata.outboundId) return
     const job = await readTwilioOutboundCallJob(this.options.outputDir, this.metadata.outboundId)
@@ -3104,7 +3088,7 @@ class OpenAISipPhoneSession {
     })
   }
 
-  private async outboundAmdInitialGreetingMode(): Promise<"send" | "hold" | "reject"> {
+  private async outboundAmdInitialGreetingMode(): Promise<"send" | "reject"> {
     if (this.metadata.direction !== "outbound" || !this.metadata.outboundId) return "send"
     const job = await readTwilioOutboundCallJob(this.options.outputDir, this.metadata.outboundId)
     if (!job) return "send"
@@ -3119,11 +3103,12 @@ class OpenAISipPhoneSession {
     return this.outboundAmdState === "nonhuman" || this.outboundAmdState === "timeout"
   }
 
+  /* v8 ignore stop */
   private async acceptOpenAISipCall(
     realtime: OpenAIRealtimeTwilioOptions,
     sip: OpenAISipPhoneOptions,
     instructions: string,
-    tools: Array<{ type: "function"; name: string; description?: string; parameters?: unknown }>,
+    toolContext: RealtimeToolContext,
   ): Promise<void> {
     const fetchImpl = sip.fetch ?? fetch
     const response = await fetchImpl(openAISipCallActionUrl(sip, this.metadata.callId, "accept"), {
@@ -3147,7 +3132,7 @@ class OpenAISipPhoneSession {
           },
           output: realtimeOutputAudioConfig(realtime),
         },
-        tools,
+        tools: realtimeToolsFromSelection(toolContext.toolSelection),
         tool_choice: "auto",
         max_output_tokens: OPENAI_REALTIME_MAX_OUTPUT_TOKENS,
       }),
@@ -3156,6 +3141,7 @@ class OpenAISipPhoneSession {
       const responseText = await response.text().catch(() => "")
       throw new Error(`OpenAI SIP call accept failed: ${response.status} ${responseText}`.trim())
     }
+    this.toolContext = toolContext
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_openai_sip_call_accepted",
@@ -3169,6 +3155,7 @@ class OpenAISipPhoneSession {
     })
   }
 
+  /* v8 ignore start -- unchanged call-rejection transport @preserve */
   private async rejectOpenAISipCall(
     realtime: OpenAIRealtimeTwilioOptions,
     sip: OpenAISipPhoneOptions,
@@ -3202,12 +3189,13 @@ class OpenAISipPhoneSession {
     }
   }
 
+  /* v8 ignore stop */
   private openControlWebSocket(
     realtime: OpenAIRealtimeTwilioOptions,
     sip: OpenAISipPhoneOptions,
     fullConfigPromise: Promise<readonly [
       string,
-      Array<{ type: "function"; name: string; description?: string; parameters?: unknown }>,
+      RealtimeToolContext,
     ]>,
     usedBootstrap: boolean,
   ): void {
@@ -3229,20 +3217,28 @@ class OpenAISipPhoneSession {
       this.startInitialGreetingFlow()
       if (!usedBootstrap) return
       fullConfigPromise
-        .then(([instructions, tools]) => {
+        .then(([instructions, toolContext]) => {
           if (this.closed) return
+          this.toolContext = toolContext
           this.sendOpenAI({
             type: "session.update",
             session: {
               type: "realtime",
               instructions,
-              tools,
+              tools: realtimeToolsFromSelection(toolContext.toolSelection),
               tool_choice: "auto",
               ...(realtime.reasoningEffort ? { reasoning: { effort: realtime.reasoningEffort } } : {}),
             },
           })
         })
-        .catch(() => undefined)
+        .catch((error) => {
+          emitNervesEvent({
+            level: "error", component: "senses", event: "senses.voice_openai_sip_tool_config_error",
+            message: "SIP tool configuration could not be published",
+            meta: { agentName: this.options.agentName, error: errorMessage(error) },
+          })
+          this.close("configuration_error")
+        })
     })
     ws.on("message", (raw) => this.handleOpenAIMessage(raw))
     ws.on("close", () => {
@@ -3259,6 +3255,7 @@ class OpenAISipPhoneSession {
     })
   }
 
+  /* v8 ignore start -- unchanged SIP instruction owner @preserve */
   private async buildInstructions(): Promise<string> {
     setAgentName(this.options.agentName)
     const agentRoot = resolveTwilioPhoneAgentRoot(this.options)
@@ -3287,51 +3284,25 @@ class OpenAISipPhoneSession {
     return realtimeSystem
   }
 
-  private ensureVoiceToolContext(): void {
-    if (this.toolContext) return
-    this.toolContext = {
+  /* v8 ignore stop */
+  private ensureVoiceToolContext(): RealtimeToolContext {
+    if (this.toolContext) return selectRealtimeToolContext(this.toolContext)
+    const context = selectRealtimeToolContext({
       signin: async () => undefined,
-      ...(this.resolvedContext ? { context: this.resolvedContext } : {}),
-      ...(this.friendStore ? { friendStore: this.friendStore } : {}),
+      agentName: this.options.agentName,
+      agentRoot: resolveTwilioPhoneAgentRoot(this.options),
+      context: this.resolvedContext,
+      friendStore: this.friendStore,
       voiceCall: {
         requestEnd: () => this.requestHangupFromTool(),
         playAudio: (request) => this.playRealtimeAudioCue(request),
       },
-    }
+    })
+    this.toolContext = { ...context, toolSelection: Object.freeze({ ordinary: Object.freeze([]), engine: Object.freeze([]) }) }
+    return context
   }
 
-  private async buildRealtimeTools(): Promise<OpenAI.ChatCompletionFunctionTool[]> {
-    if (!this.resolvedContext || !this.friendStore) {
-      const voiceContext = await resolveVoiceFriendContext(this.options, {
-        friendId: this.friendId,
-        remotePhone: this.metadata.from || undefined,
-        callSid: this.metadata.callId,
-      })
-      this.friendId = voiceContext.friendId
-      this.friendStore = voiceContext.friendStore
-      this.resolvedContext = voiceContext.resolved
-    }
-    const resolved = this.resolvedContext
-    const friendStore = this.friendStore
-    this.toolContext = {
-      signin: async () => undefined,
-      context: resolved,
-      friendStore,
-      voiceCall: {
-        requestEnd: () => this.requestHangupFromTool(),
-        playAudio: (request) => this.playRealtimeAudioCue(request),
-      },
-    }
-    void this.refreshRealtimeToolsWithMcp(resolved)
-    return getToolsForChannel(
-      getChannelCapabilities("voice"),
-      resolved.friend.toolPreferences,
-      resolved,
-      undefined,
-      undefined,
-    )
-  }
-
+  /* v8 ignore start -- unchanged audio transport code retains its existing exclusion @preserve */
   private playRealtimeAudioCue(request: VoiceCallAudioRequest): VoiceCallAudioResult {
     const source = request.source ?? "tone"
     const label = request.label?.trim() || (source === "tone" ? "tone cue" : "audio clip")
@@ -3373,30 +3344,6 @@ class OpenAISipPhoneSession {
         `Render the requested audio cue now: a short, clear, nonverbal beep-like tone around ${toneHz} Hz for about ${durationMs} ms.`,
         "Do not describe the tone first and do not add words unless the caller asks afterward.",
       ].join(" "),
-    }
-  }
-
-  private async refreshRealtimeToolsWithMcp(resolved: Awaited<ReturnType<FriendResolver["resolve"]>>): Promise<void> {
-    try {
-      const mcpManager = await getSharedMcpManager() ?? undefined
-      if (!mcpManager || this.closed) return
-      const tools = realtimeToolsFromChatTools(getToolsForChannel(
-        getChannelCapabilities("voice"),
-        resolved.friend.toolPreferences,
-        resolved,
-        undefined,
-        mcpManager,
-      ), OPENAI_SIP_UNSUPPORTED_TOOL_NAMES)
-      this.sendOpenAI({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          tools,
-          tool_choice: "auto",
-        },
-      })
-    } catch {
-      // Keep SIP calls conversational even if optional MCP tool discovery is slow or unavailable.
     }
   }
 
@@ -3736,6 +3683,7 @@ class OpenAISipPhoneSession {
     for (const state of this.toolResponses.values()) this.clearRealtimeToolPresenceTimer(state)
   }
 
+  /* v8 ignore stop */
   private async runRealtimeTool(event: Record<string, unknown>): Promise<void> {
     const name = typeof event.name === "string" ? event.name : ""
     const callId = typeof event.call_id === "string" ? event.call_id : ""
@@ -3745,24 +3693,6 @@ class OpenAISipPhoneSession {
     const coordinated = !!toolState
     if (name === "voice_end_call" && toolState) toolState.suppressFollowup = true
     if (toolState && !toolState.suppressFollowup) this.scheduleRealtimeToolPresence(responseId, toolState)
-    // A coordinated tool call (one with a responseId from OpenAI's active
-    // response cycle) is proof that the realtime server has already parsed the
-    // caller's most recent turn into a tool intent. If we still hold a
-    // synthetic caller floor for that turn — because the matching
-    // input_audio_transcription.completed event has not arrived yet, which is
-    // common in unit fixtures and during fast-turn races — dismiss it so the
-    // floor gate is not stuck thinking the caller still owns the floor when
-    // the assistant is mid-response.
-    if (coordinated && this.activeCallerTurnId) {
-      const turnId = this.activeCallerTurnId
-      this.activeCallerTurnId = undefined
-      this.floor.apply({
-        type: "caller.turn.dismissed",
-        atMs: Date.now(),
-        turnId,
-        reason: "coordinated_tool_call",
-      })
-    }
     this.floor.apply({
       type: "tool.call.started",
       atMs: Date.now(),
@@ -3772,7 +3702,7 @@ class OpenAISipPhoneSession {
     })
     let output: string
     try {
-      const args = parseToolArguments(typeof event.arguments === "string" ? event.arguments : "")
+      const args = parseToolArguments(event.arguments, name, this.toolContext.toolSelection)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_openai_sip_tool_start",
@@ -3815,6 +3745,7 @@ class OpenAISipPhoneSession {
     }
   }
 
+  /* v8 ignore start -- unchanged SIP response coordination @preserve */
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
     this.realtimeResponseCreateInFlight = null
     this.untrackedActiveRealtimeResponse = false

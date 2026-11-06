@@ -182,6 +182,7 @@ describe("Sanctuary interactive daemon control", () => {
     fs.mkdirSync(`${agentRoot}/state/acceptance`, { recursive: true })
     fs.writeFileSync(control.socketPath, "stale")
     expect(await sanctuaryInteractiveControlReady(control.socketPath, 20)).toBe(false)
+    fs.unlinkSync(control.socketPath)
     await control.start()
     try {
       expect(fs.statSync(control.socketPath).mode & 0o777).toBe(0o600)
@@ -201,7 +202,7 @@ describe("Sanctuary interactive daemon control", () => {
       await control.stop()
       fs.writeFileSync(control.socketPath, "stale-after-stop")
       await control.stop()
-      expect(fs.existsSync(control.socketPath)).toBe(false)
+      expect(fs.readFileSync(control.socketPath, "utf8")).toBe("stale-after-stop")
       fs.rmSync(agentRoot, { recursive: true, force: true })
     }
     expect(await sanctuaryInteractiveControlReady(control.socketPath, 20)).toBe(false)

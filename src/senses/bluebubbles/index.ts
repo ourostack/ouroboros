@@ -1919,9 +1919,10 @@ async function handleBlueBubblesNormalizedEvent(
       }
       options.lifecycleSignal?.throwIfAborted()
 
+      const mcpOwner = { agentName, agentRoot: getAgentRoot(agentName) }
       const liveTurnId = beginBlueBubblesActiveTurn(agentName, event)
       activeTurnId = liveTurnId
-      const mcpManager = await getSharedMcpManager() ?? undefined
+      const mcpManager = await getSharedMcpManager(mcpOwner) ?? undefined
 
       if (event.chat.isGroup) {
         await upsertGroupContextParticipants({
@@ -2229,6 +2230,7 @@ async function handleBlueBubblesNormalizedEvent(
               /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
               signin: async () => undefined,
               ...safeToolContext,
+              ...mcpOwner,
               summarize,
               bluebubblesReplyTarget: {
                 setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
@@ -2262,7 +2264,7 @@ async function handleBlueBubblesNormalizedEvent(
           orientationFrame,
           toolContext: {
             signin: async () => undefined,
-            agentRoot: getAgentRoot(),
+            ...mcpOwner,
             currentIngressEvidence: options.currentIngressEvidence,
           },
         },

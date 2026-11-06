@@ -330,6 +330,67 @@ describe("createGithubCopilotProviderRuntime", () => {
     expect(payload.input).toEqual([{ role: "user", content: "current request" }])
   })
 
+  it("GPT model: converts Workbench image content into Responses input_image items", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    const actualStreaming = await vi.importActual<typeof import("../../../heart/streaming")>("../../../heart/streaming")
+    mockToResponsesInput.mockImplementation(actualStreaming.toResponsesInput)
+    mockStreamResponsesApi.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("gpt-5.4")
+    const dataUrl = `data:image/png;base64,${Buffer.from("copilot-image").toString("base64")}`
+    const messages = [{
+      role: "user" as const,
+      content: [
+        { type: "image_url" as const, image_url: { url: dataUrl } },
+        { type: "text" as const, text: "inspect attachment:cli-local-file:abc" },
+      ],
+    }]
+    runtime.resetTurnState(messages)
+
+    await runtime.streamTurn({
+      messages,
+      activeTools: [],
+      callbacks: { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() },
+    })
+
+    expect(mockStreamResponsesApi.mock.calls[0]?.[1].input).toEqual([{
+      role: "user",
+      content: [
+        { type: "input_image", image_url: dataUrl, detail: "auto" },
+        { type: "input_text", text: "inspect attachment:cli-local-file:abc" },
+      ],
+    }])
+  })
+
+  it("Claude model: forwards Workbench image content through Copilot chat completions", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    mockStreamChatCompletion.mockResolvedValue({ content: "", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
+    const content = [
+      { type: "image_url" as const, image_url: { url: `data:image/png;base64,${Buffer.from("copilot-claude-image").toString("base64")}` } },
+      { type: "text" as const, text: "inspect attachment:cli-local-file:def" },
+    ]
+
+    await runtime.streamTurn({
+      messages: [{ role: "user", content }],
+      activeTools: [],
+      callbacks: { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() },
+    })
+
+    expect(mockStreamChatCompletion.mock.calls[0]?.[1]).toMatchObject({
+      messages: [{ role: "user", content }],
+    })
+  })
+
   it("Claude model: resetTurnState and appendToolOutput are no-ops", async () => {
     await setupConfig({
       providers: {

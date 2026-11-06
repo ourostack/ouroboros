@@ -5,6 +5,11 @@ import * as path from "node:path"
 
 import type { RunSenseTurnResult } from "../../senses/shared-turn"
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, accessSync: vi.fn(actual.accessSync) }
+})
+
 function settledResult(response = "ok"): RunSenseTurnResult {
   return {
     response,
@@ -27,6 +32,50 @@ function request(turnId = "turn-1") {
 }
 
 describe("frontend session service", () => {
+  it("withholds image capability when the full decoder is unavailable", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const access = vi.mocked(fs.accessSync)
+    const original = access.getMockImplementation()!
+    access.mockImplementation(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })
+    try {
+      const service = new FrontendSessionService({ getProviderRuntime: async () => ({ model: "gpt-5.4" }) as never })
+      await expect(service.getPromptCapabilities({ agent: "boss", channel: "mcp" })).resolves.toEqual({ image: false })
+    } finally {
+      access.mockReset().mockImplementation(original)
+    }
+  })
+
+  it("resolves prompt capability from the exact owner's active provider model", async () => {
+    const identity = await import("../../heart/identity")
+    const root = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/boss")
+    const getProviderRuntime = vi.fn().mockResolvedValue({ model: "gpt-5.3-codex" })
+    try {
+      const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+      const service = new FrontendSessionService({ getProviderRuntime })
+      await expect(service.getPromptCapabilities({ agent: " boss ", channel: "mcp" })).resolves.toEqual({ image: false })
+      expect(getProviderRuntime).toHaveBeenCalledWith("agent", { agentName: "boss", agentRoot: "/tmp/boss" })
+      getProviderRuntime.mockResolvedValue({ model: "gpt-5.4" })
+      await expect(service.getPromptCapabilities({ agent: "boss", channel: "mcp" })).resolves.toEqual({ image: true })
+      getProviderRuntime.mockRejectedValue(new Error("provider unavailable"))
+      await expect(service.getPromptCapabilities({ agent: "boss", channel: "mcp" })).rejects.toThrow("provider unavailable")
+    } finally {
+      root.mockRestore()
+    }
+  })
+
+  it.each([{ attachmentIds: [] }, { attachmentIds: [" "] }])("preserves an explicit empty attachment scope: $attachmentIds", async ({ attachmentIds }) => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner })
+    const events: any[] = []
+    service.subscribe((event) => events.push(event))
+
+    await service.runTurn({ ...request(), attachmentIds })
+
+    expect(runner.mock.calls[0]?.[0]?.toolContext?.attachmentIds).toEqual([])
+    expect(events.find((event) => event.type === "user_message")?.data.attachmentIds).toEqual([])
+  })
+
   it("passes an owned signal to the turn and returns the structured result", async () => {
     const runner = vi.fn(async (input: any) => {
       expect(input.signal).toBeInstanceOf(AbortSignal)
@@ -306,6 +355,52 @@ describe("frontend session service", () => {
     expect(signals.every((signal) => signal.aborted)).toBe(true)
     await Promise.all(turns)
     expect(service.cancelAllTurns()).toBe(0)
+  })
+
+  it("scopes the turn to its validated attachment ids without persisting image bytes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-attachments-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    const runner = vi.fn(async (input: any) => {
+      input.onProviderUserContent?.(providerUserContent)
+      input.onProviderUserContent?.(undefined)
+      return settledResult()
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const providerUserContent = [
+      { type: "image_url", image_url: { url: "data:image/png;base64,cG5n" } },
+      { type: "text", text: "look at this\n\n[attachments]\n- attachment:cli-local-file:aaa | image | shot.png | image/png | 12 B" },
+    ] as any
+    const service = new FrontendSessionService({ runner, journal })
+
+    await service.runTurn({
+      ...request(),
+      message: "look at this\n\n[attachments]\n- attachment:cli-local-file:aaa | image | shot.png | image/png | 12 B",
+      attachmentIds: ["attachment:cli-local-file:aaa", " ", "attachment:cli-local-file:aaa", "attachment:cli-local-file:bbb"],
+      requireImageSupport: true,
+    })
+
+    expect(runner.mock.calls[0]![0].toolContext.attachmentIds)
+      .toEqual(["attachment:cli-local-file:aaa", "attachment:cli-local-file:bbb"])
+    expect(runner.mock.calls[0]![0].onProviderUserContent).toEqual(expect.any(Function))
+    expect(runner.mock.calls[0]![0].requireImageSupport).toBe(true)
+    const replayed = journal.replay(refFor(request())).events
+    const userMessage = replayed.find((event) => event.type === "user_message")!
+    expect(userMessage.data).toMatchObject({
+      attachmentIds: ["attachment:cli-local-file:aaa", "attachment:cli-local-file:bbb"],
+    })
+    expect(JSON.stringify(replayed)).not.toContain("base64")
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("omits attachment scoping entirely for text-only turns", async () => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner })
+
+    await service.runTurn(request())
+
+    expect(runner.mock.calls[0]![0].toolContext?.attachmentIds).toBeUndefined()
   })
 
   it("writes turn-ahead, stable callback, and terminal events to one journal", async () => {

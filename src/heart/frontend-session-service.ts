@@ -1,7 +1,11 @@
-import type { Channel } from "@ouro.bot/friends"
+import { channelToFacing, type Channel } from "@ouro.bot/friends"
+import type OpenAI from "openai"
 
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
-import type { ApprovalSuspensionResult } from "./core"
+import { getProviderRuntime, type ApprovalSuspensionResult } from "./core"
+import { getAgentRoot } from "./identity"
+import { getModelCapabilities } from "./model-capabilities"
+import { imageValidationAvailable } from "./attachments/image-normalize"
 import { runSenseTurn, type FrontendTurnEvent, type RunSenseTurnOptions, type RunSenseTurnResult } from "../senses/shared-turn"
 import {
   FrontendJournalStore,
@@ -31,6 +35,12 @@ export interface FrontendTurnRequest {
   channel: Channel
   sessionKey: string
   message: string
+  /** Attachment ids this ingress already validated and persisted. Never image bytes. */
+  attachmentIds?: readonly string[]
+  /** Native image input is required; never replace it with a text-only turn. */
+  requireImageSupport?: boolean
+  /** Transient multimodal projection for the active provider attempt. Never journaled. */
+  providerUserContent?: OpenAI.ChatCompletionUserMessageParam["content"]
   runtimeMcpServers?: RuntimeMcpServers
   disableTools?: boolean
   ephemeral?: boolean
@@ -116,16 +126,27 @@ export class FrontendSessionService {
   private readonly runner: FrontendTurnRunner
   private readonly journal: FrontendJournalStore | null
   private readonly authority: FrontendAuthorityRuntime | null
+  private readonly resolveProviderRuntime: typeof getProviderRuntime
   private closed = false
 
   constructor(options: {
     runner?: FrontendTurnRunner
     journal?: FrontendJournalStore | null
     authority?: FrontendAuthorityRuntime | null
+    getProviderRuntime?: typeof getProviderRuntime
   } = {}) {
     this.runner = options.runner ?? runSenseTurn
     this.journal = options.journal ?? null
     this.authority = options.authority ?? null
+    this.resolveProviderRuntime = options.getProviderRuntime ?? getProviderRuntime
+  }
+
+  async getPromptCapabilities(ref: { agent: string; channel: Channel }): Promise<{ image: boolean }> {
+    const agentName = required(ref.agent, "agent")
+    const runtime = await this.resolveProviderRuntime(channelToFacing(ref.channel), {
+      agentName, agentRoot: getAgentRoot(agentName),
+    })
+    return { image: getModelCapabilities(runtime.model).vision === true && imageValidationAvailable() }
   }
 
   hasTurn(turnId: string): boolean {
@@ -187,13 +208,16 @@ export class FrontendSessionService {
 
   prepareTurn(request: FrontendTurnRequest): PreparedFrontendTurn {
     const turnId = required(request.turnId, "turnId")
+    const { attachmentIds: _requestedAttachmentIds, ...rest } = request
+    const attachmentIds = [...new Set((_requestedAttachmentIds ?? []).map((id) => id.trim()).filter(Boolean))]
     const normalized: FrontendTurnRequest = {
-      ...request,
+      ...rest,
       turnId,
       agent: required(request.agent, "agent"),
       friendId: required(request.friendId, "friendId"),
       sessionKey: required(request.sessionKey, "sessionKey"),
       message: required(request.message, "message"),
+      ...(_requestedAttachmentIds !== undefined ? { attachmentIds } : {}),
     }
     if (this.activeTurns.has(turnId)) throw new FrontendTurnConflictError(turnId)
     const sessionIdentity = [normalized.agent, normalized.friendId, normalized.channel, normalized.sessionKey].join("\0")
@@ -217,7 +241,10 @@ export class FrontendSessionService {
     const sessionIdentity = prepared.sessionIdentity
     const controller = prepared.controller
     try {
-      this.publish(normalized, "user_message", { text: normalized.message }, "user_message")
+      this.publish(normalized, "user_message", {
+        text: normalized.message,
+        ...(normalized.attachmentIds ? { attachmentIds: normalized.attachmentIds } : {}),
+      }, "user_message")
       this.publish(normalized, "turn_started", {}, "turn_started")
       const frontendEventSink = {
         onEvent: (event: FrontendTurnEvent) => this.publishFrontendEvent(normalized, event),
@@ -234,10 +261,16 @@ export class FrontendSessionService {
         channel: normalized.channel,
         sessionKey: normalized.sessionKey,
         userMessage: normalized.message,
+        onProviderUserContent: (providerUserContent) => {
+          if (providerUserContent === undefined) delete normalized.providerUserContent
+          else normalized.providerUserContent = providerUserContent
+        },
         signal: controller.signal,
         latencyMode: "live",
         frontendEventSink,
         ...(normalized.disableTools ? { disableTools: true } : {}),
+        ...(normalized.requireImageSupport ? { requireImageSupport: true } : {}),
+        ...(normalized.attachmentIds ? { toolContext: { attachmentIds: normalized.attachmentIds } } : {}),
         ...(normalized.ephemeral ? { disablePersistence: true } : {}),
         ...(approvalCoordinatorFactory ? { approvalCoordinatorFactory } : {}),
         ...(normalized.runtimeMcpServers ? { runtimeMcpServers: normalized.runtimeMcpServers } : {}),

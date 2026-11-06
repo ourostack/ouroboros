@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
+import type { StewardPolicyRecord } from "../../heart/steward-policy"
 
 // ── Mock continuity store modules ────────────────────────────────
 
@@ -22,6 +23,7 @@ const mockGetExternalEventRoot = vi.fn(() => "/events")
 const mockReadExternalEventRecord = vi.fn()
 const mockClaimExternalEvent = vi.fn()
 const mockCommitExternalEventDisposition = vi.fn()
+const mockReadStewardPolicy = vi.fn<(agentRoot: string) => StewardPolicyRecord>()
 
 vi.mock("../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
@@ -70,6 +72,11 @@ vi.mock("../../heart/external-events/router", () => ({
   readExternalEventRecord: (...args: any[]) => mockReadExternalEventRecord(...args),
   claimExternalEvent: (...args: any[]) => mockClaimExternalEvent(...args),
   commitExternalEventDisposition: (...args: any[]) => mockCommitExternalEventDisposition(...args),
+}))
+
+vi.mock("../../heart/steward-policy", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../heart/steward-policy")>(),
+  readStewardPolicy: (agentRoot: string) => mockReadStewardPolicy(agentRoot),
 }))
 
 afterEach(() => vi.useRealTimers())
@@ -133,10 +140,9 @@ function findTool(name: string): ToolDefinition {
 describe("continuity tools", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
-      ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" }, "service:sonarr": { value: "on", provenance: "stated", version: 2, source: "ari" }, test: { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
-      : "")
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockReturnValue("")
+    mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" }, "service:sonarr": { value: "on", provenance: "stated", version: 2, source: "ari" }, test: { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
     mockReadCares.mockReturnValue([])
   })
 
@@ -615,10 +621,7 @@ describe("continuity tools", () => {
     })
 
     it("delivers an explicit current-policy report once before committing the disposition", async () => {
-      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
-        ? JSON.stringify({ schemaVersion: 1, version: 4, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 4, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
-        : "")
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 4, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 4, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
       const deliverOwnerDecision = vi.fn(async () => undefined)
@@ -642,19 +645,18 @@ describe("continuity tools", () => {
     })
 
     it("rejects stale current policy and allows no-policy dispositions for fresh observations with no applicable key", async () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false)
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null })
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "unchanged", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) } }
       expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "silent", reason: "Expected.", nextWake: "on_change" }, context)).toThrow(/exact current key\/version/u)
       expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/fresh observation/u)
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
-      vi.mocked(fs.existsSync).mockReturnValue(true)
-      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ schemaVersion: 1, version: 1, desiredStates: { "service:other": { value: "on", provenance: "stated", version: 1, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" }))
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 1, desiredStates: { "service:other": { value: "on", provenance: "stated", version: 1, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
       await expect(findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No applicable policy yet.", nextWake: "on_change" }, context)).resolves.toContain("handled")
     })
 
     it("validates Care incident ownership and the exact pending Await time", async () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false)
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null })
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", recordPath: "/events/ouroboros/sanctuary-health/books.json", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockReadCares.mockReturnValue([{ id: "care-books", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
@@ -670,9 +672,8 @@ describe("continuity tools", () => {
     it("prevents a second event from binding an Await owned by the first event", async () => {
       const tool = findTool("external_event_disposition")
       const awaitText = "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_for_friend_id: owner\nfiled_from_key: /events/ouroboros/health/event-a.json\n---\n"
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("shared-wake.md")
-        ? awaitText
-        : JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" }))
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("shared-wake.md") ? awaitText : "")
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
       const timed = { expectedGeneration: 1, classifiedRevision: "rev-1", classification: "snoozed", stewardPolicyKind: "none", decision: "silent", reason: "Wait.", nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "shared-wake" }
       const contextFor = (recordPath: string, eventId: string) => ({
@@ -891,9 +892,8 @@ describe("continuity tools", () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", recordPath: "/events/ouroboros/sanctuary-health/books.json", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
       mockReadCares.mockReturnValue([{ id: "care-downloads", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
-        ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
-        : String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
       const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
       const deliverOwnerDecision = vi.fn(async () => undefined)
       const tool = findTool("external_event_disposition")
@@ -947,9 +947,8 @@ describe("continuity tools", () => {
       mockReadCares.mockReturnValue([{ id: "adopted-care", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
       expect(() => tool.handler({ ...base, classification: "adopted", careId: "adopted-care" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).not.toThrow()
       expect(() => tool.handler({ ...base, careId: "" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).not.toThrow()
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
-        ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: { "service:books": { action: "restart", targets: ["books"], exclusions: [], maxCount: 1, windowMs: 1, verificationRequired: true, provenance: "stated", version: 2 } }, updatedAt: "2026-08-29T00:00:00.000Z" })
-        : String(filePath).endsWith("resolved.md") ? "---\nstatus: resolved\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nDone.\n" : "")
+      mockReadStewardPolicy.mockReturnValue({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: { "service:books": { action: "restart", targets: ["books"], exclusions: [], maxCount: 1, windowMs: 1, verificationRequired: true, provenance: "stated", version: 2, issuer: "ari", authorizedAt: "2026-08-29T00:00:00.000Z", authorizingSessionEvent: "evt-owner" } }, updatedAt: "2026-08-29T00:00:00.000Z" })
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("resolved.md") ? "---\nstatus: resolved\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nDone.\n" : "")
       expect(() => tool.handler(base, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).not.toThrow()
       expect(() => tool.handler({ ...base, nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "resolved" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("does not match the exact wake time")
       vi.mocked(fs.lstatSync).mockReturnValueOnce({ isFile: () => false, isSymbolicLink: () => true } as any)

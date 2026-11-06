@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
-import { canonicalizeTelegramSessionKey, resolveSessionPath } from "../heart/config";
+import { canonicalizeTelegramSessionKey, InvalidSessionPathError, isValidSessionCoordinate, resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName, loadAgentConfig } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -39,6 +39,7 @@ import {
   type CrossChatDirectDeliveryResult,
 } from "../heart/cross-chat-delivery";
 import type { ToolContext, ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
+import { assertRelationshipToolOwner } from "./tool-arguments";
 import { listVisibleBackgroundOperations } from "../heart/mail-import-discovery";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
 import { getExternalEventRoot, listExternalEventStatus, type ExternalEventStatus } from "../heart/external-events/router";
@@ -693,7 +694,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (args) => {
+    handler: (args, ctx) => {
       const validation = validateSessionSummarySelector(args)
       if (!validation.ok) {
         return JSON.stringify({
@@ -702,7 +703,8 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           message: validation.message,
         }, null, 2)
       }
-      const summary = readHabitSessionSummary(getAgentRoot(), validation.selector)
+      assertRelationshipToolOwner(ctx)
+      const summary = readHabitSessionSummary(ctx?.agentRoot ?? getAgentRoot(ctx?.agentName), validation.selector)
       if (!summary) {
         return JSON.stringify({
           kind: "not_found",
@@ -754,6 +756,15 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       const count = parseInt(args.messageCount || "20", 10)
       const mode = args.mode || "transcript"
 
+      if (!isValidSessionCoordinate(friendId) || !isValidSessionCoordinate(channel)) {
+        emitNervesEvent({
+          level: "warn", component: "tools", event: "tool.session_path_rejected",
+          message: "session query rejected invalid coordinates", meta: { reason: "invalid friend or channel" },
+        })
+        return NO_SESSION_FOUND_MESSAGE
+      }
+
+      assertRelationshipToolOwner(ctx)
       // Resolve friend name -> UUID if not already a UUID or "self"
       if (friendId && friendId !== "self" && !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(friendId) && ctx?.friendStore?.listAll) {
         const allFriends = await ctx.friendStore.listAll()
@@ -768,8 +779,9 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           return "status mode is only available for self/private runtime."
         }
 
-        const sessionPath = getPrivateRuntimeSessionPath(getAgentRoot())
-        const pendingDir = getPrivateRuntimePendingDir(getAgentName())
+        const agentRoot = ctx?.agentRoot ?? getAgentRoot(ctx?.agentName)
+        const sessionPath = getPrivateRuntimeSessionPath(agentRoot)
+        const pendingDir = getPrivateRuntimePendingDir(ctx?.agentName ?? getAgentName(), agentRoot)
         return renderInnerProgressStatus(readPrivateRuntimeStatus(sessionPath, pendingDir))
       }
 
@@ -781,7 +793,19 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         })
       }
 
-      const sessFile = resolveSessionPath(friendId, channel, key)
+      let sessFile: string
+      try {
+        sessFile = resolveSessionPath(friendId, channel, key, {
+          agentRoot: ctx?.agentRoot ?? getAgentRoot(ctx?.agentName), confined: true,
+        })
+      } catch (error) {
+        if (!(error instanceof InvalidSessionPathError)) throw error
+        emitNervesEvent({
+          level: "warn", component: "tools", event: "tool.session_path_rejected",
+          message: "session query rejected an unconfined path", meta: { reason: error.message },
+        })
+        return NO_SESSION_FOUND_MESSAGE
+      }
       const sessionTail = await summarizeSessionTailSafely({
         sessionPath: sessFile,
         friendId,

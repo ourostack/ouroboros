@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/agent" })
+
 /**
  * W6 Unit 9 wiring tests: getSharedMcpManager() merges plugin-declared MCP
  * servers (from each enabled plugin's `.mcp.json`) into the same start() call
@@ -70,13 +72,13 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager()
+    const manager = await mod.getSharedMcpManager(OWNER)
     expect(manager).not.toBeNull()
     // Both servers connected
     expect(connectCalls.sort()).toEqual(["echo-calc", "echo-desk"])
 
     // Plugin server tools surface with the pluginId attribution
-    const all = manager!.listAllTools()
+    const all = manager!.entries
     const deskEntry = all.find((e) => e.server === "desk")
     expect(deskEntry).toBeTruthy()
     expect((deskEntry as { pluginId?: string }).pluginId).toBe("desk")
@@ -84,7 +86,7 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     const calcEntry = all.find((e) => e.server === "calc")
     expect((calcEntry as { pluginId?: string }).pluginId).toBeUndefined()
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
@@ -140,11 +142,11 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager()
+    const manager = await mod.getSharedMcpManager(OWNER)
     expect(manager).not.toBeNull()
     expect(connectCalls).toEqual(["node"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
@@ -170,10 +172,10 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager()
+    const manager = await mod.getSharedMcpManager(OWNER)
     expect(manager).toBeNull()
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
@@ -230,12 +232,12 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager()
+    const manager = await mod.getSharedMcpManager(OWNER)
     expect(manager).not.toBeNull()
     // Only one server connected — the builtin
     expect(connectCalls).toEqual(["builtin-desk"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
@@ -301,26 +303,27 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     const mod = await import("../../repertoire/mcp-manager")
 
     // First call: start() — both servers connect
-    const manager1 = await mod.getSharedMcpManager()
+    const manager1 = await mod.getSharedMcpManager(OWNER)
     expect(manager1).not.toBeNull()
     expect(connects.sort()).toEqual(["builtin-calc", "plugin-desk"])
     expect(shutdowns).toEqual([])
-    expect(manager1!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "desk"])
+    expect(manager1!.entries.map((e) => e.server).sort()).toEqual(["calc", "desk"])
 
     // Second call: cached manager → reconcile()
     // BUG would do: see only "calc" in desired (config.mcpServers), treat
     // "desk" as removed, shutdown the desk client.
     // FIX: reconcile() re-merges via buildMergedServerConfig() — both stay.
-    const manager2 = await mod.getSharedMcpManager()
-    expect(manager2).toBe(manager1) // same singleton
+    const manager2 = await mod.getSharedMcpManager(OWNER)
+    expect(manager2!.manager).toBe(manager1!.manager)
+    expect(manager2).not.toBe(manager1)
     expect(shutdowns).toEqual([]) // desk was NOT torn down
-    expect(manager2!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "desk"])
+    expect(manager2!.entries.map((e) => e.server).sort()).toEqual(["calc", "desk"])
 
     // Third call for good measure — same outcome
-    await mod.getSharedMcpManager()
+    await mod.getSharedMcpManager(OWNER)
     expect(shutdowns).toEqual([])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")

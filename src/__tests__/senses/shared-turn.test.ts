@@ -1,13 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { a003Event, a003Marker } from "../fixtures/a003-session"
+import { a003Event, a003Marker, a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../../heart/core"
 import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "@ouro.bot/friends"
-import type { InboundTurnResult } from "../../senses/pipeline"
-import { getIngressRelations, type SessionEvent, type SessionEventToolCall } from "../../heart/session-events"
+import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
+import type { FrontendTurnEvent } from "../../senses/shared-turn"
+import { getIngressRelations, parseSessionEnvelope, type SessionEvent, type SessionEventToolCall } from "../../heart/session-events"
 
 // ── Mocks ──────────────────────────────────────────────────────
 
@@ -20,7 +21,8 @@ const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease
   release: vi.fn(),
 }))
 
-vi.mock("../../mind/session-transaction", () => ({
+vi.mock("../../mind/session-transaction", async (original) => ({
+  ...await original<typeof import("../../mind/session-transaction")>(),
   withSessionTurnLease: (...args: any[]) => mockWithSessionTurnLease(...args),
   readSessionTransaction: (...args: any[]) => mockReadSessionTransaction(...args),
 }))
@@ -36,6 +38,7 @@ vi.mock("../../senses/pipeline", async () => {
 const mockGetProvider = vi.fn().mockReturnValue("anthropic")
 const mockRunAgent = vi.fn()
 const mockBuildSystem = vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" })
+const mockBuildAttachmentProviderContent = vi.fn()
 
 vi.mock("../../heart/core", async () => {
   const actual = await vi.importActual<typeof import("../../heart/core")>("../../heart/core")
@@ -54,6 +57,10 @@ vi.mock("../../mind/prompt", async () => {
   flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
   }
 })
+
+vi.mock("../../heart/attachments/provider-content", () => ({
+  buildAttachmentProviderContent: (...args: any[]) => mockBuildAttachmentProviderContent(...args),
+}))
 
 const mockSessionPath = vi.fn().mockReturnValue("/tmp/session.json")
 
@@ -450,6 +457,21 @@ describe("runSenseTurn", () => {
     }))
   })
 
+  it("preserves an explicit empty attachment scope at the core boundary", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "empty-attachment-scope",
+      friendId: "friend-1",
+      userMessage: "hello",
+      toolContext: { attachmentIds: [] },
+    })
+
+    expect(mockHandleInboundTurn.mock.calls[0]?.[0].runAgentOptions.toolContext.attachmentIds).toEqual([])
+    expect(mockBuildAttachmentProviderContent).not.toHaveBeenCalled()
+  })
+
   it("carries authenticated ingress relations on the synthesized user message", async () => {
     const ingressRelations = {
       replyToEventId: "evt-000010",
@@ -472,6 +494,7 @@ describe("runSenseTurn", () => {
         messages: [],
       }
     })
+
     const { runSenseTurn } = await import("../../senses/shared-turn")
 
     const result = await runSenseTurn({
@@ -484,6 +507,85 @@ describe("runSenseTurn", () => {
     })
 
     expect(result.response).toBe("hello from the agent")
+  })
+
+  it("keeps canonical ingress text-only while projecting images into the provider turn", async () => {
+    const providerUserContent = [
+      { type: "image_url", image_url: { url: "data:image/png;base64,cG5n" } },
+      { type: "text", text: "inspect attachment:cli-local-file:abc" },
+    ] as any
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      const user = input.messages.at(-1)
+      expect(user).toMatchObject({
+        role: "user",
+        content: "inspect attachment:cli-local-file:abc",
+      })
+      expect(input.runAgentOptions.providerUserMessage).toBe(user)
+      expect(input.runAgentOptions.providerUserContent).toEqual(providerUserContent)
+      expect(JSON.stringify(input.messages)).not.toContain("data:image/png")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        completion: { answer: "seen", intent: "complete" },
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-image",
+      friendId: "friend-1",
+      userMessage: "inspect attachment:cli-local-file:abc",
+      providerUserContent,
+    })
+  })
+
+  it("builds required provider image content lazily from scoped attachment ids", async () => {
+    const providerUserContent = [
+      { type: "image_url", image_url: { url: "data:image/png;base64,cG5n" } },
+      { type: "text", text: "inspect the attachment" },
+    ] as any
+    const onProviderUserContent = vi.fn()
+    mockBuildAttachmentProviderContent.mockResolvedValueOnce(providerUserContent)
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      const user = input.messages.at(-1)
+      const builder = input.runAgentOptions.providerUserContentBuilder
+      expect(input.runAgentOptions.providerUserMessage).toBe(user)
+      expect(builder).toEqual(expect.any(Function))
+      expect(await builder({ model: "gpt-5.4" })).toEqual(providerUserContent)
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        completion: { answer: "seen", intent: "complete" },
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-image-builder",
+      friendId: "friend-1",
+      userMessage: "inspect the attachment",
+      toolContext: { attachmentIds: ["attachment:cli-local-file:abc"] },
+      requireImageSupport: true,
+      onProviderUserContent,
+    })
+
+    expect(mockBuildAttachmentProviderContent).toHaveBeenCalledWith({
+      agentName: "test-agent",
+      agentRoot: "/tmp/test-agent",
+      model: "gpt-5.4",
+      message: "inspect the attachment",
+      attachmentIds: ["attachment:cli-local-file:abc"],
+      requireVision: true,
+    })
+    expect(onProviderUserContent).toHaveBeenCalledWith(providerUserContent)
   })
 
   it("behaviorally holds the session lease before load through persistence and accepted delivery", async () => {
@@ -763,6 +865,90 @@ describe("runSenseTurn", () => {
     })
 
     expect(events.filter((event) => event.type === "structured_output")).toEqual([])
+  })
+
+  it("D006 emits one new output with exact precommitted ingress and final causality across a real interleaved Telegram receipt", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-turn-preservation-"))
+    const originalAgentRoot = mockGetAgentRoot.getMockImplementation()!
+    const originalCapabilities = mockGetChannelCapabilities.getMockImplementation()!
+    const actualContext = await vi.importActual<typeof import("../../mind/context")>("../../mind/context")
+    const transactions = await vi.importActual<typeof import("../../mind/session-transaction")>("../../mind/session-transaction")
+    const telegram = await import("../../senses/telegram-effect-adapter")
+    const effects = new telegram.FileTelegramEffectJournal(path.join(root, "effects"))
+    const friendId = "friend-1"
+    const sessionKey = "session-123"
+    const file = path.join(root, "state", "sessions", friendId, "telegram", `${sessionKey}.json`)
+    const reference = "telegram-inbound:D006-current"
+    const question = "current native question"
+    const answer = "New choices:\n1. Current\n2. Fresh"
+    const events: FrontendTurnEvent[] = []
+    const onDelivery = vi.fn(async () => undefined)
+    const request = vi.fn(async () => ({ message_id: 42 }))
+    const authorization = { allowed: true as const, receiptId: "fixture-authorization", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } }
+    let artifactId = ""
+    try {
+      mockGetAgentRoot.mockReturnValue(root)
+      mockGetChannelCapabilities.mockReturnValue({ ...makeMcpCapabilities(), channel: "telegram" })
+      mockFriendResolve.mockResolvedValue({ friend: makeFriend(), channel: { ...makeMcpCapabilities(), channel: "telegram" } })
+      const history = a003RetainedHistoryEnvelope()
+      history.projection = { ...history.projection, eventIds: ["evt-000005"], trimmed: true }
+      const before = telegram.appendTelegramInboundEvent(parseSessionEnvelope(history)!, { text: question, reference, recordedAt: new Date().toISOString() })
+      before.projection.eventIds = ["evt-000008"]
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify(before), { mode: 0o600 })
+      mockReadSessionTransaction.mockImplementation(transactions.readSessionTransaction)
+      mockLoadSession.mockImplementation(actualContext.loadSession)
+      mockDeferPostTurnPersist.mockImplementationOnce(async (...args: Parameters<typeof actualContext.deferPostTurnPersist>) => {
+        expect(transactions.currentSessionTurnLease(file)).toBeDefined()
+        const prepared = telegram.prepareTelegramEffect(effects, {
+          idempotencyKey: "D006-interleaved-receipt", target: { kind: "approved_relationship", friendId, sessionKey: `telegram:${sessionKey}` },
+          authorClass: "butler", effect: { kind: "text", text: "Separate receipt." }, authorization,
+        })
+        const artifact = await telegram.executeTelegramEffect(effects, prepared.id, { request }, () => authorization)
+        artifactId = artifact.id
+        await telegram.recordTelegramEffectsInSession({ store: effects, sessionPath: file, artifacts: [artifact] })
+        return actualContext.deferPostTurnPersist(...args)
+      })
+      mockHandleInboundTurn.mockImplementationOnce(async (input: InboundTurnInput) => {
+        expect(input.messages).toEqual([])
+        const loaded = await input.sessionLoader.loadOrCreate()
+        expect(loaded.structuredOutputs).toEqual([])
+        loaded.messages.push({ role: "assistant", content: answer })
+        input.callbacks.onModelStart?.()
+        input.callbacks.onTextChunk(answer)
+        input.postTurn(loaded.messages, loaded.sessionPath)
+        return {
+          resolvedContext: { friend: makeFriend(), channel: { ...makeMcpCapabilities(), channel: "telegram" } },
+          gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer, intent: "direct_reply" },
+          sessionPath: loaded.sessionPath, messages: loaded.messages,
+        }
+      })
+      const { runSenseTurn } = await import("../../senses/shared-turn")
+      const result = await runSenseTurn({
+        agentName: "test-agent", channel: "telegram", sessionKey, friendId, userMessage: question,
+        precommittedIngress: { eventId: "evt-000008", reference },
+        _withSessionTurnLease: transactions.withSessionTurnLease,
+        deliverySink: { onDelivery }, frontendEventSink: { onEvent: (event) => events.push(event) },
+      })
+      expect(result).toMatchObject({ response: answer, turnOutcome: "settled", causalSessionEventIds: ["evt-000010"] })
+      expect(request).toHaveBeenCalledOnce()
+      expect(onDelivery).toHaveBeenCalledOnce()
+      expect(effects.read(artifactId).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000009", attempts: 1 })
+      const after = actualContext.loadSession(file)!
+      expect(after.events.slice(0, before.events.length)).toEqual(before.events)
+      expect(after.events).toHaveLength(10)
+      expect(after.events.filter((event) => event.role === "user" && event.content === question).map((event) => event.id)).toEqual(["evt-000008"])
+      expect(after.projectionEventIds).toEqual(["evt-000008", "evt-000010"])
+      expect(after.structuredOutputs.map((output) => output.sourceEventId)).toEqual(["evt-000010"])
+      expect(events.filter((event) => event.type === "structured_output")).toEqual([{
+        type: "structured_output", data: { output: expect.objectContaining({ sourceEventId: "evt-000010", heading: "New choices:" }) },
+      }])
+    } finally {
+      effects.close()
+      mockGetAgentRoot.mockImplementation(originalAgentRoot)
+      mockGetChannelCapabilities.mockImplementation(originalCapabilities)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("returns an aborted outcome when the pipeline has no persistence work", async () => {
@@ -1177,6 +1363,46 @@ describe("runSenseTurn", () => {
   })
 
   it.each([
+    { name: "missing snapshot", value: null },
+    { name: "primitive snapshot", value: "invalid" },
+    { name: "array snapshot", value: [] },
+    { name: "legacy snapshot", value: { version: 1, projection: { eventIds: ["evt-000002"] } } },
+    { name: "missing projection", value: { version: 2 } },
+    { name: "primitive projection", value: { version: 2, projection: "invalid" } },
+    { name: "array projection", value: { version: 2, projection: [] } },
+    { name: "missing IDs", value: { version: 2, projection: {} } },
+    { name: "malformed IDs", value: { version: 2, projection: { eventIds: "evt-000002" } } },
+    { name: "intentionally empty projection", value: { version: 2, projection: { eventIds: [], trimmed: true } } },
+  ])("D006 refuses a precommit with $name despite an apparently valid derived view", async ({ value }) => {
+    const reference = "telegram-admission:raw-evidence"
+    const ingress = makeSessionEvent({ id: "evt-000002", sequence: 2, role: "user", content: "approved original", references: [reference] })
+    mockLoadSession.mockReturnValue({ messages: [{ role: "user", content: "approved original" }], events: [ingress], projectionEventIds: [ingress.id] })
+    mockReadSessionTransaction.mockReturnValue({ bytes: JSON.stringify(value), value, revision: "revision-a" })
+    const observer = { providerInvocationCount: 0, toolInvocationCount: 0 }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await expect(runSenseTurn({
+      agentName: "test-agent", channel: "telegram", sessionKey: "raw-evidence", friendId: "friend-1",
+      userMessage: "approved original", precommittedIngress: { eventId: ingress.id, reference }, turnMetricsObserver: observer,
+    })).rejects.toThrow("precommitted ingress is absent from the provider projection")
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(observer).toEqual({ providerInvocationCount: 0, toolInvocationCount: 0 })
+  })
+
+  it("D006 preserves a native legacy-empty projection's valid precommit meaning", async () => {
+    const reference = "telegram-admission:legacy-empty"
+    const ingress = makeSessionEvent({ id: "evt-000002", sequence: 2, role: "user", content: "approved original", references: [reference] })
+    mockSessionTransaction([ingress], [])
+    mockLoadSession.mockReturnValue({ messages: [{ role: "user", content: "approved original" }], events: [ingress], projectionEventIds: [ingress.id] })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent", channel: "telegram", sessionKey: "legacy-empty", friendId: "friend-1",
+      userMessage: "approved original", precommittedIngress: { eventId: ingress.id, reference },
+    })
+    expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+    expect(mockHandleInboundTurn.mock.calls[0]![0].messages).toEqual([])
+  })
+
+  it.each([
     { name: "omitted behind older identical text", projectionOrder: ["evt-000001"] },
     { name: "reordered before older identical text", projectionOrder: ["evt-000002", "evt-000001"] },
     { name: "duplicated within the ordered IDs", projectionOrder: ["evt-000001", "evt-000002", "evt-000002"] },
@@ -1583,9 +1809,13 @@ describe("runSenseTurn", () => {
       friendId: "friend-1",
       userMessage: "hello",
       runtimeMcpServers,
+      toolContext: { agentName: "other-agent", agentRoot: "/other/agent.ouro" },
     })
 
-    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ runtimeServers: runtimeMcpServers })
+    const owner = { agentName: "test-agent", agentRoot: "/tmp/test-agent" }
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ ...owner, runtimeServers: runtimeMcpServers })
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledWith(owner)
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext).toMatchObject(owner)
   })
 
   it("releases each runtime MCP before the next queued turn starts", async () => {
@@ -1642,6 +1872,10 @@ describe("runSenseTurn", () => {
     await Promise.all([first, second])
 
     expect(order).toEqual(["turn:1", "release:1", "turn:2", "release:2"])
+    expect(mockReleaseRuntimeMcpServers.mock.calls).toEqual([
+      [{ agentName: "test-agent", agentRoot: "/tmp/test-agent" }],
+      [{ agentName: "test-agent", agentRoot: "/tmp/test-agent" }],
+    ])
   })
 
   it("releases runtime MCPs when a turn fails", async () => {
@@ -1660,9 +1894,10 @@ describe("runSenseTurn", () => {
     })).rejects.toThrow("provider failed")
 
     expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledWith({ agentName: "test-agent", agentRoot: "/tmp/test-agent" })
   })
 
-  it("calls getSharedMcpManager with undefined when no runtimeMcpServers are supplied", async () => {
+  it("keeps explicit owner coordinates when no runtimeMcpServers are supplied", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
       agentName: "test-agent",
@@ -1672,7 +1907,9 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })
 
-    expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({
+      agentName: "test-agent", agentRoot: "/tmp/test-agent", runtimeServers: undefined,
+    })
     expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
   })
 

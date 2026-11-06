@@ -8,9 +8,13 @@
 import * as os from "os"
 import * as path from "path"
 import * as fs from "fs"
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionUserMessageParam,
+} from "openai/resources/chat/completions"
 import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from "../heart/core"
 import { runAgent } from "../heart/core"
+import { buildAttachmentProviderContent } from "../heart/attachments/provider-content"
 import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
 import { selectEffectiveSessionEvents, stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
@@ -23,7 +27,7 @@ import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
@@ -36,9 +40,9 @@ const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["speak", "(spoken)"],
 ])
 
-async function releaseRuntimeMcpServersAfterTurn(): Promise<void> {
+async function releaseRuntimeMcpServersAfterTurn(owner: McpOwner): Promise<void> {
   const manager = await import("../repertoire/mcp-manager")
-  await manager.releaseRuntimeMcpServers()
+  await manager.releaseRuntimeMcpServers(owner)
 }
 
 /**
@@ -182,6 +186,12 @@ export interface RunSenseTurnOptions {
   }
   /** The user's message text. */
   userMessage: string
+  /** Transient multimodal content projected only into the current provider attempt. */
+  providerUserContent?: ChatCompletionUserMessageParam["content"]
+  /** ACP image input must fail rather than silently become a text-only turn. */
+  requireImageSupport?: boolean
+  /** Receives the transient provider projection after agent-bound materialization. */
+  onProviderUserContent?: (content: ChatCompletionUserMessageParam["content"] | undefined) => void
   /** Optional authenticated transport binding for the new user event. */
   ingressRelations?: SessionIngressRelations
   /** Exact already-committed user ingress claimed by a durable transport worker. */
@@ -397,20 +407,30 @@ function exactProjectedIngressMessage(
   existing: NonNullable<ReturnType<typeof loadSession>>,
   messages: ChatCompletionMessageParam[],
   eventId: string,
+  nativeValue: unknown,
 ): ChatCompletionMessageParam | null {
+  if (!nativeValue || typeof nativeValue !== "object" || Array.isArray(nativeValue)) return null
+  const native = nativeValue as Record<string, unknown>
+  if (native.version !== 2 || !native.projection || typeof native.projection !== "object" || Array.isArray(native.projection)) return null
+  const projection = native.projection as Record<string, unknown>
+  if (!Array.isArray(projection.eventIds)) return null
+  // Authorization must inspect stored IDs before a reader filters unresolved entries.
+  const projectionIds = projection.eventIds.length > 0
+    ? projection.eventIds
+    : projection.trimmed === true ? [] : existing.projectionEventIds
   const eventsById = new Map(existing.events.map((event) => [event.id, event] as const))
   if (eventsById.size !== existing.events.length) return null
   const seenProjectionIds = new Set<string>()
   const effectiveIds = new Set(selectEffectiveSessionEvents(existing.events).map((event) => event.id))
   const projectedEvents: SessionEvent[] = []
-  for (const projectedId of existing.projectionEventIds) {
+  for (const projectedId of projectionIds) {
     if (typeof projectedId !== "string" || !projectedId.trim() || seenProjectionIds.has(projectedId)) return null
     const event = eventsById.get(projectedId)
     if (!event) return null
     seenProjectionIds.add(projectedId)
     if (effectiveIds.has(event.id)) projectedEvents.push(event)
   }
-  if (existing.projectionEventIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
+  if (projectionIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
   const projectedUsers = projectedEvents.filter((event) => event.role === "user")
   const providerUsers = messages.filter((message) => message.role === "user")
   if (projectedUsers.at(-1)?.id !== eventId || projectedUsers.length !== providerUsers.length) return null
@@ -452,19 +472,21 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   return withTurnExecutionLease(async () => {
-    setAgentName(options.agentName)
+    const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
+    setAgentName(owner.agentName)
     try {
-      return await runSenseTurnExclusive(options)
+      return await runSenseTurnExclusive(options, owner)
     } finally {
       if (options.runtimeMcpServers && !options.disableTools) {
-        await releaseRuntimeMcpServersAfterTurn()
+        await releaseRuntimeMcpServersAfterTurn(owner)
       }
     }
   })
 }
 
-async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
-  const { agentName, channel, sessionKey, friendId, userMessage } = options
+async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {
+  const { channel, sessionKey, friendId, userMessage } = options
+  const { agentName, agentRoot } = owner
 
   emitNervesEvent({
     component: "senses",
@@ -474,7 +496,24 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   })
 
   // Resolve context
-  const agentRoot = getAgentRoot(agentName)
+  const attachmentIds = options.toolContext?.attachmentIds
+  const providerUserContentBuilder = options.providerUserContent === undefined && attachmentIds?.length
+    ? async ({ model }: { model: string }) => {
+        const content = await buildAttachmentProviderContent({
+          agentName,
+          agentRoot,
+          model,
+          message: userMessage,
+          attachmentIds,
+          ...(options.requireImageSupport ? { requireVision: true } : {}),
+        })
+        options.onProviderUserContent?.(content)
+        return content
+      }
+    : undefined
+  if (options.providerUserContent !== undefined) {
+    options.onProviderUserContent?.(options.providerUserContent)
+  }
   const friendsPath = path.join(agentRoot, "friends")
   const friendStore = new FileFriendStore(friendsPath)
   const capabilities = getChannelCapabilities(channel)
@@ -516,9 +555,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
   const mcpManager = options.disableTools
     ? undefined
-    : await getSharedMcpManager(
-      options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
-    ) ?? undefined
+    : await getSharedMcpManager({ ...owner, runtimeServers: options.runtimeMcpServers }) ?? undefined
 
   // Session path and loading
   const ephemeralRoot = options.disablePersistence
@@ -533,7 +570,8 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   try {
   return await runWithLease(sessPath, async (sessionTurnLease) => {
-  const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
+  const baseSession = readSessionTransaction(sessPath, sessionTurnLease)
+  const baseSessionRevision = baseSession.revision
   const existing = options.disablePersistence ? undefined : loadSession(sessPath)
   const precommittedIngressEvent = options.precommittedIngress
     ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
@@ -559,9 +597,11 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
         undefined,
       )),
     }]
+  let providerUserMessage: ChatCompletionMessageParam | undefined
   if (precommittedIngressEvent) {
-    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id)
+    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
+    providerUserMessage = projectedIngress
     stampIngressRelations(projectedIngress, {
       replyToEventId: precommittedIngressEvent.relations.replyToEventId,
       threadRootEventId: precommittedIngressEvent.relations.threadRootEventId,
@@ -676,6 +716,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     stampIngressTime(userMsg)
     if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
     inboundMessages.push(userMsg)
+    providerUserMessage = userMsg
   }
   const turnResult = await handleInboundTurn({
     channel,
@@ -711,9 +752,19 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       ...(options.approvalCoordinatorFactory && !options.disablePersistence ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
+      ...((options.providerUserContent || providerUserContentBuilder) && providerUserMessage
+        ? {
+            providerUserMessage,
+            ...(options.providerUserContent
+              ? { providerUserContent: options.providerUserContent }
+              : { providerUserContentBuilder }),
+          }
+        : {}),
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),
+        agentName,
+        agentRoot,
         currentUserMessage: userMessage,
       },
     },

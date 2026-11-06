@@ -3484,7 +3484,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("think. record. share. rest.")
   })
 
-  it("buildSystem('inner') exposes send_message as the explicit outward escape hatch", async () => {
+  it("buildSystem('inner') advertises the canonical private tool set without an ungranted send_message", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3495,7 +3495,7 @@ describe("buildSystem with context", () => {
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
 
     expect(toolsBlock).toContain("- surface:")
-    expect(toolsBlock).toContain("- send_message:")
+    expect(toolsBlock).not.toContain("- send_message:")
     expect(toolsBlock).toContain("- rest:")
     expect(toolsBlock).toContain("- ponder:")
     expect(toolsBlock).not.toContain("- settle:")

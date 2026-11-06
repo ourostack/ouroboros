@@ -204,6 +204,8 @@ describe("ouro acp-serve CLI", () => {
       "Boss",
       "--friend-id",
       "friend-explicit",
+      "--socket",
+      "/tmp/ouro-isolated.sock",
       "--workbench-mcp",
       mcpPath,
     ], deps)
@@ -215,11 +217,11 @@ describe("ouro acp-serve CLI", () => {
       agent: "Boss",
       explicitFriendId: "friend-explicit",
     }))
-    expect(ensureDaemonForFrontend).toHaveBeenCalledWith("Boss")
+    expect(ensureDaemonForFrontend).toHaveBeenCalledWith("Boss", "/tmp/ouro-isolated.sock")
     expect(createAcpServer).toHaveBeenCalledWith({
       agent: "Boss",
       friendId: "11111111-1111-4111-8111-111111111111",
-      frontendSocketPath: "/tmp/ouro.sock.frontend",
+      frontendSocketPath: "/tmp/ouro-isolated.sock.frontend",
       stdin: input,
       stdout: output,
       runtimeMcpServers: {

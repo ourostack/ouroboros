@@ -195,6 +195,7 @@ const cache = new Map()
       const fileContents = new Map<string, string>([
         ["src/heart/attachments/materialize.ts", 'emitNervesEvent({ component: "engine", event: "engine.attachment_materialized" })'],
         ["src/heart/attachments/originals.ts", "export function originalStoragePath() {}"],
+        ["src/heart/attachments/image-format.ts", "export function probeImageBuffer() {}"],
         ["src/heart/attachments/sources/index.ts", "export function getAttachmentSourceAdapter() {}"],
         ["src/heart/attachments/sources/cli-local-file.ts", "export function buildCliLocalFileAttachmentRecord() {}"],
       ])
@@ -204,6 +205,7 @@ const cache = new Map()
       expect(result.status).toBe("pass")
       expect(result.missing).toHaveLength(0)
       expect(result.exempt).toContain("src/heart/attachments/originals.ts")
+      expect(result.exempt).toContain("src/heart/attachments/image-format.ts")
       expect(result.exempt).toContain("src/heart/attachments/sources/index.ts")
       expect(result.exempt).toContain("src/heart/attachments/sources/cli-local-file.ts")
     })

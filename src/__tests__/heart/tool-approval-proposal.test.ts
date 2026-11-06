@@ -148,6 +148,8 @@ describe("approval proposal commit recovery", () => {
       tokenStore: tokens,
       proposal: proposal(),
       preCallMessages,
+      attachmentIds: ["attachment:cli-local-file:image-1", " ", "attachment:cli-local-file:image-1"],
+      attachmentUserMessageIndex: 0,
     })
 
     expect(committed.record.state).toBe("awaiting_prompt_binding")
@@ -158,12 +160,31 @@ describe("approval proposal commit recovery", () => {
       baseSessionRevision: "d".repeat(64),
       suspendedSessionRevision: "f".repeat(64),
       preCallMessages,
+      attachmentIds: ["attachment:cli-local-file:image-1"],
+      attachmentUserMessageIndex: 0,
       frozenAssistantMessage: proposal().frozenAssistantMessage,
       argumentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       schemaDigest: "a".repeat(64),
       toolDigest: "b".repeat(64),
       policyDigest: "c".repeat(64),
     })
+    approvals.close()
+  })
+
+  it("rejects an attachment owner index that does not identify a user message", () => {
+    const approvals = store()
+    const checkpoints = checkpointStore()
+    const tokens = tokenStore()
+
+    expect(() => commitApprovalProposal({
+      approvalStore: approvals,
+      checkpointStore: checkpoints,
+      tokenStore: tokens,
+      proposal: proposal(),
+      preCallMessages: [{ role: "assistant", content: "not the attachment owner" }],
+      attachmentIds: ["attachment:cli-local-file:image-1"],
+      attachmentUserMessageIndex: 0,
+    })).toThrow("attachment user message index is invalid")
     approvals.close()
   })
 

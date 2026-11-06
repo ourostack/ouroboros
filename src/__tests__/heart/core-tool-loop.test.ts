@@ -22,6 +22,7 @@ vi.mock("fs", () => ({
 vi.mock("child_process", () => ({
   execSync: vi.fn(),
   spawnSync: vi.fn(),
+  spawn: vi.fn(),
 }))
 
 // Hard-mock the daemon socket client so this test never connects to the real
@@ -144,6 +145,214 @@ function expectProviderOnlyRejection(messages: unknown[], callId: string, fragme
   expect(outbound).toContain(callId)
   expect(outbound).toContain(fragment)
 }
+
+describe("relationship-scoped canonical option boundaries", () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    mockCreate.mockReset()
+    mockResponsesCreate.mockReset()
+    await setupMinimax()
+    const credentials = await import("../../heart/provider-credentials")
+    credentials.cacheProviderCredentialRecords("sanctuary", [credentials.createProviderCredentialRecord({
+      provider: "minimax", credentials: { apiKey: "sanctuary-test-key" }, config: {}, provenance: { source: "auth" },
+    })])
+  })
+
+  function call(name: string, args: Record<string, unknown>) {
+    return makeStream([makeChunk(undefined, [{
+      index: 0, id: `selection-${name}`, function: { name, arguments: JSON.stringify(args) },
+    }])])
+  }
+
+  function context() {
+    return {
+      signin: async () => undefined,
+      agentName: "sanctuary",
+      agentRoot: "/mock/repo/sanctuary",
+      relationshipAuthorization: {
+        profileId: "sanctuary-household",
+        authorizedContextScopes: [],
+        advertisedToolNames: ["unraid_get_system", "settle", "speak", "read_file"],
+        authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "current-relationship" })),
+      },
+    }
+  }
+
+  it.each([true, false, undefined, "true"])("dispatches schema-validated shell background=%j without boolean coercion", async (background) => {
+    const childProcess = await import("child_process")
+    const actualChildProcess = await vi.importActual<typeof import("child_process")>("child_process")
+    const shellSessions = await import("../../repertoire/shell-sessions")
+    const { runAgent } = await import("../../heart/core")
+    vi.mocked(childProcess.spawn).mockReset().mockImplementation(actualChildProcess.spawn)
+    vi.mocked(childProcess.execSync).mockReset().mockReturnValue("foreground result")
+    const owner = { agentName: "sanctuary", agentRoot: "/mock/repo/sanctuary" }
+    const command = `exec ${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdin.resume(); process.stdout.write('owned-ready')")}`
+    const live = context()
+    live.relationshipAuthorization.profileId = "sanctuary-owner"
+    live.relationshipAuthorization.advertisedToolNames = ["shell", "settle"]
+    mockCreate
+      .mockReturnValueOnce(call("shell", { command, ...(background === undefined ? {} : { background }) }))
+      .mockReturnValueOnce(call("settle", { answer: "finished" }))
+    try {
+      await runAgent([{ role: "user", content: "run the bounded local shell fixture" }], makeCallbacks(), "telegram", undefined, {
+        toolContext: live,
+      })
+      expect(childProcess.spawn).toHaveBeenCalledTimes(background === true ? 1 : 0)
+      expect(childProcess.execSync).toHaveBeenCalledTimes(background === false || background === undefined ? 1 : 0)
+      if (background === true) {
+        await vi.waitFor(() => expect(shellSessions.listShellSessions(owner)).toHaveLength(1))
+        const [session] = shellSessions.listShellSessions(owner)
+        await vi.waitFor(() => expect(shellSessions.tailShellSession(session.id, owner)).toContain("owned-ready"))
+        expect(session.status).toBe("running")
+      }
+    } finally {
+      const child = vi.mocked(childProcess.spawn).mock.results[0]?.value
+      const closed = child ? new Promise<void>((resolve) => child.once("close", () => resolve())) : Promise.resolve()
+      shellSessions.resetShellSessions()
+      await closed
+    }
+  })
+
+  it.each(["extra", "description", "parameters", "duplicate", "engine", "mixed"] as const)(
+    "rejects a relationship %s override before provider execution",
+    async (change) => {
+      const { resolveToolDefinition, settleTool } = await import("../../repertoire/tools")
+      const canonical = resolveToolDefinition("unraid_get_system")!.tool
+      const changed = structuredClone(canonical)
+      if (change === "description") changed.function.description = "Changed meaning"
+      if (change === "parameters") changed.function.parameters = { type: "object", properties: { injected: { type: "string" } } }
+      const forgedEngine = structuredClone(settleTool)
+      forgedEngine.function.description = "Not the canonical engine"
+      const extra = resolveToolDefinition("read_file")!.tool
+      const tools = change === "extra" ? [extra]
+        : change === "duplicate" ? [canonical, canonical]
+        : change === "engine" ? [forgedEngine]
+        : change === "mixed" ? [canonical, extra]
+        : [changed]
+      mockCreate.mockReturnValueOnce(call("settle", { answer: "no effects", intent: "complete" }))
+      const custom = vi.fn(async () => "must not run")
+      const { runAgent } = await import("../../heart/core")
+      let failure: unknown
+      try {
+        const result = await runAgent([{ role: "user", content: "read status" }], makeCallbacks(), "telegram", undefined, {
+          tools, execTool: custom, toolContext: context(),
+        })
+        failure = result.error
+      } catch (error) {
+        failure = error
+      }
+
+      expect(String(failure)).toMatch(/canonical|selection|duplicate|collision/)
+      expect(mockCreate).not.toHaveBeenCalled()
+      expect(custom).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([true, false])("keeps exact ordinary reductions and genuine engine helpers (empty=%s)", async (empty) => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const canonical = resolveToolDefinition("unraid_get_system")!.tool
+    mockCreate.mockReturnValueOnce(call("settle", { answer: "no effects", intent: "complete" }))
+    const { runAgent } = await import("../../heart/core")
+    await runAgent([{ role: "user", content: "read status" }], makeCallbacks(), "telegram", undefined, {
+      tools: empty ? [] : [structuredClone(canonical)], toolContext: context(),
+    })
+    const names = mockCreate.mock.calls[0][0].tools.map((tool: { function: { name: string } }) => tool.function.name)
+    expect(names).toContain("settle")
+    expect(names).toContain("speak")
+    expect(names.includes("unraid_get_system")).toBe(!empty)
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it("keeps ignored malformed overrides inactive when tools are hard-disabled", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const extra = resolveToolDefinition("read_file")!.tool
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk("text only")]))
+    const { runAgent } = await import("../../heart/core")
+    const custom = vi.fn()
+    await runAgent([{ role: "user", content: "say hello" }], makeCallbacks(), "telegram", undefined, {
+      hardDisableTools: true, tools: [extra, extra], execTool: custom, toolContext: context(),
+    })
+    expect(mockCreate).toHaveBeenCalledOnce()
+    expect(mockCreate.mock.calls[0][0].tools ?? []).toEqual([])
+    expect(custom).not.toHaveBeenCalled()
+  })
+
+  it("runs the current relationship gate before a custom ordinary executor", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const toolContext = context()
+    const authorize = vi.fn(async (name: string) => name === "unraid_get_system"
+      ? { allowed: false as const, reason: "relationship revoked" }
+      : { allowed: true as const, receiptId: "terminal-relationship" })
+    const custom = vi.fn(async () => "must not run")
+    const liveContext = { ...toolContext, relationshipAuthorization: { ...toolContext.relationshipAuthorization, authorizeTool: authorize } }
+    mockCreate.mockReturnValueOnce(call("unraid_get_system", {}))
+    mockCreate.mockReturnValueOnce(call("settle", { answer: "blocked", intent: "blocked" }))
+    const { runAgent } = await import("../../heart/core")
+    await runAgent([{ role: "user", content: "read status" }], makeCallbacks(), "telegram", undefined, {
+      tools: [resolveToolDefinition("unraid_get_system")!.tool], execTool: custom, toolContext: liveContext,
+    })
+    expect(authorize).toHaveBeenCalledWith("unraid_get_system", {})
+    expect(custom).not.toHaveBeenCalled()
+  })
+
+  it("A001a coverage rejects every companion when one currently authorized batch member is revoked", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const toolContext = context()
+    const names = ["unraid_get_system", "unraid_get_storage"]
+    toolContext.relationshipAuthorization.advertisedToolNames.push("unraid_get_storage")
+    const authorizeTool = vi.fn(async (name: string) => name === "unraid_get_system"
+      ? { allowed: false as const, reason: "relationship revoked" }
+      : { allowed: true as const, receiptId: "remaining-authority" })
+    const custom = vi.fn(async () => "must not run")
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, names.map((name, index) => ({
+      index, id: `blocked-batch-${index}`, function: { name, arguments: "{}" },
+    })))]))
+    mockCreate.mockReturnValueOnce(call("settle", { answer: "blocked", intent: "blocked" }))
+    const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "read both statuses" }]
+    const { runAgent } = await import("../../heart/core")
+    expect((await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+      tools: names.map((name) => resolveToolDefinition(name)!.tool), execTool: custom,
+      toolContext: { ...toolContext, relationshipAuthorization: { ...toolContext.relationshipAuthorization, authorizeTool } },
+    })).outcome).toBe("blocked")
+    expect(custom).not.toHaveBeenCalled()
+    expectProviderOnlyRejection(messages, "blocked-batch-1", "another call in this batch failed current authorization")
+  })
+
+  it.each([
+    ["settle", { answer: "not authorized", intent: "complete" }, "telegram"],
+    ["speak", { message: "not authorized" }, "telegram"],
+    ["observe", { reason: "not authorized" }, "cli"],
+    ["rest", { status: "HEARTBEAT_OK" }, "inner"],
+    ["ponder", { action: "create", kind: "reflection", objective: "not authorized", summary: "fixture", success_criteria: "none", payload_json: "{}" }, "telegram"],
+  ] as const)("authorizes the real %s engine branch before its effects", async (name, args, channel) => {
+    const controller = new AbortController()
+    const authorize = vi.fn(async () => {
+      controller.abort()
+      return { allowed: false as const, reason: "engine authority revoked" }
+    })
+    mockCreate.mockReturnValueOnce(call(name, args))
+    mockCreate.mockReturnValueOnce(call("settle", { answer: "unexpected fallback", intent: "complete" }))
+    const callbacks = makeCallbacks({ flushNow: vi.fn(async () => undefined) })
+    const { runAgent } = await import("../../heart/core")
+    const result = await runAgent([{ role: "user", content: "use the engine" }], callbacks, channel, controller.signal, {
+      tools: [],
+      toolContext: {
+        signin: async () => undefined,
+        agentName: "testagent",
+        agentRoot: "/mock/repo/testagent",
+        relationshipAuthorization: {
+          profileId: "generic-reactive", authorizedContextScopes: [],
+          advertisedToolNames: [name, "settle"], authorizeTool: authorize,
+        },
+      },
+    })
+    expect(authorize).toHaveBeenCalledWith(name, args)
+    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
+    expect(callbacks.flushNow).not.toHaveBeenCalled()
+    expect(["settled", "observed", "rested"]).not.toContain(result.outcome)
+  })
+})
 
 describe("runAgent tool loop guard", () => {
   beforeEach(async () => {
@@ -764,7 +973,7 @@ describe("runAgent tool loop guard", () => {
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("coding_status", "sessionId=coding-001", false)
   })
 
-  it("releases final-only commentary for an admissible ordinary tool batch", async () => {
+  it("releases final-only commentary while preserving an empty attachment scope for ordinary tools", async () => {
     mockCreate
       .mockReturnValueOnce(makeStream([
         makeChunk("checking the current status"),
@@ -782,6 +991,7 @@ describe("runAgent tool loop guard", () => {
         }]),
       ]))
 
+    const execTool = vi.fn().mockResolvedValue("status: running")
     const visibleText: string[] = []
     const callbacks = makeCallbacks({
       settleOutputMode: "final_only",
@@ -795,12 +1005,13 @@ describe("runAgent tool loop guard", () => {
       undefined,
       {
         toolChoiceRequired: true,
-        execTool: vi.fn().mockResolvedValue("status: running"),
-        toolContext: { signin: async () => undefined },
+        execTool,
+        toolContext: { signin: async () => undefined, attachmentIds: [] },
       },
     )
 
     expect(visibleText).toEqual(["checking the current status", "status checked"])
+    expect(execTool.mock.calls[0]?.[2]?.attachmentIds).toEqual([])
     expect(result).toMatchObject({
       outcome: "settled",
       completion: { answer: "status checked", intent: "complete" },
@@ -1412,10 +1623,13 @@ describe("runAgent tool loop guard", () => {
     expect(result.outcome).toBe("observed")
   })
 
-  it("flushes ordinary buffered output and reports a string rejection from a terminal default handler", async () => {
+  it.each(["string", "error", "success", "custom-string"] as const)("flushes ordinary buffered output and preserves terminal handler outcome: %s", async (mode) => {
     const terminalToolName = "synthetic_terminal_projection_string_failure"
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const handler = vi.fn(async () => Promise.reject("opaque terminal failure"))
+    const handler = vi.fn(async () => {
+      if (mode === "success") return "terminal receipt"
+      throw mode === "error" ? new Error("opaque terminal failure") : "opaque terminal failure"
+    })
     baseToolDefinitions.push({
       tool: {
         type: "function",
@@ -1459,16 +1673,17 @@ describe("runAgent tool loop guard", () => {
           },
         }],
         toolContext: { signin: async () => undefined },
+        ...(mode === "custom-string" ? { execTool: async () => { throw "opaque terminal failure" } } : {}),
       },
     )
 
-    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledTimes(mode === "custom-string" ? 0 : 1)
     expect(callbacks.onClearText).not.toHaveBeenCalled()
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), false)
-    expect(callbacks.onTextChunk).toHaveBeenLastCalledWith("error: opaque terminal failure")
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), mode === "success")
+    expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(mode === "success" ? "terminal receipt" : "error: opaque terminal failure")
     expect(result).toMatchObject({
-      outcome: "blocked",
-      completion: { answer: "error: opaque terminal failure", intent: "blocked" },
+      outcome: mode === "success" ? "settled" : "blocked",
+      completion: { answer: mode === "success" ? "terminal receipt" : "error: opaque terminal failure", intent: mode === "success" ? "complete" : "blocked" },
     })
   })
 
@@ -1777,65 +1992,63 @@ describe("runAgent tool loop guard", () => {
     }
 
     it("carries the one live standing-policy classification into the exact dispatch without rereading it", async () => {
-      const policy = {
-        schemaVersion: 1,
-        version: 1,
-        desiredStates: {},
-        routineActionGrants: {
-          "unraid.restart:calibre-web": { action: "unraid.container.restart", targets: ["calibre-web"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T17:00:00.000Z", authorizingSessionEvent: "evt-1", version: 1 },
-        },
-        updatedAt: "2026-08-29T17:00:00.000Z",
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
+      const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
+      })
+      try {
+        const { resolveToolDefinition } = await import("../../repertoire/tools")
+        const tool = resolveToolDefinition("unraid_restart_container")!.tool
+        mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart"))
+        const controller = new AbortController()
+        const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
+        const propose = vi.fn()
+        const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "request-2", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
+        const { runAgent } = await import("../../heart/core")
+
+        const result = await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "telegram", controller.signal, {
+          tools: [tool], execTool, approvalCoordinator: { propose },
+          toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization },
+        } as any)
+
+        expect(propose).not.toHaveBeenCalled()
+        expect(result.outcome).not.toBe("errored")
+        expect(mockCreate).toHaveBeenCalledOnce()
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
+        expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
+        expect(inspect).toHaveBeenCalledOnce()
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
+      } finally {
+        inspect.mockRestore()
       }
-      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json") ? JSON.stringify(policy) : defaultReadFileSync(filePath))
-      const { resolveToolDefinition } = await import("../../repertoire/tools")
-      const tool = resolveToolDefinition("unraid_restart_container")!.tool
-      mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart"))
-      const controller = new AbortController()
-      const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
-      const propose = vi.fn()
-      const relationshipAuthorization = { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
-      const { runAgent } = await import("../../heart/core")
-
-      const result = await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "cli", controller.signal, {
-        tools: [tool], execTool, approvalCoordinator: { propose },
-        toolContext: { signin: async () => undefined, agentRoot: "/mock/repo/testagent", relationshipAuthorization },
-      } as any)
-
-      expect(propose).not.toHaveBeenCalled()
-      expect(result.outcome).not.toBe("errored")
-      expect(mockCreate).toHaveBeenCalledOnce()
-      expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
-      expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledOnce()
     })
 
     it("executes the exact family standing-policy restart without an approval coordinator", async () => {
-      const policy = {
-        schemaVersion: 1,
-        version: 1,
-        desiredStates: {},
-        routineActionGrants: {
-          "unraid.restart:calibre-web": { action: "unraid.container.restart", targets: ["calibre-web"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T17:00:00.000Z", authorizingSessionEvent: "evt-1", version: 1 },
-        },
-        updatedAt: "2026-08-29T17:00:00.000Z",
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
+      const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
+      })
+      try {
+        const { resolveToolDefinition } = await import("../../repertoire/tools")
+        const tool = resolveToolDefinition("unraid_restart_container")!.tool
+        mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart_without_coordinator"))
+        const controller = new AbortController()
+        const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
+        const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "request-2", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
+        const { runAgent } = await import("../../heart/core")
+
+        await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "telegram", controller.signal, {
+          tools: [tool], execTool,
+          toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization },
+        } as any)
+
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
+        expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
+        expect(inspect).toHaveBeenCalledOnce()
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
+      } finally {
+        inspect.mockRestore()
       }
-      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json") ? JSON.stringify(policy) : defaultReadFileSync(filePath))
-      const { resolveToolDefinition } = await import("../../repertoire/tools")
-      const tool = resolveToolDefinition("unraid_restart_container")!.tool
-      mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart_without_coordinator"))
-      const controller = new AbortController()
-      const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
-      const relationshipAuthorization = { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
-      const { runAgent } = await import("../../heart/core")
-
-      await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "inner", controller.signal, {
-        tools: [tool], execTool,
-        toolContext: { signin: async () => undefined, agentRoot: "/mock/repo/testagent", relationshipAuthorization },
-      } as any)
-
-      expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
-      expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledOnce()
     })
 
     it("fails a protected call closed before its handler when no approval coordinator exists", async () => {
@@ -2111,6 +2324,272 @@ describe("runAgent tool loop guard", () => {
       return { runtime, views, callerViews }
     }
 
+    it("projects image content only into provider attempts and keeps canonical caller state text-only", async () => {
+      const canonicalUser = { role: "user" as const, content: "inspect attachment:cli-local-file:abc" }
+      const messages: ChatCompletionMessageParam[] = [canonicalUser]
+      const providerViews: ChatCompletionMessageParam[][] = []
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async (request) => {
+          providerViews.push(structuredClone(request.messages))
+          return response("done")
+        }),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const dataUrl = `data:image/png;base64,${Buffer.from("provider-only-image").toString("base64")}`
+      const providerUserContent = [
+        { type: "image_url" as const, image_url: { url: dataUrl } },
+        { type: "text" as const, text: canonicalUser.content },
+      ]
+      const providerUserContentBuilder = vi.fn(async ({ model }: { model: string }) => {
+        expect(model).toBe("gpt-5.4")
+        return providerUserContent
+      })
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContentBuilder,
+      })
+
+      expect(result.outcome).toBe("settled")
+      expect(providerUserContentBuilder).toHaveBeenCalledOnce()
+      expect(providerViews[0]?.find((message) => (
+        message.role === "user" && Array.isArray(message.content)
+      ))).toEqual({ role: "user", content: providerUserContent })
+      expect(messages).toContain(canonicalUser)
+      expect(canonicalUser.content).toBe("inspect attachment:cli-local-file:abc")
+      expect(JSON.stringify(messages)).not.toContain(dataUrl)
+    })
+
+    it("rejects provider projection when the canonical target is not text", async () => {
+      const canonicalUser = {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: "already projected" }],
+      }
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async () => response("should not run")),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      await expect(runAgent([canonicalUser], makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: [{ type: "text", text: "projected" }],
+      })).rejects.toThrow("provider user message must keep canonical text content")
+      expect(runtime.streamTurn).not.toHaveBeenCalled()
+    })
+
+    it("rejects provider projection without a canonical target", async () => {
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async () => response("should not run")),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      await expect(runAgent(
+        [{ role: "user", content: "inspect image" }],
+        makeCallbacks(),
+        "mcp",
+        undefined,
+        {
+          toolChoiceRequired: false,
+          providerRuntimeOverride: runtime,
+          providerUserContent: [{ type: "text", text: "projected" }],
+        },
+      )).rejects.toThrow("providerUserContent requires providerUserMessage")
+      expect(runtime.streamTurn).not.toHaveBeenCalled()
+    })
+
+    it("rejects provider projection when the target disappears from an attempt", async () => {
+      const canonicalUser = { role: "user" as const, content: "inspect image" }
+      const messages = [canonicalUser] as ChatCompletionMessageParam[]
+      messages.findIndex = () => -1
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async () => response("should not run")),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      await expect(runAgent(messages, makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: [{ type: "text", text: "projected" }],
+      })).rejects.toThrow("provider user message is not present in the provider attempt")
+      expect(runtime.streamTurn).not.toHaveBeenCalled()
+    })
+
+    it("rejects non-structured provider projection content", async () => {
+      const canonicalUser = { role: "user" as const, content: "inspect image" }
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async () => response("should not run")),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      await expect(runAgent([canonicalUser], makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: "not structured" as any,
+      })).rejects.toThrow("providerUserContent must be structured content")
+      expect(runtime.streamTurn).not.toHaveBeenCalled()
+    })
+
+    it("preserves the provider projection target across context-overflow recovery", async () => {
+      const canonicalUser = { role: "user" as const, content: "inspect image after trimming" }
+      const providerViews: ChatCompletionMessageParam[][] = []
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.4",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn: vi.fn(async (request) => {
+          providerViews.push(request.messages)
+          if (providerViews.length === 1) {
+            const error = new Error("context_length_exceeded") as Error & { code: string }
+            error.code = "context_length_exceeded"
+            throw error
+          }
+          return response("done")
+        }),
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([
+        { role: "assistant", content: "old history ".repeat(500) },
+        canonicalUser,
+      ], makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,cG5n" } },
+        ],
+      })
+
+      expect(result.outcome).toBe("settled")
+      expect(providerViews).toHaveLength(2)
+      expect(providerViews[1]?.some((message) => (
+        message.role === "user" && Array.isArray(message.content)
+      ))).toBe(true)
+    })
+
+    it("rejects provider image projection when the active model lacks vision", async () => {
+      const canonicalUser = { role: "user" as const, content: "inspect attachment:cli-local-file:no-vision" }
+      const messages: ChatCompletionMessageParam[] = [canonicalUser]
+      const streamTurn = vi.fn(async () => response("should not run"))
+      const runtime: ProviderRuntime = {
+        id: "openai-codex",
+        model: "gpt-5.3-codex",
+        client: {} as never,
+        capabilities: new Set(),
+        streamTurn,
+        resetTurnState: vi.fn(),
+        appendToolOutput: vi.fn(),
+        ping: vi.fn(),
+        classifyError: () => "unknown",
+      }
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "mcp", undefined, {
+        toolChoiceRequired: false,
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: [
+          { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from("unsupported-image").toString("base64")}` } },
+          { type: "text", text: canonicalUser.content },
+        ],
+      })
+
+      expect(result).toMatchObject({
+        outcome: "errored",
+        error: { message: "provider model gpt-5.3-codex does not support image input" },
+      })
+      expect(streamTurn).not.toHaveBeenCalled()
+      expect(JSON.stringify(messages)).not.toContain("data:image/png")
+    })
+
+    it("keeps image bytes out of approval suspension checkpoints", async () => {
+      const canonicalUser = { role: "user" as const, content: "restart after inspecting attachment:cli-local-file:approval" }
+      const messages: ChatCompletionMessageParam[] = [canonicalUser]
+      const { resolveToolDefinition } = await import("../../repertoire/tools")
+      const shellTool = resolveToolDefinition("shell")!.tool
+      const runtime = runtimeFor([
+        response("", [call("shell", "approval-image-call", { command: "docker restart calibre-web" })]),
+      ], messages).runtime
+      runtime.id = "openai-codex"
+      runtime.model = "gpt-5.4"
+      const propose = vi.fn().mockResolvedValue({
+        approvalId: "11111111-1111-4111-8111-111111111111",
+        checkpointDigest: "a".repeat(64),
+        suspendedSessionRevision: "b".repeat(64),
+      })
+      const dataUrl = `data:image/png;base64,${Buffer.from("approval-image").toString("base64")}`
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "mcp", undefined, {
+        tools: [shellTool],
+        execTool: vi.fn(),
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+        providerRuntimeOverride: runtime,
+        providerUserMessage: canonicalUser,
+        providerUserContent: [
+          { type: "image_url", image_url: { url: dataUrl } },
+          { type: "text", text: canonicalUser.content },
+        ],
+      })
+
+      expect(result.outcome).toBe("suspended")
+      expect(propose).toHaveBeenCalledOnce()
+      expect(propose.mock.calls[0]?.[0].attachmentUserMessageIndex).toBe(0)
+      expect(JSON.stringify(propose.mock.calls[0]?.[0].preCallMessages)).not.toContain(dataUrl)
+    })
+
     it.each(["text", "settle"] as const)("keeps %s rejections in one scratch block, consumes each correction, and preserves identical human text", async (kind) => {
       const correction = "Use current evidence."
       const secondCorrection = "Use the newly returned evidence."
@@ -2339,7 +2818,7 @@ describe("runAgent tool loop guard", () => {
       const generated = capture.mock.calls[0]![0] as ChatCompletionMessageParam[]
       expect(generated.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" }])
       expect(generated.filter((message) => message.role === "assistant").flatMap((message) => message.tool_calls?.map((entry) => entry.id) ?? [])).toEqual(["completed-read"])
-      if (kind !== "overflow") expect(messages).toContainEqual({ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" })
+      expect(messages).toContainEqual({ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" })
     })
 
     it.each(["dependent-validation", "tool-end-observer"] as const)("promotes a completed handler receipt before %s can fail", async (kind) => {

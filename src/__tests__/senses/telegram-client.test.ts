@@ -126,6 +126,19 @@ describe("Telegram approval callback transport", () => {
     }
   }
 
+  it("requires pending, signed terminal state before controls can outlive relationship access", async () => {
+    const missing = approvalFixture({ signAcceptanceEvidence: () => "f".repeat(64) })
+    await expect(missing.transport.validatePendingTerminalControl("missing")).rejects.toThrow("integrity is unavailable")
+    const unsigned = approvalFixture()
+    await unsigned.transport.sendApproval({ approvalId: "unsigned", decisionToken: "secret", prompt: "Approve?" })
+    await expect(unsigned.transport.validatePendingTerminalControl("unsigned")).rejects.toThrow("integrity is unavailable")
+    const proposed = approvalFixture({ signAcceptanceEvidence: () => "f".repeat(64) })
+    await proposed.transport.sendApproval({ approvalId: "proposed", decisionToken: "secret", prompt: "Approve?" })
+    await expect(proposed.transport.validatePendingTerminalControl("proposed")).rejects.toThrow("not authenticated")
+    expect(proposed.onDecision).not.toHaveBeenCalled()
+    expect(proposed.calls.map((call) => call.method)).toEqual(["sendMessage"])
+  })
+
   it("rejects a non-canonical message id returned by the injected approval effect port", async () => {
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
     const transport = createRawTelegramApprovalTransport({

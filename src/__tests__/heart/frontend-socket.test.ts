@@ -61,6 +61,101 @@ describe("frontend socket", () => {
     while (cleanup.length > 0) await cleanup.pop()!()
   })
 
+  it("revalidates the active model before admitting required image input", async () => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-model-gate")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner, getProviderRuntime: async () => ({ model: "gpt-5.3-codex" }) as never }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1, id: "image", method: "turn.start",
+      params: { turnId: "image-turn", agent: "boss", friendId: "friend-1", channel: "mcp", sessionKey: "session-1", message: "inspect", attachmentIds: ["attachment:cli-local-file:image"], requireImageSupport: true },
+    })}\n`)
+    const reply = await waitForFrame(frames, (frame) => frame.id === "image")
+    socket.destroy()
+    expect(reply).toMatchObject({ ok: false, error: { admissionRejected: true } })
+    expect(reply.error.message).toMatch(/model.*image/)
+    expect(reply.error.message).toContain("decoder")
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])("rechecks client liveness after held image capability resolution (disconnect=%s)", async (disconnect) => {
+    const active = Promise.withResolvers<AbortSignal>()
+    const capabilityRequested = Promise.withResolvers<void>()
+    const capability = Promise.withResolvers<{ model: string }>()
+    const runner = vi.fn(async (input: any) => {
+      if (input.sessionKey === "active-session") {
+        active.resolve(input.signal)
+        await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }))
+        return { ...settledResult(""), turnOutcome: "aborted" as const }
+      }
+      return settledResult()
+    })
+    const decoder = await import("../../heart/attachments/image-normalize")
+    const available = vi.spyOn(decoder, "imageValidationAvailable").mockReturnValue(true)
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const service = new FrontendSessionService({
+      runner,
+      getProviderRuntime: async () => {
+        capabilityRequested.resolve()
+        return await capability.promise as never
+      },
+    })
+    const prepareTurn = vi.spyOn(service, "prepareTurn")
+    const events = vi.fn()
+    const unsubscribe = service.subscribe(events)
+    const target = socketPath("pending-image")
+    const server = await startFrontendSocketServer({ socketPath: target, service })
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+    cleanup.push(async () => {
+      capability.resolve({ model: "gpt-5.4" })
+      service.cancelAllTurns()
+      socket.destroy()
+      await server.stop()
+      unsubscribe()
+      available.mockRestore()
+    })
+    const params = { agent: "boss", friendId: "friend-1", channel: "mcp", message: "hello" }
+    socket.write(`${JSON.stringify({ protocolVersion: 1, id: "active", method: "turn.start", params: {
+      ...params, turnId: "active-turn", sessionKey: "active-session",
+    } })}\n`)
+    const activeSignal = await active.promise
+    prepareTurn.mockClear()
+    runner.mockClear()
+    socket.write(`${JSON.stringify({ protocolVersion: 1, id: "pending", method: "turn.start", params: {
+      ...params, turnId: "pending-turn", sessionKey: "pending-session",
+      attachmentIds: ["attachment:cli-local-file:image"], requireImageSupport: true,
+    } })}\n`)
+    await capabilityRequested.promise
+    expect(prepareTurn).not.toHaveBeenCalled()
+    if (disconnect) {
+      socket.destroy()
+      // Cancellation of the already-owned turn proves server-side client cleanup ran.
+      await vi.waitFor(() => expect(activeSignal.aborted).toBe(true))
+    }
+    capability.resolve({ model: "gpt-5.4" })
+    await new Promise((resolve) => setImmediate(resolve))
+    if (disconnect) {
+      expect(prepareTurn).not.toHaveBeenCalled()
+      expect(runner).not.toHaveBeenCalled()
+      expect(service.hasTurn("pending-turn")).toBe(false)
+      expect(events.mock.calls.some(([event]) => event.turnId === "pending-turn")).toBe(false)
+    } else {
+      expect(await waitForFrame(frames, (frame) => frame.id === "pending")).toMatchObject({ ok: true, result: { accepted: true } })
+      await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+      expect(prepareTurn).toHaveBeenCalledOnce()
+      expect(activeSignal.aborted).toBe(false)
+    }
+  })
+
   it("derives a stable frontend path within the Unix socket limit", async () => {
     const { frontendSocketPathForDaemon } = await import("../../heart/frontend-socket")
     expect(frontendSocketPathForDaemon("/tmp/ouro.sock")).toBe("/tmp/ouro.sock.frontend")
@@ -95,6 +190,97 @@ describe("frontend socket", () => {
       { protocolVersion: 1, id: "one", ok: true, result: { subscribed: true } },
       { protocolVersion: 1, id: "two", ok: true, result: { subscribed: false } },
     ])
+    socket.destroy()
+  })
+
+  it.each([{ attachmentIds: ["attachment:cli-local-file:aaa"] }, { attachmentIds: [] }])("forwards validated attachment ids including empty scopes: $attachmentIds", async ({ attachmentIds }) => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-attachments")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "sub")
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1,
+      id: "start",
+      method: "turn.start",
+      params: {
+        turnId: "turn-1",
+        agent: "boss",
+        friendId: "friend-1",
+        channel: "mcp",
+        sessionKey: "session-1",
+        message: "look",
+        attachmentIds,
+      },
+    })}\n`)
+    await waitForFrame(frames, (frame) => frame.event === "turn.completed")
+    expect(runner.mock.calls[0]![0].toolContext?.attachmentIds).toEqual(attachmentIds)
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1,
+      id: "bad",
+      method: "turn.start",
+      params: {
+        turnId: "turn-2",
+        agent: "boss",
+        friendId: "friend-1",
+        channel: "mcp",
+        sessionKey: "session-2",
+        message: "look",
+        attachmentIds: ["ok", 7],
+      },
+    })}\n`)
+    expect(await waitForFrame(frames, (frame) => frame.id === "bad")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_params", message: "attachmentIds must be an array of non-empty strings" },
+    })
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1,
+      id: "blank",
+      method: "turn.start",
+      params: {
+        turnId: "turn-blank",
+        agent: "boss",
+        friendId: "friend-1",
+        channel: "mcp",
+        sessionKey: "session-blank",
+        message: "look",
+        attachmentIds: ["  "],
+      },
+    })}\n`)
+    expect(await waitForFrame(frames, (frame) => frame.id === "blank")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_params", message: "attachmentIds must be an array of non-empty strings" },
+    })
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1,
+      id: "not-array",
+      method: "turn.start",
+      params: {
+        turnId: "turn-3",
+        agent: "boss",
+        friendId: "friend-1",
+        channel: "mcp",
+        sessionKey: "session-3",
+        message: "look",
+        attachmentIds: "attachment:cli-local-file:aaa",
+      },
+    })}\n`)
+    expect(await waitForFrame(frames, (frame) => frame.id === "not-array")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_params", message: "attachmentIds must be an array of non-empty strings" },
+    })
     socket.destroy()
   })
 
@@ -257,6 +443,7 @@ describe("frontend socket", () => {
       error: {
         code: "invalid_params",
         message: "runtimeMcpServers supports only ouro_workbench",
+        admissionRejected: true,
       },
     })
     expect(runner).not.toHaveBeenCalled()
@@ -430,6 +617,7 @@ describe("frontend socket", () => {
       error: {
         code: "invalid_params",
         message: "frontend session already has an active turn: session-1",
+        admissionRejected: true,
       },
     })
     expect(firstFrames.some((frame) => frame.event === "turn.failed")).toBe(false)
@@ -490,7 +678,7 @@ describe("frontend socket", () => {
       { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "params must be an object" } },
       { protocolVersion: 1, id: "version", ok: false, error: { code: "unsupported_version", message: "protocolVersion must be 1" } },
       { protocolVersion: 1, id: "unknown", ok: false, error: { code: "method_not_found", message: "unknown frontend method: nope" } },
-      { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string" } },
+      { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string", admissionRejected: true } },
       { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "sessionKey must be a non-empty string" } },
     ])
     socket.destroy()

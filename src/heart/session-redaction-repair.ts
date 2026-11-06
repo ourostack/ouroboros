@@ -9,6 +9,7 @@ import type { JsonValue } from "./approval-store"
 import {
   isExactRawSessionRedactionMarker,
   parseSessionEnvelope,
+  projectedSessionEventIds,
   selectEffectiveSessionEvents,
   type SessionEnvelope,
   type SessionEvent,
@@ -238,6 +239,12 @@ function rawEnvelope(bytes: string): SessionEnvelope {
   return envelope
 }
 
+function projectedStructuredOutputs(envelope: SessionEnvelope) {
+  const byId = new Map(envelope.events.map((event) => [event.id, event]))
+  const events = projectedSessionEventIds(envelope).map((id) => byId.get(id)!)
+  return extractStructuredOutputsFromEvents(events, { emitTelemetry: false })
+}
+
 function compute(bytes: string, relative: string, capturedAt: string): { manifest: Manifest; postimage: SessionEnvelope } {
   const envelope = rawEnvelope(bytes)
   const targets = selectA003LegacyRequiredCorrections(envelope.events)
@@ -254,11 +261,15 @@ function compute(bytes: string, relative: string, capturedAt: string): { manifes
   const events = [...envelope.events, ...entries.map((entry) => entry.marker)]
   if (!entries.every((entry) => isExactRawSessionRedactionMarker(entry.marker, events))) refuse("invalid computed marker block")
   const removed = new Set(entries.flatMap((entry) => [entry.target.id, entry.marker.id]))
+  const selected = new Set(projectedSessionEventIds(envelope).filter((id) => !removed.has(id)))
   const postimage: SessionEnvelope = {
     ...envelope, events,
-    projection: { ...envelope.projection, eventIds: envelope.projection.eventIds.filter((id) => !removed.has(id)) },
-    structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents(events), { emitTelemetry: false }),
+    projection: {
+      ...envelope.projection, eventIds: envelope.projection.eventIds.filter((id) => !removed.has(id)),
+      trimmed: envelope.projection.trimmed || selectEffectiveSessionEvents(events).some((event) => !selected.has(event.id)),
+    },
   }
+  postimage.structuredOutputs = projectedStructuredOutputs(postimage)
   const postBytes = JSON.stringify(postimage, null, 2)
   if (Buffer.byteLength(postBytes) > SESSION_LIMIT) refuse("postimage exceeds 32 MiB")
   return {
@@ -392,7 +403,7 @@ function alreadyApplied(envelope: SessionEnvelope, manifest: Manifest, currentRe
   const effective = selectEffectiveSessionEvents(envelope.events)
   const visible = new Set(effective.map((event) => event.id))
   return envelope.projection.eventIds.every((id) => visible.has(id))
-    && isDeepStrictEqual(envelope.structuredOutputs, extractStructuredOutputsFromEvents(effective, { emitTelemetry: false }))
+    && isDeepStrictEqual(envelope.structuredOutputs, projectedStructuredOutputs(envelope))
 }
 
 async function reconcileWrite(

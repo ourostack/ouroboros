@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { bindPrivilegedFailsafeArtifact, listExternalEventStatus, readExternalEventRecord, type ExternalEventRecord } from "../heart/external-events/router"
-import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
+import { loadSessionEnvelopeFile, projectedSessionEventIds, selectEffectiveSessionEvents, type SessionEnvelope, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
@@ -749,11 +749,15 @@ export function appendTelegramArtifactEvents(envelope: SessionEnvelope, artifact
     }
   })
   const eventIds = events.map((event) => event.id)
+  const priorIds = projectedSessionEventIds(envelope)
   return {
     envelope: {
       ...envelope,
       events: [...envelope.events, ...events],
-      projection: { ...envelope.projection, eventIds: [...envelope.projection.eventIds, ...eventIds], projectedAt: recordedAt, trimmed: false },
+      projection: {
+        ...envelope.projection, eventIds: [...priorIds, ...eventIds], projectedAt: recordedAt,
+        trimmed: new Set(priorIds).size < selectEffectiveSessionEvents(envelope.events).length,
+      },
     },
     eventIds,
   }
@@ -783,10 +787,14 @@ export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { t
     },
     provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
   }
+  const priorIds = projectedSessionEventIds(envelope)
   return {
     ...envelope,
     events: [...envelope.events, event],
-    projection: { ...envelope.projection, eventIds: [...envelope.projection.eventIds, id], projectedAt: input.recordedAt, trimmed: false },
+    projection: {
+      ...envelope.projection, eventIds: [...priorIds, id], projectedAt: input.recordedAt,
+      trimmed: new Set(priorIds).size < selectEffectiveSessionEvents(envelope.events).length,
+    },
   }
 }
 

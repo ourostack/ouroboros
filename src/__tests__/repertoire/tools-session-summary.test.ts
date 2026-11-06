@@ -75,6 +75,23 @@ describe("session_summary tool", () => {
     mockMkdirSync.mockReset()
   })
 
+  it.each(["missing-name", "missing-root", "missing-both"])("requires explicit relationship ownership before summary reads: %s", async (missing) => {
+    const tool = await getSessionSummaryTool()
+    const context = {
+      signin: async () => undefined,
+      ...(missing === "missing-name" || missing === "missing-both" ? {} : { agentName: "owner-a" }),
+      ...(missing === "missing-root" || missing === "missing-both" ? {} : { agentRoot: "/bundles/a.ouro" }),
+      relationshipAuthorization: {
+        advertisedToolNames: ["session_summary"], authorizedContextScopes: [],
+        authorizeTool: () => ({ allowed: true as const, receiptId: "fixture" }),
+      },
+    }
+    await expect(Promise.resolve().then(() => tool.handler({ runId: "run-1" }, context)))
+      .rejects.toThrow(/explicit.*owner|owner.*required/i)
+    expect(mockReadHabitSessionSummary).not.toHaveBeenCalled()
+    expect(mockGetAgentRoot).not.toHaveBeenCalled()
+  })
+
   it("is registered in baseToolDefinitions as a read-only orientation tool", async () => {
     const tool = await getSessionSummaryTool()
 
@@ -120,6 +137,16 @@ describe("session_summary tool", () => {
     expect(result.text).toContain("next: check whether Ari answered")
     expect(fs.writeFileSync).not.toHaveBeenCalled()
     expect(fs.mkdirSync).not.toHaveBeenCalled()
+  })
+
+  it("reads the exact initiating root without consulting the ambient owner", async () => {
+    const tool = await getSessionSummaryTool()
+    const result = parseToolResult(await tool.handler({ runId: "run-1" }, {
+      signin: async () => undefined, agentName: "owner-a", agentRoot: "/bundles/a.ouro",
+    }) as string)
+    expect(result.kind).toBe("habit_session_summary")
+    expect(mockReadHabitSessionSummary).toHaveBeenCalledExactlyOnceWith("/bundles/a.ouro", { runId: "run-1" })
+    expect(mockGetAgentRoot).not.toHaveBeenCalled()
   })
 
   it("validates exclusive runId selectors before reading summaries", async () => {

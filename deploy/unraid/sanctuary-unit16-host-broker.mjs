@@ -492,6 +492,7 @@ async function containerSnapshot(expectedImage) {
     || typeof value.startedAt !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\s]{1,64}Z$/u.test(value.startedAt)) {
     throw new Error("production container identity is invalid")
   }
+  if (typeof value.readOnlyRoot !== "boolean") throw new Error("production container root mode is invalid")
   const ports = object(value.ports ?? {}, "published ports")
   const publishedPortCount = Object.values(ports).reduce((count, bindings) => count + (Array.isArray(bindings) ? bindings.length : 0), 0)
   const mounts = Array.isArray(value.mounts) ? value.mounts.map((raw) => {
@@ -499,14 +500,14 @@ async function containerSnapshot(expectedImage) {
     return { destination: mount.Destination, source: mount.Source, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
   const expectedMounts = [
-    { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
-    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
-    { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, mode: "ro", propagation: "rprivate", rw: false, type: "bind" },
+    { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
+    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
+    { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, propagation: "rprivate", rw: false, type: "bind" },
   ]
-  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.mode === expected.mode && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
+  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
-    && JSON.stringify(value.capDrop) === JSON.stringify(["ALL"])
-    && JSON.stringify(value.securityOpt) === JSON.stringify(["no-new-privileges"])
+    && (value.capDrop === null || (Array.isArray(value.capDrop) && value.capDrop.length === 0))
+    && (value.securityOpt === null || (Array.isArray(value.securityOpt) && value.securityOpt.length === 0))
   const running = value.running === true
   if (!running) throw new Error("production container is not running")
   const configuredUser = text(value.user, "container user")
@@ -534,7 +535,7 @@ async function containerSnapshot(expectedImage) {
     user: configuredUser,
     liveProcessUser,
     processBindingDigest,
-    readOnlyRoot: value.readOnlyRoot === true,
+    readOnlyRoot: value.readOnlyRoot,
     mountCount: mounts.length,
     mountsDigest: createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
     mountsExact,

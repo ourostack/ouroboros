@@ -156,6 +156,52 @@ describe("Anthropic thinking block round-trip", () => {
     expect(result.system?.match(/verified predecessor evidence/g)).toHaveLength(1)
   })
 
+  it("toAnthropicMessages converts provider image URLs into Anthropic base64 blocks", async () => {
+    const { toAnthropicMessages } = await import("../../heart/providers/anthropic")
+    const bytes = Buffer.alloc(24)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+    bytes.writeUInt32BE(1, 16)
+    bytes.writeUInt32BE(1, 20)
+    const data = bytes.toString("base64")
+    const result = toAnthropicMessages([{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:image/png;base64,${data}` } },
+        { type: "text", text: "inspect attachment:cli-local-file:abc" },
+      ],
+    }] as any)
+
+    expect(result.messages).toEqual([{
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data },
+        },
+        { type: "text", text: "inspect attachment:cli-local-file:abc" },
+      ],
+    }])
+  })
+
+  it("toAnthropicMessages ignores unsupported user parts and non-array content", async () => {
+    const { toAnthropicMessages } = await import("../../heart/providers/anthropic")
+    const result = toAnthropicMessages([
+      { role: "user", content: { unexpected: true } },
+      {
+        role: "user",
+        content: [
+          { type: "input_audio", input_audio: { data: "audio", format: "wav" } },
+          { type: "text", text: "kept text" },
+        ],
+      },
+    ] as any)
+
+    expect(result.messages).toEqual([
+      { role: "user", content: "" },
+      { role: "user", content: [{ type: "text", text: "kept text" }] },
+    ])
+  })
+
   it("non-Anthropic providers ignore _thinking_blocks (toResponsesInput)", async () => {
     emitTestEvent("toResponsesInput ignores thinking blocks")
     const { toResponsesInput } = await import("../../heart/streaming")

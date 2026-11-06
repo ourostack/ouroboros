@@ -6,7 +6,7 @@ import * as readline from "node:readline"
 
 import type { Channel } from "@ouro.bot/friends"
 
-import type { FrontendSessionService, FrontendTurnRequest } from "./frontend-session-service"
+import type { FrontendSessionService, FrontendTurnRequest, PreparedFrontendTurn } from "./frontend-session-service"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -176,6 +176,14 @@ function validatedRuntimeMcpEnvironment(value: unknown): Record<string, string> 
   }
 }
 
+function validatedAttachmentIds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string" || !id.trim())) {
+    throw new Error("attachmentIds must be an array of non-empty strings")
+  }
+  return [...new Set((value as string[]).map((id) => id.trim()))]
+}
+
 function validatedRuntimeMcpServers(value: unknown): RuntimeMcpServers | undefined {
   if (value === undefined) return undefined
   const servers = record(value)
@@ -254,6 +262,14 @@ export async function startFrontendSocketServer(options: {
     const method = requiredString(request.method, "method")
     const params = record(request.params ?? {})
 
+    if (method === "agent.prompt-capabilities") {
+      client.writer.send(response(id, await options.service.getPromptCapabilities({
+        agent: requiredString(params.agent, "agent"),
+        channel: requiredString(params.channel, "channel") as Channel,
+      })))
+      return
+    }
+
     if (method === "session.load") {
       const result = options.service.loadSession({
         agent: requiredString(params.agent, "agent"),
@@ -289,27 +305,49 @@ export async function startFrontendSocketServer(options: {
     }
 
     if (method === "turn.start" || method === "turn.start.observe-only") {
-      const observeOnly = method === "turn.start.observe-only"
-      if (params.toolMode !== undefined) {
-        throw new Error("toolMode is unsupported; use turn.start.observe-only")
+      let prepared: PreparedFrontendTurn
+      try {
+        const observeOnly = method === "turn.start.observe-only"
+        if (params.toolMode !== undefined) {
+          throw new Error("toolMode is unsupported; use turn.start.observe-only")
+        }
+        if (observeOnly && params.runtimeMcpServers !== undefined) {
+          throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
+        }
+        const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
+        const attachmentIds = validatedAttachmentIds(params.attachmentIds)
+        if (params.requireImageSupport !== undefined && typeof params.requireImageSupport !== "boolean") {
+          throw new Error("requireImageSupport must be a boolean")
+        }
+        if (params.requireImageSupport && (observeOnly || !attachmentIds?.length)) {
+          throw new Error("required image input needs attachments and an ordinary turn")
+        }
+        const turnRequest: FrontendTurnRequest = {
+          turnId: requiredString(params.turnId, "turnId"),
+          agent: requiredString(params.agent, "agent"),
+          friendId: requiredString(params.friendId, "friendId"),
+          channel: requiredString(params.channel, "channel") as Channel,
+          sessionKey: requiredString(params.sessionKey, "sessionKey"),
+          message: requiredString(params.message, "message"),
+          ...(attachmentIds !== undefined ? { attachmentIds } : {}),
+          ...(params.requireImageSupport ? { requireImageSupport: true } : {}),
+          ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
+          ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
+        }
+        if (turnRequest.requireImageSupport && !(await options.service.getPromptCapabilities(turnRequest)).image) {
+          throw new Error("active model and image decoder must support image prompts")
+        }
+        if (client.socket.destroyed) return
+        prepared = options.service.prepareTurn(turnRequest)
+      } catch (error) {
+        client.writer.send({
+          protocolVersion: PROTOCOL_VERSION, id, ok: false,
+          error: { code: "invalid_params", message: error instanceof Error ? error.message : String(error), admissionRejected: true },
+        })
+        return
       }
-      if (observeOnly && params.runtimeMcpServers !== undefined) {
-        throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
-      }
-      const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
-      const turnRequest: FrontendTurnRequest = {
-        turnId: requiredString(params.turnId, "turnId"),
-        agent: requiredString(params.agent, "agent"),
-        friendId: requiredString(params.friendId, "friendId"),
-        channel: requiredString(params.channel, "channel") as Channel,
-        sessionKey: requiredString(params.sessionKey, "sessionKey"),
-        message: requiredString(params.message, "message"),
-        ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
-        ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
-      }
-      const prepared = options.service.prepareTurn(turnRequest)
-      client.ownedTurnIds.add(turnRequest.turnId)
-      client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
+      client.ownedTurnIds.add(prepared.request.turnId)
+      client.writer.send(response(id, { accepted: true, turnId: prepared.request.turnId }))
       queueMicrotask(() => {
         void options.service.runPreparedTurn(prepared).catch(() => undefined)
       })

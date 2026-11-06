@@ -10,10 +10,13 @@ vi.mock("node:fs", async (importOriginal) => {
 
 import {
   MAX_RECENT_ATTACHMENTS,
+  getAttachment,
+  getAttachmentCatalogPath,
   getRecentAttachmentsPath,
   listRecentAttachments,
   readRecentAttachments,
   cacheRecentAttachment,
+  removeAttachment,
 } from "../../../heart/attachments/store"
 import {
   buildAttachmentId,
@@ -63,6 +66,20 @@ describe("attachment ids", () => {
 })
 
 describe("recent attachment store", () => {
+  it("removes only the selected catalog entry and tolerates repeated rollback", () => {
+    const agentRoot = makeAgentRoot()
+    const owned = buildCliLocalFileAttachmentRecord({ path: "/tmp/owned.txt", mimeType: "text/plain" })
+    const retained = buildCliLocalFileAttachmentRecord({ path: "/tmp/retained.txt", mimeType: "text/plain" })
+    cacheRecentAttachment("slugger", owned, agentRoot)
+    cacheRecentAttachment("slugger", retained, agentRoot)
+    removeAttachment("slugger", owned.id, agentRoot)
+    expect(getAttachment("slugger", owned.id, agentRoot)).toBeNull()
+    expect(readRecentAttachments("slugger", agentRoot)).toEqual([retained])
+    removeAttachment("slugger", owned.id, agentRoot)
+    expect(getAttachment("slugger", retained.id, agentRoot)).toEqual(retained)
+    expect(readRecentAttachments("slugger", agentRoot)).toEqual([retained])
+  })
+
   it("returns an empty list when the persisted store is invalid or not an array", () => {
     const agentRoot = makeAgentRoot()
     const storePath = getRecentAttachmentsPath("slugger", agentRoot)
@@ -129,7 +146,7 @@ describe("recent attachment store", () => {
 
     expect(() => cacheRecentAttachment("slugger", attachment, agentRoot)).toThrow(cleanupError)
     unlink.mockRestore()
-    expect(readRecentAttachments("slugger", agentRoot)).toEqual([attachment])
+    expect(getAttachment("slugger", attachment.id, agentRoot)).toEqual(attachment)
   })
 
   it("deduplicates by attachment id and keeps the newest copy", () => {
@@ -213,6 +230,58 @@ describe("recent attachment store", () => {
     expect(recent).toHaveLength(MAX_RECENT_ATTACHMENTS)
     expect(recent[0]?.id).toBe("attachment:bluebubbles:GUID-104")
     expect(recent.at(-1)?.id).toBe("attachment:bluebubbles:GUID-5")
+  })
+})
+
+describe("durable attachment catalog", () => {
+  it("keeps evicted attachments resolvable after the recency cache rolls over", () => {
+    const agentRoot = makeAgentRoot()
+    const evicted = buildCliLocalFileAttachmentRecord(
+      { path: "/tmp/session-bound.png", mimeType: "image/png", byteCount: 512 },
+      1,
+    )
+    cacheRecentAttachment("slugger", evicted, agentRoot)
+
+    for (let index = 0; index < MAX_RECENT_ATTACHMENTS + 5; index += 1) {
+      cacheRecentAttachment(
+        "slugger",
+        buildBlueBubblesAttachmentRecord(
+          { guid: `NEWER-${index}`, transferName: `newer-${index}.png`, mimeType: "image/png", totalBytes: 10 },
+          index + 2,
+        ),
+        agentRoot,
+      )
+    }
+
+    expect(readRecentAttachments("slugger", agentRoot).some((entry) => entry.id === evicted.id)).toBe(false)
+    expect(getAttachment("slugger", evicted.id, agentRoot)).toEqual(evicted)
+  })
+
+  it("falls back to the recency cache when no durable record exists", () => {
+    const agentRoot = makeAgentRoot()
+    const attachment = buildCliLocalFileAttachmentRecord({ path: "/tmp/cache-only.png", mimeType: "image/png", byteCount: 8 })
+    cacheRecentAttachment("slugger", attachment, agentRoot)
+    fs.rmSync(getAttachmentCatalogPath("slugger", agentRoot), { recursive: true, force: true })
+
+    expect(getAttachment("slugger", attachment.id, agentRoot)).toEqual(attachment)
+    expect(getAttachment("slugger", "attachment:cli-local-file:missing", agentRoot)).toBeNull()
+  })
+
+  it("ignores unreadable or mismatched durable records instead of returning them", () => {
+    const agentRoot = makeAgentRoot()
+    const attachment = buildCliLocalFileAttachmentRecord({ path: "/tmp/corrupt.png", mimeType: "image/png", byteCount: 8 })
+    cacheRecentAttachment("slugger", attachment, agentRoot)
+    const catalogDirectory = getAttachmentCatalogPath("slugger", agentRoot)
+    const recordFile = path.join(catalogDirectory, fs.readdirSync(catalogDirectory)[0]!)
+
+    fs.writeFileSync(recordFile, "{not json", "utf-8")
+    expect(getAttachment("slugger", attachment.id, agentRoot)).toEqual(attachment)
+
+    fs.writeFileSync(recordFile, JSON.stringify(null), "utf-8")
+    expect(getAttachment("slugger", attachment.id, agentRoot)).toEqual(attachment)
+
+    fs.writeFileSync(recordFile, JSON.stringify({ ...attachment, id: "attachment:cli-local-file:other" }), "utf-8")
+    expect(getAttachment("slugger", attachment.id, agentRoot)).toEqual(attachment)
   })
 })
 

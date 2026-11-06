@@ -3,7 +3,7 @@ import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { randomUUID } from "node:crypto"
-import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
+import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
 import {
   listAllBundleAgents,
   listBundleSyncRows,
@@ -31,6 +31,7 @@ import {
 } from "./agent-service"
 import { getAlwaysOnSenseNames } from "@ouro.bot/friends"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
+import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { startMailboxHttpServer, type MailboxHttpServerHandle } from "../mailbox/mailbox-http"
 import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
@@ -1447,7 +1448,6 @@ export class OuroDaemon {
     }
     this.frontendSessionService.close?.()
     stopUpdateChecker()
-    shutdownSharedMcpManager()
     this.scheduler.stop?.()
     this.healthMonitor.stopPeriodicChecks?.()
     if (this.senseAutostartTimer) {
@@ -1458,7 +1458,10 @@ export class OuroDaemon {
       clearInterval(this.externalEventReconcileTimer)
       this.externalEventReconcileTimer = null
     }
-    const workerStopTasks = [Promise.resolve().then(() => this.processManager.stopAll())]
+    const workerStopTasks = [
+      Promise.resolve().then(() => this.processManager.stopAll()),
+      Promise.resolve().then(() => shutdownSharedMcpManager()),
+    ]
     if (this.senseManager) {
       workerStopTasks.push(Promise.resolve().then(() => this.senseManager!.stopAll()))
     }
@@ -2800,27 +2803,35 @@ export class OuroDaemon {
       }
       case "mcp.list": {
         return withTurnExecutionLease(async () => {
-          setAgentName(command.agent ?? "default")
-          const mcpManager = await getSharedMcpManager()
+          const agentName = command.agent ?? "default"
+          const owner = { agentName, agentRoot: getAgentRoot(agentName) }
+          setAgentName(agentName)
+          const mcpManager = await getSharedMcpManager(owner)
           if (!mcpManager) {
             return { ok: true, data: [], message: "no MCP servers configured" }
           }
-          return { ok: true, data: mcpManager.listAllTools() }
+          return { ok: true, data: mcpManager.entries.map(({ server, tools, pluginId }) => ({ server, tools, pluginId })) }
         })
       }
       case "mcp.call": {
         return withTurnExecutionLease(async () => {
-          setAgentName(command.agent ?? "default")
-          const mcpCallManager = await getSharedMcpManager()
+          const agentName = command.agent ?? "default"
+          const owner = { agentName, agentRoot: getAgentRoot(agentName) }
+          setAgentName(agentName)
+          const mcpCallManager = await getSharedMcpManager(owner)
           if (!mcpCallManager) {
             return { ok: false, error: "no MCP servers configured" }
           }
           try {
             const parsedArgs = command.args ? JSON.parse(command.args) as Record<string, unknown> : {}
-            const result = await mcpCallManager.callTool(command.server, command.tool, parsedArgs)
+            const matches = mcpToolsAsDefinitions(mcpCallManager).filter((definition) =>
+              definition.mcpBinding?.server === command.server && definition.mcpBinding.rawName === command.tool,
+            )
+            const binding = matches.length === 1 ? matches[0].mcpBinding : undefined
+            if (!binding) return { ok: false, error: "MCP tool is unavailable or ambiguous" }
+            const result = await mcpCallManager.manager.callTool(binding, parsedArgs, owner)
             return { ok: true, data: result }
           } catch (error) {
-            /* v8 ignore next -- defensive: callTool errors are always Error instances @preserve */
             return { ok: false, error: error instanceof Error ? error.message : String(error) }
           }
         })

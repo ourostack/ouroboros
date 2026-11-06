@@ -265,7 +265,7 @@ export interface OuroCliDeps {
   acpServeInput?: Readable
   acpServeOutput?: Writable
   createAcpServer?: (options: AcpServerOptions) => AcpServer
-  ensureDaemonForFrontend?: (agent: string) => Promise<{ ok: boolean; message: string }>
+  ensureDaemonForFrontend?: (agent: string, socketPath: string) => Promise<{ ok: boolean; message: string }>
   workbenchMcpEnvironment?: Record<string, string | undefined>
   resolveFrontendFriendId?: (input: {
     agent: string

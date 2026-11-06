@@ -99,13 +99,7 @@ function setupReadFileSync() {
   })
 }
 
-const PREFERRED_ARTIFACTS_DIR = "/Users/microsoft/AgentBundles/ouroboros.ouro/tasks/one-shots/2026-03-31-doing-claude-code-harness-improvements"
-const ARTIFACTS_DIR = realFs.existsSync(realPath.dirname(PREFERRED_ARTIFACTS_DIR))
-  ? PREFERRED_ARTIFACTS_DIR
-  : realPath.join(require("os").tmpdir(), "ouroboros-baseline-artifacts")
-
-// Ensure artifacts directory exists
-realFs.mkdirSync(ARTIFACTS_DIR, { recursive: true })
+const ARTIFACTS_DIR = realFs.mkdtempSync(realPath.join(require("os").tmpdir(), "ouroboros-baseline-artifacts-"))
 
 describe("token baseline measurement", () => {
   beforeEach(() => {

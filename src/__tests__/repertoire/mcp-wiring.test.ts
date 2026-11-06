@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/agent" })
+
 /**
  * Tests for MCP Manager wiring into production code paths:
  * 1. daemon.ts handleCommand routes mcp.list/mcp.call to shared manager
@@ -77,19 +79,19 @@ describe("MCP Manager wiring", () => {
       // Now import — picks up mocks
       const mod = await import("../../repertoire/mcp-manager")
 
-      const manager = await mod.getSharedMcpManager()
+      const manager = await mod.getSharedMcpManager(OWNER)
       expect(manager).not.toBeNull()
       expect(mockConnect).toHaveBeenCalledOnce()
 
       // Verify shutdown cleans up
-      mod.shutdownSharedMcpManager()
+      await mod.shutdownSharedMcpManager()
       expect(mockShutdown).toHaveBeenCalledOnce()
 
       // Second shutdown is a no-op
-      mod.shutdownSharedMcpManager()
+      await mod.shutdownSharedMcpManager()
       expect(mockShutdown).toHaveBeenCalledOnce()
 
-      mod.resetSharedMcpManager()
+      await mod.resetSharedMcpManager()
       vi.doUnmock("../../repertoire/mcp-client")
       vi.doUnmock("../../heart/identity")
     })
@@ -110,10 +112,10 @@ describe("MCP Manager wiring", () => {
       }))
 
       const mod = await import("../../repertoire/mcp-manager")
-      const manager = await mod.getSharedMcpManager()
+      const manager = await mod.getSharedMcpManager(OWNER)
       expect(manager).toBeNull()
 
-      mod.resetSharedMcpManager()
+      await mod.resetSharedMcpManager()
       vi.doUnmock("../../repertoire/mcp-client")
       vi.doUnmock("../../heart/identity")
     })
@@ -141,11 +143,12 @@ describe("MCP Manager wiring", () => {
       }))
 
       const mod = await import("../../repertoire/mcp-manager")
-      const first = await mod.getSharedMcpManager()
-      const second = await mod.getSharedMcpManager()
-      expect(first).toBe(second)
+      const first = await mod.getSharedMcpManager(OWNER)
+      const second = await mod.getSharedMcpManager(OWNER)
+      expect(first!.manager).toBe(second!.manager)
+      expect(first).not.toBe(second)
 
-      mod.resetSharedMcpManager()
+      await mod.resetSharedMcpManager()
       vi.doUnmock("../../repertoire/mcp-client")
       vi.doUnmock("../../heart/identity")
     })

@@ -1012,6 +1012,7 @@ export interface TelegramApprovalTransport {
   terminalizeOrphaned(approvalId: string, terminalText: string): Promise<{ terminalEditSucceeded: boolean }>
   terminalizeRecovered(approvalId: string, terminalText: string): Promise<void>
   listPendingDeliveries(): TelegramPersistedPendingApproval[]
+  validatePendingTerminalControl(approvalId: string): Promise<void>
 }
 
 export interface TelegramApprovalTransportOptions {
@@ -1040,6 +1041,7 @@ export interface TelegramApprovalTransportOptions {
 }
 
 export const TELEGRAM_APPROVAL_TTL_MS = 300_000
+export const TELEGRAM_APPROVAL_EXPIRED_TEXT = "⚠️ Approval expired"
 export const TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS = 30_000
 export const TELEGRAM_APPROVAL_TOMBSTONE_TTL_MS = 600_000
 
@@ -1476,7 +1478,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
           }
           const observation = ensureExpiryObservation(current)!
           await options.onExpire?.(current.approvalId)
-          const terminalizedAt = await editTerminal(current, "⚠️ Approval expired", observation.observedAt)
+          const terminalizedAt = await editTerminal(current, TELEGRAM_APPROVAL_EXPIRED_TEXT, observation.observedAt)
           if (current.acceptanceBinding) persistMutation(current, () => retainTerminalTombstone(current, terminalizedAt))
           else {
             remove(current)
@@ -1491,6 +1493,19 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   }
 
   return {
+    async validatePendingTerminalControl(approvalId) {
+      const pending = uniquePending().find((entry) => entry.approvalId === approvalId)
+      if (!pending || !options.signAcceptanceEvidence) throw new Error("Telegram terminal control integrity is unavailable")
+      const state = classifyTelegramPersistedApprovalState(pending)
+      if (state === "action_terminal") {
+        await validateDecisionAttempt(pending)
+        validateTerminalOutcome(pending)
+      } else if (state === "expiry_observed") {
+        validateExpiryObservation(pending)
+      } else {
+        throw new Error("Telegram pending terminal control is not authenticated")
+      }
+    },
     async sendApproval(input) {
       effectBarrier()
       const approveCallbackData = `a:${options.createOpaqueHandle()}`

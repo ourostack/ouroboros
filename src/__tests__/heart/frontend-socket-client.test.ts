@@ -84,7 +84,7 @@ describe("frontend socket client", () => {
             protocolVersion: 1,
             id: request.id,
             ok: false,
-            error: count === 1 ? { message: "denied" } : {},
+            error: count === 1 ? { message: "denied", code: "invalid_params", admissionRejected: true } : {},
           })}\n`)
         }
       })
@@ -92,8 +92,8 @@ describe("frontend socket client", () => {
     cleanup.push(() => close(server))
     const client = new SocketFrontendClient(target)
 
-    await expect(client.request("one", {})).rejects.toThrow("denied")
-    await expect(client.request("two", {})).rejects.toThrow("frontend request failed")
+    await expect(client.request("one", {})).rejects.toMatchObject({ message: "denied", code: "invalid_params", admissionRejected: true })
+    await expect(client.request("two", {})).rejects.toMatchObject({ message: "frontend request failed", admissionRejected: false })
     client.close()
   })
 

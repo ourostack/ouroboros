@@ -264,14 +264,18 @@ describe("image-paste utilities", () => {
 
     it("returns image_url content blocks with base64 data for pasted images", async () => {
       const fs = await import("fs/promises")
-      vi.mocked(fs.readFile).mockResolvedValue(Buffer.from("fake-png-data"))
+      const pngBytes = Buffer.alloc(24)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBytes)
+      pngBytes.writeUInt32BE(1, 16)
+      pngBytes.writeUInt32BE(1, 20)
+      vi.mocked(fs.readFile).mockResolvedValue(pngBytes)
       const { resolveImageContent } = await import("../../../senses/cli/image-paste")
       const images = new Map([[1, "/Users/foo/screenshot.png"]])
       const result = await resolveImageContent("[Image #1] describe this", images)
       expect(result).toHaveLength(2)
       expect(result[0]).toEqual({
         type: "image_url",
-        image_url: { url: `data:image/png;base64,${Buffer.from("fake-png-data").toString("base64")}` },
+        image_url: { url: `data:image/png;base64,${pngBytes.toString("base64")}` },
       })
       expect(result[1]).toEqual(expect.objectContaining({ type: "text", text: expect.stringContaining("[Image #1] describe this") }))
       expect(result[1].type === "text" ? result[1].text : "").toContain("[attachments]")

@@ -1,23 +1,31 @@
 import * as path from "node:path"
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
-import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
-import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
-import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
+import { openApprovalStore, type ApprovalOwnerBinding, type ApprovalRecord } from "../heart/approval-store"
+import { ApprovalExecutionFailedError, approvalCheckpointMatchesRecord, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
+import { getProviderRuntime, resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
-import { loadSessionEnvelopeFile } from "../heart/session-events"
+import { buildAttachmentProviderContent } from "../heart/attachments/provider-content"
+import { loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
 import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
 import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
-import { approvalPolicyForInvocation, execTool, resolveToolDefinition } from "../repertoire/tools"
-import type { ToolContext } from "../repertoire/tools-base"
+import { authorizeRestartApprovalRequester, authorizeRoutineActionRequester, type RelationshipAuthorizationEvaluator } from "../repertoire/relationship-authorization"
+import { approvalPolicyForInvocation, executeTool, preflightToolCall, resolveToolDefinition, selectToolsForChannel } from "../repertoire/tools"
+import type { execTool } from "../repertoire/tools"
+import { getSharedMcpManager } from "../repertoire/mcp-manager"
+import type { ToolContext, ToolDefinition, ToolExecutionOutcome } from "../repertoire/tools-base"
+import type { TelegramEffectAuthorizationInput } from "./telegram-effect-adapter"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
+import { getSenseSessionPath } from "./shared-turn"
 import {
   createTelegramApprovalTransport,
   classifyTelegramPersistedApprovalState,
   FileTelegramPendingApprovalStore,
+  TELEGRAM_APPROVAL_EXPIRED_TEXT,
   type TelegramApprovalTransport,
   type TelegramApprovalTransportOptions,
   type TelegramBotApi,
@@ -29,6 +37,7 @@ export interface TelegramApprovalRuntime {
   legacySubjects(): string[]
   migrateIdentity(legacySubjects: readonly string[]): void
   recover(): Promise<void>
+  isPendingTerminalControl?(input: Pick<TelegramEffectAuthorizationInput, "authorClass" | "effect" | "idempotencyKey">): Promise<boolean>
   close(): void
 }
 
@@ -65,11 +74,11 @@ export function formatTelegramApprovalPrompt(toolName: string, args: Record<stri
 export async function executeApprovedTelegramTool(
   name: string,
   args: Record<string, unknown>,
-  execute: (name: string, args: Record<string, unknown>) => Promise<string>,
+  execute: (name: string, args: Record<string, unknown>) => Promise<ToolExecutionOutcome>,
   scenarioHandleDigest?: string,
   approvalId?: string,
   effectBarrier: () => void = () => undefined,
-): Promise<string> {
+): Promise<ToolExecutionOutcome> {
   if (name === "unraid_restart_container") emitNervesEvent({
     component: "senses",
     event: "senses.telegram_approved_restart_start",
@@ -78,17 +87,26 @@ export async function executeApprovedTelegramTool(
   })
   try {
   effectBarrier()
-  const result = await execute(name, args)
+  const outcome = await execute(name, args)
+  if (outcome.kind !== "handler_succeeded") {
+    if (name === "unraid_restart_container") emitNervesEvent({
+      level: "error", component: "senses", event: "senses.telegram_approved_restart_error",
+      message: "approved Sanctuary restart did not complete",
+      meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), ...(approvalId ? { approvalId } : {}), outcome: outcome.kind },
+    })
+    return outcome
+  }
+  const result = outcome.text
   if (name === "sanctuary_resume_download_queue") {
     let parsed: unknown
     try { parsed = JSON.parse(result) } catch { throw new ApprovalExecutionFailedError("approved download resume returned an invalid result") }
     const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { ok?: unknown; data?: unknown }) : null
-    const outcome = data?.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data as { verified?: unknown; after?: unknown } : null
-    const after = outcome?.after && typeof outcome.after === "object" && !Array.isArray(outcome.after) ? outcome.after as { paused?: unknown } : null
-    if (data?.ok !== true || outcome?.verified !== true || after?.paused !== false) throw new ApprovalExecutionFailedError("approved download resume was not independently verified")
-    return result
+    const verification = data?.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data as { verified?: unknown; after?: unknown } : null
+    const after = verification?.after && typeof verification.after === "object" && !Array.isArray(verification.after) ? verification.after as { paused?: unknown } : null
+    if (data?.ok !== true || verification?.verified !== true || after?.paused !== false) throw new ApprovalExecutionFailedError("approved download resume was not independently verified")
+    return outcome
   }
-  if (name !== "unraid_restart_container") return result
+  if (name !== "unraid_restart_container") return outcome
   let parsed: unknown
   try {
     parsed = JSON.parse(result)
@@ -128,7 +146,7 @@ export async function executeApprovedTelegramTool(
     message: "approved Sanctuary restart execution completed",
     meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), ...(approvalId ? { approvalId } : {}), observedRestart: true },
   })
-  return result
+  return outcome
   } catch (error) {
     if (name === "unraid_restart_container") emitNervesEvent({
       level: "error",
@@ -153,6 +171,8 @@ export function createTelegramApprovalRuntime(options: {
   subject: string
   identityKey: string
   toolContext: Partial<ToolContext>
+  resolveOwnerRelationship?: (binding: Readonly<ApprovalOwnerBinding>) => Promise<RelationshipAuthorizationEvaluator>
+  resolveLiveToolContext?: (record: ApprovalRecord) => Promise<ToolContext>
   effects: TelegramApprovalTransportOptions["effects"]
   effectBarrier?: () => void
   dependencies?: {
@@ -162,6 +182,8 @@ export function createTelegramApprovalRuntime(options: {
     runProvider?: typeof runAgent
     resolveTool?: typeof resolveToolDefinition
     executeTool?: typeof execTool
+    getProviderRuntime?: typeof getProviderRuntime
+    getSharedMcpManager?: typeof getSharedMcpManager
     commitAcceptanceEvidence?: (event: string, meta: Record<string, unknown>) => void | Promise<void>
   }
 }): TelegramApprovalRuntime {
@@ -176,15 +198,105 @@ export function createTelegramApprovalRuntime(options: {
   const acceptanceMarker = options.dependencies?.acceptanceMarker ?? (() => readSanctuaryAcceptanceMarker(options.agentName))
   const provider = options.dependencies?.runProvider ?? runAgent
   const resolveTool = options.dependencies?.resolveTool ?? resolveToolDefinition
-  const executeTool = options.dependencies?.executeTool ?? execTool
   const agentRoot = options.dependencies?.agentRoot ?? getAgentRoot(options.agentName)
-  const liveToolContext = { ...options.toolContext, agentRoot: options.toolContext.agentRoot ?? agentRoot } as ToolContext
+  const owner = Object.freeze({ agentName: options.agentName, agentRoot })
+  const currentOptions = async (record: ApprovalRecord, phase: "decision" | "continuation"): Promise<(RunAgentOptions & { toolContext: ToolContext }) | null> => {
+    try {
+      if (!options.resolveLiveToolContext) throw new Error("current owner authority producer is unavailable")
+      let context = await options.resolveLiveToolContext(record)
+      const relationship = context.relationshipAuthorization
+      if (context.agentName !== owner.agentName || context.agentRoot !== owner.agentRoot
+        || relationship?.profileId !== "sanctuary-owner" || relationship.actor?.trustLevel !== "family"
+        || context.context?.friend.trustLevel !== "family" || context.context.friend.id !== relationship.actor.friendId
+        || context.currentSession?.friendId !== relationship.actor.friendId
+        || context.currentSession.key !== record.sessionKey || context.currentSession.sessionPath !== record.sessionPath) {
+        throw new Error("current approval owner coordinates are not exact")
+      }
+      if (record.toolName === "unraid_restart_container") {
+        const restartOwner = await resolveRestartOwnerContext(record, context)
+        if (restartOwner.allowed) {
+          context = restartOwner.context
+        } else {
+          const { reason } = restartOwner
+          emitNervesEvent({
+            level: "warn", component: "senses", event: "senses.telegram_approval_owner_denied",
+            message: "restart approval owner revalidation failed",
+            meta: { approvalId: record.approvalId, reason, phase },
+          })
+          if (phase === "decision") return null
+          context = {
+            ...context,
+            relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: false, reason }) },
+          }
+        }
+      }
+      const runtime = await (options.dependencies?.getProviderRuntime ?? getProviderRuntime)("human", owner)
+      const mcpManager = await (options.dependencies?.getSharedMcpManager ?? getSharedMcpManager)(owner) ?? undefined
+      const selectCurrentTools = () => selectToolsForChannel(
+        getChannelCapabilities("telegram"), context.context?.friend.toolPreferences, context.context,
+        runtime.capabilities, mcpManager, runtime.model, context,
+      )
+      return {
+        providerRuntimeOverride: runtime, mcpManager,
+        toolContext: { ...context, toolSelection: selectCurrentTools(), selectCurrentTools },
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn", component: "senses", event: "senses.telegram_approval_authority_unavailable",
+        message: "current approval authority could not be reconstructed; execution remains disabled",
+        meta: { approvalId: record.approvalId, category: error instanceof Error ? error.name : "unknown" },
+      })
+      return null
+    }
+  }
+  const invocationContext = (current: RunAgentOptions & { toolContext: ToolContext }, definition: ToolDefinition, restartApproval?: ToolContext["restartApproval"]): ToolContext => ({
+    ...current.toolContext,
+    toolSelection: Object.freeze({ ordinary: Object.freeze([definition]), engine: Object.freeze([]) }),
+    ...(restartApproval ? { restartApproval } : {}),
+  })
   const stateRoot = path.join(agentRoot, "state", "approvals")
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite"), now: () => new Date(now()) })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
   let transport!: TelegramApprovalTransport
+  const ownerSessionMatches = (binding: ApprovalOwnerBinding, sessionPath: string): boolean => {
+    if (binding.sessionKey !== `telegram:${options.subject}`
+      || sessionPath !== getSenseSessionPath(options.agentName, binding.friendId, "telegram", binding.sessionKey, agentRoot)) return false
+    const envelope = loadSessionEnvelopeFile(sessionPath)
+    const latestUser = envelope && selectEffectiveSessionEvents(envelope.events).findLast((event) => event.role === "user")
+    return latestUser?.id === binding.sessionEventId && latestUser.relations.references.includes(binding.requestId)
+  }
+  const resolveRestartOwnerContext = async (record: ApprovalRecord, currentContext: ToolContext): Promise<
+    | { allowed: true; context: ToolContext }
+    | { allowed: false; reason: string }
+  > => {
+    const resolve = options.resolveOwnerRelationship
+    const binding = record.ownerBinding && Object.freeze({ ...record.ownerBinding })
+    if (!binding || !resolve || (options.toolContext.agentRoot ?? agentRoot) !== agentRoot || record.sessionKey !== binding.sessionKey) {
+      return { allowed: false, reason: "restart approval owner binding is unavailable" }
+    }
+    try {
+      if (!ownerSessionMatches(binding, record.sessionPath)) return { allowed: false, reason: "restart approval owner session changed" }
+      const relationship = await resolve(binding)
+      const context: ToolContext = {
+        ...currentContext,
+        relationshipAuthorization: {
+          ...relationship,
+          requestId: binding.requestId,
+          authorizeTool: async (name, args) => {
+            const current = await resolve(binding)
+            if (!ownerSessionMatches(binding, record.sessionPath)) return { allowed: false, reason: "restart approval owner session changed" }
+            return current.authorizeTool(name, args)
+          },
+        },
+      }
+      const authorization = await authorizeRestartApprovalRequester(context, record.arguments, binding)
+      return authorization.allowed ? { allowed: true, context } : authorization
+    } catch {
+      return { allowed: false, reason: "restart approval owner authorization is unavailable" }
+    }
+  }
   const commitAcceptanceEvidence = options.dependencies?.commitAcceptanceEvidence ?? (async (event: string, meta: Record<string, unknown>): Promise<void> => {
     if (event === "telegram.callback_settled") {
       await emitNervesEventDurable({
@@ -209,6 +321,23 @@ export function createTelegramApprovalRuntime(options: {
     propose: async (request) => {
       if (request.toolCall.type !== "function") throw new Error("approval requires a function tool call")
       effectBarrier()
+      let ownerBinding: ApprovalOwnerBinding | undefined
+      if (request.toolCall.function.name === "unraid_restart_container") {
+        const live = request.liveToolContext
+        const authorization = await authorizeRoutineActionRequester(live, request.arguments)
+        if (!authorization.allowed || authorization.requester.kind !== "owner"
+          || live?.agentRoot !== agentRoot || live.currentSession?.sessionPath !== context.sessionPath) {
+          throw new Error("restart approval requires a current owner request")
+        }
+        const requester = authorization.requester
+        ownerBinding = {
+          friendId: requester.friendId, requestId: requester.requestId, sessionEventId: requester.sessionEventId,
+          sessionKey: requester.origin.key, profileVersion: authorization.profileVersion,
+        }
+        if (!ownerSessionMatches(ownerBinding, context.sessionPath)) throw new Error("restart approval owner session changed")
+        const policy = await approvalPolicyForInvocation("unraid_restart_container", request.arguments, live)
+        if (policy.kind !== "required") throw new Error("restart approval no longer has owner fallback")
+      }
       const scenarioHandleDigest = acceptanceMarker()?.scenarioHandleDigest
       const committed = commitApprovalProposal({
         approvalStore: store,
@@ -232,9 +361,12 @@ export function createTelegramApprovalRuntime(options: {
           transportChatId: options.subject,
           expiresAt: new Date(now() + 300_000).toISOString(),
           frozenAssistantMessage: request.frozenAssistantMessage as never,
+          ...(ownerBinding ? { ownerBinding } : {}),
           ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
         },
         preCallMessages: request.preCallMessages,
+        attachmentIds: request.liveToolContext?.attachmentIds,
+        attachmentUserMessageIndex: request.attachmentUserMessageIndex,
         hooks: telegramApprovalCommitBarrierHooks(effectBarrier),
       })
       const prompt = formatTelegramApprovalPrompt(request.toolCall.function.name, request.arguments)
@@ -295,14 +427,36 @@ export function createTelegramApprovalRuntime(options: {
     return withSessionTurnLease(record.sessionPath, async (lease) => {
       const checkpoint = checkpoints.read(record.approvalId)
       if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
+      if (!approvalCheckpointMatchesRecord(record, checkpoint)) {
+        return { accepted: false, terminalText: "⚠️ Approval checkpoint is invalid" }
+      }
       const continuationOwnerId = `telegram-continuation-${randomUUID()}`
       let continuationEpoch = 0
       let continuationCausalEventId: string | undefined
+      let continuationAuthorized = false
+      let controlNotice: string | undefined
       const continuationCoordinator: ApprovalCoordinator = {
         propose: (request) => coordinator({
           sessionPath: record.sessionPath,
           baseSessionRevision: readSessionTransaction(record.sessionPath, lease).revision,
         }).propose(request),
+      }
+      const continuationAttachmentIds = checkpoint.attachmentIds
+      const providerUserMessage = continuationAttachmentIds?.length
+        && checkpoint.attachmentUserMessageIndex !== undefined
+        ? checkpoint.preCallMessages[checkpoint.attachmentUserMessageIndex]
+        : undefined
+      const providerProjection: Pick<RunAgentOptions, "providerUserMessage" | "providerUserContentBuilder"> = {}
+      if (providerUserMessage && continuationAttachmentIds?.length) {
+        providerProjection.providerUserMessage = providerUserMessage
+        providerProjection.providerUserContentBuilder = async ({ model }) =>
+          await buildAttachmentProviderContent({
+            agentName: options.agentName,
+            agentRoot,
+            model,
+            message: providerUserMessage.content as string,
+            attachmentIds: continuationAttachmentIds,
+          })
       }
       effectBarrier()
       await resumeApprovalContinuation({
@@ -322,7 +476,18 @@ export function createTelegramApprovalRuntime(options: {
         markContinuationAttempted: () => { effectBarrier(); store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         completeContinuation: () => { effectBarrier(); store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         runAgent: provider,
-        runAgentOptions: approvalContinuationRunAgentOptions(liveToolContext, continuationCoordinator),
+        revalidate: async () => {
+          const current = await currentOptions(record, "continuation")
+          continuationAuthorized = current !== null
+          return current ? {
+            ...current,
+            ...approvalContinuationRunAgentOptions({
+              ...current.toolContext,
+              attachmentIds: continuationAttachmentIds ?? [],
+            }, continuationCoordinator),
+            ...providerProjection,
+          } : null
+        },
         persist: (messages, result) => {
           effectBarrier()
           const existingEventIds = new Set(loadSessionEnvelopeFile(record.sessionPath)?.events.map((event) => event.id) ?? [])
@@ -333,6 +498,15 @@ export function createTelegramApprovalRuntime(options: {
         },
         deliver: async (text) => {
           effectBarrier()
+          if (!continuationAuthorized) {
+            controlNotice = text
+            emitNervesEvent({
+              component: "senses", event: "senses.telegram_approval_control_only",
+              message: "approval result will use its existing terminal control instead of an unauthorized Butler message",
+              meta: { approvalId: record.approvalId, state: record.state },
+            })
+            return
+          }
           const messageIds = await options.effects.sendText({ idempotencyKey: `approval:${record.approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`, chatId: options.authorizedChatId, text, authorClass: "butler", ...(continuationCausalEventId ? { causalEventId: continuationCausalEventId } : {}) })
           effectBarrier()
           if (acceptanceBinding) {
@@ -353,7 +527,7 @@ export function createTelegramApprovalRuntime(options: {
           }
         },
       })
-      return terminalOutcome(record)
+      return { ...terminalOutcome(record), ...(controlNotice ? { terminalText: controlNotice } : {}) }
     })
   }
 
@@ -396,6 +570,8 @@ export function createTelegramApprovalRuntime(options: {
         record = recoverAttemptedApproval({ approvalStore: store, approvalId: existing.approvalId })
       } else if (existing.state === "proposed") {
         const ownerId = `telegram-decision-${randomUUID()}`
+        let restartApproval: ToolContext["restartApproval"]
+        let definition: ToolDefinition | undefined
         record = await withSessionTurnLease(existing.sessionPath, async (lease) => executeApprovalDecision({
             approvalStore: store,
             checkpointStore: checkpoints,
@@ -408,20 +584,64 @@ export function createTelegramApprovalRuntime(options: {
               sessionKey: existing.sessionKey,
             },
             ownerId,
-            currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
-            resolveTool,
-            resolveApprovalPolicy: (name, args) => approvalPolicyForInvocation(name, args, liveToolContext),
-            liveGuard: async () => ({ ok: true }),
+            currentSessionRevision: () => readSessionTransaction(existing.sessionPath, lease).revision,
+            resolveTool: async (name) => {
+              const current = await currentOptions(existing, "decision")
+              definition = current ? resolveTool(name, current.toolContext.toolSelection) : undefined
+              return definition
+            },
+            resolveApprovalPolicy: async (name, args) => {
+              const current = await currentOptions(existing, "decision")
+              return current ? approvalPolicyForInvocation(name, args, current.toolContext) : { kind: "not_required" }
+            },
+            liveGuard: async (context) => {
+              if (existing.toolName !== "unraid_restart_container") return { ok: true }
+              const current = await currentOptions(existing, "decision")
+              if (!current || !existing.ownerBinding) return { ok: false, reason: "restart approval owner binding is unavailable" }
+              const restartToolContext = current.toolContext
+              const authorization = await authorizeRestartApprovalRequester(restartToolContext, context.arguments, existing.ownerBinding)
+              if (!authorization.allowed) return { ok: false, reason: authorization.reason }
+              try {
+                const listed = await restartToolContext.sanctuary?.listContainers()
+                if (!listed || typeof listed !== "object" || !("ok" in listed) || listed.ok !== true
+                  || !("data" in listed) || !listed.data || typeof listed.data !== "object"
+                  || !("truncated" in listed.data) || listed.data.truncated !== false
+                  || !("containers" in listed.data) || !Array.isArray(listed.data.containers)) {
+                  return { ok: false, reason: "restart approval inventory is invalid" }
+                }
+                const matches = listed.data.containers.filter((target) => target?.name === context.arguments.container)
+                const target = matches[0]
+                if (matches.length !== 1 || typeof target?.id !== "string" || !target.id.trim() || target.id !== target.id.trim() || target.degraded !== false) {
+                  return { ok: false, reason: "restart approval target is not exact" }
+                }
+                restartApproval = Object.freeze({
+                  approvalId: existing.approvalId, agentRoot, sessionPath: existing.sessionPath,
+                  ownerBinding: Object.freeze({ ...existing.ownerBinding }),
+                  argumentDigest: existing.argumentDigest,
+                  target: Object.freeze({ id: target.id, name: String(context.arguments.container) }),
+                })
+                return { ok: true }
+              } catch {
+                return { ok: false, reason: "restart approval target is unavailable" }
+              }
+            },
             liveRisk: async () => ({ ok: true }),
+            preflight: async (context) => {
+              const current = await currentOptions(existing, "decision")
+              if (!current) return { ok: false, reason: "current tool authority is unavailable" }
+              const result = await preflightToolCall(context.record.toolName, context.arguments as Record<string, string>, invocationContext(current, context.definition, restartApproval))
+              return result.kind === "ready" ? { ok: true } : { ok: false, reason: result.text }
+            },
             hooks: telegramApprovalDecisionBarrierHooks(effectBarrier),
-            execute: (name, args) => {
-              const approvedToolContext = name === "unraid_restart_container"
-                ? { ...options.toolContext, relationshipAuthorization: undefined } as ToolContext
-                : options.toolContext as ToolContext
+            execute: async (name, args) => {
+              if (name === "unraid_restart_container" && !restartApproval) return { kind: "rejected_before_handler", text: "restart approval was not revalidated" }
+              const current = await currentOptions(existing, "decision")
+              if (!current || !definition) return { kind: "rejected_before_handler", text: "current approved tool authority is unavailable" }
+              const approvedToolContext = invocationContext(current, definition, restartApproval)
               const execute = () => executeApprovedTelegramTool(
                 name,
                 args,
-                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, approvedToolContext),
+                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, approvedToolContext, options.dependencies?.executeTool),
                 decisionScenarioDigest,
                 existing.approvalId,
                 effectBarrier,
@@ -468,7 +688,7 @@ export function createTelegramApprovalRuntime(options: {
           if (mustFailClosed) throw new Error("Telegram fenced approval journal is unavailable")
           const orphanRecovery = await transport.terminalizeOrphaned(
             pending.approvalId,
-            "⚠️ Approval record is unavailable — no action was taken",
+            "⚠️ Approval record is unavailable — the action outcome is unknown and will not be retried",
           )
           emitNervesEvent({
             component: "senses",
@@ -569,5 +789,35 @@ export function createTelegramApprovalRuntime(options: {
     })
   }
 
-  return { transport, coordinator, legacySubjects, migrateIdentity, recover, close: () => store.close() }
+  const isPendingTerminalControl: NonNullable<TelegramApprovalRuntime["isPendingTerminalControl"]> = async (input) => {
+    if (input.authorClass !== "control") return false
+    const effect = input.effect
+    for (const pending of transport.listPendingDeliveries()) {
+      const record = store.read(pending.approvalId)
+      if (!record || !pending.messageId || record.transport !== "telegram"
+        || record.requesterId !== options.subject || record.transportUserId !== options.subject
+        || record.transportChatId !== options.subject || record.sessionKey !== `telegram:${options.subject}`
+        || record.transportMessageId !== opaqueTelegramMessageBinding(options.subject, pending.messageId)
+        || !["succeeded", "failed", "attempted_indeterminate", "denied", "expired", "drifted", "session_head_changed", "abandoned_before_attempt"].includes(record.state)
+        || (pending.terminal && pending.terminal.accepted !== (record.state === "succeeded"))) continue
+      let matches = false
+      if (effect.kind === "callback_ack") {
+        const digest = createHash("sha256").update(effect.callbackQueryId).digest("hex")
+        matches = Boolean(pending.terminal && effect.text === undefined && effect.showAlert !== true
+          && pending.decisionAttempt?.queryIdDigest === digest && input.idempotencyKey === `approval-callback:${digest}`)
+      } else if (effect.kind === "edit") {
+        const terminalText = pending.terminal?.terminalText
+          ?? (record.state === "expired" && pending.expiryObservation?.deadlineAt === pending.expiresAt
+            && pending.expiryObservation.observedAt >= pending.expiresAt ? TELEGRAM_APPROVAL_EXPIRED_TEXT : undefined)
+        matches = terminalText !== undefined && effect.text === terminalText && effect.messageId === Number(pending.messageId)
+          && input.idempotencyKey === `approval:${pending.approvalId}:edit:${createHash("sha256").update(terminalText).digest("hex")}`
+      }
+      if (!matches) continue
+      await transport.validatePendingTerminalControl(pending.approvalId)
+      return true
+    }
+    return false
+  }
+
+  return { transport, coordinator, legacySubjects, migrateIdentity, recover, isPendingTerminalControl, close: () => store.close() }
 }

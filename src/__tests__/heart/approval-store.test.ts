@@ -107,6 +107,57 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  const ownerBinding = {
+    friendId: "friend-ari",
+    requestId: "telegram-update:owner-request",
+    sessionEventId: "evt-000001",
+    sessionKey: "telegram:chat-7",
+    profileVersion: 3,
+  }
+
+  it("A006 persists only the exact owner request binding through a real store reopen", () => {
+    const root = makeRoot()
+    const store = open(root)
+    const binding = { ...ownerBinding }
+    const prepared = store.prepare(proposalInput({ ownerBinding: binding }))
+    expect(prepared.record).toHaveProperty("ownerBinding", ownerBinding)
+    binding.requestId = "changed-after-prepare"
+    store.close()
+    const reopened = open(root)
+    expect(reopened.read(prepared.record.approvalId)).toHaveProperty("ownerBinding", ownerBinding)
+    expect(parseApprovalRecord(reopened.read(prepared.record.approvalId))).toHaveProperty("ownerBinding", ownerBinding)
+    reopened.close()
+  })
+
+  it("A006 leaves legacy unbound approvals readable without inventing owner authority", () => {
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+    expect(parseApprovalRecord(prepared.record)).not.toHaveProperty("ownerBinding")
+    expect(store.read(prepared.record.approvalId)).not.toHaveProperty("ownerBinding")
+    store.close()
+  })
+
+  it.each([
+    null,
+    [],
+    {},
+    { ...ownerBinding, extra: "authority" },
+    ...["friendId", "requestId", "sessionEventId", "sessionKey"].flatMap((field) => [
+      { ...ownerBinding, [field]: undefined },
+      { ...ownerBinding, [field]: "" },
+      { ...ownerBinding, [field]: " " },
+      { ...ownerBinding, [field]: " padded " },
+      { ...ownerBinding, [field]: 42 },
+    ]),
+    ...[undefined, null, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "3"].map((profileVersion) => ({ ...ownerBinding, profileVersion })),
+  ])("A006 rejects a malformed persisted owner binding %# before it can become authority", (binding) => {
+    const store = open()
+    expect(() => store.prepare(proposalInput({ ownerBinding: binding }))).toThrowError(new ApprovalStoreError("invalid_proposal"))
+    const legacy = store.prepare(proposalInput()).record
+    expect(() => parseApprovalRecord({ ...legacy, ownerBinding: binding })).toThrowError(new ApprovalStoreError("corrupt_record"))
+    store.close()
+  })
+
   it("rejects fractional decision timestamps before inspecting the decision binding", () => {
     const store = open()
     const proposed = makeProposed(store)

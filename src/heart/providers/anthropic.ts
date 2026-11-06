@@ -8,6 +8,7 @@ import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, 
 import { finalizeSettleStream, ProviderTextOutput, SettleStreamer } from "../streaming";
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
+import { parseProviderImageDataUrl } from "../attachments/provider-content";
 import { classifyHttpError } from "./error-classification";
 
 export type AnthropicThinkingBlock =
@@ -83,6 +84,28 @@ function toAnthropicTextContent(content: unknown): string {
     .join("\n");
 }
 
+function toAnthropicUserContent(
+  content: OpenAI.ChatCompletionUserMessageParam["content"],
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part): Array<Record<string, unknown>> => {
+    if (part.type === "text") return [{ type: "text", text: part.text }];
+    if (part.type === "image_url") {
+      const parsed = parseProviderImageDataUrl(part.image_url.url);
+      return [{
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: parsed.mimeType,
+          data: parsed.data,
+        },
+      }];
+    }
+    return [];
+  });
+}
+
 function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
   if (!argumentsJson.trim()) return {};
   try {
@@ -109,7 +132,7 @@ export function toAnthropicMessages(
     if (msg.role === "user") {
       converted.push({
         role: "user",
-        content: toAnthropicTextContent((msg as OpenAI.ChatCompletionUserMessageParam).content),
+        content: toAnthropicUserContent((msg as OpenAI.ChatCompletionUserMessageParam).content),
       });
       continue;
     }

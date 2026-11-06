@@ -8,6 +8,7 @@ import {
   normalizeImageForVision,
 } from "../../../heart/attachments/image-normalize"
 import { buildCliLocalFileAttachmentRecord } from "../../../heart/attachments/sources/cli-local-file"
+import { pngBytes } from "../../fixtures/minimal-images"
 
 const tempDirs: string[] = []
 
@@ -33,9 +34,10 @@ afterEach(() => {
 describe("normalizeImageForVision", () => {
   it("uses the built-in sips helpers when no overrides are supplied", async () => {
     vi.resetModules()
-    const execFile = vi.fn((_: string, args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+    const execFile = vi.fn((_: string, args: string[], _options: unknown, callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
       if (args[0] === "-g") {
-        callback(null, "hasAlpha: no\n", "")
+        const format = args.at(-1) === "/tmp/capture.heic" ? "heic" : "jpeg"
+        callback(null, `hasAlpha: no\nformat: ${format}\npixelWidth: 100\npixelHeight: 100\n`, "")
         return
       }
       callback(null, "", "")
@@ -43,6 +45,7 @@ describe("normalizeImageForVision", () => {
     vi.doMock("node:child_process", () => ({ execFile }))
     vi.doMock("node:fs/promises", () => ({
       mkdir: vi.fn().mockResolvedValue(undefined),
+      readFile: vi.fn().mockResolvedValue(Buffer.from("not-image")),
       readdir: vi.fn().mockResolvedValue([]),
       stat: vi.fn().mockResolvedValue({ size: 1024 }),
     }))
@@ -67,18 +70,24 @@ describe("normalizeImageForVision", () => {
     } as any)
 
     expect(result.mimeType).toBe("image/jpeg")
-    expect(execFile).toHaveBeenCalledWith("/usr/bin/sips", ["-g", "hasAlpha", "/tmp/capture.heic"], expect.any(Function))
+    expect(execFile).toHaveBeenCalledWith(
+      "/usr/bin/sips",
+      ["-g", "hasAlpha", "-g", "format", "-g", "pixelWidth", "-g", "pixelHeight", "/tmp/capture.heic"],
+      { timeout: 30_000, killSignal: "SIGKILL" },
+      expect.any(Function),
+    )
     expect(execFile).toHaveBeenCalledWith(
       "/usr/bin/sips",
       expect.arrayContaining(["-s", "format", "jpeg", "-s", "formatOptions", "best", "-Z", "3072", "/tmp/capture.heic", "--out"]),
+      { timeout: 30_000, killSignal: "SIGKILL" },
       expect.any(Function),
     )
   })
 
   it("uses the built-in Quick Look fallback and can emit a png result", async () => {
     vi.resetModules()
-    const execFile = vi.fn((file: string, args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
-      if (file === "/usr/bin/sips" && args[0] === "-g" && args[2] === "/tmp/capture.bmp") {
+    const execFile = vi.fn((file: string, args: string[], _options: unknown, callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+      if (file === "/usr/bin/sips" && args[0] === "-g" && args.at(-1) === "/tmp/capture.bmp") {
         callback(new Error("probe failed"), "", "probe failed")
         return
       }
@@ -87,7 +96,7 @@ describe("normalizeImageForVision", () => {
         return
       }
       if (file === "/usr/bin/sips" && args[0] === "-g") {
-        callback(null, "hasAlpha: yes\n", "")
+        callback(null, "hasAlpha: yes\nformat: png\npixelWidth: 100\npixelHeight: 100\n", "")
         return
       }
       callback(null, "", "")
@@ -95,7 +104,8 @@ describe("normalizeImageForVision", () => {
     vi.doMock("node:child_process", () => ({ execFile }))
     vi.doMock("node:fs/promises", () => ({
       mkdir: vi.fn().mockResolvedValue(undefined),
-      readdir: vi.fn().mockResolvedValue(["capture.png"]),
+      readFile: vi.fn().mockResolvedValue(Buffer.from("not-image")),
+      readdir: vi.fn().mockResolvedValue(["capture.bmp", "capture.png"]),
       stat: vi.fn().mockResolvedValue({ size: 512 }),
     }))
 
@@ -122,13 +132,14 @@ describe("normalizeImageForVision", () => {
     expect(execFile).toHaveBeenCalledWith(
       "/usr/bin/qlmanage",
       ["-t", "-s", "4096", "-o", expect.stringContaining("attachment_cli-local-file_ql"), "/tmp/capture.bmp"],
+      { timeout: 30_000, killSignal: "SIGKILL" },
       expect.any(Function),
     )
   })
 
   it("surfaces a narrow Quick Look error when no rasterized candidate is produced", async () => {
     vi.resetModules()
-    const execFile = vi.fn((file: string, args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+    const execFile = vi.fn((file: string, args: string[], _options: unknown, callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
       if (file === "/usr/bin/sips" && args[0] === "-g") {
         callback(new Error("probe failed"), "", "probe failed")
         return
@@ -138,6 +149,7 @@ describe("normalizeImageForVision", () => {
     vi.doMock("node:child_process", () => ({ execFile }))
     vi.doMock("node:fs/promises", () => ({
       mkdir: vi.fn().mockResolvedValue(undefined),
+      readFile: vi.fn().mockResolvedValue(Buffer.from("not-image")),
       readdir: vi.fn().mockResolvedValue([]),
       stat: vi.fn(),
     }))
@@ -166,7 +178,7 @@ describe("normalizeImageForVision", () => {
 
   it("falls back to the child-process error message when sips or Quick Look provide no stderr or stdout", async () => {
     vi.resetModules()
-    const execFile = vi.fn((file: string, args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+    const execFile = vi.fn((file: string, args: string[], _options: unknown, callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
       if (file === "/usr/bin/sips" && args[0] === "-g") {
         callback(new Error("probe failed"))
         return
@@ -176,6 +188,7 @@ describe("normalizeImageForVision", () => {
     vi.doMock("node:child_process", () => ({ execFile }))
     vi.doMock("node:fs/promises", () => ({
       mkdir: vi.fn().mockResolvedValue(undefined),
+      readFile: vi.fn().mockResolvedValue(Buffer.from("not-image")),
       readdir: vi.fn().mockResolvedValue([]),
       stat: vi.fn(),
     }))
@@ -202,6 +215,51 @@ describe("normalizeImageForVision", () => {
     ).rejects.toThrow("quick look failed")
   })
 
+  it.each([
+    "hasAlpha: no\nformat: jpeg\npixelHeight: 100\n",
+    "hasAlpha: no\nformat: jpeg\npixelWidth: 100\n",
+  ])("rejects incomplete built-in image dimensions before Quick Look fallback: %s", async (probeOutput) => {
+    vi.resetModules()
+    const execFile = vi.fn((
+      file: string,
+      _args: string[],
+      _options: unknown,
+      callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+    ) => {
+      if (file === "/usr/bin/sips") {
+        callback(null, probeOutput, "")
+        return
+      }
+      callback(new Error("quick look stopped"))
+    })
+    vi.doMock("node:child_process", () => ({ execFile }))
+    vi.doMock("node:fs/promises", () => ({
+      mkdir: vi.fn().mockResolvedValue(undefined),
+      readFile: vi.fn().mockResolvedValue(Buffer.from("not-image")),
+      readdir: vi.fn().mockResolvedValue([]),
+      stat: vi.fn(),
+    }))
+
+    const { normalizeImageForVision: normalizeWithDefaults } = await import("../../../heart/attachments/image-normalize")
+    await expect(normalizeWithDefaults({
+      attachment: {
+        id: "attachment:cli-local-file:missing-dimension",
+        source: "cli-local-file",
+        sourceId: "missing-dimension",
+        kind: "image",
+        displayName: "capture.bmp",
+        mimeType: "image/bmp",
+        byteCount: 9,
+        createdAt: 1,
+        lastSeenAt: 1,
+        sourceData: { path: "/tmp/capture.bmp" },
+      },
+      sourcePath: "/tmp/capture.bmp",
+      agentName: "slugger",
+      agentRoot: "/tmp/agent-root",
+    } as any)).rejects.toThrow("quick look stopped")
+  })
+
   it("passes through already-safe supported images without transcoding", async () => {
     const agentRoot = makeAgentRoot()
     const sourcePath = makeFile(agentRoot, "already-safe.png")
@@ -210,7 +268,12 @@ describe("normalizeImageForVision", () => {
       mimeType: "image/png",
       byteCount: MAX_VLM_IMAGE_BYTES - 1,
     })
-    const probeImage = vi.fn()
+    const probeImage = vi.fn().mockResolvedValue({
+      hasAlpha: false,
+      pixelWidth: 100,
+      pixelHeight: 100,
+      mimeType: "image/png",
+    })
     const encodeVariant = vi.fn()
 
     const result = await normalizeImageForVision({
@@ -224,9 +287,103 @@ describe("normalizeImageForVision", () => {
 
     expect(result.path).toBe(sourcePath)
     expect(result.mimeType).toBe("image/png")
-    expect(result.byteCount).toBe(MAX_VLM_IMAGE_BYTES - 1)
-    expect(probeImage).not.toHaveBeenCalled()
+    expect(result.byteCount).toBe(Buffer.byteLength("file"))
+    expect(probeImage).toHaveBeenCalledOnce()
     expect(encodeVariant).not.toHaveBeenCalled()
+  })
+
+  it("uses a portable image header probe before macOS-only helpers", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourcePath = path.join(agentRoot, "portable.png")
+    const bytes = pngBytes()
+    fs.writeFileSync(sourcePath, bytes)
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: sourcePath,
+      mimeType: "application/octet-stream",
+      byteCount: bytes.length,
+    })
+    const probeImage = vi.fn(async () => { throw new Error("sips unavailable") })
+
+    const result = await normalizeImageForVision({
+      attachment,
+      sourcePath,
+      agentName: "slugger",
+      agentRoot,
+      probeImage,
+    })
+
+    expect(result).toMatchObject({
+      path: sourcePath,
+      mimeType: "image/png",
+      byteCount: bytes.length,
+    })
+    expect(probeImage).not.toHaveBeenCalled()
+  })
+
+  it("uses the actual file size instead of stale attachment metadata", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourcePath = makeFile(agentRoot, "grown.png")
+    fs.truncateSync(sourcePath, MAX_VLM_IMAGE_BYTES + 1)
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: sourcePath,
+      mimeType: "image/png",
+      byteCount: 10,
+    })
+    const encodeVariant = vi.fn(async (input: { outputDir: string }) => {
+      const outputPath = path.join(input.outputDir, "normalized.jpg")
+      fs.mkdirSync(input.outputDir, { recursive: true })
+      fs.writeFileSync(outputPath, "jpeg")
+      return { path: outputPath, mimeType: "image/jpeg", byteCount: 4 }
+    })
+
+    const result = await normalizeImageForVision({
+      attachment,
+      sourcePath,
+      agentName: "slugger",
+      agentRoot,
+      probeImage: vi.fn().mockResolvedValue({
+        hasAlpha: false,
+        pixelWidth: 100,
+        pixelHeight: 100,
+      }),
+      encodeVariant,
+    })
+
+    expect(encodeVariant).toHaveBeenCalled()
+    expect(result.path).toContain("normalized.jpg")
+  })
+
+  it("normalizes small but over-dimension images before provider projection", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourcePath = makeFile(agentRoot, "wide.png")
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: sourcePath,
+      mimeType: "image/png",
+      byteCount: 4,
+    })
+    const probeImage = vi.fn(async ({ sourcePath: candidate }: { sourcePath: string }) => (
+      candidate === sourcePath
+        ? { hasAlpha: false, pixelWidth: 9_000, pixelHeight: 100 }
+        : { hasAlpha: false, pixelWidth: 3_072, pixelHeight: 100 }
+    ))
+    const encodeVariant = vi.fn(async (input: { outputDir: string }) => {
+      const outputPath = path.join(input.outputDir, "resized.jpg")
+      fs.mkdirSync(input.outputDir, { recursive: true })
+      fs.writeFileSync(outputPath, "jpeg")
+      return { path: outputPath, mimeType: "image/jpeg", byteCount: 4 }
+    })
+
+    const result = await normalizeImageForVision({
+      attachment,
+      sourcePath,
+      agentName: "slugger",
+      agentRoot,
+      probeImage,
+      encodeVariant,
+    })
+
+    expect(encodeVariant).toHaveBeenCalled()
+    expect(result.path).toContain("resized.jpg")
   })
 
   it("iterates deterministic jpeg attempts until one fits the transport budget", async () => {
@@ -260,7 +417,7 @@ describe("normalizeImageForVision", () => {
       sourcePath,
       agentName: "slugger",
       agentRoot,
-      probeImage: vi.fn().mockResolvedValue({ hasAlpha: false }),
+      probeImage: vi.fn().mockResolvedValue({ hasAlpha: false, pixelWidth: 100, pixelHeight: 100 }),
       encodeVariant,
     })
 
@@ -270,7 +427,7 @@ describe("normalizeImageForVision", () => {
       { format: "jpeg", maxEdge: 3072, quality: "80" },
     ])
     expect(result.mimeType).toBe("image/jpeg")
-    expect(result.byteCount).toBe(MAX_VLM_IMAGE_BYTES - 500)
+    expect(result.byteCount).toBe(Buffer.byteLength("jpeg"))
   })
 
   it("tries png first for alpha images, then falls back to jpeg when png stays too large", async () => {
@@ -299,7 +456,7 @@ describe("normalizeImageForVision", () => {
       sourcePath,
       agentName: "slugger",
       agentRoot,
-      probeImage: vi.fn().mockResolvedValue({ hasAlpha: true }),
+      probeImage: vi.fn().mockResolvedValue({ hasAlpha: true, pixelWidth: 100, pixelHeight: 100 }),
       encodeVariant,
     })
 
@@ -320,7 +477,7 @@ describe("normalizeImageForVision", () => {
     const probeImage = vi
       .fn()
       .mockRejectedValueOnce(new Error("sips could not read image"))
-      .mockResolvedValueOnce({ hasAlpha: false })
+      .mockResolvedValue({ hasAlpha: false, pixelWidth: 100, pixelHeight: 100 })
     const rasterizeWithQuickLook = vi.fn().mockResolvedValue(rasterizedPath)
     const encodeVariant = vi.fn(async (input: { outputDir: string }) => {
       const outputPath = path.join(input.outputDir, "normalized.jpg")
@@ -371,7 +528,7 @@ describe("normalizeImageForVision", () => {
       sourcePath,
       agentName: "slugger",
       agentRoot,
-      probeImage: vi.fn().mockResolvedValue({ hasAlpha: true }),
+      probeImage: vi.fn().mockResolvedValue({ hasAlpha: true, pixelWidth: 100, pixelHeight: 100 }),
       encodeVariant: vi.fn(async (input: { outputDir: string; targetFormat: string }) => {
         const outputPath = path.join(input.outputDir, `${input.targetFormat}.bin`)
         fs.mkdirSync(input.outputDir, { recursive: true })
@@ -384,7 +541,7 @@ describe("normalizeImageForVision", () => {
     })
 
     expect(result.path).toContain(".bin")
-    expect(result.mimeType).toBeUndefined()
+    expect(result.mimeType).toBe("image/png")
   })
 
   it("treats undefined byte counts as non-fitting and keeps trying later variants", async () => {
@@ -402,7 +559,7 @@ describe("normalizeImageForVision", () => {
       sourcePath,
       agentName: "slugger",
       agentRoot,
-      probeImage: vi.fn().mockResolvedValue({ hasAlpha: false }),
+      probeImage: vi.fn().mockResolvedValue({ hasAlpha: false, pixelWidth: 100, pixelHeight: 100 }),
       encodeVariant: vi.fn(async (input: { outputDir: string }) => {
         attempt += 1
         const outputPath = path.join(input.outputDir, `attempt-${attempt}.jpg`)
@@ -416,7 +573,45 @@ describe("normalizeImageForVision", () => {
     })
 
     expect(attempt).toBe(2)
-    expect(result.byteCount).toBe(MAX_VLM_IMAGE_BYTES - 1)
+    expect(result.byteCount).toBe(Buffer.byteLength("jpeg"))
+  })
+
+  it("rejects variants whose generated bytes cannot be probed", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourcePath = makeFile(agentRoot, "bad-variant-source")
+    const attachment = buildCliLocalFileAttachmentRecord({
+      path: sourcePath,
+      mimeType: "image/tiff",
+      byteCount: MAX_VLM_IMAGE_BYTES + 1,
+    })
+    let probeAttempt = 0
+    let encodeAttempt = 0
+
+    await expect(normalizeImageForVision({
+      attachment,
+      sourcePath,
+      agentName: "slugger",
+      agentRoot,
+      probeImage: vi.fn(async () => {
+        probeAttempt += 1
+        if (probeAttempt === 1) {
+          return { hasAlpha: false, pixelWidth: 100, pixelHeight: 100 }
+        }
+        throw new Error("invalid generated image")
+      }),
+      encodeVariant: vi.fn(async (input: { outputDir: string }) => {
+        encodeAttempt += 1
+        if (encodeAttempt > 1) throw new Error("stop after rejected variant")
+        const outputPath = path.join(input.outputDir, "invalid.jpg")
+        fs.mkdirSync(input.outputDir, { recursive: true })
+        fs.writeFileSync(outputPath, "invalid")
+        return {
+          path: outputPath,
+          mimeType: "image/jpeg",
+          byteCount: 7,
+        }
+      }),
+    })).rejects.toThrow("stop after rejected variant")
   })
 
   it("throws a narrow error when no normalized variant can fit the budget", async () => {
@@ -434,7 +629,7 @@ describe("normalizeImageForVision", () => {
         sourcePath,
         agentName: "slugger",
         agentRoot,
-        probeImage: vi.fn().mockResolvedValue({ hasAlpha: false }),
+        probeImage: vi.fn().mockResolvedValue({ hasAlpha: false, pixelWidth: 100, pixelHeight: 100 }),
         encodeVariant: vi.fn(async (input: { outputDir: string }) => {
           const outputPath = path.join(input.outputDir, "too-big.jpg")
           fs.mkdirSync(input.outputDir, { recursive: true })
@@ -468,7 +663,7 @@ describe("normalizeImageForVision", () => {
         sourcePath,
         agentName: "slugger",
         agentRoot,
-        probeImage: vi.fn().mockResolvedValue({ hasAlpha: false }),
+        probeImage: vi.fn().mockResolvedValue({ hasAlpha: false, pixelWidth: 100, pixelHeight: 100 }),
         encodeVariant: vi.fn(async (input: { outputDir: string }) => {
           const outputPath = path.join(input.outputDir, "too-big.jpg")
           fs.mkdirSync(input.outputDir, { recursive: true })

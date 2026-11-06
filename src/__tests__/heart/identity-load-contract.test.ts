@@ -1,11 +1,7 @@
 /**
  * Structural contract test for `loadAgentConfig()` in `src/heart/identity.ts`.
  *
- * `loadAgentConfig` reads from `getAgentRoot()` with no parameter override,
- * so this file follows the same pattern as the existing `identity.test.ts`:
- * mock `fs` and return the fixture agent.json when `readFileSync` is called
- * on the expected path. This lets us exercise the real function without
- * touching the developer's ~/AgentBundles.
+ * Exercises the real loader against mocked filesystem reads, including explicit owner coordinates, without touching the developer's ~/AgentBundles.
  *
  * Why a separate file from `identity-contract.test.ts`: `vi.mock("fs")` is
  * per-file scoped, and `identity-contract.test.ts` needs real fs for
@@ -110,5 +106,82 @@ describe("loadAgentConfig structural contract", () => {
     resetIdentity()
     const config = loadAgentConfig()
     expect(config.shell).toEqual({ defaultTimeout: 99_000 })
+  })
+})
+
+describe("loadAgentConfig explicit owner", () => {
+  const owner = { agentName: "owner-a", agentRoot: "/mock/bundles/owner-a.ouro" }
+
+  it("reads the initiating root without resolving an ambient agent", async () => {
+    process.argv = ["node", "cli-entry.js"]
+    const fixture = { ...FULL_AGENT_JSON, mcpServers: { owned: { command: "owner-a-mcp" } } }
+    vi.mocked(fs.readFileSync).mockImplementation((file) => {
+      if (String(file) !== path.join(owner.agentRoot, "agent.json")) throw new Error("wrong agent read")
+      return JSON.stringify(fixture)
+    })
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(loadAgentConfig(owner).mcpServers).toEqual(fixture.mcpServers)
+    expect(fs.readFileSync).toHaveBeenCalledExactlyOnceWith(path.join(owner.agentRoot, "agent.json"), "utf-8")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("does not borrow or clear another agent's ambient override", async () => {
+    const { loadAgentConfig, resetIdentity, setAgentConfigOverride } = await import("../../heart/identity")
+    resetIdentity()
+    const other = { ...FULL_AGENT_JSON, mcpServers: { other: { command: "owner-b-mcp" } } }
+    setAgentConfigOverride(other)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(FULL_AGENT_JSON))
+
+    expect(loadAgentConfig(owner).mcpServers).toEqual(FULL_AGENT_JSON.mcpServers)
+    expect(loadAgentConfig()).toBe(other)
+    expect(fs.readFileSync).toHaveBeenCalledExactlyOnceWith(path.join(owner.agentRoot, "agent.json"), "utf-8")
+  })
+
+  it("uses the explicit name for Sanctuary's required paid-turn budget", async () => {
+    process.argv = ["node", "cli-entry.js", "--agent", "other"]
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(FULL_AGENT_JSON))
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+    const sanctuary = { agentName: "sanctuary", agentRoot: "/mock/bundles/sanctuary.ouro" }
+
+    expect(() => loadAgentConfig(sanctuary)).toThrow("must explicitly set")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...FULL_AGENT_JSON, habitPaidTurnsPerDay: 24 }))
+    expect(loadAgentConfig(sanctuary).habitPaidTurnsPerDay).toBe(24)
+  })
+
+  it.each(["missing", "malformed"])("does not fall back to an override after a %s explicit config", async (failure) => {
+    const { loadAgentConfig, resetIdentity, setAgentConfigOverride } = await import("../../heart/identity")
+    resetIdentity()
+    setAgentConfigOverride(FULL_AGENT_JSON)
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      if (failure === "missing") throw new Error("ENOENT")
+      return "{"
+    })
+
+    expect(() => loadAgentConfig(owner)).toThrow()
+    expect(fs.readFileSync).toHaveBeenCalledExactlyOnceWith(path.join(owner.agentRoot, "agent.json"), "utf-8")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(loadAgentConfig()).toBe(FULL_AGENT_JSON)
+  })
+
+  it.each([
+    null,
+    false,
+    {},
+    { agentName: "", agentRoot: "/mock/bundles/owner-a.ouro" },
+    { agentName: 1, agentRoot: "/mock/bundles/owner-a.ouro" },
+    { agentName: "owner-a", agentRoot: "" },
+    { agentName: "owner-a", agentRoot: 1 },
+    { agentName: "owner-a", agentRoot: "relative/owner-a.ouro" },
+  ])("rejects invalid explicit coordinates before config access: %j", async (invalid) => {
+    const { loadAgentConfig, resetIdentity, setAgentConfigOverride } = await import("../../heart/identity")
+    resetIdentity()
+    setAgentConfigOverride(FULL_AGENT_JSON)
+
+    expect(() => Reflect.apply(loadAgentConfig, undefined, [invalid])).toThrow("invalid agent configuration owner")
+    expect(fs.readFileSync).not.toHaveBeenCalled()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 })

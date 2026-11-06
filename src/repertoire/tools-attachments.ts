@@ -4,7 +4,7 @@ import { getAgentName } from "../heart/identity"
 import { readProviderCredentialRecord } from "../heart/provider-credentials"
 import { MINIMAX_PROVIDER_BASE_URL } from "../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../heart/providers/minimax-vlm"
-import { listRecentAttachments } from "../heart/attachments/store"
+import { getAttachment, listRecentAttachments } from "../heart/attachments/store"
 import { materializeAttachment } from "../heart/attachments/materialize"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolDefinition } from "./tools-base"
@@ -94,9 +94,27 @@ function missingPrompt(): string {
   })
 }
 
+function attachmentBytesMissing(tool: string, attachmentId: string): string {
+  return frictionToolResult(tool, {
+    kind: "local_repair",
+    recoverability: "blocked",
+    summary: `Attachment ${attachmentId} is still catalogued but its stored bytes are no longer available.`,
+    signature: `${tool}:attachment-bytes-missing`,
+    suggested_next_actions: [
+      {
+        kind: "message",
+        message: "Tell the person the image expired on this machine and ask them to send it again.",
+      },
+    ],
+  })
+}
+
 function normalizeMaterializeError(tool: string, attachmentId: string, reason: string): string {
   if (reason.startsWith("Attachment not found:")) {
     return attachmentNotFound(tool, attachmentId)
+  }
+  if (reason.startsWith("Attachment bytes are missing or expired:")) {
+    return attachmentBytesMissing(tool, attachmentId)
   }
   if (reason.includes("is not an image")) {
     return frictionToolResult(tool, {
@@ -163,11 +181,17 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const agentName = getAgentName()
       const kind = trimArg(args.kind)
-      const allowed = ctx?.attachmentIds ? new Set(ctx.attachmentIds) : null
-      const attachments = listRecentAttachments(agentName, {
-        kind: kind ? kind as "image" | "audio" | "document" | "binary" | "unknown" : undefined,
-        limit: allowed ? undefined : parseLimit(args.limit),
-      }).filter((attachment) => !allowed || allowed.has(attachment.id)).slice(0, parseLimit(args.limit))
+      const kindFilter = kind ? kind as "image" | "audio" | "document" | "binary" | "unknown" : undefined
+      const limit = parseLimit(args.limit)
+      // Scoped turns resolve their exact ingress ids through the durable
+      // catalog so a session-bound attachment stays reachable after newer
+      // attachments evict it from the bounded recency cache.
+      const attachments = ctx?.attachmentIds
+        ? ctx.attachmentIds.flatMap((attachmentId) => {
+          const attachment = getAttachment(agentName, attachmentId)
+          return attachment && (!kindFilter || attachment.kind === kindFilter) ? [attachment] : []
+        }).slice(0, limit)
+        : listRecentAttachments(agentName, { kind: kindFilter, limit })
       return okToolResult("list_recent_attachments", attachments)
     },
     summaryKeys: ["kind", "limit"],

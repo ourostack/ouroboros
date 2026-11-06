@@ -1044,7 +1044,12 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
   // extraPrefixSections from onPendingDrained still prepend to user message (e.g., private-runtime wakes)
   if (extraPrefixSections.length > 0 && input.messages.length > 0) {
-    input.messages[0] = prependTurnSections(input.messages[0], extraPrefixSections)
+    const originalMessage = input.messages[0]
+    const prefixedMessage = prependTurnSections(originalMessage, extraPrefixSections)
+    input.messages[0] = prefixedMessage
+    if (input.runAgentOptions?.providerUserMessage === originalMessage) {
+      input.runAgentOptions.providerUserMessage = prefixedMessage
+    }
   }
 
   // Append user messages from the inbound turn

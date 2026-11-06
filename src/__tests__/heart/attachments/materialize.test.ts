@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { materializeAttachment } from "../../../heart/attachments/materialize"
-import { cacheRecentAttachment } from "../../../heart/attachments/store"
+import { cacheRecentAttachment, getRecentAttachmentsPath } from "../../../heart/attachments/store"
 import {
   buildBlueBubblesAttachmentRecord,
   persistBlueBubblesAttachmentSource,
@@ -332,5 +332,79 @@ describe("materializeAttachment", () => {
     await expect(
       materializeAttachment("slugger", "attachment:bluebubbles:missing", { agentRoot }),
     ).rejects.toThrow("Attachment not found: attachment:bluebubbles:missing")
+  })
+
+  it("resolves durable attachments the recency cache no longer holds", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourceDir = makeAgentRoot()
+    const filePath = makeFile(sourceDir, "durable.png", "durable-bytes")
+    const record = cacheRecentAttachment(
+      "slugger",
+      buildCliLocalFileAttachmentRecord({ path: filePath, mimeType: "image/png", byteCount: 13 }),
+      agentRoot,
+    )
+    fs.rmSync(getRecentAttachmentsPath("slugger", agentRoot), { force: true })
+
+    const materialized = await materializeAttachment("slugger", record.id, { agentRoot })
+
+    expect(materialized.path).toBe(filePath)
+  })
+
+  it("uses the built-in vision normalizer when no override is supplied", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourceDir = makeAgentRoot()
+    const filePath = makeFile(sourceDir, "default-normalizer.png", "default-normalizer-bytes")
+    const normalizedPath = makeFile(sourceDir, "default-normalizer.jpg", "normalized-bytes")
+    const record = cacheRecentAttachment(
+      "slugger",
+      buildCliLocalFileAttachmentRecord({ path: filePath, mimeType: "image/png", byteCount: 23 }),
+      agentRoot,
+    )
+    vi.resetModules()
+    vi.doMock("../../../heart/attachments/image-normalize", () => ({
+      MAX_VLM_IMAGE_BYTES: 5 * 1024 * 1024,
+      normalizeImageForVision: vi.fn().mockResolvedValue({ path: normalizedPath, mimeType: "image/jpeg", byteCount: 16 }),
+    }))
+    try {
+      const { materializeAttachment: materializeWithDefaults } = await import("../../../heart/attachments/materialize")
+
+      await expect(materializeWithDefaults("slugger", record.id, { agentRoot, variant: "vision_safe" })).resolves.toMatchObject({
+        variant: "vision_safe",
+        path: normalizedPath,
+        mimeType: "image/jpeg",
+      })
+    } finally {
+      vi.doUnmock("../../../heart/attachments/image-normalize")
+      vi.resetModules()
+    }
+  })
+
+  it("rethrows materialization failures that are not missing stored bytes", async () => {
+    const agentRoot = makeAgentRoot()
+    const record = cacheRecentAttachment(
+      "slugger",
+      { ...buildCliLocalFileAttachmentRecord({ path: "/tmp/pathless.png", mimeType: "image/png" }), sourceData: { path: "   " } },
+      agentRoot,
+    )
+
+    await expect(
+      materializeAttachment("slugger", record.id, { agentRoot }),
+    ).rejects.toThrow("CLI local attachment path is required")
+  })
+
+  it("reports an explicit missing-artifact state when the recorded bytes are gone", async () => {
+    const agentRoot = makeAgentRoot()
+    const sourceDir = makeAgentRoot()
+    const filePath = makeFile(sourceDir, "expired.png", "expired-bytes")
+    const record = cacheRecentAttachment(
+      "slugger",
+      buildCliLocalFileAttachmentRecord({ path: filePath, mimeType: "image/png", byteCount: 13 }),
+      agentRoot,
+    )
+    fs.rmSync(filePath, { force: true })
+
+    await expect(
+      materializeAttachment("slugger", record.id, { agentRoot }),
+    ).rejects.toThrow(`Attachment bytes are missing or expired: ${record.id}`)
   })
 })

@@ -5008,6 +5008,30 @@ describe("daemon command plane branches", () => {
     await stopping
   })
 
+  it.each(["success", "failure"] as const)("drains workers while the MCP owner shutdown is still pending: %s", async (result) => {
+    const { daemon, processManager, senseManager } = make(tmpSocketPath("daemon-stop-mcp-drain"))
+    const mcp = await import("../../../repertoire/mcp-manager")
+    const drain = createDeferred<void>()
+    const shutdown = vi.spyOn(mcp, "shutdownSharedMcpManager").mockImplementation(async () => {
+      await drain.promise
+      if (result === "failure") throw new Error("MCP owner did not drain")
+    })
+    const stopping = daemon.stop().then(() => null, (error: unknown) => error)
+    try {
+      await Promise.resolve()
+      expect(processManager.stopAll).toHaveBeenCalledOnce()
+      expect(senseManager.stopAll).toHaveBeenCalledOnce()
+      drain.resolve()
+      const error = await stopping
+      if (result === "failure") expect(error).toMatchObject({ message: "daemon shutdown could not drain 1 managed worker group(s)" })
+      else expect(error).toBeNull()
+    } finally {
+      drain.resolve()
+      await stopping
+      shutdown.mockRestore()
+    }
+  })
+
   it("cleans up after both worker groups before surfacing a drain failure", async () => {
     const socketPath = tmpSocketPath("daemon-stop-drain-failure")
     const { daemon, processManager, senseManager } = make(socketPath)

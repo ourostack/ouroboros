@@ -1,3 +1,4 @@
+import type OpenAI from "openai"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
@@ -191,6 +192,80 @@ describe("runAgent prompt budget integration", () => {
     expect(rendered).not.toContain("old history")
     expect(rendered).not.toContain("old answer")
     expect(rendered.length).toBeLessThan(originalLength)
+  })
+
+  it("preserves canonical history and tool pairs while budgeting the provider request", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "old system replaced by buildSystem" },
+      { role: "user", content: "historical request " + "old ".repeat(180) },
+      { role: "assistant", content: null, tool_calls: [{ id: "historical-read", type: "function", function: { name: "read_file", arguments: '{"path":"history.txt"}' } }] },
+      { role: "tool", tool_call_id: "historical-read", content: "historical receipt" },
+      { role: "assistant", content: "historical answer " + "old ".repeat(180) },
+      { role: "user", content: "current question must be sent" },
+    ]
+    const original = messages.slice(1)
+    const originalValues = structuredClone(original)
+    const { runAgent } = await import("../../heart/core")
+    const { estimatePromptBudgetTokens } = await import("../../mind/prompt-budget")
+
+    await runAgent(messages, callbacks(), "cli", undefined, { toolChoiceRequired: true })
+
+    expect(mockCreate).toHaveBeenCalledOnce()
+    const providerMessages = mockCreate.mock.calls[0]![0].messages
+    expect(JSON.stringify(providerMessages)).toContain("current question must be sent")
+    expect(JSON.stringify(providerMessages)).not.toMatch(/historical request|historical answer/)
+    expect(estimatePromptBudgetTokens(providerMessages)).toBeLessThanOrEqual(84)
+    for (const message of original) expect(messages).toContain(message)
+    expect(messages.filter((message) => original.includes(message))).toEqual(originalValues)
+  })
+
+  it("shrinks overflow retry without rewriting canonical history or required evidence", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      name: "testagent",
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.7" },
+      context: { maxTokens: 300, contextMargin: 20 },
+    })
+    const payloads: OpenAI.ChatCompletionMessageParam[][] = []
+    mockCreate
+      .mockImplementationOnce((request: { messages: OpenAI.ChatCompletionMessageParam[] }) => {
+        payloads.push([...request.messages])
+        throw Object.assign(new Error("context_length_exceeded"), { code: "context_length_exceeded" })
+      })
+      .mockImplementationOnce((request: { messages: OpenAI.ChatCompletionMessageParam[] }) => {
+        payloads.push([...request.messages])
+        return makeStream(settleChunks("done"))
+      })
+    const predecessor = Object.freeze({ role: "system" as const, content: "verified predecessor evidence" })
+    const current = Object.freeze({ role: "user" as const, content: "current request" })
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "old system" },
+      { role: "user", content: "historical request" },
+      { role: "assistant", content: null, tool_calls: [{ id: "historical-read", type: "function", function: { name: "read_file", arguments: '{"path":"history.txt"}' } }] },
+      { role: "tool", tool_call_id: "historical-read", content: "historical receipt" },
+      { role: "assistant", content: "historical answer" },
+      predecessor,
+      current,
+    ]
+    const original = messages.filter((message) => message.role !== "system")
+    const originalValues = structuredClone(original)
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(messages, callbacks(), "bluebubbles", undefined, {
+      skipKeptNotes: true,
+      requiredPromptEvidence: { currentUserMessage: current, verifiedPredecessorMessage: predecessor },
+    })
+
+    expect(payloads).toHaveLength(2)
+    expect(JSON.stringify(payloads[0])).toContain("historical receipt")
+    expect(JSON.stringify(payloads[1]).length).toBeLessThan(JSON.stringify(payloads[0]).length)
+    for (const payload of payloads) {
+      expect(payload.filter((message) => message === current)).toHaveLength(1)
+      expect(payload.filter((message) => message === predecessor)).toHaveLength(1)
+    }
+    for (const message of original) expect(messages).toContain(message)
+    expect(messages.filter((message) => original.includes(message))).toEqual(originalValues)
   })
 
   it("rejects an oversized required floor before kept-note judging or the main provider", async () => {

@@ -2,7 +2,15 @@ import { randomUUID } from "node:crypto"
 import * as readline from "node:readline"
 import type { Readable, Writable } from "node:stream"
 
-import { SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
+import {
+  InlinePromptImageRejection,
+  prepareInlinePromptImages,
+  type InlinePromptImage,
+  type InlinePromptImageTransaction,
+} from "../heart/attachments/inline-image"
+import { imageValidationAvailable } from "../heart/attachments/image-normalize"
+import { renderAttachmentBlock } from "../heart/attachments/render"
+import { FrontendRequestError, SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -41,12 +49,19 @@ export interface AcpServerOptions {
 }
 
 export function createAcpServer(options: AcpServerOptions): AcpServer {
+  // Observe-only passes run tool-free and ephemeral, so a stored attachment id
+  // would be unresolvable for that turn. Image prompts belong to full turns.
+  const toolsEnabled = options.disableTools !== true
   const sessions = new Set<string>()
   const activePrompts = new Map<string, {
     rpcId: number | string
     turnId: string
     resolve: (stopReason: string) => void
     reject: (error: Error) => void
+    controller: AbortController
+    cancelled: boolean
+    submitted: boolean
+    admitted: boolean
   }>()
   const pendingOutbound = new Map<string, {
     sessionId: string
@@ -79,7 +94,10 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
         removeEventListener = value.onEvent(handleFrontendEvent)
         removeCloseListener = value.onClose((error) => {
           const failure = error ?? new Error("frontend provider disconnected")
-          for (const prompt of activePrompts.values()) prompt.reject(failure)
+          for (const prompt of activePrompts.values()) {
+            prompt.controller.abort(failure)
+            prompt.reject(failure)
+          }
           pendingOutbound.clear()
         })
         return value
@@ -91,6 +109,20 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
   async function subscribe(sessionId: string): Promise<void> {
     await (await client()).request("session.subscribe", { sessionKey: sessionId })
     sessions.add(sessionId)
+  }
+
+  async function supportsImagePrompts(): Promise<boolean> {
+    if (!toolsEnabled) return false
+    try {
+      const capabilities = await (await client()).request("agent.prompt-capabilities", { agent: options.agent, channel: "mcp" })
+      return capabilities?.image === true && imageValidationAvailable()
+    } catch {
+      emitNervesEvent({
+        level: "warn", component: "senses", event: "senses.acp_image_capability_unavailable",
+        message: "daemon model capability is unavailable; image prompts remain disabled",
+      })
+      return false
+    }
   }
 
   function sessionUpdate(sessionId: string, update: Record<string, unknown>): void {
@@ -163,6 +195,9 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (!sessions.has(sessionId)) return
     const turnId = typeof event.turnId === "string" ? event.turnId : ""
     const active = activePrompts.get(sessionId)
+    if (active?.turnId === turnId && ["turn.started", "turn.completed", "turn.cancelled", "turn.failed"].includes(event.event)) {
+      active.admitted = true
+    }
     if (event.event === "text.delta" && typeof event.text === "string") {
       sessionUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
@@ -204,13 +239,69 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     return value.trim()
   }
 
-  function promptText(value: unknown): string {
+  /**
+   * Parse an ACP v1 `ContentBlock[]` deterministically.
+   *
+   * Text is required only when the prompt carries no accepted image. Unknown,
+   * unsupported, or malformed blocks are rejected instead of being dropped, and
+   * accepted images land in the attachment store before any turn can start.
+   */
+  async function promptContent(value: unknown, signal: AbortSignal): Promise<{ message: string; attachmentIds: string[]; transaction?: InlinePromptImageTransaction }> {
     if (!Array.isArray(value)) throw new AcpProtocolError(-32602, "prompt must be an array")
-    const text = value
-      .flatMap((part) => part?.type === "text" && typeof part.text === "string" ? [part.text] : [])
-      .join("")
-    if (!text.trim()) throw new AcpProtocolError(-32602, "prompt must contain text")
-    return text
+    const textParts: string[] = []
+    const images: InlinePromptImage[] = []
+    for (const part of value) {
+      if (!part || typeof part !== "object" || Array.isArray(part)) {
+        throw new AcpProtocolError(-32602, "prompt content block must be an object")
+      }
+      const block = part as Record<string, unknown>
+      if (block.type === "text") {
+        if (typeof block.text !== "string") throw new AcpProtocolError(-32602, "text content block must include text")
+        textParts.push(block.text)
+        continue
+      }
+      if (block.type === "image") {
+        if (!toolsEnabled) {
+          throw new AcpProtocolError(-32602, "image prompt content is unavailable in observe-only mode")
+        }
+        if (typeof block.data !== "string" || typeof block.mimeType !== "string") {
+          throw new AcpProtocolError(-32602, "image content block must include data and mimeType")
+        }
+        images.push({
+          data: block.data,
+          mimeType: block.mimeType,
+          ...(typeof block.name === "string" ? { name: block.name } : {}),
+        })
+        continue
+      }
+      throw new AcpProtocolError(
+        -32602,
+        `unsupported prompt content block: ${typeof block.type === "string" ? block.type : "missing type"}`,
+      )
+    }
+
+    const text = textParts.join("")
+    if (images.length === 0) {
+      if (!text.trim()) throw new AcpProtocolError(-32602, "prompt must contain text")
+      return { message: text, attachmentIds: [] }
+    }
+
+    try {
+      if (!(await supportsImagePrompts())) {
+        throw new InlinePromptImageRejection("active model and image decoder must support image prompts")
+      }
+      signal.throwIfAborted()
+      const transaction = await prepareInlinePromptImages(options.agent, images, { signal })
+      const attachments = transaction.attachments
+      return {
+        message: [text.trim(), renderAttachmentBlock(attachments)].filter(Boolean).join("\n\n"),
+        attachmentIds: attachments.map((attachment) => attachment.id),
+        transaction,
+      }
+    } catch (error) {
+      if (error instanceof InlinePromptImageRejection) throw new AcpProtocolError(-32602, error.message)
+      throw new AcpProtocolError(-32603, error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function handleResponse(response: JsonRpcRequest): Promise<void> {
@@ -235,7 +326,13 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (method === "initialize") {
       if (id === undefined) return
       if (requestParams.protocolVersion !== 1) throw new AcpProtocolError(-32602, "protocolVersion must be 1")
-      result(id, { protocolVersion: 1 })
+      result(id, {
+        protocolVersion: 1,
+        agentCapabilities: {
+          loadSession: toolsEnabled,
+          promptCapabilities: { image: await supportsImagePrompts() },
+        },
+      })
       return
     }
 
@@ -279,21 +376,47 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       const sessionId = requiredString(requestParams.sessionId, "sessionId")
       if (!sessions.has(sessionId)) throw new AcpProtocolError(-32001, `unknown session: ${sessionId}`)
       if (activePrompts.has(sessionId)) throw new AcpProtocolError(-32002, "session already has an active prompt")
-      const message = promptText(requestParams.prompt)
       const turnId = randomUUID()
       const completion = Promise.withResolvers<string>()
-      activePrompts.set(sessionId, { rpcId: id, turnId, resolve: completion.resolve, reject: completion.reject })
+      // Disconnection can settle the event promise while admission itself is still pending.
+      void completion.promise.catch(() => undefined)
+      const active = {
+        rpcId: id, turnId, resolve: completion.resolve, reject: completion.reject,
+        controller: new AbortController(), cancelled: false, submitted: false, admitted: false,
+      }
+      activePrompts.set(sessionId, active)
+      let transaction: InlinePromptImageTransaction | undefined
       try {
-        await (await client()).request(options.disableTools ? "turn.start.observe-only" : "turn.start", {
+        const prompt = await promptContent(requestParams.prompt, active.controller.signal)
+        transaction = prompt.transaction
+        const frontend = await client()
+        active.controller.signal.throwIfAborted()
+        active.submitted = true
+        const admission = await frontend.request(options.disableTools ? "turn.start.observe-only" : "turn.start", {
           turnId,
           agent: options.agent,
           friendId: options.friendId,
           channel: "mcp",
           sessionKey: sessionId,
-          message,
+          message: prompt.message,
+          attachmentIds: prompt.attachmentIds,
+          ...(prompt.attachmentIds.length > 0 ? { requireImageSupport: true } : {}),
           ...(options.runtimeMcpServers ? { runtimeMcpServers: options.runtimeMcpServers } : {}),
         })
+        if (admission?.accepted !== true) throw new Error("frontend did not confirm turn admission")
+        active.admitted = true
+        await transaction?.commit()
+        transaction = undefined
         result(id, { stopReason: await completion.promise })
+      } catch (error) {
+        if (!active.admitted && (!active.submitted || (error instanceof FrontendRequestError && error.admissionRejected))) {
+          await transaction?.rollback()
+        } else {
+          // A transport failure is not evidence of rejection. Retain anything the daemon may have admitted.
+          await transaction?.commit()
+        }
+        if (active.cancelled && !active.submitted) result(id, { stopReason: "cancelled" })
+        else throw error
       } finally {
         activePrompts.delete(sessionId)
       }
@@ -303,7 +426,11 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     if (method === "session/cancel") {
       const sessionId = requiredString(requestParams.sessionId, "sessionId")
       const active = activePrompts.get(sessionId)
-      if (active) await (await client()).request("turn.cancel", { turnId: active.turnId })
+      if (active) {
+        active.cancelled = true
+        active.controller.abort()
+        if (active.submitted) await (await client()).request("turn.cancel", { turnId: active.turnId })
+      }
       return
     }
 
@@ -357,7 +484,11 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       frontendClient?.close()
       frontendClient = null
       clientPromise = null
-      for (const prompt of activePrompts.values()) prompt.reject(new Error("ACP server stopped"))
+      for (const prompt of activePrompts.values()) {
+        const failure = new Error("ACP server stopped")
+        prompt.controller.abort(failure)
+        prompt.reject(failure)
+      }
       activePrompts.clear()
       pendingOutbound.clear()
       sessions.clear()

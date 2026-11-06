@@ -260,6 +260,8 @@ The whole system is designed so the agent *owns* its rhythms without forcing eve
 
 Attachments are first-class across senses. Every attachment should remain reachable via a stable `attachment:<source>:<id>` handle, and image normalization should produce a VLM-safe variant without hiding the original artifact.
 
+ACP image prompts require positive native-vision support from the daemon's active model and an installed ImageMagick 7 (`magick`) decoder. Image capability is withheld if the decoder is unavailable; ordinary text and other transports keep their existing behavior. Each prompt may contain up to four PNG, JPEG, GIF, or WebP images sharing an 8 MiB decoded-byte budget. The complete prompt is validated and every image is fully decoded in memory before attachment storage; images are never silently replaced with a text-only turn. Decoding rejects warnings and enforces the image-dimension and memory limits without a disk cache. Pending uploads retain a cross-process ingress lease through admission. Confirmed rejection removes only new data, while accepted, reused, or transport-uncertain data is retained.
+
 ## Connecting With Dev Tools
 
 Agents can talk to developer tools like Claude Code and Codex through the MCP bridge. This is how you stay present in a human's coding workflow without them needing to switch to `ouro chat`.

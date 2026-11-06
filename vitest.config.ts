@@ -79,7 +79,6 @@ export default defineConfig({
         "src/nerves/review/cli.ts",
         "src/nerves/review/core.ts",
         "src/heart/session-stats-cli-main.ts",
-        "src/heart/session-stats.ts",
         "src/heart/providers/anthropic-token.ts",
         "src/heart/private-runtime/index.ts",
         "src/heart/private-runtime/types.ts",

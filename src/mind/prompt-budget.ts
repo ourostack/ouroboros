@@ -29,6 +29,7 @@ export interface PromptBudgetTruncation {
 export interface PromptBudgetInput {
   messages: OpenAI.ChatCompletionMessageParam[]
   requiredPromptEvidence?: RequiredPromptEvidence
+  requiredProviderUserMessage?: OpenAI.ChatCompletionMessageParam
   provider: string
   model: string
   contextWindowTokens?: number | null
@@ -77,7 +78,7 @@ interface PromptBudgetItem {
   messages: OpenAI.ChatCompletionMessageParam[]
   originalMessageCount: number
   compacted?: boolean
-  required?: "current-user" | "verified-predecessor"
+  required?: "current-user" | "verified-predecessor" | "provider-user"
 }
 
 function contentCharacters(content: unknown): number {
@@ -152,7 +153,19 @@ function cloneMessage(message: OpenAI.ChatCompletionMessageParam): OpenAI.ChatCo
 
 function requiredMessagesByIdentity(input: PromptBudgetInput): OpenAI.ChatCompletionMessageParam[] {
   const evidence = input.requiredPromptEvidence
-  if (!evidence) return []
+  const providerUser = input.requiredProviderUserMessage
+  if (providerUser) {
+    if (providerUser.role !== "user") {
+      throw new Error("required provider user message must have role=user")
+    }
+    const providerMatches = input.messages.filter((message) => message === providerUser)
+    if (providerMatches.length !== 1) {
+      throw new Error(providerMatches.length === 0
+        ? "required provider user message is not present by identity"
+        : "required provider user message must appear exactly once by identity")
+    }
+  }
+  if (!evidence) return providerUser ? [providerUser] : []
   const current = evidence.currentUserMessage
   if (current.role !== "user") {
     throw new Error("required current user message must have role=user")
@@ -179,7 +192,11 @@ function requiredMessagesByIdentity(input: PromptBudgetInput): OpenAI.ChatComple
       throw new Error("required verified predecessor message must be immediately before the current user message")
     }
   }
-  return input.messages.filter((message) => message === current || message === predecessor)
+  return input.messages.filter((message) => (
+    message === current
+    || message === predecessor
+    || (providerUser !== current && message === providerUser)
+  ))
 }
 
 function cloneUnlessRequired(
@@ -316,11 +333,24 @@ function nonSystemSourceFor(messages: OpenAI.ChatCompletionMessageParam[]): Prom
 function buildPromptBudgetItems(
   messages: OpenAI.ChatCompletionMessageParam[],
   requiredPromptEvidence?: RequiredPromptEvidence,
+  requiredProviderUserMessage?: OpenAI.ChatCompletionMessageParam,
 ): PromptBudgetItem[] {
   const rawItems: PromptBudgetItem[] = []
   let index = 0
   while (index < messages.length) {
     const message = messages[index]
+    if (message === requiredProviderUserMessage && message !== requiredPromptEvidence?.currentUserMessage) {
+      rawItems.push({
+        id: `required:${index}:provider-user`,
+        priority: 1,
+        source: "current-user-message",
+        messages: [message],
+        originalMessageCount: 1,
+        required: "provider-user",
+      })
+      index += 1
+      continue
+    }
     if (message === requiredPromptEvidence?.currentUserMessage) {
       rawItems.push({
         id: `required:${index}:current`,
@@ -522,7 +552,7 @@ export function applyPromptBudget(input: PromptBudgetInput): PromptBudgetResult 
     return result
   }
 
-  let items = buildPromptBudgetItems(input.messages, input.requiredPromptEvidence)
+  let items = buildPromptBudgetItems(input.messages, input.requiredPromptEvidence, input.requiredProviderUserMessage)
 
   for (const priority of [8, 7, 6, 5, 4, 3] as const) {
     if (totalItemTokens(items) <= budget.inputTokenLimit) break

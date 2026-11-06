@@ -31,7 +31,10 @@ interface MockClient {
 
 let clientFactory: () => MockClient
 
-function createMockClient(tools: McpToolInfo[] = [], shouldFailConnect = false): MockClient {
+function createMockClient(
+  tools: McpToolInfo[] = ["get_items", "send_mail", "missing"].map((name) => ({ name, description: name, inputSchema: {} })),
+  shouldFailConnect = false,
+): MockClient {
   let closeCallback: (() => void) | null = null
   let connected = !shouldFailConnect
   return {
@@ -75,7 +78,19 @@ vi.mock("../../repertoire/mcp-client", () => ({
   },
 }))
 
-import { McpManager } from "../../repertoire/mcp-manager"
+import { McpManager, type McpTurnView } from "../../repertoire/mcp-manager"
+import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
+
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/test.ouro" })
+
+function fixtureBinding(view: McpTurnView | null, server: string, rawName: string) {
+  if (!view) throw new Error("MCP fixture startup did not produce a view")
+  const definition = mcpToolsAsDefinitions(view).find((candidate) =>
+    candidate.mcpBinding?.server === server && candidate.mcpBinding.rawName === rawName,
+  )
+  if (!definition?.mcpBinding) throw new Error(`missing MCP fixture binding: ${server}/${rawName}`)
+  return definition.mcpBinding
+}
 
 describe("McpManager", () => {
   let clientInstances: MockClient[]
@@ -99,7 +114,7 @@ describe("McpManager", () => {
     it("spawns clients for each server in config", async () => {
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
         mail: { command: "mail-server", args: ["--port", "3000"] },
       })
@@ -112,7 +127,7 @@ describe("McpManager", () => {
     it("handles empty config (no servers)", async () => {
       const manager = new McpManager()
 
-      await manager.start({})
+      await manager.start(OWNER, {})
 
       expect(clientInstances).toHaveLength(0)
     })
@@ -128,7 +143,7 @@ describe("McpManager", () => {
       const manager = new McpManager()
 
       // Should not throw, should log the error
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
@@ -148,7 +163,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         failing: { command: "bad-server" },
         working: { command: "good-server" },
       })
@@ -173,12 +188,12 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
         mail: { command: "mail-server" },
       })
 
-      const allTools = manager.listAllTools()
+      const allTools = manager.listAllTools(OWNER)
 
       expect(allTools).toHaveLength(2)
       expect(allTools[0].server).toBe("ado")
@@ -194,7 +209,7 @@ describe("McpManager", () => {
     it("returns empty array when no servers configured", () => {
       const manager = new McpManager()
 
-      const allTools = manager.listAllTools()
+      const allTools = manager.listAllTools(OWNER)
       expect(allTools).toEqual([])
     })
   })
@@ -216,12 +231,12 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
         mail: { command: "mail-server" },
       })
 
-      const result = await manager.callTool("mail", "send_mail", { to: "test@test.com" })
+      const result = await manager.callTool(fixtureBinding(view, "mail", "send_mail"), { to: "test@test.com" }, OWNER)
 
       expect(result).toEqual({
         content: [{ type: "text", text: "mail result" }],
@@ -232,11 +247,14 @@ describe("McpManager", () => {
     it("returns error for unknown server", async () => {
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      await expect(manager.callTool("unknown", "tool", {})).rejects.toThrow(/unknown server/i)
+      await expect(manager.callTool({
+        ...fixtureBinding(view, "ado", "get_items"), server: "unknown",
+      }, {}, OWNER)).rejects.toThrow(/stale|unavailable/i)
+      expect(clientInstances[0].callTool).not.toHaveBeenCalled()
     })
 
     it("returns error for disconnected server", async () => {
@@ -249,11 +267,11 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      await expect(manager.callTool("ado", "get_items", {})).rejects.toThrow(/disconnected/i)
+      await expect(manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER)).rejects.toThrow(/disconnected/i)
     })
 
     it("reconnects a stale disconnected transport before calling a tool", async () => {
@@ -270,11 +288,11 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      const result = await manager.callTool("ado", "get_items", {})
+      const result = await manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER)
 
       expect(result.content[0].text).toBe("result")
       expect(clientInstances).toHaveLength(2)
@@ -283,7 +301,7 @@ describe("McpManager", () => {
       expect(nervesEvents.some((e) => e.event === "mcp.transport_recovery")).toBe(true)
     })
 
-    it("reconnects and retries once after a transport-level call failure", async () => {
+    it("reconnects for later calls without replaying a transport-level call failure", async () => {
       let clientIdx = 0
       clientFactory = () => {
         const client = createMockClient()
@@ -297,19 +315,24 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      const result = await manager.callTool("ado", "get_items", { q: "x" })
+      const binding = fixtureBinding(view, "ado", "get_items")
+      await expect(manager.callTool(binding, { q: "x" }, OWNER)).rejects.toThrow("Transport closed")
+      await manager.validateToolBinding(binding, OWNER)
 
-      expect(result.content[0].text).toBe("result")
       expect(clientInstances).toHaveLength(2)
       expect(clientInstances[0].shutdown).toHaveBeenCalled()
-      expect(clientInstances[1].callTool).toHaveBeenCalledWith("get_items", { q: "x" })
+      expect(clientInstances[0].callTool).toHaveBeenCalledExactlyOnceWith("get_items", { q: "x" })
+      expect(clientInstances[1].callTool).not.toHaveBeenCalled()
+      const result = await manager.callTool(binding, { q: "fresh request" }, OWNER)
+      expect(result.content[0].text).toBe("result")
+      expect(clientInstances[1].callTool).toHaveBeenCalledExactlyOnceWith("get_items", { q: "fresh request" })
     })
 
-    it("reports when transport recovery cannot reconnect after a call failure", async () => {
+    it("preserves the started call's failure when transport recovery cannot reconnect", async () => {
       let clientIdx = 0
       clientFactory = () => {
         const client = createMockClient()
@@ -325,13 +348,15 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      await expect(manager.callTool("ado", "get_items", {})).rejects.toThrow(
-        'Server "ado" is disconnected after recovery: Transport closed',
+      await expect(manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER)).rejects.toThrow(
+        "Transport closed",
       )
+      await manager.shutdown()
+      expect(clientInstances[1].callTool).not.toHaveBeenCalled()
     })
 
     it("recovers after a non-Error transport-level call failure", async () => {
@@ -348,14 +373,15 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      const result = await manager.callTool("ado", "get_items", {})
+      await expect(manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER)).rejects.toBe("transport closed as string")
+      await manager.validateToolBinding(fixtureBinding(view, "ado", "get_items"), OWNER)
 
-      expect(result.content[0].text).toBe("result")
       expect(clientInstances).toHaveLength(2)
+      expect(clientInstances[1].callTool).not.toHaveBeenCalled()
     })
 
     it("does not retry application-level MCP tool errors", async () => {
@@ -368,11 +394,11 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      const view = await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
-      await expect(manager.callTool("ado", "missing", {})).rejects.toThrow("Method not found")
+      await expect(manager.callTool(fixtureBinding(view, "ado", "missing"), {}, OWNER)).rejects.toThrow("Method not found")
       expect(clientInstances).toHaveLength(1)
     })
   })
@@ -386,9 +412,9 @@ describe("McpManager", () => {
       }
 
       const manager = new McpManager()
-      await manager.start({ ado: { command: "ado-server" } })
+      await manager.start(OWNER, { ado: { command: "ado-server" } })
 
-      const results = await manager.runCanaries()
+      const results = await manager.runCanaries(OWNER)
 
       expect(results).toEqual([{ server: "ado", ok: true, detail: "1 tools listed" }])
       expect(clientInstances[0].refreshTools).toHaveBeenCalled()
@@ -407,9 +433,9 @@ describe("McpManager", () => {
       }
 
       const manager = new McpManager()
-      await manager.start({ ado: { command: "ado-server" } })
+      await manager.start(OWNER, { ado: { command: "ado-server" } })
 
-      const results = await manager.runCanaries()
+      const results = await manager.runCanaries(OWNER)
 
       expect(results).toEqual([{ server: "ado", ok: true, detail: "1 tools listed" }])
       expect(clientInstances).toHaveLength(2)
@@ -425,9 +451,9 @@ describe("McpManager", () => {
       }
 
       const manager = new McpManager()
-      await manager.start({ ado: { command: "ado-server" } })
+      await manager.start(OWNER, { ado: { command: "ado-server" } })
 
-      const results = await manager.runCanaries()
+      const results = await manager.runCanaries(OWNER)
 
       expect(results).toEqual([{ server: "ado", ok: false, detail: "disconnected after recovery attempt" }])
       expect(clientInstances).toHaveLength(2)
@@ -442,9 +468,9 @@ describe("McpManager", () => {
       }
 
       const manager = new McpManager()
-      await manager.start({ ado: { command: "ado-server" } })
+      await manager.start(OWNER, { ado: { command: "ado-server" } })
 
-      const results = await manager.runCanaries()
+      const results = await manager.runCanaries(OWNER)
 
       expect(results).toEqual([{ server: "ado", ok: false, detail: "Transport closed during refresh" }])
       expect(clientInstances).toHaveLength(2)
@@ -460,9 +486,9 @@ describe("McpManager", () => {
       }
 
       const manager = new McpManager()
-      await manager.start({ ado: { command: "ado-server" } })
+      await manager.start(OWNER, { ado: { command: "ado-server" } })
 
-      const results = await manager.runCanaries()
+      const results = await manager.runCanaries(OWNER)
 
       expect(results).toEqual([{ server: "ado", ok: false, detail: "plain refresh failure" }])
       expect(clientInstances).toHaveLength(1)
@@ -475,7 +501,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
@@ -505,7 +531,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
@@ -528,20 +554,20 @@ describe("McpManager", () => {
     it("shuts down all clients", async () => {
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
         mail: { command: "mail-server" },
       })
 
-      manager.shutdown()
+      await manager.shutdown()
 
       expect(clientInstances[0].shutdown).toHaveBeenCalled()
       expect(clientInstances[1].shutdown).toHaveBeenCalled()
     })
 
-    it("is a no-op when no servers are started", () => {
+    it("is a no-op when no servers are started", async () => {
       const manager = new McpManager()
-      manager.shutdown()
+      await manager.shutdown()
       expect(clientInstances).toHaveLength(0)
     })
   })
@@ -552,7 +578,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         liteapi: {
           command: "liteapi-server",
           env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
@@ -569,7 +595,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         liteapi: {
           command: "liteapi-server",
           env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
@@ -586,7 +612,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         liteapi: {
           command: "liteapi-server",
           env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
@@ -604,7 +630,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         liteapi: {
           command: "liteapi-server",
           env: { LITEAPI_KEY: "vault:liteapi.travel/apiKey" },
@@ -620,7 +646,7 @@ describe("McpManager", () => {
     it("passes through non-vault env values unchanged", async () => {
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         simple: {
           command: "simple-server",
           env: { PLAIN_KEY: "just-a-value" },
@@ -637,7 +663,7 @@ describe("McpManager", () => {
 
       const manager = new McpManager()
 
-      await manager.start({
+      await manager.start(OWNER, {
         ado: { command: "ado-server" },
       })
 
@@ -645,7 +671,7 @@ describe("McpManager", () => {
       const initialCount = clientInstances.length
 
       // Shutdown sets shuttingDown flag, then trigger close callback to test the guard
-      manager.shutdown()
+      await manager.shutdown()
       firstClient._triggerClose()
 
       await vi.advanceTimersByTimeAsync(1500)

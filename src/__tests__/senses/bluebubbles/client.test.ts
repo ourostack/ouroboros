@@ -2217,6 +2217,10 @@ describe("BlueBubbles client", () => {
   })
 
   it("marks repaired non-balloon messages as no longer requiring repair without changing their text", async () => {
+    const jpegBytes = Buffer.from([
+      0xff, 0xd8,
+      0xff, 0xc0, 0x00, 0x07, 0x08, 0x00, 0x01, 0x00, 0x01,
+    ])
     global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
@@ -2252,7 +2256,7 @@ describe("BlueBubbles client", () => {
         ),
       )
       .mockResolvedValueOnce(
-        new Response(Buffer.from("image-bytes"), {
+        new Response(jpegBytes, {
           status: 200,
           headers: { "content-type": "image/jpeg" },
         }),
@@ -2301,7 +2305,7 @@ describe("BlueBubbles client", () => {
           {
             type: "image_url",
             image_url: {
-              url: `data:image/jpeg;base64,${Buffer.from("image-bytes").toString("base64")}`,
+              url: `data:image/jpeg;base64,${jpegBytes.toString("base64")}`,
               detail: "auto",
             },
           },
