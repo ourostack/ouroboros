@@ -11,7 +11,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
+import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -25,12 +25,10 @@ import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-ho
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
-import { getTaskModule } from "../../repertoire/tasks"
-import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
+import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
-import type { TaskModule } from "../../repertoire/tasks/types"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
   resolveHatchCredentials,
@@ -53,12 +51,32 @@ import {
   type RuntimeCredentialConfigReadResult,
 } from "../runtime-credentials"
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
-import { buildAgentProviderVisibility } from "../provider-visibility"
-import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
+import {
+  buildAgentProviderVisibility,
+} from "../provider-visibility"
+import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { getDefaultModelForProvider } from "../provider-models"
+import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
+import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
+import { importMboxFileToStore } from "../../mailroom/mbox-import"
+import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader } from "../../mailroom/reader"
+import { queuePendingMessage } from "../../mind/pending"
+import {
+  completeBackgroundOperation,
+  failBackgroundOperation,
+  listBackgroundOperations,
+  markBackgroundOperationRunning,
+  readBackgroundOperation,
+  startBackgroundOperation,
+  updateBackgroundOperation,
+  type BackgroundOperationRecord,
+} from "../background-operations"
+import { discoverMailImportFilePath } from "../mail-import-discovery"
+import { listSessionActivity } from "../session-activity"
+import { listTargetSessionCandidates } from "../target-resolution"
 
 import type {
   OuroCliCommand,
@@ -66,8 +84,6 @@ import type {
   EnsureDaemonResult,
   GithubCopilotModel,
   SessionEntry,
-  TaskCliCommand,
-  ReminderCliCommand,
   FriendCliCommand,
   AuthCliCommand,
   AuthVerifyCliCommand,
@@ -75,6 +91,7 @@ import type {
   ProviderCliCommand,
   RepairCliCommand,
   VaultCliCommand,
+  DnsCliCommand,
   ChangelogCliCommand,
   ConfigModelCliCommand,
   ConfigModelsCliCommand,
@@ -83,6 +100,7 @@ import type {
   AttentionCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
+  McpCanaryCliCommand,
   SetupCliCommand,
   HookCliCommand,
   HabitLocalCliCommand,
@@ -98,54 +116,180 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
+  executePluginInstall,
+  executePluginList,
+  executePluginRemove,
+} from "./plugin-cli"
+import {
   parseStatusPayload,
   formatDaemonStatusOutput,
   formatVersionOutput,
   daemonUnavailableStatusOutput,
   isDaemonUnavailableError,
   formatMcpResponse,
+  type StatusPayload,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
-import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
 import type { DegradedAgent } from "./interactive-repair"
-import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
+import { createAgenticDiagnosisProviderRuntime, runAgenticRepair, shouldFireRepairGuide } from "./agentic-repair"
 import {
   genericReadinessIssue,
+  isKnownReadinessIssue,
   renderReadinessIssueNextSteps,
   runGuidedReadinessRepair,
   type AgentReadinessIssue,
   type AgentReadinessReport,
   type RepairAction,
 } from "./readiness-repair"
+import {
+  buildHumanReadinessSnapshot,
+  type HumanReadinessItem,
+} from "./human-readiness"
+import {
+  buildOuroHomeActions,
+  renderAgentPickerScreen,
+  renderHumanCommandBoard,
+  renderHumanReadinessBoard,
+  renderOuroHomeScreen,
+  resolveNamedAgentSelection,
+  resolveOuroHomeAction,
+} from "./human-command-screens"
+import { type TerminalSection } from "./terminal-ui"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
-import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
-import { listEnabledBundleAgents } from "./agent-discovery"
+import { createProviderPingProgressReporter } from "./provider-ping-progress"
+import { pingGithubCopilotModel, pingProvider, type ProviderPingOptions } from "../provider-ping"
+import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
+import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
+import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
+import {
+  verifyEmbeddingsCapability,
+  verifyPerplexityCapability,
+} from "../runtime-capability-check"
+import {
+  normalizeVaultItemFieldName,
+  PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  normalizePorkbunOpsAccount,
+  porkbunOpsAccountFromItemName,
+  requireVaultItemSecret,
+  vaultItemTemplateSecretFields,
+} from "./vault-items"
+import { formatMcpStatusCanaryResult, runMcpStatusCanary } from "./mcp-canary"
 
 // ── ensureDaemonRunning ──
 
-const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 10_000
+const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 60_000
 const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+const CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS = {
+  attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+  timeoutMs: 5_000,
+} satisfies Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
+
+function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
+  const normalized = error.trim().toLowerCase()
+  if (timedOut || normalized.includes("timed out") || normalized.includes("abort")) {
+    return "skipped; registry did not answer"
+  }
+  if (normalized.includes("registry unavailable")) {
+    return "skipped; registry unavailable"
+  }
+  if (
+    normalized.includes("network") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("enotfound") ||
+    normalized.includes("eai_again") ||
+    normalized.includes("econnreset")
+  ) {
+    return "skipped; registry unavailable"
+  }
+  return "skipped; update check unavailable"
+}
+
+function returnCliFailure(deps: Pick<OuroCliDeps, "setExitCode" | "writeStdout">, message: string, exitCode = 1): string {
+  deps.setExitCode?.(exitCode)
+  deps.writeStdout(message)
+  return message
+}
+
+export function summarizeDaemonStartupFailure(result: EnsureDaemonResult): string {
+  if (result.startupFailureReason && result.startupFailureReason.trim().length > 0) {
+    return result.startupFailureReason
+  }
+  const firstLine = result.message.split(/\r?\n/, 1)[0]?.trim()
+  return firstLine && firstLine.length > 0
+    ? firstLine
+    : "background service failed to finish booting"
+}
+
+function formatDaemonStartupProgressLine(
+  serviceLabel: string,
+  status: "waiting" | "answering" | "stabilizing",
+  latestEvent?: string | null,
+): string {
+  const base = status === "waiting"
+    ? `waiting for the ${serviceLabel} to answer`
+    : status === "answering"
+      ? `${serviceLabel} answered\n- waiting for this boot to publish its ready signal`
+      : `${serviceLabel} answered\n- ready signal received; making sure it holds`
+  const trimmedEvent = latestEvent?.trim()
+  return trimmedEvent && status !== "stabilizing"
+    ? `${base}\n- latest daemon event: ${trimmedEvent}`
+    : base
+}
+
+async function runCliUpdateCheckWithTimeout(
+  checkForCliUpdate: NonNullable<OuroCliDeps["checkForCliUpdate"]>,
+  timeoutMs = CLI_UPDATE_CHECK_TIMEOUT_MS,
+): Promise<{ result: CheckForUpdateResult; timedOut: boolean }> {
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    const timeoutId = setTimeout(() => {
+      settled = true
+      resolve({
+        timedOut: true,
+        result: {
+          available: false,
+          error: `update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
+        },
+      })
+    }, timeoutMs)
+
+    /* v8 ignore start -- Promise-settlement wiring is exercised by command tests; v8 misses these callback lines @preserve */
+    void checkForCliUpdate()
+      .then((result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        resolve({ result, timedOut: false })
+      })
+      .catch((error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        reject(error)
+      })
+    /* v8 ignore stop */
+  })
+}
 
 async function checkAgentProviders(
   deps: OuroCliDeps,
-  agentsOverride?: string[],
+  agents: string[],
   onProgress?: (message: string) => void,
 ): Promise<DegradedAgent[]> {
-  const agents = agentsOverride ?? await listCliAgents(deps)
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const degraded: DegradedAgent[] = []
 
   for (const agent of [...new Set(agents)]) {
     try {
-      onProgress?.(`${agent}: checking providers...`)
       const result = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
@@ -178,16 +322,79 @@ async function checkAgentProviders(
   return degraded
 }
 
+type StatusProviderRow = StatusPayload["providers"][number]
+
+function degradedFromStatusProviderRow(row: StatusProviderRow): DegradedAgent {
+  const binding = row.provider === "unconfigured" ? row.provider : `${row.provider} / ${row.model}`
+  const detail = row.detail ? `: ${row.detail}` : ""
+  const fixHint = row.detail && row.detail.startsWith("ouro ")
+    ? `Run \`${row.detail}\`.`
+    : "Run `ouro status` or `ouro doctor` for provider details."
+  return {
+    agent: row.agent,
+    errorReason: `${row.lane} provider ${binding} readiness is ${row.readiness}${detail}`,
+    fixHint,
+  }
+}
+
+function providerStatusRowsCoverAgents(rows: StatusProviderRow[], agents: string[]): boolean {
+  for (const agent of agents) {
+    const lanes = new Set(rows.filter((row) => row.agent === agent).map((row) => row.lane))
+    if (!lanes.has("outward") || !lanes.has("inner")) return false
+  }
+  return true
+}
+
+async function checkAgentProvidersFromDaemonStatus(
+  deps: OuroCliDeps,
+  agents: string[],
+  onProgress?: (message: string) => void,
+): Promise<DegradedAgent[] | null> {
+  const uniqueAgents = [...new Set(agents)]
+  if (uniqueAgents.length === 0) return []
+  let response
+  try {
+    response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+  } catch {
+    // Fall through to the same foreground-check fallback used for empty status responses.
+  }
+  if (!response || !response.ok) return null
+  const payload = parseStatusPayload(response.data)
+  if (!payload) return null
+  const rows = payload.providers.filter((row) => uniqueAgents.includes(row.agent))
+  if (!providerStatusRowsCoverAgents(rows, uniqueAgents)) return null
+
+  const degraded: DegradedAgent[] = []
+  const degradedAgents = new Set<string>()
+  for (const row of rows) {
+    if (row.readiness === "ready" || degradedAgents.has(row.agent)) continue
+    degraded.push(degradedFromStatusProviderRow(row))
+    degradedAgents.add(row.agent)
+  }
+  onProgress?.(degraded.length === 0
+    ? "provider readiness confirmed by daemon status"
+    : "provider readiness reported by daemon status")
+  return degraded
+}
+
 async function checkAgentProviderHealth(
   agentName: string,
   bundlesRoot: string,
   deps: OuroCliDeps,
   onProgress?: (message: string) => void,
+  options: Pick<LiveConfigCheckDeps, "providerPingOptions" | "recordReadiness"> = {},
 ): ReturnType<typeof checkAgentConfigWithProviderHealth> {
-  const liveDeps: import("./agent-config-check").LiveConfigCheckDeps = {}
+  const liveDeps: LiveConfigCheckDeps = {}
   if (deps.homeDir) liveDeps.homeDir = deps.homeDir
   if (onProgress) liveDeps.onProgress = onProgress
-  if (liveDeps.homeDir || liveDeps.onProgress) {
+  if (options.providerPingOptions) liveDeps.providerPingOptions = options.providerPingOptions
+  if (options.recordReadiness !== undefined) liveDeps.recordReadiness = options.recordReadiness
+  if (
+    liveDeps.homeDir ||
+    liveDeps.onProgress ||
+    liveDeps.providerPingOptions ||
+    liveDeps.recordReadiness !== undefined
+  ) {
     return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, liveDeps)
   }
   return checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
@@ -205,6 +412,12 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
+  | "friend.list"
+  | "friend.show"
+  | "friend.create"
+  | "friend.update"
+  | "habit.list"
+  | "habit.create"
   | "provider.use"
   | "provider.check"
   | "provider.status"
@@ -216,7 +429,14 @@ type MissingAgentResolvableKind =
   | "vault.status"
   | "vault.config.set"
   | "vault.config.status"
+  | "vault.item.set"
+  | "vault.item.status"
+  | "vault.item.list"
+  | "dns.workflow"
   | "connect"
+  | "account.ensure"
+  | "mail.import-mbox"
+  | "mail.backfill-indexes"
   | "auth.run"
   | "auth.verify"
   | "auth.switch"
@@ -229,6 +449,7 @@ type MissingAgentResolvableKind =
   | "attention.show"
   | "attention.history"
   | "inner.status"
+  | "session.list"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -288,11 +509,18 @@ function invalidAgentSelectionMessage(agentNames: string[]): string {
 
 function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
   switch (command.kind) {
+    case "friend.list":
+    case "friend.show":
+    case "friend.create":
+    case "friend.update":
+    case "habit.list":
+    case "habit.create":
     case "thoughts":
     case "attention.list":
     case "attention.show":
     case "attention.history":
     case "inner.status":
+    case "session.list":
       return "return-message"
     case "provider.use":
     case "provider.check":
@@ -305,7 +533,13 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "vault.status":
     case "vault.config.set":
     case "vault.config.status":
+    case "vault.item.set":
+    case "vault.item.status":
+    case "vault.item.list":
+    case "dns.workflow":
     case "connect":
+    case "account.ensure":
+    case "mail.import-mbox":
     case "auth.run":
     case "auth.verify":
     case "auth.switch":
@@ -376,7 +610,10 @@ function managedAgentsSignature(agentNames: string[]): string {
 }
 
 async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<DegradedAgent[]> {
-  return checkAgentProviders(deps, undefined, onProgress)
+  const agents = await listCliAgents(deps)
+  const statusResult = await checkAgentProvidersFromDaemonStatus(deps, agents, onProgress)
+  if (statusResult) return statusResult
+  return checkAgentProviders(deps, agents, onProgress)
 }
 
 function readinessIssueFromDegraded(entry: DegradedAgent): AgentReadinessIssue {
@@ -395,9 +632,70 @@ function writeProviderRepairSummary(
   deps.writeStdout([title, ...blocks].join("\n\n"))
 }
 
+function formatDaemonStatusJsonOutput(response: DaemonResponse): string {
+  return JSON.stringify(response.data ?? {
+    ok: response.ok,
+    ...(response.summary ? { summary: response.summary } : {}),
+    ...(response.message ? { message: response.message } : {}),
+    ...(response.error ? { error: response.error } : {}),
+  }, null, 2)
+}
+
+function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: string): string {
+  return JSON.stringify({
+    ok: false,
+    error: "daemon unavailable",
+    socketPath,
+    ...(healthFilePath ? { healthFilePath } : {}),
+  }, null, 2)
+}
+
 function providerRepairCountSummary(count: number): string {
-  if (count === 0) return "ok"
+  if (count === 0) return "selected providers answered live checks"
   return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+/**
+ * Layer 2: human-readable summary of boot-sync-probe findings, written to
+ * stdout when any non-clean finding surfaces. The order reads "blockers
+ * first, then advisories" so the operator's eye lands on the actionable
+ * items before the warnings.
+ */
+export function writeSyncProbeSummary(
+  deps: Pick<OuroCliDeps, "writeStdout">,
+  findings: readonly BootSyncProbeFinding[],
+): void {
+  const lines: string[] = ["sync probe findings:"]
+  const sortKey = (f: BootSyncProbeFinding): number => (f.advisory ? 1 : 0)
+  const sorted = [...findings].sort((a, b) => sortKey(a) - sortKey(b) || a.agent.localeCompare(b.agent))
+  for (const finding of sorted) {
+    const severity = finding.advisory ? "warn" : "block"
+    lines.push(`  [${severity}] ${finding.agent}: ${finding.classification} — ${finding.error.split("\n")[0]}`)
+  }
+  deps.writeStdout(lines.join("\n"))
+}
+
+function bootPhasePlan(_daemonAlive: boolean): readonly string[] {
+  return ["update check", "system setup", "sync probe", "starting daemon", "provider checks", "final daemon check"]
+}
+
+const FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS = 20_000
+const FINAL_DAEMON_HEALTH_SETTLE_POLL_INTERVAL_MS = 500
+
+/**
+ * Layer 2: brief, scannable summary of a boot-sync-probe finding for the
+ * progress reporter. Renderer-style hints (full repair guidance) live in
+ * `inner-status.ts` / `startup-tui.ts` consumers; this helper is just for
+ * the progress phase blurb.
+ */
+export function summarizeSyncProbeFindings(findings: readonly BootSyncProbeFinding[]): string {
+  if (findings.length === 0) return "all sync-enabled bundles healthy"
+  const blocking = findings.filter((f) => !f.advisory).length
+  const advisory = findings.filter((f) => f.advisory).length
+  const parts: string[] = []
+  if (blocking > 0) parts.push(`${blocking} blocking`)
+  if (advisory > 0) parts.push(`${advisory} advisory`)
+  return `${findings.length} finding${findings.length === 1 ? "" : "s"} (${parts.join(", ")})`
 }
 
 function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): CommandProgress {
@@ -429,37 +727,139 @@ async function runCommandProgressPhase<T>(
 }
 
 function daemonProgressSummary(result: EnsureDaemonResult): string {
-  if (result.verifyStartupStatus === false) return "not answering yet"
   if (result.alreadyRunning) return "already running"
-  if (result.message.includes("restarted")) return "restarted and ready"
-  return "ready"
+  if (result.message.includes("replaced")) return "replacement answered"
+  return "background service answered"
 }
 
-async function reportPostRepairProviderHealth(
+interface FinalDaemonCheckResult {
+  ok: boolean
+  summary: string
+  message?: string
+  retryable?: boolean
+  reason?: string
+}
+
+function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
+  const lines = [`background service stopped before boot finished: ${reason}`]
+  const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
+  if (recentLogLines.length > 0) {
+    lines.push("recent daemon logs:")
+    lines.push(...recentLogLines.map((line) => `  ${line}`))
+  }
+  lines.push("Run `ouro up` again or `ouro doctor` for a deeper diagnosis.")
+  return lines.join("\n")
+}
+
+async function verifyDaemonReadyForHandoff(
   deps: OuroCliDeps,
-  repairedAgents: string[],
-  onProgress?: (message: string) => void,
-): Promise<DegradedAgent[]> {
-  const remainingDegraded = await checkAgentProviders(deps, repairedAgents, onProgress)
+  options: {
+    allowDegradedHealth?: boolean
+    settleTimeoutMs: number
+    settlePollIntervalMs: number
+    onSettling?: (reason: string) => void
+  },
+): Promise<FinalDaemonCheckResult> {
+  const settleTimeoutMs = options.settleTimeoutMs
+  const settlePollIntervalMs = options.settlePollIntervalMs
+  const settleDeadlineMs = cliNowMs(deps) + settleTimeoutMs
+  for (;;) {
+    const result = await verifyDaemonReadyForHandoffOnce(deps, options)
+    if (result.ok || !result.retryable || settleTimeoutMs === 0) return result
+    if (cliNowMs(deps) >= settleDeadlineMs) {
+      const reason = result.reason as string
+      return {
+        ...result,
+        message: finalDaemonFailureMessage(
+          deps,
+          `${reason} after waiting ${Math.ceil(settleTimeoutMs / 1_000)}s`,
+        ),
+      }
+    }
+    const reason = result.reason as string
+    options.onSettling?.(reason)
+    await cliSleep(deps, settlePollIntervalMs)
+  }
+}
 
-  emitNervesEvent({
-    level: remainingDegraded.length > 0 ? "warn" : "info",
-    component: "daemon",
-    event: "daemon.post_repair_provider_check",
-    message: remainingDegraded.length > 0
-      ? "post-repair provider health check still degraded"
-      : "post-repair provider health check recovered",
-    meta: { degradedCount: remainingDegraded.length, repairedAgents },
-  })
-
-  if (remainingDegraded.length === 0) {
-    deps.writeStdout("All set. Provider checks recovered after repair.")
-    return remainingDegraded
+async function verifyDaemonReadyForHandoffOnce(
+  deps: OuroCliDeps,
+  options: { allowDegradedHealth?: boolean } = {},
+): Promise<FinalDaemonCheckResult> {
+  const socketAlive = await deps.checkSocketAlive(deps.socketPath)
+  if (!socketAlive) {
+    return {
+      ok: false,
+      summary: "background service stopped",
+      message: finalDaemonFailureMessage(deps, "the daemon socket is no longer answering"),
+    }
   }
 
-  writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
-  deps.writeStdout("Run `ouro up` again after these are fixed.")
-  return remainingDegraded
+  try {
+    const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+    if (!response.ok) {
+      const reason = response.error ?? response.message ?? "daemon status did not answer cleanly"
+      return {
+        ok: false,
+        summary: "daemon status did not answer",
+        message: finalDaemonFailureMessage(deps, reason),
+      }
+    }
+
+    const payload = parseStatusPayload(response.data)
+    if (!payload) {
+      return {
+        ok: true,
+        summary: "daemon answered",
+      }
+    }
+    if (payload.overview.daemon !== "running") {
+      return {
+        ok: false,
+        summary: `daemon reported ${payload.overview.daemon}`,
+        message: finalDaemonFailureMessage(
+          deps,
+          `the daemon reported state ${payload.overview.daemon}`,
+        ),
+      }
+    }
+    if (payload.overview.health !== "ok") {
+      const degradedSenses = payload.senses
+        .filter((sense) => sense.enabled && !["running", "interactive", "disabled", "not_attached"].includes(sense.status))
+        .map((sense) => `${sense.agent}/${sense.sense}: ${sense.status} - ${sense.detail}`)
+      const detail = degradedSenses.length > 0 ? `; ${degradedSenses.join("; ")}` : ""
+      if (options.allowDegradedHealth) {
+        return {
+          ok: true,
+          summary: `runtime health ${payload.overview.health}`,
+        }
+      }
+      const reason = `runtime health is ${payload.overview.health}${detail}`
+      return {
+        ok: false,
+        summary: `daemon health ${payload.overview.health}`,
+        message: finalDaemonFailureMessage(deps, reason),
+        retryable: true,
+        reason,
+      }
+    }
+    const workerCount = payload.workers.length
+    return {
+      ok: true,
+      summary: workerCount === 0
+        ? "daemon answered"
+        : `${workerCount} worker${workerCount === 1 ? "" : "s"} still answering`,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      summary: "daemon status did not answer",
+      message: finalDaemonFailureMessage(
+        deps,
+        error instanceof Error ? error.message : String(error),
+      ),
+    }
+  }
 }
 
 async function checkProviderHealthBeforeChat(
@@ -474,6 +874,194 @@ async function checkProviderHealthBeforeChat(
     return { ok: false, output }
   }
   return { ok: true }
+}
+
+function interactiveHumanSurfaceEnabled(deps: OuroCliDeps): boolean {
+  return !!deps.promptInput && (deps.isTTY ?? process.stdout.isTTY === true)
+}
+
+function ttyBoardEnabled(deps: OuroCliDeps): boolean {
+  return deps.isTTY ?? process.stdout.isTTY === true
+}
+
+function renderCommandBoard(
+  deps: OuroCliDeps,
+  options: {
+    title: string
+    subtitle: string
+    summary: string
+    sections: TerminalSection[]
+    actions?: import("./terminal-ui").TerminalAction[]
+  },
+): string {
+  return renderHumanCommandBoard({
+    title: options.title,
+    subtitle: options.subtitle,
+    summary: options.summary,
+    isTTY: true,
+    columns: deps.stdoutColumns ?? process.stdout.columns,
+    sections: options.sections,
+    actions: options.actions,
+  }).trimEnd()
+}
+
+function writeConnectorIntro(
+  deps: OuroCliDeps,
+  options: {
+    title: string
+    subtitle: string
+    summary: string
+    sections: TerminalSection[]
+    fallbackLines: string[]
+  },
+): void {
+  const text = ttyBoardEnabled(deps)
+    ? renderCommandBoard(deps, {
+        title: options.title,
+        subtitle: options.subtitle,
+        summary: options.summary,
+        sections: options.sections,
+      })
+    : options.fallbackLines.join("\n")
+  deps.writeStdout(text)
+}
+
+function formatLocalUnlockStoreLine(store: { kind: string; secure: boolean }): string {
+  return `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`
+}
+
+function writeCommandOutcome(
+  deps: OuroCliDeps,
+  options: {
+    title: string
+    subtitle: string
+    summary: string
+    sections: TerminalSection[]
+    fallbackLines: string[]
+  },
+): string {
+  const message = ttyBoardEnabled(deps)
+    ? renderCommandBoard(deps, {
+        title: options.title,
+        subtitle: options.subtitle,
+        summary: options.summary,
+        sections: options.sections,
+      })
+    : options.fallbackLines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+function writeCapabilityOutcome(
+  deps: OuroCliDeps,
+  options: {
+    subtitle: string
+    summary: string
+    whatChanged: string[]
+    nextMoves: string[]
+    fallbackLines: string[]
+  },
+): string {
+  return writeCommandOutcome(deps, {
+    title: "Capability connected",
+    subtitle: options.subtitle,
+    summary: options.summary,
+    sections: [
+      {
+        title: "What changed",
+        lines: options.whatChanged,
+      },
+      {
+        title: "Next moves",
+        lines: options.nextMoves,
+      },
+    ],
+    fallbackLines: options.fallbackLines,
+  })
+}
+
+function writeCapabilityAttention(
+  deps: OuroCliDeps,
+  options: {
+    subtitle: string
+    summary: string
+    whatChanged: string[]
+    nextMoves: string[]
+    fallbackLines: string[]
+  },
+): string {
+  return writeCommandOutcome(deps, {
+    title: "Capability needs attention",
+    subtitle: options.subtitle,
+    summary: options.summary,
+    sections: [
+      {
+        title: "What changed",
+        lines: options.whatChanged,
+      },
+      {
+        title: "Next moves",
+        lines: options.nextMoves,
+      },
+    ],
+    fallbackLines: options.fallbackLines,
+  })
+}
+
+async function promptForNamedAgent(
+  title: string,
+  subtitle: string,
+  agents: string[],
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (!deps.promptInput) throw new Error("agent selection requires interactive input")
+  /* v8 ignore start -- daemon-cli tests cover both board and plain prompt selection paths; V8 undercounts this tiny helper's compact fallback branch @preserve */
+  const prompt = interactiveHumanSurfaceEnabled(deps)
+    ? renderAgentPickerScreen({
+        title,
+        subtitle,
+        agents,
+        isTTY: true,
+        columns: deps.stdoutColumns ?? process.stdout.columns,
+      })
+    : `${title}\n${agents.map((agent, index) => `${index + 1}. ${agent}`).join("\n")}\nChoose [1-${agents.length}] or type a name: `
+  const selected = resolveNamedAgentSelection(await deps.promptInput(prompt), agents)
+  if (!selected) throw new Error("Invalid selection")
+  /* v8 ignore stop */
+  return selected
+}
+
+function authVerifyItemFor(
+  agent: string,
+  provider: AgentProvider,
+  status: string,
+): HumanReadinessItem {
+  if (status === "ok") {
+    return {
+      key: `provider:${provider}`,
+      title: provider,
+      status: "ready",
+      summary: `${provider}: ok`,
+      detailLines: [],
+      actions: [],
+    }
+  }
+
+  return {
+    key: `provider:${provider}`,
+    title: provider,
+    status: "needs attention",
+    summary: `${provider}: ${status}`,
+    detailLines: [],
+    actions: [
+      {
+        label: `Refresh ${provider} credentials`,
+        actor: "human-required",
+        command: `ouro auth --agent ${agent} --provider ${provider}`,
+        recommended: true,
+      },
+    ],
+  }
 }
 
 export function mergeStartupStability(
@@ -506,7 +1094,7 @@ export async function ensureDaemonRunning(
       // The daemon writes structured events to daemon.ndjson in the first
       // agent bundle's state/daemon/logs/ directory. Read the last line to
       // surface what it's currently doing (e.g., "starting auto-start agents").
-      const bundlesRoot = getAgentBundlesRoot()
+      const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
       if (!fs.existsSync(bundlesRoot)) return null
       const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
       for (const agent of agents) {
@@ -580,12 +1168,33 @@ export async function ensureDaemonRunning(
       stopDaemon: async () => {
         await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
       },
+      prepareDaemonRuntimeReplacement: deps.prepareDaemonRuntimeReplacement,
       cleanupStaleSocket: deps.cleanupStaleSocket,
       startDaemonProcess: deps.startDaemonProcess,
       checkSocketAlive: deps.checkSocketAlive,
+      onProgress: deps.reportDaemonStartupPhase,
+      now: deps.now,
+      waitForDaemonStartup: async ({ pid, bootStartedAtMs }) => {
+        const startupFailure = await waitForDaemonStartup(deps, {
+          bootStartedAtMs,
+          pid,
+          serviceLabel: "replacement background service",
+          readLatestDaemonEvent: readLatestDaemonStartupEvent,
+        })
+        return startupFailure
+          ? { ok: false, reason: startupFailure.reason }
+          : { ok: true }
+      },
     })
-    if (!runtimeResult.verifyStartupStatus) {
-      return runtimeResult
+    if (!runtimeResult.ok) {
+      return {
+        ok: false,
+        alreadyRunning: runtimeResult.alreadyRunning,
+        message: runtimeResult.message,
+        verifyStartupStatus: runtimeResult.verifyStartupStatus,
+        startedPid: runtimeResult.startedPid,
+        startupFailureReason: runtimeResult.startupFailureReason ?? null,
+      }
     }
 
     const stability = await pollDaemonStartup({
@@ -608,8 +1217,12 @@ export async function ensureDaemonRunning(
     })
 
     return {
+      ok: true,
       alreadyRunning: runtimeResult.alreadyRunning,
       message: runtimeResult.message,
+      verifyStartupStatus: runtimeResult.verifyStartupStatus,
+      startedPid: runtimeResult.startedPid,
+      startupFailureReason: null,
       stability,
     }
   }
@@ -622,8 +1235,8 @@ export async function ensureDaemonRunning(
   let lastPid: number | null = null
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-    deps.reportDaemonStartupPhase?.("launching daemon process")
-    deps.reportDaemonStartupPhase?.("waiting for daemon socket")
+    deps.reportDaemonStartupPhase?.("starting a fresh background service")
+    deps.reportDaemonStartupPhase?.("waiting for the new background service to answer")
     deps.cleanupStaleSocket(deps.socketPath)
 
     const bootStartedAtMs = (deps.now ?? Date.now)()
@@ -633,6 +1246,8 @@ export async function ensureDaemonRunning(
     const startupFailure = await waitForDaemonStartup(deps, {
       bootStartedAtMs,
       pid: lastPid,
+      serviceLabel: "new background service",
+      readLatestDaemonEvent: readLatestDaemonStartupEvent,
     })
     if (!startupFailure) {
       const stability = await pollDaemonStartup({
@@ -655,8 +1270,10 @@ export async function ensureDaemonRunning(
       })
 
       return {
+        ok: true,
         alreadyRunning: false,
         message: `daemon started (pid ${lastPid ?? "unknown"})`,
+        startupFailureReason: null,
         stability,
       }
     }
@@ -666,12 +1283,14 @@ export async function ensureDaemonRunning(
       break
     }
 
-    deps.reportDaemonStartupPhase?.("daemon startup lost stability; retrying once")
+    deps.reportDaemonStartupPhase?.("background service startup went sideways once; trying one more time")
   }
 
   return {
+    ok: false,
     alreadyRunning: false,
     message: formatDaemonStartupFailureMessage(lastPid, lastFailure, deps),
+    startupFailureReason: lastFailure.reason,
   }
 }
 
@@ -710,14 +1329,14 @@ function formatDaemonStartupFailureMessage(
   deps: OuroCliDeps,
 ): string {
   const lines = [
-    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure.reason}`,
+    `background service started (pid ${pid ?? "unknown"}) but did not finish booting: ${failure.reason}`,
   ]
   const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
   if (recentLogLines.length > 0) {
     lines.push("recent daemon logs:")
     lines.push(...recentLogLines.map((line) => `  ${line}`))
   }
-  lines.push("fix hint for daemon: check daemon logs or run `ouro doctor`")
+  lines.push("Run `ouro logs` to watch live startup logs or `ouro doctor` for a deeper diagnosis.")
   return lines.join("\n")
 }
 
@@ -726,6 +1345,8 @@ async function waitForDaemonStartup(
   options: {
     bootStartedAtMs: number
     pid: number | null
+    serviceLabel: string
+    readLatestDaemonEvent?: () => string | null
   },
 ): Promise<DaemonStartupFailure | null> {
   const now = deps.now ?? Date.now
@@ -739,20 +1360,16 @@ async function waitForDaemonStartup(
   let sawSocket = false
 
   if (!useHealthMonitor) {
-    const verified = await verifyDaemonAlive(
-      deps.checkSocketAlive,
-      deps.socketPath,
-      timeoutMs,
-      pollIntervalMs,
-      sleep,
-      now,
-    )
-    return verified
-      ? null
-      : {
-          reason: `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
-          retryable: false,
-        }
+    while (now() < deadline) {
+      await sleep(pollIntervalMs)
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "waiting", latestEvent))
+      if (await deps.checkSocketAlive(deps.socketPath)) return null
+    }
+    return {
+      reason: `${options.serviceLabel} did not answer within ${Math.ceil(timeoutMs / 1000)}s`,
+      retryable: false,
+    }
   }
 
   while (now() < deadline) {
@@ -761,23 +1378,29 @@ async function waitForDaemonStartup(
     if (!aliveNow) {
       if (sawSocket) {
         return {
-          reason: "daemon socket disappeared during startup",
+          reason: `${options.serviceLabel} answered once and then disappeared during startup`,
           retryable: true,
         }
       }
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "waiting", latestEvent))
       continue
     }
 
     if (!sawSocket) {
       sawSocket = true
       stableSinceMs = now()
-      deps.reportDaemonStartupPhase?.("verifying daemon health")
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "answering", latestEvent))
     }
 
     if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "answering", latestEvent))
       continue
     }
 
+    deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "stabilizing"))
     if (stableSinceMs !== null && now() - stableSinceMs >= stabilityWindowMs) {
       return null
     }
@@ -785,26 +1408,10 @@ async function waitForDaemonStartup(
 
   return {
     reason: sawSocket
-      ? "daemon did not publish fresh health for the current boot attempt"
-      : `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+      ? `${options.serviceLabel} answered but this boot never published a ready signal within ${Math.ceil(timeoutMs / 1000)}s`
+      : `${options.serviceLabel} did not answer within ${Math.ceil(timeoutMs / 1000)}s`,
     retryable: sawSocket,
   }
-}
-
-async function verifyDaemonAlive(
-  checkSocketAlive: (socketPath: string) => Promise<boolean>,
-  socketPath: string,
-  maxWaitMs = 10_000,
-  pollIntervalMs = 500,
-  sleep: (ms: number) => Promise<void> = defaultSleep,
-  now: () => number = Date.now,
-): Promise<boolean> {
-  const deadline = now() + maxWaitMs
-  while (now() < deadline) {
-    await sleep(pollIntervalMs)
-    if (await checkSocketAlive(socketPath)) return true
-  }
-  return false
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -847,12 +1454,17 @@ export async function listGithubCopilotModels(
 async function verifyProviderCredentials(
   provider: string,
   providers: Record<string, Record<string, unknown>>,
+  options: ProviderPingOptions = {},
 ): Promise<string> {
   const config = providers[provider]
   if (!config) return "not configured"
   try {
     const { pingProvider } = await import("../../heart/provider-ping")
-    const result = await pingProvider(provider as AgentProvider, config as unknown as Parameters<typeof pingProvider>[1])
+    const result = await pingProvider(
+      provider as AgentProvider,
+      config as unknown as Parameters<typeof pingProvider>[1],
+      options,
+    )
     return result.ok ? "ok" : `failed (${result.message})`
   } catch (error) {
     return `failed (${error instanceof Error ? error.message : String(error)})`
@@ -948,7 +1560,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -992,7 +1604,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
   }
 }
 
-// ── Provider state CLI helpers ──
+// ── Provider selection CLI helpers ──
 
 function providerCliHomeDir(deps: OuroCliDeps): string {
   return providerCredentialMachineHomeDir(deps.homeDir)
@@ -1030,11 +1642,6 @@ function pushAgentBundleAfterCliMutation(agent: string, deps: OuroCliDeps): stri
     return `bundle sync: ran post-change sync (remote: ${sync.remote})`
   }
   return `bundle sync: could not push bundle changes (${result.error})`
-}
-
-function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
-  return syncSummary ? `${message}\n${syncSummary}` : message
 }
 
 function writeAgentVaultConfig(
@@ -1266,6 +1873,12 @@ async function executeVaultUnlock(
   const progress = createHumanCommandProgress(deps, "vault unlock")
   let store: ReturnType<typeof storeVaultUnlockSecret> | undefined
   try {
+    await runCommandProgressPhase(
+      progress,
+      "checking vault access",
+      () => probeCredentialVaultAccess(command.agent, unlockSecret, { homeDir: deps.homeDir }),
+      () => "ok",
+    )
     store = await runCommandProgressPhase(
       progress,
       "saving local unlock",
@@ -1276,25 +1889,38 @@ async function executeVaultUnlock(
       }, unlockSecret, { homeDir: deps.homeDir, store: command.store }),
       (saved) => saved.kind,
     )
-    await runCommandProgressPhase(
-      progress,
-      "checking vault access",
-      async () => {
-        resetCredentialStore()
-        await getCredentialStore(command.agent).get("__ouro_vault_probe__")
-      },
-      () => "ok",
-    )
+    resetCredentialStore()
   } finally {
     progress.end()
   }
-  const message = [
+  const fallbackLines = [
     `vault unlocked for ${command.agent} on this machine`,
     `vault: ${vault.email} at ${vault.serverUrl}`,
-    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+    formatLocalUnlockStoreLine(store),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent}'s vault is open on this machine again.`,
+    summary: `This machine can now open ${command.agent}'s vault without re-entering the unlock secret every request.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${vault.email} at ${vault.serverUrl}`,
+          formatLocalUnlockStoreLine(store),
+          "secret was not printed",
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Run ouro up so Ouro can check ${command.agent} again.`,
+          `If credentials are still missing, run ouro auth --agent ${command.agent} --provider <provider>.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultCreate(
@@ -1363,15 +1989,40 @@ async function executeVaultCreate(
   }
   /* v8 ignore next -- defensive: success path assigns store before continuing @preserve */
   if (!store) throw new Error(`vault create failed for ${command.agent}: local unlock material was not saved`)
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(store),
     "All raw credentials for this agent will be stored in this Ouro credential vault.",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent}'s credential vault is ready.`,
+    summary: `All raw credentials for ${command.agent} now live in this vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(store),
+          "This vault will hold provider and runtime credentials for the agent.",
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Authenticate the providers ${command.agent} should use with ouro auth --agent ${command.agent} --provider <provider>.`,
+          `Then run ouro up so Ouro can bring ${command.agent} online.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultReplace(
@@ -1415,17 +2066,42 @@ async function executeVaultReplace(
   /* v8 ignore next -- defensive: createRepairVaultForAgent either returns or throws @preserve */
   if (!repair) throw new Error(`vault replace failed for ${command.agent}: no vault repair result`)
   if (!repair.ok) return repair.message
-
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(repair.store),
     "imported: none",
     `next: ouro repair --agent ${command.agent}`,
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent} has a fresh vault.`,
+    summary: `${command.agent} now has a fresh empty vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(repair.store),
+          "Imported: none",
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Re-enter provider credentials with ouro auth --agent ${command.agent} --provider <provider>.`,
+          `Re-enter runtime secrets with ouro connect --agent ${command.agent} or ouro vault config set --agent ${command.agent} --key <field>.`,
+          `Then run ouro repair --agent ${command.agent} or ouro up.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultRecover(
@@ -1511,19 +2187,47 @@ async function executeVaultRecover(
     progress.end()
   }
   const providerList = [...importedProviders].sort()
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault recovered for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(repair.store),
     `sources imported: ${sourceImports.length}`,
     `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
     `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
     `machine runtime credentials imported: ${machineRuntimeFields.length === 0 ? "none" : machineRuntimeFields.join(", ")}`,
     "credential values were not printed",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent}'s vault is back in service.`,
+    summary: `Recovered credentials have been moved back into ${command.agent}'s vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(repair.store),
+          `Sources imported: ${sourceImports.length}`,
+          `Provider credentials: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
+          `Runtime credentials: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
+          `Machine runtime credentials: ${machineRuntimeFields.length === 0 ? "none" : machineRuntimeFields.join(", ")}`,
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Run ouro auth verify --agent ${command.agent} to re-check the stored providers.`,
+          `Then run ouro up so Ouro can check ${command.agent} again.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultStatus(
@@ -1684,13 +2388,28 @@ const DEFAULT_AGENT_RESTART_TIMEOUT_MS = 8_000
 const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
 
 function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): boolean {
+  return readRuntimeConfigString(config, key) !== null
+}
+
+function readRuntimeConfigBoolean(config: RuntimeCredentialConfig, key: string): boolean | null {
   const segments = key.split(".")
   let cursor: unknown = config
   for (const segment of segments) {
-    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return false
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null
     cursor = (cursor as Record<string, unknown>)[segment]
   }
-  return typeof cursor === "string" && cursor.trim().length > 0
+  /* v8 ignore next -- boolean runtime config parsing is exercised through connect/status mode branches; non-boolean leaf is defensive @preserve */
+  return typeof cursor === "boolean" ? cursor : null
+}
+
+function readRuntimeConfigString(config: RuntimeCredentialConfig, key: string): string | null {
+  const segments = key.split(".")
+  let cursor: unknown = config
+  for (const segment of segments) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null
+    cursor = (cursor as Record<string, unknown>)[segment]
+  }
+  return typeof cursor === "string" && cursor.trim().length > 0 ? cursor : null
 }
 
 function runtimeConfigReadStatus(
@@ -1800,11 +2519,11 @@ async function applyRuntimeChangeToRunningAgent(
   onProgress?: (message: string) => void,
 ): Promise<string> {
   try {
-    onProgress?.("checking daemon socket")
+    onProgress?.("checking whether Ouro is already running")
     const alive = await deps.checkSocketAlive(deps.socketPath)
     if (!alive) return "daemon is not running; next `ouro up` will load the change"
 
-    onProgress?.("requesting restart from daemon")
+    onProgress?.(`asking Ouro to reload ${agent}`)
     const response = await withCliTimeout(
       DEFAULT_AGENT_RESTART_TIMEOUT_MS,
       "daemon restart request timed out",
@@ -1813,7 +2532,7 @@ async function applyRuntimeChangeToRunningAgent(
     if (!response.ok) return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
 
     const deadline = cliNowMs(deps) + DEFAULT_RUNTIME_APPLY_TIMEOUT_MS
-    onProgress?.(`waiting for ${agent} to report running state`)
+    onProgress?.(`waiting for ${agent} to come back\n- reload request accepted`)
     while (cliNowMs(deps) < deadline) {
       try {
         const statusResponse = await withCliTimeout(
@@ -1824,30 +2543,62 @@ async function applyRuntimeChangeToRunningAgent(
         if (statusResponse.ok) {
           const payload = parseStatusPayload(statusResponse.data)
           if (!payload) {
-            onProgress?.("daemon status did not include structured worker state")
+            onProgress?.("waiting for Ouro to confirm the reload\n- daemon status did not include structured worker state")
             return "restart requested; daemon status is unavailable, so verify with `ouro status` if needed"
           }
           const worker = readRuntimeApplyWorker(payload, agent)
           if (!worker) {
-            onProgress?.(`still waiting: ${agent} is not listed by daemon`)
+            onProgress?.(`waiting for ${agent} to come back\n- ${agent} is not listed by daemon yet`)
           } else if (worker.status === "running") {
-            onProgress?.(`daemon reports ${agent}/${worker.worker} running`)
+            onProgress?.(`waiting for ${agent} to come back\n- daemon reports ${agent}/${worker.worker} running`)
             return `restarted ${agent} and the daemon reports it running`
           } else if (worker.status === "crashed") {
+            onProgress?.(`waiting for ${agent} to come back\n- daemon reports ${agent}/${worker.worker} crashed`)
             return `restart requested, but ${agent}/${worker.worker} crashed before reporting running${worker.errorReason ? `: ${worker.errorReason}` : worker.fixHint ? `: ${worker.fixHint}` : ""}`
           } else {
-            onProgress?.(`still waiting: ${agent}/${worker.worker} is ${worker.status}`)
+            onProgress?.(`waiting for ${agent} to come back\n- current worker state: ${worker.status}`)
           }
         } else {
-          onProgress?.(`still waiting: daemon status returned ${statusResponse.error ?? statusResponse.message ?? "unknown error"}`)
+          onProgress?.(`waiting for ${agent} to come back\n- latest status check: ${statusResponse.error ?? statusResponse.message ?? "unknown error"}`)
         }
       } catch (error) {
-        onProgress?.(`still waiting: ${error instanceof Error ? error.message : String(error)}`)
+        onProgress?.(`waiting for ${agent} to come back\n- latest status check: ${error instanceof Error ? error.message : String(error)}`)
       }
       if (cliNowMs(deps) >= deadline - DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS) break
       await cliSleep(deps, DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS)
     }
     return `restart requested, but ${agent} did not report running before timeout. The change is stored; run \`ouro status\` or \`ouro up\` if it still looks stale.`
+  } catch (error) {
+    return `daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function applyLocalSenseChangeToRunningDaemon(
+  agent: string,
+  senseLabel: string,
+  deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
+): Promise<string> {
+  try {
+    onProgress?.("checking whether Ouro is already running")
+    const alive = await deps.checkSocketAlive(deps.socketPath)
+    if (!alive) return "daemon is not running; next `ouro up` will load the change"
+
+    onProgress?.(`restarting Ouro so ${senseLabel} is attached in the live sense manager`)
+    const stopped = await withCliTimeout(
+      DEFAULT_AGENT_RESTART_TIMEOUT_MS,
+      "daemon stop request timed out",
+      () => deps.sendCommand(deps.socketPath, { kind: "daemon.stop" }),
+    )
+    if (!stopped.ok) return `daemon restart skipped: ${stopped.error ?? stopped.message ?? "unknown daemon error"}`
+
+    deps.cleanupStaleSocket(deps.socketPath)
+    const started = await ensureDaemonRunning({
+      ...deps,
+      reportDaemonStartupPhase: (message) => onProgress?.(message),
+    }, { initialAlive: false })
+    if (!started.ok) return `daemon restart requested, but startup failed: ${started.message}`
+    return `restarted Ouro; ${senseLabel} is loaded for ${agent}`
   } catch (error) {
     return `daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`
   }
@@ -1941,6 +2692,325 @@ async function executeVaultConfigStatus(
   return message
 }
 
+type VaultItemSecretPayload = {
+  schemaVersion: 1
+  updatedAt: string
+  publicFields: Record<string, string>
+  secretFields: Record<string, string>
+}
+
+function parseVaultItemPublicFields(fields: string[] | undefined): Record<string, string> {
+  const parsed: Record<string, string> = {}
+  for (const field of fields ?? []) {
+    const separator = field.indexOf("=")
+    const key = normalizeVaultItemFieldName(field.slice(0, separator))
+    parsed[key] = field.slice(separator + 1)
+  }
+  return parsed
+}
+
+function uniqueVaultItemSecretFields(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>): string[] {
+  const fields = command.template ? vaultItemTemplateSecretFields(command.template) : []
+  for (const field of command.secretFields ?? []) {
+    if (!fields.includes(field)) fields.push(field)
+  }
+  return fields
+}
+
+function vaultItemCompatibilityNotice(command: { compatibilityAlias?: string }): string[] {
+  if (command.compatibilityAlias !== PORKBUN_OPS_COMPATIBILITY_ALIAS) return []
+  return ["deprecated compatibility alias: use ouro vault item set --template porkbun-api"]
+}
+
+function freeformVaultItemReservedMessage(itemName: string): string | undefined {
+  if (itemName.startsWith("providers/")) {
+    return `Vault item "${itemName}" is reserved for harness-managed workflows. Use ouro auth or ouro connect for provider credentials.`
+  }
+  if (itemName === "runtime/config" || /^runtime\/machines\/[^/]+\/config$/.test(itemName)) {
+    return `Vault item "${itemName}" is reserved for harness-managed workflows. Use ouro connect or ouro vault config for runtime and sense configuration.`
+  }
+  return undefined
+}
+
+function assertFreeformVaultItemWritable(itemName: string): void {
+  const reservedMessage = freeformVaultItemReservedMessage(itemName)
+  if (reservedMessage) throw new Error(reservedMessage)
+}
+
+function porkbunAccountForCompatibility(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" | "vault.item.status" }>): string | undefined {
+  if (command.compatibilityAlias !== PORKBUN_OPS_COMPATIBILITY_ALIAS) return undefined
+  return normalizePorkbunOpsAccount(porkbunOpsAccountFromItemName(command.item))
+}
+
+const PORKBUN_OPS_PROMPT_LABELS = {
+  apiKey: (account: string) => `Porkbun API key for ${account}: `,
+  secretApiKey: (account: string) => `Porkbun Secret API key for ${account}: `,
+} as const
+
+const PORKBUN_OPS_VALIDATION_LABELS = {
+  apiKey: "Porkbun API key",
+  secretApiKey: "Porkbun Secret API key",
+} as const
+
+function vaultItemTemplatePromptLabel(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>, field: string, account?: string): string {
+  if (command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS) {
+    return PORKBUN_OPS_PROMPT_LABELS[field as keyof typeof PORKBUN_OPS_PROMPT_LABELS](account!)
+  }
+  return `Secret field ${field} for ${command.item}: `
+}
+
+function vaultItemSecretValidationLabel(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>, field: string): string {
+  if (command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS) {
+    return PORKBUN_OPS_VALIDATION_LABELS[field as keyof typeof PORKBUN_OPS_VALIDATION_LABELS]
+  }
+  return `Secret field ${field}`
+}
+
+async function executeVaultItemSet(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent credential vault. Store vault items in the owning agent vault.")
+  }
+  if (!command.compatibilityAlias) assertFreeformVaultItemWritable(command.item)
+  const account = porkbunAccountForCompatibility(command)
+  const promptSecret = requirePromptSecret(deps, command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "Porkbun ops credential entry" : "Vault item secret entry")
+  const secretFieldNames = uniqueVaultItemSecretFields(command)
+  const publicFields = parseVaultItemPublicFields(command.publicFields)
+  if (account && !publicFields.account) publicFields.account = account
+  const secretFields: Record<string, string> = {}
+  for (const field of secretFieldNames) {
+    const normalized = normalizeVaultItemFieldName(field)
+    const value = await promptSecret(vaultItemTemplatePromptLabel(command, normalized, account))
+    secretFields[normalized] = requireVaultItemSecret(value, vaultItemSecretValidationLabel(command, normalized))
+  }
+  const payload: VaultItemSecretPayload = {
+    schemaVersion: 1,
+    updatedAt: providerCliNow(deps).toISOString(),
+    publicFields,
+    secretFields,
+  }
+  const progress = createHumanCommandProgress(deps, command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "vault ops porkbun" : "vault item set")
+  try {
+    await runCommandProgressPhase(
+      progress,
+      command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "storing ordinary vault item" : "storing vault item",
+      async () => {
+        const store = getCredentialStore(command.agent)
+        await store.store(command.item, {
+          ...(account ? { username: account } : {}),
+          password: JSON.stringify(payload),
+          ...(command.note !== undefined
+            ? { notes: command.note }
+            : command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS
+              ? { notes: "Ordinary vault item written by a deprecated Porkbun compatibility alias. Notes are for human/agent orientation only; workflow bindings live outside this item." }
+              : {}),
+        })
+        return command.item
+      },
+      () => "secret stored",
+    )
+  } finally {
+    progress.end()
+  }
+
+  const message = [
+    ...vaultItemCompatibilityNotice(command),
+    `stored ordinary vault item for ${command.agent}`,
+    `item: vault:${command.agent}:${command.item}`,
+    ...(account ? [`account: ${account}`] : []),
+    `public fields: ${Object.keys(publicFields).length === 0 ? "none" : Object.keys(publicFields).sort().join(", ")}`,
+    `secret fields: ${Object.keys(secretFields).sort().join(", ")}`,
+    `notes: ${command.note !== undefined || command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "present" : "absent"}`,
+    "secret values were not printed",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultItemStatus(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.status" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent credential vault. Vault items belong in the owning agent vault."
+    deps.writeStdout(message)
+    return message
+  }
+  const store = getCredentialStore(command.agent)
+  const account = porkbunAccountForCompatibility(command)
+  const meta = await store.get(command.item)
+  const lines = [
+    ...vaultItemCompatibilityNotice(command),
+    `agent: ${command.agent}`,
+    `${command.compatibilityAlias ? "ordinary vault item" : "item"}: vault:${command.agent}:${command.item}`,
+    `status: ${meta ? "present" : "missing"}`,
+  ]
+  if (meta?.username) lines.push(account ? `account: ${meta.username}` : `username: ${meta.username}`)
+  if (meta?.notes) lines.push("notes: present")
+  lines.push("secret values were not printed")
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultItemList(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.list" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent credential vault. Vault items belong in the owning agent vault."
+    deps.writeStdout(message)
+    return message
+  }
+  const store = getCredentialStore(command.agent)
+  const prefix = command.prefix
+  const items = (await store.list())
+    .filter((item) => !prefix || item.domain.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`))
+    .map((item) => item.domain)
+    .sort()
+  const lines = [
+    ...vaultItemCompatibilityNotice(command),
+    `agent: ${command.agent}`,
+    ...(prefix ? [`prefix: ${prefix}`] : []),
+    `items: ${items.length === 0 ? "none stored" : items.join(", ")}`,
+    "secret values were not printed",
+  ]
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+function resolveWorkflowFilePath(filePath: string, deps: OuroCliDeps): string {
+  return path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(deps.getRepoCwd?.() ?? process.cwd(), filePath)
+}
+
+function extractDnsBackupRecords(input: unknown): Array<import("./dns-workflow").DnsRecord> {
+  const value = input as {
+    records?: Array<import("./dns-workflow").DnsRecord>
+    backup?: { records?: Array<import("./dns-workflow").DnsRecord> }
+    plan?: { backup?: { records?: Array<import("./dns-workflow").DnsRecord> } }
+  }
+  const records = value.plan?.backup?.records ?? value.backup?.records ?? value.records
+  if (!Array.isArray(records)) throw new Error("dns rollback backup does not contain records")
+  return records
+}
+
+async function executeDnsWorkflow(
+  command: Extract<ResolvedOuroCliCommand, { kind: "dns.workflow" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const workflow = await import("./dns-workflow")
+  const bindingPath = resolveWorkflowFilePath(command.bindingPath, deps)
+  const binding = workflow.loadDnsWorkflowBinding(JSON.parse(fs.readFileSync(bindingPath, "utf-8")))
+  const store = getCredentialStore(command.agent)
+  const reader = {
+    readSecretField: async (item: string, field: string): Promise<string> => {
+      const raw = await store.getRawSecret(item, "password")
+      const payload = JSON.parse(raw) as { secretFields?: Record<string, unknown> } & Record<string, unknown>
+      const value = [payload.secretFields?.[field], payload[field]]
+        .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "")
+      if (!value) {
+        throw new Error(`vault item ${item} is missing required secret field ${field}`)
+      }
+      return value
+    },
+  }
+  const secrets = await workflow.resolveDnsWorkflowSecrets(binding, reader)
+  const driver = workflow.createPorkbunDnsDriver({ fetchImpl: deps.fetchImpl ?? fetch })
+  if (command.action === "certificate") {
+    if (!binding.certificate) throw new Error("DNS workflow binding does not define a certificate")
+    if (binding.certificate.source !== "porkbun-ssl") {
+      throw new Error(`DNS workflow certificate source ${binding.certificate.source} is not implemented`)
+    }
+    const certificate = await driver.retrieveCertificate({ domain: binding.domain, secrets })
+    const payload: VaultItemSecretPayload = {
+      schemaVersion: 1,
+      updatedAt: providerCliNow(deps).toISOString(),
+      publicFields: {
+        domain: binding.domain,
+        host: binding.certificate.host,
+        source: binding.certificate.source,
+      },
+      secretFields: certificate,
+    }
+    await store.store(binding.certificate.storeItem, {
+      username: binding.certificate.host,
+      password: JSON.stringify(payload),
+      notes: "TLS certificate bundle retrieved by DNS workflow. Notes are for human/agent orientation only; workflow bindings and deploy config remain the machine contract.",
+    })
+    const artifactPayload = workflow.redactDnsWorkflowArtifact({
+      action: command.action,
+      binding,
+      certificate: {
+        host: binding.certificate.host,
+        storeItem: binding.certificate.storeItem,
+        ...certificate,
+      },
+    })
+    if (command.outputPath) {
+      const outputPath = resolveWorkflowFilePath(command.outputPath, deps)
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+      fs.writeFileSync(outputPath, `${JSON.stringify(artifactPayload, null, 2)}\n`, "utf-8")
+    }
+    const message = [
+      `dns certificate for ${binding.domain}`,
+      `driver: ${binding.driver}`,
+      `credential item: vault:${command.agent}:${binding.credentialItem}`,
+      `certificate item: vault:${command.agent}:${binding.certificate.storeItem}`,
+      command.outputPath ? `artifact: ${command.outputPath}` : "artifact: not written",
+      "secret values were not printed",
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  const currentRecords = await driver.retrieveRecords({ domain: binding.domain, secrets })
+  let plan: ReturnType<typeof workflow.planDnsWorkflow>
+  if (command.action === "rollback") {
+    const backupPath = command.backupPath as string
+    plan = workflow.planDnsRollback({
+      binding,
+      currentRecords,
+      backupRecords: extractDnsBackupRecords(
+        JSON.parse(fs.readFileSync(resolveWorkflowFilePath(backupPath, deps), "utf-8")),
+      ),
+    })
+  } else {
+    plan = workflow.planDnsWorkflow({ binding, currentRecords })
+  }
+  const applied = command.action === "apply" || command.action === "rollback"
+    ? await workflow.applyDnsWorkflowPlan({ driver, domain: binding.domain, secrets, plan })
+    : []
+  const payload = workflow.redactDnsWorkflowArtifact({
+    action: command.action,
+    binding,
+    plan,
+    applied,
+  })
+  if (command.outputPath) {
+    const outputPath = resolveWorkflowFilePath(command.outputPath, deps)
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+    fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
+  }
+  const changed = plan.changes.length
+  const preserved = plan.preservedRecords.length
+  const message = [
+    `dns ${command.action} for ${binding.domain}`,
+    `driver: ${binding.driver}`,
+    `credential item: vault:${command.agent}:${binding.credentialItem}`,
+    `changes: ${changed}`,
+    ...(applied.length > 0 ? [`applied: ${applied.length}`] : []),
+    `preserved records: ${preserved}`,
+    command.outputPath ? `artifact: ${command.outputPath}` : "artifact: not written",
+    "secret values were not printed",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 function requirePromptSecret(deps: OuroCliDeps, purpose: string): (question: string) => Promise<string> {
   if (deps.promptSecret) return deps.promptSecret
   throw new Error(`${purpose} requires an interactive terminal so the secret can be hidden.`)
@@ -1977,7 +3047,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -1990,39 +3060,172 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams", deps: O
     ...senses,
     cli: senses.cli ?? { enabled: true },
     teams: senses.teams ?? { enabled: false },
+    bluebubbles: senses.bluebubbles ?? { enabled: false },
+    mail: senses.mail ?? { enabled: false },
+    voice: senses.voice ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-async function buildConnectMenu(agent: string, deps: OuroCliDeps): Promise<string> {
+const CONNECT_MENU_PROMPT = "Choose [1-7] or type a name: "
+
+function connectMenuIsTTY(deps: OuroCliDeps): boolean {
+  return deps.isTTY ?? process.stdout.isTTY === true
+}
+
+function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean; voiceEnabled: boolean } {
+  const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
+  const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
+    senses?: {
+      teams?: { enabled?: boolean }
+      bluebubbles?: { enabled?: boolean }
+      mail?: { enabled?: boolean }
+      voice?: { enabled?: boolean }
+    }
+  }
+  return {
+    teamsEnabled: parsed.senses?.teams?.enabled === true,
+    blueBubblesEnabled: parsed.senses?.bluebubbles?.enabled === true,
+    mailEnabled: parsed.senses?.mail?.enabled === true,
+    voiceEnabled: parsed.senses?.voice?.enabled === true,
+  }
+}
+
+async function buildConnectMenu(
+  agent: string,
+  deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
+): Promise<string> {
+  const bundlesRoot = path.dirname(providerCliAgentRoot({ agent }, deps))
+  let providerHealth: Awaited<ReturnType<typeof checkAgentProviderHealth>> | undefined
+  try {
+    onProgress?.("checking selected providers")
+    providerHealth = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress, {
+      providerPingOptions: CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS,
+      recordReadiness: false,
+    })
+  } catch (error) {
+    providerHealth = {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      fix: `Run 'ouro auth verify --agent ${agent}' to inspect provider health.`,
+    }
+  }
   const providerVisibility = buildAgentProviderVisibility({
     agentName: agent,
     agentRoot: providerCliAgentRoot({ agent }, deps),
     homeDir: providerCliHomeDir(deps),
   })
-  const providerStatus = providerVisibility.lanes.some((lane) => lane.status === "unconfigured")
-    ? "needs setup"
-    : providerVisibility.lanes.some((lane) => lane.status === "configured" && lane.credential.status !== "present")
-      ? "needs auth"
-      : providerVisibility.lanes.some((lane) => lane.status === "configured" && (lane.readiness.status === "failed" || lane.readiness.status === "stale"))
-        ? "needs attention"
-        : "ready"
-  const providerDetail = providerVisibility.lanes.map((lane) => lane.status === "configured"
-    ? `${lane.lane}: ${lane.provider} / ${lane.model}`
-    : `${lane.lane}: choose provider/model`).join(" | ")
+  const providerSummary = summarizeProvidersForConnect(agent, providerVisibility, providerHealth)
 
+  onProgress?.("loading portable settings")
   const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+  onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
-  const agentConfig = readAgentConfigForAgent(agent, deps.bundlesRoot).config
-  const teamsEnabled = agentConfig.senses?.teams?.enabled === true
-  const blueBubblesEnabled = agentConfig.senses?.bluebubbles?.enabled === true
-  const perplexityStatus = runtimeConfig.ok
-    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.perplexityApiKey") ? "ready" : "missing"
-    : runtimeConfigReadStatus(runtimeConfig)
-  const embeddingsStatus = runtimeConfig.ok
-    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey") ? "ready" : "missing"
-    : runtimeConfigReadStatus(runtimeConfig)
+  const { teamsEnabled, blueBubblesEnabled, mailEnabled, voiceEnabled } = readConnectBaySenseFlags(agent, deps)
+  const perplexityApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
+    : null
+  const embeddingsApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  const elevenLabsApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsApiKey")
+    : null
+  const elevenLabsVoiceId = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsVoiceId")
+      ?? readRuntimeConfigString(runtimeConfig.config, "voice.elevenLabsVoiceId")
+    : null
+  const voiceConversationEngine = machineRuntime.ok || runtimeConfig.ok
+    ? (
+        (machineRuntime.ok
+          ? readRuntimeConfigString(machineRuntime.config, "voice.twilioConversationEngine")
+            ?? readRuntimeConfigString(machineRuntime.config, "voice.conversationEngine")
+          : null)
+        ?? (runtimeConfig.ok
+          ? readRuntimeConfigString(runtimeConfig.config, "voice.twilioConversationEngine")
+            ?? readRuntimeConfigString(runtimeConfig.config, "voice.conversationEngine")
+          : null)
+        ?? "cascade"
+      ).toLowerCase()
+    : "cascade"
+  const openAIRealtimeApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiRealtimeApiKey")
+      ?? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiApiKey")
+      ?? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  const openAISipProjectId = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiSipProjectId") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigString(machineRuntime.config, "voice.openaiSipProjectId") : null)
+    : null
+  const openAISipWebhookSecret = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiSipWebhookSecret") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigString(machineRuntime.config, "voice.openaiSipWebhookSecret") : null)
+    : null
+  const openAISipAllowUnsignedWebhooks = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigBoolean(runtimeConfig.config, "voice.openaiSipAllowUnsignedWebhooks") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigBoolean(machineRuntime.config, "voice.openaiSipAllowUnsignedWebhooks") : null)
+      ?? false
+    : false
+  const twilioPublicUrl = machineRuntime.ok
+    ? readRuntimeConfigString(machineRuntime.config, "voice.twilioPublicUrl")
+    : null
+  const twilioTransportMode = machineRuntime.ok
+    ? readRuntimeConfigString(machineRuntime.config, "voice.twilioTransportMode")
+    : null
+  const shouldVerifyPerplexity = runtimeConfig.ok && !!perplexityApiKey
+  const shouldVerifyEmbeddings = runtimeConfig.ok && !!embeddingsApiKey
+  let perplexityVerification: Awaited<ReturnType<typeof verifyPerplexityCapability>> | undefined
+  let embeddingsVerification: Awaited<ReturnType<typeof verifyEmbeddingsCapability>> | undefined
+  if (shouldVerifyPerplexity && shouldVerifyEmbeddings) {
+    onProgress?.("verifying Perplexity search and embeddings")
+    ;[perplexityVerification, embeddingsVerification] = await Promise.all([
+      verifyPerplexityCapability(perplexityApiKey!),
+      verifyEmbeddingsCapability(embeddingsApiKey!),
+    ])
+  } else if (shouldVerifyPerplexity) {
+    onProgress?.("verifying Perplexity search")
+    perplexityVerification = await verifyPerplexityCapability(perplexityApiKey!)
+  } else if (shouldVerifyEmbeddings) {
+    onProgress?.("verifying embeddings")
+    embeddingsVerification = await verifyEmbeddingsCapability(embeddingsApiKey!)
+  }
+
+  let perplexityStatus: ConnectMenuEntry["status"]
+  let perplexityDetailLines: string[]
+  if (!runtimeConfig.ok) {
+    perplexityStatus = runtimeConfigReadStatus(runtimeConfig)
+    perplexityDetailLines = []
+  } else if (!perplexityApiKey) {
+    perplexityStatus = "missing"
+    perplexityDetailLines = ["no API key saved yet"]
+  } else {
+    perplexityStatus = perplexityVerification?.ok ? "ready" : "needs attention"
+    perplexityDetailLines = [
+      perplexityVerification?.ok
+        ? "verified live just now"
+        : `live check failed: ${perplexityVerification!.summary}`,
+    ]
+  }
+
+  let embeddingsStatus: ConnectMenuEntry["status"]
+  let embeddingsDetailLines: string[]
+  if (!runtimeConfig.ok) {
+    embeddingsStatus = runtimeConfigReadStatus(runtimeConfig)
+    embeddingsDetailLines = []
+  } else if (!embeddingsApiKey) {
+    embeddingsStatus = "missing"
+    embeddingsDetailLines = ["no API key saved yet"]
+  } else {
+    embeddingsStatus = embeddingsVerification?.ok ? "ready" : "needs attention"
+    embeddingsDetailLines = [
+      embeddingsVerification?.ok
+        ? "verified live just now"
+        : `live check failed: ${embeddingsVerification!.summary}`,
+    ]
+  }
+
   const teamsStatus = runtimeConfig.ok
     ? hasRuntimeConfigValue(runtimeConfig.config, "teams.clientId")
       && hasRuntimeConfigValue(runtimeConfig.config, "teams.clientSecret")
@@ -2038,30 +3241,166 @@ async function buildConnectMenu(agent: string, deps: OuroCliDeps): Promise<strin
       ? "attached"
       : "not attached"
     : machineRuntimeReadStatus(machineRuntime)
+  /* v8 ignore start -- connect-menu voice readiness mirrors the dedicated voice resolver; exact provider/config permutations are covered in voice runtime tests @preserve */
+  const voiceStatus = runtimeConfig.ok
+    ? machineRuntime.ok
+      ? (voiceConversationEngine === "openai-sip"
+        ? openAIRealtimeApiKey
+          && openAISipProjectId
+          && (openAISipWebhookSecret || openAISipAllowUnsignedWebhooks)
+          && twilioPublicUrl
+          && voiceEnabled
+        : voiceConversationEngine === "openai-realtime"
+          ? openAIRealtimeApiKey
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.twilioPublicUrl")
+            && twilioTransportMode === "media-stream"
+            && voiceEnabled
+          : elevenLabsApiKey
+            && elevenLabsVoiceId
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath")
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath")
+            && voiceEnabled)
+        ? "attached"
+        : "not attached"
+      : machineRuntimeReadStatus(machineRuntime)
+    : runtimeConfigReadStatus(runtimeConfig)
+  /* v8 ignore stop */
+  const mailroomConfig = runtimeConfig.ok && runtimeConfig.config.mailroom && typeof runtimeConfig.config.mailroom === "object" && !Array.isArray(runtimeConfig.config.mailroom)
+    ? runtimeConfig.config.mailroom as Record<string, unknown>
+    : {}
+  const mailPrivateKeys = mailroomConfig.privateKeys
+  const hasMailPrivateKeys = !!mailPrivateKeys && typeof mailPrivateKeys === "object" && !Array.isArray(mailPrivateKeys) && Object.values(mailPrivateKeys).some((value) => typeof value === "string" && value.trim().length > 0)
+  const mailStatus = runtimeConfig.ok
+    ? hasRuntimeConfigValue(runtimeConfig.config, "mailroom.mailboxAddress")
+      && hasMailPrivateKeys
+      && mailEnabled
+      ? "ready"
+      : "missing"
+    : runtimeConfigReadStatus(runtimeConfig)
 
-  return [
-    `${agent} // connect bay`,
-    "Bring one capability online at a time.",
-    "",
-    `  1. [${providerStatus}] Providers`,
-    `     ${providerDetail}`,
-    "",
-    `  2. [${perplexityStatus}] Perplexity search`,
-    "     Portable. Web search via Perplexity.",
-    "",
-    `  3. [${embeddingsStatus}] Memory embeddings`,
-    "     Portable. Memory retrieval and note search.",
-    "",
-    `  4. [${teamsStatus}] Teams`,
-    "     Portable. Microsoft Teams sense credentials.",
-    "",
-    `  5. [${blueBubblesStatus}] BlueBubbles iMessage`,
-    "     This machine only. Local Mac Messages bridge.",
-    "",
-    "  6. Cancel",
-    "",
-    "Choose [1-6] or type a name: ",
-  ].join("\n")
+  const entries: ConnectMenuEntry[] = [
+    {
+      option: "1",
+      name: "Providers",
+      section: "Providers",
+      status: providerSummary.status,
+      detailLines: providerSummary.detailLines,
+      laneSummaries: providerSummary.laneSummaries,
+      nextAction: providerSummary.nextAction,
+      nextNote: providerSummary.nextNote,
+    },
+    {
+      option: "2",
+      name: "Perplexity search",
+      section: "Portable",
+      status: perplexityStatus,
+      description: "Web search via Perplexity.",
+      detailLines: perplexityDetailLines,
+      nextAction: connectEntryNeedsAttention({
+        option: "2",
+        name: "Perplexity search",
+        section: "Portable",
+        status: perplexityStatus,
+      }) ? `ouro connect perplexity --agent ${agent}` : undefined,
+    },
+    {
+      option: "3",
+      name: "Embeddings",
+      section: "Portable",
+      status: embeddingsStatus,
+      description: "Note search and diary consultation.",
+      detailLines: embeddingsDetailLines,
+      nextAction: connectEntryNeedsAttention({
+        option: "3",
+        name: "Embeddings",
+        section: "Portable",
+        status: embeddingsStatus,
+      }) ? `ouro connect embeddings --agent ${agent}` : undefined,
+    },
+    {
+      option: "4",
+      name: "Teams",
+      section: "Portable",
+      status: teamsStatus,
+      description: "Microsoft Teams sense credentials.",
+      nextAction: connectEntryNeedsAttention({
+        option: "4",
+        name: "Teams",
+        section: "Portable",
+        status: teamsStatus,
+      }) ? `ouro connect teams --agent ${agent}` : undefined,
+    },
+    {
+      option: "5",
+      name: "BlueBubbles iMessage",
+      section: "This machine",
+      status: blueBubblesStatus,
+      description: "Local Mac Messages bridge.",
+      nextAction: connectEntryNeedsAttention({
+        option: "5",
+        name: "BlueBubbles iMessage",
+        section: "This machine",
+        status: blueBubblesStatus,
+      }) ? `ouro connect bluebubbles --agent ${agent}` : undefined,
+    },
+    {
+      option: "6",
+      name: "Agent Mail",
+      section: "Portable",
+      status: mailStatus,
+      description: "Vault-coupled Mailroom mailbox and delegated source aliases.",
+      nextAction: connectEntryNeedsAttention({
+        option: "6",
+        name: "Agent Mail",
+        section: "Portable",
+        status: mailStatus,
+      }) ? `ouro connect mail --agent ${agent}` : undefined,
+    },
+    {
+      option: "7",
+      name: "Voice",
+      section: "This machine",
+      status: voiceStatus,
+      description: "Conversational audio through the first-class Voice sense.",
+      /* v8 ignore start -- status detail copy follows the same voice readiness matrix as voiceStatus above @preserve */
+      detailLines: runtimeConfig.ok && machineRuntime.ok
+        ? voiceConversationEngine === "openai-sip"
+          ? [
+              openAIRealtimeApiKey ? "OpenAI Realtime API key available in portable runtime config" : "missing voice.openaiRealtimeApiKey",
+              openAISipProjectId ? "OpenAI SIP project id saved" : "missing voice.openaiSipProjectId",
+              openAISipWebhookSecret || openAISipAllowUnsignedWebhooks ? "OpenAI SIP webhook verification configured" : "missing voice.openaiSipWebhookSecret",
+              twilioPublicUrl ? "Twilio public Voice URL saved for this machine" : "missing voice.twilioPublicUrl",
+            ]
+          : voiceConversationEngine === "openai-realtime"
+            ? [
+                openAIRealtimeApiKey ? "OpenAI Realtime API key available in portable runtime config" : "missing voice.openaiRealtimeApiKey",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.twilioPublicUrl") ? "Twilio public Voice URL saved for this machine" : "missing voice.twilioPublicUrl",
+                twilioTransportMode === "media-stream" ? "Twilio media-stream transport selected" : "missing voice.twilioTransportMode=media-stream",
+              ]
+            : [
+                elevenLabsApiKey ? "ElevenLabs API key saved in portable runtime config" : "missing integrations.elevenLabsApiKey",
+                elevenLabsVoiceId ? "ElevenLabs voice ID saved in portable runtime config" : "missing integrations.elevenLabsVoiceId",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath") ? "Whisper.cpp CLI path saved for this machine" : "missing voice.whisperCliPath",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath") ? "Whisper.cpp model path saved for this machine" : "missing voice.whisperModelPath",
+              ]
+        : [],
+      /* v8 ignore stop */
+      nextAction: connectEntryNeedsAttention({
+        option: "7",
+        name: "Voice",
+        section: "This machine",
+        status: voiceStatus,
+      }) ? `ouro connect voice --agent ${agent}` : undefined,
+    },
+  ]
+
+  const isTTY = connectMenuIsTTY(deps)
+  return renderConnectBay(entries, {
+    agent,
+    isTTY,
+    columns: deps.stdoutColumns ?? process.stdout.columns,
+    prompt: CONNECT_MENU_PROMPT,
+  })
 }
 
 async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2069,15 +3408,43 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect Perplexity on the hatchling agent instead.")
   }
   const promptSecret = requirePromptSecret(deps, "Perplexity API key entry")
-  deps.writeStdout([
-    `Connect Perplexity for ${agent}`,
-    "The API key stays hidden while you type.",
-    `Ouro stores it in ${agent}'s vault runtime/config item.`,
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Perplexity",
+    subtitle: `${agent} gets portable web search.`,
+    summary: "Add one hidden API key, verify it live, and make web search travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Portable web search inside Ouro.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "One Perplexity API key.",
+          "It stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect Perplexity for ${agent}`,
+      "The API key stays hidden while you type.",
+      `Ouro stores it in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const key = (await promptSecret("Perplexity API key: ")).trim()
   if (!key) throw new Error("Perplexity API key cannot be blank")
   const progress = createHumanCommandProgress(deps, "connect perplexity")
   let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let verification: Awaited<ReturnType<typeof verifyPerplexityCapability>>
   let reload: string
   try {
     stored = await runCommandProgressPhase(
@@ -2093,6 +3460,36 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
       }),
       () => "secret stored",
     )
+
+    progress.startPhase("verifying Perplexity search")
+    verification = await verifyPerplexityCapability(key)
+    if (!verification.ok) {
+      progress.failPhase("verifying Perplexity search", verification.summary)
+      progress.end()
+      return writeCapabilityAttention(deps, {
+        subtitle: `${agent}'s Perplexity key needs another pass.`,
+        summary: "Perplexity search was saved, but the live check failed.",
+        whatChanged: [
+          `Stored: ${stored.itemPath}`,
+          `Live check: ${verification.summary}`,
+          "secret was not printed",
+        ],
+        nextMoves: [
+          `Rerun ouro connect perplexity --agent ${agent} with a working key.`,
+          `Use ouro connect --agent ${agent} to review the rest of the capability bay.`,
+        ],
+        fallbackLines: [
+        `Perplexity key was saved for ${agent}, but the live check failed.`,
+        `stored: ${stored.itemPath}`,
+        `live check: ${verification.summary}`,
+        "secret was not printed",
+        "",
+        `Next: rerun \`ouro connect perplexity --agent ${agent}\` with a working key.`,
+        ],
+      })
+    }
+    progress.completePhase("verifying Perplexity search", verification.summary)
+
     reload = await runCommandProgressPhase(
       progress,
       `applying change to running ${agent}`,
@@ -2102,17 +3499,29 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
   } finally {
     progress.end()
   }
-  const message = [
-    `Perplexity connected for ${agent}`,
-    "capability: Perplexity search",
-    `stored: ${stored.itemPath}`,
-    `running agent: ${reload}`,
-    "secret was not printed",
-    "",
-    "Next: ask the agent to search.",
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s search compass is online.`,
+    summary: `Perplexity search is ready to travel with ${agent}.`,
+    whatChanged: [
+      `Capability: Perplexity search`,
+      `Stored: ${stored.itemPath}`,
+      `Running agent: ${reload}`,
+      "secret was not printed",
+    ],
+    nextMoves: [
+      "Ask the agent to search.",
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Perplexity connected for ${agent}`,
+      "capability: Perplexity search",
+      `stored: ${stored.itemPath}`,
+      `running agent: ${reload}`,
+      "secret was not printed",
+      "",
+      "Next: ask the agent to search.",
+    ],
+  })
 }
 
 async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2120,20 +3529,48 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect embeddings on the hatchling agent instead.")
   }
   const promptSecret = requirePromptSecret(deps, "OpenAI embeddings API key entry")
-  deps.writeStdout([
-    `Connect embeddings for ${agent}`,
-    "The API key stays hidden while you type.",
-    `Ouro stores it in ${agent}'s vault runtime/config item.`,
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Embeddings",
+    subtitle: `${agent} gets portable note search and diary consultation.`,
+    summary: "Add one hidden API key, verify it live, and let semantic note search travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Portable note search and diary consultation.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "One OpenAI embeddings API key.",
+          "It stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect embeddings for ${agent}`,
+      "The API key stays hidden while you type.",
+      `Ouro stores it in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const key = (await promptSecret("OpenAI embeddings API key: ")).trim()
   if (!key) throw new Error("OpenAI embeddings API key cannot be blank")
   const progress = createHumanCommandProgress(deps, "connect embeddings")
   let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let verification: Awaited<ReturnType<typeof verifyEmbeddingsCapability>>
   let reload: string
   try {
     stored = await runCommandProgressPhase(
       progress,
-      "saving memory embeddings",
+      "saving embeddings",
       () => storeRuntimeConfigKey({
         agent,
         key: "integrations.openaiEmbeddingsApiKey",
@@ -2144,6 +3581,36 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
       }),
       () => "secret stored",
     )
+
+    progress.startPhase("verifying embeddings")
+    verification = await verifyEmbeddingsCapability(key)
+    if (!verification.ok) {
+      progress.failPhase("verifying embeddings", verification.summary)
+      progress.end()
+      return writeCapabilityAttention(deps, {
+        subtitle: `${agent}'s embeddings key needs another pass.`,
+        summary: "Embeddings were saved, but the live check failed.",
+        whatChanged: [
+          `Stored: ${stored.itemPath}`,
+          `Live check: ${verification.summary}`,
+          "secret was not printed",
+        ],
+        nextMoves: [
+          `Rerun ouro connect embeddings --agent ${agent} with a working key.`,
+          `Use ouro connect --agent ${agent} to review the rest of the connections screen.`,
+        ],
+        fallbackLines: [
+        `Embeddings key was saved for ${agent}, but the live check failed.`,
+        `stored: ${stored.itemPath}`,
+        `live check: ${verification.summary}`,
+        "secret was not printed",
+        "",
+        `Next: rerun \`ouro connect embeddings --agent ${agent}\` with a working key.`,
+        ],
+      })
+    }
+    progress.completePhase("verifying embeddings", verification.summary)
+
     reload = await runCommandProgressPhase(
       progress,
       `applying change to running ${agent}`,
@@ -2153,17 +3620,29 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
   } finally {
     progress.end()
   }
-  const message = [
-    `Embeddings connected for ${agent}`,
-    "capability: memory embeddings",
-    `stored: ${stored.itemPath}`,
-    `running agent: ${reload}`,
-    "secret was not printed",
-    "",
-    "Next: ask the agent to search notes or memory.",
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s embeddings index is online.`,
+    summary: `Embeddings are ready to travel with ${agent}.`,
+    whatChanged: [
+      "Capability: embeddings",
+      `Stored: ${stored.itemPath}`,
+      `Running agent: ${reload}`,
+      "secret was not printed",
+    ],
+    nextMoves: [
+      "Ask the agent to search notes or consult the diary.",
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Embeddings connected for ${agent}`,
+      "capability: embeddings",
+      `stored: ${stored.itemPath}`,
+      `running agent: ${reload}`,
+      "secret was not printed",
+      "",
+      "Next: ask the agent to search notes or consult the diary.",
+    ],
+  })
 }
 
 async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2172,11 +3651,38 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   }
   const promptInput = requirePromptInput(deps, "Teams setup")
   const promptSecret = requirePromptSecret(deps, "Teams client secret entry")
-  deps.writeStdout([
-    `Connect Teams for ${agent}`,
-    "This connects the Teams sense.",
-    "The client secret stays hidden while you type.",
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Teams",
+    subtitle: `${agent} gets a portable Teams sense.`,
+    summary: "Add the app credentials once, keep the secret hidden, and let Teams travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Microsoft Teams messages and actions inside Ouro.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "A Teams client ID, client secret, and tenant ID.",
+          "The client secret stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect Teams for ${agent}`,
+      "The client secret stays hidden while you type.",
+      `Ouro stores the setup in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const clientId = (await promptInput("Teams client ID: ")).trim()
   if (!clientId) throw new Error("Teams client ID cannot be blank")
   const clientSecret = (await promptSecret("Teams client secret: ")).trim()
@@ -2210,18 +3716,32 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   } finally {
     progress.end()
   }
-
-  const message = appendBundleSyncSummary([
-    `Teams connected for ${agent}`,
-    "capability: Teams sense",
-    `stored: ${stored.itemPath}`,
-    "agent.json: senses.teams.enabled = true",
-    "secret was not printed",
-    "",
-    "Next: run `ouro up` so the daemon picks up the Teams sense change.",
-  ].join("\n"), agent, deps)
-  deps.writeStdout(message)
-  return message
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s Teams sense is configured.`,
+    summary: `Teams is ready for ${agent}.`,
+    whatChanged: [
+      "Capability: Teams sense",
+      `Stored: ${stored.itemPath}`,
+      "agent.json: senses.teams.enabled = true",
+      "secret was not printed",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+    nextMoves: [
+      "Run ouro up so the daemon picks up the Teams sense change.",
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Teams connected for ${agent}`,
+      "capability: Teams sense",
+      `stored: ${stored.itemPath}`,
+      "agent.json: senses.teams.enabled = true",
+      "secret was not printed",
+      "",
+      "Next: run `ouro up` so the daemon picks up the Teams sense change.",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+  })
 }
 
 async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2230,11 +3750,38 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   }
   const promptInput = requirePromptInput(deps, "BlueBubbles setup")
   const promptSecret = requirePromptSecret(deps, "BlueBubbles password entry")
-  deps.writeStdout([
-    `Connect BlueBubbles for ${agent}`,
-    "This is a local attachment for this machine.",
-    "The app password stays hidden while you type.",
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect BlueBubbles",
+    subtitle: `${agent} gets a local Messages bridge on this machine.`,
+    summary: "Attach this Mac's BlueBubbles bridge without pretending it travels anywhere else.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Local iMessage bridge access on this machine only.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "A BlueBubbles server URL and app password.",
+          "The app password stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s machine runtime config for this machine.`,
+          "It does not travel to other machines unless you attach them too.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect BlueBubbles for ${agent}`,
+      "This is a local attachment for this machine.",
+      "The app password stays hidden while you type.",
+    ],
+  })
   const serverUrl = (await promptInput("BlueBubbles server URL for this machine: ")).trim()
   if (!serverUrl) throw new Error("BlueBubbles server URL cannot be blank")
   const password = (await promptSecret("BlueBubbles app password: ")).trim()
@@ -2242,10 +3789,19 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const port = parseOptionalPort(await promptInput("Local webhook port [18790]: "), 18790, "BlueBubbles webhook port")
   const webhookPath = normalizeWebhookPath(await promptInput("Local webhook path [/bluebubbles-webhook]: "), "/bluebubbles-webhook")
   const requestTimeoutMs = parseOptionalPositiveInteger(await promptInput("Request timeout ms [30000]: "), 30000, "BlueBubbles request timeout")
+  // Capture the operator's known iMessage handles so the BB ingest path can
+  // filter group-chat echoes whose `isFromMe` flag was lost or never set.
+  // Without this, the agent would ingest its own outbound message as inbound
+  // and reply to itself ("Slugger talking to himself" in groups).
+  const ownHandlesRaw = (await promptInput("Your iMessage handle(s) — phone(s) and/or email(s) BlueBubbles attributes to your sent messages (comma-separated; needed for the group self-talk filter; blank to skip): ")).trim()
+  const ownHandles = ownHandlesRaw
+    ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
+    : []
   const machineId = currentMachineId(deps)
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
   let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
+  let daemonApply = "not applied"
   try {
     progress.startPhase("saving BlueBubbles attachment")
     progress.updateDetail("checking existing machine runtime config")
@@ -2260,6 +3816,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
         serverUrl,
         password,
         accountId: "default",
+        ownHandles,
       },
       bluebubblesChannel: {
         port,
@@ -2272,23 +3829,1288 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.updateDetail("enabling BlueBubbles in agent.json")
     enableAgentSense(agent, "bluebubbles", deps)
     progress.completePhase("saving BlueBubbles attachment", "secret stored")
+    daemonApply = await runCommandProgressPhase(
+      progress,
+      "applying BlueBubbles to running Ouro",
+      () => applyLocalSenseChangeToRunningDaemon(agent, "BlueBubbles", deps, (message) => progress.updateDetail(message)),
+      (result) => result,
+    )
     progress.end()
   } catch (error) {
     progress.end()
     throw error
   }
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s local bridge is attached.`,
+    summary: `BlueBubbles is attached on this machine for ${agent}.`,
+    whatChanged: [
+      `Machine: ${machineId}`,
+      `Stored: ${stored.itemPath}`,
+      "agent.json: senses.bluebubbles.enabled = true",
+      `Runtime: ${daemonApply}`,
+      `ownHandles: ${ownHandles.length > 0 ? ownHandles.join(", ") : "(none — group self-talk filter inactive)"}`,
+      "secret was not printed",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+    nextMoves: [
+      `Point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
+      "If BlueBubbles was already pointed there, messages can now reach the agent.",
+      `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
+    ],
+    fallbackLines: [
+      `BlueBubbles attached for ${agent} on this machine`,
+      `machine: ${machineId}`,
+      `stored: ${stored.itemPath}`,
+      "agent.json: senses.bluebubbles.enabled = true",
+      `runtime: ${daemonApply}`,
+      "secret was not printed",
+      "",
+      `Next: point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+  })
+}
 
-  const message = appendBundleSyncSummary([
-    `BlueBubbles attached for ${agent} on this machine`,
-    `machine: ${machineId}`,
-    `stored: ${stored.itemPath}`,
-    "agent.json: senses.bluebubbles.enabled = true",
-    "secret was not printed",
+interface MailroomSetupOutcome {
+  mailboxAddress: string
+  sourceAlias: string | null
+  mode: "local" | "hosted"
+  registryPath: string | null
+  storePath: string | null
+  hostedControlUrl?: string
+  blobStoreLabel?: string
+  stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>>
+  syncSummary: string | null
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function readMailroomRegistryFromDisk(registryPath: string): MailroomRegistry | undefined {
+  if (!fs.existsSync(registryPath)) return undefined
+  const parsed = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as unknown
+  if (!isPlainRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.mailboxes) || !Array.isArray(parsed.sourceGrants)) {
+    throw new Error(`mailroom registry at ${registryPath} is not a valid Mailroom registry`)
+  }
+  return parsed as unknown as MailroomRegistry
+}
+
+function mailroomPrivateKeys(mailroom: Record<string, unknown> | undefined): Record<string, string> {
+  const keys = isPlainRecord(mailroom?.privateKeys) ? mailroom.privateKeys : {}
+  return Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+}
+
+interface HostedMailControlConfig {
+  url: string
+  token: string
+}
+
+interface HostedMailControlEnsureResponse {
+  ok?: boolean
+  error?: string
+  mailboxAddress?: unknown
+  sourceAlias?: unknown
+  generatedPrivateKeys?: unknown
+  mailbox?: unknown
+  sourceGrant?: unknown
+  publicRegistry?: unknown
+  blobStore?: unknown
+}
+
+interface HostedMissingMailKeys {
+  keyIds: string[]
+  rotateMailbox: boolean
+  rotateSourceGrant: boolean
+}
+
+function hostedMailControlConfig(config: RuntimeCredentialConfig): HostedMailControlConfig | null {
+  const workSubstrate = isPlainRecord(config.workSubstrate) ? config.workSubstrate : undefined
+  if (!workSubstrate || stringField(workSubstrate, "mode") !== "hosted") return null
+  const mailControl = isPlainRecord(workSubstrate.mailControl) ? workSubstrate.mailControl : undefined
+  const url = mailControl ? stringField(mailControl, "url").replace(/\/+$/, "") : ""
+  const token = mailControl ? (stringField(mailControl, "token") || stringField(mailControl, "adminToken")) : ""
+  if (!url || !token) {
+    throw new Error("hosted workSubstrate.mailControl requires url and token in the agent vault runtime/config item")
+  }
+  return { url, token }
+}
+
+function cleanHostedMailroomBase(existingMailroom: Record<string, unknown> | undefined): Record<string, unknown> {
+  const base = { ...(existingMailroom ?? {}) }
+  delete base.registryPath
+  delete base.storePath
+  return base
+}
+
+function requiredResponseRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isPlainRecord(value)) throw new Error(`Mail Control response missing ${label}`)
+  return value
+}
+
+function requiredResponseText(record: Record<string, unknown>, key: string, label: string): string {
+  const value = stringField(record, key)
+  if (!value) throw new Error(`Mail Control response missing ${label}`)
+  return value
+}
+
+function responsePrivateKeys(value: unknown): Record<string, string> {
+  if (!isPlainRecord(value)) return {}
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] =>
+    typeof entry[0] === "string" && typeof entry[1] === "string" && entry[1].trim().length > 0))
+}
+
+function requiredHostedKeyIds(body: HostedMailControlEnsureResponse): string[] {
+  return [body.mailbox, body.sourceGrant]
+    .filter(isPlainRecord)
+    .map((record) => stringField(record, "keyId"))
+    .filter((keyId) => keyId.length > 0)
+}
+
+function hostedMissingMailKeys(body: HostedMailControlEnsureResponse, keys: Record<string, string>): HostedMissingMailKeys {
+  const mailbox = isPlainRecord(body.mailbox) ? body.mailbox : undefined
+  const sourceGrant = isPlainRecord(body.sourceGrant) ? body.sourceGrant : undefined
+  const mailboxKeyId = mailbox ? stringField(mailbox, "keyId") : ""
+  const sourceKeyId = sourceGrant ? stringField(sourceGrant, "keyId") : ""
+  const missingMailbox = mailboxKeyId.length > 0 && !keys[mailboxKeyId]
+  const missingSourceGrant = sourceKeyId.length > 0 && !keys[sourceKeyId]
+  return {
+    keyIds: [
+      ...(missingMailbox ? [mailboxKeyId] : []),
+      ...(missingSourceGrant ? [sourceKeyId] : []),
+    ],
+    rotateMailbox: missingMailbox,
+    rotateSourceGrant: missingSourceGrant,
+  }
+}
+
+function assertHostedPrivateKeys(input: {
+  agent: string
+  keys: Record<string, string>
+  requiredKeyIds: string[]
+}): void {
+  for (const keyId of input.requiredKeyIds) {
+    if (input.keys[keyId]) continue
+    throw new Error(`hosted Mail Control references private mail key ${keyId}, but it was not returned and is not present in ${input.agent}'s vault runtime/config. Repair requires a fresh Mail Control one-time key response or rerunning setup with --rotate-missing-mail-keys.`)
+  }
+}
+
+async function requestHostedMailControl(input: {
+  fetchImpl: typeof fetch
+  config: HostedMailControlConfig
+  path: "/v1/mailboxes/ensure" | "/v1/mailboxes/rotate-keys"
+  payload: Record<string, unknown>
+  label: "ensure" | "key rotation"
+}): Promise<HostedMailControlEnsureResponse> {
+  const response = await input.fetchImpl(`${input.config.url}${input.path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${input.config.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(input.payload),
+  })
+  const body = await response.json() as HostedMailControlEnsureResponse
+  if (!response.ok || body.ok === false) {
+    throw new Error(`hosted Mail Control ${input.label} failed (${response.status}): ${body.error ?? response.statusText}`)
+  }
+  return body
+}
+
+interface MailSourceSetupInput {
+  ownerEmail?: string
+  source?: string
+  noDelegatedSource?: boolean
+  rotateMissingMailKeys?: boolean
+}
+
+async function promptDelegatedMailSource(deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<{ ownerEmail: string; source: string }> {
+  if (input.noDelegatedSource) return { ownerEmail: "", source: "" }
+  if (input.ownerEmail !== undefined) {
+    const ownerEmail = input.ownerEmail.trim()
+    return {
+      ownerEmail,
+      source: ownerEmail ? (input.source?.trim() || "hey") : "",
+    }
+  }
+  const promptInput = requirePromptInput(deps, "Agent Mail setup")
+  const ownerEmail = (await promptInput("Delegated owner email for first source alias [blank to skip]: ")).trim()
+  const source = ownerEmail
+    ? ((await promptInput("Delegated source label [hey]: ")).trim() || "hey")
+    : ""
+  return { ownerEmail, source }
+}
+
+async function ensureAgentMailroom(
+  agent: string,
+  input: { ownerEmail: string; source: string; rotateMissingMailKeys?: boolean },
+  deps: OuroCliDeps,
+  progressLabel: string,
+): Promise<MailroomSetupOutcome> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Connect mail on the hatchling agent instead.")
+  }
+  const agentRoot = providerCliAgentRoot({ agent }, deps)
+  const mailStateDir = path.join(agentRoot, "state", "mailroom")
+  const progress = createHumanCommandProgress(deps, progressLabel)
+  let stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>> | undefined
+  let mailboxAddress = `${agent.toLowerCase()}@ouro.bot`
+  let sourceAlias: string | null = null
+  let mode: MailroomSetupOutcome["mode"] = "local"
+  let registryPath: string | null = path.join(mailStateDir, "registry.json")
+  let storePath: string | null = mailStateDir
+  let hostedControlUrl: string | undefined
+  let blobStoreLabel: string | undefined
+  try {
+    progress.startPhase("checking Mailroom runtime config")
+    const current = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+    }
+    const currentConfig = current.ok ? current.config : {}
+    const existingMailroom = isPlainRecord(currentConfig.mailroom) ? currentConfig.mailroom : undefined
+    const hostedConfig = hostedMailControlConfig(currentConfig)
+    registryPath = stringField(existingMailroom ?? {}, "registryPath") || registryPath
+    storePath = stringField(existingMailroom ?? {}, "storePath") || storePath
+    let nextConfig: RuntimeCredentialConfig
+    if (hostedConfig) {
+      progress.updateDetail("calling hosted Mail Control")
+      const fetchImpl = deps.fetchImpl ?? fetch
+      const basePayload = {
+        agentId: agent,
+        ...(input.ownerEmail ? { ownerEmail: input.ownerEmail } : {}),
+        ...(input.source ? { source: input.source } : {}),
+      }
+      let body = await requestHostedMailControl({
+        fetchImpl,
+        config: hostedConfig,
+        path: "/v1/mailboxes/ensure",
+        payload: basePayload,
+        label: "ensure",
+      })
+      let generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
+      const privateKeys = {
+        ...mailroomPrivateKeys(existingMailroom),
+        ...generatedPrivateKeys,
+      }
+      const missingKeys = hostedMissingMailKeys(body, privateKeys)
+      if (missingKeys.keyIds.length > 0 && input.rotateMissingMailKeys) {
+        progress.updateDetail("rotating missing hosted mail keys")
+        body = await requestHostedMailControl({
+          fetchImpl,
+          config: hostedConfig,
+          path: "/v1/mailboxes/rotate-keys",
+          payload: {
+            ...basePayload,
+            rotateMailbox: missingKeys.rotateMailbox,
+            rotateSourceGrant: missingKeys.rotateSourceGrant,
+            reason: "missing private mail keys in agent vault",
+          },
+          label: "key rotation",
+        })
+        generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
+        Object.assign(privateKeys, generatedPrivateKeys)
+      }
+      assertHostedPrivateKeys({
+        agent,
+        keys: privateKeys,
+        requiredKeyIds: requiredHostedKeyIds(body),
+      })
+      const publicRegistry = requiredResponseRecord(body.publicRegistry, "publicRegistry")
+      const blobStore = requiredResponseRecord(body.blobStore, "blobStore")
+      mailboxAddress = typeof body.mailboxAddress === "string" && body.mailboxAddress.trim()
+        ? body.mailboxAddress.trim()
+        : requiredResponseText(requiredResponseRecord(body.mailbox, "mailbox"), "canonicalAddress", "mailboxAddress")
+      sourceAlias = typeof body.sourceAlias === "string" && body.sourceAlias.trim() ? body.sourceAlias.trim() : null
+      mode = "hosted"
+      registryPath = null
+      storePath = null
+      hostedControlUrl = hostedConfig.url
+      blobStoreLabel = `${requiredResponseText(blobStore, "azureAccountUrl", "blobStore.azureAccountUrl")}/${requiredResponseText(blobStore, "container", "blobStore.container")}`
+      nextConfig = {
+        ...currentConfig,
+        mailroom: {
+          ...cleanHostedMailroomBase(existingMailroom),
+          mode,
+          mailboxAddress,
+          sourceAlias,
+          azureAccountUrl: requiredResponseText(blobStore, "azureAccountUrl", "blobStore.azureAccountUrl"),
+          azureContainer: requiredResponseText(blobStore, "container", "blobStore.container"),
+          registryAzureAccountUrl: requiredResponseText(publicRegistry, "azureAccountUrl", "publicRegistry.azureAccountUrl"),
+          registryContainer: requiredResponseText(publicRegistry, "container", "publicRegistry.container"),
+          registryBlob: requiredResponseText(publicRegistry, "blob", "publicRegistry.blob"),
+          registryDomain: requiredResponseText(publicRegistry, "domain", "publicRegistry.domain"),
+          registryRevision: requiredResponseText(publicRegistry, "revision", "publicRegistry.revision"),
+          privateKeys,
+        },
+      }
+    } else {
+      progress.updateDetail("ensuring local Mailroom identity")
+      const ensured = ensureMailboxRegistry({
+        agentId: agent,
+        registry: readMailroomRegistryFromDisk(registryPath!),
+        keys: mailroomPrivateKeys(existingMailroom),
+        ownerEmail: input.ownerEmail || undefined,
+        source: input.source || undefined,
+      })
+      mailboxAddress = ensured.mailboxAddress
+      sourceAlias = ensured.sourceAlias
+      fs.mkdirSync(path.dirname(registryPath!), { recursive: true })
+      fs.mkdirSync(storePath!, { recursive: true })
+      fs.writeFileSync(registryPath!, `${JSON.stringify(ensured.registry, null, 2)}\n`, "utf-8")
+      nextConfig = {
+        ...currentConfig,
+        mailroom: {
+          ...(existingMailroom ?? {}),
+          mode,
+          mailboxAddress,
+          registryPath,
+          storePath,
+          privateKeys: ensured.keys,
+        },
+      }
+    }
+    progress.updateDetail("storing private mail keys in vault")
+    stored = await upsertRuntimeCredentialConfig(agent, nextConfig, providerCliNow(deps))
+    progress.updateDetail("enabling Mail sense in agent.json")
+    enableAgentSense(agent, "mail", deps)
+    progress.completePhase("checking Mailroom runtime config", "mail ready")
+    progress.end()
+  } catch (error) {
+    progress.end()
+    throw error
+  }
+  /* v8 ignore next -- defensive: successful setup always stores before leaving the guarded block. @preserve */
+  if (!stored) throw new Error("Mailroom setup did not store runtime credentials")
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return { mailboxAddress, sourceAlias, mode, registryPath, storePath, hostedControlUrl, blobStoreLabel, stored, syncSummary }
+}
+
+async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<string> {
+  writeConnectorIntro(deps, {
+    title: "Connect Agent Mail",
+    subtitle: `${agent} gets a private Mailroom identity and delegated source lane.`,
+    summary: "Provision a vault-coupled mailbox, source alias, encrypted local store, and Mail sense.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Private agent mail at the agent's canonical @ouro.bot address.",
+          "HEY/source aliases that stay labeled as delegated human mail.",
+          "Bounded read tools with access logging.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "Optional owner email for the first delegated source alias.",
+          "No mail password is printed or pasted; Ouro generates mail keys and stores private keys in the agent vault.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item for private keys and Mailroom coordinates.`,
+          `${agent}'s bundle state for non-secret registry and local encrypted mail cache.`,
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect Agent Mail for ${agent}`,
+      "Ouro generates mail keys and stores private keys in the agent vault.",
+      "The registry and encrypted local store live under the agent bundle state.",
+    ],
+  })
+  const setup = await promptDelegatedMailSource(deps, input)
+  const outcome = await ensureAgentMailroom(agent, {
+    ...setup,
+    ...(input.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }, deps, "connect mail")
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s Mail sense is configured.`,
+    summary: `Agent Mail is ready for ${agent}.`,
+    whatChanged: [
+      `Mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`Registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`Encrypted store: ${outcome.storePath}`] : []),
+      `Stored: ${outcome.stored.itemPath}`,
+      "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+    nextMoves: [
+      "Run ouro up so the daemon picks up the Mail sense.",
+      outcome.sourceAlias
+        ? `Use ${outcome.sourceAlias} for HEY forwarding or Extensions after the SMTP ingress proof is accepted.`
+        : "Add delegated source aliases when you are ready to mirror human mail.",
+    ],
+    fallbackLines: [
+      `Agent Mail connected for ${agent}`,
+      `mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`encrypted store: ${outcome.storePath}`] : []),
+      `stored: ${outcome.stored.itemPath}`,
+      "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
+      "",
+      "Next: run `ouro up` so the daemon picks up the Mail sense.",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+  })
+}
+
+async function executeAccountEnsure(
+  command: Extract<ResolvedOuroCliCommand, { kind: "account.ensure" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  writeConnectorIntro(deps, {
+    title: "Ensure Agent Account",
+    subtitle: `${command.agent}'s Ouro work substrate gets its vault-backed coordinates.`,
+    summary: "Prepare the portable runtime account shape that couples vault, Mailroom, and enabled senses.",
+    sections: [
+      {
+        title: "Account substrate",
+        lines: [
+          "runtime/config remains the private vault item for portable integration secrets.",
+          "Mailroom gets a private native mailbox and optional delegated source alias.",
+          "agent.json records that the Mail sense is enabled.",
+        ],
+      },
+      {
+        title: "Human-only edges",
+        lines: [
+          "This command does not perform browser auth, HEY forwarding, DNS edits, MX cutover, or autonomous sending enablement.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Ensure Ouro work substrate for ${command.agent}`,
+      "This creates or preserves runtime/config Mailroom coordinates and enables the Mail sense.",
+    ],
+  })
+  const setup = await promptDelegatedMailSource(deps, command)
+  const outcome = await ensureAgentMailroom(command.agent, {
+    ...setup,
+    ...(command.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }, deps, "account ensure")
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${command.agent}'s work substrate account is configured.`,
+    summary: `Ouro work substrate is ready for ${command.agent}.`,
+    whatChanged: [
+      "Vault item: runtime/config",
+      `Mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`Registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`Encrypted store: ${outcome.storePath}`] : []),
+      "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+    nextMoves: [
+      "Run ouro up so the daemon picks up the Mail sense.",
+      "Import HEY MBOX mail only after the human has exported the file.",
+      "Keep production MX and autonomous send disabled until the final explicit confirmation.",
+    ],
+    fallbackLines: [
+      `Ouro work substrate ready for ${command.agent}`,
+      "vault: runtime/config",
+      `mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`encrypted store: ${outcome.storePath}`] : []),
+      "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+  })
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+interface TrackedMailOperation {
+  record: BackgroundOperationRecord
+  running: (summary: string, detail?: string, progress?: { current?: number; total?: number; unit?: string }) => void
+  update: (
+    summary: string,
+    detail?: string,
+    progress?: { current?: number; total?: number; unit?: string },
+    spec?: Record<string, unknown>,
+  ) => void
+  succeed: (summary: string, detail: string, result: Record<string, unknown>) => Promise<void>
+  fail: (
+    error: unknown,
+    summary: string,
+    detail: string,
+    remediation: string[],
+    failure?: { class: string; retryDisposition?: "retry-safe" | "fix-before-retry" | "investigate-first"; hint?: string },
+  ) => Promise<void>
+}
+
+function cliNowIso(deps: OuroCliDeps): string {
+  return new Date(deps.now?.() ?? Date.now()).toISOString()
+}
+
+function makeBackgroundOperationId(kind: "mail.import-mbox" | "mail.backfill-indexes"): string {
+  const prefix = kind === "mail.import-mbox" ? "op_mail_import" : "op_mail_backfill"
+  return `${prefix}_${randomUUID().slice(0, 8)}`
+}
+
+async function notifyMailOperation(
+  agentName: string,
+  record: BackgroundOperationRecord & { detail: string },
+  deps: OuroCliDeps,
+): Promise<void> {
+  const lines = [
+    "[Background Operation]",
+    `${record.title} ${record.status === "failed" ? "failed" : "finished"}.`,
+    `operation: ${record.id}`,
+    `status: ${record.status}`,
+    `summary: ${record.summary}`,
+    `detail: ${record.detail}`,
+    ...(record.failure?.class ? [`failure class: ${record.failure.class}`] : []),
+    ...(record.failure?.retryDisposition ? [`retry: ${record.failure.retryDisposition}`] : []),
+    ...(record.failure?.hint ? [`recovery: ${record.failure.hint}`] : []),
+    ...(record.error?.message ? [`error: ${record.error.message}`] : []),
+    ...(record.remediation && record.remediation.length > 0 ? ["", "next steps:", ...record.remediation.map((step) => `- ${step}`)] : []),
+    ...(record.kind === "mail.import-mbox" && record.status === "succeeded"
+      ? ["", "do not rerun the same archive unless a newer export appears."]
+      : []),
     "",
-    "Next: point BlueBubbles at this machine's webhook, then run `ouro up`.",
-  ].join("\n"), agent, deps)
+    "Use query_active_work for the live background-work view before drilling into mail details.",
+  ]
+  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
+  const content = lines.join("\n")
+  queuePendingMessage(path.join(agentRoot, "state", "pending", "self", "inner", "dialog"), {
+    from: "mailroom",
+    friendId: "self",
+    channel: "inner",
+    key: "dialog",
+    content,
+    timestamp: deps.now?.() ?? Date.now(),
+    mode: "reflect",
+  })
+  await queueMailOperationTargetNotification(agentName, content, deps).catch(() => undefined)
+  await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
+    .then(() => undefined)
+    .catch(() => undefined)
+}
+
+async function queueMailOperationTargetNotification(
+  agentName: string,
+  content: string,
+  deps: OuroCliDeps,
+): Promise<void> {
+  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
+  const friendsDir = path.join(agentRoot, "friends")
+  const sessionsDir = path.join(agentRoot, "state", "sessions")
+  const mcpTarget = listSessionActivity({
+    sessionsDir,
+    friendsDir,
+    agentName,
+  }).find((candidate) => candidate.channel === "mcp")
+  if (mcpTarget) {
+    queuePendingMessage(path.join(agentRoot, "state", "pending", mcpTarget.friendId, mcpTarget.channel, mcpTarget.key), {
+      from: "mailroom",
+      friendId: mcpTarget.friendId,
+      channel: mcpTarget.channel,
+      key: mcpTarget.key,
+      content,
+      timestamp: deps.now?.() ?? Date.now(),
+      mode: "relay",
+    })
+    return
+  }
+  const candidates = await listTargetSessionCandidates({
+    sessionsDir,
+    friendsDir,
+    agentName,
+    friendStore: new FileFriendStore(friendsDir),
+  })
+  const target = candidates.find((candidate) => candidate.delivery.mode !== "blocked")
+  if (!target) return
+  queuePendingMessage(path.join(agentRoot, "state", "pending", target.friendId, target.channel, target.key), {
+    from: "mailroom",
+    friendId: target.friendId,
+    channel: target.channel,
+    key: target.key,
+    content,
+    timestamp: deps.now?.() ?? Date.now(),
+    mode: "relay",
+  })
+}
+
+function ensureTrackedMailOperation(input: {
+  agentName: string
+  deps: OuroCliDeps
+  operationId?: string
+  kind: "mail.import-mbox" | "mail.backfill-indexes"
+  title: string
+  queuedSummary: string
+  spec?: Record<string, unknown>
+}): TrackedMailOperation | null {
+  if (!input.operationId) return null
+  const operationId = input.operationId
+  const agentRoot = providerCliAgentRoot({ agent: input.agentName }, input.deps)
+  const existing = readBackgroundOperation({
+    agentName: input.agentName,
+    agentRoot,
+    id: operationId,
+  })
+  const record = existing ?? startBackgroundOperation({
+    agentName: input.agentName,
+    agentRoot,
+    id: operationId,
+    kind: input.kind,
+    title: input.title,
+    summary: input.queuedSummary,
+    createdAt: cliNowIso(input.deps),
+    ...(input.spec ? { spec: input.spec } : {}),
+  })
+  return {
+    record,
+    running: (summary, detail, progress) => {
+      markBackgroundOperationRunning({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        startedAt: cliNowIso(input.deps),
+        summary,
+        ...(detail ? { detail } : {}),
+        ...(progress ? { progress } : {}),
+      })
+    },
+    update: (summary, detail, progress, spec) => {
+      updateBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        summary,
+        updatedAt: cliNowIso(input.deps),
+        ...(detail ? { detail } : {}),
+        ...(progress ? { progress } : {}),
+        ...(spec ? { spec } : {}),
+      })
+    },
+    succeed: async (summary, detail, result) => {
+      const completed = completeBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        finishedAt: cliNowIso(input.deps),
+        summary,
+        detail,
+        result,
+      })
+      await notifyMailOperation(input.agentName, { ...completed, detail }, input.deps)
+    },
+    fail: async (error, summary, detail, remediation, failure) => {
+      const failed = failBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        finishedAt: cliNowIso(input.deps),
+        summary,
+        detail,
+        error: error instanceof Error ? error.message : String(error),
+        ...(failure ? { failure } : {}),
+        remediation,
+      })
+      await notifyMailOperation(input.agentName, { ...failed, detail }, input.deps)
+    },
+  }
+}
+
+async function launchBackgroundMailCommand(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" | "mail.backfill-indexes" }>,
+  deps: OuroCliDeps,
+  args: string[],
+  title: string,
+  queuedSummary: string,
+  spec?: Record<string, unknown>,
+): Promise<string> {
+  const spawnBackgroundCli = deps.spawnBackgroundCli
+  if (!spawnBackgroundCli) {
+    throw new Error("background CLI launch is not available in this runtime")
+  }
+  const operationId = makeBackgroundOperationId(command.kind)
+  const agentRoot = providerCliAgentRoot({ agent: command.agent }, deps)
+  startBackgroundOperation({
+    agentName: command.agent,
+    agentRoot,
+    id: operationId,
+    kind: command.kind,
+    title,
+    summary: queuedSummary,
+    createdAt: cliNowIso(deps),
+    ...(spec ? { spec } : {}),
+  })
+  try {
+    await spawnBackgroundCli([process.argv[1]!, ...args, "--foreground", "--operation-id", operationId])
+  } catch (error) {
+    failBackgroundOperation({
+      agentName: command.agent,
+      agentRoot,
+      id: operationId,
+      finishedAt: cliNowIso(deps),
+      summary: `${title} could not be started`,
+      error: error instanceof Error ? error.message : String(error),
+      remediation: ["retry the command once the local runtime is healthy"],
+    })
+    throw error
+  }
+  const message = [
+    `Started background ${title} for ${command.agent}`,
+    `operation: ${operationId}`,
+    ...(spec ? Object.entries(spec).map(([key, value]) => `${key}: ${String(value)}`) : []),
+    `${command.agent} will be woken on failure or completion.`,
+    "Use query_active_work only when a live status check is actually needed.",
+  ].join("\n")
   deps.writeStdout(message)
   return message
+}
+
+function buildMailImportOperationSpec(filePath: string, ownerEmail?: string, source?: string): Record<string, unknown> {
+  const stats = fs.statSync(filePath)
+  return {
+    filePath,
+    ...(ownerEmail ? { ownerEmail } : {}),
+    ...(source ? { source } : {}),
+    fileSizeBytes: stats.size,
+    fileModifiedAt: new Date(stats.mtimeMs).toISOString(),
+  }
+}
+
+function classifyMailImportFailure(error: unknown): {
+  failure: {
+    class: string
+    retryDisposition?: "retry-safe" | "fix-before-retry" | "investigate-first"
+    hint?: string
+  }
+  remediation: string[]
+} {
+  const message = error instanceof Error ? error.message : String(error)
+  const normalized = message.toLowerCase()
+  if (normalized.includes("auth_required:mailroom") || normalized.includes("cannot read mailroom config")) {
+    return {
+      failure: {
+        class: "mailroom-auth",
+        retryDisposition: "fix-before-retry",
+        hint: "mailroom credentials or vault access are unavailable; unlock or repair mail auth first",
+      },
+      remediation: [
+        "unlock or repair the owning agent vault/runtime config, then rerun the import",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ],
+    }
+  }
+  if (
+    normalized.includes("missing mailroom config")
+    || normalized.includes("missing registrypath/storepath")
+    || normalized.includes("missing hosted registry coordinates")
+  ) {
+    return {
+      failure: {
+        class: "mailroom-config",
+        retryDisposition: "fix-before-retry",
+        hint: "mailroom runtime config is incomplete for this agent",
+      },
+      remediation: [
+        `rerun 'ouro connect mail --agent <agent>' or repair the stored mailroom runtime config`,
+        "retry the import only after the config repair is complete",
+      ],
+    }
+  }
+  if (normalized.includes("no enabled mailroom source grant found")) {
+    return {
+      failure: {
+        class: "source-grant-missing",
+        retryDisposition: "fix-before-retry",
+        hint: "the requested owner/source lane is not provisioned yet",
+      },
+      remediation: [
+        "create or repair the delegated source grant for the intended owner/source, then rerun the import",
+        "confirm the import is pointed at the intended owner/source before retrying",
+      ],
+    }
+  }
+  if (normalized.includes("multiple source grants found")) {
+    return {
+      failure: {
+        class: "source-grant-ambiguous",
+        retryDisposition: "fix-before-retry",
+        hint: "more than one source grant matches; the import needs a narrower owner/source target",
+      },
+      remediation: [
+        "rerun the import with explicit --owner-email and/or --source hints",
+        "confirm which delegated lane should receive this archive before retrying",
+      ],
+    }
+  }
+  if (normalized.includes("could not discover an mbox file")) {
+    return {
+      failure: {
+        class: "archive-discovery",
+        retryDisposition: "fix-before-retry",
+        hint: "no matching local archive was discovered in the known browser/download locations",
+      },
+      remediation: [
+        "check the recent browser/download artifact locations or pass --file with the exact archive path",
+        "retry only after the correct archive is visible locally",
+      ],
+    }
+  }
+  if (normalized.includes("multiple candidate mbox files found")) {
+    return {
+      failure: {
+        class: "archive-ambiguity",
+        retryDisposition: "fix-before-retry",
+        hint: "more than one plausible archive matches this import request",
+      },
+      remediation: [
+        "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
+        "retry after confirming which archive is the intended one",
+      ],
+    }
+  }
+  if (normalized.includes("no such file:") || normalized.includes("enoent")) {
+    return {
+      failure: {
+        class: "archive-missing",
+        retryDisposition: "fix-before-retry",
+        hint: "the chosen archive path is not readable on disk anymore",
+      },
+      remediation: [
+        "re-check the local archive path or re-download the export before retrying",
+        "retry after the archive exists locally again",
+      ],
+    }
+  }
+  if (normalized.includes("permission denied") || normalized.includes("eacces") || normalized.includes("eperm")) {
+    return {
+      failure: {
+        class: "archive-access",
+        retryDisposition: "fix-before-retry",
+        hint: "the archive or backing store could not be read with current filesystem permissions",
+      },
+      remediation: [
+        "repair filesystem access to the archive or backing store, then rerun the import",
+        "retry after confirming the path is readable by Ouro",
+      ],
+    }
+  }
+  if (
+    normalized.includes("timed out")
+    || normalized.includes("socket closed early")
+    || normalized.includes("econnreset")
+    || normalized.includes("eai_again")
+  ) {
+    return {
+      failure: {
+        class: "transient-storage-read",
+        retryDisposition: "retry-safe",
+        hint: "likely transient hosted read failure",
+      },
+      remediation: [
+        "retry the import from the same archive after the transient storage/network issue clears",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ],
+    }
+  }
+  return {
+    failure: {
+      class: "unknown-mail-import-failure",
+      retryDisposition: "investigate-first",
+      hint: "the import failed for a reason that does not match a known recovery class yet",
+    },
+    remediation: [
+      "inspect the recorded error and surrounding Mailroom/runtime state before retrying",
+      "retry only after the likely cause is understood or ruled out",
+    ],
+  }
+}
+
+function matchingMailImportOperation(
+  record: BackgroundOperationRecord,
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  filePath: string,
+): boolean {
+  if (record.kind !== "mail.import-mbox") return false
+  if ((record.spec?.filePath ?? null) !== filePath) return false
+  const expectedOwnerEmail = command.ownerEmail?.trim() ?? ""
+  const expectedSource = command.source?.trim() ?? ""
+  const recordOwnerEmail = typeof record.spec?.ownerEmail === "string" ? record.spec.ownerEmail.trim() : ""
+  const recordSource = typeof record.spec?.source === "string" ? record.spec.source.trim() : ""
+  return recordOwnerEmail === expectedOwnerEmail && recordSource === expectedSource
+}
+
+function latestComparableOperationTimestamp(record: BackgroundOperationRecord): number | null {
+  const candidates = [record.finishedAt, record.updatedAt]
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue
+    const parsed = Date.parse(candidate)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function duplicateMailImportMessage(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  filePath: string,
+  record: BackgroundOperationRecord,
+): string {
+  const lines = [
+    `Background mail import already ${record.status === "succeeded" ? "completed" : record.status} for ${command.agent}`,
+    `operation: ${record.id}`,
+    `filePath: ${filePath}`,
+    ...(command.ownerEmail ? [`ownerEmail: ${command.ownerEmail}`] : []),
+    ...(command.source ? [`source: ${command.source}`] : []),
+    `summary: ${record.summary}`,
+    ...(record.detail ? [`detail: ${record.detail}`] : []),
+  ]
+  if (record.status === "succeeded") {
+    lines.push("This archive has not changed since that import. Download a newer export before rerunning.")
+  } else {
+    lines.push(`${command.agent} will be woken on failure or completion.`)
+  }
+  return lines.join("\n")
+}
+
+function findExistingMailImportOperation(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  deps: OuroCliDeps,
+  filePath: string,
+): BackgroundOperationRecord | null {
+  const agentRoot = providerCliAgentRoot({ agent: command.agent }, deps)
+  const currentFileMtimeMs = fs.statSync(filePath).mtimeMs
+  const operations = listBackgroundOperations({ agentName: command.agent, agentRoot, limit: 50 })
+  for (const record of operations) {
+    if (!matchingMailImportOperation(record, command, filePath)) continue
+    if (record.status === "queued" || record.status === "running") {
+      return record
+    }
+    if (record.status === "succeeded") {
+      const recordTimestamp = latestComparableOperationTimestamp(record)
+      if (recordTimestamp !== null && currentFileMtimeMs <= recordTimestamp) {
+        return record
+      }
+    }
+  }
+  return null
+}
+
+export function resolveMailImportFilePath(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  deps: OuroCliDeps,
+): string {
+  if (command.filePath) {
+    return path.resolve(command.filePath)
+  }
+  if (!command.discover) {
+    throw new Error("mail import requires either --file <path> or --discover")
+  }
+  return discoverMailImportFilePath({
+    agentName: command.agent,
+    ownerEmail: command.ownerEmail,
+    source: command.source,
+    repoRoot: path.resolve(deps.getRepoCwd?.() ?? process.cwd()),
+    homeDir: deps.homeDir ?? os.homedir(),
+  })
+}
+
+async function executeMailImportMbox(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (!command.foreground) {
+    const filePath = resolveMailImportFilePath(command, deps)
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`no such file: ${filePath}`)
+    }
+    const duplicate = findExistingMailImportOperation(command, deps, filePath)
+    if (duplicate) {
+      const message = duplicateMailImportMessage(command, filePath, duplicate)
+      deps.writeStdout(message)
+      return message
+    }
+    const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
+    return launchBackgroundMailCommand(
+      command,
+      deps,
+      [
+        "mail",
+        "import-mbox",
+        "--agent",
+        command.agent,
+        "--file",
+        filePath,
+        ...(command.ownerEmail ? ["--owner-email", command.ownerEmail] : []),
+        ...(command.source ? ["--source", command.source] : []),
+      ],
+      "mail import",
+      "queued delegated mail import",
+      spec,
+    )
+  }
+  const progress = createHumanCommandProgress(deps, "mail import")
+  let filePath: string | null = command.filePath ? path.resolve(command.filePath) : null
+  const trackedOperation = ensureTrackedMailOperation({
+    agentName: command.agent,
+    deps,
+    operationId: command.operationId,
+    kind: "mail.import-mbox",
+    title: "mail import",
+    queuedSummary: "queued delegated mail import",
+    spec: {
+      ...(filePath ? { filePath } : {}),
+      ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
+      ...(command.source ? { source: command.source } : {}),
+      ...(command.discover ? { discovery: true } : {}),
+    },
+  })
+  try {
+    trackedOperation?.running(
+      "resolving mail archive",
+      filePath ? `file: ${filePath}` : "mode: discover",
+      {
+        current: 0,
+        unit: "messages",
+      },
+    )
+    filePath = resolveMailImportFilePath(command, deps)
+    const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
+    trackedOperation?.running("reading Mailroom config", `file: ${filePath}`, {
+      current: 0,
+      unit: "messages",
+    })
+    trackedOperation?.update("reading Mailroom config", `file: ${filePath}`, {
+      current: 0,
+      unit: "messages",
+    }, spec)
+    progress.startPhase("reading Mailroom config")
+    const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+    if (!runtime.ok) {
+      progress.end()
+      throw new Error(`cannot read Mailroom config from ${runtime.itemPath}: ${runtime.error}`)
+    }
+    const mailroom = parseMailroomConfig(runtime.config.mailroom)
+    if (!mailroom) {
+      progress.end()
+      throw new Error(`missing mailroom config for ${command.agent}; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+    }
+    const hosted = Boolean(mailroom.azureAccountUrl)
+    if (hosted) {
+      const registryAzureAccountUrl = mailroom.registryAzureAccountUrl?.trim() ?? ""
+      const registryBlob = mailroom.registryBlob?.trim() ?? ""
+      if (!registryAzureAccountUrl || !registryBlob) {
+        progress.end()
+        throw new Error(`mailroom config for ${command.agent} is missing hosted registry coordinates; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+      }
+    } else {
+      const registryPath = mailroom.registryPath?.trim() ?? ""
+      const storePath = mailroom.storePath?.trim() ?? ""
+      if (!registryPath || !storePath) {
+        progress.end()
+        throw new Error(`mailroom config for ${command.agent} is missing registryPath/storePath; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+      }
+    }
+
+    const resolved = resolveMailroomReader(command.agent)
+    if (!resolved.ok) {
+      progress.end()
+      throw new Error(resolved.error)
+    }
+
+    progress.updateDetail("reading registry and MBOX")
+    trackedOperation?.update("reading registry and MBOX", `file: ${filePath}`)
+    const registry = await readMailroomRegistry(resolved.config)
+    progress.updateDetail("importing delegated mail")
+    trackedOperation?.update("importing delegated mail", `file: ${filePath}`)
+    const result = await importMboxFileToStore({
+      registry,
+      store: resolved.store,
+      agentId: command.agent,
+      filePath,
+      ownerEmail: command.ownerEmail,
+      source: command.source,
+      onProgress: (importProgress) => {
+        trackedOperation?.update(
+          "importing delegated mail",
+          `scanned ${importProgress.scanned} messages`,
+          {
+            current: importProgress.scanned,
+            unit: "messages",
+          },
+        )
+      },
+    })
+    progress.completePhase("reading Mailroom config", "imported")
+    progress.end()
+    const message = [
+      ...(command.discover ? [`Discovered MBOX: ${filePath}`] : []),
+      `Imported MBOX for ${command.agent}`,
+      `file: ${filePath}`,
+      `grant: ${result.sourceGrant.grantId} (${result.sourceGrant.source}; ${result.sourceGrant.ownerEmail})`,
+      `scanned: ${result.scanned}`,
+      `imported: ${result.imported}`,
+      `duplicates: ${result.duplicates}`,
+      `source fresh through: ${result.sourceFreshThrough ?? "unknown"}`,
+      "archive imports are historical; they do not create Screener wakeups.",
+      "body reads remain explicit through mail_recent/mail_search/mail_body and are access-logged.",
+    ].join("\n")
+    await trackedOperation?.succeed(
+      "imported delegated mail archive",
+      `scanned ${result.scanned}; imported ${result.imported}; duplicates ${result.duplicates}`,
+      {
+        scanned: result.scanned,
+        imported: result.imported,
+        duplicates: result.duplicates,
+        sourceFreshThrough: result.sourceFreshThrough,
+      },
+    )
+    deps.writeStdout(message)
+    return message
+  } catch (error) {
+    progress.end()
+    const classifiedFailure = classifyMailImportFailure(error)
+    const failureDetail = filePath
+      ? `file: ${filePath}`
+      : [
+          "mode: discover",
+          ...(command.ownerEmail ? [`owner: ${command.ownerEmail}`] : []),
+          ...(command.source ? [`source: ${command.source}`] : []),
+        ].join("; ")
+    await trackedOperation?.fail(
+      error,
+      "delegated mail import failed",
+      failureDetail,
+      classifiedFailure.remediation,
+      classifiedFailure.failure,
+    )
+    throw error
+  }
+}
+
+async function executeMailBackfillIndexes(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.backfill-indexes" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (!command.foreground) {
+    return launchBackgroundMailCommand(
+      command,
+      deps,
+      [
+        "mail",
+        "backfill-indexes",
+        "--agent",
+        command.agent,
+      ],
+      "mail index repair",
+      "queued hosted mail index repair",
+    )
+  }
+  const progress = createHumanCommandProgress(deps, "mail index repair")
+  const trackedOperation = ensureTrackedMailOperation({
+    agentName: command.agent,
+    deps,
+    operationId: command.operationId,
+    kind: "mail.backfill-indexes",
+    title: "mail index repair",
+    queuedSummary: "queued hosted mail index repair",
+  })
+  try {
+    trackedOperation?.running("resolving Mailroom store")
+    progress.startPhase("resolving Mailroom store")
+    const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+    if (!runtime.ok) {
+      progress.end()
+      throw new Error(`cannot read Mailroom config from ${runtime.itemPath}: ${runtime.error}`)
+    }
+    const resolved = resolveMailroomReader(command.agent)
+    if (!resolved.ok) {
+      progress.end()
+      throw new Error(resolved.error)
+    }
+    if (resolved.storeKind !== "azure-blob") {
+      progress.completePhase("resolving Mailroom store", "not needed")
+      progress.end()
+      const message = [
+        `Hosted mail index backfill not needed for ${command.agent}`,
+        `store: ${resolved.storeLabel}`,
+        "This agent is using the local file Mailroom store, so recent mail reads do not depend on hosted blob indexes.",
+      ].join("\n")
+      await trackedOperation?.succeed(
+        "hosted mail index repair not needed",
+        `store: ${resolved.storeLabel}`,
+        { indexed: 0, store: resolved.storeLabel, reason: "local-file-store" },
+      )
+      deps.writeStdout(message)
+      return message
+    }
+    const store = resolved.store as {
+      backfillMessageIndexes?: (
+        agentId?: string,
+        onProgress?: (progress: { scanned: number; indexed: number; failures: number; total: number }) => void,
+      ) => Promise<number>
+    }
+    if (typeof store.backfillMessageIndexes !== "function") {
+      progress.end()
+      throw new Error(`hosted Mailroom store for ${command.agent} does not expose index backfill`)
+    }
+    progress.updateDetail("backfilling hosted message indexes")
+    trackedOperation?.update("backfilling hosted message indexes")
+    const indexed = await store.backfillMessageIndexes(command.agent, (backfillProgress) => {
+      trackedOperation?.update(
+        "backfilling hosted message indexes",
+        `indexed ${backfillProgress.indexed} of ${backfillProgress.total}`,
+        {
+          current: backfillProgress.scanned,
+          total: backfillProgress.total,
+          unit: "blobs",
+        },
+      )
+    })
+    progress.completePhase("resolving Mailroom store", "backfilled")
+    progress.end()
+    const message = [
+      `Backfilled hosted mail indexes for ${command.agent}`,
+      `store: ${resolved.storeLabel}`,
+      `indexed: ${indexed}`,
+      "Safe to rerun. Existing index entries are rewritten in place.",
+    ].join("\n")
+    await trackedOperation?.succeed(
+      "hosted mail index repair finished",
+      `indexed ${indexed} message indexes`,
+      { indexed, store: resolved.storeLabel },
+    )
+    deps.writeStdout(message)
+    return message
+  } catch (error) {
+    progress.end()
+    await trackedOperation?.fail(
+      error,
+      "hosted mail index repair failed",
+      "store resolution or blob backfill failed",
+      [
+        "rerun the hosted index repair to retry remaining blobs",
+        "if the same residue repeats, inspect the failed blob ids and timeouts",
+      ],
+    )
+    throw error
+  }
 }
 
 async function executeConnectProviders(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2322,14 +5144,53 @@ function machineRuntimeReadStatus(
   return "needs attention"
 }
 
-function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "cancel" {
+function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "cancel" {
   const normalized = answer.trim().toLowerCase()
   if (normalized === "1" || normalized === "providers" || normalized === "provider" || normalized === "auth") return "providers"
   if (normalized === "2" || normalized === "perplexity" || normalized === "perplexity-search" || normalized === "search") return "perplexity"
   if (normalized === "3" || normalized === "embeddings" || normalized === "embedding" || normalized === "memory" || normalized === "note-search" || normalized === "notes") return "embeddings"
   if (normalized === "4" || normalized === "teams" || normalized === "msteams" || normalized === "microsoft-teams") return "teams"
   if (normalized === "5" || normalized === "bluebubbles" || normalized === "imessage" || normalized === "messages") return "bluebubbles"
+  if (normalized === "6" || normalized === "mail" || normalized === "email" || normalized === "mailroom") return "mail"
+  if (normalized === "7" || normalized === "voice" || normalized === "audio" || normalized === "speech") return "voice"
   return "cancel"
+}
+
+async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<string> {
+  const agentPathSegment = agent.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "agent"
+  const message = [
+    `Voice foundation for ${agent}`,
+    "Voice is one sense with multiple transports. Preferred phone setup is OpenAI Realtime over SIP:",
+    `  ouro vault config set --agent ${agent} --key voice.openaiRealtimeApiKey`,
+    `  ouro vault config set --agent ${agent} --key voice.openaiSipProjectId`,
+    `  ouro vault config set --agent ${agent} --key voice.openaiSipWebhookSecret`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.openaiSipWebhookPath --value /voice/agents/${agentPathSegment}/sip/openai`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioConversationEngine --value openai-sip`,
+    "Legacy cascade fallback uses portable ElevenLabs settings:",
+    `  ouro vault config set --agent ${agent} --key integrations.elevenLabsApiKey`,
+    `  ouro vault config set --agent ${agent} --key integrations.elevenLabsVoiceId`,
+    "Legacy cascade fallback also uses this machine's Whisper.cpp attachment:",
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
+    "Optional managed Twilio phone transport setup:",
+    `  ouro vault config set --agent ${agent} --key voice.twilioAccountSid`,
+    `  ouro vault config set --agent ${agent} --key voice.twilioAuthToken`,
+    `  ouro vault config set --agent ${agent} --key voice.twilioFromNumber --value <your Twilio phone number>`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPublicUrl`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioBasePath --value /voice/agents/${agentPathSegment}/twilio`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPort --value 18910`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioTransportMode --value media-stream`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPlaybackMode --value stream`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioGreetingPrebufferMs --value 12000`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value ari`,
+    "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
+    `The managed Voice entrypoint will listen at POST <public-url>/voice/agents/${agentPathSegment}/twilio/incoming.`,
+    `The OpenAI SIP webhook should be registered as POST <public-url>/voice/agents/${agentPathSegment}/sip/openai for realtime.call.incoming events.`,
+    `Standalone local smoke remains available with: node dist/senses/voice-twilio-entry.js --agent ${agent} --port 18910 --public-url https://<cloudflare-tunnel>.`,
+    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Phone testing should use SIP when the carrier can route it; media-stream remains the fallback for raw audio injection and cascade compatibility.",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
 }
 
 async function executeConnect(
@@ -2341,18 +5202,33 @@ async function executeConnect(
   if (command.target === "embeddings") return executeConnectEmbeddings(command.agent, deps)
   if (command.target === "teams") return executeConnectTeams(command.agent, deps)
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
+  if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
+  if (command.target === "voice") return executeConnectVoice(command.agent, deps)
 
-  const menu = await buildConnectMenu(command.agent, deps)
+  const progress = createHumanCommandProgress(deps, "connect")
+  let menu: string
+  try {
+    menu = await runCommandProgressPhase(
+      progress,
+      "checking current connections",
+      () => buildConnectMenu(command.agent, deps, (message) => progress.updateDetail(message)),
+      () => "checked",
+    )
+  } finally {
+    progress.end()
+  }
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
-      menu.replace(/\nChoose \[1-6\] or type a name: $/, ""),
+      menu.replace(/\nChoose \[1-7\] or type a name: $/, ""),
       "",
       `Run: ouro connect providers --agent ${command.agent}`,
       `Run: ouro connect perplexity --agent ${command.agent}`,
       `Run: ouro connect embeddings --agent ${command.agent}`,
       `Run: ouro connect teams --agent ${command.agent}`,
       `Run: ouro connect bluebubbles --agent ${command.agent}`,
+      `Run: ouro connect mail --agent ${command.agent}`,
+      `Run: ouro connect voice --agent ${command.agent}`,
     ].join("\n")
     deps.writeStdout(message)
     return message
@@ -2363,47 +5239,11 @@ async function executeConnect(
   if (answer === "embeddings") return executeConnectEmbeddings(command.agent, deps)
   if (answer === "teams") return executeConnectTeams(command.agent, deps)
   if (answer === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
+  if (answer === "mail") return executeConnectMail(command.agent, deps)
+  if (answer === "voice") return executeConnectVoice(command.agent, deps)
   const message = "connect cancelled."
   deps.writeStdout(message)
   return message
-}
-
-function readOrBootstrapProviderState(agentName: string, deps: OuroCliDeps): { agentRoot: string; state: ProviderState } {
-  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
-  const readResult = readProviderState(agentRoot)
-  if (readResult.ok) return { agentRoot, state: readResult.state }
-  if (readResult.reason === "invalid") {
-    throw new Error(`provider state for ${agentName} is invalid at ${readResult.statePath}: ${readResult.error}`)
-  }
-
-  const { config } = readAgentConfigForAgent(agentName, deps.bundlesRoot)
-  const homeDir = providerCliHomeDir(deps)
-  const machine = loadOrCreateMachineIdentity({
-    homeDir,
-    now: () => providerCliNow(deps),
-  })
-  const state = bootstrapProviderStateFromAgentConfig({
-    machineId: machine.machineId,
-    now: providerCliNow(deps),
-    agentConfig: {
-      humanFacing: {
-        provider: config.humanFacing.provider,
-        model: config.humanFacing.model || getDefaultModelForProvider(config.humanFacing.provider),
-      },
-      agentFacing: {
-        provider: config.agentFacing.provider,
-        model: config.agentFacing.model || getDefaultModelForProvider(config.agentFacing.provider),
-      },
-    },
-  })
-  writeProviderState(agentRoot, state)
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.provider_state_bootstrapped",
-    message: "bootstrapped local provider state from agent config",
-    meta: { agent: agentName, agentRoot },
-  })
-  return { agentRoot, state }
 }
 
 function credentialPingConfig(record: ProviderCredentialRecord): Parameters<typeof pingProvider>[1] {
@@ -2413,19 +5253,13 @@ function credentialPingConfig(record: ProviderCredentialRecord): Parameters<type
   } as unknown as Parameters<typeof pingProvider>[1]
 }
 
-function pingAttemptCount(result: PingResult | { attempts?: unknown }): number | undefined {
-  if (typeof result.attempts === "number") return result.attempts
-  if (Array.isArray(result.attempts)) return result.attempts.length
-  return undefined
-}
-
 async function readProviderCredentialRecord(
   agent: string,
   provider: AgentProvider,
   _deps: OuroCliDeps,
   options: { onProgress?: (message: string) => void } = {},
 ): Promise<{ ok: true; record: ProviderCredentialRecord } | { ok: false; reason: "missing" | "invalid" | "unavailable"; poolPath: string; error: string }> {
-  const poolResult = await refreshProviderCredentialPool(agent, options)
+  const poolResult = await refreshProviderCredentialPool(agent, { ...options, providers: [provider] })
   if (poolResult.ok) {
     const existing = poolResult.pool.providers[provider]
     if (existing) return { ok: true, record: existing }
@@ -2441,62 +5275,47 @@ async function readProviderCredentialRecord(
   }
 }
 
-function writeProviderBinding(input: {
-  agentRoot: string
-  state: ProviderState
-  lane: ProviderLane
-  provider: AgentProvider
-  model: string
-  deps: OuroCliDeps
-  status: "ready" | "failed" | "unknown"
-  credentialRevision?: string
-  error?: string
-  attempts?: number
-}): void {
-  const updatedAt = providerCliNow(input.deps).toISOString()
-  input.state.updatedAt = updatedAt
-  input.state.lanes[input.lane] = {
-    provider: input.provider,
-    model: input.model,
-    source: "local",
-    updatedAt,
-  }
-  input.state.readiness[input.lane] = {
-    status: input.status,
-    provider: input.provider,
-    model: input.model,
-    checkedAt: updatedAt,
-    ...(input.credentialRevision ? { credentialRevision: input.credentialRevision } : {}),
-    ...(input.error ? { error: input.error } : {}),
-    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
-  }
-  writeProviderState(input.agentRoot, input.state)
+function providerFacingKeyForLane(lane: ProviderLane): "humanFacing" | "agentFacing" {
+  return lane === "inner" ? "agentFacing" : "humanFacing"
 }
 
-function writeProviderReadiness(input: {
-  agentRoot: string
-  state: ProviderState
+function providerConfigBinding(config: AgentConfig, lane: ProviderLane): { provider: AgentProvider; model: string } {
+  const binding = config[providerFacingKeyForLane(lane)]
+  return {
+    provider: binding.provider,
+    model: binding.model || getDefaultModelForProvider(binding.provider),
+  }
+}
+
+function writeAgentProviderBinding(input: {
+  agent: string
   lane: ProviderLane
   provider: AgentProvider
   model: string
   deps: OuroCliDeps
-  status: "ready" | "failed"
-  credentialRevision: string
-  error?: string
-  attempts?: number
 }): void {
-  const checkedAt = providerCliNow(input.deps).toISOString()
-  input.state.updatedAt = checkedAt
-  input.state.readiness[input.lane] = {
-    status: input.status,
-    provider: input.provider,
-    model: input.model,
-    checkedAt,
-    credentialRevision: input.credentialRevision,
-    ...(input.error ? { error: input.error } : {}),
-    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+  const { configPath, config } = readAgentConfigForAgent(input.agent, input.deps.bundlesRoot)
+  const facingKey = providerFacingKeyForLane(input.lane)
+  const nextConfig: AgentConfig = {
+    ...config,
+    [facingKey]: {
+      ...config[facingKey],
+      provider: input.provider,
+      model: input.model,
+    },
   }
-  writeProviderState(input.agentRoot, input.state)
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.provider_selection_updated",
+    message: "updated provider selection in agent config",
+    meta: { agent: input.agent, lane: input.lane, provider: input.provider, model: input.model, configPath },
+  })
+}
+
+function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return syncSummary ? [message, syncSummary].join("\n") : message
 }
 
 async function executeProviderUse(
@@ -2510,8 +5329,15 @@ async function executeProviderUse(
     if (options.writeStdout !== false) deps.writeStdout(message)
     return message
   }
+  const mismatch = getProviderModelMismatchMessage(command.provider, command.model)
+  if (mismatch) {
+    const defaultModel = getDefaultModelForProvider(command.provider)
+    return writeMessage([
+      mismatch,
+      `Run \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${defaultModel}\`.`,
+    ].join("\n"))
+  }
   try {
-    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
     progress?.startPhase(`reading ${command.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, command.provider, deps, {
       onProgress: (message) => progress?.updateDetail(message),
@@ -2525,17 +5351,18 @@ async function executeProviderUse(
         ].join("\n")
         return writeMessage(message)
       }
-      writeProviderBinding({
-        agentRoot,
-        state,
+      writeAgentProviderBinding({
+        agent: command.agent,
         lane: command.lane,
         provider: command.provider,
         model: command.model,
         deps,
-        status: "failed",
-        error: credential.error,
       })
-      const message = `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`
+      const message = appendBundleSyncSummary(
+        `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`,
+        command.agent,
+        deps,
+      )
       return writeMessage(message)
     }
 
@@ -2545,31 +5372,33 @@ async function executeProviderUse(
       model: command.model,
       attemptPolicy: { baseDelayMs: 0 },
       sleep: deps.sleep,
+      ...createProviderPingProgressReporter(
+        { provider: command.provider, model: command.model },
+        (message) => progress?.updateDetail(message),
+      ),
     })
-    const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress?.completePhase(`checking ${command.provider} / ${command.model}`, status)
     if (!pingResult.ok && !command.force) {
       const message = [
         `${command.agent} ${command.lane} ${command.provider} / ${command.model}: failed (${pingResult.message})`,
-        `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force the local binding with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
+        `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force agent.json with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
       ].join("\n")
       return writeMessage(message)
     }
 
-    writeProviderBinding({
-      agentRoot,
-      state,
+    writeAgentProviderBinding({
+      agent: command.agent,
       lane: command.lane,
       provider: command.provider,
       model: command.model,
       deps,
-      status: pingResult.ok ? "ready" : "failed",
-      credentialRevision: credential.record.revision,
-      ...(!pingResult.ok ? { error: pingResult.message } : {}),
-      ...(attempts !== undefined ? { attempts } : {}),
     })
-    const message = `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`
+    const message = appendBundleSyncSummary(
+      `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`,
+      command.agent,
+      deps,
+    )
     emitNervesEvent({
       component: "daemon",
       event: "daemon.provider_use_completed",
@@ -2594,8 +5423,8 @@ async function executeProviderCheck(
     return message
   }
   try {
-    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-    const binding = state.lanes[command.lane]
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const binding = providerConfigBinding(config, command.lane)
     progress.startPhase(`reading ${binding.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps, {
       onProgress: (message) => progress.updateDetail(message),
@@ -2615,22 +5444,13 @@ async function executeProviderCheck(
       model: binding.model,
       attemptPolicy: { baseDelayMs: 0 },
       sleep: deps.sleep,
+      ...createProviderPingProgressReporter(
+        { provider: binding.provider, model: binding.model },
+        (message) => progress.updateDetail(message),
+      ),
     })
-    const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
-    writeProviderReadiness({
-      agentRoot,
-      state,
-      lane: command.lane,
-      provider: binding.provider,
-      model: binding.model,
-      deps,
-      status: pingResult.ok ? "ready" : "failed",
-      credentialRevision: credential.record.revision,
-      ...(!pingResult.ok ? { error: pingResult.message } : {}),
-      ...(attempts !== undefined ? { attempts } : {}),
-    })
     const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
     emitNervesEvent({
       component: "daemon",
@@ -2639,13 +5459,15 @@ async function executeProviderCheck(
       meta: { agent: command.agent, lane: command.lane, provider: binding.provider, model: binding.model, status: pingResult.ok ? "ready" : "failed" },
     })
     return writeMessage(message)
+  /* v8 ignore start -- defensive rethrow: provider-check dependency failures are covered at the caller boundary @preserve */
   } catch (error) {
     progress.end()
     throw error
   }
+  /* v8 ignore stop */
 }
 
-function renderProviderCredentialLine(credential: EffectiveProviderCredentialStatus): string {
+function renderProviderCredentialLine(agentName: string, credential: EffectiveProviderCredentialStatus): string {
   if (credential.status === "present") {
     const credentialFields = credential.credentialFields.length > 0 ? ` credentials: ${credential.credentialFields.join(", ")}` : " credentials: none"
     const configFields = credential.configFields.length > 0 ? ` config: ${credential.configFields.join(", ")}` : " config: none"
@@ -2653,6 +5475,9 @@ function renderProviderCredentialLine(credential: EffectiveProviderCredentialSta
   }
   if (credential.status === "invalid-pool") {
     return `credentials: vault unavailable (${credential.error}); repair: ${credential.repair.command}`
+  }
+  if (credential.status === "not-loaded") {
+    return `credentials: not loaded in this process; run \`ouro provider refresh --agent ${agentName}\` to read the vault now`
   }
   return `credentials: missing; repair: ${credential.repair.command}`
 }
@@ -2664,18 +5489,26 @@ async function executeProviderStatus(
   const agentRoot = providerCliAgentRoot(command, deps)
   const progress = createHumanCommandProgress(deps, "provider status")
   try {
-    await runCommandProgressPhase(
-      progress,
-      "reading provider credentials",
-      () => refreshProviderCredentialPool(command.agent, {
-        onProgress: (message) => progress.updateDetail(message),
-      }),
-      (poolResult) => {
-        if (!poolResult.ok) return poolResult.reason
-        const summary = summarizeProviderCredentialPool(poolResult.pool)
-        return summary.providers.map((provider) => provider.provider).join(", ") || "none stored"
-      },
-    )
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    {
+      const selectedProviders = [...new Set([
+        config.humanFacing.provider,
+        config.agentFacing.provider,
+      ])]
+      await runCommandProgressPhase(
+        progress,
+        "reading selected provider credentials",
+        () => refreshProviderCredentialPool(command.agent, {
+          providers: selectedProviders,
+          onProgress: (message) => progress.updateDetail(message),
+        }),
+        (poolResult) => {
+          if (!poolResult.ok) return poolResult.reason
+          const summary = summarizeProviderCredentialPool(poolResult.pool)
+          return summary.providers.map((provider) => provider.provider).join(", ") || "none stored"
+        },
+      )
+    }
   } finally {
     progress.end()
   }
@@ -2688,15 +5521,18 @@ async function executeProviderStatus(
       homeDir,
       lane,
     })
+    /* v8 ignore start -- defensive: provider status pre-validates agent.json before resolving lane details @preserve */
     if (!resolved.ok) {
       lines.push(`  ${lane}: unavailable`)
-      lines.push(`    ${resolved.reason}: ${resolved.repair.command}`)
+      lines.push(`    ${resolved.reason}: ${resolved.error}`)
+      lines.push(`    repair: ${resolved.repair.command}`)
       continue
     }
+    /* v8 ignore stop */
     const binding = resolved.binding
     lines.push(`  ${lane}: ${binding.provider} / ${binding.model} (${binding.source})`)
-    lines.push(`    readiness: ${binding.readiness.status}${binding.readiness.error ? ` (${binding.readiness.error})` : ""}`)
-    lines.push(`    ${renderProviderCredentialLine(binding.credential)}`)
+    lines.push(`    readiness: ${binding.readiness.status}`)
+    lines.push(`    ${renderProviderCredentialLine(command.agent, binding.credential)}`)
     for (const warning of binding.warnings) {
       lines.push(`    warning: ${warning.message}`)
     }
@@ -2730,7 +5566,7 @@ async function executeProviderRefresh(
   const lines: string[] = []
   if (pool.ok) {
     const summary = summarizeProviderCredentialPool(pool.pool)
-    lines.push(`refreshed provider credential snapshot for ${command.agent}`)
+    lines.push(`refreshed in-memory provider credentials for ${command.agent}`)
     lines.push(`providers: ${summary.providers.map((provider) => provider.provider).join(", ") || "none"}`)
     progress.completePhase("refreshing provider credentials", summary.providers.map((provider) => provider.provider).join(", ") || "none")
   } else {
@@ -2778,30 +5614,59 @@ async function executeAuthRun(
     throw error
   }
   progress.completePhase(`authenticating ${provider}`, "credentials stored")
-  // Behavior: ouro auth stores credentials only — does NOT switch provider.
-  // Use `ouro auth switch` to change the active provider.
+  // Behavior: ouro auth stores credentials only; `ouro use` selects the active provider/model lane.
 
   // Verify the credentials actually work by pinging the provider.
+  let verificationStatus = "not checked"
   /* v8 ignore start -- integration: real API ping after auth @preserve */
   try {
     progress.startPhase(`verifying ${provider}`)
     const credential = await readProviderCredentialRecord(command.agent, provider, deps, {
       onProgress: (message) => progress.updateDetail(message),
     })
-    const status = credential.ok
+    verificationStatus = credential.ok
       ? await verifyProviderCredentials(provider, {
         [provider]: { ...credential.record.config, ...credential.record.credentials },
+      }, {
+        sleep: deps.sleep,
+        ...createProviderPingProgressReporter(
+          { provider },
+          (message) => progress.updateDetail(message),
+        ),
       })
       : `stored but could not be re-read from vault (${credential.error})`
-    progress.completePhase(`verifying ${provider}`, status)
+    progress.completePhase(`verifying ${provider}`, verificationStatus)
   } catch (error) {
     // Verification failure is non-blocking — credentials were saved regardless.
-    progress.completePhase(`verifying ${provider}`, `skipped (${error instanceof Error ? error.message : String(error)})`)
+    verificationStatus = `skipped (${error instanceof Error ? error.message : String(error)})`
+    progress.completePhase(`verifying ${provider}`, verificationStatus)
   }
   /* v8 ignore stop */
   progress.end()
-  deps.writeStdout(result.message)
-  return result.message
+  return writeCommandOutcome(deps, {
+    title: "Provider auth",
+    subtitle: `${command.agent} just refreshed ${provider}.`,
+    summary: `${command.agent} can now use ${provider} when this lane is selected.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Stored in: ${result.credentialPath}`,
+          `Provider: ${provider}`,
+          `Live check: ${verificationStatus}`,
+          "secret was not printed",
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Choose it for a lane with ouro use --agent ${command.agent} --lane <outward|inner> --provider ${provider} --model <model>.`,
+          `Double-check it any time with ouro auth verify --agent ${command.agent} --provider ${provider}.`,
+        ],
+      },
+    ],
+    fallbackLines: [result.message],
+  })
 }
 
 async function readinessReportForAgent(agent: string, deps: OuroCliDeps): Promise<AgentReadinessReport> {
@@ -2890,6 +5755,8 @@ async function executeRepair(
       promptInput: deps.promptInput,
       writeStdout: repairDeps.writeStdout,
       runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, repairDeps),
+      isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+      stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
     })
     return lines.join("\n")
   }
@@ -2936,6 +5803,8 @@ async function runReadinessRepairForDegraded(
     const result = await runGuidedReadinessRepair(readinessReportsFromDegraded(current), {
       promptInput: deps.promptInput,
       writeStdout: deps.writeStdout,
+      isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+      stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
       onActionAttempted: (agentName) => {
         attemptedAgents.add(agentName)
       },
@@ -2977,25 +5846,26 @@ async function executeLegacyAuthSwitch(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.switch" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
-  const { state } = readOrBootstrapProviderState(command.agent, deps)
+  const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const lanes: ProviderLane[] = command.facing
     ? [command.facing === "human" ? "outward" : "inner"]
     : ["outward", "inner"]
   const messages: string[] = []
   for (const lane of lanes) {
-    const model = state.lanes[lane].model
+    const model = providerConfigBinding(config, lane).model
+    const selection = resolveModelForProviderSelection(command.provider, model)
     messages.push(await executeProviderUse({
       kind: "provider.use",
       agent: command.agent,
       lane,
       provider: command.provider,
-      model,
+      model: selection.model,
       force: true,
       legacyFacing: command.facing,
     }, deps, { writeStdout: false }))
   }
   const message = [
-    `deprecated: switched this machine's local provider binding. \`ouro auth switch\` no longer edits agent.json.`,
+    `deprecated: switched provider selection in agent.json.`,
     ...messages,
     `Use \`ouro use --agent ${command.agent} --lane <outward|inner> --provider ${command.provider} --model <model>\` for explicit provider/model selection.`,
   ].join("\n")
@@ -3008,8 +5878,18 @@ async function executeLegacyConfigModel(
   deps: OuroCliDeps,
 ): Promise<string> {
   const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
-  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-  const binding = state.lanes[lane]
+  const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const binding = providerConfigBinding(config, lane)
+  const mismatch = getProviderModelMismatchMessage(binding.provider, command.modelName)
+  if (mismatch) {
+    const defaultModel = getDefaultModelForProvider(binding.provider)
+    const message = [
+      mismatch,
+      `Run \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${defaultModel}\`.`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
   const progress = binding.provider === "github-copilot" ? createHumanCommandProgress(deps, "config model") : null
   const writeMessage = (message: string): string => {
     progress?.end()
@@ -3065,17 +5945,20 @@ async function executeLegacyConfigModel(
     }
   }
 
-  const updatedAt = providerCliNow(deps).toISOString()
-  state.updatedAt = updatedAt
-  state.lanes[lane] = {
-    ...binding,
-    model: command.modelName,
-    source: "local",
-    updatedAt,
+  const facingKey = providerFacingKeyForLane(lane)
+  const nextConfig: AgentConfig = {
+    ...config,
+    [facingKey]: {
+      ...config[facingKey],
+      model: command.modelName,
+    },
   }
-  delete state.readiness[lane]
-  writeProviderState(agentRoot, state)
-  const message = `deprecated: updated ${command.agent} model on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
+  const message = appendBundleSyncSummary(
+    `deprecated: updated ${command.agent} model in agent.json on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`,
+    command.agent,
+    deps,
+  )
   return writeMessage(message)
 }
 
@@ -3105,6 +5988,9 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
       /* v8 ignore next -- old-launcher repair hint: fires when stale ~/.local/bin/ouro is fixed @preserve */
       if (installResult.repairedOldLauncher) {
         deps.writeStdout("repaired stale ouro launcher at ~/.local/bin/ouro")
+      }
+      if (installResult.repairedShadowedLauncherPath) {
+        deps.writeStdout(`updated stale ouro launcher at ${installResult.repairedShadowedLauncherPath}`)
       }
       if (installResult.pathResolution?.status === "shadowed") {
         deps.writeStdout(
@@ -3173,129 +6059,6 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
 
   // Register .ouro bundle type (UTI on macOS)
   await registerOuroBundleTypeNonBlocking(deps)
-}
-
-// ── Task command execution ──
-
-function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
-  if (command.kind === "task.board") {
-    if (command.status) {
-      const lines = taskMod.boardStatus(command.status)
-      return lines.length > 0 ? lines.join("\n") : "no tasks in that status"
-    }
-    const board = taskMod.getBoard()
-    return board.full || board.compact || "no tasks found"
-  }
-
-  if (command.kind === "task.create") {
-    try {
-      const created = taskMod.createTask({
-        title: command.title,
-        type: command.type ?? "one-shot",
-        category: "general",
-        body: "",
-      })
-      return `created: ${created}`
-    } catch (error) {
-      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-    }
-  }
-
-  if (command.kind === "task.update") {
-    const result = taskMod.updateStatus(command.id, command.status)
-    if (!result.ok) {
-      return `error: ${result.reason ?? "status update failed"}`
-    }
-    const archivedSuffix = result.archived && result.archived.length > 0
-      ? ` | archived: ${result.archived.join(", ")}`
-      : ""
-    return `updated: ${command.id} -> ${result.to}${archivedSuffix}`
-  }
-
-  if (command.kind === "task.show") {
-    const task = taskMod.getTask(command.id)
-    if (!task) return `task not found: ${command.id}`
-    return [
-      `title: ${task.title}`,
-      `type: ${task.type}`,
-      `status: ${task.status}`,
-      `category: ${task.category}`,
-      `created: ${task.created}`,
-      `updated: ${task.updated}`,
-      `path: ${task.path}`,
-      task.body ? `\n${task.body}` : "",
-    ].filter(Boolean).join("\n")
-  }
-
-  if (command.kind === "task.actionable") {
-    const lines = taskMod.boardAction()
-    return lines.length > 0 ? lines.join("\n") : "no action required"
-  }
-
-  if (command.kind === "task.deps") {
-    const lines = taskMod.boardDeps()
-    return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies"
-  }
-
-  if (command.kind === "task.fix") {
-    try {
-      const fixOptions: import("../../repertoire/tasks/types").FixOptions = {
-        mode: command.mode,
-        ...(command.issueId ? { issueId: command.issueId } : {}),
-        ...(command.option !== undefined ? { option: command.option } : {}),
-      }
-      const result = taskMod.fix(fixOptions)
-
-      if (command.mode === "dry-run") {
-        if (result.remaining.length === 0) {
-          return `task health: clean`
-        }
-        const safeIssues = result.remaining.filter((i) => i.confidence === "safe")
-        const reviewIssues = result.remaining.filter((i) => i.confidence === "needs_review")
-        const lines: string[] = [`${result.remaining.length} issues found`]
-        if (safeIssues.length > 0) {
-          lines.push("", `safe fixes (${safeIssues.length}):`)
-          for (const issue of safeIssues) {
-            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-          }
-        }
-        if (reviewIssues.length > 0) {
-          lines.push("", `needs review (${reviewIssues.length}):`)
-          for (const issue of reviewIssues) {
-            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-          }
-        }
-        lines.push("", `task health: ${result.health}`)
-        return lines.join("\n")
-      }
-
-      // safe, single, or --all modes: show what was done
-      const lines: string[] = []
-      if (result.applied.length > 0) {
-        lines.push(`${result.applied.length} applied:`)
-        for (const issue of result.applied) {
-          lines.push(`  ${issue.code}:${issue.target}`)
-        }
-      }
-      if (result.remaining.length > 0) {
-        lines.push(`${result.remaining.length} remaining:`)
-        for (const issue of result.remaining) {
-          lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-        }
-      }
-      if (result.applied.length === 0 && result.remaining.length === 0) {
-        lines.push("no issues")
-      }
-      lines.push(`task health: ${result.health}`)
-      return lines.join("\n")
-    } catch (error) {
-      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-    }
-  }
-
-  // command.kind === "task.sessions"
-  const lines = taskMod.boardSessions()
-  return lines.length > 0 ? lines.join("\n") : "no active sessions"
 }
 
 // ── Friend command execution ──
@@ -3424,25 +6187,6 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
 }
 
-// ── Reminder command execution ──
-
-function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule): string {
-  try {
-    const created = taskMod.createTask({
-      title: command.title,
-      type: command.cadence ? "ongoing" : "one-shot",
-      category: command.category ?? "reminder",
-      body: command.body,
-      scheduledAt: command.scheduledAt,
-      cadence: command.cadence,
-      requester: command.requester,
-    })
-    return `created: ${created}`
-  } catch (error) {
-    return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-  }
-}
-
 // ── Dev mode helpers ──
 
 /* v8 ignore start -- repo resolution for ouro dev: repoPath branch tested via daemon-cli-dev; clone requires real git/npm @preserve */
@@ -3501,7 +6245,7 @@ function resolveClonePath(
 
   // Fresh clone
   deps.writeStdout(`cloning ouroboros to ${cloneTarget}...`)
-  const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
+  const HARNESS_CANONICAL_REPO_URL = "https://github.com/ourostack/ouroboros.git"
   fs.mkdirSync(path.dirname(cloneTarget), { recursive: true })
   execSync(`git clone ${HARNESS_CANONICAL_REPO_URL} "${cloneTarget}"`, { stdio: "inherit" })
   deps.writeStdout(`installing dependencies in ${cloneTarget}...`)
@@ -3520,7 +6264,20 @@ function resolveClonePath(
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-    const text = getGroupedHelp()
+    const helpText = getGroupedHelp()
+    const text = ttyBoardEnabled(deps)
+      ? renderCommandBoard(deps, {
+          title: "Help",
+          subtitle: "Everything Ouro can do from the terminal.",
+          summary: "Pick a command family here, then ask for details with `ouro help <command>`.",
+          sections: [
+            {
+              title: "Command groups",
+              lines: helpText.split("\n").filter(Boolean),
+            },
+          ],
+        })
+      : helpText
     deps.writeStdout(text)
     return text
   }
@@ -3560,8 +6317,79 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const discovered = await Promise.resolve(
       deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
     )
-    if (discovered.length === 0 && deps.runSerpentGuide) {
+    /* v8 ignore start -- the interactive home shell is exercised extensively in daemon-cli tests; V8 miscounts this orchestrator because it chains through recursive command handoffs and early chat health exits @preserve */
+    if (interactiveHumanSurfaceEnabled(deps)) {
+      const homePrompt = renderOuroHomeScreen({
+        agents: discovered,
+        isTTY: true,
+        columns: deps.stdoutColumns ?? process.stdout.columns,
+      })
+      const homeAction = resolveOuroHomeAction(await deps.promptInput!(homePrompt), buildOuroHomeActions(discovered))
+      if (!homeAction) throw new Error("Invalid selection")
+      if (homeAction.kind === "chat" && homeAction.agent) {
+        await ensureDaemonRunning(deps)
+        const health = await checkProviderHealthBeforeChat(homeAction.agent, deps)
+        if (!health.ok) return health.output
+        if (deps.startChat) {
+          await deps.startChat(homeAction.agent)
+          return ""
+        }
+        command = { kind: "chat.connect", agent: homeAction.agent }
+      /* v8 ignore start -- human home menu routing is exercised by dedicated CLI tests; V8 miscounts this chained dispatch block around recursive handoffs @preserve */
+      } else if (homeAction.kind === "up") {
+        return runOuroCli(["up"], deps)
+      } else if (homeAction.kind === "connect") {
+        const targetAgent = discovered.length === 1
+          ? discovered[0]
+          : await promptForNamedAgent("Connect an agent", "Choose who you want to onboard.", discovered, deps)
+        return runOuroCli(["connect", "--agent", targetAgent], deps)
+      /* v8 ignore start -- thin recursive handoff into the fully tested repair command suite @preserve */
+      } else if (homeAction.kind === "repair") {
+        const targetAgent = discovered.length === 1
+          ? discovered[0]
+          : await promptForNamedAgent("Repair an agent", "Choose who needs attention.", discovered, deps)
+        return runOuroCli(["repair", "--agent", targetAgent], deps)
+      /* v8 ignore stop */
+      } else if (homeAction.kind === "help") {
+        const text = getGroupedHelp()
+        deps.writeStdout(text)
+        return text
+      /* v8 ignore stop */
+      /* v8 ignore start -- home clone routing is covered by higher-level screen tests; V8 miscounts this prompt guard beside the ignored recursive handoff @preserve */
+      } else if (homeAction.kind === "clone") {
+        const remote = (await deps.promptInput!("Git remote URL for the agent bundle: ")).trim()
+        if (!remote) {
+          const message = "no remote URL provided — clone cancelled."
+          deps.writeStdout(message)
+          return message
+        }
+        /* v8 ignore next -- thin recursive handoff into the fully tested clone command suite @preserve */
+        return runOuroCli(["clone", remote], deps)
+      /* v8 ignore stop */
+      } else if (homeAction.kind === "hatch") {
+        if (deps.runSerpentGuide) {
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.first_run_choice_hatch",
+            message: "user chose hatch in first-run flow",
+            meta: {},
+          })
+          await performSystemSetup(deps)
+          const hatchlingName = await deps.runSerpentGuide()
+          if (!hatchlingName) return ""
+          await ensureDaemonRunning(deps)
+          if (deps.startChat) await deps.startChat(hatchlingName)
+          return ""
+        }
+        command = { kind: "hatch.start" }
+      /* v8 ignore next -- empty home exit shortcut has no side effects beyond returning to the shell @preserve */
+      } else if (homeAction.kind === "exit") {
+        return ""
+      }
+    /* v8 ignore stop */
+    } else if (discovered.length === 0 && deps.runSerpentGuide) {
       // Hatch-or-clone choice when promptInput is available
+      /* v8 ignore next -- dedicated first-run tests cover the prompt-present path; the no-prompt path falls through to the same hatch bootstrap below @preserve */
       if (deps.promptInput) {
         const choice = await deps.promptInput("No agents found. Would you like to hatch a new agent or clone an existing one? (hatch/clone): ")
         if (choice.trim().toLowerCase() === "clone") {
@@ -3644,9 +6472,24 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   })
 
   if (command.kind === "help") {
-    const text = command.command
+    const helpText = command.command
       ? (getCommandHelp(command.command) ?? `Unknown command: ${command.command}\n\n${getGroupedHelp()}`)
       : getGroupedHelp()
+    const text = ttyBoardEnabled(deps)
+      ? renderCommandBoard(deps, {
+          title: "Help",
+          subtitle: command.command ? `Reference for ${command.command}.` : "Everything Ouro can do from the terminal.",
+          summary: command.command
+            ? `A closer look at ${command.command}.`
+            : "Pick a command family here, then ask for details with `ouro help <command>`.",
+          sections: [
+            {
+              title: command.command ? "Command" : "Command groups",
+              lines: helpText.split("\n").filter(Boolean),
+            },
+          ],
+        })
+      : helpText
     deps.writeStdout(text)
     return text
   }
@@ -3667,6 +6510,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "connect") {
     return executeConnect(command, deps)
+  }
+
+  if (command.kind === "account.ensure") {
+    return executeAccountEnsure(command, deps)
+  }
+
+  if (command.kind === "mail.import-mbox") {
+    return executeMailImportMbox(command, deps)
+  }
+
+  if (command.kind === "mail.backfill-indexes") {
+    return executeMailBackfillIndexes(command, deps)
   }
 
   if (command.kind === "daemon.up") {
@@ -3696,7 +6551,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next 2 -- unreachable after exec replaces process @preserve */
           return ""
         }
-        const message = "no installed version found. run: npx ouro.bot"
+        const message = "no installed version found. run: npx ouro.bot@latest"
         deps.writeStdout(message)
         return message
       }
@@ -3708,16 +6563,24 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const progress = new UpProgress({
       write: deps.writeRaw ?? deps.writeStdout,
       isTTY: outputIsTTY,
+      columns: deps.stdoutColumns ?? process.stdout.columns,
       now: deps.now ?? (() => Date.now()),
       autoRender: true,
     })
+    const daemonAliveAtBootStart = await deps.checkSocketAlive(deps.socketPath)
+    ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveAtBootStart))
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
       progress.startPhase("update check")
+      progress.updateDetail(`current runtime: ${getPackageVersion()}\nchecking npm registry\ncontinuing startup if it stays quiet`)
       let pendingReExec = false
+      let updateCheckStatus = "up to date"
       try {
-        const updateResult = await deps.checkForCliUpdate()
+        const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(
+          deps.checkForCliUpdate,
+          deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS,
+        )
         if (updateResult.available && updateResult.latestVersion) {
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
@@ -3730,9 +6593,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             deps.writeStdout(`review changes with: ${changelogCommand}`)
           }
           pendingReExec = true
+        } else if (updateResult.error) {
+          updateCheckStatus = summarizeCliUpdateCheckStatus(updateResult.error, timedOut)
         }
       /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
       } catch (error) {
+        updateCheckStatus = summarizeCliUpdateCheckStatus(
+          error instanceof Error ? error.message : String(error),
+        )
         emitNervesEvent({
           level: "warn",
           component: "daemon",
@@ -3746,7 +6614,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         progress.end()
         deps.reExecFromNewVersion!(args)
       } else {
-        progress.completePhase("update check", "up to date")
+        progress.completePhase("update check", updateCheckStatus)
       }
     }
 
@@ -3844,41 +6712,47 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       promptInput: deps.promptInput,
     })
 
-    const daemonAliveBeforeStart = await deps.checkSocketAlive(deps.socketPath)
-    let providerChecksAlreadyRun = false
-    if (!daemonAliveBeforeStart) {
-      progress.startPhase("provider checks")
-      const preflightProviderDegraded = await checkAgentProviders(deps, undefined, (msg) => progress.updateDetail(msg))
-      providerChecksAlreadyRun = true
-      progress.completePhase("provider checks", providerRepairCountSummary(preflightProviderDegraded.length))
-
-      if (preflightProviderDegraded.length > 0) {
-        progress.end()
-        if (command.noRepair) {
-          writeProviderRepairSummary(deps, "Provider checks need attention", preflightProviderDegraded)
-          const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
-          deps.writeStdout(message)
-          return message
-        }
-
-        const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
-        if (!repairResult.repairsAttempted) {
-          writeProviderRepairSummary(deps, "Provider checks still need attention", repairResult.remainingDegraded)
-          const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
-          deps.writeStdout(message)
-          return message
-        }
-
-        const remainingDegraded = repairResult.remainingDegraded
-        if (remainingDegraded.length > 0) {
-          writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
-          const message = "daemon not started: provider checks still need repair."
-          deps.writeStdout(message)
-          return message
-        }
-        deps.writeStdout("All set. Provider checks recovered after repair.")
+    // ── Layer 2 sync probe: pre-flight `git pull` for every sync-enabled bundle ──
+    // Runs BEFORE provider checks so that any agent.json changes pulled from
+    // the remote are visible to the live-check that follows. The probe has a
+    // hard 15s per-agent timeout via `runWithTimeouts`, so a hung remote
+    // can't stall the boot. `--no-repair` doesn't change probe behavior — it
+    // gates layer 3's RepairGuide invocation, which lands in a separate PR.
+    //
+    // Errors in the probe path itself are caught and logged — they must not
+    // break the boot, since the probe is best-effort visibility, not a gate.
+    // Layer 3: hoist sync-probe findings to outer scope so the
+    // RepairGuide diagnostic call later in this function can include
+    // them in its prompt. Default to [] when the probe was skipped or
+    // threw — the runAgenticRepair callsite then sees "no sync
+    // findings to report" rather than missing data.
+    let bootSyncFindings: BootSyncProbeFinding[] = []
+    progress.startPhase("sync probe")
+    try {
+      const syncProbeImpl = deps.runBootSyncProbeImpl ?? runBootSyncProbe
+      const syncRows = listBundleSyncRows({ bundlesRoot: deps.bundlesRoot ?? bundlesRoot })
+      const syncProbeResult = await syncProbeImpl(syncRows, {
+        bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
+      })
+      bootSyncFindings = syncProbeResult.findings
+      progress.completePhase("sync probe", summarizeSyncProbeFindings(syncProbeResult.findings))
+      if (syncProbeResult.findings.length > 0) {
+        writeSyncProbeSummary(deps, syncProbeResult.findings)
       }
+    } catch (probeError) {
+      const message = probeError instanceof Error ? probeError.message : String(probeError)
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.boot_sync_probe_failed",
+        message: "boot sync probe failed; continuing boot",
+        meta: { error: message },
+      })
+      progress.completePhase("sync probe", "skipped (probe error)")
     }
+
+    const daemonAliveBeforeStart = await deps.checkSocketAlive(deps.socketPath)
+    ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveBeforeStart))
 
     progress.startPhase("starting daemon")
     const daemonResult = await ensureDaemonRunning({
@@ -3887,88 +6761,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
     }, { initialAlive: daemonAliveBeforeStart })
-    progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
-    if (daemonResult.verifyStartupStatus === false) {
+    if (!daemonResult.ok) {
+      ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
+        "starting daemon",
+        summarizeDaemonStartupFailure(daemonResult),
+      )
       progress.end()
-      deps.writeStdout(daemonResult.message)
-      return daemonResult.message
+      return returnCliFailure(deps, daemonResult.message)
     }
-    if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
-      progress.startPhase("provider checks")
-      const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
-      daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
-      progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
-    }
-    progress.end()
-
-    // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)
-    if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
-      if (command.noRepair) {
-        // --no-repair: write degraded summary and skip interactive repair
-        writeProviderRepairSummary(deps, "Provider checks need attention", daemonResult.stability.degraded)
-        emitNervesEvent({
-          level: "warn",
-          component: "daemon",
-          event: "daemon.no_repair_degraded_summary",
-          message: "degraded agents detected with --no-repair, skipping interactive repair",
-          meta: { degradedCount: daemonResult.stability.degraded.length },
-        })
-      } else {
-        const repairResult = await runAgenticRepair(daemonResult.stability.degraded, {
-          /* v8 ignore start -- production provider discovery wiring @preserve */
-          discoverWorkingProvider: async (agentName: string) => {
-            const { discoverWorkingProvider: discover } = await import("./provider-discovery")
-            const { pingProvider } = await import("../provider-ping")
-            return discover({
-              agentName,
-              pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
-            })
-          },
-          createProviderRuntime: createAgenticDiagnosisProviderRuntime,
-          readDaemonLogsTail: () => {
-            try {
-              const fs = require("node:fs") as typeof import("node:fs")
-              const path = require("node:path") as typeof import("node:path")
-              const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
-              const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
-              if (files.length === 0) return "(no daemon logs found)"
-              const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
-              const lines = lastLog.split("\n")
-              return lines.slice(-50).join("\n")
-            } catch {
-              return "(unable to read daemon logs)"
-            }
-          },
-          /* v8 ignore stop */
-          runInteractiveRepair,
-          promptInput: deps.promptInput ?? (async () => "n"),
-          writeStdout: deps.writeStdout,
-          runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
-            await executeAuthRun({
-              kind: "auth.run",
-              agent,
-              ...(providerOverride ? { provider: providerOverride } : {}),
-            }, deps)
-          },
-          runVaultUnlock: async (agent: string) => {
-            await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
-          },
-          skipQueueSummary: true,
-        })
-        if (repairResult.repairsAttempted) {
-          const repairedAgents = daemonResult.stability.degraded
-            .filter(hasRunnableInteractiveRepair)
-            .map((entry) => entry.agent)
-          progress.startPhase("post-repair check")
-          await reportPostRepairProviderHealth(deps, repairedAgents, (msg) => progress.updateDetail(msg))
-          progress.completePhase("post-repair check", providerRepairCountSummary(repairedAgents.length))
-        }
-      }
-    }
-
-    // Persist boot startup AFTER daemon is running — bootstrap is safe now
-    // because the daemon socket exists, so launchd's KeepAlive registers
-    // for crash recovery without starting a competing process.
+    progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
     if (deps.ensureDaemonBootPersistence) {
       try {
         await Promise.resolve(deps.ensureDaemonBootPersistence(deps.socketPath))
@@ -3980,6 +6781,153 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           message: "failed to persist daemon boot startup",
           meta: { error: error instanceof Error ? error.message : String(error), socketPath: deps.socketPath },
         })
+      }
+    }
+    progress.startPhase("provider checks")
+    const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
+    daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
+    progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
+    progress.startPhase("final daemon check")
+    const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps, {
+      allowDegradedHealth: Boolean(
+        command.noRepair
+        && ((daemonResult.stability?.degraded.length ?? 0) > 0 || providerDegraded.length > 0),
+      ),
+      settleTimeoutMs: deps.finalDaemonHealthSettleTimeoutMs ?? FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS,
+      settlePollIntervalMs: deps.finalDaemonHealthSettlePollIntervalMs ?? FINAL_DAEMON_HEALTH_SETTLE_POLL_INTERVAL_MS,
+      onSettling: (reason) => progress.updateDetail(`${reason}\nwaiting for enabled senses to prove healthy`),
+    })
+    if (!finalDaemonCheck.ok) {
+      ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
+        "final daemon check",
+        finalDaemonCheck.summary,
+      )
+      progress.end()
+      const message = finalDaemonCheck.message ?? "background service stopped before boot finished"
+      return returnCliFailure(deps, message)
+    }
+    progress.completePhase("final daemon check", finalDaemonCheck.summary)
+    progress.end()
+
+    // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)
+    if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
+      if (command.noRepair) {
+        // --no-repair: write degraded summary and skip interactive repair
+        writeProviderRepairSummary(deps, "Provider checks need attention", daemonResult.stability.degraded)
+        deps.setExitCode?.(1)
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.no_repair_degraded_summary",
+          message: "degraded agents detected with --no-repair, skipping interactive repair",
+          meta: {
+            degradedCount: daemonResult.stability.degraded.length,
+          },
+        })
+      } else {
+        const typedDegraded = daemonResult.stability.degraded.filter((entry) => isKnownReadinessIssue(entry.issue))
+        const untypedDegraded = daemonResult.stability.degraded.filter((entry) => !isKnownReadinessIssue(entry.issue))
+        let repairsAttempted = false
+        let remainingDegraded: DegradedAgent[] = []
+
+        if (typedDegraded.length > 0) {
+          const guidedRepair = await runReadinessRepairForDegraded(typedDegraded, deps)
+          if (guidedRepair.repairsAttempted) {
+            repairsAttempted = true
+          }
+          remainingDegraded = mergeRemainingDegraded(remainingDegraded, guidedRepair.remainingDegraded)
+        }
+
+        // Layer 3: extended activation contract — fires when there are
+        // untyped degraded entries OR when typed entries stack to ≥3 (compound
+        // situations that warrant a RepairGuide-driven proposal pass). The
+        // `--no-repair` flag short-circuits the entire decision via
+        // `shouldFireRepairGuide`. The set passed into `runAgenticRepair` is
+        // the union of typed + untyped so the diagnostic prompt has the full
+        // picture. When the gate fires solely on typed-stacking,
+        // `runAgenticRepair` is told via `forceDiagnosis: true` to bypass the
+        // early-return that normally defers typed-only sets to the
+        // deterministic typed repair flow that already ran above.
+        const repairGuideShouldFire = shouldFireRepairGuide({
+          untypedDegraded,
+          typedDegraded,
+          noRepair: Boolean(command.noRepair),
+        })
+        if (repairGuideShouldFire) {
+          const repairInput = [...untypedDegraded, ...typedDegraded]
+          const forceDiagnosis = untypedDegraded.length === 0 && typedDegraded.length >= 3
+          const repairResult = await runAgenticRepair(repairInput, {
+            /* v8 ignore start -- production provider discovery wiring @preserve */
+            discoverWorkingProvider: async (agentName: string) => {
+              const { discoverWorkingProvider: discover } = await import("./provider-discovery")
+              const { pingProvider } = await import("../provider-ping")
+              return discover({
+                agentName,
+                pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
+              })
+            },
+            createProviderRuntime: createAgenticDiagnosisProviderRuntime,
+            readDaemonLogsTail: () => {
+              try {
+                const fs = require("node:fs") as typeof import("node:fs")
+                const path = require("node:path") as typeof import("node:path")
+                const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
+                const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
+                if (files.length === 0) return "(no daemon logs found)"
+                const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
+                const lines = lastLog.split("\n")
+                return lines.slice(-50).join("\n")
+              } catch {
+                return "(unable to read daemon logs)"
+              }
+            },
+            /* v8 ignore stop */
+            runInteractiveRepair,
+            promptInput: deps.promptInput ?? (async () => "n"),
+            writeStdout: deps.writeStdout,
+            runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
+              await executeAuthRun({
+                kind: "auth.run",
+                agent,
+                ...(providerOverride ? { provider: providerOverride } : {}),
+              }, deps)
+            },
+            runVaultUnlock: async (agent: string) => {
+              await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
+            },
+            skipQueueSummary: true,
+            isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+            stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
+            forceDiagnosis,
+            syncFindings: bootSyncFindings,
+          })
+          if (repairResult.repairsAttempted) {
+            repairsAttempted = true
+            const repairedUntypedAgents = untypedDegraded
+              .filter(hasRunnableInteractiveRepair)
+              .map((entry) => entry.agent)
+            const recheckedUntyped = repairedUntypedAgents.length > 0
+              ? await checkAgentProviders(deps, repairedUntypedAgents, (msg) => progress.updateDetail(msg))
+              : []
+            const untouchedUntyped = untypedDegraded.filter((entry) => !repairedUntypedAgents.includes(entry.agent))
+            remainingDegraded = mergeRemainingDegraded([...remainingDegraded, ...untouchedUntyped], recheckedUntyped)
+          } else {
+            remainingDegraded = mergeRemainingDegraded(remainingDegraded, untypedDegraded)
+          }
+        }
+
+        if (repairsAttempted) {
+          progress.startPhase("post-repair check")
+          progress.completePhase("post-repair check", providerRepairCountSummary(remainingDegraded.length))
+          if (remainingDegraded.length === 0) {
+            deps.writeStdout("All set. Provider checks recovered after repair.")
+          } else {
+            writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
+            deps.writeStdout("Run `ouro up` again after these are fixed.")
+          }
+        } else if (untypedDegraded.length > 0) {
+          writeProviderRepairSummary(deps, "Provider checks need attention", remainingDegraded)
+        }
       }
     }
 
@@ -4160,19 +7108,40 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const sections = [localSection]
     if (deps.checkForCliUpdate) {
       try {
-        const updateResult = await deps.checkForCliUpdate()
+        const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(
+          deps.checkForCliUpdate,
+          deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS,
+        )
         if (updateResult.latestVersion) {
           sections.push(`published latest: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
         } else if (updateResult.error) {
-          sections.push(`published latest: unavailable (${updateResult.error})`)
+          sections.push(`published latest: unavailable (${summarizeCliUpdateCheckStatus(updateResult.error, timedOut)})`)
         }
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
+        const reason = summarizeCliUpdateCheckStatus(
+          err instanceof Error ? err.message : String(err),
+        )
         sections.push(`published latest: unavailable (${reason})`)
       }
     }
 
-    const message = sections.join("\n\n")
+    const message = ttyBoardEnabled(deps)
+      ? renderCommandBoard(deps, {
+          title: "Versions",
+          subtitle: "Installed and published CLI runtime versions.",
+          summary: "This machine can keep a few runtimes around so upgrades and rollbacks stay legible.",
+          sections: [
+            {
+              title: "Installed versions",
+              lines: localSection.split("\n"),
+            },
+            {
+              title: "Published latest",
+              lines: sections.slice(1).length > 0 ? sections.slice(1) : ["published latest: unavailable"],
+            },
+          ],
+        })
+      : sections.join("\n\n")
     deps.writeStdout(message)
     return message
   }
@@ -4195,7 +7164,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  if (command.kind === "outlook") {
+  if (command.kind === "mailbox") {
     let status: DaemonResponse
     try {
       status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
@@ -4208,25 +7177,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore stop */
 
     const payload = parseStatusPayload(status.data)
-    /* v8 ignore start -- ?? branch: outlookUrl always present in test fixtures */
-    const outlookUrl = payload?.overview.outlookUrl ?? "unavailable"
+    /* v8 ignore start -- ?? branch: mailboxUrl always present in test fixtures */
+    const mailboxUrl = payload?.overview.mailboxUrl ?? payload?.overview.outlookUrl ?? "unavailable"
     /* v8 ignore stop */
     if (!command.json) {
-      deps.writeStdout(outlookUrl)
-      return outlookUrl
+      deps.writeStdout(mailboxUrl)
+      return mailboxUrl
     }
 
-    /* v8 ignore start — error path: outlook URL not available */
-    if (outlookUrl === "unavailable") {
-      deps.writeStdout(outlookUrl)
-      return outlookUrl
+    /* v8 ignore start — error path: mailbox URL not available */
+    if (mailboxUrl === "unavailable") {
+      deps.writeStdout(mailboxUrl)
+      return mailboxUrl
     }
     /* v8 ignore stop */
 
     /* v8 ignore start -- ?? branch: tests always inject fetchImpl */
     const fetchImpl = deps.fetchImpl ?? fetch
     /* v8 ignore stop */
-    const response = await fetchImpl(`${outlookUrl}/api/machine`)
+    const response = await fetchImpl(`${mailboxUrl}/api/machine`)
     const data = await response.json() as unknown
     const text = JSON.stringify(data, null, 2)
     deps.writeStdout(text)
@@ -4274,7 +7243,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (require("fs").existsSync(deps.socketPath)) {
       try {
         await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: command.agent, content } as DaemonCommand).catch(() => {})
-        await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+        // Only wake the agent on session lifecycle boundaries, not on every
+        // single tool use. A long Claude Code working session can fire
+        // dozens of post-tool-use hooks per minute; waking the agent
+        // synchronously on each one creates a feedback storm where the
+        // inner loop is re-prompted faster than it can rest, the
+        // "...time passing. anything stirring?" probe fires back-to-back,
+        // and the agent burns its attention budget responding to wakes
+        // instead of doing actual work. The message is still delivered
+        // either way (above); the agent picks it up on its next natural
+        // turn.
+        if (eventType === "session-start" || eventType === "stop") {
+          await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+        }
       } catch { /* daemon not running — silent */ }
     } else {
       emitNervesEvent({
@@ -4376,7 +7357,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
       // 3. Write conversation formatting instructions
       const claudeMdPath = path.join(claudeConfigDir, "CLAUDE.md")
-      const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\` to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
+      const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\`, \`ask\`, or another conversation tool to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
       let existingClaudeMd = ""
       if (fs.existsSync(claudeMdPath)) {
         existingClaudeMd = fs.readFileSync(claudeMdPath, "utf-8")
@@ -4404,6 +7385,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
+  }
+
+  if (command.kind === "mcp.canary") {
+    const canarySocketPath = command.socketOverride ?? deps.socketPath
+    const result = await runMcpStatusCanary({
+      agent: command.agent,
+      socketPath: canarySocketPath,
+      command: process.execPath,
+      commandArgs: [
+        path.join(__dirname, "ouro-bot-entry.js"),
+        "mcp-serve",
+        "--agent",
+        command.agent,
+        "--socket",
+        canarySocketPath,
+      ],
+      requiredSenses: command.requiredSenses ?? [],
+    })
+    if (!result.ok) deps.setExitCode?.(1)
+    const message = command.json ? JSON.stringify(result, null, 2) : formatMcpStatusCanaryResult(result)
+    deps.writeStdout(message)
+    return message
   }
 
   /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */
@@ -4457,34 +7460,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── task subcommands (local, no daemon socket needed) ──
-  if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
-      command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
-      command.kind === "task.sessions" || command.kind === "task.fix") {
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? getTaskModule()
-    /* v8 ignore stop */
-    const message = executeTaskCommand(command, taskMod)
-    deps.writeStdout(message)
-    return message
-  }
-
-  // ── reminder subcommands (local, no daemon socket needed) ──
-  if (command.kind === "reminder.create") {
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? getTaskModule()
-    /* v8 ignore stop */
-    const message = executeReminderCommand(command, taskMod)
-    deps.writeStdout(message)
-    return message
-  }
-
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
-    const agentName = command.agent ?? getAgentName()
-    const bundleRoot = deps.agentBundleRoot ?? path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+    const bundleRoot = deps.agentBundleRoot ?? path.join(
+      deps.bundlesRoot ?? getAgentBundlesRoot(),
+      `${command.agent}.ouro`,
+    )
     /* v8 ignore stop */
     const habitsDir = path.join(bundleRoot, "habits")
 
@@ -4505,7 +7489,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const lines: string[] = []
       for (const file of files) {
         const fileContent = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-        const habit = parseHabitFile(fileContent, path.join(habitsDir, file))
+        const habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, path.join(habitsDir, file)))
         const lastRunStr = habit.lastRun ?? "never"
         lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}  lastRun=${lastRunStr}`)
       }
@@ -4528,7 +7512,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         title: command.name,
         cadence: command.cadence ?? "null",
         status: "active",
-        lastRun: now,
         created: now,
       },
       `Habit: ${command.name}`,
@@ -4548,8 +7531,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Derive agent-scoped friends dir from --agent flag or link/unlink's agent field
       const agentName = ("agent" in command && command.agent) ? command.agent : undefined
       const friendsDir = agentName
-        ? path.join(getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
-        : path.join(getAgentBundlesRoot(), "friends")
+        ? path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
+        : path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), "friends")
       store = new FileFriendStore(friendsDir)
     }
     /* v8 ignore stop */
@@ -4558,7 +7541,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── provider state commands (local, no daemon socket needed) ──
+  // ── provider commands (local, no daemon socket needed) ──
   if (command.kind === "provider.use") {
     return executeProviderUse(command, deps)
   }
@@ -4607,6 +7590,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeVaultConfigStatus(command, deps)
   }
 
+  if (command.kind === "vault.item.set") {
+    return executeVaultItemSet(command, deps)
+  }
+
+  if (command.kind === "vault.item.status") {
+    return executeVaultItemStatus(command, deps)
+  }
+
+  if (command.kind === "vault.item.list") {
+    return executeVaultItemList(command, deps)
+  }
+
+  if (command.kind === "dns.workflow") {
+    return executeDnsWorkflow(command, deps)
+  }
+
+  // ── plugin commands (local, no daemon socket needed) ──
+  if (command.kind === "plugin.install") {
+    return executePluginInstall(command, { writeStdout: deps.writeStdout })
+  }
+  if (command.kind === "plugin.list") {
+    return executePluginList(command, { writeStdout: deps.writeStdout })
+  }
+  if (command.kind === "plugin.remove") {
+    return executePluginRemove(command, { writeStdout: deps.writeStdout })
+  }
+
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     return executeAuthRun(command, deps)
@@ -4616,6 +7626,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
   if (command.kind === "auth.verify") {
     const progress = createHumanCommandProgress(deps, "auth verify")
+    const useTTYBoard = deps.isTTY ?? process.stdout.isTTY === true
+    const renderTTYBoard = (items: HumanReadinessItem[]): string => {
+      const snapshot = buildHumanReadinessSnapshot({
+        agent: command.agent,
+        title: "Provider health",
+        items,
+      })
+      return renderHumanReadinessBoard({
+        agent: command.agent,
+        title: "Provider health",
+        subtitle: "Checked live just now.",
+        snapshot,
+        isTTY: true,
+        columns: deps.stdoutColumns ?? process.stdout.columns,
+      }).trimEnd()
+    }
     const writeMessage = (message: string): string => {
       progress.end()
       deps.writeStdout(message)
@@ -4629,6 +7655,23 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (!poolResult.ok) {
         progress.completePhase("reading provider credentials", poolResult.reason)
         const message = `vault unavailable: ${poolResult.error}\n${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro auth verify'.")}`
+        if (useTTYBoard) {
+          return writeMessage(renderTTYBoard([{
+            key: "vault",
+            title: "Provider vault",
+            status: "locked",
+            summary: message,
+            detailLines: [],
+            actions: [
+              {
+                label: `Unlock ${command.agent}'s vault`,
+                actor: "human-required",
+                command: `ouro vault unlock --agent ${command.agent}`,
+                recommended: true,
+              },
+            ],
+          }]))
+        }
         return writeMessage(message)
       }
       const providerCount = Object.keys(poolResult.pool.providers).length
@@ -4637,17 +7680,43 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const record = poolResult.pool.providers[command.provider]
         if (!record) {
           const message = `${command.provider}: missing. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\`.`
+          if (useTTYBoard) {
+            return writeMessage(renderTTYBoard([{
+              key: `provider:${command.provider}`,
+              title: command.provider,
+              status: "needs credentials",
+              summary: `${command.provider}: missing`,
+              detailLines: [],
+              actions: [
+                {
+                  label: `Authenticate ${command.provider}`,
+                  actor: "human-required",
+                  command: `ouro auth --agent ${command.agent} --provider ${command.provider}`,
+                  recommended: true,
+                },
+              ],
+            }]))
+          }
           return writeMessage(message)
         }
         progress.startPhase(`verifying ${command.provider}`)
         const status = await verifyProviderCredentials(command.provider, {
           [command.provider]: { ...record.config, ...record.credentials },
+        }, {
+          sleep: deps.sleep,
+          ...createProviderPingProgressReporter(
+            { provider: command.provider },
+            (message) => progress.updateDetail(message),
+          ),
         })
         progress.completePhase(`verifying ${command.provider}`, status)
-        const message = `${command.provider}: ${status}`
+        const message = useTTYBoard
+          ? renderTTYBoard([authVerifyItemFor(command.agent, command.provider, status)])
+          : `${command.provider}: ${status}`
         return writeMessage(message)
       }
       const lines: string[] = []
+      const items: HumanReadinessItem[] = []
       const entries = Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>
       if (entries.length > 0) {
         progress.startPhase("verifying providers")
@@ -4655,16 +7724,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       for (const [p, record] of entries) {
         const status = await verifyProviderCredentials(p, {
           [p]: { ...record.config, ...record.credentials },
+        }, {
+          sleep: deps.sleep,
+          ...createProviderPingProgressReporter(
+            { provider: p },
+            (message) => progress.updateDetail(message),
+          ),
         })
         const line = `${p}: ${status}`
         lines.push(line)
+        items.push(authVerifyItemFor(command.agent, p, status))
         progress.updateDetail(line)
       }
       if (entries.length > 0) {
         progress.completePhase("verifying providers", `${entries.length} checked`)
       }
-      if (lines.length === 0) lines.push(`no provider credentials in ${command.agent}'s vault`)
-      const message = lines.join("\n")
+      if (lines.length === 0) {
+        lines.push(`no provider credentials in ${command.agent}'s vault`)
+        items.push({
+          key: "provider:none",
+          title: "Providers",
+          status: "missing",
+          summary: `no provider credentials in ${command.agent}'s vault`,
+          detailLines: [],
+          actions: [],
+        })
+      }
+      const message = useTTYBoard ? renderTTYBoard(items) : lines.join("\n")
       return writeMessage(message)
     } catch (error) {
       progress.end()
@@ -4737,13 +7823,33 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── whoami (local, no daemon socket needed) ──
   if (command.kind === "whoami") {
+    const formatWhoami = (agentName: string, homePath: string, bonesVersion: string): string => {
+      if (!ttyBoardEnabled(deps)) {
+        return [
+          `agent: ${agentName}`,
+          `home: ${homePath}`,
+          `bones: ${bonesVersion}`,
+        ].join("\n")
+      }
+      return renderCommandBoard(deps, {
+        title: "Identity",
+        subtitle: "Who is speaking from this terminal right now.",
+        summary: "This is the agent bundle and runtime currently in play.",
+        sections: [
+          {
+            title: "Agent",
+            lines: [
+              `agent: ${agentName}`,
+              `home: ${homePath}`,
+              `bones: ${bonesVersion}`,
+            ],
+          },
+        ],
+      })
+    }
     if (command.agent) {
       const agentRoot = path.join(getAgentBundlesRoot(), `${command.agent}.ouro`)
-      const message = [
-        `agent: ${command.agent}`,
-        `home: ${agentRoot}`,
-        `bones: ${getRuntimeMetadata().version}`,
-      ].join("\n")
+      const message = formatWhoami(command.agent, agentRoot, getRuntimeMetadata().version)
       deps.writeStdout(message)
       return message
     }
@@ -4751,11 +7857,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (deps.whoamiInfo) {
         try {
           const info = deps.whoamiInfo()
-          const message = [
-            `agent: ${info.agentName}`,
-            `home: ${info.homePath}`,
-            `bones: ${info.bonesVersion}`,
-          ].join("\n")
+          const message = formatWhoami(info.agentName, info.homePath, info.bonesVersion)
           deps.writeStdout(message)
           return message
         } catch {
@@ -4768,11 +7870,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         return resolvedAgent.message
       }
       const agentRoot = path.join(getAgentBundlesRoot(), `${resolvedAgent.agent}.ouro`)
-      const message = [
-        `agent: ${resolvedAgent.agent}`,
-        `home: ${agentRoot}`,
-        `bones: ${getRuntimeMetadata().version}`,
-      ].join("\n")
+      const message = formatWhoami(resolvedAgent.agent, agentRoot, getRuntimeMetadata().version)
       deps.writeStdout(message)
       return message
     } catch {
@@ -4826,10 +7924,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── thoughts (local, no daemon socket needed) ──
   if (command.kind === "thoughts") {
     try {
-      const agentName = command.agent ?? getAgentName()
       /* v8 ignore next -- production fallback: tests always inject bundlesRoot via createTmpBundle @preserve */
       const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-      const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
+      const agentRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
       const sessionFilePath = getInnerDialogSessionPath(agentRoot)
       if (command.json) {
         try {
@@ -4871,11 +7968,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- CLI attention handler: requires real obligation store on disk @preserve */
   if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
     try {
-      const agentName = command.agent ?? getAgentName()
       const { listActiveReturnObligations, readReturnObligation } = await import("../../arc/obligations")
 
       if (command.kind === "attention.list") {
-        const obligations = listActiveReturnObligations(agentName)
+        const obligations = listActiveReturnObligations(command.agent)
         if (obligations.length === 0) {
           const message = "nothing held — attention queue is empty"
           deps.writeStdout(message)
@@ -4889,7 +7985,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
 
       if (command.kind === "attention.show") {
-        const obligation = readReturnObligation(agentName, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
+        const obligation = readReturnObligation(command.agent, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
         if (!obligation) {
           const message = `no obligation found with id ${(command as Extract<OuroCliCommand, { kind: "attention.show" }>).id}`
           deps.writeStdout(message)
@@ -4902,7 +7998,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
       // attention.history: show returned obligations
       const { getReturnObligationsDir } = await import("../../arc/obligations")
-      const obligationsDir = getReturnObligationsDir(agentName)
+      const obligationsDir = getReturnObligationsDir(command.agent)
       let attEntries: string[] = []
       try { attEntries = fs.readdirSync(obligationsDir) } catch { /* empty */ }
       const returned = attEntries
@@ -4936,16 +8032,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
   if (command.kind === "inner.status") {
     try {
-      const agentName = command.agent ?? getAgentName()
-      const agentRoot = getAgentRoot(agentName)
+      const agentRoot = deps.agentBundleRoot ?? getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
-      const { sessionPath: getSessionPath } = await import("../config")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
       const { listActiveReturnObligations } = await import("../../arc/obligations")
 
       // Read runtime state
-      const innerSessionPath = getSessionPath("inner-dialog", "inner", "session")
+      const innerSessionPath = getInnerDialogSessionPath(agentRoot)
       const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
       let runtimeState: import("./inner-status").InnerRuntimeState | null = null
       try {
@@ -4994,10 +8088,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       } catch { /* no habits — heartbeat unknown */ }
 
       // Attention count
-      const activeObligations = listActiveReturnObligations(agentName)
+      const activeObligations = listActiveReturnObligations(command.agent)
 
       const message = buildInnerStatusOutput({
-        agentName,
+        agentName: command.agent,
         runtimeState,
         journalFiles,
         heartbeat,
@@ -5019,7 +8113,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore start -- production default: requires full identity setup @preserve */
     const scanner = deps.scanSessions ?? (async () => [] as SessionEntry[])
     /* v8 ignore stop */
-    const sessions = await scanner()
+    const sessions = await scanner(command.agent)
     if (sessions.length === 0) {
       const message = "no active sessions"
       deps.writeStdout(message)
@@ -5075,6 +8169,23 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Route through serpent guide when no explicit hatch args were provided
     const hasExplicitHatchArgs = !!(command.agentName || command.humanName || command.provider || command.credentials)
     if (deps.runSerpentGuide && !hasExplicitHatchArgs) {
+      if (ttyBoardEnabled(deps)) {
+        deps.writeStdout(renderCommandBoard(deps, {
+          title: "Hatch an agent",
+          subtitle: "Let’s set up a new agent.",
+          summary: "Ouro will walk through the essentials, then hand the conversation to the specialist.",
+          sections: [
+            {
+              title: "Flow",
+              lines: [
+                "1. Pick a name and vibe.",
+                "2. Choose providers and capabilities.",
+                "3. Land the bundle and bring it online.",
+              ],
+            },
+          ],
+        }))
+      }
       // System setup first — ouro command, subagents, UTI — before the interactive specialist
       await performSystemSetup(deps)
 
@@ -5111,9 +8222,31 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return ""
     }
 
-    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
-    deps.writeStdout(message)
-    return message
+    return writeCommandOutcome(deps, {
+          title: "Hatch complete",
+          subtitle: `${hatchInput.agentName} just arrived.`,
+          summary: `${hatchInput.agentName} is ready for first contact.`,
+          sections: [
+            {
+              title: "What changed",
+              lines: [
+                `Bundle: ${result.bundleRoot}`,
+                `Specialist identity: ${result.selectedIdentity}`,
+                `Runtime status: ${daemonResult.message}`,
+              ],
+            },
+        {
+          title: "Next moves",
+          lines: [
+            `Talk to them with ouro chat ${hatchInput.agentName}.`,
+            `Use ouro connect --agent ${hatchInput.agentName} to bring more capabilities online.`,
+          ],
+        },
+      ],
+      fallbackLines: [
+        `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`,
+      ],
+    })
   }
 
   // ── doctor (local, no daemon socket needed) ──
@@ -5132,15 +8265,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
     }
-    const doctorResult = await runDoctorChecks(doctorDeps)
-    const output = formatDoctorOutput(doctorResult)
+    const doctorResult = command.category
+      ? await runDoctorChecks(doctorDeps, { category: command.category })
+      : await runDoctorChecks(doctorDeps)
+    if (command.category && doctorResult.categories.length === 0) {
+      const message = `unknown doctor category '${command.category}'. known categories: CLI, Daemon, Agents, Senses, Habits, Security, Trips, Mailroom, Friends, Disk.\n`
+      deps.writeStdout(message)
+      return message
+    }
+    const output = command.json
+      ? `${JSON.stringify(doctorResult, null, 2)}\n`
+      : formatDoctorOutput(doctorResult)
     deps.writeStdout(output)
     emitNervesEvent({
       component: "daemon",
       event: "daemon.doctor_run",
       message: "ouro doctor completed",
-      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
+      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed, strict: command.strict ?? false },
     })
+    if (command.strict && (doctorResult.summary.warnings > 0 || doctorResult.summary.failed > 0)) {
+      throw new Error(`doctor --strict: ${doctorResult.summary.warnings} warning${doctorResult.summary.warnings === 1 ? "" : "s"} and ${doctorResult.summary.failed} failure${doctorResult.summary.failed === 1 ? "" : "s"}`)
+    }
     return output
   }
 
@@ -5285,6 +8430,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   let response: DaemonResponse
   try {
     response = await deps.sendCommand(deps.socketPath, daemonCommand)
+    // `ouro msg` is operator-driven and expects the recipient to process the
+    // message now (vs. on next natural turn). message.send is queue-only as
+    // of the 2026-05-11 fix; we explicitly fire inner.wake to preserve the
+    // historical CLI UX. Background callers (hooks, API) deliberately omit
+    // this and let the agent pick up notifications on its next turn.
+    if (command.kind === "message.send" && command.from === "ouro-cli") {
+      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.to } as DaemonCommand).catch(() => {})
+    }
   } catch (error) {
     if (command.kind === "message.send") {
       const pendingPath = deps.fallbackPendingMessage(command)
@@ -5293,7 +8446,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     if (command.kind === "daemon.status" && isDaemonUnavailableError(error)) {
-      const message = daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
+      const message = command.json
+        ? daemonUnavailableStatusJsonOutput(deps.socketPath, deps.healthFilePath)
+        : daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
       deps.writeStdout(message)
       return message
     }
@@ -5306,7 +8461,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
   const fallbackMessage = response.summary ?? response.message ?? (response.ok ? "ok" : `error: ${response.error ?? "unknown error"}`)
   const message = command.kind === "daemon.status"
-    ? formatDaemonStatusOutput(response, fallbackMessage)
+    ? command.json
+      ? formatDaemonStatusJsonOutput(response)
+      : formatDaemonStatusOutput(response, fallbackMessage)
     : fallbackMessage
   deps.writeStdout(message)
   return message

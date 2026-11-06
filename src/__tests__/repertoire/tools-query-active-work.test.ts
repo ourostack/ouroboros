@@ -96,6 +96,7 @@ const listCodingSessionsMock = vi.fn(() => [
     originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
   },
 ])
+const listVisibleBackgroundOperationsMock = vi.fn(() => [])
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -201,6 +202,10 @@ vi.mock("../../repertoire/coding", () => ({
   })),
 }))
 
+vi.mock("../../heart/mail-import-discovery", () => ({
+  listVisibleBackgroundOperations: listVisibleBackgroundOperationsMock,
+}))
+
 describe("query_active_work tool", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -283,6 +288,8 @@ describe("query_active_work tool", () => {
         originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
       },
     ])
+    listVisibleBackgroundOperationsMock.mockReset()
+    listVisibleBackgroundOperationsMock.mockImplementation(() => [])
   })
 
   it("is registered in baseToolDefinitions", async () => {
@@ -473,5 +480,86 @@ describe("query_active_work tool", () => {
 
     expect(result).toContain("codex coding-083")
     expect(result).toContain("## return obligations")
+  })
+
+  it("reports whole-self status including active background operations", async () => {
+    listVisibleBackgroundOperationsMock.mockReturnValue([
+      {
+        schemaVersion: 1,
+        id: "op_mail_import_1",
+        kind: "mail.import-mbox",
+        title: "mail import",
+        status: "running",
+        agentName: "slugger",
+        summary: "importing Ari's HEY archive",
+        detail: "scanned 500 of 16616 messages",
+        progress: {
+          current: 500,
+          total: 16616,
+          unit: "messages",
+        },
+        failure: {
+          class: "transient-storage-read",
+          retryDisposition: "retry-safe",
+          hint: "likely transient hosted read failure",
+        },
+        spec: {
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+          filePath: "/tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox",
+          fileOriginLabel: "browser sandbox (.playwright-mcp)",
+        },
+        createdAt: "2026-04-23T22:40:00.000Z",
+        startedAt: "2026-04-23T22:40:05.000Z",
+        updatedAt: "2026-04-23T22:40:30.000Z",
+        remediation: [
+          "retry the import from the same archive after fixing the failure",
+        ],
+      },
+      {
+        schemaVersion: 1,
+        id: "op_mail_import_done",
+        kind: "mail.import-mbox",
+        title: "mail import",
+        status: "succeeded",
+        agentName: "slugger",
+        summary: "imported Ari's HEY archive",
+        createdAt: "2026-04-23T22:00:00.000Z",
+        finishedAt: "2026-04-23T22:10:00.000Z",
+        updatedAt: "2026-04-23T22:10:00.000Z",
+      },
+    ])
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
+
+    const result = await tool.handler({}, {
+      signin: async () => undefined,
+      currentSession: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+      },
+    } as any)
+
+    expect(result).toContain("## background operations")
+    expect(result).toContain("[running] mail import")
+    expect(result).toContain("operation: op_mail_import_1")
+    expect(result).toContain("importing Ari's HEY archive")
+    expect(result).toContain("scanned 500 of 16616 messages")
+    expect(result).toContain("file: /tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox")
+    expect(result).toContain("origin: browser sandbox (.playwright-mcp)")
+    expect(result).toContain("owner/source: ari@mendelow.me / hey")
+    expect(result).toContain("started: 2026-04-23T22:40:05.000Z")
+    expect(result).toContain("updated: 2026-04-23T22:40:30.000Z")
+    expect(result).toContain("failure class: transient-storage-read")
+    expect(result).toContain("retry: retry-safe")
+    expect(result).toContain("recovery: likely transient hosted read failure")
+    expect(result).toContain("recovery universe: transient dependency/read issue — safe to retry once storage/network answers again")
+    expect(result).toContain("retry the import from the same archive after fixing the failure")
+    expect(result).toContain("[succeeded] mail import")
+    expect(result).toContain("imported Ari's HEY archive")
+    expect(result).toContain("next: in flight — no action unless it stalls or i need live status")
+    expect(result).toContain("next: caught up — no rerun needed unless a newer archive appears")
   })
 })

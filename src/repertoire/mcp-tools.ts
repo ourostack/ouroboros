@@ -27,6 +27,11 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
           parameters: tool.inputSchema ?? { type: "object", properties: {} },
         },
       },
+      riskProfile: {
+        mutates: "external_side_effect" as const,
+        risk: "high" as const,
+        reason: "MCP tools may mutate external systems",
+      },
       handler: async (args: Record<string, string>): Promise<string> => {
         emitNervesEvent({
           event: "mcp.tool_start",

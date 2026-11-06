@@ -58,6 +58,11 @@ describe("mcpToolsAsDefinitions", () => {
     expect(result[0].tool.function.description).toBe("Navigate to URL")
     expect(result[0].tool.function.parameters).toEqual({ type: "object", properties: { url: { type: "string" } } })
     expect(result[0].mcpServer).toBe("browser")
+    expect(result[0].riskProfile).toEqual({
+      mutates: "external_side_effect",
+      risk: "high",
+      reason: "MCP tools may mutate external systems",
+    })
 
     expect(result[1].tool.function.name).toBe("browser_screenshot")
     expect(result[1].tool.function.description).toBe("Take screenshot")
@@ -198,6 +203,21 @@ describe("mcpToolsAsDefinitions", () => {
 
     const result = mcpToolsAsDefinitions(mgr)
     expect(result[0].tool.type).toBe("function")
+  })
+
+  it("marks MCP tools as high-risk external side effects by default", () => {
+    const mgr = makeMockMcpManager([{
+      server: "calendar",
+      tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+    }])
+
+    const result = mcpToolsAsDefinitions(mgr)
+
+    expect(result[0].riskProfile).toEqual({
+      mutates: "external_side_effect",
+      risk: "high",
+      reason: "MCP tools may mutate external systems",
+    })
   })
 
   describe("double-prefix avoidance", () => {
