@@ -13,7 +13,7 @@ type Gate = any
 let gate: Gate
 beforeEach(async () => { gate = await import(/* @vite-ignore */ SCRIPT) })
 
-const empty = (overrides: Record<string, unknown> = {}) => ({ effectsReadable: true, stewardSha: "aaa", ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides })
+const empty = (overrides: Record<string, unknown> = {}) => ({ effectsReadable: true, stewardSha: "aaa", principalLearned: { notes: {}, toolPreferences: {}, relationshipPolicy: null }, ledgerLines: 3, queue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], ...overrides })
 
 const hostTrustDirs: string[] = []
 afterAll(() => { for (const dir of hostTrustDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -163,8 +163,8 @@ describe("readback helpers", () => {
       const obs = empty({ effects: [{ idempotencyKey: key, createdAt: new Date(10_000).toISOString() }], awaiting: [{ name: "chef_show_s2_landed.md", createdAt: created, filedFor: "real-friend" }] })
       const { host } = fakeHost({ observations: [empty(), obs], clock })
       const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
-      expect(suite.results.at(-1)).toMatchObject({ id: "no-telegram", status: "pass" })
-      expect(suite.results.at(-1).checks[0].detail).toContain("info:")
+      expect(suite.results.find((r: { id: string }) => r.id === "no-telegram")).toMatchObject({ status: "pass" })
+      expect(suite.results.find((r: { id: string }) => r.id === "no-telegram").checks[0].detail).toContain("info:")
     })
   })
 
@@ -577,6 +577,8 @@ function fakeHost(opts: { sessions?: Record<string, unknown>; replies?: (req: { 
     openWindow: (minutes: number) => { log.push(`open:${minutes}`) },
     closeWindow: () => { log.push("close") },
     restorePsycheFile: (name: string, text: string, mode: number) => { log.push(`restore:${name}:${JSON.stringify(text)}:${mode}`) },
+    restoreReplayFriendLearned: () => undefined,
+    readReplayFriendLearned: () => ({ notes: {}, toolPreferences: {}, relationshipPolicy: null }),
     send: async (req: { who: string; text: string; delegated: boolean; context: string }) => { contexts.push(req.context); log.push(`send:${req.who}:${req.delegated}`); return opts.replies ? opts.replies(req) : { text: "Books is up. Chef Show" } },
     readSession: async (context: string) => opts.sessions?.[context] ?? opts.sessions?.["*"] ?? null,
     observe: async () => { const o = opts.observations?.[Math.min(observeCalls, opts.observations.length - 1)] ?? empty(); observeCalls += 1; return typeof o === "function" ? o(contexts.at(-1) ?? "") : o },
@@ -590,8 +592,8 @@ describe("runSuite orchestration", () => {
     const { host, log } = fakeHost({ sessions: { "*": trace } })
     const suite = await gate.runSuite(host, { cases: ["chef-question"], windowMinutes: 12 })
     expect(log).toEqual(["open:12", "send:principal:false", "close"])
-    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["chef-question:pass", "owner-policy-untouched:pass", "no-telegram:pass"])
-    expect(suite.summary).toEqual({ ok: true, passed: 3, skipped: 0, failed: [], warned: [] })
+    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["chef-question:pass", "owner-policy-untouched:pass", "no-telegram:pass", "replay-friend-restored:pass"])
+    expect(suite.summary).toEqual({ ok: true, passed: 4, skipped: 0, failed: [], warned: [] })
   })
 
   it("reports a model-quality case as a warning without failing the run, unless it was planted", async () => {
@@ -616,7 +618,7 @@ describe("runSuite orchestration", () => {
     const leak = empty({ effects: [{ idempotencyKey: "owner-notice:delegated:x", createdAt: new Date(10_000).toISOString() }] })
     const { host, log } = fakeHost({ observations: [empty(), leak], clock })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
-    expect(suite.results.map((r: { status: string }) => r.status)).toEqual(["skipped", "pass", "fail"])
+    expect(suite.results.map((r: { status: string }) => r.status)).toEqual(["skipped", "pass", "fail", "pass"])
     expect(suite.summary).toMatchObject({ ok: false, skipped: 1, failed: ["no-telegram"] })
     expect(log.at(-1)).toBe("close")
   })
@@ -674,7 +676,7 @@ describe("runSuite orchestration", () => {
       expect(run.lines).toEqual(["TACIT changed during the run; its text before the restore is kept at /client/tacit-before-restore-2026-11-05T00:00:00.000Z.md"])
       expect(run.state.tacit).toEqual(snapshot)
       expect(suite.results.find((r: { id: string }) => r.id === "tacit-restored")).toEqual({ id: "tacit-restored", status: "pass", checks: [{ name: "TACIT holds the text it had before the run", ok: true }] })
-      expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["learns-into-tacit", "handoff-greeting", "owner-policy-untouched", "no-telegram", "tacit-restored"])
+      expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["learns-into-tacit", "handoff-greeting", "owner-policy-untouched", "no-telegram", "tacit-restored", "replay-friend-restored"])
     } finally { learns.readback = original }
   })
 
@@ -685,14 +687,14 @@ describe("runSuite orchestration", () => {
       expect(run.log.some((line) => line.startsWith("keep:"))).toBe(false)
       expect(run.lines).toEqual([])
       expect(run.log.slice(-2)).toEqual([`restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
-      expect(suite.results.at(-1)).toMatchObject({ id: "tacit-restored", status: "pass" })
+      expect(suite.results.find((r: { id: string }) => r.id === "tacit-restored")).toMatchObject({ status: "pass" })
     }
   })
 
   it("fails tacit-restored when TACIT does not hold the snapshot after the restore, and never excuses it", async () => {
     const run = tacitHost(snapshot, { learn: learned, restore: () => undefined })
     const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
-    expect(suite.results.at(-1)).toEqual({ id: "tacit-restored", status: "fail", checks: [{ name: "TACIT holds the text it had before the run", ok: false, detail: "TACIT differs from the snapshot after the restore" }] })
+    expect(suite.results.find((r: { id: string }) => r.id === "tacit-restored")).toEqual({ id: "tacit-restored", status: "fail", checks: [{ name: "TACIT holds the text it had before the run", ok: false, detail: "TACIT differs from the snapshot after the restore" }] })
     expect(suite.summary.failed).toContain("tacit-restored")
     expect(gate.NEVER_EXCUSED).toContain("tacit-restored")
   })
@@ -722,7 +724,7 @@ describe("runSuite orchestration", () => {
     const first = await gate.runSuite(unreadable.host, { cases: ["handoff-greeting"], log: unreadable.say })
     expect(unreadable.lines).toEqual(["could not keep TACIT's text before the restore: TACIT is a symlink"])
     expect(unreadable.state.tacit).toEqual(snapshot)
-    expect(first.results.at(-1)).toMatchObject({ id: "tacit-restored", status: "pass" })
+    expect(first.results.find((r: { id: string }) => r.id === "tacit-restored")).toMatchObject({ status: "pass" })
     const unkept = tacitHost(snapshot, { learn: learned, keepFails: true })
     await gate.runSuite(unkept.host, { cases: ["handoff-greeting"], log: unkept.say })
     expect(unkept.lines).toEqual(["could not keep TACIT's text before the restore: client folder gone"])
@@ -730,17 +732,108 @@ describe("runSuite orchestration", () => {
     const blind = tacitHost(snapshot, { learn: learned, readFails: Infinity })
     const suite = await gate.runSuite(blind.host, { cases: ["handoff-greeting"], log: blind.say })
     expect(blind.state.tacit).toEqual(snapshot)
-    expect(suite.results.at(-1)).toEqual({ id: "tacit-restored", status: "fail", checks: [{ name: "TACIT holds the text it had before the run", ok: false, detail: "TACIT could not be read after the restore: TACIT is a symlink" }] })
+    expect(suite.results.find((r: { id: string }) => r.id === "tacit-restored")).toEqual({ id: "tacit-restored", status: "fail", checks: [{ name: "TACIT holds the text it had before the run", ok: false, detail: "TACIT could not be read after the restore: TACIT is a symlink" }] })
     const plain = tacitHost(snapshot, { learn: learned })
     ;(plain.host as Record<string, unknown>).readPsycheFile = () => { throw "no reason" }
     const odd = await gate.runSuite(plain.host, { cases: ["handoff-greeting"], log: plain.say })
     expect(plain.lines).toEqual(["could not keep TACIT's text before the restore: no reason"])
-    expect(odd.results.at(-1).checks[0].detail).toBe("TACIT could not be read after the restore: no reason")
+    expect(odd.results.find((r: { id: string }) => r.id === "tacit-restored").checks[0].detail).toBe("TACIT could not be read after the restore: no reason")
   })
 
   it("throws the restore's error when nothing else failed", async () => {
     const run = tacitHost(snapshot, { restore: () => { throw new Error("disk full") } })
     await expect(gate.runSuite(run.host, { cases: ["stall-kept"], log: run.say })).rejects.toThrow("disk full")
+  })
+
+  /** A fake host whose principal record is live state: a send can change what the principal learned, and restoreReplayFriendLearned acts on it. */
+  type Learned = { notes: Record<string, unknown>; toolPreferences: Record<string, unknown>; relationshipPolicy: unknown }
+  const startLearned: Learned = { notes: { likes: "cosy" }, toolPreferences: { media: "short" }, relationshipPolicy: { preferences: { communication: ["plain"] } } }
+  const sigOf = (l: Learned) => JSON.stringify(l)
+  function friendHost(opts: { learn?: Learned; restore?: (l: Learned) => void; readFails?: unknown; start?: Learned | null } = {}) {
+    const state = { learned: opts.start === undefined ? startLearned : opts.start }
+    const run = tacitHost(snapshot)
+    const observe = () => empty({ tacit: snapshot, principalLearned: opts.start === undefined ? startLearned : opts.start })
+    run.host.observe = async () => observe() as never
+    const send = run.host.send
+    run.host.send = async (req: any) => { if (opts.learn) state.learned = opts.learn; return send(req) }
+    Object.assign(run.host, {
+      restoreReplayFriendLearned: opts.restore ?? ((l: Learned) => { run.log.push(`friend-restore:${sigOf(l)}`); state.learned = l }),
+      readReplayFriendLearned: () => { if (opts.readFails !== undefined) throw opts.readFails; run.log.push("friend-read"); return state.learned },
+    })
+    return { ...run, friend: state }
+  }
+  const friendCheck = "the replay friend's notes and preferences hold what they had before the run"
+  const friendOf = (suite: { results: Array<{ id: string }> }) => suite.results.find((r) => r.id === "replay-friend-restored")
+
+  it("restores the replay friend's learned fields after a run that changed them, and the result passes after tacit-restored", async () => {
+    const changed: Learned = { notes: { likes: "cosy", subtitles: "english" }, toolPreferences: { media: "long" }, relationshipPolicy: { preferences: { communication: ["plain", "terse"] } } }
+    const run = friendHost({ learn: changed })
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+    expect(run.friend.learned).toEqual(startLearned)
+    expect(run.log.filter((line) => line.startsWith("friend-"))).toEqual([`friend-restore:${sigOf(startLearned)}`, "friend-read"])
+    expect(friendOf(suite)).toEqual({ id: "replay-friend-restored", status: "pass", checks: [{ name: friendCheck, ok: true }] })
+    expect(suite.results.map((r: { id: string }) => r.id).slice(-2)).toEqual(["tacit-restored", "replay-friend-restored"])
+    expect(run.lines).toEqual([])
+  })
+
+  it("fails replay-friend-restored, and never excuses it, when the read-back differs from the snapshot", async () => {
+    const run = friendHost({ learn: { ...startLearned, notes: { subtitles: "english" } }, restore: () => undefined })
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say, liveResults: [{ id: "replay-friend-restored", status: "fail" }] })
+    expect(friendOf(suite)).toMatchObject({ status: "fail", live: "fail", checks: [{ name: friendCheck, ok: false, detail: "the replay friend's record differs from the snapshot after the restore" }] })
+    expect(suite.summary.failed).toContain("replay-friend-restored")
+    expect(gate.NEVER_EXCUSED).toContain("replay-friend-restored")
+  })
+
+  it("fails replay-friend-restored when the record cannot be read back", async () => {
+    for (const [thrown, text] of [[new Error("friend is a symlink"), "friend is a symlink"], ["no reason", "no reason"]] as const) {
+      const run = friendHost({ readFails: thrown })
+      const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+      expect(friendOf(suite)).toEqual({ id: "replay-friend-restored", status: "fail", checks: [{ name: friendCheck, ok: false, detail: `the replay friend's record could not be read after the restore: ${text}` }] })
+    }
+  })
+
+  it("restores the replay friend when the run throws, when the window is distrusted, and keeps the earlier error", async () => {
+    const thrown = friendHost({ restore: () => { throw new Error("disk full") } })
+    thrown.host.send = async () => { throw new Error("docker gone") }
+    await expect(gate.runSuite(thrown.host, { cases: ["chef-question"], log: thrown.say })).rejects.toThrow("docker gone")
+    expect(thrown.lines).toEqual(["could not restore the replay friend's record after the run (an earlier error is reported instead): disk full"])
+    const plain = friendHost({ restore: () => { throw "no reason" } })
+    plain.host.closeWindow = () => { throw new Error("close failed") }
+    await expect(gate.runSuite(plain.host, { cases: ["stall-kept"], log: plain.say })).rejects.toThrow("close failed")
+    expect(plain.lines).toEqual(["could not restore the replay friend's record after the run (an earlier error is reported instead): no reason"])
+    const distrusted = friendHost({ learn: { ...startLearned, notes: {} } })
+    ;(distrusted.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "no" })
+    const suite = await gate.runSuite(distrusted.host, { cases: ["chef-question"], log: distrusted.say })
+    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["window-trusted:fail", "tacit-restored:pass", "replay-friend-restored:pass"])
+  })
+
+  it("throws the friend restore's error when nothing else failed, still restoring after a failed TACIT restore, and logs the second error", async () => {
+    const alone = friendHost({ restore: () => { throw new Error("friend disk full") } })
+    await expect(gate.runSuite(alone.host, { cases: ["stall-kept"], log: alone.say })).rejects.toThrow("friend disk full")
+    const both = friendHost()
+    ;(both.host as Record<string, unknown>).restorePsycheFile = () => { throw new Error("tacit disk full") }
+    await expect(gate.runSuite(both.host, { cases: ["stall-kept"], log: both.say })).rejects.toThrow("tacit disk full")
+    expect(both.log).toContain(`friend-restore:${sigOf(startLearned)}`)
+    const bothFail = friendHost({ restore: () => { throw new Error("friend disk full") } })
+    ;(bothFail.host as Record<string, unknown>).restorePsycheFile = () => { throw new Error("tacit disk full") }
+    await expect(gate.runSuite(bothFail.host, { cases: ["stall-kept"], log: bothFail.say })).rejects.toThrow("tacit disk full")
+    expect(bothFail.lines).toEqual(["could not restore the replay friend's record after the run (an earlier error is reported instead): friend disk full"])
+  })
+
+  it("leaves the replay friend as found, and says so, when its record was unreadable before the run", async () => {
+    for (const start of [null, undefined]) {
+      const run = friendHost()
+      run.host.observe = async () => empty({ tacit: snapshot, principalLearned: start }) as never
+      const suite = await gate.runSuite(run.host, { cases: ["stall-kept"], log: run.say })
+      expect(run.log.some((line) => line.startsWith("friend-"))).toBe(false)
+      expect(run.lines).toEqual(["the replay friend's record was unreadable before the run, so it is left as found"])
+      expect(friendOf(suite)).toBeUndefined()
+    }
+    const distrusted = friendHost()
+    distrusted.host.observe = async () => empty({ tacit: snapshot, principalLearned: null }) as never
+    ;(distrusted.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "no" })
+    const aborted = await gate.runSuite(distrusted.host, { cases: ["chef-question"], log: distrusted.say })
+    expect(aborted.results.map((r: { id: string }) => r.id)).toEqual(["window-trusted", "tacit-restored"])
   })
 
   it("restores TACIT when the run itself throws, when the window is distrusted, and when the window fails to close", async () => {
@@ -752,8 +845,8 @@ describe("runSuite orchestration", () => {
     ;(distrusted.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "no" })
     const suite = await gate.runSuite(distrusted.host, { cases: ["chef-question"], log: distrusted.say })
     expect(distrusted.log).toEqual(["open:85", "close", "read:TACIT.md", `restore:TACIT.md:${JSON.stringify(snapshot.text)}:${0o640}`, "read:TACIT.md"])
-    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["window-trusted:fail", "tacit-restored:pass"])
-    expect(suite.summary).toEqual({ ok: false, passed: 1, skipped: 0, failed: ["window-trusted"] })
+    expect(suite.results.map((r: { id: string; status: string }) => `${r.id}:${r.status}`)).toEqual(["window-trusted:fail", "tacit-restored:pass", "replay-friend-restored:pass"])
+    expect(suite.summary).toEqual({ ok: false, passed: 2, skipped: 0, failed: ["window-trusted"] })
     const stuck = tacitHost(snapshot)
     stuck.host.closeWindow = () => { throw new Error("close failed") }
     await expect(gate.runSuite(stuck.host, { cases: ["stall-kept"], log: stuck.say })).rejects.toThrow("close failed")
@@ -763,7 +856,7 @@ describe("runSuite orchestration", () => {
   it("runs every case when none are chosen", async () => {
     const run = tacitHost(snapshot)
     const suite = await gate.runSuite(run.host, { log: run.say })
-    expect(suite.results.map((r: { id: string }) => r.id)).toEqual([...gate.CASES.map((c: { id: string }) => c.id), "owner-policy-untouched", "no-telegram", "tacit-restored"])
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual([...gate.CASES.map((c: { id: string }) => c.id), "owner-policy-untouched", "no-telegram", "tacit-restored", "replay-friend-restored"])
   })
 
   it("restores nothing, and says so, when TACIT was absent before the run", async () => {
@@ -789,8 +882,8 @@ describe("runSuite orchestration", () => {
     ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "state/replay is owned by uid 10001" })
     const suite = await gate.runSuite(host, { cases: ["chef-question", "books-on-idempotent"] })
     expect(log).toEqual(["open:85", "close"])
-    expect(suite.results).toEqual([{ id: "window-trusted", status: "fail", checks: [{ name: "the Butler sees the replay window as trusted", ok: false, detail: "state/replay is owned by uid 10001" }] }])
-    expect(suite.summary).toEqual({ ok: false, passed: 0, skipped: 0, failed: ["window-trusted"] })
+    expect(suite.results).toEqual([{ id: "window-trusted", status: "fail", checks: [{ name: "the Butler sees the replay window as trusted", ok: false, detail: "state/replay is owned by uid 10001" }] }, { id: "replay-friend-restored", status: "pass", checks: [{ name: "the replay friend's notes and preferences hold what they had before the run", ok: true }] }])
+    expect(suite.summary).toEqual({ ok: false, passed: 1, skipped: 0, failed: ["window-trusted"] })
   })
 
   it("runs the cases when the Butler sees the window as trusted", async () => {
@@ -798,7 +891,7 @@ describe("runSuite orchestration", () => {
     ;(host as Record<string, unknown>).windowTrusted = async () => ({ ok: true })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
     expect(log).toEqual(["open:85", "close"])
-    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "owner-policy-untouched", "no-telegram"])
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["stall-kept", "owner-policy-untouched", "no-telegram", "replay-friend-restored"])
   })
 
   it("gives each case the whole transcript of what the Butler said", async () => {
@@ -886,8 +979,8 @@ describe("runSuite orchestration", () => {
   it("fails the no-telegram check when the effects directory could not be read", async () => {
     const { host } = fakeHost({ observations: [empty(), empty({ effectsReadable: false })] })
     const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
-    expect(suite.results.at(-1)).toMatchObject({ id: "no-telegram", status: "fail" })
-    expect(suite.results.at(-1).checks[0].detail).toMatch(/not readable/)
+    expect(suite.results.find((r: { id: string }) => r.id === "no-telegram")).toMatchObject({ status: "fail" })
+    expect(suite.results.find((r: { id: string }) => r.id === "no-telegram").checks[0].detail).toMatch(/not readable/)
   })
 
   it("keeps only sink lines written during the case", async () => {
@@ -1034,7 +1127,7 @@ describe("a fair gate (2026-10-25: live 911 failed its own gate)", () => {
     const { host } = fakeHost({ clock, sessions: { "*": { events: [] } } })
     const live = [{ id: "chef-question", status: "pass" }, { id: "failure-report", status: "fail" }]
     const suite = await gate.runSuite(host, { cases: ["chef-question", "failure-report"], liveResults: live })
-    expect(suite.results.map((r: { id: string; status: string; live: string }) => `${r.id}:${r.live}>${r.status}`)).toEqual(["chef-question:pass>fail", "failure-report:fail>failing-on-live-too", "owner-policy-untouched:not run>pass", "no-telegram:not run>pass"])
+    expect(suite.results.map((r: { id: string; status: string; live: string }) => `${r.id}:${r.live}>${r.status}`)).toEqual(["chef-question:pass>fail", "failure-report:fail>failing-on-live-too", "owner-policy-untouched:not run>pass", "no-telegram:not run>pass", "replay-friend-restored:not run>pass"])
     expect(suite.summary).toMatchObject({ ok: false, failed: ["chef-question"], failingOnLiveToo: ["failure-report"] })
     const lenient = await gate.runSuite(host, { cases: ["failure-report"], liveResults: live })
     expect(lenient.summary.ok).toBe(true)
@@ -1723,6 +1816,74 @@ describe("provision and the real host", () => {
       expect(chowns).toEqual([])
     })
 
+    describe("the replay friend's learned fields (the principal's record)", () => {
+      const record = () => path.join(bundle, "friends", "friend-1.json")
+      const read = () => JSON.parse(fs.readFileSync(record(), "utf8"))
+      const seed = (extra: Record<string, unknown> = {}) => fs.writeFileSync(record(), JSON.stringify({ id: "friend-1", name: "principal", trustLevel: "family", a2a: { did: "did:key:P" }, notes: { likes: "cosy" }, toolPreferences: { media: "short" }, relationshipPolicy: { preferences: { communication: ["plain"] } }, ...extra }))
+      const learned = { notes: { likes: "cosy" }, toolPreferences: { media: "short" }, relationshipPolicy: { preferences: { communication: ["plain"] } } }
+
+      it("observes the three fields as principalLearned, null when unreadable, and signs them as before", async () => {
+        const host = provisioned()
+        seed()
+        const seen = await host.observe()
+        expect(seen.principalLearned).toEqual(learned)
+        expect(seen.principalSig).toMatch(/^[0-9a-f]{64}$/)
+        expect(host.readReplayFriendLearned()).toEqual(learned)
+        fs.writeFileSync(record(), "{ not json")
+        const broken = await host.observe()
+        expect(broken.principalLearned).toBeNull()
+        expect(broken.principalSig).toBeNull()
+        expect(() => host.readReplayFriendLearned()).toThrow(/not valid JSON/)
+      })
+
+      it("puts back exactly notes, toolPreferences and relationshipPolicy, leaving every other field, with mode 0600 and the record's owner", () => {
+        const host = provisioned()
+        seed()
+        const before = read()
+        fs.writeFileSync(record(), JSON.stringify({ ...before, notes: { likes: "cosy", subtitles: "english" }, toolPreferences: { media: "long" }, relationshipPolicy: { preferences: { communication: ["plain", "terse"] } }, trustLevel: "friend-now-changed-by-butler" }))
+        fs.chmodSync(record(), 0o644)
+        const owner = fs.statSync(record())
+        host.restoreReplayFriendLearned(learned)
+        const after = read()
+        expect(after).toEqual({ ...before, trustLevel: "friend-now-changed-by-butler" })
+        expect(fs.statSync(record()).mode & 0o7777).toBe(0o600)
+        expect([fs.statSync(record()).uid, fs.statSync(record()).gid]).toEqual([owner.uid, owner.gid])
+        expect(chowns).toEqual([[owner.uid, owner.gid]])
+        expect(fs.readdirSync(path.join(bundle, "friends")).sort()).toEqual(["friend-1.json", "friend-2.json", "friend-3.json"])
+      })
+
+      it("removes a field the record did not have before the run, rather than adding an empty one", () => {
+        const host = provisioned()
+        seed({ notes: { subtitles: "english" }, toolPreferences: { media: "long" }, relationshipPolicy: { x: 1 } })
+        host.restoreReplayFriendLearned({ notes: undefined, toolPreferences: undefined, relationshipPolicy: undefined })
+        const after = read()
+        expect(Object.keys(after).sort()).toEqual(["a2a", "id", "name", "trustLevel"])
+      })
+
+      it("refuses a symlink, a hard link, a missing or non-file record and a friend that is not the principal, changing nothing", () => {
+        const host = provisioned()
+        seed()
+        expect(() => host.restoreReplayFriendLearned(learned, "friend-2")).toThrow(/only the replay principal/)
+        expect(() => host.restoreReplayFriendLearned(learned, "real-claude-code")).toThrow(/only the replay principal/)
+        const other = path.join(bundle, "elsewhere.json")
+        fs.linkSync(record(), other)
+        expect(() => host.restoreReplayFriendLearned({ notes: {}, toolPreferences: {}, relationshipPolicy: null })).toThrow(/hard link/)
+        expect(JSON.parse(fs.readFileSync(other, "utf8")).notes).toEqual({ likes: "cosy" })
+        fs.rmSync(other)
+        const decoy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "replay-gate-decoy-")), "x.json")
+        fs.writeFileSync(decoy, JSON.stringify({ id: "decoy" }))
+        fs.rmSync(record())
+        fs.symlinkSync(decoy, record())
+        expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/symlink/)
+        expect(JSON.parse(fs.readFileSync(decoy, "utf8"))).toEqual({ id: "decoy" })
+        fs.rmSync(record())
+        expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/does not exist/)
+        fs.mkdirSync(record())
+        expect(() => host.restoreReplayFriendLearned(learned)).toThrow(/not a file/)
+        expect(chowns).toEqual([])
+      })
+    })
+
     it("keeps TACIT's pre-restore text in a root-owned 0600 file in the replay-client folder", () => {
       const host = provisioned()
       const kept = host.keepTacitCopy("# TACIT\nlearned from the house\n")
@@ -2111,7 +2272,7 @@ describe("cli", () => {
     const a = io()
     const makeHost = () => fakeHost({ sessions: { "*": trace } }).host
     expect(await gate.main(["run", "--cases", "chef-question"], a.io, { makeHost, provision: () => undefined })).toBe(0)
-    expect(a.out.map((l) => JSON.parse(l)).map((r) => r.id ?? "summary")).toEqual(["chef-question", "owner-policy-untouched", "no-telegram", "summary"])
+    expect(a.out.map((l) => JSON.parse(l)).map((r) => r.id ?? "summary")).toEqual(["chef-question", "owner-policy-untouched", "no-telegram", "replay-friend-restored", "summary"])
     const b = io()
     expect(await gate.main(["run", "--cases", "chef-question", "--plant", "chef-question", "--window-minutes", "3", "--bundle", "/b", "--card-url", "c"], b.io, { makeHost, provision: () => undefined })).toBe(1)
     const c = io()

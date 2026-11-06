@@ -873,7 +873,7 @@ export function withTurnNote(checks, turn) {
 }
 
 // Safety checks a live failure never excuses: each guards the owner and the house, not the Butler's answers.
-export const NEVER_EXCUSED = ["window-trusted", "no-telegram", "owner-policy-untouched", "tacit-restored"]
+export const NEVER_EXCUSED = ["window-trusted", "no-telegram", "owner-policy-untouched", "tacit-restored", "replay-friend-restored"]
 export const FAILING_ON_LIVE_TOO = "failing-on-live-too"
 
 /**
@@ -940,6 +940,29 @@ function tacitRestoredResult(host, snapshot) {
   return { id: "tacit-restored", status: detail ? "fail" : "pass", checks: [check("TACIT holds the text it had before the run", !detail, detail)] }
 }
 
+/** The three fields of the replay principal's friend record that a case can teach it, as the signature in `principalSig` sees them. */
+const LEARNED_FIELDS = ["notes", "toolPreferences", "relationshipPolicy"]
+const learnedOf = (record) => Object.fromEntries(LEARNED_FIELDS.map((field) => [field, record[field]]))
+const learnedSig = (learned) => sha256(JSON.stringify({ notes: learned.notes ?? {}, toolPreferences: learned.toolPreferences ?? {}, relationshipPolicy: learned.relationshipPolicy ?? null }))
+
+/** Puts the replay principal's learned friend-record fields back to their snapshot after the run. Returns the result, or null when there was no snapshot. */
+async function restoreReplayFriend(host, learned, log) {
+  if (learned === null || learned === undefined) { log("the replay friend's record was unreadable before the run, so it is left as found"); return null }
+  host.restoreReplayFriendLearned(learned)
+  return replayFriendRestoredResult(host, learned)
+}
+
+/** Reads the principal's record back after the restore. A read that fails is a failed restore, never a skipped one. */
+function replayFriendRestoredResult(host, learned) {
+  let detail
+  try {
+    detail = learnedSig(host.readReplayFriendLearned()) === learnedSig(learned) ? "" : "the replay friend's record differs from the snapshot after the restore"
+  } catch (error) {
+    detail = `the replay friend's record could not be read after the restore: ${error?.message ?? error}`
+  }
+  return { id: "replay-friend-restored", status: detail ? "fail" : "pass", checks: [check("the replay friend's notes and preferences hold what they had before the run", !detail, detail)] }
+}
+
 export async function runSuite(host, { cases = CASES.map((entry) => entry.id), plant, windowMinutes = DEFAULT_WINDOW_MINUTES, liveResults, log = console.error } = {}) {
   const unknown = [...cases, ...(plant ? [plant] : [])].filter((id) => !CASES.some((entry) => entry.id === id))
   if (unknown.length) throw new Error(`unknown case(s): ${unknown.join(", ")}. Known: ${CASES.map((entry) => entry.id).join(", ")}`)
@@ -951,6 +974,7 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   let aborted = null
   let failing = false
   let restored = null
+  let friendRestored = null
   host.openWindow(windowMinutes)
   try {
     // The owner notice must reach the sink, never Telegram. Ask the Butler, through its own code, whether it sees the
@@ -971,14 +995,22 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
     // what it held before the first case, once, after the last, whatever happened in between. A restore that fails while an
     // earlier error is on its way out is logged, never put in that error's place.
     try { host.closeWindow() } catch (error) { failing = true; throw error } finally {
+      let restoreError = null
       try { restored = await restoreTacit(host, baseline.tacit, log) } catch (error) {
-        if (!failing) throw error
-        log(`could not restore TACIT after the run (an earlier error is reported instead): ${error?.message ?? error}`)
+        if (!failing) restoreError = error
+        else log(`could not restore TACIT after the run (an earlier error is reported instead): ${error?.message ?? error}`)
       }
+      // The replay principal's friend record: a case that saves a note or a preference leaves it behind for the next release run.
+      // A failed TACIT restore does not stop this one; the first restore error is the one thrown, the other is logged.
+      try { friendRestored = await restoreReplayFriend(host, baseline.principalLearned, log) } catch (error) {
+        if (!failing && !restoreError) restoreError = error
+        else log(`could not restore the replay friend's record after the run (an earlier error is reported instead): ${error?.message ?? error}`)
+      }
+      if (restoreError) throw restoreError
     }
   }
   if (aborted) {
-    const entries = [aborted, ...(restored ? [restored] : [])]
+    const entries = [aborted, ...(restored ? [restored] : []), ...(friendRestored ? [friendRestored] : [])]
     return { results: entries, summary: { ok: false, passed: entries.filter((entry) => entry.status === "pass").length, skipped: 0, failed: entries.filter((entry) => entry.status === "fail").map((entry) => entry.id) } }
   }
   const runEnd = host.now()
@@ -990,7 +1022,7 @@ export async function runSuite(host, { cases = CASES.map((entry) => entry.id), p
   const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect attributable to the replay run was recorded", clean, detail)] }
   const policyChecks = ownerPolicyUntouched(baseline, finalObservation)
   const policy = { id: "owner-policy-untouched", status: policyChecks.every((entry) => entry.ok) ? "pass" : "fail", checks: policyChecks }
-  const all = [...results, policy, telegram, ...(restored ? [restored] : [])]
+  const all = [...results, policy, telegram, ...(restored ? [restored] : []), ...(friendRestored ? [friendRestored] : [])]
   const judged = liveResults ? applyBaseline(all, liveResults, { plant }) : all
   return { results: judged, summary: summarize(judged) }
 }
@@ -1006,7 +1038,7 @@ const sessionOf = (calls) => ({
 })
 
 function emptyObservation(overrides = {}) {
-  return { effectsReadable: true, stewardSha: "aaa", principalSig: "p1", psycheSha: "s1", tacit: { text: "# TACIT\n", mode: 0o644 }, identitySha: "i1", radarrProfilesSha: "r1", ledgerLines: 3, queue: [], radarrQueue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], outbox: {}, outboxBodies: {}, ...overrides }
+  return { effectsReadable: true, stewardSha: "aaa", principalSig: "p1", principalLearned: { notes: {}, toolPreferences: {}, relationshipPolicy: null }, psycheSha: "s1", tacit: { text: "# TACIT\n", mode: 0o644 }, identitySha: "i1", radarrProfilesSha: "r1", ledgerLines: 3, queue: [], radarrQueue: [], containers: { "calibre-web": true }, awaiting: [], done: [], effects: [], sink: [], outbox: {}, outboxBodies: {}, ...overrides }
 }
 
 const SELF_TEST_CONTEXT = "3d305f1b-0000-4000-8000-000000000000"
@@ -1450,6 +1482,25 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       if (!refuseLinkOrWrongType(dir, "directory")) throw new Error(`refusing to restore TACIT.md: ${dir} does not exist`)
       writePsycheFileAsRoot(dir, name, text, mode, { uid: BUTLER_UID, gid: BUTLER_GID })
     },
+    /**
+     * Puts the replay principal's notes, toolPreferences and relationshipPolicy back to the snapshot, as root, and leaves every other field as found.
+     * The file stays owned by its current uid and gid with mode 0600. Refuses a link, a hard link and any friend but the principal.
+     */
+    restoreReplayFriendLearned(learned, friendId = provisioned.principal.friendId) {
+      if (friendId !== provisioned.principal.friendId) throw new Error(`refusing to restore the record of ${friendId}: only the replay principal is restored`)
+      const file = friendFile(bundle, friendId)
+      const stat = refuseLinkOrWrongType(file, "file")
+      if (!stat) throw new Error(`refusing to restore ${file}: it does not exist`)
+      if (stat.nlink > 1) throw new Error(`refusing: ${file} has another hard link. Nothing was changed.`)
+      const record = readJsonNoFollow(file)
+      for (const field of LEARNED_FIELDS) { if (learned[field] === undefined) delete record[field]; else record[field] = learned[field] }
+      writeAtomic(file, `${JSON.stringify(record, null, 2)}\n`, 0o600)
+      handOverFile(file, { uid: stat.uid, gid: stat.gid, mode: 0o600 })
+    },
+    /** The principal's notes, toolPreferences and relationshipPolicy as the record holds them now, read through no link. Throws when unreadable. */
+    readReplayFriendLearned() {
+      return learnedOf(readJsonNoFollow(friendFile(bundle, provisioned.principal.friendId)))
+    },
     /** TACIT's text and mode ({ null, null } when missing), read through no link, with no docker or network. Throws on a link. */
     readPsycheFile(name) {
       if (name !== "TACIT.md") throw new Error(`refusing to read psyche/${name} here: only TACIT.md is read`)
@@ -1481,10 +1532,11 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       // What the replay principal's friend record holds, the psyche folder, and Radarr's quality profiles: a case that must
       // not change them compares these before and after. null means unreadable, which never counts as unchanged.
       let principalSig = null
+      let principalLearned = null
       try {
-        const record = readJson(path.join(bundle, "friends", `${provisioned.principal.friendId}.json`))
-        principalSig = sha256(JSON.stringify({ notes: record.notes ?? {}, toolPreferences: record.toolPreferences ?? {}, relationshipPolicy: record.relationshipPolicy ?? null }))
-      } catch { /* stays null */ }
+        principalLearned = learnedOf(readJson(friendFile(bundle, provisioned.principal.friendId)))
+        principalSig = learnedSig(principalLearned)
+      } catch { /* both stay null */ }
       let psycheSha = null
       try {
         const dir = path.join(bundle, "psyche")
@@ -1527,6 +1579,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
         stewardSha: hashOf(policy),
         auditSha: hashOf(audit),
         principalSig,
+        principalLearned,
         psycheSha,
         tacit,
         identitySha,
