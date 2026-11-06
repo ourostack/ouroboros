@@ -1,6 +1,6 @@
 <!-- ourostack:brand:start -->
 <p align="center">
-  <a href="https://github.com/ourostack"><img src="https://raw.githubusercontent.com/ourostack/.github/main/brand/ouro.png" alt="Ouro" width="160" height="160"></a>
+  <a href="https://github.com/ourostack"><img src="https://raw.githubusercontent.com/ourostack/.github/main/brand/headers/ouroboros.webp" alt="Ouro outside its round-doored home in a flowering hillside, with letters and speech bubbles floating out of the windows and a telephone and mailbox by the door" width="100%"></a>
 </p>
 <!-- ourostack:brand:end -->
 
