@@ -1389,7 +1389,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       it.each(["telegram", "bluebubbles", "teams"])("a family human may have it changed one to one on %s", async (channel) => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         for (const tool of ["write_file", "edit_file"]) {
-          expect(guardInvocation(tool, { path: target }, ctx(target, family(channel))), tool).toEqual({ allowed: true })
+          expect(guardInvocation(tool, { path: target }, ctx(target, family(channel, { isGroupChat: false }))), tool).toEqual({ allowed: true })
         }
       })
       it.each([
@@ -1402,6 +1402,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         ["a family human on inner", family("inner")],
         ["a family human on mail", family("mail")],
         ["a family human in a group chat", family("telegram", { isGroupChat: true })],
+        ["a family human on teams when teams has not said it is one to one", family("teams")],
         ["no friend at all", {}],
         ["a friend with no trust level", family("telegram", { trustLevel: undefined })],
       ])("is refused for %s", async (_label, who) => {
@@ -1437,6 +1438,47 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         expect(guardInvocation("write_file", { path: target }, ctx(target, family("telegram", { trustLevel })))).toEqual({ allowed: false, reason: REFUSAL })
       })
+    })
+
+    it("lets a family human change SOUL through the relative form only the repo root resolves", async () => {
+      const { guardInvocation, psycheFileClass } = await import("../../repertoire/guardrails")
+      const agentRoot = "/home/ouro/AgentBundles/b.ouro"
+      const target = path.relative("/opt/ouro", `${agentRoot}/psyche/SOUL.md`)
+      expect(psycheFileClass(target, agentRoot)).toBe("identity")
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram") })).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram", { trustLevel: "friend" }) })).toEqual({ allowed: false, reason: REFUSAL })
+    })
+
+    it("treats a TACIT that links to SOUL as SOUL", async () => {
+      const agentRoot = tempBundle()
+      fs.writeFileSync(path.join(agentRoot, "psyche", "SOUL.md"), "me")
+      fs.symlinkSync(path.join(agentRoot, "psyche", "SOUL.md"), path.join(agentRoot, "psyche", "TACIT.md"))
+      const target = path.join(agentRoot, "psyche", "TACIT.md")
+      const { guardInvocation, psycheFileClass } = await import("../../repertoire/guardrails")
+      expect(psycheFileClass(target, agentRoot)).toBe("identity")
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram", { trustLevel: "friend" }) })).toEqual({ allowed: false, reason: REFUSAL })
+    })
+
+    it("refuses a TACIT that is hard linked to another file", async () => {
+      const agentRoot = tempBundle()
+      fs.writeFileSync(path.join(agentRoot, "psyche", "SOUL.md"), "me")
+      fs.linkSync(path.join(agentRoot, "psyche", "SOUL.md"), path.join(agentRoot, "psyche", "TACIT.md"))
+      const target = path.join(agentRoot, "psyche", "TACIT.md")
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram") })).toEqual({ allowed: false, reason: REFUSAL })
+    })
+
+    it("still refuses an allowed psyche write that a link carries into the friends store or policy", async () => {
+      const agentRoot = tempBundle()
+      fs.mkdirSync(path.join(agentRoot, "friends"))
+      fs.mkdirSync(path.join(agentRoot, "state", "policy"), { recursive: true })
+      fs.symlinkSync(path.join(agentRoot, "friends", "x.json"), path.join(agentRoot, "psyche", "NOTES.md"))
+      fs.symlinkSync(path.join(agentRoot, "state", "policy", "steward.json"), path.join(agentRoot, "psyche", "RULES.md"))
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      for (const file of ["NOTES.md", "RULES.md"]) {
+        const target = path.join(agentRoot, "psyche", file)
+        expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram") }), file).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+      }
     })
 
     it("creates TACIT when it does not exist yet", async () => {
@@ -1612,11 +1654,39 @@ describe("the product rules change only by release", () => {
     expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: true })
   })
 
-  it("refuses when the filesystem cannot say where the agent root lands", async () => {
+  it("refuses every spelling of a shell path that lands in product/", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "product-home-"))
+    const root = path.join(home, "AgentBundles", "b.ouro")
+    fs.mkdirSync(path.join(root, "product"), { recursive: true })
+    fs.mkdirSync(path.join(root, "arc"))
+    const alias = path.join(home, "alias")
+    fs.symlinkSync(root, alias)
+    vi.stubEnv("HOME", home)
+    try {
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      const ctx = { readPaths: new Set<string>(), agentRoot: root, trustLevel: "family" as const }
+      for (const command of [
+        `echo x > ${root}/./product/PRODUCT.md`, `echo x > ${root}//product/PRODUCT.md`, `echo x > ${root}/arc/../product/PRODUCT.md`,
+        `echo x > ${alias}/product/PRODUCT.md`, "echo x > ~/AgentBundles/b.ouro/product/PRODUCT.md", `cd ${root} && echo x > ./product/PRODUCT.md`,
+        `cd ${root} && echo x > "./product/PRODUCT.md"`, `cd ${root}/arc && echo x > ../product/PRODUCT.md`, `cd ${root} && cd product && echo x > PRODUCT.md`,
+        `node -e "require('fs').writeFileSync('${root}/product/PRODUCT.md','x')"`,
+      ]) {
+        expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: false, reason: PROTECTED })
+      }
+      expect(guardInvocation("shell", { command: `cd ${root} && ls product && cat ./product/PRODUCT.md` }, ctx)).toEqual({ allowed: true })
+    } finally {
+      vi.unstubAllEnvs()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses when the filesystem cannot say where a product path lands, and leaves other commands alone", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     vi.spyOn(fs.realpathSync, "native").mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EACCES" }) })
     try {
-      expect(guardInvocation("shell", { command: "echo hi" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: false, reason: PROTECTED })
+      const ctx = { readPaths: new Set<string>(), agentRoot: "/bundle", trustLevel: "family" as const }
+      expect(guardInvocation("shell", { command: "echo x > /bundle/product/PRODUCT.md" }, ctx)).toEqual({ allowed: false, reason: PROTECTED })
+      expect(guardInvocation("shell", { command: "echo hi" }, ctx)).toEqual({ allowed: true })
     } finally {
       vi.restoreAllMocks()
     }

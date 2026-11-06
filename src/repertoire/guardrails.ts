@@ -129,16 +129,19 @@ const PSYCHE_IDENTITY_CHANNELS = new Set(["telegram", "bluebubbles", "teams"])
 export function psycheFileClass(filePath: string, agentRoot: string | undefined): "tacit" | "identity" | null {
   if (!filePath || !agentRoot || !insideAgentFolder(filePath, agentRoot, "psyche")) return null
   const lexicalFolder = path.resolve(agentRoot, "psyche")
-  const tacits = [lexicalFolder, canonicalize(lexicalFolder)].map((folder) => path.join(folder, "TACIT.md"))
-  return canonicalTarget(filePath, agentRoot).some((target) => tacits.includes(target)) ? "tacit" : "identity"
+  const folders = [lexicalFolder, canonicalize(lexicalFolder)]
+  const tacits = folders.map((folder) => path.join(folder, "TACIT.md"))
+  // Every form of the path that lands in psyche/ must be TACIT: a link that sends one form of it to SOUL makes it identity.
+  const inPsyche = canonicalTarget(filePath, agentRoot).filter((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
+  return inPsyche.every((target) => tacits.includes(target)) ? "tacit" : "identity"
 }
 
-/** True when `p` is a symlink; false when it does not exist; throws on any other lookup failure. */
-function isSymlink(p: string): boolean {
+/** The lstat of `p`, or null when it does not exist; throws on any other lookup failure. */
+function lstatIfPresent(p: string): fs.Stats | null {
   try {
-    return fs.lstatSync(p).isSymbolicLink()
+    return fs.lstatSync(p)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
     throw error
   }
 }
@@ -149,9 +152,11 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
   /* v8 ignore next -- a file is only classed as psyche when there is an agent root @preserve */
   if (!agentRoot) return false
   try {
-    if (isSymlink(path.join(agentRoot, "psyche"))) return false
+    if (lstatIfPresent(path.join(agentRoot, "psyche"))?.isSymbolicLink()) return false
     if (fileClass === "tacit") {
-      if (isSymlink(path.join(agentRoot, "psyche", "TACIT.md"))) return false
+      // A symlink or a hard link would carry the write to some other file.
+      const tacit = lstatIfPresent(path.join(agentRoot, "psyche", "TACIT.md"))
+      if (tacit && (tacit.isSymbolicLink() || tacit.nlink > 1)) return false
       if (context.friendId === undefined) return true
       return context.trustLevel === undefined || context.trustLevel === "friend" || context.trustLevel === "family"
     }
@@ -162,6 +167,8 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
     && context.trustLevel === "family"
     && context.channel !== undefined && PSYCHE_IDENTITY_CHANNELS.has(context.channel)
     && context.isGroupChat !== true
+    // Teams does not yet tell the turn whether it is a group chat, so there only an explicit one-to-one counts.
+    && (context.channel !== "teams" || context.isGroupChat === false)
 }
 
 /** The line a successful write to an identity file carries back to the agent. */
@@ -342,15 +349,30 @@ function friendsShellWriteRefused(command: string, agentRoot: string | undefined
 // product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
 // Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
 // agent's only when the command is plainly working in the agent root.
+/** Words of a shell command that name a path whose part is exactly `product`, wherever they sit (code and quotes included). */
+function productWords(command: string): string[] {
+  return command.split(/[\s'"=();|&<>`]+/).filter((token) => /(?:^|\/)product(?:\/|$)/.test(token))
+}
+
 function commandMentionsProduct(command: string, words: readonly string[], agentRoot: string): boolean {
-  const lexicalRoot = path.resolve(agentRoot)
-  const roots = [lexicalRoot, canonicalize(lexicalRoot)]
-  if (globOrExpansionCouldReach(command, path.join(lexicalRoot, "product"), agentRoot)) return true
-  const named = roots.some((root) => command.split(path.join(root, "product")).slice(1).some((rest) => rest === "" || /^[/\s'"]/.test(rest)))
-  if (named) return true
-  if (!/(?:^|[\s'"=(])product(?:\/|$|[\s'"])/.test(command)) return false
-  if (roots.includes(process.cwd())) return true
-  return words.some((word, index) => words[index - 1] === "cd" && roots.includes(path.resolve(expandHome(word))))
+  const lexicalProduct = path.resolve(agentRoot, "product")
+  if (globOrExpansionCouldReach(command, lexicalProduct, agentRoot)) return true
+  const candidates = productWords(command)
+  if (candidates.length === 0) return false
+  const folders = [lexicalProduct, path.join(canonicalize(path.resolve(agentRoot)), "product")]
+  // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
+  const cwds = [process.cwd()]
+  for (const [index, word] of words.entries()) {
+    if (words[index - 1] !== "cd") continue
+    const target = expandHome(word)
+    cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => path.resolve(cwd, target))))
+  }
+  return candidates.some((candidate) => {
+    const word = expandHome(candidate)
+    const lexicals = path.isAbsolute(word) ? [path.resolve(word)] : cwds.map((cwd) => path.resolve(cwd, word))
+    return lexicals.flatMap((lexical) => [lexical, canonicalize(lexical)])
+      .some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
+  })
 }
 
 function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
@@ -358,7 +380,7 @@ function productShellWriteRefused(command: string, agentRoot: string | undefined
   try {
     return protectedFolderShellWriteRefused(command, (words) => commandMentionsProduct(command, words, agentRoot))
   } catch {
-    // The filesystem could not say where the agent root lands: refuse rather than guess.
+    // The filesystem could not say where a path that names product/ lands: refuse rather than guess.
     return true
   }
 }
@@ -400,9 +422,11 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (agentRoot) {
       try {
         const psycheClass = psycheFileClass(filePath, agentRoot)
-        if (psycheClass) return psycheWriteAllowed(psycheClass, filePath, context) ? allow : deny(PSYCHE_REFUSAL)
+        if (psycheClass && !psycheWriteAllowed(psycheClass, filePath, context)) return deny(PSYCHE_REFUSAL)
         if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
         if (insideAgentFolder(filePath, agentRoot, "product")) return deny(REASONS.protectedPath)
+        // A link can carry a write that reads as harmless to a protected file (state/policy, agent.json).
+        if (canonicalTarget(filePath, agentRoot).some(isProtectedPath)) return deny(REASONS.protectedPath)
       } catch {
         return deny(REASONS.protectedPath)
       }
