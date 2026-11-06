@@ -66,6 +66,7 @@ export const userProfileToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["fields"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "stores user profile vault fields" },
   },
 
   {
@@ -151,5 +152,6 @@ export const userProfileToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: [],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "deletes user profile vault item" },
   },
 ]

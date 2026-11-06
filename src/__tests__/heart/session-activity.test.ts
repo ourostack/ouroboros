@@ -478,6 +478,47 @@ describe("session activity", () => {
     }
   })
 
+  it("skips stale session files by mtime before loading their envelopes", async () => {
+    vi.resetModules()
+    const now = Date.now()
+    const loadSessionEnvelopeFile = vi.fn()
+    const deriveSessionChronology = vi.fn()
+    vi.doMock("../../heart/session-events", () => ({
+      loadSessionEnvelopeFile,
+      deriveSessionChronology,
+    }))
+
+    try {
+      const sessionsDir = "/mock/sessions"
+      const friendsDir = "/mock/friends"
+
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      vi.mocked(fs.readdirSync).mockImplementation(((p: string) => {
+        if (p === sessionsDir) return ["friend-1"] as any
+        if (p === path.join(sessionsDir, "friend-1")) return ["cli"] as any
+        if (p === path.join(sessionsDir, "friend-1", "cli")) return ["session.json"] as any
+        return [] as any
+      }) as any)
+      vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: now - 48 * 60 * 60 * 1000 } as any)
+
+      const { listSessionActivity } = await import("../../heart/session-activity")
+      const result = listSessionActivity({
+        sessionsDir,
+        friendsDir,
+        agentName: "slugger",
+        activeThresholdMs: 24 * 60 * 60 * 1000,
+        nowMs: now,
+      })
+
+      expect(result).toEqual([])
+      expect(loadSessionEnvelopeFile).not.toHaveBeenCalled()
+      expect(deriveSessionChronology).not.toHaveBeenCalled()
+    } finally {
+      vi.doUnmock("../../heart/session-events")
+      vi.resetModules()
+    }
+  })
+
   it("falls back to mtime when derived chronology has a malformed inbound timestamp", async () => {
     vi.resetModules()
     const now = Date.now()

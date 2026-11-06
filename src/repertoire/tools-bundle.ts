@@ -963,6 +963,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: initGitHandler,
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "initializes bundle git state" },
   },
   {
     tool: {
@@ -982,6 +983,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: addRemoteHandler,
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates bundle git remote configuration" },
   },
   {
     tool: {
@@ -1010,6 +1012,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: doFirstCommitHandler,
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates a bundle git commit" },
   },
   {
     tool: {
@@ -1038,6 +1041,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: pushHandler,
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "pushes bundle state to a remote" },
   },
   {
     tool: {
@@ -1055,5 +1059,10 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: pullRebaseHandler,
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "rebases bundle state from a remote",
+    },
   },
 ]

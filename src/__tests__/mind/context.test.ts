@@ -213,6 +213,185 @@ describe("trimMessages", () => {
   })
 })
 
+describe("postTurnTrim idle rest compaction", () => {
+  beforeEach(() => { vi.resetModules() })
+
+  it("keeps only recent idle rest-only heartbeat turns while preserving meaningful tool turns", async () => {
+    const { postTurnTrim } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+    ]
+
+    for (let i = 0; i < 25; i++) {
+      msgs.push(
+        { role: "user", content: `...time passing. anything stirring?\n\nlast checkpoint: idle ${i}` },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: `call_rest_${i}`,
+              type: "function",
+              function: { name: "rest", arguments: "{}" },
+            },
+          ],
+        } as any,
+        { role: "tool", tool_call_id: `call_rest_${i}`, content: "(resting)" } as any,
+      )
+    }
+
+    msgs.push(
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: important" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_surface",
+            type: "function",
+            function: { name: "surface", arguments: JSON.stringify({ message: "important surfaced message" }) },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_surface", content: "delivered" } as any,
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_rest_final",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_rest_final", content: "(resting)" } as any,
+    )
+
+    const prepared = postTurnTrim(msgs)
+    const restCalls = msgs.flatMap((message) => {
+      if (message.role !== "assistant") return []
+      return ((message as any).tool_calls ?? []).filter((toolCall: any) => toolCall.function?.name === "rest")
+    })
+
+    expect(restCalls).toHaveLength(21)
+    expect(JSON.stringify(msgs)).toContain("call_surface")
+    expect(JSON.stringify(msgs)).not.toContain("call_rest_0")
+    expect(JSON.stringify(msgs)).toContain("call_rest_24")
+    expect(prepared.trimmedMessages).toHaveLength(msgs.length)
+  })
+
+  it("does not compact protected or incomplete rest-shaped turns", async () => {
+    const { postTurnTrim } = await import("../../mind/context")
+    const msgs: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      {
+        role: "user",
+        content: [
+          "not idle",
+          { type: "input_image", image_url: "memory://blank" },
+        ] as any,
+      },
+      { role: "assistant", content: "structured content without text should not look idle" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "...time passing. anything stirring?\n[pending from ari/bluebubbles/chat]: check this" },
+        ] as any,
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_pending_rest",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_pending_rest", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: contentful rest" },
+      {
+        role: "assistant",
+        content: "I am resting with visible context.",
+        tool_calls: [
+          {
+            id: "call_contentful_rest",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_contentful_rest", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: wrong tool" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_surface",
+            type: "function",
+            function: { name: "surface", arguments: JSON.stringify({ message: "not idle" }) },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_surface", content: "delivered" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: missing id" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_missing_id", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: mismatch" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_mismatched_rest",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "tool", tool_call_id: "call_other", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: next is not assistant" },
+      { role: "user", content: "not an assistant" },
+      { role: "tool", tool_call_id: "call_non_assistant_rest", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: assistant has no tool calls" },
+      { role: "assistant", content: null } as any,
+      { role: "tool", tool_call_id: "call_absent_rest", content: "(resting)" } as any,
+      { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: result is not tool" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_not_followed_by_tool",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      } as any,
+      { role: "assistant", content: "not a tool result" } as any,
+    ]
+    postTurnTrim(msgs)
+
+    expect(JSON.stringify(msgs)).toContain("call_pending_rest")
+    expect(JSON.stringify(msgs)).toContain("call_contentful_rest")
+    expect(JSON.stringify(msgs)).toContain("call_surface")
+    expect(JSON.stringify(msgs)).toContain("call_mismatched_rest")
+    expect(JSON.stringify(msgs)).toContain("call_not_followed_by_tool")
+  })
+})
+
 describe("saveSession", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -522,6 +701,292 @@ describe("loadSession", () => {
     expect(result!.messages[0]).toEqual({ role: "system", content: "sys" })
     expect(result!.messages[1]).toMatchObject({ role: "user", content: expect.stringContaining("hi") })
     expect(result!.events).toHaveLength(2)
+  })
+
+  it("returns an empty structured output registry for envelopes saved before the registry existed", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/session-events", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-events")>("../../heart/session-events")
+      return {
+        ...actual,
+        loadSessionEnvelopeFile: vi.fn(() => ({
+          version: 2 as const,
+          events: [],
+          projection: {
+            eventIds: [],
+            trimmed: false,
+            maxTokens: null,
+            contextMargin: null,
+            inputTokens: null,
+            projectedAt: null,
+          },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        })),
+        projectProviderMessages: vi.fn(() => [{ role: "user", content: "hello" }]),
+      }
+    })
+
+    try {
+      const { loadSession } = await import("../../mind/context")
+      const result = loadSession("/tmp/pre-registry.json")
+      expect(result).not.toBeNull()
+      expect(result!.structuredOutputs).toEqual([])
+      expect(result!.messages).toEqual([{ role: "user", content: "hello" }])
+    } finally {
+      vi.doUnmock("../../heart/session-events")
+      vi.resetModules()
+    }
+  })
+
+  it("does not inject relative-time annotations into live provider messages", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const usage = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 150 }
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-24T03:00:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-24T03:00:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000002",
+            sequence: 2,
+            role: "assistant",
+            content: "hi back",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:01:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:01:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:01:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001", "evt-000002"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-04-24T03:01:00.000Z",
+        },
+        lastUsage: usage,
+        state: {
+          mustResolveBeforeHandoff: false,
+          lastFriendActivityAt: null,
+        },
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+    expect(result).not.toBeNull()
+    expect(result!.messages).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi back" },
+    ])
+  })
+
+  it("repairs projected sessions that contain duplicate system prompts", async () => {
+    const { loadSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "system",
+            content: "fresh system",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:00:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:00:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:00:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000002",
+            sequence: 2,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-24T03:01:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-24T03:01:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000003",
+            sequence: 3,
+            role: "assistant",
+            content: "hi back",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:02:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:02:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:02:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000004",
+            sequence: 4,
+            role: "system",
+            content: "stale system",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:03:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:03:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:03:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001", "evt-000002", "evt-000003", "evt-000004"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-04-24T03:03:00.000Z",
+        },
+        lastUsage: null,
+        state: {
+          mustResolveBeforeHandoff: false,
+          lastFriendActivityAt: null,
+        },
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+    expect(result).not.toBeNull()
+    expect(result!.messages).toEqual([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi back" },
+    ])
   })
 
   it("returns canonical events alongside projected messages when loading a legacy v1 file", async () => {
@@ -1236,6 +1701,96 @@ describe("deferPostTurnPersist return value", () => {
   })
 })
 
+describe("deferPostTurnPersist concurrency", () => {
+  // Real corruption was found in slugger.ouro/state/sessions where two BB
+  // webhooks for the same chat racing through deferPostTurnPersist each loaded
+  // the envelope, both computed the same `events.length + 1` next sequence,
+  // and wrote events with colliding ids ("evt-000130" appearing 3x). The
+  // serialization queue must prevent that even when both calls fire on the
+  // same tick for the same sessPath.
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.mkdirSync).mockReset()
+    vi.mocked(fs.existsSync).mockReset()
+  })
+
+  it("serializes concurrent deferPostTurnPersist calls for the same sessPath, leaving no duplicate ids", async () => {
+    const sessPath = "/tmp/concurrent-session.json"
+    // Mock fs as an in-memory store so the second call sees the first call's writes.
+    let onDisk: string | null = null
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      if (p === sessPath && onDisk !== null) return onDisk as any
+      throw new Error("ENOENT")
+    })
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, contents: any) => {
+      if (p === sessPath) onDisk = contents as string
+    })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+
+    const turnOne: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+    ]
+    const turnTwo: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+      { role: "user", content: "second turn" },
+      { role: "assistant", content: "second answer" },
+    ]
+    const preparedOne = postTurnTrim(turnOne)
+    const preparedTwo = postTurnTrim(turnTwo)
+
+    // Fire both at once, same sessPath, no awaits between.
+    const [eventsOne, eventsTwo] = await Promise.all([
+      deferPostTurnPersist(sessPath, preparedOne),
+      deferPostTurnPersist(sessPath, preparedTwo),
+    ])
+
+    // Both calls return event arrays with no internal duplicates.
+    const idsOne = eventsOne.map((e) => e.id)
+    const idsTwo = eventsTwo.map((e) => e.id)
+    expect(new Set(idsOne).size).toBe(idsOne.length)
+    expect(new Set(idsTwo).size).toBe(idsTwo.length)
+
+    // The final on-disk envelope has no duplicate ids either.
+    expect(onDisk).not.toBeNull()
+    const written = JSON.parse(onDisk!) as { events: { id: string }[] }
+    const writtenIds = written.events.map((e) => e.id)
+    expect(new Set(writtenIds).size).toBe(writtenIds.length)
+  })
+
+  it("does not deadlock subsequent calls when one persist throws", async () => {
+    const sessPath = "/tmp/deadlock-session.json"
+    let writeCalls = 0
+    vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error("ENOENT") })
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      writeCalls += 1
+      if (writeCalls === 1) throw new Error("disk failure on first call")
+    })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "u" },
+      { role: "assistant", content: "a" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const failing = deferPostTurnPersist(sessPath, prepared)
+    const recovering = deferPostTurnPersist(sessPath, prepared)
+
+    const [first, second] = await Promise.all([failing, recovering])
+    // First throws -> empty array. Second runs and returns real events.
+    expect(first).toEqual([])
+    expect(second.length).toBeGreaterThan(0)
+    expect(writeCalls).toBe(2)
+  })
+})
+
 describe("mind observability instrumentation", () => {
   it("trimMessages emits mind step lifecycle events", async () => {
     vi.resetModules()
@@ -1313,6 +1868,55 @@ describe("validateSessionMessages", () => {
     ]
     expect(validateSessionMessages(messages)).toEqual([])
   })
+
+  it("flags duplicate tool_call_id reused across assistant messages (MiniMax canonical id collision)", async () => {
+    const { validateSessionMessages, detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "first" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_function_aaaaaa_1", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "result1", tool_call_id: "call_function_aaaaaa_1" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "second" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_function_aaaaaa_1", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "result2", tool_call_id: "call_function_aaaaaa_1" },
+      { role: "assistant", content: "done" },
+    ]
+    const violations = validateSessionMessages(messages)
+    expect(violations.some((violation) => violation.includes("duplicate tool_call_id"))).toBe(true)
+    const collisions = detectDuplicateToolCallIds(messages)
+    expect(collisions).toHaveLength(1)
+    expect(collisions[0]?.id).toBe("call_function_aaaaaa_1")
+    expect(collisions[0]?.indices).toEqual([2, 6])
+  })
+
+  it("does not flag the same tool_call_id appearing twice in one assistant message (parallel call shape)", async () => {
+    const { detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "x" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "dup", type: "function", function: { name: "foo", arguments: "{}" } },
+          { id: "dup", type: "function", function: { name: "foo", arguments: "{}" } },
+        ],
+      },
+    ]
+    expect(detectDuplicateToolCallIds(messages)).toEqual([])
+  })
+
+  it("does not flag distinct ids across messages", async () => {
+    const { detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "x" },
+      { role: "assistant", content: null, tool_calls: [{ id: "a", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "r1", tool_call_id: "a" },
+      { role: "assistant", content: null, tool_calls: [{ id: "b", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "r2", tool_call_id: "b" },
+    ]
+    expect(detectDuplicateToolCallIds(messages)).toEqual([])
+  })
 })
 
 describe("repairSessionMessages", () => {
@@ -1356,6 +1960,32 @@ describe("repairSessionMessages", () => {
     expect(repaired).toHaveLength(3)
     // Both non-string contents should fall back to ""
     expect((repaired[2] as any).content).toBe("\n\n")
+  })
+
+  it("drops the second of two consecutive assistants with byte-identical content (retry/double-persist artifact)", async () => {
+    const { repairSessionMessages } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "I'll help with that." },
+      { role: "assistant", content: "I'll help with that." },
+    ]
+    const repaired = repairSessionMessages(messages)
+    expect(repaired).toHaveLength(3)
+    expect((repaired[2] as { content: string }).content).toBe("I'll help with that.")
+  })
+
+  it("trim-equality only — different content still concatenates (legitimate back-to-back)", async () => {
+    const { repairSessionMessages } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "First part." },
+      { role: "assistant", content: "Second, different part." },
+    ]
+    const repaired = repairSessionMessages(messages)
+    expect(repaired).toHaveLength(3)
+    expect((repaired[2] as { content: string }).content).toBe("First part.\n\nSecond, different part.")
   })
 })
 
@@ -1414,6 +2044,36 @@ describe("appendSyntheticAssistantMessage", () => {
       throw new Error("disk full")
     })
     expect(appendSyntheticAssistantMessage("/mock/write-fails.json", "test")).toBe(false)
+  })
+
+  it("assigns a sequence beyond the max existing sequence (not events.length+1) so pruned envelopes don't collide", async () => {
+    // Regression for the off-by-one in appendSyntheticAssistantEvent. Build a
+    // canonical session envelope where events have non-contiguous sequences
+    // (simulating prior pruning), then call appendSyntheticAssistantMessage
+    // and verify the new event's sequence is max+1, not events.length+1.
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    const { appendSyntheticAssistantMessage } = await import("../../mind/context")
+    const envelope = {
+      version: 2 as const,
+      events: [
+        { id: "evt-000001", sequence: 1, role: "user", content: "hello", time: { recordedAt: "2026-04-26T00:00:00Z", observedAt: "2026-04-26T00:00:00Z" }, captureKind: "live" as const, encoding: { format: "v1" as const, role: "user" }, projectionVersion: 1 },
+        { id: "evt-000050", sequence: 50, role: "assistant", content: "ok", time: { recordedAt: "2026-04-26T00:00:01Z", observedAt: "2026-04-26T00:00:01Z" }, captureKind: "live" as const, encoding: { format: "v1" as const, role: "assistant" }, projectionVersion: 1 },
+      ],
+      projection: { eventIds: ["evt-000001", "evt-000050"], projectedAt: "2026-04-26T00:00:01Z", trimmed: false },
+    }
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(envelope))
+
+    const result = appendSyntheticAssistantMessage("/mock/pruned-session.json", "my reflection")
+    expect(result).toBe(true)
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    const newEvent = written.events[written.events.length - 1]
+    // Pre-fix: events.length+1 = 3 → would collide with no existing event but
+    // breaks the invariant that sequence is monotonic across appends. The
+    // correct value is max(existing) + 1 = 51.
+    expect(newEvent.sequence).toBe(51)
+    expect(newEvent.id).toBe("evt-000051")
   })
 })
 

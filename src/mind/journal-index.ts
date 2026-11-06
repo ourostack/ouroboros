@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { JournalIndexEntry } from "./note-search"
 
@@ -97,7 +98,7 @@ export async function indexJournalFiles(
       continue
     }
 
-    const preview = extractPreview(content)
+    const preview = capStructuredRecordString(extractPreview(content))
     const embedText = content.slice(0, PREVIEW_CHAR_LIMIT)
 
     // Generate embedding

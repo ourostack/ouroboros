@@ -1,7 +1,370 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type OpenAI from "openai"
 
 describe("session events", () => {
+  const markerFor = (maxChars: number, originalLength: number) =>
+    `[truncated — event content exceeded ${maxChars} chars; original length ${originalLength} chars]`
+
+  const expectedTruncatedContent = (content: string, maxChars: number) => {
+    const marker = markerFor(maxChars, content.length)
+    const remainingBudget = Math.max(0, maxChars - marker.length)
+    const headLength = Math.ceil(remainingBudget * 0.75)
+    const tailLength = remainingBudget - headLength
+    return `${content.slice(0, headLength)}${marker}${tailLength > 0 ? content.slice(-tailLength) : ""}`
+  }
+
+  describe("truncateLargeEventContent", () => {
+    it("leaves under-cap strings unchanged and reports the original length", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "small event content"
+
+      expect(truncateLargeEventContent(input, 100)).toEqual({
+        content: input,
+        truncated: false,
+        originalLength: input.length,
+      })
+    })
+
+    it("truncates over-cap strings with the rendered marker and preserved head/tail samples", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const maxChars = 100
+      const input = `${"H".repeat(80)}${"M".repeat(80)}${"T".repeat(80)}`
+
+      expect(truncateLargeEventContent(input, maxChars)).toEqual({
+        content: expectedTruncatedContent(input, maxChars),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+
+    it.each([
+      { label: "object", content: { nested: "value" } },
+      { label: "array", content: [{ type: "text", text: "value" }] },
+      { label: "null", content: null },
+      { label: "undefined", content: undefined },
+    ])("leaves non-string $label content unchanged", async ({ content }) => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+
+      expect(truncateLargeEventContent(content, 10)).toEqual({
+        content,
+        truncated: false,
+        originalLength: 0,
+      })
+    })
+
+    it("returns only the marker when the cap is zero", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "anything"
+
+      expect(truncateLargeEventContent(input, 0)).toEqual({
+        content: markerFor(0, input.length),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+
+    it("leaves exactly-at-cap strings unchanged", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "x".repeat(25)
+
+      expect(truncateLargeEventContent(input, input.length)).toEqual({
+        content: input,
+        truncated: false,
+        originalLength: input.length,
+      })
+    })
+
+    it("truncates strings that are one byte over the cap", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const maxChars = 80
+      const input = "x".repeat(maxChars + 1)
+
+      expect(truncateLargeEventContent(input, maxChars)).toEqual({
+        content: expectedTruncatedContent(input, maxChars),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+  })
+
+  it("caps oversized event content at 256 KB by default for every session role without changing non-content fields", async () => {
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+    const maxChars = 256 * 1024
+    const oversized = `${"H".repeat(200_000)}${"M".repeat(80_000)}${"T".repeat(20_000)}`
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: oversized, name: "system-name" },
+      { role: "user", content: oversized, name: "user-name" },
+      {
+        role: "assistant",
+        content: oversized,
+        name: "assistant-name",
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_session", arguments: "{\"needle\":\"blue\"}" },
+          },
+        ],
+      },
+      { role: "tool", content: oversized, tool_call_id: "call-1" },
+    ] as OpenAI.ChatCompletionMessageParam[]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-13T20:00:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.events.map((event) => event.role)).toEqual(["system", "user", "assistant", "tool"])
+    for (const event of envelope.events) {
+      expect(typeof event.content).toBe("string")
+      expect((event.content as string).length).toBeLessThanOrEqual(maxChars)
+      expect(event.content).toContain(markerFor(maxChars, oversized.length))
+      expect(event.content).toMatch(/^H+/)
+      expect(event.content).toMatch(/T+$/)
+      expect(event.attachments).toEqual([])
+    }
+    expect(envelope.events[0]).toMatchObject({ name: "system-name", toolCalls: [], toolCallId: null })
+    expect(envelope.events[1]).toMatchObject({ name: "user-name", toolCalls: [], toolCallId: null })
+    expect(envelope.events[2]).toMatchObject({
+      name: "assistant-name",
+      toolCallId: null,
+      toolCalls: [
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "query_session", arguments: "{\"needle\":\"blue\"}" },
+        },
+      ],
+    })
+    expect(envelope.events[3]).toMatchObject({
+      name: null,
+      toolCallId: "call-1",
+      toolCalls: [],
+      relations: { toolCallId: "call-1" },
+    })
+  })
+
+  it("preserves non-string event content arrays through the envelope path while capping oversized strings", async () => {
+    const { buildCanonicalSessionEnvelope, EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const contentParts = [
+      { type: "text", text: "keep this structured content" },
+      { type: "image_url", image_url: { url: "attachment://image-1" } },
+    ]
+    const oversized = "x".repeat(EVENT_CONTENT_MAX_CHARS + 1)
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: contentParts },
+      { role: "assistant", content: oversized },
+    ] as OpenAI.ChatCompletionMessageParam[]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-13T20:01:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.events[0]?.content).toEqual(contentParts)
+    expect(envelope.events[1]?.content).toContain(markerFor(EVENT_CONTENT_MAX_CHARS, oversized.length))
+    expect(String(envelope.events[1]?.content).length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+  })
+
+  it("persists assistant structured outputs in the canonical session envelope", async () => {
+    const { buildCanonicalSessionEnvelope, parseSessionEnvelope } = await import("../../heart/session-events")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "what are the gaps?" },
+      {
+        role: "assistant",
+        content: "Gaps:\n1. Zurich to Basel\n2. Basel to Lugano\n3. Lugano to Milan\n4. La Villa to MXP",
+      },
+    ]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-19T16:20:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.structuredOutputs).toEqual([
+      expect.objectContaining({
+        id: "structured-evt-000002-1",
+        sourceEventId: "evt-000002",
+        heading: "Gaps:",
+        items: [
+          { label: "1", text: "Zurich to Basel" },
+          { label: "2", text: "Basel to Lugano" },
+          { label: "3", text: "Lugano to Milan" },
+          { label: "4", text: "La Villa to MXP" },
+        ],
+      }),
+    ])
+
+    const parsed = parseSessionEnvelope(JSON.parse(JSON.stringify(envelope)))
+    expect(parsed?.structuredOutputs).toEqual(envelope.structuredOutputs)
+  })
+
+  it("derives missing structured outputs during session reads without live extraction telemetry", async () => {
+    const { registerGlobalLogSink } = await import("../../nerves")
+    const { parseSessionEnvelope } = await import("../../heart/session-events")
+    const extractedEvents: Array<{ event: string }> = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "heart.structured_output_extracted") {
+        extractedEvents.push(entry)
+      }
+    })
+
+    try {
+      const parsedV2 = parseSessionEnvelope({
+        version: 2,
+        events: [{
+          id: "evt-quiet-v2",
+          sequence: 1,
+          role: "assistant",
+          content: "Backfilled choices:\n1. Keep old referents queryable\n2. Keep logs quiet",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-05-19T17:00:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        }],
+        projection: {
+          eventIds: ["evt-quiet-v2"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-05-19T17:00:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }, {
+        recordedAt: "2026-05-19T17:00:00.000Z",
+        fileMtimeAt: "2026-05-19T17:00:00.000Z",
+      })
+
+      expect(parsedV2?.structuredOutputs).toEqual([
+        expect.objectContaining({
+          id: "structured-evt-quiet-v2-1",
+          items: [
+            { label: "1", text: "Keep old referents queryable" },
+            { label: "2", text: "Keep logs quiet" },
+          ],
+        }),
+      ])
+
+      const migrated = parseSessionEnvelope({
+        version: 1,
+        messages: [
+          {
+            role: "assistant",
+            content: "Legacy choices:\n1. Derive old referents\n2. Do not fake live activity",
+          },
+        ],
+      }, {
+        recordedAt: "2026-05-19T17:01:00.000Z",
+        fileMtimeAt: "2026-05-19T17:01:00.000Z",
+      })
+
+      expect(migrated?.structuredOutputs).toEqual([
+        expect.objectContaining({
+          id: "structured-evt-000001-1",
+          items: [
+            { label: "1", text: "Derive old referents" },
+            { label: "2", text: "Do not fake live activity" },
+          ],
+        }),
+      ])
+      expect(extractedEvents).toEqual([])
+    } finally {
+      unregister()
+    }
+  })
+
+  it("keeps live structured-output extraction telemetry for canonical envelope builds", async () => {
+    const { registerGlobalLogSink } = await import("../../nerves")
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+    const extractedEvents: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "heart.structured_output_extracted") {
+        extractedEvents.push(entry)
+      }
+    })
+
+    try {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "what changed?" },
+        { role: "assistant", content: "Live choices:\n1. Emit the event\n2. Preserve diagnostic signal" },
+      ]
+
+      const { envelope } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: messages,
+        recordedAt: "2026-05-19T17:05:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(envelope.structuredOutputs).toHaveLength(1)
+      expect(extractedEvents).toEqual([
+        expect.objectContaining({
+          event: "heart.structured_output_extracted",
+          meta: {
+            sourceEventId: "evt-000002",
+            outputCount: 1,
+            itemCount: 2,
+          },
+        }),
+      ])
+    } finally {
+      unregister()
+    }
+  })
+
   it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
     const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
 
@@ -309,6 +672,90 @@ describe("session events", () => {
     expect(parsed?.events[0]?.attachments).toEqual(["attachment:one", "attachment:two"])
   })
 
+  it("strips synthetic relative-time prefixes from parsed user and assistant events", async () => {
+    const { parseSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "user",
+          content: "[just now] [-34m] hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-24T03:00:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-24T03:00:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "assistant",
+          content: "[just now] reply",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-24T03:01:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-24T03:01:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-24T03:01:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-24T03:01:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }, {
+      recordedAt: "2026-04-24T03:01:00.000Z",
+      fileMtimeAt: "2026-04-24T03:01:00.000Z",
+    })
+
+    expect(parsed?.events[0]?.content).toBe("hello")
+    expect(parsed?.events[1]?.content).toBe("reply")
+    expect(projectProviderMessages(parsed!)).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "reply" },
+    ])
+  })
+
   it("drops malformed lastUsage payloads instead of preserving partial numeric garbage", async () => {
     const { parseSessionEnvelope } = await import("../../heart/session-events")
 
@@ -417,10 +864,259 @@ describe("session events", () => {
         tool_call_id: "",
       },
       {
+        role: "tool",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+        tool_call_id: "tc-custom",
+      },
+      {
         role: "user",
         content: "",
         name: "Ari",
       },
+    ])
+  })
+
+  it("canonicalizes duplicate system prompts down to one leading system message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "system", content: "stale system" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ])
+  })
+
+  it("injects synthetic tool results for assistant tool calls missing their outputs", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "user", content: "next" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "user", content: "next" },
+    ])
+  })
+
+  it("stops synthetic tool-result backfill at the next assistant message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ])
+  })
+
+  it("stops collecting tool results once a later assistant message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "assistant", content: "starting a fresh thought" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "assistant", content: "starting a fresh thought" },
+    ])
+  })
+
+  it("stops collecting tool results once a later user message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "user", content: "new question" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
+      },
+      { role: "user", content: "new question" },
+    ])
+  })
+
+  it("keeps collecting tool results across non-turn messages that are neither assistant nor user", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "system", content: "mid-stream metadata" },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
     ])
   })
 
@@ -1565,35 +2261,35 @@ describe("session events", () => {
   })
 
   describe("appendEvictedToArchive", () => {
-    it("writes evicted events as NDJSON lines to archive file", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-
-      const evictedEvents = [
-        { id: "evt-000001", sequence: 1, role: "user" as const, content: "hello", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
-        { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "hi", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: "2026-04-13T10:01:00.000Z", authoredAtSource: "local" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "local" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
-      ]
-
-      appendEvictedToArchive(sessPath, evictedEvents)
-
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-      const content = fs.readFileSync(archivePath, "utf-8")
-      const lines = content.trim().split("\n")
-      expect(lines).toHaveLength(2)
-      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
-      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
-
-      // Cleanup
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+    const mkEvent = (id: string, sequence: number, content: string) => ({
+      id,
+      sequence,
+      role: "user" as const,
+      content,
+      name: null,
+      toolCallId: null,
+      toolCalls: [],
+      attachments: [],
+      time: {
+        authoredAt: null,
+        authoredAtSource: "unknown" as const,
+        observedAt: "2026-04-13T10:00:00.000Z",
+        observedAtSource: "ingest" as const,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        recordedAtSource: "save" as const,
+      },
+      relations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: [] as string[],
+        toolCallId: null,
+        supersedesEventId: null,
+        redactsEventId: null,
+      },
+      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
     })
 
-    it("appends to existing archive file without overwriting", async () => {
+    it("does not create or modify an archive file for evicted events", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
@@ -1602,22 +2298,40 @@ describe("session events", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
       const sessPath = path.join(tmpDir, "dialog.json")
       const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const sessionContent = "{\"version\":2}\n"
+      fs.writeFileSync(sessPath, sessionContent)
 
-      const event1 = { id: "evt-000001", sequence: 1, role: "user" as const, content: "first", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
-      const event2 = { id: "evt-000002", sequence: 2, role: "user" as const, content: "second", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+      const result = appendEvictedToArchive(sessPath, [
+        mkEvent("evt-000001", 1, "hello"),
+        mkEvent("evt-000002", 2, "hi"),
+      ])
 
-      appendEvictedToArchive(sessPath, [event1])
-      appendEvictedToArchive(sessPath, [event2])
+      expect(result).toBeUndefined()
+      expect(fs.existsSync(archivePath)).toBe(false)
+      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
 
-      const content = fs.readFileSync(archivePath, "utf-8")
-      const lines = content.trim().split("\n")
-      expect(lines).toHaveLength(2)
-      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
-      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
 
-      // Cleanup
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+    it("is idempotent across different evictions and preserves the session file", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const sessionContent = JSON.stringify({ version: 2, events: [] })
+      fs.writeFileSync(sessPath, sessionContent)
+
+      appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
+      appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
+
+      expect(fs.existsSync(archivePath)).toBe(false)
+      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it("does not write when evictedEvents is empty", async () => {
@@ -1634,176 +2348,98 @@ describe("session events", () => {
 
       expect(fs.existsSync(archivePath)).toBe(false)
 
-      // Cleanup
-      fs.rmdirSync(tmpDir)
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
-    it("does not crash when archive write fails", async () => {
-      const fs = await import("fs")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      // Use an invalid path that will cause appendFileSync to fail
-      const badPath = "/nonexistent/deeply/nested/dialog.json"
-      const event = { id: "evt-000001", sequence: 1, role: "user" as const, content: "test", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
-
-      // Should not throw
-      expect(() => appendEvictedToArchive(badPath, [event])).not.toThrow()
-    })
-
-  })
-
-  describe("loadFullEventHistory", () => {
-    const mkEvent = (id: string, seq: number, role: "system" | "user" | "assistant", content: string) => ({
-      id, sequence: seq, role, content, name: null, toolCallId: null, toolCalls: [] as any[], attachments: [] as string[],
-      time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const },
-      relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null },
-      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
-    })
-
-    it("returns only envelope events when no archive file exists", async () => {
+    it("emits the archive-disabled nerves event exactly once per process", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
+      const emitNervesEvent = vi.fn()
 
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000003", 3, "user", "current")],
-        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      vi.resetModules()
+      vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+      try {
+        const { appendEvictedToArchive } = await import("../../heart/session-events")
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+        const sessPath = path.join(tmpDir, "AgentBundles", "slugger.ouro", "state", "sessions", "dialog.json")
+        fs.mkdirSync(path.dirname(sessPath), { recursive: true })
+
+        appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
+        appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
+
+        expect(emitNervesEvent).toHaveBeenCalledTimes(1)
+        expect(emitNervesEvent).toHaveBeenCalledWith({
+          component: "heart",
+          event: "heart.session_archive_disabled",
+          message: "session archive append disabled",
+          meta: {
+            type: "session_archive_disabled",
+            agent: "slugger",
+            sessionPath: sessPath,
+            evictedCount: 1,
+            ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+          },
+        })
+
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      } finally {
+        vi.doUnmock("../../nerves/runtime")
+        vi.resetModules()
       }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(1)
-      expect(events[0]!.id).toBe("evt-000003")
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.rmdirSync(tmpDir)
     })
 
-    it("merges envelope events with archive events sorted by sequence", async () => {
+    it("lets postTurnPersist complete without producing an archive sidecar", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
+      const { postTurnPersist } = await import("../../mind/context")
 
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
       const sessPath = path.join(tmpDir, "dialog.json")
       const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      // Envelope with current events
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000003", 3, "user", "current")],
-        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      // Archive with older events
-      const archiveEvents = [
-        mkEvent("evt-000001", 1, "user", "first"),
-        mkEvent("evt-000002", 2, "assistant", "second"),
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "old question" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: "latest question" },
       ]
-      fs.writeFileSync(archivePath, archiveEvents.map((e) => JSON.stringify(e)).join("\n") + "\n")
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "latest question" },
+      ]
 
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(3)
-      expect(events[0]!.id).toBe("evt-000001")
-      expect(events[1]!.id).toBe("evt-000002")
-      expect(events[2]!.id).toBe("evt-000003")
+      expect(() => postTurnPersist(sessPath, {
+        currentMessages,
+        trimmedMessages,
+        currentIngressTimes: currentMessages.map(() => null),
+        maxTokens: 1024,
+        contextMargin: 128,
+      })).not.toThrow()
 
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
-    })
+      expect(fs.existsSync(sessPath)).toBe(true)
+      expect(fs.existsSync(archivePath)).toBe(false)
 
-    it("deduplicates events by id", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      const sharedEvent = mkEvent("evt-000001", 1, "user", "shared")
-      const envelope = {
-        version: 2 as const,
-        events: [sharedEvent],
-        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-      fs.writeFileSync(archivePath, JSON.stringify(sharedEvent) + "\n")
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(1) // deduplicated
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
-    })
-
-    it("skips corrupted NDJSON lines gracefully", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000002", 2, "user", "current")],
-        projection: { eventIds: ["evt-000002"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      // Archive with one valid line, one corrupted, and blank lines
-      const validEvent = mkEvent("evt-000001", 1, "user", "archived")
-      fs.writeFileSync(archivePath, [
-        JSON.stringify(validEvent),
-        "this is not valid json{{{",
-        "",
-        "",
-      ].join("\n"))
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(2) // valid archived + envelope event
-      expect(events[0]!.id).toBe("evt-000001")
-      expect(events[1]!.id).toBe("evt-000002")
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
   })
 
-  describe("integration: full session lifecycle with pruning and archive", () => {
-    it("builds envelope, changes system prompt, prunes, archives, and reconstructs full history", async () => {
+  describe("module surface", () => {
+    it("does not export the removed full-history loader", async () => {
+      const moduleExports = await import("../../heart/session-events") as Record<string, unknown>
+
+      expect(moduleExports).not.toHaveProperty(`load${"Full"}EventHistory`)
+    })
+  })
+
+  describe("integration: full session lifecycle with pruning and disabled archive", () => {
+    it("builds envelope, changes system prompt, prunes, and replays the envelope projection only", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
       const {
         buildCanonicalSessionEnvelope,
         appendEvictedToArchive,
-        loadFullEventHistory,
         projectProviderMessages,
       } = await import("../../heart/session-events")
 
@@ -1864,18 +2500,19 @@ describe("session events", () => {
       expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
       expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
 
-      // Phase 3: Archive evicted events
+      // Phase 3: Archive append is now disabled but remains callable from the persist path.
       appendEvictedToArchive(sessPath, result2.evictedEvents)
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
+      expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 
-      // Phase 4: Reconstruct full history
-      const fullHistory = loadFullEventHistory(sessPath)
+      // Phase 4: Replay now reads only the bounded envelope projection.
+      const envelopeHistory = result2.envelope.events
 
-      // Full history should have all unique events from both archive and envelope
-      expect(fullHistory.length).toBeGreaterThan(3) // more than just the projected events
+      expect(envelopeHistory).toHaveLength(result2.envelope.events.length)
+      expect(envelopeHistory.map((event) => event.id)).toEqual(result2.envelope.events.map((event) => event.id))
       // Events should be sorted by sequence
-      for (let i = 1; i < fullHistory.length; i++) {
-        expect(fullHistory[i]!.sequence).toBeGreaterThanOrEqual(fullHistory[i - 1]!.sequence)
+      for (let i = 1; i < envelopeHistory.length; i++) {
+        expect(envelopeHistory[i]!.sequence).toBeGreaterThanOrEqual(envelopeHistory[i - 1]!.sequence)
       }
 
       // Phase 5: Verify projection works correctly
@@ -1890,6 +2527,283 @@ describe("session events", () => {
       try { fs.unlinkSync(sessPath) } catch { /* */ }
       try { fs.unlinkSync(archivePath) } catch { /* */ }
       try { fs.rmdirSync(tmpDir) } catch { /* */ }
+    })
+  })
+
+  describe("duplicate-event-id self-healing", () => {
+    // Real corruption found in slugger.ouro/state/sessions: concurrent writers
+    // each loaded the envelope, both computed the same `events.length + 1`
+    // sequence, and wrote events with colliding ids. parseSessionEnvelope
+    // must collapse those to a single per-id entry, last-occurrence-wins, so
+    // the next save heals the file and downstream replay does not see the
+    // same outbound message twice.
+    it("collapses duplicate event ids on parse, keeping the last occurrence", async () => {
+      const { parseSessionEnvelope } = await import("../../heart/session-events")
+      const stamp = "2026-04-25T07:00:00.000Z"
+      const baseEvent = (id: string, content: string, role: string = "assistant") => ({
+        id,
+        sequence: parseInt(id.replace("evt-", ""), 10),
+        role,
+        content,
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: stamp, recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      })
+      const parsed = parseSessionEnvelope({
+        version: 2,
+        events: [
+          baseEvent("evt-000130", "first version of evt-130"),
+          baseEvent("evt-000131", "evt-131 only copy"),
+          baseEvent("evt-000130", "second version of evt-130"),
+          baseEvent("evt-000132", "evt-132 only copy"),
+          baseEvent("evt-000130", "third version of evt-130"),
+        ],
+        projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: stamp },
+      })
+
+      expect(parsed).not.toBeNull()
+      const ids = parsed!.events.map((e) => e.id)
+      expect(ids).toEqual(["evt-000131", "evt-000132", "evt-000130"])
+      const evt130 = parsed!.events.find((e) => e.id === "evt-000130")
+      // last-occurrence-wins: the third version is the survivor
+      expect((evt130!.content as { type: string; text: string }[])?.[0]?.text ?? evt130!.content).toContain("third version")
+    })
+
+    it("buildCanonicalSessionEnvelope assigns the next sequence as max(existing)+1, not events.length+1", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Existing envelope after self-heal: 3 events with sequences 1, 2, 130.
+      // The naive `events.length + 1` would produce sequence 4 (collision once
+      // we hit existing sequence 4 in the future). The robust max(...)+1 must
+      // produce 131 instead.
+      const existing = {
+        version: 2 as const,
+        events: [
+          { id: "evt-000001", sequence: 1, role: "user" as const, content: "u1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "a1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000130", sequence: 130, role: "assistant" as const, content: "a-late", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+        ],
+        projection: { eventIds: ["evt-000001", "evt-000002", "evt-000130"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: "2026-04-25T00:00:00.000Z" },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+
+      const previousMessages = [
+        { role: "user" as const, content: "u1" },
+        { role: "assistant" as const, content: "a1" },
+        { role: "assistant" as const, content: "a-late" },
+      ] as OpenAI.ChatCompletionMessageParam[]
+
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        ...previousMessages,
+        { role: "user", content: "u-fresh" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages,
+        currentMessages,
+        trimmedMessages: currentMessages,
+        recordedAt: "2026-04-25T00:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const newEvent = result.envelope.events.find((e) => (e.content as { type: string; text: string }[])?.[0]?.text === "u-fresh" || e.content === "u-fresh")
+      expect(newEvent).toBeDefined()
+      expect(newEvent!.sequence).toBe(131)
+      expect(newEvent!.id).toBe("evt-000131")
+    })
+  })
+
+  describe("inline-reasoning replay repair (MiniMax 2013 fix)", () => {
+    // The bug Slugger surfaced: MiniMax-M2.7 emits assistant messages with
+    // inline <think>...</think> content AND tool_calls. Replaying that
+    // combination triggers MiniMax error 2013 ("tool result's tool id not
+    // found") and stalls the session — every subsequent turn fails.
+    //
+    // The fix has two halves:
+    // (a) Strip the <think> blocks from the assistant content so replays
+    //     are valid.
+    // (b) The synthetic tool-result message is an EXPLANATORY one (not the
+    //     generic "interrupted") so the agent has full awareness of what
+    //     happened and what to do — strip-and-stay-silent would be bad AX.
+    it("strips inline <think> blocks from assistant messages with tool_calls and surfaces an explanatory tool-result", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "what's up?" },
+        {
+          role: "assistant",
+          content: "<think>doing some reasoning that the provider can't replay</think>",
+          tool_calls: [{ id: "call_xyz", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"ok\"}" } }],
+        },
+        // Note: NO matching tool result for call_xyz — repairToolCallSequences will synthesize one.
+        { role: "user", content: "next message" },
+      ])
+
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      expect(assistant).toBeDefined()
+      // <think> stripped from persisted content (or content set to null if the
+      // strip leaves nothing).
+      const content = assistant.content
+      const contentText = typeof content === "string" ? content : ""
+      expect(contentText).not.toContain("<think>")
+      expect(contentText).not.toContain("</think>")
+      // The tool_call survives (so the API replay reconstructs correctly).
+      expect(assistant.tool_calls).toHaveLength(1)
+      expect(assistant.tool_calls[0].id).toBe("call_xyz")
+
+      // The synthesized tool-result is the EXPLANATORY one (not the generic
+      // "result was lost" — that one is for tool calls whose parent didn't
+      // have stripped reasoning).
+      const synthetic = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_xyz") as any
+      expect(synthetic).toBeDefined()
+      expect(synthetic.content).toContain("inline `<think>")
+      expect(synthetic.content).toContain("MiniMax")
+      expect(synthetic.content).toContain("retry the tool call")
+    })
+
+    it("keeps the generic 'result was lost' message for orphaned tool_calls whose parent did NOT have stripped reasoning", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "no inline reasoning here, just plain content",
+          tool_calls: [{ id: "call_plain", type: "function" as const, function: { name: "read_file", arguments: "{}" } }],
+        },
+        // Orphan: no matching tool result.
+        { role: "user", content: "next" },
+      ])
+      const synthetic = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_plain") as any
+      expect(synthetic).toBeDefined()
+      expect(synthetic.content).toContain("result was lost")
+      expect(synthetic.content).not.toContain("inline `<think>")
+    })
+
+    it("handles an unclosed <think> tag (open without close) by dropping everything from <think> onward", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          content: "early text<think>started thinking but stream was cut",
+          tool_calls: [{ id: "call_truncated", type: "function" as const, function: { name: "settle", arguments: "{}" } }],
+        },
+        { role: "user", content: "next" },
+      ])
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      const content = typeof assistant.content === "string" ? assistant.content : ""
+      // Everything from <think> to end of string is dropped; the early text survives.
+      expect(content).toBe("early text")
+      expect(content).not.toContain("<think>")
+    })
+
+    it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware orphan check)", async () => {
+      // Real bug observed in slugger.ouro/state/sessions/.../mcp/c11a7ba8-...:
+      // After session pruning, a synthetic tool result lived at seq 86
+      // referencing call_function_utqogadgqp5h_1, but the assistant message
+      // that defines that tool_call_id was at seq 88 — AFTER the tool result.
+      // The previous orphan check used a global Set so this looked valid,
+      // but MiniMax rejected with error 2013 because tool results must
+      // follow their matching assistant.
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "early" },
+        // Tool result referencing a tool_call_id that doesn't exist YET
+        // in the conversation
+        { role: "tool", content: "stale or misplaced result", tool_call_id: "call_xyz_1" } as any,
+        { role: "user", content: "middle" },
+        // The assistant that defines call_xyz_1 — appears AFTER the tool result above
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_xyz_1", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"ok\",\"intent\":\"complete\"}" } }],
+        },
+        // Valid following tool result for the assistant
+        { role: "tool", content: "(delivered)", tool_call_id: "call_xyz_1" } as any,
+      ])
+
+      // The misplaced tool result before the assistant is removed
+      const toolMsgs = sanitized.filter((m) => m.role === "tool") as any[]
+      expect(toolMsgs.find((m) => m.content === "stale or misplaced result")).toBeUndefined()
+
+      // The valid one (after the assistant) survives
+      expect(toolMsgs.find((m) => m.content === "(delivered)")).toBeDefined()
+
+      // The order is sane: assistant comes before its tool result
+      const assistantIdx = sanitized.findIndex((m) => m.role === "assistant" && (m as any).tool_calls)
+      const validToolIdx = sanitized.findIndex((m) => m.role === "tool" && (m as any).content === "(delivered)")
+      expect(assistantIdx).toBeLessThan(validToolIdx)
+    })
+
+    it("end-to-end: a Slugger-shaped poisoned session produces a valid replay shape after sanitize", async () => {
+      // Reproduces the exact pattern observed in
+      // ~/AgentBundles/slugger.ouro/state/sessions/.../mcp/c11a7ba8-...json:
+      // assistant with <think>...</think> + settle tool_call, no matching
+      // tool_result, then a stack of new user messages. After sanitize, the
+      // shape MiniMax sees should be: clean assistant (no think tags), the
+      // tool_call survives, an explanatory tool-result is inserted, and the
+      // user messages follow normally — no replay violation.
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "earlier user message" },
+        {
+          role: "assistant",
+          content: "<think>thinking through the answer</think>",
+          tool_calls: [{ id: "call_function_utqogadgqp5h_1", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"the actual answer slugger wanted to deliver\",\"intent\":\"direct_reply\"}" } }],
+        },
+        // No tool_result for call_function_utqogadgqp5h_1 — the original
+        // session was saved before the result was written
+        { role: "user", content: "follow-up message 1" },
+        { role: "user", content: "follow-up message 2" },
+        { role: "user", content: "follow-up message 3 (now what?)" },
+      ])
+
+      // Find the assistant — it should NOT have <think> tags anymore
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      expect(typeof assistant.content === "string" ? assistant.content : "").not.toContain("<think>")
+
+      // The tool_call survives so the API can match the tool_result
+      expect(assistant.tool_calls).toHaveLength(1)
+      expect(assistant.tool_calls[0].id).toBe("call_function_utqogadgqp5h_1")
+
+      // A synthetic tool-result was inserted with the explanatory message
+      const toolResult = sanitized.find((m) => m.role === "tool" && (m as any).tool_call_id === "call_function_utqogadgqp5h_1") as any
+      expect(toolResult).toBeDefined()
+      expect(toolResult.content).toContain("MiniMax")
+      expect(toolResult.content).toContain("retry the tool call")
+
+      // The user messages follow normally
+      const userMsgs = sanitized.filter((m) => m.role === "user").map((m) => m.content)
+      expect(userMsgs).toContain("earlier user message")
+      expect(userMsgs).toContain("follow-up message 1")
+      expect(userMsgs).toContain("follow-up message 2")
+      expect(userMsgs).toContain("follow-up message 3 (now what?)")
+
+      // The order is correct: assistant before its synthetic tool-result,
+      // and follow-up users come after the tool-result.
+      const assistantIdx = sanitized.findIndex((m) => m.role === "assistant")
+      const toolResultIdx = sanitized.findIndex((m) => m.role === "tool")
+      const firstFollowUpIdx = sanitized.findIndex((m) => m.role === "user" && m.content === "follow-up message 1")
+      expect(assistantIdx).toBeLessThan(toolResultIdx)
+      expect(toolResultIdx).toBeLessThan(firstFollowUpIdx)
+    })
+
+    it("leaves an assistant message with <think> but no tool_calls untouched (think tags are fine on their own)", async () => {
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "<think>just thinking</think>final answer here" },
+      ])
+      const assistant = sanitized.find((m) => m.role === "assistant") as any
+      // No tool_calls means no replay-rejection risk; we don't strip.
+      expect(assistant.content).toContain("<think>")
     })
   })
 })

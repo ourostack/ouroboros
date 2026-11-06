@@ -253,14 +253,14 @@ describe("start-of-turn packet", () => {
       expect(rendered.length).toBeGreaterThan(10)
     })
 
-    it("renders provider state as first-class start-of-turn truth", () => {
+    it("renders agent provider selection as first-class start-of-turn truth", () => {
       const view = makeView({
         activeObligations: [makeObligation({ content: "ship provider visibility" })],
       })
       const packet = buildStartOfTurnPacket(view)
-      ;(packet as StartOfTurnPacket & { providerState: string }).providerState = [
-        "- outward: minimax / MiniMax-M2.5 [ready; source: local; credentials: auth-flow]",
-        "- inner: openai-codex / gpt-5.4 [failed: 400 status code; source: local; credentials: manual]",
+      packet.providerSelection = [
+        "- outward: minimax / MiniMax-M2.5 [ready; source: agent.json; credentials: auth-flow]",
+        "- inner: openai-codex / gpt-5.4 [failed: 400 status code; source: agent.json; credentials: manual]",
       ].join("\n")
 
       const rendered = renderStartOfTurnPacket(packet)
