@@ -282,6 +282,8 @@ describe("bridge_manage tool", () => {
       key: "conv-2",
       summarize: undefined,
     }))
+    expect(vi.mocked(search_notes.summarizeSessionTail).mock.calls[0]?.[0]).not.toHaveProperty("archiveFallback")
+    expect(vi.mocked(search_notes.summarizeSessionTail).mock.calls[1]?.[0]).not.toHaveProperty("archiveFallback")
     expect(mockAttachSession).toHaveBeenCalledWith("bridge-1", expect.objectContaining({
       snapshot: "recent focus: user: hi",
     }))
@@ -389,6 +391,7 @@ describe("bridge_manage tool", () => {
       { signin: vi.fn() } as any,
     )
 
+    expect(vi.mocked(search_notes.summarizeSessionTail).mock.calls[0]?.[0]).not.toHaveProperty("archiveFallback")
     expect(mockAttachSession).toHaveBeenCalledWith("bridge-1", expect.objectContaining({
       snapshot: "session exists but has no non-system messages.",
     }))

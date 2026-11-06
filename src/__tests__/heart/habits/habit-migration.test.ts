@@ -61,7 +61,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     expect(content).toContain("title: Heartbeat check-in")
     expect(content).toContain("cadence: 30m")
     expect(content).toContain("status: active") // processing -> active
-    expect(content).toContain("lastRun: null")
+    expect(content).not.toContain("lastRun:")
     expect(content).toContain("created: 2026-03-08T12:00:00.000Z")
     expect(content).toContain("Run a lightweight heartbeat cycle.")
 
@@ -234,9 +234,14 @@ describe("migrateHabitsFromTaskSystem", () => {
     expect(content).toContain("title: Full Task Habit")
     expect(content).toContain("cadence: 30m")
     expect(content).toContain("status: active")
-    expect(content).toContain("lastRun: 2026-03-08T13:00:00.000Z")
+    expect(content).not.toContain("lastRun:")
     expect(content).toContain("created: 2026-03-08T12:00:00.000Z")
     expect(content).toContain("Full task body preserved.")
+
+    const runtimeState = JSON.parse(
+      fs.readFileSync(path.join(bundleRoot, "state", "habits", "full-task.json"), "utf-8"),
+    ) as { lastRun: string }
+    expect(runtimeState.lastRun).toBe("2026-03-08T13:00:00.000Z")
 
     // Stripped task-only fields
     expect(content).not.toContain("type:")
@@ -736,5 +741,40 @@ describe("migrateHabitsFromTaskSystem", () => {
 
     // Should be migrated as-is (filename already a slug)
     expect(fs.existsSync(path.join(bundleRoot, "habits", "simple-habit.md"))).toBe(true)
+  })
+
+  it("imports legacy last_run alias into runtime state during migration", async () => {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.migration_test_start",
+      message: "testing last_run alias migration",
+      meta: {},
+    })
+
+    const bundleRoot = makeTempDir("migrate-last-run-alias")
+    cleanup.push(bundleRoot)
+
+    const oldHabitsDir = path.join(bundleRoot, "tasks", "habits")
+    fs.mkdirSync(oldHabitsDir, { recursive: true })
+
+    fs.writeFileSync(path.join(oldHabitsDir, "2026-03-08-1200-alias-habit.md"), [
+      "---",
+      "title: Alias Habit",
+      "status: processing",
+      "cadence: \"1h\"",
+      "last_run: 2026-03-08T14:00:00.000Z",
+      "---",
+      "",
+      "Alias body.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
+    migrateHabitsFromTaskSystem(bundleRoot)
+
+    const runtimeState = JSON.parse(
+      fs.readFileSync(path.join(bundleRoot, "state", "habits", "alias-habit.json"), "utf-8"),
+    ) as { lastRun: string }
+    expect(runtimeState.lastRun).toBe("2026-03-08T14:00:00.000Z")
   })
 })

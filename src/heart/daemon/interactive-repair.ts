@@ -8,6 +8,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import type { AgentReadinessIssue, RepairAction } from "./readiness-repair"
+import { renderTerminalWizard, type TerminalWizardStatus } from "./terminal-ui"
 
 export interface DegradedAgent {
   agent: string
@@ -23,6 +24,8 @@ export interface InteractiveRepairDeps {
   runVaultUnlock?: (agent: string) => Promise<void>
   recheckAgent?: (agent: string) => Promise<DegradedAgent | null>
   skipQueueSummary?: boolean
+  isTTY?: boolean
+  stdoutColumns?: number
 }
 
 export interface InteractiveRepairResult {
@@ -124,6 +127,10 @@ function renderRepairChoices(prefix: "next" | "run", commands: string[]): string
   return commands.map((command, index) => `  ${index === 0 ? prefix : "or"}: ${command}`)
 }
 
+function repairStatusFor(action: RunnableRepairAction): TerminalWizardStatus {
+  return action.kind === "vault-unlock" ? "locked" : "needs credentials"
+}
+
 function renderRepairQueueSummaryLines(degraded: DegradedAgent[]): string[] {
   const repairable = degraded
     .map((entry) => ({ entry, action: runnableRepairActionFor(entry) }))
@@ -146,6 +153,37 @@ function renderRepairQueueSummaryLines(degraded: DegradedAgent[]): string[] {
   return lines
 }
 
+function renderRepairQueueSummary(degraded: DegradedAgent[], deps: InteractiveRepairDeps): string {
+  const repairable = degraded
+    .map((entry) => ({ entry, action: runnableRepairActionFor(entry) }))
+    .filter((item): item is { entry: DegradedAgent; action: RunnableRepairAction } => item.action !== undefined)
+
+  if (!deps.isTTY) {
+    return renderRepairQueueSummaryLines(degraded).join("\n")
+  }
+
+  return renderTerminalWizard({
+    isTTY: true,
+    columns: deps.stdoutColumns,
+    masthead: {
+      subtitle: "Repair paths ready.",
+    },
+    title: "Needs attention before startup can finish",
+    summary: "Ouro found repair steps it can open right now. It will walk through them one at a time.",
+    sections: [{
+      title: "Repair queue",
+      items: repairable.map(({ entry, action }) => ({
+        label: entry.agent,
+        status: repairStatusFor(action),
+        summary: action.label,
+        detailLines: [entry.errorReason],
+        command: action.command,
+      })),
+    }],
+    suppressEvent: true,
+  }).trimEnd()
+}
+
 function renderActionPromptLines(agent: string, action: RunnableRepairAction): string[] {
   const lines = [
     `${agent}`,
@@ -158,11 +196,68 @@ function renderActionPromptLines(agent: string, action: RunnableRepairAction): s
   return lines
 }
 
-function renderDeferredRepair(agent: string, commands: string[]): string {
-  return [
-    `Leaving ${agent} for later.`,
-    ...renderRepairChoices("next", commands),
-  ].join("\n")
+function renderActionPrompt(entry: DegradedAgent, action: RunnableRepairAction, deps: InteractiveRepairDeps): string {
+  if (!deps.isTTY) return renderActionPromptLines(entry.agent, action).join("\n")
+
+  const footer = action.kind === "vault-unlock"
+    ? "Only say yes if you have the saved vault unlock secret."
+    : "Say yes if you want Ouro to open the auth flow now."
+
+  return renderTerminalWizard({
+    isTTY: true,
+    columns: deps.stdoutColumns,
+    masthead: {
+      subtitle: "One repair step at a time.",
+    },
+    title: `Repair ${entry.agent}`,
+    summary: "Ouro found one clear next move for this agent.",
+    nextStep: {
+      label: action.kind === "vault-unlock"
+        ? "Unlock the credential vault on this machine."
+        : "Refresh provider authentication.",
+      detail: action.kind === "vault-unlock"
+        ? "Use the saved unlock secret if you have it. If not, leave this for later and choose a replacement or recovery path."
+        : "This opens the provider login or refresh flow for the selected provider.",
+      command: action.command,
+    },
+    sections: [{
+      title: "Why startup paused",
+      items: [{
+        label: entry.agent,
+        status: repairStatusFor(action),
+        summary: entry.errorReason,
+      }],
+    }],
+    footerLines: [footer],
+    suppressEvent: true,
+  }).trimEnd()
+}
+
+function renderDeferredRepair(agent: string, commands: string[], deps: InteractiveRepairDeps): string {
+  if (!deps.isTTY) {
+    return [
+      `Leaving ${agent} for later.`,
+      ...renderRepairChoices("next", commands),
+    ].join("\n")
+  }
+  return renderTerminalWizard({
+    isTTY: true,
+    columns: deps.stdoutColumns,
+    masthead: {
+      subtitle: "Nothing changed yet.",
+    },
+    title: `Leaving ${agent} for later`,
+    summary: "Ouro did not open this repair flow right now.",
+    sections: [{
+      title: "Next time",
+      items: commands.map((command, index) => ({
+        key: String(index + 1),
+        label: index === 0 ? "Start here" : "Or try this",
+        command,
+      })),
+    }],
+    suppressEvent: true,
+  }).trimEnd()
 }
 
 function renderManualRepairHint(agent: string, fixHint: string): string {
@@ -181,7 +276,7 @@ function renderUnknownRepair(agent: string, errorReason: string): string {
 }
 
 function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: InteractiveRepairDeps): void {
-  deps.writeStdout(renderDeferredRepair(degraded.agent, fallbackCommandsFor(degraded, command)))
+  deps.writeStdout(renderDeferredRepair(degraded.agent, fallbackCommandsFor(degraded, command), deps))
 }
 
 function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction | undefined {
@@ -224,7 +319,7 @@ function typedActionToRunnable(degraded: DegradedAgent, action: RepairAction): R
 
 function writeRepairQueueSummary(degraded: DegradedAgent[], deps: InteractiveRepairDeps): void {
   const lines = renderRepairQueueSummaryLines(degraded)
-  if (lines.length > 0) deps.writeStdout(lines.join("\n"))
+  if (lines.length > 0) deps.writeStdout(renderRepairQueueSummary(degraded, deps))
 }
 
 interface RepairStepOutcome {
@@ -237,7 +332,7 @@ async function attemptVaultUnlock(
   action: RunnableRepairAction,
   deps: InteractiveRepairDeps,
 ): Promise<RepairStepOutcome> {
-  deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
+  deps.writeStdout(renderActionPrompt(entry, action, deps))
   const answer = await deps.promptInput(
     `Unlock ${entry.agent}'s vault now? [y/N] `,
   )
@@ -271,7 +366,7 @@ async function attemptProviderAuth(
   action: RunnableRepairAction & { kind: "provider-auth"; provider?: AgentProvider },
   deps: InteractiveRepairDeps,
 ): Promise<RepairStepOutcome> {
-  deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
+  deps.writeStdout(renderActionPrompt(entry, action, deps))
   const answer = await deps.promptInput(
     `Open the auth flow for ${entry.agent} now? [y/N] `,
   )

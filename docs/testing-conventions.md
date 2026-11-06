@@ -21,9 +21,12 @@ For runtime code changes, keep these green:
 npm test
 npx tsc --noEmit
 npm run test:coverage
+npm run test:integration
+npm run test:e2e:package
+npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json
 ```
 
-Treat warnings as problems to fix, not background noise.
+Treat warnings as problems to fix, not background noise. The real-smoke lane is the live external check; keep it ready in CI and run it locally whenever the change touches provider auth, portable capability onboarding, or live verification behavior and you have the sacrificial secrets file available.
 
 ## TDD Rule
 
@@ -71,6 +74,9 @@ Before calling runtime work complete:
 - [ ] `npm test` passes
 - [ ] `npx tsc --noEmit` passes
 - [ ] `npm run test:coverage` passes
+- [ ] `npm run test:integration` passes for runtime/daemon/provider/auth changes
+- [ ] `npm run test:e2e:package` passes for package-install or CLI distribution changes
+- [ ] `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json` passes when live provider/capability verification changed and sacrificial credentials are available
 - [ ] new or changed code is fully covered
 - [ ] runtime observability contracts remain valid
 
