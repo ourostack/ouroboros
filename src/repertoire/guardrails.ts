@@ -363,9 +363,9 @@ function friendsShellWriteRefused(command: string, agentRoot: string | undefined
 // A command can name one of this agent's folders by an absolute path, by ~/ or $HOME/, or relative to wherever it cd's (or
 // git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
 // working in, lexically and canonically, and counts when it lands in this agent's <name>/.
-/** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
 const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
 
+/** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
 function namedFolderWords(command: string, name: string): string[] {
   const part = new RegExp(`(?:^|/)${name}(?:/|$)`)
   return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
@@ -381,6 +381,11 @@ function commandMentionsAgentFolder(command: string, words: readonly string[], a
   // A working directory this guard cannot follow (pushd, cd --, a cd or -C to a variable, or a nested shell's -c string):
   // a relative path could land anywhere, so it counts.
   if (UNFOLLOWABLE_WORKING_DIRECTORY.test(command)) return true
+  // A path that names this bundle's own folder (x.ouro/psyche) or a glob just above the folder (*/psyche) is this agent's
+  // wherever the command works from, so eval, a piped shell, env --chdir, find -path and code that chdir's all count.
+  const bundle = path.basename(path.resolve(agentRoot)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const anchored = new RegExp(`(?:^|/)(?:${bundle}|[^/]*[*?[][^/]*)/${name}(?:/|$)`)
+  if (candidates.some((candidate) => anchored.test(candidate))) return true
   const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
   // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
   const cwds = [process.cwd()]

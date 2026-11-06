@@ -1609,6 +1609,12 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
             "sh -c \"cd ~/AgentBundles && echo x > x.ouro/psyche/SOUL.md\"",
             "cd -- ~/AgentBundles && echo x > x.ouro/psyche/SOUL.md",
             "git -C $HOME/AgentBundles mv /tmp/a x.ouro/psyche/SOUL.md",
+            // The second re-review: commands that name the bundle's own folder, or a glob above it, from anywhere.
+            "eval \"cd ~/AgentBundles; echo x > x.ouro/psyche/SOUL.md\"",
+            "echo \"cd ~/AgentBundles; echo x > x.ouro/psyche/SOUL.md\" | sh",
+            `env --chdir=${path.join(home, "AgentBundles")} cp /tmp/a x.ouro/psyche/SOUL.md`,
+            "python3 -c \"import os; os.chdir('/x'); open('x.ouro/psyche/SOUL.md','w')\"",
+            "find ~/AgentBundles -path \"*/psyche/SOUL.md\" -delete",
           ]) {
             const result = guardInvocation("shell", { command }, who)
             expect(result, command).toMatchObject({ allowed: false })
@@ -1635,8 +1641,8 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         const realpath = vi.spyOn(fs.realpathSync, "native").mockImplementation(() => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }) })
         try {
           const who = ctx({ agentRoot: "/bundle", readPaths: new Set() })
-          expect(guardInvocation("shell", { command: "cd / && cat bundle/psyche/SOUL.md" }, who)).toMatchObject({ allowed: false })
-          expect(guardInvocation("shell", { command: "cd / && cat bundle/friends/f.json" }, who)).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "cd /other && cat link/psyche/SOUL.md" }, who)).toMatchObject({ allowed: false })
+          expect(guardInvocation("shell", { command: "cd /other && cat link/friends/f.json" }, who)).toMatchObject({ allowed: false })
         } finally {
           realpath.mockRestore()
         }
