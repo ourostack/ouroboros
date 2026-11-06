@@ -8,20 +8,26 @@ export interface SurfaceRouteResult {
   detail?: string
 }
 
+export interface SurfaceDeliveryHint {
+  channel?: "auto" | "voice"
+  phoneNumber?: string
+}
+
 // ── Handler ──────────────────────────────────────────────────────
 
 export interface HandleSurfaceInput {
   content: string
   delegationId?: string
   friendId?: string
+  deliveryHint?: SurfaceDeliveryHint
   queue: AttentionItem[]
-  routeToFriend: (friendId: string, content: string, queueItem?: AttentionItem) => Promise<SurfaceRouteResult>
+  routeToFriend: (friendId: string, content: string, queueItem?: AttentionItem, deliveryHint?: SurfaceDeliveryHint) => Promise<SurfaceRouteResult>
   advanceObligation: (obligationId: string, update: { status: string; returnedAt?: number; returnTarget?: string }) => void
   fulfillHeartObligation?: (origin: { friendId: string; channel: string; key: string }) => void
 }
 
 export async function handleSurface(input: HandleSurfaceInput): Promise<string> {
-  const { content, delegationId, friendId, queue, routeToFriend, advanceObligation, fulfillHeartObligation } = input
+  const { content, delegationId, friendId, deliveryHint, queue, routeToFriend, advanceObligation, fulfillHeartObligation } = input
 
   // Resolve target friend
   let targetFriendId: string
@@ -42,7 +48,9 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
   }
 
   // Route to target
-  const result = await routeToFriend(targetFriendId, content, queueItem)
+  const result = deliveryHint
+    ? await routeToFriend(targetFriendId, content, queueItem, deliveryHint)
+    : await routeToFriend(targetFriendId, content, queueItem)
 
   emitNervesEvent({
     event: "senses.surface_routed",

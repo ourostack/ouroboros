@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderHabitFile } from "./habit-parser"
+import { writeHabitLastRun } from "./habit-runtime-state"
 import { parseFrontmatter } from "../../repertoire/tasks/parser"
 
 /** Fields that belong to the task system and should be stripped from migrated habits. */
@@ -112,19 +113,23 @@ export function migrateHabitsFromTaskSystem(bundleRoot: string): void {
       continue
     }
 
+    const legacyLastRun = typeof frontmatter.lastRun === "string" && frontmatter.lastRun !== "null"
+      ? frontmatter.lastRun
+      : typeof frontmatter.last_run === "string" && frontmatter.last_run !== "null"
+        ? frontmatter.last_run
+        : null
+
     // Build new frontmatter, stripping task-only fields
     const newFrontmatter: Record<string, unknown> = {}
     if (typeof frontmatter.title === "string") newFrontmatter.title = frontmatter.title
     if (typeof frontmatter.cadence === "string") newFrontmatter.cadence = frontmatter.cadence
     newFrontmatter.status = habitStatus
-    newFrontmatter.lastRun = typeof frontmatter.lastRun === "string" && frontmatter.lastRun !== "null"
-      ? frontmatter.lastRun
-      : "null"
     newFrontmatter.created = typeof frontmatter.created === "string" ? frontmatter.created : "null"
 
     // Add any other non-task fields from original
     for (const [key, value] of Object.entries(frontmatter)) {
       if (TASK_ONLY_FIELDS.has(key)) continue
+      if (key === "lastRun" || key === "last_run") continue
       if (key in newFrontmatter) continue
       /* v8 ignore next -- dead code: status is caught by `key in newFrontmatter` above since newFrontmatter.status is always set @preserve */
       if (key === "status") continue // already mapped
@@ -133,6 +138,9 @@ export function migrateHabitsFromTaskSystem(bundleRoot: string): void {
 
     const rendered = renderHabitFile(newFrontmatter, body)
     fs.writeFileSync(targetPath, rendered, "utf-8")
+    if (legacyLastRun) {
+      writeHabitLastRun(bundleRoot, path.basename(slugName, ".md"), legacyLastRun)
+    }
     migratedCount++
 
     emitNervesEvent({
