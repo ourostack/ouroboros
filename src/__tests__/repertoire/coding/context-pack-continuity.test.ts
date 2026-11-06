@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { CodingSession, CodingSessionRequest } from "../../../repertoire/coding/types"
 import { prepareCodingContextPack, emitCodingEpisode } from "../../../repertoire/coding/context-pack"
+import { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } from "../../helpers/content-cap"
 
 const mockEmitEpisode = vi.fn()
 vi.mock("../../../arc/episodes", () => ({
@@ -9,7 +10,7 @@ vi.mock("../../../arc/episodes", () => ({
 
 function makeRequest(overrides: Partial<CodingSessionRequest> = {}): CodingSessionRequest {
   return {
-    task: "fix the bug",
+    prompt: "fix the bug",
     workdir: "/Users/test/Projects/ouro",
     runner: "codex",
     parentAgent: "ouroboros",
@@ -88,6 +89,28 @@ describe("coding context pack continuity integration", () => {
 
     // Empty string should not add a continuity section
     expect(result.stateContent).not.toContain("## Continuity")
+  })
+
+  it("caps oversized generated markdown fields before writing context pack files", () => {
+    const deps = makeDeps()
+    const oversized = makeOversizedAgentContent("coding continuity ")
+    const result = prepareCodingContextPack(
+      {
+        request: makeRequest({ prompt: oversized }),
+        startOfTurnPacket: oversized,
+      },
+      deps,
+    )
+
+    expect(result.scopeContent.includes(expectedTruncationMarker(oversized))).toBe(true)
+    expect(result.stateContent.includes(expectedTruncationMarker(oversized))).toBe(true)
+    expect(result.scopeContent).toContain(expectedCappedContent(oversized))
+    expect(result.stateContent).toContain(expectedCappedContent(oversized))
+    expect(deps.writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("-scope.md"),
+      expect.stringContaining(expectedCappedContent(oversized)),
+      "utf-8",
+    )
   })
 })
 

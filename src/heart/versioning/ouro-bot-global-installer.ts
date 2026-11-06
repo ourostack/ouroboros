@@ -95,13 +95,14 @@ export function syncGlobalOuroBotWrapper(
   const globalRoot = resolveGlobalRoot(execFileSyncImpl)
   const installedVersion = readInstalledWrapperVersion(globalRoot, existsSyncImpl, readFileSyncImpl)
   const executableOwner = resolveExecutableOwner(globalPrefix, platform, existsSyncImpl, realpathSyncImpl)
+  const installTarget = `ouro.bot@${runtimeVersion}`
 
-  if (executableOwner === "wrapper") {
+  if (executableOwner === "wrapper" && installedVersion === runtimeVersion) {
     emitNervesEvent({
       component: "daemon",
       event: "daemon.ouro_bot_global_sync_end",
       message: "global ouro.bot wrapper already current",
-      meta: { version: runtimeVersion, installedVersion, executableOwner, installed: false },
+      meta: { version: runtimeVersion, installedVersion, executableOwner, installed: false, installTarget },
     })
     return {
       installed: false,
@@ -113,7 +114,7 @@ export function syncGlobalOuroBotWrapper(
 
   execFileSyncImpl(
     "npm",
-    ["install", "-g", "--force", "ouro.bot@latest"],
+    ["install", "-g", "--force", installTarget],
     { stdio: "pipe", encoding: "utf-8" },
   )
 
@@ -121,7 +122,7 @@ export function syncGlobalOuroBotWrapper(
     component: "daemon",
     event: "daemon.ouro_bot_global_sync_end",
     message: "global ouro.bot wrapper synced",
-    meta: { version: runtimeVersion, installedVersion, executableOwner, installed: true },
+    meta: { version: runtimeVersion, installedVersion, executableOwner, installed: true, installTarget },
   })
 
   return {
