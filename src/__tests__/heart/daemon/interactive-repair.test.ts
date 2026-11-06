@@ -532,6 +532,76 @@ describe("runInteractiveRepair", () => {
     expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
   })
 
+  it("renders the grouped repair queue as a shared wizard on tty", async () => {
+    const deps = makeDeps({
+      isTTY: true,
+      stdoutColumns: 78,
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "ouroboros",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+      },
+      {
+        agent: "slugger",
+        errorReason: "provider credentials failed",
+        fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+      },
+    ]
+
+    await runInteractiveRepair(degraded, deps)
+
+    expect(stdoutText(deps)).toContain("Repair queue")
+    expect(stdoutText(deps)).toContain("Needs attention before startup can finish")
+    expect(stdoutText(deps)).toContain("One repair step at a time.")
+    expect(stdoutText(deps)).toContain("ouro auth --agent slugger --provider openai-codex")
+  })
+
+  it("renders tty action prompts in the shared wizard language", async () => {
+    const deps = makeDeps({
+      isTTY: true,
+      stdoutColumns: 76,
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    await runInteractiveRepair(degraded, deps)
+
+    expect(stdoutText(deps)).toContain("Repair slugger")
+    expect(stdoutText(deps)).toContain("Why startup paused")
+    expect(stdoutText(deps)).toContain("Unlock the credential vault on this machine.")
+    expect(stdoutText(deps)).toContain("Only say yes if you have the saved vault unlock secret.")
+  })
+
+  it("renders tty deferred guidance in the shared wizard language", async () => {
+    const deps = makeDeps({
+      isTTY: true,
+      stdoutColumns: 76,
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger' if you have the saved secret. If nobody saved it, run 'ouro vault replace --agent slugger'. Then run 'ouro up' again.",
+      },
+    ]
+
+    await runInteractiveRepair(degraded, deps)
+
+    expect(stdoutText(deps)).toContain("Leaving slugger for later")
+    expect(stdoutText(deps)).toContain("Next time")
+    expect(stdoutText(deps)).toContain("ouro vault replace --agent slugger")
+  })
+
   it("catches auth flow errors and continues to next agent", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),

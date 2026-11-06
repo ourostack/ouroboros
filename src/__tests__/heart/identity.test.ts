@@ -11,8 +11,13 @@ vi.mock("../../heart/migrate-config", () => ({
   migrateAgentConfigV1ToV2: vi.fn(),
 }))
 
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn(),
+}))
+
 import * as fs from "fs"
 import { migrateAgentConfigV1ToV2 } from "../../heart/migrate-config"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 let savedArgv: string[]
 let savedWebsiteSiteName: string | undefined
@@ -22,6 +27,7 @@ beforeEach(() => {
   savedWebsiteSiteName = process.env.WEBSITE_SITE_NAME
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
+  vi.mocked(emitNervesEvent).mockReset()
 })
 
 afterEach(() => {
@@ -60,6 +66,26 @@ describe("getAgentName", () => {
 
     process.argv = ["node", "cli-entry.js", "--agent", "other"]
     expect(getAgentName()).toBe("ouroboros")
+  })
+
+  it("logs argv resolution once and leaves cache hits quiet", async () => {
+    process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
+    const { getAgentName, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(getAgentName()).toBe("ouroboros")
+    expect(getAgentName()).toBe("ouroboros")
+
+    const identityResolveEvents = vi
+      .mocked(emitNervesEvent)
+      .mock.calls.filter(([event]) => event.event === "identity.resolve")
+    expect(identityResolveEvents).toHaveLength(1)
+    expect(identityResolveEvents[0]?.[0]).toMatchObject({
+      component: "config/identity",
+      event: "identity.resolve",
+      message: "resolved agent name from argv",
+      meta: { source: "argv" },
+    })
   })
 })
 
@@ -139,6 +165,7 @@ describe("agent paths", () => {
     const {
       getAgentDaemonLoggingConfigPath,
       getAgentDaemonLogsDir,
+      getAgentMailroomRoot,
       getAgentMessagesRoot,
       getAgentRepoWorkspacesRoot,
       getAgentToolsRoot,
@@ -147,9 +174,10 @@ describe("agent paths", () => {
     } = await import("../../heart/identity")
     resetIdentity()
 
-    expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ouroborosbot/ouroboros.git")
+    expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ourostack/ouroboros.git")
     expect(getAgentDaemonLoggingConfigPath()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"))
     expect(getAgentDaemonLogsDir()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logs"))
+    expect(getAgentMailroomRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "mailroom"))
     expect(getAgentMessagesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "messages"))
     expect(getAgentRepoWorkspacesRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "workspaces"))
     expect(getAgentToolsRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "tools"))
@@ -184,6 +212,8 @@ describe("buildDefaultAgentTemplate", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -333,6 +363,8 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
+      voice: { enabled: false },
     })
   })
 
@@ -355,6 +387,8 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: false },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
+      voice: { enabled: false },
     })
   })
 
@@ -380,6 +414,8 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
+      voice: { enabled: false },
     })
   })
 

@@ -59,6 +59,20 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
   writeDaemonTombstone: writeDaemonTombstoneMock,
 }))
 
+const { createMcpStatusCanaryProbeMock } = vi.hoisted(() => ({
+  createMcpStatusCanaryProbeMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/mcp-canary", () => ({
+  createMcpStatusCanaryProbe: (options: { agent: string; ignoreOverviewHealth?: boolean }) => {
+    createMcpStatusCanaryProbeMock(options)
+    return {
+      name: `mcp-canary:${options.agent}`,
+      check: async () => ({ ok: true }),
+    }
+  },
+}))
+
 vi.mock("../../../heart/config", () => ({
   getBlueBubblesChannelConfig: vi.fn(() => ({
     port: 18790,
@@ -87,6 +101,7 @@ describe("daemon entrypoint", () => {
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
+    createMcpStatusCanaryProbeMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     fs.rmSync(testHomeRoot, { recursive: true, force: true })
@@ -142,6 +157,12 @@ describe("daemon entrypoint", () => {
           senseManagerCtor(_opts)
         }
         listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [
+          {
+            name: "bluebubbles:slugger",
+            check: async () => ({ ok: true }),
+          },
+        ])
         startAutoStartSenses = vi.fn(async () => undefined)
         stopAll = vi.fn(async () => undefined)
       },
@@ -191,8 +212,16 @@ describe("daemon entrypoint", () => {
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
-      expect.objectContaining({ name: "sense-probe:bluebubbles", status: "critical" }),
+      { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
+      { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },
+      { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
     ])
+    expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "slugger", ignoreOverviewHealth: true }),
+    )
+    expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "ouroboros", ignoreOverviewHealth: true }),
+    )
     await expect(daemonOptions.router.send({
       from: "slugger",
       to: "ouroboros",
@@ -247,6 +276,92 @@ describe("daemon entrypoint", () => {
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
 
     argvSpy.mockRestore()
+  })
+
+  it("wires daemon.stop command cleanup to stop entrypoint timers before exiting", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const daemonCtor = vi.fn()
+    const healthMonitorStopPeriodicChecks = vi.fn()
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      constructor(_opts: unknown) {
+        daemonCtor(_opts)
+      }
+      start = start
+      stop = stop
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+        sendToAgent = vi.fn()
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/health-monitor", () => ({
+      HealthMonitor: class MockHealthMonitor {
+        runChecks = vi.fn(async () => [])
+        startPeriodicChecks = vi.fn()
+        stopPeriodicChecks = healthMonitorStopPeriodicChecks
+      },
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    try {
+      await import("../../../heart/daemon/daemon-entry")
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
+        onStopCommandComplete: () => void
+      }
+      expect(typeof daemonOptions.onStopCommandComplete).toBe("function")
+
+      daemonOptions.onStopCommandComplete()
+      daemonOptions.onStopCommandComplete()
+
+      expect(habitSchedulerStopWatchMock).toHaveBeenCalledTimes(1)
+      expect(habitSchedulerStopMock).toHaveBeenCalledTimes(1)
+      expect(healthMonitorStopPeriodicChecks).toHaveBeenCalledTimes(1)
+      const healthPath = path.join(testHomeRoot, ".ouro-cli", "daemon-health.json")
+      const healthState = JSON.parse(fs.readFileSync(healthPath, "utf-8")) as { status: string }
+      expect(healthState.status).toBe("down")
+      expect(writeDaemonTombstoneMock).not.toHaveBeenCalled()
+      expect(exitSpy).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(100)
+
+      expect(exitSpy).toHaveBeenCalledTimes(1)
+      expect(exitSpy).toHaveBeenCalledWith(0)
+    } finally {
+      argvSpy.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it("discovers managed agents from ~/AgentBundles instead of hardcoding them", async () => {

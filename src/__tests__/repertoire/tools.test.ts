@@ -75,7 +75,7 @@ vi.mock("../../heart/identity", () => {
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-    HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+    HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
     resetIdentity: vi.fn(),
   }
 })
@@ -152,6 +152,16 @@ describe("execTool", () => {
     const result = await execTool("write_file", { path: "/tmp/out.txt", content: "hello" })
     expect(result).toContain("ok")
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
+  })
+
+  it("write_file preserves oversized content exactly without applying the structured record cap", async () => {
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
+    const oversized = `write-file-${"x".repeat(256 * 1024 + 1)}`
+
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: oversized })
+
+    expect(result).toContain("ok")
+    expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", oversized, "utf-8")
   })
 
   it("relative paths resolve against repo root (no workspace indirection)", async () => {

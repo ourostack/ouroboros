@@ -14,6 +14,7 @@ import {
   type DaemonHealthState,
   type DegradedComponent,
 } from "./daemon-health"
+import { computeDaemonRollup } from "./daemon-rollup"
 import { TaskDrivenScheduler } from "./task-scheduler"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { DaemonSenseManager } from "./sense-manager"
@@ -22,6 +23,8 @@ import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
+import { AwaitScheduler } from "../awaiting/await-scheduler"
+import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
@@ -29,8 +32,7 @@ import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { createHttpHealthProbe } from "./http-health-probe"
-import { getBlueBubblesChannelConfig } from "../config"
+import { createMcpStatusCanaryProbe } from "./mcp-canary"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -110,17 +112,26 @@ const senseManager = new DaemonSenseManager({
   agents: [...managedAgents],
 })
 
-/* v8 ignore next 5 -- entry-point wiring: probe factory and HealthMonitor both have full unit tests @preserve */
-let bbPort = 18790
-try { bbPort = getBlueBubblesChannelConfig().port } catch {
-  // Daemon runs without --agent; agent-scoped config may not be available.
-}
-const bbProbe = createHttpHealthProbe("bluebubbles", bbPort)
-
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
-  senseProbes: [bbProbe],
+  senseProbeProvider: () => [
+    ...senseManager.listHealthProbes(),
+    ...managedAgents.map((agent) => createMcpStatusCanaryProbe({
+      agent,
+      socketPath,
+      command: process.execPath,
+      commandArgs: [
+        path.join(__dirname, "ouro-bot-entry.js"),
+        "mcp-serve",
+        "--agent",
+        agent,
+        "--socket",
+        socketPath,
+      ],
+      ignoreOverviewHealth: true,
+    })),
+  ],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -134,7 +145,34 @@ const healthMonitor = new HealthMonitor({
   onCriticalAgent: (agentName) => {
     try { processManager.restartAgent(agentName) } catch { /* recovery is best-effort */ }
   },
+  /* v8 ignore next 3 -- wiring: delegates to senseManager.restartSense which has focused tests @preserve */
+  onCriticalSense: (managedName) => {
+    try { void senseManager.restartSense(managedName) } catch { /* recovery is best-effort */ }
+  },
 })
+
+const habitSchedulers: HabitScheduler[] = []
+const awaitSchedulers: AwaitScheduler[] = []
+let entryRuntimeStopping = false
+let stopCommandExitScheduled = false
+
+function stopEntryRuntime(): void {
+  if (entryRuntimeStopping) return
+  entryRuntimeStopping = true
+  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+  for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
+  healthMonitor.stopPeriodicChecks()
+}
+
+function scheduleCleanProcessExitAfterStopCommand(): void {
+  if (stopCommandExitScheduled) return
+  stopCommandExitScheduled = true
+  // Account for the explicit daemon.stop path so the process exit catch-all
+  // does not mislabel an operator-requested stop as an unexpected clean exit.
+  _tombstoneWritten = true
+  writeStopCommandHealthState()
+  setTimeout(() => process.exit(0), 100)
+}
 
 const daemon = new OuroDaemon({
   socketPath,
@@ -144,6 +182,10 @@ const daemon = new OuroDaemon({
   healthMonitor,
   router,
   mode,
+  onStopCommandComplete: () => {
+    stopEntryRuntime()
+    scheduleCleanProcessExitAfterStopCommand()
+  },
 })
 
 const daemonStartedAt = new Date().toISOString()
@@ -164,13 +206,42 @@ function buildDaemonHealthState(): DaemonHealthState {
         since: snapshot.lastCrashAt ?? daemonStartedAt,
       }
     })
+  // Preserved for backwards-compatible inspection: callers (status
+  // command, mailbox surface, etc.) may still read this combined list
+  // for per-component reasons. The rollup status field above is what
+  // changed meaning — the array is still the union of bootstrap +
+  // agent-derived degradation entries.
   const degraded = [
     ...degradedComponents.map((entry) => ({ ...entry })),
     ...agentDegradedComponents,
   ]
 
+  // Layer 1 rollup: project per-agent snapshots into the minimal
+  // AgentRollupInput shape and let computeDaemonRollup decide. The
+  // input is "every enabled agent" — managedAgents was filtered via
+  // listEnabledBundleAgents at module init, and snapshots only covers
+  // agents the process manager was told to manage, so by construction
+  // these entries are all enabled. The rollup function is a pure
+  // declarative function on the data we hand it.
+  //
+  // Note: safe-mode is wired as `false` here. Existing crash-loop
+  // detection (safe-mode.ts) already runs at the daemon-up boot path
+  // (cli-exec.ts), not from inside the daemon process itself. Once
+  // the daemon is up and reaching this rollup, safe mode no longer
+  // applies — the daemon is by definition past the crash-loop gate.
+  // If a future PR moves safe-mode signal into the running daemon,
+  // wire it through this third argument.
+  const rollupStatus = computeDaemonRollup({
+    enabledAgents: snapshots.map((snapshot) => ({
+      name: snapshot.name,
+      status: snapshot.status,
+    })),
+    bootstrapDegraded: degradedComponents,
+    safeMode: false,
+  })
+
   return {
-    status: degraded.length > 0 ? "degraded" : "ok",
+    status: rollupStatus,
     mode,
     pid: process.pid,
     startedAt: daemonStartedAt,
@@ -236,13 +307,34 @@ function emitHabitSetupError(agent: string, error: unknown): void {
   })
 }
 
+function emitAwaitSetupError(agent: string, error: unknown): void {
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.await_setup_error",
+    message: `await setup failed for agent ${agent}`,
+    meta: { agent, error: normalized.message },
+  })
+}
+
 /* v8 ignore start — daemon health writer wiring, tested via daemon-health.test.ts @preserve */
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
 /* v8 ignore stop */
 
-const habitSchedulers: HabitScheduler[] = []
+function writeStopCommandHealthState(): void {
+  try {
+    healthWriter.writeHealth({
+      ...buildDaemonHealthState(),
+      status: "down",
+      uptimeSeconds: Math.floor(process.uptime()),
+    })
+  } catch {
+    // Health writes are best-effort during shutdown.
+  }
+}
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void daemon.start().then(() => {
@@ -310,6 +402,85 @@ void daemon.start().then(() => {
         guidance: `fix ${agent} habits or cron setup and rerun ouro up to restore habit automation`,
       })
     }
+
+    // Parallel await-condition scheduler. Uses its own OS cron manager so
+    // habits and awaits don't share label namespace and stale removals can't
+    // collide.
+    const awaitsDir = path.join(bundleRoot, "awaiting")
+    const awaitDegradedComponent = `awaits:${agent}`
+    try {
+      const awaitOsCronManager = new LaunchdCronManager(osCronDeps)
+      const awaitScheduler = new AwaitScheduler({
+        agent,
+        awaitsDir,
+        osCronManager: awaitOsCronManager,
+        onAwaitFire: (awaitName) => {
+          processManager.sendToAgent(agent, { type: "await", awaitName })
+        },
+        onAwaitExpire: (awaitName) => {
+          void archiveAndAlertExpiredAwait({
+            agentRoot: bundleRoot,
+            agentName: agent,
+            awaitName,
+            deliveryDeps: {
+              agentName: agent,
+              queuePending: () => {
+                // Best-effort: queue inner-dialog wake so the agent processes the alert path
+                sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+              },
+            },
+          }).catch((err) => {
+            emitNervesEvent({
+              level: "error",
+              component: "daemon",
+              event: "daemon.await_expire_error",
+              message: "await expiry handler threw",
+              meta: { agent, awaitName, error: err instanceof Error ? err.message : String(err) },
+            })
+          })
+        },
+        deps: {
+          readdir: (dir) => fs.readdirSync(dir),
+          readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+          existsSync: (p) => fs.existsSync(p),
+          mkdir: (dir) => { fs.mkdirSync(dir, { recursive: true }) },
+          now: () => Date.now(),
+          ouroPath,
+          watch: (dir, cb) => fs.watch(dir, cb),
+        },
+      })
+      try {
+        awaitScheduler.start()
+        awaitScheduler.startPeriodicReconciliation()
+        awaitScheduler.watchForChanges()
+        awaitSchedulers.push(awaitScheduler)
+      } catch (error) {
+        try {
+          awaitScheduler.stopWatching()
+          awaitScheduler.stop()
+        } catch {
+          // best-effort cleanup
+        }
+        emitAwaitSetupError(agent, error)
+        recordRecoverableBootstrapFailure({
+          agent,
+          component: awaitDegradedComponent,
+          habitsDir: awaitsDir,
+          error,
+          guidance: `fix ${agent} awaits or cron setup and rerun ouro up to restore await automation`,
+        })
+      }
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      emitAwaitSetupError(agent, error)
+      recordRecoverableBootstrapFailure({
+        agent,
+        component: awaitDegradedComponent,
+        habitsDir: awaitsDir,
+        error,
+        guidance: `fix ${agent} awaits or cron setup and rerun ouro up to restore await automation`,
+      })
+    }
   }
 
   healthMonitor.startPeriodicChecks(60_000)
@@ -340,8 +511,7 @@ process.on("SIGINT", () => {
   // tombstone is strictly better than silence.
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  healthMonitor.stopPeriodicChecks()
+  stopEntryRuntime()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })
@@ -349,8 +519,7 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  healthMonitor.stopPeriodicChecks()
+  stopEntryRuntime()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })

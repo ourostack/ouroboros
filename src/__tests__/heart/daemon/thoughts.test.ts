@@ -16,13 +16,42 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "../../../heart/daemon/thoughts"
+import {
+  parseInnerDialogSession,
+  formatThoughtTurns,
+  getInnerDialogSessionPath,
+  followThoughts,
+  extractThoughtResponseFromMessages,
+} from "../../../heart/daemon/thoughts"
 
 describe("thoughts", () => {
   function tmpSessionFile(messages: unknown[]): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-test-"))
     const filePath = path.join(dir, "dialog.json")
     fs.writeFileSync(filePath, JSON.stringify({ version: 1, messages }))
+    return filePath
+  }
+
+  function tmpEventSessionFile(events: Array<Record<string, unknown>>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-test-"))
+    const filePath = path.join(dir, "dialog.json")
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      events,
+      projection: {
+        eventIds: events.map((event) => event.id),
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-24T03:40:00.000Z",
+      },
+      lastUsage: null,
+      state: {
+        mustResolveBeforeHandoff: false,
+        lastFriendActivityAt: null,
+      },
+    }))
     return filePath
   }
 
@@ -225,11 +254,123 @@ describe("thoughts", () => {
       expect(parseInnerDialogSession(filePath)).toEqual([])
     })
 
+    it("returns empty array when session JSON parses to a primitive", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "thoughts-test-"))
+      const filePath = path.join(dir, "dialog.json")
+      fs.writeFileSync(filePath, "42")
+
+      expect(parseInnerDialogSession(filePath)).toEqual([])
+    })
+
     it("returns empty array for wrong version", () => {
       const filePath = tmpSessionFile([])
       fs.writeFileSync(filePath, JSON.stringify({ version: 99, messages: [] }))
 
       expect(parseInnerDialogSession(filePath)).toEqual([])
+    })
+
+    it("parses live v2 event-envelope sessions", () => {
+      const sessionPath = tmpEventSessionFile([
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "user",
+          content: "waking up.\n\nwhat needs my attention?",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-24T03:39:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-24T03:39:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "assistant",
+          content: null,
+          name: null,
+          toolCallId: null,
+          toolCalls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: {
+                name: "search_notes",
+                arguments: "{}",
+              },
+            },
+          ],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-24T03:39:30.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-24T03:39:30.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-24T03:39:30.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: "evt-000001",
+            threadRootEventId: "evt-000001",
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000003",
+          sequence: 3,
+          role: "assistant",
+          content: "checked in. ready to work.",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-24T03:39:45.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-24T03:39:45.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-24T03:39:45.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: "evt-000001",
+            threadRootEventId: "evt-000001",
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ])
+
+      const turns = parseInnerDialogSession(sessionPath)
+
+      expect(turns).toHaveLength(1)
+      expect(turns[0]).toMatchObject({
+        type: "boot",
+        response: "checked in. ready to work.",
+        tools: ["search_notes"],
+      })
     })
 
     it("handles assistant with structured content arrays", () => {
@@ -312,6 +453,46 @@ describe("thoughts", () => {
       expect(turns[0].tools).toEqual(["real_tool"])
     })
 
+    it("shows meaningful tool-only turns instead of a blank response", () => {
+      const sessionPath = tmpSessionFile([
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: older visible checkpoint" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_surface",
+              type: "function",
+              function: {
+                name: "surface",
+                arguments: JSON.stringify({ message: "HEY — something is WRONG." }),
+              },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_surface", content: "delivered — via iMessage" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_rest",
+              type: "function",
+              function: { name: "rest", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_rest", content: "(resting)" },
+      ])
+
+      const turns = parseInnerDialogSession(sessionPath)
+
+      expect(turns).toHaveLength(1)
+      expect(turns[0].tools).toEqual(["surface", "rest"])
+      expect(turns[0].response).toBe("surfaced: HEY — something is WRONG.")
+    })
+
     it("handles turn with no assistant response", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
@@ -383,6 +564,129 @@ describe("thoughts", () => {
       ], 10)
 
       expect(output).toContain("(no response)")
+    })
+  })
+
+  describe("extractThoughtResponseFromMessages", () => {
+    it("summarizes meaningful tool-only actions when there is no assistant text", () => {
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_diary",
+              type: "function",
+              function: { name: "diary_write", arguments: JSON.stringify({ text: "logged the incident" }) },
+            },
+          ],
+        },
+      ])).toBe("diary: logged the incident")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_ponder",
+              type: "function",
+              function: { name: "ponder", arguments: JSON.stringify({ topic: "why the rest loop happened" }) },
+            },
+          ],
+        },
+      ])).toBe("pondered: why the rest loop happened")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_let_go",
+              type: "function",
+              function: { name: "let_go", arguments: JSON.stringify({ reason: "no longer relevant" }) },
+            },
+          ],
+        },
+      ])).toBe("let go: no longer relevant")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_rest_note",
+              type: "function",
+              function: { name: "rest", arguments: JSON.stringify({ status: "waiting on the next tick" }) },
+            },
+          ],
+        },
+      ])).toBe("rested: waiting on the next tick")
+    })
+
+    it("ignores unrecognized or malformed tool-only actions", () => {
+      const response = extractThoughtResponseFromMessages([
+        { role: "tool", content: "orphaned" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_shell",
+              type: "function",
+              function: { name: "shell", arguments: JSON.stringify({ cmd: "pwd" }) },
+            },
+            { id: "call_custom", type: "custom" },
+          ],
+        },
+      ])
+
+      expect(response).toBe("")
+    })
+
+    it("ignores recognized tool-only actions when their arguments have no summary text", () => {
+      for (const toolCall of [
+        { name: "surface", arguments: JSON.stringify({ message: "" }) },
+        { name: "ponder", arguments: JSON.stringify({ summary: "" }) },
+        { name: "diary_write", arguments: JSON.stringify({ text: "" }) },
+        { name: "let_go", arguments: JSON.stringify({ reason: "" }) },
+        { name: "rest", arguments: "[]" },
+      ]) {
+        expect(extractThoughtResponseFromMessages([
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${toolCall.name}`,
+                type: "function",
+                function: toolCall,
+              },
+            ],
+          },
+        ])).toBe("")
+      }
+    })
+
+    it("truncates long tool-only summaries for display", () => {
+      const response = extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_surface_long",
+              type: "function",
+              function: { name: "surface", arguments: JSON.stringify({ message: "A".repeat(250) }) },
+            },
+          ],
+        },
+      ])
+
+      expect(response.endsWith("...")).toBe(true)
+      expect(response.length).toBe(220)
     })
   })
 
