@@ -16,7 +16,7 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
 
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
-import { readProviderState } from "../../../heart/provider-state"
+import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
@@ -98,7 +98,7 @@ describe("hatch flow", () => {
     expect(heartbeat).toContain("title: Heartbeat check-in")
     expect(heartbeat).toContain("cadence: 30m")
     expect(heartbeat).toContain("status: active")
-    expect(heartbeat).toContain("lastRun: null")
+    expect(heartbeat).not.toContain("lastRun:")
     expect(heartbeat).toContain("created:")
     // Should NOT have task-system fields
     expect(heartbeat).not.toContain("type:")
@@ -114,18 +114,18 @@ describe("hatch flow", () => {
     expect(fs.existsSync(path.join(result.bundleRoot, "tasks", "habits"))).toBe(false)
   })
 
-  it("creates bootstrapped local provider state for the hatchling machine", async () => {
-    const homeDir = makeTempDir("hatch-provider-state-home")
+  it("writes hatchling provider selection into agent.json", async () => {
+    const homeDir = makeTempDir("hatch-agent.json provider selection-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const specialistSource = makeTempDir("hatch-provider-state-specialist")
-    const specialistTarget = makeTempDir("hatch-provider-state-specialist-target")
+    const specialistSource = makeTempDir("hatch-agent.json provider selection-specialist")
+    const specialistTarget = makeTempDir("hatch-agent.json provider selection-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
 
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     const result = await runHatchFlow(
       {
-        agentName: "ProviderStateBot",
+        agentName: "AgentProviderSelectionFixtureBot",
         humanName: "Ari",
         provider: "minimax",
         credentials: {
@@ -141,33 +141,29 @@ describe("hatch flow", () => {
       },
     )
 
-    const stateResult = readProviderState(result.bundleRoot)
+    const stateResult = readAgentProviderSelectionFixture(result.bundleRoot)
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.machineId).toMatch(/^machine_/)
-    expect(stateResult.state.updatedAt).toBe("2026-04-12T22:15:00.000Z")
     const expectedModel = getDefaultModelForProvider("minimax")
     expect(stateResult.state.lanes.outward).toMatchObject({
       provider: "minimax",
       model: expectedModel,
-      source: "bootstrap",
-      updatedAt: "2026-04-12T22:15:00.000Z",
+      source: "agent.json",
     })
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: expectedModel,
-      source: "bootstrap",
-      updatedAt: "2026-04-12T22:15:00.000Z",
+      source: "agent.json",
     })
     expect(stateResult.state.readiness).toEqual({})
     expect(JSON.stringify(stateResult.state)).not.toContain("minimax-secret-key")
   })
 
-  it("creates a machine identity while bootstrapping provider state from the default provider credential home", async () => {
-    const homeDir = makeTempDir("hatch-provider-state-default-home")
+  it("writes agent.json provider selection from the default provider credential home", async () => {
+    const homeDir = makeTempDir("hatch-agent.json provider selection-default-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const specialistSource = makeTempDir("hatch-provider-state-default-specialist")
-    const specialistTarget = makeTempDir("hatch-provider-state-default-specialist-target")
+    const specialistSource = makeTempDir("hatch-agent.json provider selection-default-specialist")
+    const specialistTarget = makeTempDir("hatch-agent.json provider selection-default-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
@@ -198,11 +194,11 @@ describe("hatch flow", () => {
         },
       )
 
-      const stateResult = readProviderState(result.bundleRoot)
+      const stateResult = readAgentProviderSelectionFixture(result.bundleRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
-      expect(stateResult.state.updatedAt).toBe("2026-04-12T22:16:00.000Z")
-      expect(fs.existsSync(path.join(homeDir, ".ouro-cli", "machine.json"))).toBe(true)
+      expect(stateResult.state.lanes.outward.provider).toBe("minimax")
+      expect(stateResult.state.lanes.inner.provider).toBe("minimax")
     } finally {
       vi.doUnmock("../../../heart/provider-credentials")
       vi.resetModules()
@@ -370,18 +366,23 @@ describe("hatch flow", () => {
   })
 
   it("uses default home, source, and target paths when optional deps are omitted", async () => {
+    // Layer 3: the `~/AgentBundles/SerpentGuide.ouro/` override is gone —
+    // `getSpecialistIdentitySourceDir()` now returns the in-repo path
+    // unconditionally. This test mirrors the previous fixture but provides
+    // the source via `specialistIdentitySourceDir` (since the in-repo path
+    // would otherwise resolve to the actual repo at runtime, polluting
+    // test state).
     const tempCwd = makeTempDir("hatch-default-cwd")
     cleanup.push(tempCwd)
 
     const homeDir = os.homedir()
-    const specialistBundleDir = path.join(homeDir, "AgentBundles", "SerpentGuide.ouro")
-    const sourceDir = path.join(specialistBundleDir, "psyche", "identities")
-    fs.mkdirSync(sourceDir, { recursive: true })
-    fs.writeFileSync(path.join(sourceDir, "python.md"), "# Python\n", "utf-8")
+    const explicitSourceDir = makeTempDir("hatch-default-source")
+    cleanup.push(explicitSourceDir)
+    fs.writeFileSync(path.join(explicitSourceDir, "python.md"), "# Python\n", "utf-8")
 
     const agentName = `DefaultsBot-${Date.now()}`
     const bundleRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
-    cleanup.push(bundleRoot, specialistBundleDir)
+    cleanup.push(bundleRoot)
 
     const originalCwd = process.cwd()
     try {
@@ -393,7 +394,7 @@ describe("hatch flow", () => {
         credentials: {
           setupToken: `sk-ant-oat01-${"b".repeat(80)}`,
         },
-      })
+      }, { specialistIdentitySourceDir: explicitSourceDir })
 
       expect(result.bundleRoot).toBe(bundleRoot)
       expect(fs.existsSync(path.join(tempCwd, "SerpentGuide.ouro", "psyche", "identities", "python.md"))).toBe(true)
@@ -401,5 +402,36 @@ describe("hatch flow", () => {
     } finally {
       process.chdir(originalCwd)
     }
+  })
+
+  it("falls through to getSpecialistIdentitySourceDir() when specialistIdentitySourceDir is not in deps", async () => {
+    // Covers the RHS branch of the `?? getSpecialistIdentitySourceDir()`
+    // operator at hatch-flow.ts:183. Without this test, the production
+    // code path (deps override absent) is unreachable from the test
+    // suite — branch coverage stays at 99.99% even though both sides
+    // of the `??` are syntactically reachable.
+    const homeDir = os.homedir()
+    const explicitTargetDir = makeTempDir("hatch-default-target")
+    cleanup.push(explicitTargetDir)
+
+    const agentName = `SourceFallbackBot-${Date.now()}`
+    const bundleRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
+    cleanup.push(bundleRoot)
+
+    const result = await runHatchFlow({
+      agentName,
+      humanName: "Ari",
+      provider: "anthropic",
+      credentials: {
+        setupToken: `sk-ant-oat01-${"c".repeat(80)}`,
+      },
+    }, { specialistIdentityTargetDir: explicitTargetDir })
+
+    expect(result.bundleRoot).toBe(bundleRoot)
+    // Source resolves to the in-repo SerpentGuide.ouro path via the
+    // production resolver. Identities directory will have been populated
+    // from whatever ships in-repo today.
+    expect(fs.readdirSync(explicitTargetDir).length).toBeGreaterThan(0)
+    expect(result.credentialPath).toBe(`vault:${agentName}:providers/anthropic`)
   })
 })

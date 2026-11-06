@@ -49,6 +49,39 @@ vi.mock("../../../heart/habits/habit-migration", () => ({
   migrateHabitsFromTaskSystem: migrateHabitsFromTaskSystemMock,
 }))
 
+const {
+  awaitSchedulerStartMock,
+  awaitSchedulerStopMock,
+  awaitSchedulerWatchMock,
+  awaitSchedulerStopWatchMock,
+  awaitSchedulerStartPeriodicReconciliationMock,
+  awaitSchedulerCtorHook,
+} = vi.hoisted(() => ({
+  awaitSchedulerStartMock: vi.fn(),
+  awaitSchedulerStopMock: vi.fn(),
+  awaitSchedulerWatchMock: vi.fn(),
+  awaitSchedulerStopWatchMock: vi.fn(),
+  awaitSchedulerStartPeriodicReconciliationMock: vi.fn(),
+  awaitSchedulerCtorHook: vi.fn(),
+}))
+
+vi.mock("../../../heart/awaiting/await-scheduler", () => ({
+  AwaitScheduler: class MockAwaitScheduler {
+    constructor(public options: { agent: string }) {
+      awaitSchedulerCtorHook(options)
+    }
+    start = awaitSchedulerStartMock
+    stop = awaitSchedulerStopMock
+    watchForChanges = awaitSchedulerWatchMock
+    stopWatching = awaitSchedulerStopWatchMock
+    startPeriodicReconciliation = awaitSchedulerStartPeriodicReconciliationMock
+  },
+}))
+
+vi.mock("../../../heart/awaiting/await-expiry", () => ({
+  archiveAndAlertExpiredAwait: vi.fn(async () => ({ archived: false, alerted: false })),
+}))
+
 vi.mock("../../../heart/daemon/os-cron-deps", () => ({
   createRealOsCronDeps: vi.fn(() => ({
     exec: vi.fn(),
@@ -97,6 +130,12 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     habitSchedulerStopWatchMock.mockReset()
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
     habitSchedulerCtorHook.mockReset()
+    awaitSchedulerStartMock.mockReset()
+    awaitSchedulerStopMock.mockReset()
+    awaitSchedulerWatchMock.mockReset()
+    awaitSchedulerStopWatchMock.mockReset()
+    awaitSchedulerStartPeriodicReconciliationMock.mockReset()
+    awaitSchedulerCtorHook.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     vi.restoreAllMocks()
@@ -162,8 +201,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    // Allow the .then() to resolve
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
+    })
 
     // alpha and charlie should have had their schedulers started
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
@@ -200,7 +241,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(1)
+    })
 
     // bravo should still have its scheduler started
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
@@ -236,7 +280,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(1)
+    })
 
     // Both agents had their constructors called, both had start() called
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(2)
@@ -268,7 +315,20 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "error",
+          component: "daemon",
+          event: "daemon.habit_setup_error",
+          message: expect.stringContaining("failbot"),
+          meta: expect.objectContaining({
+            agent: "failbot",
+            error: "scheduler kaboom",
+          }),
+        }),
+      )
+    })
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -308,7 +368,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(habitSchedulerStartMock).toHaveBeenCalledTimes(3)
+      expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
+    })
 
     // a1 and a4 should have watchForChanges called (a2 failed at migration, a3 failed at start)
     expect(habitSchedulerWatchMock).toHaveBeenCalledTimes(2)
@@ -336,7 +399,19 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await new Promise((r) => setTimeout(r, 50))
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "error",
+          component: "daemon",
+          event: "daemon.habit_setup_error",
+          meta: expect.objectContaining({
+            agent: "stringbot",
+            error: "raw string failure",
+          }),
+        }),
+      )
+    })
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -349,5 +424,81 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
         }),
       }),
     )
+  })
+
+  it("emits daemon.await_setup_error when AwaitScheduler constructor throws (Error)", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    awaitSchedulerCtorHook.mockImplementation((options: { agent: string }) => {
+      if (options.agent === "alpha") {
+        throw new Error("await ctor boom")
+      }
+    })
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.await_setup_error",
+        meta: expect.objectContaining({ agent: "alpha", error: "await ctor boom" }),
+      }))
+    })
+  })
+
+  it("emits daemon.await_setup_error from non-Error throws", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["bravo"])
+    awaitSchedulerCtorHook.mockImplementation((options: { agent: string }) => {
+      if (options.agent === "bravo") {
+        throw "raw await failure"
+      }
+    })
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.await_setup_error",
+        meta: expect.objectContaining({ agent: "bravo", error: "raw await failure" }),
+      }))
+    })
+  })
+
+  it("emits daemon.await_setup_error when AwaitScheduler.start() throws", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    awaitSchedulerStartMock.mockImplementation(() => { throw new Error("await start boom") })
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.await_setup_error",
+        meta: expect.objectContaining({ agent: "alpha", error: "await start boom" }),
+      }))
+    })
+  })
+
+  it("emits daemon.await_setup_error when start() throws a non-Error (string)", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    awaitSchedulerStartMock.mockImplementation(() => { throw "start raw string" })
+
+    const { emitNervesEvent } = setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.await_setup_error",
+        meta: expect.objectContaining({ agent: "alpha", error: "start raw string" }),
+      }))
+    })
   })
 })

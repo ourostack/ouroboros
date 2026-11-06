@@ -1,4 +1,5 @@
 import * as path from "path"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import { generateTimestampId, readJsonDir, readJsonFileOrThrow, writeJsonFile } from "./json-store"
 
@@ -37,8 +38,8 @@ export function createCare(
   const id = generateTimestampId("care")
   const care: CareRecord = {
     id,
-    label: input.label,
-    why: input.why,
+    label: capStructuredRecordString(input.label),
+    why: capStructuredRecordString(input.why),
     kind: input.kind,
     status: input.status,
     salience: input.salience,
@@ -47,7 +48,7 @@ export function createCare(
     relatedAgentIds: input.relatedAgentIds,
     relatedObligationIds: input.relatedObligationIds,
     relatedEpisodeIds: input.relatedEpisodeIds,
-    currentRisk: input.currentRisk,
+    currentRisk: input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk),
     nextCheckAt: input.nextCheckAt,
     createdAt: now,
     updatedAt: now,
@@ -112,6 +113,9 @@ export function updateCare(
   const updated: CareRecord = {
     ...care,
     ...updates,
+    ...(typeof updates.label === "string" ? { label: capStructuredRecordString(updates.label) } : {}),
+    ...(typeof updates.why === "string" ? { why: capStructuredRecordString(updates.why) } : {}),
+    ...(typeof updates.currentRisk === "string" ? { currentRisk: capStructuredRecordString(updates.currentRisk) } : {}),
     id: care.id, // protect ID from overwrite
     createdAt: care.createdAt, // protect createdAt
     updatedAt: now,

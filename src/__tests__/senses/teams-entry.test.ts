@@ -59,6 +59,32 @@ describe("teams entrypoint", () => {
     argvSpy.mockRestore()
   })
 
+  it("starts the Teams sense without waiting for runtime config refresh", async () => {
+    vi.resetModules()
+
+    const startTeamsApp = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "teams-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../senses/teams-entry")
+
+    await vi.waitFor(() => {
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(startTeamsApp).toHaveBeenCalledTimes(1)
+    })
+    argvSpy.mockRestore()
+  })
+
   it("fails fast when --agent is missing", async () => {
     vi.resetModules()
 
