@@ -1083,17 +1083,17 @@ export class SanctuaryAuthorityRootLifecycle {
   }
 }
 
-/**
- * Keep the real failure where only root can read it (D-034). Stderr stays generic
- * because a parse error can quote private bytes; the authority root is as private
- * as the token it already holds.
- */
 /** Whether a release expects its psyche mounted read-only over the bundle: only `0.1.0-alpha.N` tags with N <= 978 do. */
 export function predecessorExpectsPsycheMount(imageReference: string): boolean {
   const release = /^0\.1\.0-alpha\.(\d+)$/u.exec(imageReference.slice(imageReference.lastIndexOf(":") + 1))
   return release !== null && Number(release[1]) <= 978
 }
 
+/**
+ * Keep the real failure where only root can read it (D-034). Stderr stays generic
+ * because a parse error can quote private bytes; the authority root is as private
+ * as the token it already holds.
+ */
 export function recordSanctuaryRootLifecycleFailure(error: unknown, file = `${ROOT}/lifecycle-failure.log`): string {
   try {
     fs.appendFileSync(file, `${new Date().toISOString()} ${error instanceof Error ? error.stack : String(error)}\n`, { mode: 0o600 })

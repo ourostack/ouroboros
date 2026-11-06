@@ -48,7 +48,7 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync, openSync, closeSync, fchownSync, fchmodSync, renameSync, constants as fsConstants } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, lstatSync, chmodSync, realpathSync, readdirSync, openSync, closeSync, fchownSync, fchmodSync, fstatSync, readSync, renameSync, unlinkSync, constants as fsConstants } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
@@ -612,48 +612,109 @@ export function psycheProblems(dir, { lstat = lstatSync, readdir = readdirSync }
   return problems
 }
 // A gated upgrade plants a marker in the psyche and hashes the four identity files, then proves both survived the release
-// and any rollback. TACIT is the Butler's own and may change, so only its presence is checked.
+// and any rollback. TACIT is the Butler's own and may change, so only that it is there is checked.
+// Root works inside a folder the Butler's user owns, which could rename psyche/ and put a symlink in its place at any moment.
+// So every operation goes through one descriptor held on the real psyche/ (/proc/self/fd/<fd>/<name> on the Linux host),
+// every read opens a regular file without following links or blocking, and before each write, rename or unlink the path
+// psyche/ must still be that same directory.
 export const PSYCHE_IDENTITY_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "ASPIRATIONS.md"]
 const PSYCHE_FILES = [...PSYCHE_IDENTITY_FILES, "TACIT.md"]
 const PSYCHE_MARKER = ".release-marker"
-const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex")
-const readMarker = (dir) => { try { return readFileSync(`${dir}/${PSYCHE_MARKER}`, "utf8") } catch { return null } }
+const PSYCHE_READ_LIMIT = 1024 * 1024
+export const psycheFdPath = (dirfd, name) => `/proc/self/fd/${dirfd}/${name}`
 
-/** Write psyche/.release-marker (0600, resident-owned, a random token) without following a link the Butler could plant, and hash the identity files. */
-export function plantPsycheMarker(dir, { uid, gid }) {
-  if (!lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a real directory`)
-  const identity = Object.fromEntries(PSYCHE_IDENTITY_FILES.map((name) => [name, sha256(`${dir}/${name}`)]))
-  const token = randomBytes(16).toString("hex")
-  const staged = `${dir}/${PSYCHE_MARKER}.${token}`
-  const fd = openSync(staged, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
+/** Read at most `limit` bytes from an open file; more than that is a problem, even if the file grew after it was checked. */
+export function readPsycheBytes(fd, limit = PSYCHE_READ_LIMIT) {
+  const buffer = Buffer.alloc(limit + 1)
+  let length = 0
+  for (let read; length <= limit && (read = readSync(fd, buffer, length, limit + 1 - length, null)) > 0;) length += read
+  return length > limit ? { problem: "is larger than 1 MiB" } : { bytes: buffer.subarray(0, length) }
+}
+
+function readPsycheFile(dirfd, name, at) {
+  let fd
+  try { fd = openSync(at(dirfd, name), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK) } catch (e) {
+    const why = e.code === "ENOENT" ? "is missing" : e.code === "ELOOP" ? "is a symlink" : `could not be opened (${e.code ?? e.message})`
+    return { problem: `psyche/${name} ${why}` }
+  }
   try {
-    fchownSync(fd, uid, gid)
-    fchmodSync(fd, 0o600)
-    writeFileSync(fd, token)
+    if (!fstatSync(fd).isFile()) return { problem: `psyche/${name} is not a regular file` }
+    const read = readPsycheBytes(fd)
+    return read.problem ? { problem: `psyche/${name} ${read.problem}` } : read
   } finally { closeSync(fd) }
-  renameSync(staged, `${dir}/${PSYCHE_MARKER}`)
-  return { token, identity }
 }
 
-/** Null when the marker holds the token, all five psyche files exist and the four identity hashes match; otherwise the first problem. */
-export function psycheSurvival(dir, planted) {
-  const marker = readMarker(dir)
-  if (marker === null) return `psyche/${PSYCHE_MARKER} is missing`
-  if (marker !== planted.token) return `psyche/${PSYCHE_MARKER} does not hold this upgrade's token`
-  const missing = PSYCHE_FILES.find((name) => !existsSync(`${dir}/${name}`))
-  if (missing) return `psyche/${missing} is missing`
-  const changed = PSYCHE_IDENTITY_FILES.find((name) => sha256(`${dir}/${name}`) !== planted.identity[name])
-  return changed ? `psyche/${changed} changed` : null
+/** Run `work` with a descriptor on the real psyche/ and a guard that throws if the path psyche/ is no longer that directory. */
+function withPsycheDir(dir, work) {
+  let dirfd
+  try { dirfd = openSync(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW) } catch { throw new Error(`${dir} is not a real directory`) }
+  try {
+    const held = fstatSync(dirfd)
+    const guard = () => {
+      let now = null
+      try { now = lstatSync(dir) } catch { /* gone counts as replaced */ }
+      if (!now?.isDirectory() || now.dev !== held.dev || now.ino !== held.ino) throw new Error(`${dir} was replaced while root was working in it; refusing`)
+    }
+    return work(dirfd, guard)
+  } finally { closeSync(dirfd) }
 }
 
-/** Remove the marker only while it holds this upgrade's token. */
-export function removePsycheMarker(dir, token) {
-  if (readMarker(dir) === token) rmSync(`${dir}/${PSYCHE_MARKER}`, { force: true })
+const hashOf = (bytes) => createHash("sha256").update(bytes).digest("hex")
+
+/** Write psyche/.release-marker (0600, resident-owned, a random token) and hash the identity files. Refuses unless all five psyche files are regular files. */
+export function plantPsycheMarker(dir, { uid, gid }, { at = psycheFdPath } = {}) {
+  return withPsycheDir(dir, (dirfd, guard) => {
+    const read = Object.fromEntries(PSYCHE_FILES.map((name) => [name, readPsycheFile(dirfd, name, at)]))
+    for (const name of PSYCHE_FILES) if (read[name].problem) throw new Error(read[name].problem)
+    const identity = Object.fromEntries(PSYCHE_IDENTITY_FILES.map((name) => [name, hashOf(read[name].bytes)]))
+    const token = randomBytes(16).toString("hex")
+    const staged = `${PSYCHE_MARKER}.${token}`
+    guard()
+    const fd = openSync(at(dirfd, staged), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
+    try {
+      fchownSync(fd, uid, gid)
+      fchmodSync(fd, 0o600)
+      writeFileSync(fd, token)
+    } finally { closeSync(fd) }
+    try { guard() } catch (e) { unlinkSync(at(dirfd, staged)); throw e }
+    renameSync(at(dirfd, staged), at(dirfd, PSYCHE_MARKER))
+    return { token, identity }
+  })
+}
+
+/** Null when the marker holds the token, all five psyche files are regular files and the four identity hashes match; otherwise the first problem. */
+export function psycheSurvival(dir, planted, { at = psycheFdPath } = {}) {
+  try {
+    return withPsycheDir(dir, (dirfd) => {
+      const marker = readPsycheFile(dirfd, PSYCHE_MARKER, at)
+      if (marker.problem) return marker.problem
+      if (marker.bytes.toString("utf8") !== planted.token) return `psyche/${PSYCHE_MARKER} does not hold this upgrade's token`
+      const read = PSYCHE_FILES.map((name) => [name, readPsycheFile(dirfd, name, at)])
+      const unreadable = read.find(([, file]) => file.problem)
+      if (unreadable) return unreadable[1].problem
+      const changed = read.find(([name, file]) => name in planted.identity && hashOf(file.bytes) !== planted.identity[name])
+      return changed ? `psyche/${changed[0]} changed` : null
+    })
+  } catch (e) { return e.message }
+}
+
+/** Remove the marker only while it holds this upgrade's token, reading and unlinking through the same descriptor. Returns why it was left, or null. */
+export function removePsycheMarker(dir, token, { at = psycheFdPath } = {}) {
+  try {
+    return withPsycheDir(dir, (dirfd, guard) => {
+      const marker = readPsycheFile(dirfd, PSYCHE_MARKER, at)
+      if (marker.problem) return marker.problem
+      if (marker.bytes.toString("utf8") !== token) return `psyche/${PSYCHE_MARKER} does not hold this upgrade's token`
+      guard()
+      unlinkSync(at(dirfd, PSYCHE_MARKER))
+      return null
+    })
+  } catch (e) { return e.message }
 }
 
 /** Print the survival check as a gate case line (the shape butler-ship's parseCases reports) and return the problem, if any. */
-export function reportPsycheSurvival(id, dir, planted, log = console.log) {
-  const problem = psycheSurvival(dir, planted)
+export function reportPsycheSurvival(id, dir, planted, log = console.log, options = {}) {
+  const problem = psycheSurvival(dir, planted, options)
   const check = { name: "the psyche marker and all five psyche files survived, with the four identity files byte-identical", ok: problem === null, ...(problem ? { detail: problem } : {}) }
   log(JSON.stringify({ id, status: problem ? "fail" : "pass", checks: [check] }))
   return problem
@@ -1351,7 +1412,10 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
         pin: () => pinTemplate(version),
         prune: () => pruneButlerImages(),
       })
-    } finally { removePsycheMarker(psycheDir, planted.token) }
+    } finally {
+      const left = removePsycheMarker(psycheDir, planted.token)
+      if (left) warn(`the psyche marker was left in place: ${left}`)
+    }
     if (!outcome.passed) process.exit(1)
     console.log(`\nUPGRADE done — ${version} live and gate-verified. Run verify.`)
     return
@@ -1382,7 +1446,7 @@ function verify(withGate = false) {
   const psycheDir = `${BUNDLE}/psyche`
   if (existsSync(psycheDir)) {
     const psycheIssues = psycheProblems(psycheDir)
-    psycheIssues.length === 0 ? ok("psyche files are resident-owned and writable") : bad(`psyche files do not match what the resident boot check requires: ${psycheIssues.slice(0, 3).join("; ")}`)
+    psycheIssues.length === 0 ? ok("psyche files are resident-owned and writable") : bad(`psyche files must be owned by the resident (uid 10001), not writable by group or others, and not symlinks: ${psycheIssues.slice(0, 3).join("; ")}`)
   } else bad("psyche folder missing from the bundle")
   ok(containerExists("jellyfin") ? `jellyfin ${docker(["inspect", "jellyfin", "--format", "{{.State.Status}} restarts={{.RestartCount}}"]).trim()}` : "no jellyfin container")
   if (withGate) {

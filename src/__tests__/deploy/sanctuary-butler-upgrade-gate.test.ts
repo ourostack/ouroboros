@@ -515,6 +515,8 @@ describe("the psyche folder is resident-owned and writable", () => {
     const verifyBody = source.slice(source.indexOf("function verify("), source.indexOf("function fail("))
     expect(verifyBody).toContain("psycheProblems(psycheDir)")
     expect(verifyBody).toContain('ok("psyche files are resident-owned and writable")')
+    expect(verifyBody).toContain("bad(`psyche files must be owned by the resident (uid 10001), not writable by group or others, and not symlinks: ")
+    expect(verifyBody).not.toContain("do not match what the resident boot check requires")
   })
   it("restorePsycheModes sets directories 0755 and files 0600 and leaves symlinks alone", () => {
     const dir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "psyche-modes-"))
@@ -613,15 +615,46 @@ describe("the psyche survives every ship and rollback", () => {
     ({ parseCases } = await import(/* @vite-ignore */ path.resolve(__dirname, "../../../scripts/butler-ship-lib.mjs")))
   })
   const psyche = () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-marker-"))
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "psyche-marker-")), "psyche")
+    fs.mkdirSync(dir)
     for (const name of files) fs.writeFileSync(path.join(dir, name), `${name} as the house wrote it\n`)
     return dir
   }
   const marker = (dir: string) => path.join(dir, ".release-marker")
+  const aside = (file: string) => fs.renameSync(file, path.join(fs.mkdtempSync(path.join(os.tmpdir(), "psyche-aside-")), path.basename(file)))
+  // Stands in for /proc/self/fd/<dirfd>/<name> on any OS: it follows the directory the descriptor holds, wherever it moves.
+  // `swapOn` renames psyche/ away and puts a symlink to an outside folder in its place the first time a name starting with it is reached.
+  const anchored = (dir: string, swapOn?: string, { gap = false } = {}) => {
+    let home = dir
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-outside-"))
+    return {
+      outside,
+      home: () => home,
+      at: (_fd: number, name: string) => {
+        if (swapOn !== undefined && name.startsWith(swapOn) && home === dir) {
+          home = `${dir}.moved`
+          fs.renameSync(dir, home)
+          if (!gap) fs.symlinkSync(outside, dir)
+        }
+        return path.join(home, name)
+      },
+    }
+  }
+  const plant = (dir: string) => upgrade.plantPsycheMarker(dir, owner, { at: anchored(dir).at })
 
-  it("plants a private, resident-owned marker and hashes the four identity files", () => {
+  it("addresses every file through the held directory descriptor on the Linux host", () => {
+    expect(upgrade.psycheFdPath(7, "SOUL.md")).toBe("/proc/self/fd/7/SOUL.md")
+  })
+  it.runIf(process.platform === "linux")("plants, checks and removes through /proc/self/fd by default", () => {
     const dir = psyche()
     const planted = upgrade.plantPsycheMarker(dir, owner)
+    expect(upgrade.psycheSurvival(dir, planted)).toBeNull()
+    expect(upgrade.removePsycheMarker(dir, planted.token)).toBeNull()
+    expect(fs.existsSync(marker(dir))).toBe(false)
+  })
+  it("plants a private, resident-owned marker and hashes the four identity files", () => {
+    const dir = psyche()
+    const planted = plant(dir)
     expect(planted.token).toMatch(/^[0-9a-f]{32}$/)
     expect(fs.readFileSync(marker(dir), "utf8")).toBe(planted.token)
     const stat = fs.lstatSync(marker(dir))
@@ -636,64 +669,142 @@ describe("the psyche survives every ship and rollback", () => {
     const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "psyche-outside-")), "target")
     fs.writeFileSync(outside, "untouched")
     fs.symlinkSync(outside, marker(dir))
-    const planted = upgrade.plantPsycheMarker(dir, owner)
+    const planted = plant(dir)
     expect(fs.readFileSync(outside, "utf8")).toBe("untouched")
     expect(fs.lstatSync(marker(dir)).isSymbolicLink()).toBe(false)
     expect(fs.readFileSync(marker(dir), "utf8")).toBe(planted.token)
   })
-  it("refuses a psyche that is a symlink or is missing an identity file", () => {
+  it("refuses, before anything is written, a psyche that is a symlink or lacks an identity file or a regular TACIT", () => {
     const dir = psyche()
     const link = `${dir}-link`
     fs.symlinkSync(dir, link)
-    expect(() => upgrade.plantPsycheMarker(link, owner)).toThrow(`${link} is not a real directory`)
-    fs.renameSync(path.join(dir, "LORE.md"), path.join(os.tmpdir(), `LORE-${path.basename(dir)}.md`))
-    expect(() => upgrade.plantPsycheMarker(dir, owner)).toThrow(/LORE\.md/)
-    expect(fs.existsSync(marker(dir))).toBe(false)
+    expect(() => upgrade.plantPsycheMarker(link, owner, { at: anchored(link).at })).toThrow(`${link} is not a real directory`)
+    expect(() => upgrade.plantPsycheMarker(`${dir}-absent`, owner, { at: anchored(dir).at })).toThrow(`${dir}-absent is not a real directory`)
+    aside(path.join(dir, "LORE.md"))
+    expect(() => plant(dir)).toThrow("psyche/LORE.md is missing")
+    const noTacit = psyche()
+    aside(path.join(noTacit, "TACIT.md"))
+    expect(() => plant(noTacit)).toThrow("psyche/TACIT.md is missing")
+    const tacitLink = psyche()
+    aside(path.join(tacitLink, "TACIT.md"))
+    fs.symlinkSync(path.join(tacitLink, "SOUL.md"), path.join(tacitLink, "TACIT.md"))
+    expect(() => plant(tacitLink)).toThrow("psyche/TACIT.md is a symlink")
+    for (const refused of [dir, noTacit, tacitLink]) expect(fs.readdirSync(refused).filter((name) => name.startsWith(".release-marker"))).toEqual([])
+  })
+  it("refuses to write when psyche/ is swapped for a symlink between the open and the write, touching nothing outside", () => {
+    const dir = psyche()
+    const swap = anchored(dir, "TACIT.md")
+    expect(() => upgrade.plantPsycheMarker(dir, owner, { at: swap.at })).toThrow(`${dir} was replaced while root was working in it; refusing`)
+    expect(fs.readdirSync(swap.outside)).toEqual([])
+    expect(fs.readdirSync(swap.home()).sort()).toEqual([...files].sort())
+  })
+  it("refuses to write when psyche/ is moved away and nothing takes its place", () => {
+    const dir = psyche()
+    const swap = anchored(dir, "TACIT.md", { gap: true })
+    expect(() => upgrade.plantPsycheMarker(dir, owner, { at: swap.at })).toThrow(`${dir} was replaced while root was working in it; refusing`)
+    expect(fs.existsSync(dir)).toBe(false)
+    expect(fs.readdirSync(swap.home()).sort()).toEqual([...files].sort())
+  })
+  it("refuses to rename when psyche/ is swapped after the marker was staged, and clears the stage", () => {
+    const dir = psyche()
+    const swap = anchored(dir, ".release-marker.")
+    expect(() => upgrade.plantPsycheMarker(dir, owner, { at: swap.at })).toThrow(`${dir} was replaced while root was working in it; refusing`)
+    expect(fs.readdirSync(swap.outside)).toEqual([])
+    expect(fs.readdirSync(swap.home()).sort()).toEqual([...files].sort())
   })
   it("gives null after a plant, and still null when only TACIT changed", () => {
     const dir = psyche()
-    const planted = upgrade.plantPsycheMarker(dir, owner)
-    expect(upgrade.psycheSurvival(dir, planted)).toBeNull()
+    const planted = plant(dir)
+    const { at } = anchored(dir)
+    expect(upgrade.psycheSurvival(dir, planted, { at })).toBeNull()
     fs.writeFileSync(path.join(dir, "TACIT.md"), "I learned the house wants English subtitles.\n")
-    expect(upgrade.psycheSurvival(dir, planted)).toBeNull()
+    expect(upgrade.psycheSurvival(dir, planted, { at })).toBeNull()
   })
-  it("names a changed identity file, a missing file, a deleted marker and a foreign token", () => {
+  it("names a changed identity file, a missing file, a deleted marker, a foreign token and a missing psyche", () => {
+    const survival = (dir: string, planted: unknown) => upgrade.psycheSurvival(dir, planted, { at: anchored(dir).at })
     const changed = psyche()
-    const plantedChanged = upgrade.plantPsycheMarker(changed, owner)
+    const plantedChanged = plant(changed)
     fs.writeFileSync(path.join(changed, "SOUL.md"), "someone else's soul\n")
-    expect(upgrade.psycheSurvival(changed, plantedChanged)).toBe("psyche/SOUL.md changed")
+    expect(survival(changed, plantedChanged)).toBe("psyche/SOUL.md changed")
     const missing = psyche()
-    const plantedMissing = upgrade.plantPsycheMarker(missing, owner)
-    fs.renameSync(path.join(missing, "TACIT.md"), path.join(os.tmpdir(), `TACIT-${path.basename(missing)}.md`))
-    expect(upgrade.psycheSurvival(missing, plantedMissing)).toBe("psyche/TACIT.md is missing")
+    const plantedMissing = plant(missing)
+    aside(path.join(missing, "TACIT.md"))
+    expect(survival(missing, plantedMissing)).toBe("psyche/TACIT.md is missing")
     const gone = psyche()
-    const plantedGone = upgrade.plantPsycheMarker(gone, owner)
-    fs.renameSync(marker(gone), path.join(os.tmpdir(), `marker-${path.basename(gone)}`))
-    expect(upgrade.psycheSurvival(gone, plantedGone)).toBe("psyche/.release-marker is missing")
+    const plantedGone = plant(gone)
+    aside(marker(gone))
+    expect(survival(gone, plantedGone)).toBe("psyche/.release-marker is missing")
     const foreign = psyche()
-    const plantedForeign = upgrade.plantPsycheMarker(foreign, owner)
+    const plantedForeign = plant(foreign)
     fs.writeFileSync(marker(foreign), "another upgrade's token")
-    expect(upgrade.psycheSurvival(foreign, plantedForeign)).toBe("psyche/.release-marker does not hold this upgrade's token")
+    expect(survival(foreign, plantedForeign)).toBe("psyche/.release-marker does not hold this upgrade's token")
+    const swapped = psyche()
+    const plantedSwapped = plant(swapped)
+    aside(swapped)
+    expect(survival(swapped, plantedSwapped)).toBe(`${swapped} is not a real directory`)
+  })
+  it("names a FIFO, a symlink and an oversized file without hanging or following them", () => {
+    const survival = (dir: string, planted: unknown) => upgrade.psycheSurvival(dir, planted, { at: anchored(dir).at })
+    const fifo = psyche()
+    const plantedFifo = plant(fifo)
+    aside(path.join(fifo, "IDENTITY.md"))
+    require("node:child_process").execFileSync("mkfifo", [path.join(fifo, "IDENTITY.md")])
+    expect(survival(fifo, plantedFifo)).toBe("psyche/IDENTITY.md is not a regular file")
+    const link = psyche()
+    const plantedLink = plant(link)
+    const secret = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "psyche-outside-")), "secret")
+    fs.writeFileSync(secret, plantedLink.token)
+    aside(marker(link))
+    fs.symlinkSync(secret, marker(link))
+    expect(survival(link, plantedLink)).toBe("psyche/.release-marker is a symlink")
+    const big = psyche()
+    const plantedBig = plant(big)
+    fs.writeFileSync(path.join(big, "LORE.md"), Buffer.alloc(1024 * 1024 + 1, 0x61))
+    expect(survival(big, plantedBig)).toBe("psyche/LORE.md is larger than 1 MiB")
+    const unreadable = psyche()
+    const plantedUnreadable = plant(unreadable)
+    expect(upgrade.psycheSurvival(unreadable, plantedUnreadable, { at: () => "\0" })).toMatch(/^psyche\/\.release-marker could not be opened \(/)
+  })
+  it("caps a read at its limit even when the file grew after its size was checked", () => {
+    const dir = psyche()
+    const read = (limit: number) => {
+      const fd = fs.openSync(path.join(dir, "SOUL.md"), "r")
+      try { return upgrade.readPsycheBytes(fd, limit) } finally { fs.closeSync(fd) }
+    }
+    expect(read(4)).toEqual({ problem: "is larger than 1 MiB" })
+    expect(read(1024)).toEqual({ bytes: Buffer.from("SOUL.md as the house wrote it\n") })
   })
   it("removes only a marker that holds the token, and tolerates one that is gone", () => {
     const dir = psyche()
-    const planted = upgrade.plantPsycheMarker(dir, owner)
+    const planted = plant(dir)
+    const { at } = anchored(dir)
     fs.writeFileSync(marker(dir), "another upgrade's token")
-    upgrade.removePsycheMarker(dir, planted.token)
+    expect(upgrade.removePsycheMarker(dir, planted.token, { at })).toBe("psyche/.release-marker does not hold this upgrade's token")
     expect(fs.readFileSync(marker(dir), "utf8")).toBe("another upgrade's token")
     fs.writeFileSync(marker(dir), planted.token)
-    upgrade.removePsycheMarker(dir, planted.token)
+    expect(upgrade.removePsycheMarker(dir, planted.token, { at })).toBeNull()
     expect(fs.existsSync(marker(dir))).toBe(false)
-    expect(() => upgrade.removePsycheMarker(dir, planted.token)).not.toThrow()
+    expect(upgrade.removePsycheMarker(dir, planted.token, { at })).toBe("psyche/.release-marker is missing")
+    expect(upgrade.removePsycheMarker(`${dir}-absent`, planted.token, { at })).toBe(`${dir}-absent is not a real directory`)
     expect(fs.readdirSync(dir).sort()).toEqual([...files].sort())
+  })
+  it("refuses to unlink when psyche/ is swapped between the read and the unlink, touching nothing outside", () => {
+    const dir = psyche()
+    const planted = plant(dir)
+    const swap = anchored(dir, ".release-marker")
+    fs.writeFileSync(path.join(swap.outside, ".release-marker"), planted.token)
+    expect(upgrade.removePsycheMarker(dir, planted.token, { at: swap.at })).toBe(`${dir} was replaced while root was working in it; refusing`)
+    expect(fs.readFileSync(path.join(swap.outside, ".release-marker"), "utf8")).toBe(planted.token)
+    expect(fs.readFileSync(path.join(swap.home(), ".release-marker"), "utf8")).toBe(planted.token)
   })
   it("prints a case line butler-ship's parseCases reports, pass or fail", () => {
     const dir = psyche()
-    const planted = upgrade.plantPsycheMarker(dir, owner)
+    const planted = plant(dir)
+    const { at } = anchored(dir)
     const lines: string[] = []
-    expect(upgrade.reportPsycheSurvival("psyche-survives-rollback", dir, planted, (line: string) => lines.push(line))).toBeNull()
+    expect(upgrade.reportPsycheSurvival("psyche-survives-rollback", dir, planted, (line: string) => lines.push(line), { at })).toBeNull()
     fs.writeFileSync(path.join(dir, "IDENTITY.md"), "changed\n")
-    expect(upgrade.reportPsycheSurvival("psyche-survives-rollback", dir, planted, (line: string) => lines.push(line))).toBe("psyche/IDENTITY.md changed")
+    expect(upgrade.reportPsycheSurvival("psyche-survives-rollback", dir, planted, (line: string) => lines.push(line), { at })).toBe("psyche/IDENTITY.md changed")
     expect(lines.every((line) => line.startsWith('{"id":"psyche-survives-rollback","status":'))).toBe(true)
     const name = "the psyche marker and all five psyche files survived, with the four identity files byte-identical"
     expect(parseCases(lines.join("\n")).cases).toEqual([
@@ -703,12 +814,13 @@ describe("the psyche survives every ship and rollback", () => {
     const original = console.log
     const printed: string[] = []
     console.log = (line: string) => { printed.push(line) }
-    try { upgrade.reportPsycheSurvival("psyche-survives-release", dir, planted) } finally { console.log = original }
+    try { upgrade.reportPsycheSurvival("psyche-survives-release", `${dir}-absent`, planted) } finally { console.log = original }
     expect(parseCases(printed.join("\n")).cases[0]).toMatchObject({ id: "psyche-survives-release", status: "fail" })
   })
   it("has completeGatedUpgrade roll back and print the psyche-survives-release fail line when the psyche did not survive", () => {
     const dir = psyche()
-    const planted = upgrade.plantPsycheMarker(dir, owner)
+    const planted = plant(dir)
+    const { at } = anchored(dir)
     fs.writeFileSync(path.join(dir, "SOUL.md"), "rewritten by a release\n")
     const h = harness({ ok: true })
     const lines: string[] = []
@@ -717,7 +829,7 @@ describe("the psyche survives every ship and rollback", () => {
       ...h.deps,
       log,
       runGate: () => {
-        const problem = upgrade.reportPsycheSurvival("psyche-survives-release", dir, planted, log)
+        const problem = upgrade.reportPsycheSurvival("psyche-survives-release", dir, planted, log, { at })
         return problem ? { ok: false, detail: problem } : h.deps.runGate()
       },
     })
@@ -740,7 +852,7 @@ describe("the psyche survives every ship and rollback", () => {
     expect(confirm.indexOf('reportPsycheSurvival("psyche-survives-rollback", psycheDir, planted)')).toBeGreaterThan(confirm.indexOf("waitForButler(priorImage, 300)"))
     const gate = body.slice(body.indexOf("let outcome"))
     expect(gate).toMatch(/^let outcome\n {4}try \{\n {6}outcome = completeGatedUpgrade\(\{/)
-    expect(gate).toContain("} finally { removePsycheMarker(psycheDir, planted.token) }")
+    expect(gate).toContain("} finally {\n      const left = removePsycheMarker(psycheDir, planted.token)\n      if (left) warn(`the psyche marker was left in place: ${left}`)\n    }")
     expect(gate.indexOf("removePsycheMarker(psycheDir, planted.token)")).toBeLessThan(gate.indexOf("if (!outcome.passed) process.exit(1)"))
   })
 })
