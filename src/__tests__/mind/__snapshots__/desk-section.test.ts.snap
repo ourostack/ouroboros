@@ -1,0 +1,38 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deskSection > golden snapshot of an assembled body for a small representative fixture desk 1`] = `
+"## my desk
+
+every ouro agent has a desk. mine is at \`desk/\`. it's where my work lives across sessions — the source of truth for what i'm doing, what's queued, what's paused, what's done.
+
+**the reflex:** if work spans more than this turn, OR i'd forget it after this turn, OR it's something the operator will ask about later — it goes on desk *now*, before i start.
+
+**what belongs:**
+- a project ("refactor the auth system", "draft the Q3 strategy memo")
+- a recurring task ("check the inbox every 30m") — uses \`cadence\`
+- a one-time reminder ("ping ari about the dentist tomorrow") — uses \`scheduledAt\`
+- a multi-step investigation ("figure out why the daemon flakes")
+- a friction note or lesson worth keeping
+
+**what doesn't:**
+- a single-turn answer
+- ephemeral debugging that resolves in the same exchange
+- work that has its own first-class system (trips, habits, attention items, diary entries, journal entries — those have their own homes; desk LINKS to them when relevant)
+
+**shape:** tracks group related work (e.g. "harness-care", "summer-2026-europe-trip", or one per repo / feature area). tasks live in tracks. each task has iterations — one per work session, with \`planning.md\` and \`doing.md\`.
+
+**states:** \`drafting\` → \`processing\` → \`validating\` → \`done\`. plus \`collaborating\` (waiting on a human or peer agent), \`paused\` (operator deferred), \`blocked\` (external dependency), \`cancelled\`. external trackers (ADO, GitHub issues) get linked from the task, not replaced by it.
+
+**how i interact:**
+- \`desk\` skills walk me through the moments: \`session-start\` (top of every session), \`task-lifecycle\` (on state change), \`start-task\`, \`friction-management\`, \`lesson-capture\`.
+- \`mcp__desk__*\` tools (search/recall/similar/timeline/thread/task_*) for runtime ops.
+
+if i catch myself thinking "i should remember to…" — that's the desk signal. add the task first, then keep going.
+
+### currently
+FEATURED: harness-care   (status: active)
+  → kill-task-board   (status: drafting, updated: 2d ago)
+  → wire-desk-section   (status: processing, updated: 2h ago)
+other active tracks: summer-trip
+non-terminal tasks: 3"
+`;

@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest"
+
+describe("mailbox read composition root", () => {
+  it("re-exports the extracted reader families from focused modules", async () => {
+    const root = await import("../../../heart/mailbox/mailbox-read")
+    const agentMachine = await import("../../../heart/mailbox/readers/agent-machine")
+    const sessions = await import("../../../heart/mailbox/readers/sessions")
+    const runtime = await import("../../../heart/mailbox/readers/runtime-readers")
+    const continuity = await import("../../../heart/mailbox/readers/continuity-readers")
+
+    expect(root.readMailboxAgentState).toBe(agentMachine.readMailboxAgentState)
+    expect(root.readMailboxMachineState).toBe(agentMachine.readMailboxMachineState)
+    expect(root.readSessionInventory).toBe(sessions.readSessionInventory)
+    expect(root.readSessionTranscript).toBe(sessions.readSessionTranscript)
+    expect(root.readCodingDeep).toBe(runtime.readCodingDeep)
+    expect(root.readAttentionView).toBe(runtime.readAttentionView)
+    expect(root.readBridgeInventory).toBe(runtime.readBridgeInventory)
+    expect(root.readDaemonHealthDeep).toBe(runtime.readDaemonHealthDeep)
+    expect(root.readNotesView).toBe(runtime.readNotesView)
+    expect(root.readFriendView).toBe(runtime.readFriendView)
+    expect(root.readLogView).toBe(runtime.readLogView)
+    expect(root.readHabitView).toBe(runtime.readHabitView)
+    expect(root.readNeedsMeView).toBe(runtime.readNeedsMeView)
+    expect(root.readDeskPrefs).toBe(runtime.readDeskPrefs)
+    expect(root.readMailboxContinuity).toBe(continuity.readMailboxContinuity)
+    expect(root.readOrientationView).toBe(continuity.readOrientationView)
+    expect(root.readObligationDetailView).toBe(continuity.readObligationDetailView)
+    expect(root.readChangesView).toBe(continuity.readChangesView)
+    expect(root.readSelfFixView).toBe(continuity.readSelfFixView)
+    expect(root.readNoteDecisionView).toBe(continuity.readNoteDecisionView)
+  })
+})

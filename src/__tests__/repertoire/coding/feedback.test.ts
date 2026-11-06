@@ -597,7 +597,7 @@ describe("coding feedback relay", () => {
       session: {
         ...(session as CodingSession),
         status: "completed",
-        stdoutTail: "landed https://github.com/ouroborosbot/ouroboros/pull/124",
+        stdoutTail: "landed https://github.com/ourostack/ouroboros/pull/124",
         pid: null,
         endedAt: "2026-03-05T23:55:00.000Z",
       },
@@ -605,7 +605,7 @@ describe("coding feedback relay", () => {
     await Promise.resolve()
 
     expect(target.send).toHaveBeenLastCalledWith(
-      "codex coding-001 for bluebubbles/chat completed: landed https://github.com/ouroborosbot/ouroboros/pull/124\ncurrent artifact: PR #124\nnext: update runtime, verify version/changelog, then re-observe",
+      "codex coding-001 for bluebubbles/chat completed: landed https://github.com/ourostack/ouroboros/pull/124\ncurrent artifact: PR #124\nnext: update runtime, verify version/changelog, then re-observe",
     )
     expect(advanceObligation).toHaveBeenCalledWith(
       "/Users/test/AgentBundles/slugger.ouro",
