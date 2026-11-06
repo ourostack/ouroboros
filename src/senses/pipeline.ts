@@ -990,7 +990,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   try {
   /* v8 ignore start -- sync-enabled branches tested in sync.test.ts, pipeline tests mock at module boundary @preserve */
   if (syncConfig.enabled && !liveLatencyMode) {
-    const pullResult = preTurnPull(getAgentRoot(), syncConfig)
+    const pullResult = await preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
       syncFailure = pullResult.error
     }

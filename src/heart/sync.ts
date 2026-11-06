@@ -1,31 +1,42 @@
-import { execFile, execFileSync } from "child_process"
+import { spawn, spawnSync } from "child_process"
+import { createHash } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { SyncConfig } from "./config"
 import type { SyncClassification } from "./sync-classification"
 import { parseBundleSyncFailure, type BundleSyncFailure } from "./sync-health"
+import { acquireSyncLock, tryAcquireSyncLockSync, type SyncLockHandle } from "./sync-lock"
 
 export interface SyncResult {
   ok: boolean
   error?: string
+  /** `state/sync-paused` is in force; no git ran. */
+  paused?: boolean
+  /** The pause marker's `expiresAt`, when `paused`. */
+  pausedUntil?: string
+  /** Another sync held the bundle lock, so this one did nothing. */
+  busy?: boolean
+}
+
+/** `postTurnPush` returns after the commit; the push runs on, holding the lock. */
+export interface PostTurnPushResult extends SyncResult {
+  /** The push started under the same lock as the commit. Absent when nothing was started. */
+  push?: Promise<SyncResult>
 }
 
 /**
- * On-disk schema for `state/pending-sync.json`. Written whenever a
- * post-turn sync fails (status, commit or push) and removed only when a
- * later sync succeeds, so the agent, `ouro status` and the daemon health
- * check keep seeing the failure until it is fixed.
+ * On-disk schema for `state/pending-sync.json`. Written whenever a sync fails
+ * (commit, merge or push) and removed only when a later sync succeeds, so the
+ * agent, `ouro status` and the daemon health check keep seeing the failure
+ * until it is fixed.
  *
  * Backward compat: readers should tolerate entries without `classification`
  * or `conflictFiles` (pre-alpha.289 schema) — they fall back to "unknown".
  *
- * Layer 2 extension: `classification` now widens to the full
- * `SyncClassification` union from `sync-classification.ts`. The legacy
- * three-variant set (`push_rejected | pull_rebase_conflict | unknown`)
- * is still emitted by `postTurnPush`'s existing call sites — adding
- * the new variants is additive, so existing readers keep working as
- * long as a producer doesn't hand them a Layer-2-only variant.
+ * `classification` is the `SyncClassification` union from
+ * `sync-classification.ts`. Sync itself writes `push_rejected`,
+ * `pull_rebase_conflict` (a merge conflict outside `psyche/`) and `unknown`.
  */
 export interface PendingSyncRecord {
   error: string
@@ -55,6 +66,20 @@ export interface SkippedSyncFilesRecord {
   files: SkippedSyncFile[]
 }
 
+/** On-disk schema for `state/sync-paused`. While unexpired, no sync runs git. */
+export interface SyncPauseMarker {
+  startedAt: string
+  expiresAt: string
+}
+
+/** A message to the bundle's owner. One `noticeId` is delivered once. */
+export interface SyncOwnerNotice {
+  noticeId: string
+  text: string
+}
+
+export type SyncOwnerNotifier = (agentName: string, notice: SyncOwnerNotice) => void | Promise<void>
+
 /**
  * Sync never commits a file larger than this. GitHub rejects any push that
  * contains a file over 100 MiB and warns above 50 MiB; one such file in an
@@ -71,10 +96,29 @@ export const SYNC_FILE_SIZE_LIMIT_BYTES = 50 * 1024 * 1024
 export const SYNC_GIT_MAX_BUFFER_BYTES = 256 * 1024 * 1024
 
 /**
- * Timeout for sync's add, commit, push and pull. `git add -A` took 17 s on a
- * bundle with 30,000 changed files, past the old 10 s limit.
+ * Timeout for sync's local git steps (status, add, commit, merge). `git add -A`
+ * took 17 s on a bundle with 30,000 changed files, past the old 10 s limit.
  */
 export const SYNC_GIT_TIMEOUT_MS = 120_000
+
+/** Network steps run as detached children, killed by process group at these limits. */
+export const SYNC_FETCH_TIMEOUT_MS = 10_000
+export const SYNC_PUSH_TIMEOUT_MS = 60_000
+
+/** Message of the merge commit in which the owner's psyche edits win. */
+export const OWNER_WINS_MESSAGE = "sync: owner's psyche edit wins"
+
+/**
+ * How long `preTurnPull` waits for the bundle lock before skipping. A turn
+ * skips rather than queues: the next turn integrates anyway.
+ */
+export const PRE_TURN_LOCK_WAIT_MS = 5_000
+
+/**
+ * Test seams.
+ * @internal Not part of the public API; production code must not set these.
+ */
+export const __testHooks: { fetchTimeoutMs?: number; pushTimeoutMs?: number; preTurnLockWaitMs?: number } = {}
 
 export function pendingSyncPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "pending-sync.json")
@@ -83,6 +127,165 @@ export function pendingSyncPath(agentRoot: string): string {
 export function skippedSyncFilesPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sync-skipped-files.json")
 }
+
+export function syncPausedPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "sync-paused")
+}
+
+function syncConflictStatePath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "sync-conflict.json")
+}
+
+function agentNameFromRoot(agentRoot: string): string {
+  return path.basename(agentRoot).replace(/\.ouro$/, "")
+}
+
+function branchOf(config: SyncConfig): string {
+  return config.branch ?? "main"
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+// ---------- git ----------
+
+interface GitRun {
+  status: number | null
+  stdout: string
+  stderr: string
+}
+
+/** Identity flags go on every call: a container or an empty HOME has no gitconfig. */
+function identityArgs(agentName: string): string[] {
+  return ["-c", `user.name=${agentName}`, "-c", `user.email=${agentName}@ouro.local`, "-c", "commit.gpgsign=false"]
+}
+
+function gitEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+}
+
+function runGit(agentRoot: string, agentName: string, args: string[]): GitRun {
+  const run = spawnSync("git", [...identityArgs(agentName), ...args], {
+    cwd: agentRoot,
+    env: gitEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: SYNC_GIT_TIMEOUT_MS,
+    maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
+  })
+  /* v8 ignore next -- spawn failures (ENOENT, timeout, ENOBUFS) need a broken host @preserve */
+  if (run.error) return { status: null, stdout: "", stderr: run.error.message }
+  return { status: run.status, stdout: run.stdout.toString(), stderr: run.stderr.toString() }
+}
+
+function gitFailure(args: string[], run: GitRun): Error {
+  return new Error(`git ${args[0]} failed: ${(run.stderr || run.stdout).trim()}`)
+}
+
+/** Run git and return stdout; throw with git's message on a non-zero exit. */
+function git(agentRoot: string, agentName: string, args: string[]): string {
+  const run = runGit(agentRoot, agentName, args)
+  if (run.status !== 0) throw gitFailure(args, run)
+  return run.stdout
+}
+
+interface AsyncGitRun {
+  status: number | null
+  stderr: string
+  timedOut: boolean
+  aborted: boolean
+}
+
+/**
+ * A network git call. It runs detached, in its own process group, so a timeout
+ * or an abort kills git and everything it started (ssh, a credential helper):
+ * a lone `kill` of git leaves ssh holding the pipes open.
+ */
+function runGitAsync(
+  agentRoot: string,
+  agentName: string,
+  args: string[],
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<AsyncGitRun> {
+  return new Promise((resolve) => {
+    const child = spawn("git", [...identityArgs(agentName), ...args], {
+      cwd: agentRoot,
+      env: gitEnv(),
+      stdio: ["ignore", "ignore", "pipe"],
+      detached: true,
+    })
+    let stderr = ""
+    let timedOut = false
+    let aborted = false
+    let settled = false
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
+    const killGroup = (): void => {
+      try {
+        process.kill(-(child.pid as number), "SIGKILL")
+      } catch {
+        // The group is already gone.
+      }
+    }
+    const onAbort = (): void => {
+      aborted = true
+      killGroup()
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup()
+    }, timeoutMs)
+    signal?.addEventListener("abort", onAbort, { once: true })
+    const finish = (status: number | null, extra = ""): void => {
+      /* v8 ignore next -- only a spawn error followed by close settles twice @preserve */
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onAbort)
+      resolve({ status, stderr: extra + stderr, timedOut, aborted })
+    }
+    /* v8 ignore next -- spawning git itself failing needs a host without git @preserve */
+    child.on("error", (err) => finish(null, `${err.message}\n`))
+    child.on("close", (code) => finish(code))
+    if (signal?.aborted) onAbort()
+  })
+}
+
+function describeAsyncFailure(step: string, run: AsyncGitRun, timeoutMs: number): string {
+  if (run.timedOut) return `git ${step} timed out after ${timeoutMs} ms`
+  if (run.aborted) return `git ${step} aborted`
+  return `git ${step} failed: ${run.stderr.trim()}`
+}
+
+function hasRemote(agentRoot: string, agentName: string, config: SyncConfig): boolean {
+  return git(agentRoot, agentName, ["remote"]).split("\n").map((line) => line.trim()).includes(config.remote)
+}
+
+function remoteTrackingRef(config: SyncConfig): string {
+  return `refs/remotes/${config.remote}/${branchOf(config)}`
+}
+
+function refExists(agentRoot: string, agentName: string, ref: string): boolean {
+  return runGit(agentRoot, agentName, ["rev-parse", "--verify", "--quiet", ref]).status === 0
+}
+
+/** Commits on HEAD that the last fetched remote branch lacks. An unborn HEAD has none. */
+function commitsAhead(agentRoot: string, agentName: string, config: SyncConfig): number {
+  if (!refExists(agentRoot, agentName, "HEAD")) return 0
+  const ref = remoteTrackingRef(config)
+  const range = refExists(agentRoot, agentName, ref) ? `${ref}..HEAD` : "HEAD"
+  return Number.parseInt(git(agentRoot, agentName, ["rev-list", "--count", range]).trim(), 10)
+}
+
+function unmergedPaths(agentRoot: string, agentName: string): string[] {
+  return git(agentRoot, agentName, ["diff", "--name-only", "--diff-filter=U", "-z"]).split("\0").filter((p) => p.length > 0)
+}
+
+function gitDirEntry(agentRoot: string, name: string): string {
+  return path.join(agentRoot, ".git", name)
+}
+
+// ---------- persistent records ----------
 
 function readPreviousFailure(agentRoot: string): BundleSyncFailure | null {
   try {
@@ -158,6 +361,122 @@ function writeSkippedSyncFiles(agentRoot: string, files: SkippedSyncFile[]): voi
   }
 }
 
+/** A non-psyche conflict the owner has been told about. */
+interface SyncConflictState {
+  hash: string
+  paths: string[]
+  /** The owner has been told that the agent's side is on `sync-conflict/<agent>`. */
+  branchNoticeSent?: boolean
+}
+
+function readConflictState(agentRoot: string): SyncConflictState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(syncConflictStatePath(agentRoot), "utf-8")) as Partial<SyncConflictState>
+    return typeof parsed.hash === "string" ? (parsed as SyncConflictState) : null
+  } catch {
+    return null
+  }
+}
+
+function writeConflictState(agentRoot: string, state: SyncConflictState): void {
+  try {
+    fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
+    fs.writeFileSync(syncConflictStatePath(agentRoot), JSON.stringify(state, null, 2), "utf-8")
+  } catch {
+    // Best effort: without the record the owner may be told twice.
+  }
+}
+
+function clearConflictState(agentRoot: string): void {
+  try {
+    fs.rmSync(syncConflictStatePath(agentRoot), { force: true })
+  } catch {
+    // Best effort: a stale record only suppresses a repeat notice.
+  }
+}
+
+// ---------- owner notices ----------
+
+let ownerNotifier: SyncOwnerNotifier | null = null
+
+/** Replace how sync tells the owner (null restores the default, the Telegram owner notice). */
+export function setSyncOwnerNotifier(notifier: SyncOwnerNotifier | null): void {
+  ownerNotifier = notifier
+}
+
+async function defaultOwnerNotifier(agentName: string, notice: SyncOwnerNotice): Promise<void> {
+  const { sendTelegramOwnerNotice } = await import("../senses/telegram")
+  await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+}
+
+/** Fire and forget: a turn never waits on a notice. */
+function tellOwner(agentRoot: string, agentName: string, notice: SyncOwnerNotice): void {
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_owner_notice",
+    message: "sync: telling the owner",
+    meta: { agentRoot, noticeId: notice.noticeId },
+  })
+  const send = ownerNotifier ?? defaultOwnerNotifier
+  void Promise.resolve()
+    .then(() => send(agentName, notice))
+    .catch((err: unknown) => {
+      emitNervesEvent({
+        level: "warn",
+        component: "heart",
+        event: "heart.sync_owner_notice_error",
+        message: "sync: could not tell the owner",
+        meta: { agentRoot, noticeId: notice.noticeId, error: errorText(err) },
+      })
+    })
+}
+
+// ---------- pause marker ----------
+
+/**
+ * The pause marker's `expiresAt` while it is in force, else null. An expired or
+ * unparseable marker is deleted, so a crashed pauser cannot stop sync for good.
+ */
+function activePause(agentRoot: string): string | null {
+  const markerPath = syncPausedPath(agentRoot)
+  let raw: string
+  try {
+    raw = fs.readFileSync(markerPath, "utf-8")
+  } catch {
+    return null
+  }
+  let expiresAt: unknown
+  try {
+    expiresAt = (JSON.parse(raw) as Partial<SyncPauseMarker> | null)?.expiresAt
+  } catch {
+    expiresAt = undefined
+  }
+  const expiresMs = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN
+  if (Number.isFinite(expiresMs) && expiresMs > Date.now()) return expiresAt as string
+  fs.rmSync(markerPath, { force: true })
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_pause_expired",
+    message: "sync: removed an expired or unreadable pause marker",
+    meta: { agentRoot, expiresAt: typeof expiresAt === "string" ? expiresAt : null },
+  })
+  return null
+}
+
+function pausedResult(agentRoot: string, step: string): SyncResult | null {
+  const until = activePause(agentRoot)
+  if (until === null) return null
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_paused",
+    message: `${step} skipped: sync is paused`,
+    meta: { agentRoot, expiresAt: until },
+  })
+  return { ok: true, paused: true, pausedUntil: until }
+}
+
+// ---------- commit ----------
+
 interface StagedChange {
   status: string
   path: string
@@ -189,13 +508,8 @@ function parseStagedChanges(output: string): StagedChange[] {
  * the deletion of the old path is unstaged too; otherwise the remote would
  * lose the old path while never receiving the new one.
  */
-function unstageOversizedFiles(agentRoot: string): SkippedSyncFile[] {
-  const changes = parseStagedChanges(execFileSync("git", ["diff", "--cached", "--name-status", "-M", "-z"], {
-    cwd: agentRoot,
-    stdio: "pipe",
-    timeout: SYNC_GIT_TIMEOUT_MS,
-    maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-  }).toString())
+function unstageOversizedFiles(agentRoot: string, agentName: string): SkippedSyncFile[] {
+  const changes = parseStagedChanges(git(agentRoot, agentName, ["diff", "--cached", "--name-status", "-M", "-z"]))
 
   const oversized: SkippedSyncFile[] = []
   const unstage: string[] = []
@@ -205,6 +519,7 @@ function unstageOversizedFiles(agentRoot: string): SkippedSyncFile[] {
     try {
       bytes = fs.lstatSync(path.join(agentRoot, change.path)).size
     } catch {
+      /* v8 ignore next -- the file was removed between `git add` and this stat @preserve */
       continue
     }
     if (bytes <= SYNC_FILE_SIZE_LIMIT_BYTES) continue
@@ -214,77 +529,28 @@ function unstageOversizedFiles(agentRoot: string): SkippedSyncFile[] {
   }
   if (oversized.length === 0) return oversized
 
-  execFileSync("git", ["--literal-pathspecs", "reset", "-q", "--", ...unstage], {
-    cwd: agentRoot,
-    stdio: "pipe",
-    timeout: SYNC_GIT_TIMEOUT_MS,
-  })
+  // An unborn HEAD has nothing to reset to; `rm --cached` drops the new entry instead.
+  if (refExists(agentRoot, agentName, "HEAD")) git(agentRoot, agentName, ["--literal-pathspecs", "reset", "-q", "--", ...unstage])
+  else git(agentRoot, agentName, ["--literal-pathspecs", "rm", "-q", "--cached", "--", ...unstage])
   emitNervesEvent({
     level: "warn",
     component: "heart",
     event: "heart.sync_oversized_files_skipped",
-    message: "post-turn push: left files over the sync size limit uncommitted",
+    message: "sync: left files over the sync size limit uncommitted",
     meta: { agentRoot, limitBytes: SYNC_FILE_SIZE_LIMIT_BYTES, files: oversized },
   })
   return oversized
 }
 
-function hasStagedChanges(agentRoot: string): boolean {
-  try {
-    execFileSync("git", ["diff", "--cached", "--quiet"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: SYNC_GIT_TIMEOUT_MS,
-    })
-    return false
-  } catch {
-    return true
-  }
-}
-
-function collectRebaseConflictFiles(agentRoot: string): string[] {
-  try {
-    const output = execFileSync("git", ["status", "--porcelain=v1"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 5000,
-      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-    }).toString()
-    const files: string[] = []
-    for (const line of output.split("\n")) {
-      // Unmerged paths in porcelain v1 are prefixed with UU/AA/DD/AU/UA/DU/UD
-      if (/^(UU|AA|DD|AU|UA|DU|UD) /.test(line)) {
-        files.push(line.slice(3).trim())
-      }
-    }
-    return files
-  } catch {
-    /* v8 ignore next -- git status --porcelain failure inside a repo would require a corrupt repo @preserve */
-    return []
-  }
+function hasStagedChanges(agentRoot: string, agentName: string): boolean {
+  return runGit(agentRoot, agentName, ["diff", "--cached", "--quiet"]).status !== 0
 }
 
 /**
- * Check whether the bundle is initialized as a git repo.
- * Used by both pre-turn pull and post-turn push to surface a clear,
- * actionable error when sync is enabled but the user never ran `git init`
- * inside their bundle. This error is propagated all the way into the
- * agent's start-of-turn packet as a Sync warning, so the agent can
- * either ask the user or run `git init` itself.
- */
-function ensureGitRepo(agentRoot: string): SyncResult {
-  if (fs.existsSync(path.join(agentRoot, ".git"))) {
-    return { ok: true }
-  }
-  const error = `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)`
-  return { ok: false, error }
-}
-
-/**
- * Git holds `.git/index.lock` for milliseconds to seconds, and every git call
- * in this module has a timeout of 30s or less. A lock older than this was left
- * behind by a git process that died mid-write; while it exists every `git add`
- * fails, which silently stopped one bundle's sync for three months.
+ * Git holds `.git/index.lock` for milliseconds to seconds, and every local git
+ * call in this module has a timeout well under this. A lock older than this was
+ * left behind by a git process that died mid-write; while it exists every
+ * `git add` fails, which silently stopped one bundle's sync for three months.
  */
 export const STALE_INDEX_LOCK_MS = 10 * 60 * 1000
 
@@ -293,7 +559,7 @@ export const STALE_INDEX_LOCK_MS = 10 * 60 * 1000
 // full, unchanging lock that can be older than the threshold. When `.git` is a
 // gitdir file (worktree), statSync fails and the lock is left alone.
 function clearStaleIndexLock(agentRoot: string): void {
-  const lockPath = path.join(agentRoot, ".git", "index.lock")
+  const lockPath = gitDirEntry(agentRoot, "index.lock")
   let ageMs: number
   try {
     const stat = fs.statSync(lockPath)
@@ -310,8 +576,8 @@ function clearStaleIndexLock(agentRoot: string): void {
       level: "warn",
       component: "heart",
       event: "heart.sync_stale_lock_clear_failed",
-      message: "post-turn push: could not remove stale git index.lock",
-      meta: { agentRoot, lockPath, error: err instanceof Error ? err.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(err) },
+      message: "sync: could not remove stale git index.lock",
+      meta: { agentRoot, lockPath, error: errorText(err) },
     })
     return
   }
@@ -319,387 +585,378 @@ function clearStaleIndexLock(agentRoot: string): void {
     level: "warn",
     component: "heart",
     event: "heart.sync_stale_lock_cleared",
-    message: "post-turn push: removed stale git index.lock",
+    message: "sync: removed stale git index.lock",
     meta: { agentRoot, lockPath, ageMs },
   })
 }
 
 /**
- * Pre-turn pull: sync the agent bundle from remote before assembling the start-of-turn packet.
- *
- * If the bundle has no git remote configured, the pull is skipped and the function
- * returns ok — matching the no-remote behavior of postTurnPush. This supports the
- * "local-only sync" mode where the bundle accumulates a commit log without ever
- * pushing or pulling from a remote.
+ * Commit every change in the bundle except files over the size limit, as the
+ * agent. Synchronous, so no turn's file writes interleave with it. Throws with
+ * git's message when git fails; never commits unmerged paths (conflict markers).
  */
-export function preTurnPull(agentRoot: string, config: SyncConfig): SyncResult {
+export function commitLocalChanges(
+  agentRoot: string,
+  agentName: string,
+  message: string,
+): { committed: boolean; skipped: SkippedSyncFile[] } {
+  const status = git(agentRoot, agentName, ["status", "--porcelain"]).trim()
+  if (status.length === 0) {
+    // Nothing to commit, so nothing is skipped for size any more.
+    writeSkippedSyncFiles(agentRoot, [])
+    return { committed: false, skipped: [] }
+  }
+  const unmerged = unmergedPaths(agentRoot, agentName)
+  if (unmerged.length > 0) throw new Error(`unmerged paths in the index: ${unmerged.join(", ")}`)
+
+  clearStaleIndexLock(agentRoot)
+  git(agentRoot, agentName, ["add", "-A"])
+  const skipped = unstageOversizedFiles(agentRoot, agentName)
+  writeSkippedSyncFiles(agentRoot, skipped)
+  if (!hasStagedChanges(agentRoot, agentName)) return { committed: false, skipped }
+
+  // -q: without it git prints a create/delete line per file, which overran
+  // the output buffer on a 30,000-file commit after the commit had landed.
+  git(agentRoot, agentName, ["commit", "-q", "-m", message])
+  return { committed: true, skipped }
+}
+
+// ---------- integrate ----------
+
+/**
+ * Check whether the bundle is initialized as a git repo. The error reaches the
+ * agent's start-of-turn packet as a sync warning.
+ */
+function ensureGitRepo(agentRoot: string, step: string): SyncResult {
+  if (fs.existsSync(path.join(agentRoot, ".git"))) return { ok: true }
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_not_a_repo",
+    message: `${step} failed: bundle is not a git repo`,
+    meta: { agentRoot },
+  })
+  return { ok: false, error: `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)` }
+}
+
+/** Abort a rebase or merge that a killed git left in progress. */
+function repairInterrupted(agentRoot: string, agentName: string): void {
+  const rebase = fs.existsSync(gitDirEntry(agentRoot, "rebase-merge")) || fs.existsSync(gitDirEntry(agentRoot, "rebase-apply"))
+  if (rebase) git(agentRoot, agentName, ["rebase", "--abort"])
+  const merge = fs.existsSync(gitDirEntry(agentRoot, "MERGE_HEAD"))
+  if (merge) git(agentRoot, agentName, ["merge", "--abort"])
+  if (!rebase && !merge) return
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_repaired",
+    message: "sync: aborted a rebase or merge left in progress",
+    meta: { agentRoot, rebase, merge },
+  })
+}
+
+function abortMergeIfAny(agentRoot: string, agentName: string): void {
+  if (fs.existsSync(gitDirEntry(agentRoot, "MERGE_HEAD"))) runGit(agentRoot, agentName, ["merge", "--abort"])
+}
+
+/**
+ * Redo a merge whose conflicts are all in `psyche/` so the owner's conflicting
+ * hunks win and the agent's other hunks stay. Delete/modify conflicts take the
+ * owner's side too: removed where the owner deleted, the owner's file where the
+ * owner modified.
+ */
+function mergeOwnerWins(agentRoot: string, agentName: string, ref: string, paths: string[]): void {
+  git(agentRoot, agentName, ["merge", "--abort"])
+  const merge = runGit(agentRoot, agentName, ["merge", "--no-edit", "--ff", "-X", "theirs", "-m", OWNER_WINS_MESSAGE, ref])
+  if (merge.status !== 0) {
+    const remaining = unmergedPaths(agentRoot, agentName)
+    if (remaining.length === 0) throw gitFailure(["merge"], merge)
+    for (const file of remaining) {
+      const stages = git(agentRoot, agentName, ["--literal-pathspecs", "ls-files", "-u", "--", file])
+      const theirsHasIt = stages.split("\n").some((line) => /^\d+ [0-9a-f]+ 3\t/.test(line))
+      if (theirsHasIt) {
+        git(agentRoot, agentName, ["--literal-pathspecs", "checkout", "--theirs", "--", file])
+        git(agentRoot, agentName, ["--literal-pathspecs", "add", "--", file])
+      } else {
+        git(agentRoot, agentName, ["--literal-pathspecs", "rm", "-q", "--", file])
+      }
+    }
+    git(agentRoot, agentName, ["commit", "-q", "-m", OWNER_WINS_MESSAGE])
+  }
   emitNervesEvent({
     component: "heart",
-    event: "heart.sync_pull_start",
-    message: "pre-turn pull starting",
-    meta: { agentRoot, remote: config.remote },
+    event: "heart.sync_owner_wins",
+    message: "sync: merged with the owner's psyche edits winning conflicts",
+    meta: { agentRoot, paths },
   })
+}
 
-  // Check that the bundle is actually a git repo before touching git at all.
-  // Surfaces a clear, actionable error via syncFailure → start-of-turn packet
-  // so the agent can propose running `git init` (or just do it).
-  const repoCheck = ensureGitRepo(agentRoot)
-  if (!repoCheck.ok) {
+function conflictHash(paths: string[]): string {
+  return createHash("sha256").update(paths.join("\0")).digest("hex").slice(0, 16)
+}
+
+interface IntegrateOutcome {
+  result: SyncResult
+  /** The same non-psyche conflict recurred: push HEAD to `sync-conflict/<agent>`. */
+  conflictBranch?: boolean
+}
+
+function handleNonPsycheConflict(
+  agentRoot: string,
+  config: SyncConfig,
+  agentName: string,
+  paths: string[],
+): IntegrateOutcome {
+  git(agentRoot, agentName, ["merge", "--abort"])
+  const sorted = [...paths].sort()
+  const hash = conflictHash(sorted)
+  const error = `merge with ${config.remote}/${branchOf(config)} conflicts in ${sorted.join(", ")}; the merge was aborted and local commits are kept`
+  recordPendingSync(agentRoot, error, "pull_rebase_conflict", sorted)
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_conflict",
+    message: "sync: merge conflict outside psyche/, merge aborted",
+    meta: { agentRoot, conflictFiles: sorted, hash },
+  })
+  const previous = readConflictState(agentRoot)
+  if (previous?.hash === hash) return { result: { ok: false, error }, conflictBranch: true }
+  writeConflictState(agentRoot, { hash, paths: sorted })
+  tellOwner(agentRoot, agentName, {
+    noticeId: `sync-conflict:${agentName}:${hash}`,
+    text: `Bundle sync for ${agentName} stopped: ${sorted.join(", ")} changed on both sides. My changes stay committed locally until the conflict is merged.`,
+  })
+  return { result: { ok: false, error } }
+}
+
+/** Record a successful integrate: a resolved conflict is over, and a synced bundle has nothing pending. */
+function settleIntegrated(agentRoot: string, config: SyncConfig, agentName: string): void {
+  clearConflictState(agentRoot)
+  const pending = readPreviousFailure(agentRoot)
+  if (!pending) return
+  if (pending.classification === "pull_rebase_conflict" || commitsAhead(agentRoot, agentName, config) === 0) clearPendingSync(agentRoot)
+}
+
+function integrateCore(agentRoot: string, config: SyncConfig, agentName: string): IntegrateOutcome {
+  try {
+    repairInterrupted(agentRoot, agentName)
+    commitLocalChanges(agentRoot, agentName, "sync: pre-turn update")
+    const ref = remoteTrackingRef(config)
+    if (!refExists(agentRoot, agentName, ref)) {
+      settleIntegrated(agentRoot, config, agentName)
+      return { result: { ok: true } }
+    }
+    const shortRef = `${config.remote}/${branchOf(config)}`
+    const merge = runGit(agentRoot, agentName, ["merge", "--no-edit", "--ff", shortRef])
+    if (merge.status !== 0) {
+      const paths = unmergedPaths(agentRoot, agentName)
+      if (paths.length === 0) {
+        // Refused before touching anything ("would be overwritten"): no conflict state.
+        abortMergeIfAny(agentRoot, agentName)
+        const error = gitFailure(["merge"], merge).message
+        recordPendingSync(agentRoot, error, "unknown", [])
+        emitNervesEvent({
+          level: "warn",
+          component: "heart",
+          event: "heart.sync_merge_failed",
+          message: "sync: merge refused",
+          meta: { agentRoot, error },
+        })
+        return { result: { ok: false, error } }
+      }
+      if (paths.some((p) => !p.startsWith("psyche/"))) return handleNonPsycheConflict(agentRoot, config, agentName, paths)
+      mergeOwnerWins(agentRoot, agentName, shortRef, paths)
+    }
+    settleIntegrated(agentRoot, config, agentName)
+    return { result: { ok: true } }
+  } catch (err) {
+    abortMergeIfAny(agentRoot, agentName)
+    const error = errorText(err)
+    recordPendingSync(agentRoot, error, "unknown", [])
     emitNervesEvent({
       level: "warn",
       component: "heart",
-      event: "heart.sync_not_a_repo",
-      message: "pre-turn pull failed: bundle is not a git repo",
-      meta: { agentRoot },
+      event: "heart.sync_merge_failed",
+      message: "sync: integrate failed",
+      meta: { agentRoot, error },
     })
-    return repoCheck
+    return { result: { ok: false, error } }
   }
+}
 
-  // Check if any remote is configured. If not, skip the pull (local-only mode).
+/**
+ * Merge the fetched remote branch into the bundle. Synchronous. The caller
+ * holds the bundle lock. Steps: repair an interrupted rebase or merge, commit
+ * local changes, then merge `<remote>/<branch>` (fast-forward when possible).
+ * Conflicts only in `psyche/` go to the owner; any other conflict aborts the
+ * merge and is recorded in `state/pending-sync.json`.
+ */
+export function integrateFetched(agentRoot: string, config: SyncConfig, agentName: string): SyncResult {
+  return integrateCore(agentRoot, config, agentName).result
+}
+
+// ---------- network steps ----------
+
+async function fetchUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
+  const branch = branchOf(config)
+  const timeoutMs = __testHooks.fetchTimeoutMs ?? SYNC_FETCH_TIMEOUT_MS
+  const run = await runGitAsync(agentRoot, agentName, ["fetch", "--no-tags", config.remote, `+refs/heads/${branch}:${remoteTrackingRef(config)}`], timeoutMs, signal)
+  // An empty remote has no branch yet; integrate then only commits.
+  if (run.status === 0 || /couldn't find remote ref/i.test(run.stderr)) return { ok: true }
+  const error = describeAsyncFailure("fetch", run, timeoutMs)
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_fetch_error",
+    message: "sync: fetch failed",
+    meta: { agentRoot, remote: config.remote, branch, error },
+  })
+  return { ok: false, error }
+}
+
+/** `git fetch <remote> <branch>` as a detached child, killed by process group at 10 s or on abort. The caller holds the lock. */
+export function fetchRemote(agentRoot: string, config: SyncConfig, signal?: AbortSignal): Promise<SyncResult> {
+  return fetchUnlocked(agentRoot, config, agentNameFromRoot(agentRoot), signal)
+}
+
+async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
   try {
-    const remoteOutput = execFileSync("git", ["remote"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 5000,
-    }).toString().trim()
-
-    if (remoteOutput.length === 0) {
+    if (!hasRemote(agentRoot, agentName, config)) {
+      clearPendingSync(agentRoot)
       emitNervesEvent({
         component: "heart",
-        event: "heart.sync_pull_end",
-        message: "pre-turn pull skipped: no remote configured",
+        event: "heart.sync_push_end",
+        message: "sync: committed locally, no remote configured",
         meta: { agentRoot },
       })
       return { ok: true }
     }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_pull_error",
-      message: "pre-turn pull failed: git remote check failed",
-      meta: { agentRoot, error },
-    })
-
-    return { ok: false, error }
-  }
-
-  try {
-    execFileSync("git", ["pull", config.remote], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 30000,
-    })
-
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_pull_end",
-      message: "pre-turn pull complete",
-      meta: { agentRoot },
-    })
-
-    return { ok: true }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_pull_error",
-      message: "pre-turn pull failed",
-      meta: { agentRoot, error },
-    })
-
-    return { ok: false, error }
-  }
-}
-
-/**
- * Post-turn push: discover dirty files via `git status`, commit, and push.
- * Uses git-status-based discovery instead of explicit path tracking, ensuring
- * all file writers are captured regardless of whether they call a tracking API.
- */
-export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult {
-  emitNervesEvent({
-    component: "heart",
-    event: "heart.sync_push_start",
-    message: "post-turn push starting",
-    meta: { agentRoot, remote: config.remote },
-  })
-
-  // Same git-repo check as preTurnPull. This is the more common failure path
-  // since postTurnPush runs after every turn while preTurnPull only runs on
-  // user-initiated turns. Prior to this guard, an un-init'd bundle would fail
-  // the git-status invocation below with a generic "not a git repository"
-  // error; now we catch it explicitly with an actionable message.
-  const repoCheck = ensureGitRepo(agentRoot)
-  if (!repoCheck.ok) {
+    const branch = branchOf(config)
+    const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
+    const run = await runGitAsync(agentRoot, agentName, ["push", config.remote, `HEAD:refs/heads/${branch}`], timeoutMs, signal)
+    if (run.status === 0) {
+      clearPendingSync(agentRoot)
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_end",
+        message: "sync: push complete",
+        meta: { agentRoot, remote: config.remote, branch },
+      })
+      return { ok: true }
+    }
+    const rejected = !run.timedOut && !run.aborted && /\[rejected\]|non-fast-forward|fetch first/.test(run.stderr)
+    const error = describeAsyncFailure("push", run, timeoutMs)
+    const classification = rejected ? "push_rejected" : "unknown"
+    recordPendingSync(agentRoot, error, classification, [])
     emitNervesEvent({
       level: "warn",
       component: "heart",
-      event: "heart.sync_not_a_repo",
-      message: "post-turn push failed: bundle is not a git repo",
-      meta: { agentRoot },
+      event: "heart.sync_push_error",
+      message: `sync: push failed: ${classification}`,
+      meta: { agentRoot, error, classification },
     })
-    return repoCheck
-  }
-
-  let statusOutput: string
-  try {
-    statusOutput = execFileSync("git", ["status", "--porcelain"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: SYNC_GIT_TIMEOUT_MS,
-      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-    }).toString().trim()
+    return { ok: false, error }
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
+    const error = errorText(err)
     recordPendingSync(agentRoot, error, "unknown", [])
     emitNervesEvent({
+      level: "warn",
       component: "heart",
       event: "heart.sync_push_error",
-      message: "post-turn push: git status failed",
+      message: "sync: push failed",
       meta: { agentRoot, error },
     })
     return { ok: false, error }
   }
-
-  if (statusOutput.length === 0) {
-    // Nothing to commit, so nothing is skipped for size any more.
-    writeSkippedSyncFiles(agentRoot, [])
-    return syncCleanTree(agentRoot, config)
-  }
-
-  const changedCount = statusOutput.split("\n").length
-
-  clearStaleIndexLock(agentRoot)
-
-  try {
-    execFileSync("git", ["add", "-A"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: SYNC_GIT_TIMEOUT_MS,
-      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-    })
-
-    const skippedFiles = unstageOversizedFiles(agentRoot)
-    writeSkippedSyncFiles(agentRoot, skippedFiles)
-    if (skippedFiles.length > 0 && !hasStagedChanges(agentRoot)) {
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_push_end",
-        message: "post-turn push: only oversized files changed, nothing committed",
-        meta: { agentRoot, changedCount, skippedCount: skippedFiles.length },
-      })
-      return syncCleanTree(agentRoot, config)
-    }
-
-    // -q: without it git prints a create/delete line per file, which overran
-    // the output buffer on a 30,000-file commit after the commit had landed.
-    execFileSync("git", ["commit", "-q", "-m", "sync: post-turn update"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: SYNC_GIT_TIMEOUT_MS,
-      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-    })
-
-    if (!hasRemote(agentRoot)) {
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_push_end",
-        message: "post-turn push: committed locally, no remote configured",
-        meta: { agentRoot, changedCount },
-      })
-      clearPendingSync(agentRoot)
-      return { ok: true }
-    }
-
-    return pushWithRebaseRetry(agentRoot, config, changedCount)
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    // Record it so the start-of-turn packet surfaces the failure; otherwise a
-    // failing local commit is visible only in nerves logs.
-    recordPendingSync(agentRoot, error, "unknown", [])
-
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_push_error",
-      message: "post-turn push failed",
-      meta: { agentRoot, error },
-    })
-
-    return { ok: false, error }
-  }
-}
-
-function hasRemote(agentRoot: string): boolean {
-  return execFileSync("git", ["remote"], {
-    cwd: agentRoot,
-    stdio: "pipe",
-    timeout: 5000,
-  }).toString().trim().length > 0
 }
 
 /**
- * Nothing new to commit. A failure record must not outlive the problem, and
- * commits left behind by an earlier failed push still need to reach the
- * remote: with no remote, or nothing ahead of the upstream, the record is
- * cleared; with unpushed commits, the push is retried.
+ * `git push <remote> HEAD:<branch>` as a detached child, killed by process
+ * group at 60 s. It takes the lock the caller acquired before committing and
+ * releases it when the push ends, so nothing runs between commit and push. A
+ * rejection is recorded as `push_rejected`; the next integrate merges and the
+ * push after it succeeds. Never throws.
  */
-function syncCleanTree(agentRoot: string, config: SyncConfig): SyncResult {
+export async function pushAsync(agentRoot: string, config: SyncConfig, handle: SyncLockHandle, signal?: AbortSignal): Promise<SyncResult> {
   try {
-    if (!hasRemote(agentRoot)) {
-      clearPendingSync(agentRoot)
-    } else {
-      const ahead = Number.parseInt(execFileSync("git", ["rev-list", "--count", "@{upstream}..HEAD"], {
-        cwd: agentRoot,
-        stdio: "pipe",
-        timeout: 5000,
-      }).toString().trim(), 10)
-      if (ahead > 0) return pushWithRebaseRetry(agentRoot, config, 0)
-      if (ahead === 0) clearPendingSync(agentRoot)
-    }
-  } catch (err) {
-    // No upstream tracked (or git failed): nothing to compare against, so
-    // leave any failure record as it is rather than guess.
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_upstream_unknown",
-      message: "post-turn push: could not compare with upstream",
-      meta: { agentRoot, error: err instanceof Error ? err.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(err) },
-    })
+    return await pushUnlocked(agentRoot, config, agentNameFromRoot(agentRoot), signal)
+  } finally {
+    handle.release()
   }
-  emitNervesEvent({
-    component: "heart",
-    event: "heart.sync_push_end",
-    message: "post-turn push: no changes to sync",
-    meta: { agentRoot },
-  })
-  return { ok: true }
 }
 
-function pushWithRebaseRetry(agentRoot: string, config: SyncConfig, changedCount: number): SyncResult {
-  try {
-    execFileSync("git", ["push", config.remote], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: SYNC_GIT_TIMEOUT_MS,
-      maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-    })
-  } catch {
-    // Push rejected -- try pull-rebase-push. --autostash: an oversized file
-    // the size guard left uncommitted is an unstaged change, and a plain
-    // rebase refuses to start while one exists.
-    let rebaseError: string | null = null
-    try {
-      execFileSync("git", ["pull", "--rebase", "--autostash", config.remote], {
-        cwd: agentRoot,
-        stdio: "pipe",
-        timeout: SYNC_GIT_TIMEOUT_MS,
-        maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-      })
-    } catch (err) {
-      rebaseError = err instanceof Error ? err.message : String(err)
-    }
-
-    if (rebaseError === null) {
-      try {
-        execFileSync("git", ["push", config.remote], {
-          cwd: agentRoot,
-          stdio: "pipe",
-          timeout: SYNC_GIT_TIMEOUT_MS,
-          maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
-        })
-        // rebase + retry push both succeeded — fall through to success
-        emitNervesEvent({
-          component: "heart",
-          event: "heart.sync_push_end",
-          message: "post-turn push complete after rebase retry",
-          meta: { agentRoot, changedCount },
-        })
-        clearPendingSync(agentRoot)
-        return { ok: true }
-      } catch (retryErr) {
-        // Second push rejected — remote advanced again during rebase
-        const retryError = retryErr instanceof Error ? retryErr.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(retryErr)
-        recordPendingSync(agentRoot, retryError, "push_rejected", [])
-        emitNervesEvent({
-          component: "heart",
-          event: "heart.sync_push_error",
-          message: "post-turn push failed after retry: push_rejected",
-          meta: { agentRoot, error: retryError, classification: "push_rejected" },
-        })
-        return { ok: false, error: retryError }
-      }
-    }
-
-    // Rebase failed — detect conflict files via git status. Preserve
-    // the original rebase error message so callers see the real cause.
-    const conflictFiles = collectRebaseConflictFiles(agentRoot)
-    const classification: PendingSyncRecord["classification"] =
-      conflictFiles.length > 0 ? "pull_rebase_conflict" : "unknown"
-    recordPendingSync(agentRoot, rebaseError, classification, conflictFiles)
-
+/** The same conflict recurred: put the agent's side where the owner can merge it from the Mac. */
+async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<void> {
+  const branch = `sync-conflict/${agentName}`
+  const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
+  const run = await runGitAsync(agentRoot, agentName, ["push", config.remote, `HEAD:refs/heads/${branch}`], timeoutMs, signal)
+  if (run.status !== 0) {
     emitNervesEvent({
+      level: "warn",
       component: "heart",
-      event: "heart.sync_push_error",
-      message: `post-turn push failed: ${classification}`,
-      meta: { agentRoot, error: rebaseError, classification, conflictFiles },
+      event: "heart.sync_conflict_branch_push_error",
+      message: "sync: could not push the conflict branch",
+      meta: { agentRoot, branch, error: describeAsyncFailure("push", run, timeoutMs) },
     })
-
-    return { ok: false, error: rebaseError }
+    return
   }
-
   emitNervesEvent({
     component: "heart",
-    event: "heart.sync_push_end",
-    message: "post-turn push complete",
-    meta: { agentRoot, changedCount },
+    event: "heart.sync_conflict_branch_pushed",
+    message: "sync: pushed the agent's side of a conflict",
+    meta: { agentRoot, branch },
   })
-  clearPendingSync(agentRoot)
+  const state = readConflictState(agentRoot)
+  if (!state || state.branchNoticeSent) return
+  writeConflictState(agentRoot, { ...state, branchNoticeSent: true })
+  tellOwner(agentRoot, agentName, {
+    noticeId: `sync-conflict-branch:${agentName}:${state.hash}`,
+    text: `My side of the sync conflict in ${state.paths.join(", ")} is on branch ${branch} in ${config.remote}. Merging it into ${branchOf(config)} from the Mac resumes sync.`,
+  })
+}
 
-  return { ok: true }
+/** Fetch then integrate. The caller holds the lock. */
+async function pullUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
+  let remote: boolean
+  try {
+    remote = hasRemote(agentRoot, agentName, config)
+  } catch (err) {
+    return { ok: false, error: errorText(err) }
+  }
+  if (remote) {
+    const fetched = await fetchUnlocked(agentRoot, config, agentName, signal)
+    if (!fetched.ok) return fetched
+  }
+  const outcome = integrateCore(agentRoot, config, agentName)
+  if (outcome.conflictBranch) await pushConflictBranch(agentRoot, config, agentName, signal)
+  return outcome.result
+}
+
+// ---------- public entry points ----------
+
+export interface PreTurnPullOptions {
+  /** Defaults to the bundle directory's name without `.ouro`. */
+  agentName?: string
+  signal?: AbortSignal
 }
 
 /**
- * Layer 2 — async, signal-aware sibling of `preTurnPull`.
- *
- * Used by `runBootSyncProbe` (the `ouro up` boot orchestrator) to perform
- * the pre-flight pull with end-to-end `AbortSignal` propagation. The
- * underlying `child_process.execFile` accepts the signal and kills the git
- * child process when it aborts, so a hung remote (DNS hole, slow server)
- * can be cut by the boot timeout wrapper rather than hanging the whole
- * boot.
- *
- * The legacy sync `preTurnPull` is preserved unchanged for the per-turn
- * pipeline at `src/senses/pipeline.ts:522`. The two functions share the
- * same `.git` and remote-availability gates — the only difference is the
- * pull itself: `execFileSync` (no signal) vs `execFile` + `{ signal }`.
- *
- * Honour-the-signal contract:
- *   - If `options.signal` is already aborted at call time, the pull is
- *     skipped and the result is `{ ok: false, error: "aborted" }`.
- *   - If `options.signal` aborts mid-fetch, the child receives `SIGTERM`
- *     via Node's built-in AbortSignal handling, and the result is
- *     `{ ok: false, error: <abort message> }`.
- *   - With no signal supplied, behaviour matches the sync version (subject
- *     to the small differences listed above — same git-repo / no-remote
- *     gates and same nerves events).
+ * Pre-turn pull: under the bundle lock (waiting up to 5 s, then skipping),
+ * fetch the remote branch and merge it, so the turn reads the owner's latest
+ * edits. With no remote, local changes are committed and the result is ok.
  */
-export function preTurnPullAsync(
-  agentRoot: string,
-  config: SyncConfig,
-  options: { signal?: AbortSignal } = {},
-): Promise<SyncResult> {
+export async function preTurnPull(agentRoot: string, config: SyncConfig, options: PreTurnPullOptions = {}): Promise<SyncResult> {
+  const agentName = options.agentName ?? agentNameFromRoot(agentRoot)
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_pull_start",
-    message: "pre-turn pull starting (async)",
-    meta: { agentRoot, remote: config.remote },
+    message: "pre-turn pull starting",
+    meta: { agentRoot, remote: config.remote, branch: branchOf(config) },
   })
-
-  // Bail early when the caller has already aborted — saves a git invocation
-  // and signals failure consistently.
+  const paused = pausedResult(agentRoot, "pre-turn pull")
+  if (paused) return paused
+  const repoCheck = ensureGitRepo(agentRoot, "pre-turn pull")
+  if (!repoCheck.ok) return repoCheck
   if (options.signal?.aborted) {
     emitNervesEvent({
       level: "warn",
@@ -708,81 +965,151 @@ export function preTurnPullAsync(
       message: "pre-turn pull skipped: signal already aborted",
       meta: { agentRoot },
     })
-    return Promise.resolve({ ok: false, error: "aborted before pull started" })
+    return { ok: false, error: "aborted before pull started" }
   }
 
-  // Same .git presence check as the sync version.
-  const repoCheck = ensureGitRepo(agentRoot)
-  if (!repoCheck.ok) {
+  let lock: Awaited<ReturnType<typeof acquireSyncLock>>
+  try {
+    lock = await acquireSyncLock(agentRoot, __testHooks.preTurnLockWaitMs ?? PRE_TURN_LOCK_WAIT_MS, options.signal)
+  } catch (err) {
+    return { ok: false, error: `aborted while waiting for the sync lock: ${errorText(err)}` }
+  }
+  if ("busy" in lock) {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_pull_end",
+      message: "pre-turn pull skipped: sync lock busy",
+      meta: { agentRoot, holderPid: lock.holderPid },
+    })
+    return { ok: true, busy: true }
+  }
+  try {
+    const result = await pullUnlocked(agentRoot, config, agentName, options.signal)
+    if (result.ok) {
+      emitNervesEvent({ component: "heart", event: "heart.sync_pull_end", message: "pre-turn pull complete", meta: { agentRoot } })
+    } else {
+      emitNervesEvent({ level: "warn", component: "heart", event: "heart.sync_pull_error", message: "pre-turn pull failed", meta: { agentRoot, error: result.error } })
+    }
+    return result
+  } finally {
+    lock.release()
+  }
+}
+
+/** The signal-aware pre-turn pull used by the boot sync probe. Same as `preTurnPull`. */
+export function preTurnPullAsync(agentRoot: string, config: SyncConfig, options: PreTurnPullOptions = {}): Promise<SyncResult> {
+  return preTurnPull(agentRoot, config, options)
+}
+
+/**
+ * Post-turn push. Synchronous up to the push: take the lock without waiting
+ * (busy means skip; the next turn commits), commit, then hand the held lock to
+ * `pushAsync`, which is not awaited. `push` in the result is that promise.
+ */
+export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: string = agentNameFromRoot(agentRoot)): PostTurnPushResult {
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_push_start",
+    message: "post-turn push starting",
+    meta: { agentRoot, remote: config.remote, branch: branchOf(config) },
+  })
+  const paused = pausedResult(agentRoot, "post-turn push")
+  if (paused) return paused
+  const repoCheck = ensureGitRepo(agentRoot, "post-turn push")
+  if (!repoCheck.ok) return repoCheck
+
+  const lock = tryAcquireSyncLockSync(agentRoot)
+  if ("busy" in lock) {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_push_end",
+      message: "post-turn push skipped: sync lock busy",
+      meta: { agentRoot, holderPid: lock.holderPid },
+    })
+    return { ok: true, busy: true }
+  }
+
+  let release = true
+  try {
+    commitLocalChanges(agentRoot, agentName, "sync: post-turn update")
+    const remote = hasRemote(agentRoot, agentName, config)
+    if (remote && readPreviousFailure(agentRoot)?.classification === "pull_rebase_conflict") {
+      // The push would be rejected until the conflict is merged; the next integrate retries it.
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_end",
+        message: "post-turn push: committed, push waits for an unresolved conflict",
+        meta: { agentRoot },
+      })
+      return { ok: true }
+    }
+    if (remote && commitsAhead(agentRoot, agentName, config) === 0) {
+      clearPendingSync(agentRoot)
+      emitNervesEvent({
+        component: "heart",
+        event: "heart.sync_push_end",
+        message: "post-turn push: nothing to push",
+        meta: { agentRoot },
+      })
+      return { ok: true }
+    }
+    release = false
+    return { ok: true, push: pushAsync(agentRoot, config, lock) }
+  } catch (err) {
+    const error = errorText(err)
+    recordPendingSync(agentRoot, error, "unknown", [])
     emitNervesEvent({
       level: "warn",
       component: "heart",
-      event: "heart.sync_not_a_repo",
-      message: "pre-turn pull failed: bundle is not a git repo (async)",
-      meta: { agentRoot },
-    })
-    return Promise.resolve(repoCheck)
-  }
-
-  // Remote-presence check stays sync — it's a fast local op and doesn't
-  // need cancellation. The hangable op is the actual pull.
-  try {
-    const remoteOutput = execFileSync("git", ["remote"], {
-      cwd: agentRoot,
-      stdio: "pipe",
-      timeout: 5000,
-    }).toString().trim()
-
-    if (remoteOutput.length === 0) {
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_pull_end",
-        message: "pre-turn pull skipped: no remote configured (async)",
-        meta: { agentRoot },
-      })
-      return Promise.resolve({ ok: true })
-    }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_pull_error",
-      message: "pre-turn pull failed: git remote check failed (async)",
+      event: "heart.sync_push_error",
+      message: "post-turn push failed",
       meta: { agentRoot, error },
     })
-    return Promise.resolve({ ok: false, error })
+    return { ok: false, error }
+  } finally {
+    if (release) lock.release()
   }
+}
 
-  // The hangable op. `execFile` accepts `{ signal }` and kills the child
-  // when the signal aborts — that's the whole point of the async path.
-  const execOptions: Parameters<typeof execFile>[2] = {
-    cwd: agentRoot,
-    timeout: 30000,
-  }
-  if (options.signal) {
-    execOptions.signal = options.signal
-  }
-
-  return new Promise<SyncResult>((resolve) => {
-    execFile("git", ["pull", config.remote], execOptions, (err) => {
-      if (err) {
-        const error = err instanceof Error ? err.message : String(err)
-        emitNervesEvent({
-          component: "heart",
-          event: "heart.sync_pull_error",
-          message: "pre-turn pull failed (async)",
-          meta: { agentRoot, error },
-        })
-        resolve({ ok: false, error })
-        return
-      }
-      emitNervesEvent({
-        component: "heart",
-        event: "heart.sync_pull_end",
-        message: "pre-turn pull complete (async)",
-        meta: { agentRoot },
-      })
-      resolve({ ok: true })
-    })
+/**
+ * Manual sync (`ouro sync`, the bundle tools): under one lock, waiting up to
+ * `waitMs`, fetch, integrate and push. Built on the unlocked internals, so it
+ * never waits on its own lock.
+ */
+export async function syncNow(agentRoot: string, config: SyncConfig, agentName: string, waitMs: number): Promise<SyncResult> {
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_now_start",
+    message: "sync now starting",
+    meta: { agentRoot, remote: config.remote, branch: branchOf(config) },
   })
+  const paused = pausedResult(agentRoot, "sync now")
+  if (paused) return paused
+  const repoCheck = ensureGitRepo(agentRoot, "sync now")
+  if (!repoCheck.ok) return repoCheck
+
+  const lock = await acquireSyncLock(agentRoot, waitMs)
+  if ("busy" in lock) {
+    const error = `bundle sync lock is held${lock.holderPid === null ? "" : ` by pid ${lock.holderPid}`}`
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_now_error",
+      message: "sync now: lock busy",
+      meta: { agentRoot, error },
+    })
+    return { ok: false, busy: true, error }
+  }
+  try {
+    const pulled = await pullUnlocked(agentRoot, config, agentName)
+    const result = pulled.ok ? await pushUnlocked(agentRoot, config, agentName) : pulled
+    if (result.ok) {
+      emitNervesEvent({ component: "heart", event: "heart.sync_now_end", message: "sync now complete", meta: { agentRoot } })
+    } else {
+      emitNervesEvent({ level: "warn", component: "heart", event: "heart.sync_now_error", message: "sync now failed", meta: { agentRoot, error: result.error } })
+    }
+    return result
+  } finally {
+    lock.release()
+  }
 }

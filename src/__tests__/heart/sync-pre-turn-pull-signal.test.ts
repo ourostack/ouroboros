@@ -1,212 +1,132 @@
 /**
- * Layer 2 — Unit 3a: failing tests for `preTurnPullAsync` (signal-aware).
- *
- * The async sibling of `preTurnPull` is the one wired into `runBootSyncProbe`.
- * It accepts an optional `AbortSignal` and propagates it to the underlying
- * `child_process` invocations so a hung fetch can be killed by the boot
- * timeout wrapper.
- *
- * The existing sync `preTurnPull` is preserved unchanged (back-compat for the
- * per-turn pipeline), so all 26 of its tests in `sync.test.ts` still pass.
- *
- * Tests use vi-mocked child_process with an async `execFile` shim that
- * resolves/rejects based on the passed signal — same idiom that real
- * Node uses, but deterministic.
+ * `preTurnPullAsync` is the signal-aware pull the boot sync probe runs under
+ * its hard timeout. Real git: an abort must kill the fetch's whole process
+ * group, and an abort before the start runs no git.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { SyncConfig } from "../../heart/config"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { execFileSync } from "child_process"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
+import { preTurnPullAsync } from "../../heart/sync"
+import { tryAcquireSyncLockSync } from "../../heart/sync-lock"
 
-// Mock child_process: provide both sync execFileSync (for the legacy
-// callers within sync.ts that aren't relevant here) and an async execFile
-// that the new preTurnPullAsync uses.
-vi.mock("child_process", () => ({
-  execFileSync: vi.fn(),
-  execFile: vi.fn(),
-}))
+const CONFIG = { enabled: true, remote: "origin", branch: "main" }
+let root: string
+let savedSsh: string | undefined
 
-// Intentionally NOT mocking ../../nerves/runtime so the global capture
-// sees the events we emit (e.g., heart.sync_pull_aborted from the
-// already-aborted-signal path). Mocking the runtime would make the
-// nerves source-coverage gate flag the events as declared-but-not-observed.
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim()
+}
 
-const existsSyncMock = vi.hoisted(() => vi.fn())
-vi.mock("fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs")>()
-  existsSyncMock.mockImplementation((target: string) => {
-    if (typeof target === "string" && target.endsWith("/.git")) return true
-    return actual.existsSync(target)
-  })
-  return { ...actual, existsSync: existsSyncMock }
+function bundleWithRemote(): { bundle: string; remote: string } {
+  const remote = path.join(root, "remote.git")
+  const seed = path.join(root, "seed")
+  const bundle = path.join(root, "agent.ouro")
+  git(root, ["init", "-q", "--bare", "-b", "main", remote])
+  git(root, ["init", "-q", "-b", "main", seed])
+  fs.writeFileSync(path.join(seed, "notes.md"), "seed\n")
+  git(seed, ["add", "-A"])
+  git(seed, ["commit", "-q", "-m", "seed"])
+  git(seed, ["push", "-q", remote, "HEAD:main"])
+  git(root, ["clone", "-q", remote, bundle])
+  return { bundle, remote }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sync-signal-")))
+  savedSsh = process.env.GIT_SSH_COMMAND
 })
 
-import * as childProcess from "child_process"
-
-const defaultConfig: SyncConfig = { enabled: true, remote: "origin" }
+afterEach(() => {
+  if (savedSsh === undefined) delete process.env.GIT_SSH_COMMAND
+  else process.env.GIT_SSH_COMMAND = savedSsh
+  fs.rmSync(root, { recursive: true, force: true })
+})
 
 describe("preTurnPullAsync (signal-aware)", () => {
-  beforeEach(() => {
-    vi.mocked(childProcess.execFileSync).mockReset()
-    vi.mocked(childProcess.execFile).mockReset()
-    // Default sync remote-check returns "origin"
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from("origin\n"))
-    // Default async execFile callback resolves with "" stdout
-    vi.mocked(childProcess.execFile).mockImplementation(((..._args: unknown[]) => {
-      const callback = _args[_args.length - 1] as (err: Error | null, stdout: string, stderr: string) => void
-      // Defer resolve to next tick so we can interleave with abort.
-      queueMicrotask(() => callback(null, "", ""))
-      return {} as unknown
-    }) as typeof childProcess.execFile)
+  it("without a signal: fetches and merges the configured remote branch", async () => {
+    const { bundle, remote } = bundleWithRemote()
+    git(bundle, ["remote", "rename", "origin", "home"])
+    const other = path.join(root, "other")
+    git(root, ["clone", "-q", remote, other])
+    fs.writeFileSync(path.join(other, "notes.md"), "other\n")
+    git(other, ["commit", "-q", "-am", "other"])
+    git(other, ["push", "-q", "origin", "main"])
+
+    expect(await preTurnPullAsync(bundle, { ...CONFIG, remote: "home" })).toEqual({ ok: true })
+    expect(fs.readFileSync(path.join(bundle, "notes.md"), "utf-8")).toBe("other\n")
   })
 
-  afterEach(() => {
-    vi.restoreAllMocks()
+  it("defaults the branch to main when the config names none", async () => {
+    const { bundle } = bundleWithRemote()
+    expect(await preTurnPullAsync(bundle, { enabled: true, remote: "origin" })).toEqual({ ok: true })
   })
 
-  it("without signal — runs git pull and returns ok=true (back-compat shape)", async () => {
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(true)
-    expect(childProcess.execFile).toHaveBeenCalledWith(
-      "git",
-      ["pull", "origin"],
-      expect.objectContaining({ cwd: "/fake/agent/root" }),
-      expect.any(Function),
-    )
+  it("when the signal is already aborted, runs no git and returns ok=false", async () => {
+    const { bundle } = bundleWithRemote()
+    const controller = new AbortController()
+    controller.abort()
+    expect(await preTurnPullAsync(bundle, CONFIG, { signal: controller.signal })).toEqual({ ok: false, error: "aborted before pull started" })
   })
 
-  it("when signal is already aborted at call time, skips the pull and returns ok=false", async () => {
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const ac = new AbortController()
-    ac.abort()
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig, { signal: ac.signal })
+  it("when the signal aborts mid-fetch, the fetch's process group is killed", async () => {
+    const { bundle } = bundleWithRemote()
+    const pidFile = path.join(root, "pids")
+    const script = path.join(root, "ssh.sh")
+    fs.writeFileSync(script, `#!/bin/sh\nsleep 30 &\necho $! >> "${pidFile}"\necho $$ >> "${pidFile}"\nwait\n`, { mode: 0o755 })
+    process.env.GIT_SSH_COMMAND = script
+    git(bundle, ["remote", "set-url", "origin", "ssh://git@hang.invalid/repo.git"])
+    const controller = new AbortController()
+
+    const pending = preTurnPullAsync(bundle, CONFIG, { signal: controller.signal })
+    const until = Date.now() + 5000
+    while ((!fs.existsSync(pidFile) || fs.readFileSync(pidFile, "utf-8").trim().split("\n").length < 2) && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    controller.abort()
+    expect(await pending).toEqual({ ok: false, error: "git fetch aborted" })
+
+    const pids = fs.readFileSync(pidFile, "utf-8").trim().split("\n").map(Number)
+    const deadline = Date.now() + 3000
+    while (pids.some(alive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    expect(pids.filter(alive)).toEqual([])
+  })
+
+  it("an abort while waiting for the lock ends the wait", async () => {
+    const { bundle } = bundleWithRemote()
+    const held = tryAcquireSyncLockSync(bundle)
+    if ("busy" in held) throw new Error("lock unexpectedly busy")
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 100)
+    const result = await preTurnPullAsync(bundle, CONFIG, { signal: controller.signal })
+    held.release()
     expect(result.ok).toBe(false)
-    // The pull should NOT have been invoked because the signal was already aborted.
-    expect(childProcess.execFile).not.toHaveBeenCalled()
+    expect(result.error).toContain("aborted while waiting for the sync lock")
   })
 
-  it("when signal aborts mid-fetch, the child process receives AbortSignal", async () => {
-    // Simulate a slow fetch that we then abort.
-    let abortHandler: (() => void) | null = null
-    vi.mocked(childProcess.execFile).mockImplementation(((...args: unknown[]) => {
-      const opts = args[2] as { signal?: AbortSignal }
-      const callback = args[args.length - 1] as (err: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void
-      // Hold the callback until aborted, then reject with an AbortError.
-      if (opts.signal) {
-        opts.signal.addEventListener("abort", () => {
-          const err = Object.assign(new Error("aborted"), { name: "AbortError", code: "ABORT_ERR" })
-          callback(err, "", "")
-        })
-        abortHandler = () => { /* signal listener handles it */ }
-      }
-      return {} as unknown
-    }) as typeof childProcess.execFile)
-
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const ac = new AbortController()
-    const promise = preTurnPullAsync("/fake/agent/root", defaultConfig, { signal: ac.signal })
-    // Trigger the abort
-    ac.abort()
-    const result = await promise
+  it("returns an actionable error when the bundle is not a git repo", async () => {
+    const bundle = path.join(root, "plain.ouro")
+    fs.mkdirSync(bundle)
+    const result = await preTurnPullAsync(bundle, CONFIG)
     expect(result.ok).toBe(false)
-    expect(result.error).toMatch(/abort/i)
-    expect(abortHandler).not.toBeNull()
-    // Verify the signal was actually passed to the child.
-    expect(childProcess.execFile).toHaveBeenCalledWith(
-      "git",
-      ["pull", "origin"],
-      expect.objectContaining({ signal: ac.signal }),
-      expect.any(Function),
-    )
+    expect(result.error).toContain("git init")
   })
 
-  it("returns ok=false with error message when execFile rejects with a non-abort error", async () => {
-    vi.mocked(childProcess.execFile).mockImplementation(((...args: unknown[]) => {
-      const callback = args[args.length - 1] as (err: Error | null, stdout: string, stderr: string) => void
-      queueMicrotask(() => callback(new Error("fatal: 404 not found"), "", ""))
-      return {} as unknown
-    }) as typeof childProcess.execFile)
-
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
+  it("a fetch failure is returned with git's message", async () => {
+    const { bundle } = bundleWithRemote()
+    git(bundle, ["remote", "set-url", "origin", path.join(root, "missing.git")])
+    const result = await preTurnPullAsync(bundle, CONFIG)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("404")
-  })
-
-  it("skips the pull entirely when bundle is not a git repo", async () => {
-    existsSyncMock.mockImplementationOnce(() => false)
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("not a git repo")
-    expect(childProcess.execFile).not.toHaveBeenCalled()
-  })
-
-  it("skips the pull when no remote is configured (local-only mode)", async () => {
-    // First call (sync remote check) returns empty.
-    vi.mocked(childProcess.execFileSync).mockReturnValueOnce(Buffer.from(""))
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(true)
-    expect(childProcess.execFile).not.toHaveBeenCalled()
-  })
-
-  it("uses configured remote name in argv", async () => {
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const config: SyncConfig = { enabled: true, remote: "upstream" }
-    await preTurnPullAsync("/fake/agent/root", config)
-    expect(childProcess.execFile).toHaveBeenCalledWith(
-      "git",
-      ["pull", "upstream"],
-      expect.any(Object),
-      expect.any(Function),
-    )
-  })
-
-  it("returns ok=false when the remote check itself throws (async path)", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("fatal: not a git repository")
-    })
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("not a git repository")
-  })
-
-  it("returns ok=false with stringified error when the remote check throws a non-Error value", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      // Throw a plain string — exercises the `err instanceof Error ? ... : String(err)` branch.
-      throw "raw-string-error"
-    })
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("raw-string-error")
-  })
-
-  it("returns ok=false with stringified error when execFile callback returns a non-Error", async () => {
-    vi.mocked(childProcess.execFile).mockImplementation(((...args: unknown[]) => {
-      const callback = args[args.length - 1] as (err: unknown, stdout: string, stderr: string) => void
-      // Pass a non-Error truthy value as err — exercises the `err instanceof Error ? ... : String(err)` branch.
-      queueMicrotask(() => callback("plain string failure", "", ""))
-      return {} as unknown
-    }) as typeof childProcess.execFile)
-
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig)
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("plain string failure")
-  })
-
-  it("propagates an injected signal to the child even when the signal never aborts", async () => {
-    const ac = new AbortController()
-    const { preTurnPullAsync } = await import("../../heart/sync")
-    const result = await preTurnPullAsync("/fake/agent/root", defaultConfig, { signal: ac.signal })
-    expect(result.ok).toBe(true)
-    expect(childProcess.execFile).toHaveBeenCalledWith(
-      "git",
-      ["pull", "origin"],
-      expect.objectContaining({ signal: ac.signal }),
-      expect.any(Function),
-    )
+    expect(result.error).toMatch(/^git fetch failed: /)
   })
 })

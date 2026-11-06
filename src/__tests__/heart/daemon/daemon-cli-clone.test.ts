@@ -45,6 +45,13 @@ vi.mock("../../../heart/identity", () => ({
   })),
 }))
 
+// Bundle sync runs real git under a lock file, which this file's fs and
+// child_process mocks cannot host; its behaviour is tested in heart/sync*.test.ts.
+vi.mock("../../../heart/sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../heart/sync")>()),
+  postTurnPush: vi.fn(() => ({ ok: true })),
+}))
+
 vi.mock("../../../heart/daemon/runtime-mode", () => ({
   detectRuntimeMode: vi.fn().mockReturnValue("dev"),
 }))
