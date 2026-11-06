@@ -305,21 +305,28 @@ describe("external state grounding check", () => {
     getSettleRetryError = core.getSettleRetryError
   })
 
-  it("rejects complete when currentObligation exists but no external state verification", () => {
+  // Regression: 2026-05-08 06:18 BlueBubbles incident. `currentObligation`
+  // is set mechanically from the inbound user text in the senses pipeline, so
+  // an ordinary chat turn ("hey, can you grab milk?") would land here with
+  // `currentObligation` truthy. The old grounding check then rejected the
+  // settle and forced the agent into a retry loop where each pass delivered
+  // another near-identical iMessage. The grounding check now only fires when
+  // the agent is in a "must resolve before handoff" external-state loop —
+  // ordinary inbound chat does not require `gh pr view`.
+  it("does not reject complete on an ordinary inbound chat turn (06:18 regression)", () => {
     const result = getSettleRetryError(
-      false,        // mustResolveBeforeHandoff — false so check #5 doesn't fire
-      "complete",   // intent
+      false,        // mustResolveBeforeHandoff — ordinary inbound, no continuity clause
+      "complete",
       false,        // sawSteeringFollowUp
-      undefined,    // delegationDecision
-      false,        // sawSendMessageSelf
-      false,        // sawDescend
-      false,        // sawQuerySession
-      "merge the PR and publish", // currentObligation
-      undefined,    // innerJob
+      undefined,
+      false,
+      false,
+      false,
+      "what's the plan for tonight?", // currentObligation = raw inbound text
+      undefined,
       false,        // sawExternalStateQuery
     )
-    expect(result).toContain("verified")
-    expect(result).toContain("fresh")
+    expect(result).toBeNull()
   })
 
   it("allows complete when currentObligation exists and external state was verified", () => {

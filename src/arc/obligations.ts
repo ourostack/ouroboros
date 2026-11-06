@@ -322,9 +322,28 @@ export function advanceReturnObligation(
   return updated
 }
 
-export function listActiveReturnObligations(agentName: string): ReturnObligation[] {
+// Inner return obligations that have been sitting in queued/running state
+// longer than this are auto-pruned from the "held work items" injection.
+// Anything older is overwhelmingly noise: the agent has had many turns to
+// resolve them and has not, and reinjecting them every turn just burns
+// attention without producing progress. The file stays on disk and can
+// still be inspected or surfaced explicitly; it just no longer gets
+// re-piped into the active prompt.
+const RETURN_OBLIGATION_INJECTION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+
+// Strict allow-list of statuses that should appear in the "held work items"
+// section. Anything else (including legacy/migrated `"fulfilled"` values left
+// over from before the ObligationStatus → ReturnObligationStatus split, plus
+// any future invalid value that slips past the `as any` casts at the
+// surface-tool boundary) is treated as terminal — i.e., we do not re-inject
+// it. This is a read-time defense; the underlying file is left as-is.
+const ACTIVE_RETURN_OBLIGATION_STATUSES: ReadonlySet<ReturnObligationStatus> = new Set(["queued", "running"])
+
+export function listActiveReturnObligations(agentName: string, options: { now?: () => number } = {}): ReturnObligation[] {
   const all = readJsonDir<ReturnObligation>(getReturnObligationsDir(agentName))
+  const nowMs = (options.now ?? Date.now)()
   return all
-    .filter((parsed) => parsed.status === "queued" || parsed.status === "running")
+    .filter((parsed) => ACTIVE_RETURN_OBLIGATION_STATUSES.has(parsed.status))
+    .filter((parsed) => nowMs - parsed.createdAt <= RETURN_OBLIGATION_INJECTION_MAX_AGE_MS)
     .sort((a, b) => a.createdAt - b.createdAt)
 }

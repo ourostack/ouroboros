@@ -1,0 +1,573 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { emitNervesEvent } from "../nerves/runtime"
+import {
+  buildPlaintextStoredMailMessage,
+  readDecryptedMailMessage,
+  readPrivateEnvelope,
+  type DecryptedMailMessage,
+  type MailClassification,
+  type MailCompartmentKind,
+  type MailDecisionRecord,
+  type MailEnvelopeInput,
+  type MailIngestProvenance,
+  type MailOutboundRecord,
+  type MailPlacement,
+  type MailroomRegistry,
+  type MailboxRole,
+  type ResolvedMailAddress,
+  type MailScreenerCandidate,
+  type MailScreenerCandidateStatus,
+  type StoredMailMessage,
+} from "./core"
+import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument, type MailSearchCacheOptions } from "./search-cache"
+import { migrateLocalMailroomToPlaintext } from "./migration"
+
+export interface MailAccessLogEntry {
+  id: string
+  agentId: string
+  messageId?: string
+  threadId?: string
+  tool: string
+  reason: string
+  session?: string
+  mailboxRole?: MailboxRole
+  compartmentKind?: MailCompartmentKind
+  ownerEmail?: string | null
+  source?: string | null
+  accessedAt: string
+}
+
+export type MailAccessLogListing = MailAccessLogEntry[] & { malformedEntriesSkipped?: number }
+
+export interface MailListFilters {
+  agentId: string
+  placement?: MailPlacement
+  compartmentKind?: "native" | "delegated"
+  source?: string
+  limit?: number
+}
+
+export interface MailMessageIndexRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  compartmentKind: MailCompartmentKind
+  placement: MailPlacement
+  source?: string
+  receivedAt: string
+}
+
+export interface MailScreenerCandidateFilters {
+  agentId: string
+  status?: MailScreenerCandidateStatus
+  placement?: MailPlacement
+  limit?: number
+}
+
+export interface MailroomStore {
+  putRawMessage(input: {
+    resolved: ResolvedMailAddress
+    envelope: MailEnvelopeInput
+    rawMime: Buffer
+    receivedAt?: Date
+    ingest?: MailIngestProvenance
+    classification?: MailClassification
+  }): Promise<{ created: boolean; message: StoredMailMessage }>
+  getMessage(id: string): Promise<StoredMailMessage | null>
+  listMessages(filters: MailListFilters): Promise<StoredMailMessage[]>
+  listMessageIndexRecords?(filters: MailListFilters): Promise<MailMessageIndexRecord[] | null>
+  getIndexedMessageById?(id: string): Promise<StoredMailMessage | null>
+  updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null>
+  /**
+   * Returns the original RFC822 bytes for a stored message. For plaintext-form
+   * messages this reads `.eml` directly; for encrypted-form messages this
+   * decrypts using `privateKeys`. Returns `null` when the raw artifact is missing.
+   */
+  readRawMime(message: StoredMailMessage, privateKeys: Record<string, string>): Promise<Buffer | null>
+  putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate>
+  updateScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate>
+  listScreenerCandidates(filters: MailScreenerCandidateFilters): Promise<MailScreenerCandidate[]>
+  recordMailDecision(entry: Omit<MailDecisionRecord, "schemaVersion" | "id" | "createdAt"> & { id?: string; createdAt?: string }): Promise<MailDecisionRecord>
+  listMailDecisions(agentId: string): Promise<MailDecisionRecord[]>
+  upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord>
+  getMailOutbound(id: string): Promise<MailOutboundRecord | null>
+  listMailOutbound(agentId: string, options?: { limit?: number }): Promise<MailOutboundRecord[]>
+  recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry>
+  listAccessLog(agentId: string): Promise<MailAccessLogListing>
+}
+
+export interface FileMailroomStoreOptions {
+  rootDir: string
+  mailSearchCache?: MailSearchCacheOptions
+  /**
+   * When provided, the store runs the plaintext-migration cleanup once at
+   * construction. The migration is idempotent — on a fresh or already-migrated
+   * bundle it is a near-zero-cost no-op.
+   */
+  migrateAgentId?: string
+}
+
+function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true })
+}
+
+function applyOptionalLimit<T>(items: T[], limit: number | undefined): T[] {
+  return typeof limit === "number" ? items.slice(0, limit) : items
+}
+
+function readJson<T>(filePath: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T
+  } catch {
+    return null
+  }
+}
+
+function writeJson(filePath: string, value: unknown): void {
+  ensureDir(path.dirname(filePath))
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+}
+
+function compareNewestFirst(left: StoredMailMessage, right: StoredMailMessage): number {
+  return Date.parse(right.receivedAt) - Date.parse(left.receivedAt)
+}
+
+function compareCandidatesNewestFirst(left: MailScreenerCandidate, right: MailScreenerCandidate): number {
+  return Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt)
+}
+
+function sourceMatchesFilter(source: string | undefined, filter: string | undefined): boolean {
+  if (!filter) return true
+  if (!source) return false
+  return source.toLowerCase() === filter.toLowerCase()
+}
+
+export class FileMailroomStore implements MailroomStore {
+  private readonly rootDir: string
+  private readonly mailSearchCache: MailSearchCacheOptions
+
+  constructor(options: FileMailroomStoreOptions) {
+    this.rootDir = options.rootDir
+    this.mailSearchCache = options.mailSearchCache ?? {
+      cacheDirForAgent: () => path.resolve(this.rootDir, "..", "mail-search"),
+    }
+    ensureDir(this.messagesDir)
+    ensureDir(this.rawDir)
+    ensureDir(this.logsDir)
+    ensureDir(this.candidatesDir)
+    ensureDir(this.decisionsDir)
+    ensureDir(this.outboundDir)
+    if (options.migrateAgentId) {
+      const searchCacheRoot = this.mailSearchCache.cacheDirForAgent?.(options.migrateAgentId)
+        ?? path.resolve(this.rootDir, "..", "mail-search")
+      migrateLocalMailroomToPlaintext({
+        agentId: options.migrateAgentId,
+        mailroomRoot: this.rootDir,
+        searchCacheRoot,
+      })
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_file_store_init",
+      message: "file mailroom store initialized",
+      meta: { rootDir: this.rootDir, migrated: options.migrateAgentId !== undefined },
+    })
+  }
+
+  private get messagesDir(): string {
+    return path.join(this.rootDir, "messages")
+  }
+
+  private get rawDir(): string {
+    return path.join(this.rootDir, "raw")
+  }
+
+  private get logsDir(): string {
+    return path.join(this.rootDir, "access-log")
+  }
+
+  private get candidatesDir(): string {
+    return path.join(this.rootDir, "candidates")
+  }
+
+  private get decisionsDir(): string {
+    return path.join(this.rootDir, "decisions")
+  }
+
+  private get outboundDir(): string {
+    return path.join(this.rootDir, "outbound")
+  }
+
+  private messagePath(id: string): string {
+    return path.join(this.messagesDir, `${id}.json`)
+  }
+
+  private candidatePath(id: string): string {
+    return path.join(this.candidatesDir, `${id}.json`)
+  }
+
+  private rawPath(objectName: string): string {
+    return path.join(this.rootDir, objectName)
+  }
+
+  private decisionLogPath(agentId: string): string {
+    return path.join(this.decisionsDir, `${agentId}.jsonl`)
+  }
+
+  private outboundPath(id: string): string {
+    return path.join(this.outboundDir, `${id}.json`)
+  }
+
+  private accessLogPath(agentId: string): string {
+    return path.join(this.logsDir, `${agentId}.jsonl`)
+  }
+
+  async putRawMessage(input: {
+    resolved: ResolvedMailAddress
+    envelope: MailEnvelopeInput
+    rawMime: Buffer
+    receivedAt?: Date
+    ingest?: MailIngestProvenance
+    classification?: MailClassification
+  }): Promise<{ created: boolean; message: StoredMailMessage }> {
+    const { message, rawMime, privateEnvelope, candidate } = await buildPlaintextStoredMailMessage(input)
+    const existing = readJson<StoredMailMessage>(this.messagePath(message.id))
+    if (existing) {
+      upsertMailSearchCacheDocument(existing, privateEnvelope, this.mailSearchCache)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_store_dedupe",
+        message: "mailroom store deduped existing message",
+        meta: { id: message.id, agentId: message.agentId },
+      })
+      return { created: false, message: existing }
+    }
+    ensureDir(path.dirname(this.rawPath(message.rawObject)))
+    fs.writeFileSync(this.rawPath(message.rawObject), rawMime)
+    writeJson(this.messagePath(message.id), message)
+    upsertMailSearchCacheDocument(message, privateEnvelope, this.mailSearchCache)
+    if (candidate) {
+      writeJson(this.candidatePath(candidate.id), candidate)
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_file_store_plaintext_written",
+      message: "mailroom store wrote plaintext message",
+      meta: { id: message.id, agentId: message.agentId, candidate: candidate !== undefined },
+    })
+    return { created: true, message }
+  }
+
+  async getMessage(id: string): Promise<StoredMailMessage | null> {
+    const message = readJson<StoredMailMessage>(this.messagePath(id))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_store_message_read",
+      message: "mailroom store read message",
+      meta: { id, found: message !== null },
+    })
+    return message
+  }
+
+  async listMessages(filters: MailListFilters): Promise<StoredMailMessage[]> {
+    const messages = fs.readdirSync(this.messagesDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => readJson<StoredMailMessage>(path.join(this.messagesDir, name)))
+      .filter((message): message is StoredMailMessage => message !== null)
+      .filter((message) => message.agentId === filters.agentId)
+      .filter((message) => filters.placement ? message.placement === filters.placement : true)
+      .filter((message) => filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true)
+      .filter((message) => sourceMatchesFilter(message.source, filters.source))
+      .sort(compareNewestFirst)
+    const limited = applyOptionalLimit(messages, filters.limit)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_store_messages_listed",
+      message: "mailroom store listed messages",
+      meta: { agentId: filters.agentId, count: limited.length },
+    })
+    return limited
+  }
+
+  async updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null> {
+    const message = readJson<StoredMailMessage>(this.messagePath(id))
+    if (!message) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_store_message_placement_updated",
+        message: "mailroom store message placement update missed",
+        meta: { id, placement, found: false },
+      })
+      return null
+    }
+    const updated: StoredMailMessage = { ...message, placement }
+    writeJson(this.messagePath(id), updated)
+    syncMailSearchCacheMetadata(updated, this.mailSearchCache)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_store_message_placement_updated",
+      message: "mailroom store updated message placement",
+      meta: { id, placement, found: true },
+    })
+    return updated
+  }
+
+  async readRawMime(message: StoredMailMessage, _privateKeys: Record<string, string>): Promise<Buffer | null> {
+    const filePath = this.rawPath(message.rawObject)
+    let buffer: Buffer | null
+    try {
+      buffer = fs.readFileSync(filePath)
+    } catch {
+      buffer = null
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_store_raw_read",
+      message: "mailroom store read raw plaintext mime",
+      meta: { id: message.id, found: buffer !== null },
+    })
+    return buffer
+  }
+
+  async putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate> {
+    writeJson(this.candidatePath(candidate.id), candidate)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_screener_candidate_written",
+      message: "mail screener candidate written",
+      meta: { id: candidate.id, agentId: candidate.agentId, status: candidate.status },
+    })
+    return candidate
+  }
+
+  async updateScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate> {
+    return this.putScreenerCandidate(candidate)
+  }
+
+  async listScreenerCandidates(filters: MailScreenerCandidateFilters): Promise<MailScreenerCandidate[]> {
+    const candidates = fs.readdirSync(this.candidatesDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => readJson<MailScreenerCandidate>(path.join(this.candidatesDir, name)))
+      .filter((candidate): candidate is MailScreenerCandidate => candidate !== null)
+      .filter((candidate) => candidate.agentId === filters.agentId)
+      .filter((candidate) => filters.status ? candidate.status === filters.status : true)
+      .filter((candidate) => filters.placement ? candidate.placement === filters.placement : true)
+      .sort(compareCandidatesNewestFirst)
+      .slice(0, filters.limit ?? 50)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_screener_candidates_listed",
+      message: "mail screener candidates listed",
+      meta: { agentId: filters.agentId, count: candidates.length },
+    })
+    return candidates
+  }
+
+  async recordMailDecision(entry: Omit<MailDecisionRecord, "schemaVersion" | "id" | "createdAt"> & { id?: string; createdAt?: string }): Promise<MailDecisionRecord> {
+    const complete: MailDecisionRecord = {
+      schemaVersion: 1,
+      ...entry,
+      id: entry.id ?? `decision_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: entry.createdAt ?? new Date().toISOString(),
+    }
+    ensureDir(this.decisionsDir)
+    fs.appendFileSync(this.decisionLogPath(entry.agentId), `${JSON.stringify(complete)}\n`, "utf-8")
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_decision_recorded",
+      message: "mail decision recorded",
+      meta: { agentId: entry.agentId, messageId: entry.messageId, action: entry.action },
+    })
+    return complete
+  }
+
+  async listMailDecisions(agentId: string): Promise<MailDecisionRecord[]> {
+    const filePath = this.decisionLogPath(agentId)
+    if (!fs.existsSync(filePath)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_decisions_listed",
+        message: "mail decisions listed",
+        meta: { agentId, count: 0 },
+      })
+      return []
+    }
+    const entries = fs.readFileSync(filePath, "utf-8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as MailDecisionRecord)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_decisions_listed",
+      message: "mail decisions listed",
+      meta: { agentId, count: entries.length },
+    })
+    return entries
+  }
+
+  async upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord> {
+    writeJson(this.outboundPath(record.id), record)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_record_written",
+      message: "mail outbound record written",
+      meta: { agentId: record.agentId, id: record.id, status: record.status },
+    })
+    return record
+  }
+
+  async getMailOutbound(id: string): Promise<MailOutboundRecord | null> {
+    const record = readJson<MailOutboundRecord>(this.outboundPath(id))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_record_read",
+      message: "mail outbound record read",
+      meta: { id, found: record !== null },
+    })
+    return record
+  }
+
+  async listMailOutbound(agentId: string, options: { limit?: number } = {}): Promise<MailOutboundRecord[]> {
+    const records = fs.readdirSync(this.outboundDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => readJson<MailOutboundRecord>(path.join(this.outboundDir, name)))
+      .filter((record): record is MailOutboundRecord => record !== null)
+      .filter((record) => record.agentId === agentId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    const limited = typeof options.limit === "number" && options.limit > 0
+      ? records.slice(0, options.limit)
+      : records
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_records_listed",
+      message: "mail outbound records listed",
+      meta: { agentId, count: limited.length, scanned: records.length },
+    })
+    return limited
+  }
+
+  async recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry> {
+    const complete: MailAccessLogEntry = {
+      ...entry,
+      id: `access_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      accessedAt: new Date().toISOString(),
+    }
+    ensureDir(this.logsDir)
+    fs.appendFileSync(this.accessLogPath(entry.agentId), `${JSON.stringify(complete)}\n`, "utf-8")
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_access_recorded",
+      message: "mail access recorded",
+      meta: { agentId: entry.agentId, messageId: entry.messageId ?? null, tool: entry.tool },
+    })
+    return complete
+  }
+
+  async listAccessLog(agentId: string): Promise<MailAccessLogListing> {
+    const filePath = this.accessLogPath(agentId)
+    if (!fs.existsSync(filePath)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_access_log_listed",
+        message: "mail access log listed",
+        meta: { agentId, count: 0 },
+      })
+      return []
+    }
+    const lines = fs.readFileSync(filePath, "utf-8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+    const entries = [] as MailAccessLogListing
+    let malformedEntriesSkipped = 0
+    for (const line of lines) {
+      try {
+        entries.push(JSON.parse(line) as MailAccessLogEntry)
+      } catch {
+        malformedEntriesSkipped += 1
+      }
+    }
+    if (malformedEntriesSkipped > 0) {
+      entries.malformedEntriesSkipped = malformedEntriesSkipped
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.mail_access_log_malformed_lines_skipped",
+        message: "skipped malformed file-backed mail access log lines",
+        meta: { agentId, malformedEntriesSkipped },
+      })
+    }
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_access_log_listed",
+      message: "mail access log listed",
+      meta: { agentId, count: entries.length, malformedEntriesSkipped },
+    })
+    return entries
+  }
+}
+
+export async function ingestRawMailToStore(input: {
+  registry: MailroomRegistry
+  store: MailroomStore
+  envelope: MailEnvelopeInput
+  rawMime: Buffer
+  receivedAt?: Date
+  ingest?: MailIngestProvenance
+  authentication?: import("./core").MailAuthenticationSummary
+}): Promise<{ accepted: StoredMailMessage[]; rejectedRecipients: string[] }> {
+  const { resolveMailAddress } = await import("./core")
+  const { classifyResolvedMailPlacement } = await import("./policy")
+  const accepted: StoredMailMessage[] = []
+  const rejectedRecipients: string[] = []
+  for (const recipient of input.envelope.rcptTo) {
+    const resolved = resolveMailAddress(input.registry, recipient)
+    if (!resolved) {
+      rejectedRecipients.push(recipient)
+      continue
+    }
+    const classification = classifyResolvedMailPlacement({
+      registry: input.registry,
+      resolved,
+      sender: input.envelope.mailFrom,
+      ...(input.authentication ? { authentication: input.authentication } : {}),
+    })
+    const result = await input.store.putRawMessage({
+      resolved,
+      envelope: input.envelope,
+      rawMime: input.rawMime,
+      receivedAt: input.receivedAt,
+      ...(input.ingest ? { ingest: input.ingest } : {}),
+      classification,
+    })
+    accepted.push(result.message)
+  }
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_ingest_complete",
+    message: "mail ingest completed",
+    meta: { accepted: accepted.length, rejected: rejectedRecipients.length },
+  })
+  return { accepted, rejectedRecipients }
+}
+
+/**
+ * Reader-side convenience: produce a `DecryptedMailMessage[]` from any mix of
+ * stored variants. Plaintext-form messages pass through without touching
+ * `privateKeys`; encrypted-form messages decrypt with the matching key.
+ * Throws `MissingPrivateMailKeyError` on the first encrypted message whose key
+ * is absent — callers that want per-message resilience should call
+ * `readPrivateEnvelope` in their own loop.
+ */
+export function decryptMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): DecryptedMailMessage[] {
+  const decrypted = messages.map((message) => readDecryptedMailMessage(message, privateKeys))
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_messages_decrypted",
+    message: "mail messages projected to decrypted view",
+    meta: { count: decrypted.length },
+  })
+  return decrypted
+}
+
+export { readPrivateEnvelope }
