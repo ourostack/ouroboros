@@ -105,11 +105,14 @@ function processStartTime(pid: number): string | null {
   return readPsStart(pid)
 }
 
-/** This process's own start time cannot change, so it is read once, lazily. */
+/** This process's own start time cannot change, so it is read once, lazily, when the read succeeds. */
 let ownStartTime: string | null | undefined
 function ownProcessStartTime(): string | null {
-  if (ownStartTime === undefined) ownStartTime = processStartTime(process.pid)
-  return ownStartTime
+  if (ownStartTime !== undefined) return ownStartTime
+  // Cache only a successful read; a failed one is retried on the next attempt.
+  const read = processStartTime(process.pid)
+  if (read !== null) ownStartTime = read
+  return read
 }
 
 /** /proc ticks are all digits; `ps` lstart never is. Values of different formats cannot be compared. */
@@ -298,6 +301,11 @@ function reclaim(lockPath: string, staleRaw: string): SyncLockHandle | SyncLockB
     const verdict = judge(current)
     if (!verdict.stale || current.raw !== staleRaw) return { busy: true, holderPid: verdict.holderPid }
     __testHooks.beforeUnlink?.()
+    // Accepted residual (M14): between this ownership check and the unlink below, a guard that was
+    // judged stale and cleared by another reclaimer can still let a third contender reclaim the
+    // lock in the same gap, so two holders are possible when three reclaimers meet a guard left by
+    // a crashed one. It needs a crash plus a 30 s pause plus three contenders in one window, and
+    // every closing option (a lock-file lease, a held flock) costs more than the exposure.
     if (!guardOwned(guardPath, token)) return { busy: true, holderPid: null }
     fs.rmSync(lockPath, { force: true })
     __testHooks.afterUnlink?.()
@@ -359,25 +367,30 @@ export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | Sync
   return result
 }
 
+/** The signal's own reason, or an AbortError when it has none. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The sync lock wait was aborted", "AbortError")
+}
+
 function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
     const onAbort = (): void => {
       clearTimeout(timer)
-      reject(new DOMException("The sync lock wait was aborted", "AbortError"))
+      reject(abortReason(signal as AbortSignal))
     }
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort)
       resolve()
     }, ms)
-    // A pending wait must not keep the process alive.
-    timer.unref()
+    // The timer stays ref'd on purpose: a one-shot caller (`ouro sync`) that waits on a busy lock
+    // must keep the process alive until it gets the lock or times out.
     signal?.addEventListener("abort", onAbort, { once: true })
   })
 }
 
 /**
  * Polls every 100 ms for up to `waitMs`. `Infinity` waits until the lock is acquired; NaN or a
- * negative value is a single attempt. An aborted `signal` rejects with an AbortError.
+ * negative value is a single attempt. An aborted `signal` rejects with its reason (an AbortError by default).
  */
 export async function acquireSyncLock(
   agentRoot: string,
@@ -387,7 +400,7 @@ export async function acquireSyncLock(
   const lockPath = lockFilePath(agentRoot)
   const deadline = Date.now() + (waitMs > 0 ? waitMs : 0)
   for (;;) {
-    if (signal?.aborted) throw new DOMException("The sync lock wait was aborted", "AbortError")
+    if (signal?.aborted) throw abortReason(signal)
     const result = attemptOnce(lockPath)
     if (!("busy" in result)) return result
     if (Date.now() >= deadline) {

@@ -4,6 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import type { Logger } from "../../nerves"
 import { setRuntimeLogger } from "../../nerves/runtime"
+import ts from "typescript"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   SYNC_LOCK_FILE,
@@ -40,6 +41,30 @@ async function holdingChild(): Promise<ChildProcess> {
   children.push(child)
   writeLock({ pid: child.pid, token: "child-token", procStart: null })
   return child
+}
+
+/**
+ * Transpile sync-lock.ts to CommonJS in `dir` (nerves stubbed) and run a real child process that
+ * waits on the lock. There is no tsx in this repo, so the child cannot import the TypeScript.
+ */
+function spawnWaiter(dir: string, waitMs: number): { done: Promise<{ code: number | null; out: string }> } {
+  const source = fs.readFileSync(path.resolve(__dirname, "../../heart/sync-lock.ts"), "utf8")
+  const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } })
+  fs.mkdirSync(path.join(dir, "heart"))
+  fs.mkdirSync(path.join(dir, "nerves"))
+  fs.writeFileSync(path.join(dir, "heart", "sync-lock.js"), js.outputText)
+  fs.writeFileSync(path.join(dir, "nerves", "runtime.js"), "exports.emitNervesEvent = () => {}\n")
+  const script = `
+    const m = require(${JSON.stringify(path.join(dir, "heart", "sync-lock.js"))})
+    m.acquireSyncLock(${JSON.stringify(root)}, ${waitMs}).then((r) => {
+      if (r.busy) { console.log("busy"); return }
+      console.log("acquired"); r.release()
+    })`
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "inherit"] })
+  children.push(child)
+  let out = ""
+  child.stdout!.on("data", (d) => (out += String(d)))
+  return { done: new Promise((resolve) => child.on("exit", (code) => resolve({ code, out }))) }
 }
 
 beforeEach(() => {
@@ -651,22 +676,75 @@ describe("minor fixes", () => {
     expect(result).toEqual({ busy: true, holderPid: process.ppid })
   })
 
-  it("the poll timer does not keep the process alive", async () => {
-    writeLock({ pid: process.ppid, token: "live", procStart: null })
-    const timers: NodeJS.Timeout[] = []
-    const realSetTimeout = globalThis.setTimeout
-    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
-      const timer = realSetTimeout(...args)
-      timers.push(timer)
-      return timer
-    }) as typeof setTimeout
+  it("a pending wait keeps a one-shot process alive until it gets the lock", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-lock-build-"))
     try {
-      await acquireSyncLock(root, 150)
+      const child = spawnWaiter(dir, 20_000)
+      writeLock({ pid: process.pid, token: "parent-holds", procStart: null })
+      await new Promise((r) => setTimeout(r, 600))
+      fs.rmSync(lockPath())
+      const { code, out } = await child.done
+      expect(out).toContain("acquired")
+      expect(code).toBe(0)
     } finally {
-      globalThis.setTimeout = realSetTimeout
+      fs.rmSync(dir, { recursive: true, force: true })
     }
-    expect(timers.length).toBeGreaterThan(0)
-    expect(timers.every((t) => !t.hasRef())).toBe(true)
+  }, 30_000)
+
+  it("a pending wait keeps a one-shot process alive until it times out", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-lock-build-"))
+    try {
+      writeLock({ pid: process.pid, token: "parent-holds", procStart: null })
+      const { code, out } = await spawnWaiter(dir, 400).done
+      expect(out).toContain("busy")
+      expect(code).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it("a failed first read of our own start time is retried, not cached", () => {
+    __testHooks.readProcStat = () => null
+    let calls = 0
+    __testHooks.readPsStart = () => (++calls === 1 ? null : "Thu Nov  5 09:00:00 2026")
+    const first = tryAcquireSyncLockSync(root) as { release(): void }
+    expect(readLock().procStart).toBeNull()
+    first.release()
+    const second = tryAcquireSyncLockSync(root) as { release(): void }
+    expect(readLock().procStart).toBe("Thu Nov  5 09:00:00 2026")
+    second.release()
+  })
+
+  it("an abort rejects with the signal's own reason", async () => {
+    writeLock({ pid: process.ppid, token: "live", procStart: null })
+    const controller = new AbortController()
+    const reason = new Error("daemon stopping")
+    setTimeout(() => controller.abort(reason), 100)
+    await expect(acquireSyncLock(root, 5000, controller.signal)).rejects.toBe(reason)
+  })
+
+  it("an abort without a reason falls back to an AbortError, before and during a wait", async () => {
+    writeLock({ pid: process.ppid, token: "live", procStart: null })
+    let listener: (() => void) | undefined
+    const reasonless = {
+      aborted: false,
+      reason: undefined,
+      addEventListener: (_: string, fn: () => void) => {
+        listener = fn
+      },
+      removeEventListener() {},
+    }
+    setTimeout(() => {
+      reasonless.aborted = true
+      listener?.()
+    }, 100)
+    await expect(acquireSyncLock(root, 5000, reasonless as unknown as AbortSignal)).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    reasonless.aborted = true
+    await expect(acquireSyncLock(root, 5000, reasonless as unknown as AbortSignal)).rejects.toMatchObject({
+      name: "AbortError",
+    })
   })
 
   it("a failed write leaves no empty lock behind", () => {
