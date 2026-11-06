@@ -35,7 +35,7 @@ describe("daemon-health", () => {
 
   function makeHealthState(overrides: Partial<DaemonHealthState> = {}): DaemonHealthState {
     return {
-      status: "running",
+      status: "healthy",
       mode: "prod",
       pid: 12345,
       startedAt: "2026-03-27T10:00:00.000Z",
@@ -69,7 +69,7 @@ describe("daemon-health", () => {
       expect(fs.existsSync(healthPath)).toBe(true)
       const raw = fs.readFileSync(healthPath, "utf-8")
       const parsed = JSON.parse(raw) as DaemonHealthState
-      expect(parsed.status).toBe("running")
+      expect(parsed.status).toBe("healthy")
       expect(parsed.mode).toBe("prod")
       expect(parsed.pid).toBe(12345)
     })
@@ -105,14 +105,14 @@ describe("daemon-health", () => {
       const writer = new DaemonHealthWriter(healthPath)
 
       // Write first state
-      writer.writeHealth(makeHealthState({ status: "running" }))
+      writer.writeHealth(makeHealthState({ status: "healthy" }))
       const first = JSON.parse(fs.readFileSync(healthPath, "utf-8")) as DaemonHealthState
-      expect(first.status).toBe("running")
+      expect(first.status).toBe("healthy")
 
       // Write second state — should atomically replace
-      writer.writeHealth(makeHealthState({ status: "stopping" }))
+      writer.writeHealth(makeHealthState({ status: "down" }))
       const second = JSON.parse(fs.readFileSync(healthPath, "utf-8")) as DaemonHealthState
-      expect(second.status).toBe("stopping")
+      expect(second.status).toBe("down")
     })
 
     it("creates parent directories if they do not exist", () => {
@@ -246,7 +246,7 @@ describe("daemon-health", () => {
 
       const result = readHealth(healthPath)
       expect(result).not.toBeNull()
-      expect(result!.status).toBe("running")
+      expect(result!.status).toBe("healthy")
       expect(result!.pid).toBe(12345)
     })
 
@@ -320,7 +320,29 @@ describe("daemon-health", () => {
 
       const result = readHealth(healthPath)
       expect(result).not.toBeNull()
-      expect(result!.status).toBe("running")
+      expect(result!.status).toBe("healthy")
+    })
+
+    it("returns null when status is a string but not a valid DaemonStatus", () => {
+      // Defensive parse: the file has every required field, but `status`
+      // is junk (not in the DaemonStatus union). The type-guard tightening
+      // in Unit 1b means this path now rejects it instead of widening.
+      const dir = makeTmpDir()
+      const healthPath = path.join(dir, "daemon-health.json")
+      fs.writeFileSync(healthPath, JSON.stringify({
+        status: "banana",
+        mode: "prod",
+        pid: 1,
+        startedAt: "2026-01-01",
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      }), "utf-8")
+
+      const result = readHealth(healthPath)
+      expect(result).toBeNull()
     })
   })
 

@@ -48,6 +48,7 @@ export interface FailoverContext {
   errorSummary: string
   classification: ProviderErrorClassification
   currentProvider: AgentProvider
+  currentModel: string
   currentLane: ProviderLane
   agentName: string
   workingProviders: AgentProvider[]
@@ -265,6 +266,7 @@ export function buildFailoverContext(
     errorSummary,
     classification,
     currentProvider,
+    currentModel,
     currentLane,
     agentName,
     workingProviders,
@@ -373,4 +375,52 @@ export async function runMachineProviderFailoverInventory(
     },
   })
   return inventory
+}
+
+export type FailoverSwitchValidationResult =
+  | { ok: true }
+  | { ok: false; classification: ProviderErrorClassification; message: string }
+
+export interface ValidateFailoverSwitchCandidateOptions {
+  ping?: typeof pingProvider
+  refreshPool?: typeof refreshProviderCredentialPool
+}
+
+/**
+ * Re-verify a failover candidate is actually reachable right before we mutate
+ * provider state. The inventory ping that produced the candidate may be stale
+ * (creds revoked between inventory and reply); without this preflight, an
+ * agent-driven "switch to <provider>" can move the lane onto an unreachable
+ * provider and brick the next turn.
+ */
+export async function validateFailoverSwitchCandidate(
+  agentName: string,
+  candidate: { provider: AgentProvider; model: string },
+  options: ValidateFailoverSwitchCandidateOptions = {},
+): Promise<FailoverSwitchValidationResult> {
+  const ping = options.ping ?? pingProvider
+  const refreshPool = options.refreshPool ?? refreshProviderCredentialPool
+
+  const poolResult = await refreshPool(agentName)
+  if (!poolResult.ok) {
+    return {
+      ok: false,
+      classification: "auth-failure",
+      message: `provider credential pool unavailable (${poolResult.reason}): ${poolResult.error}`,
+    }
+  }
+  const record = poolResult.pool.providers[candidate.provider]
+  if (!record) {
+    return {
+      ok: false,
+      classification: "auth-failure",
+      message: `no credentials configured for ${candidate.provider}`,
+    }
+  }
+  const config = { ...record.credentials, ...record.config } as unknown as PingProviderConfig
+  const result = await ping(candidate.provider, config, { model: candidate.model })
+  if (!result.ok) {
+    return { ok: false, classification: result.classification, message: result.message }
+  }
+  return { ok: true }
 }

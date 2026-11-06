@@ -97,7 +97,6 @@ function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
       title: "Heartbeat check-in",
       cadence: "30m",
       status: "active",
-      lastRun: "null",
       created: now.toISOString(),
     },
     "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Journal anything important.",

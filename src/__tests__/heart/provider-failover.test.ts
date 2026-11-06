@@ -25,6 +25,7 @@ import {
   formatCredentialProvenanceLabel,
   handleFailoverReply,
   runMachineProviderFailoverInventory,
+  validateFailoverSwitchCandidate,
 } from "../../heart/provider-failover"
 
 function emitTestEvent(testName: string): void {
@@ -295,5 +296,108 @@ describe("provider failover", () => {
       vi.doUnmock("../../heart/provider-ping")
       vi.resetModules()
     }
+  })
+
+  describe("validateFailoverSwitchCandidate", () => {
+    it("returns ok when the candidate has credentials and ping succeeds", async () => {
+      emitTestEvent("validate switch candidate ok")
+      const refreshPool = vi.fn().mockResolvedValue(okPool({
+        anthropic: {
+          provider: "anthropic",
+          revision: "rev_a",
+          updatedAt: "2026-04-13T00:00:00.000Z",
+          credentials: { setupToken: "tok" },
+          config: {},
+          provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+        },
+      }))
+      const ping = vi.fn().mockResolvedValue({ ok: true } as const)
+
+      const result = await validateFailoverSwitchCandidate(
+        "slugger",
+        { provider: "anthropic", model: "claude-opus-4-6" },
+        { ping: ping as never, refreshPool: refreshPool as never },
+      )
+
+      expect(result).toEqual({ ok: true })
+      expect(refreshPool).toHaveBeenCalledWith("slugger")
+      expect(ping).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
+    })
+
+    it("refuses when the candidate has no credentials in the pool", async () => {
+      emitTestEvent("validate switch candidate missing creds")
+      const refreshPool = vi.fn().mockResolvedValue(okPool({})) // pool exists but anthropic missing
+      const ping = vi.fn()
+
+      const result = await validateFailoverSwitchCandidate(
+        "slugger",
+        { provider: "anthropic", model: "claude-opus-4-6" },
+        { ping: ping as never, refreshPool: refreshPool as never },
+      )
+
+      expect(result).toEqual({
+        ok: false,
+        classification: "auth-failure",
+        message: "no credentials configured for anthropic",
+      })
+      expect(ping).not.toHaveBeenCalled()
+    })
+
+    it("refuses when the credential pool itself cannot be loaded", async () => {
+      emitTestEvent("validate switch candidate pool unavailable")
+      const refreshPool = vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "unavailable",
+        poolPath: "vault:slugger:providers/*",
+        error: "vault locked",
+      })
+      const ping = vi.fn()
+
+      const result = await validateFailoverSwitchCandidate(
+        "slugger",
+        { provider: "anthropic", model: "claude-opus-4-6" },
+        { ping: ping as never, refreshPool: refreshPool as never },
+      )
+
+      expect(result).toMatchObject({
+        ok: false,
+        classification: "auth-failure",
+      })
+      if (result.ok) throw new Error("expected refusal")
+      expect(result.message).toContain("unavailable")
+      expect(result.message).toContain("vault locked")
+      expect(ping).not.toHaveBeenCalled()
+    })
+
+    it("refuses when the candidate's credentials are present but the ping fails", async () => {
+      emitTestEvent("validate switch candidate ping fails")
+      const refreshPool = vi.fn().mockResolvedValue(okPool({
+        anthropic: {
+          provider: "anthropic",
+          revision: "rev_a",
+          updatedAt: "2026-04-13T00:00:00.000Z",
+          credentials: { setupToken: "stale" },
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "2026-04-13T00:00:00.000Z" },
+        },
+      }))
+      const ping = vi.fn().mockResolvedValue({
+        ok: false,
+        classification: "auth-failure",
+        message: "401 token expired",
+      } as const)
+
+      const result = await validateFailoverSwitchCandidate(
+        "slugger",
+        { provider: "anthropic", model: "claude-opus-4-6" },
+        { ping: ping as never, refreshPool: refreshPool as never },
+      )
+
+      expect(result).toEqual({
+        ok: false,
+        classification: "auth-failure",
+        message: "401 token expired",
+      })
+    })
   })
 })

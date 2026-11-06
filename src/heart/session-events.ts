@@ -191,6 +191,27 @@ function normalizeContent(content: unknown): SessionEventContent {
     .map((part) => ({ ...part }))
 }
 
+const SYNTHETIC_TIMESTAMP_PREFIX_RE = /^(?:(?:\[(?:just now|-\d+[mhd])\])\s*)+/i
+
+function stripSyntheticTimestampPrefix(text: string): string {
+  return text.replace(SYNTHETIC_TIMESTAMP_PREFIX_RE, "")
+}
+
+function sanitizeConversationContent(
+  role: SessionEventRole,
+  content: SessionEventContent,
+): SessionEventContent {
+  if (role !== "user" && role !== "assistant") return content
+  if (typeof content === "string") return stripSyntheticTimestampPrefix(content)
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (part.type === "text" && typeof part.text === "string") {
+      return { ...part, text: stripSyntheticTimestampPrefix(part.text) }
+    }
+    return part
+  })
+}
+
 function normalizeToolCalls(rawToolCalls: unknown): SessionEventToolCall[] {
   if (!Array.isArray(rawToolCalls)) return []
   return rawToolCalls
@@ -226,11 +247,12 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
     tool_calls?: unknown
   }
   const role = normalizeRole(record.role)
+  const normalizedContent = sanitizeConversationContent(role, normalizeContent(record.content))
 
   if (role === "assistant") {
     return {
       role,
-      content: normalizeContent(record.content),
+      content: normalizedContent,
       name: typeof record.name === "string" ? record.name : null,
       toolCallId: null,
       toolCalls: normalizeToolCalls(record.tool_calls),
@@ -251,7 +273,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
 
   return {
     role,
-    content: normalizeContent(record.content) ?? "",
+    content: normalizedContent ?? "",
     name: typeof record.name === "string" ? record.name : null,
     toolCallId: null,
     toolCalls: [],
@@ -335,6 +357,37 @@ function makeEventId(sequence: number): string {
   return `evt-${String(sequence).padStart(6, "0")}`
 }
 
+/**
+ * Collapse duplicate event ids to a single entry, last-occurrence-wins.
+ *
+ * Concurrent writers in older versions of postTurnPersist could each load the
+ * envelope, compute `events.length + 1` for the next sequence, and both write
+ * an event with the same id. The duplicates would persist in the saved JSON
+ * and confuse downstream replay (the same outbound message could appear to
+ * have been sent twice from the agent's perspective without the agent knowing
+ * it sent it). We dedupe defensively on every load so corrupted sessions
+ * self-heal on the next save and so any future race produces a consistent
+ * view.
+ */
+function dedupeEventsByIdLastWins(events: SessionEvent[]): SessionEvent[] {
+  // Index id → last position so we can preserve original order while
+  // collapsing duplicates to their final occurrence.
+  const lastIndexById = new Map<string, number>()
+  for (let i = 0; i < events.length; i++) {
+    lastIndexById.set(events[i]!.id, i)
+  }
+  return events.filter((event, index) => lastIndexById.get(event.id) === index)
+}
+
+/**
+ * The next sequence to assign for a freshly-built event. Uses max(existing
+ * sequences) + 1 rather than `events.length + 1` so that gaps from earlier
+ * pruning, archive replay, or self-heal dedup never produce a colliding id.
+ */
+function nextEventSequence(existing: SessionEvent[]): number {
+  return existing.reduce((max, event) => Math.max(max, event.sequence), 0) + 1
+}
+
 export function validateSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
   const violations: string[] = []
   let prevNonToolRole: string | null = null
@@ -361,7 +414,56 @@ export function validateSessionMessages(messages: OpenAI.ChatCompletionMessagePa
     prevNonToolRole = msg.role
   }
 
+  for (const collision of detectDuplicateToolCallIds(messages)) {
+    violations.push(
+      `duplicate tool_call_id '${collision.id}' across assistant messages at indices ${collision.indices.join(", ")} — provider may reject (MiniMax canonicalizes call_function_<hash>_<n> across turns)`,
+    )
+  }
+
   return violations
+}
+
+export interface ToolCallIdCollision {
+  id: string
+  indices: number[]
+}
+
+/**
+ * Detect tool_call_ids that appear in more than one assistant message
+ * within the conversation. MiniMax-M2.7 in particular emits canonical
+ * ids of the form `call_function_<hash>_<n>` and reuses the same id
+ * across turns when the same function is called — which causes provider
+ * rejections on replay because tool_call_id is supposed to be unique
+ * per request. We don't (yet) rewrite these here; this function exists
+ * so the sanitize pipeline can surface the collision through nerves
+ * (`mind.session_invariant_violation`) and operators can decide.
+ *
+ * Same-message duplicates (one assistant calling the same id twice)
+ * are not collisions — they're a legitimate parallel call shape and
+ * would be handled by the assistant's own emit logic. We only flag
+ * cross-message reuse.
+ */
+export function detectDuplicateToolCallIds(
+  messages: OpenAI.ChatCompletionMessageParam[],
+): ToolCallIdCollision[] {
+  const idsByFirstIndex = new Map<string, number[]>()
+  for (let i = 0; i < messages.length; i++) {
+    const msg = normalizeMessage(messages[i]!)
+    if (msg.role !== "assistant") continue
+    const seenInThisMessage = new Set<string>()
+    for (const call of msg.toolCalls) {
+      if (!call.id || seenInThisMessage.has(call.id)) continue
+      seenInThisMessage.add(call.id)
+      const indices = idsByFirstIndex.get(call.id) ?? []
+      indices.push(i)
+      idsByFirstIndex.set(call.id, indices)
+    }
+  }
+  const collisions: ToolCallIdCollision[] = []
+  for (const [id, indices] of idsByFirstIndex) {
+    if (indices.length > 1) collisions.push({ id, indices })
+  }
+  return collisions
 }
 
 export function repairSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
@@ -370,17 +472,36 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   if (violations.length === 0) return normalized.map(toProviderMessage)
 
   const result: NormalizedProviderMessage[] = []
+  let duplicateAssistantsDropped = 0
   for (const msg of normalized) {
     if (msg.role === "assistant" && result.length > 0) {
       const prev = result[result.length - 1]
       if (prev.role === "assistant" && prev.toolCalls.length === 0) {
         const prevContent = contentText(prev.content)
         const curContent = contentText(msg.content)
+        // Drop the second of two consecutive assistants when the content is
+        // byte-identical (after trim) — that's a retry/double-persist artifact,
+        // not legitimate continuation. Concatenating them produced visible
+        // duplicate text in surfaces. Empty strings still concatenate (could
+        // be "" + real content).
+        if (prevContent.trim().length > 0 && prevContent.trim() === curContent.trim() && msg.toolCalls.length === 0) {
+          duplicateAssistantsDropped += 1
+          continue
+        }
         prev.content = `${prevContent}\n\n${curContent}`
         continue
       }
     }
     result.push(msg)
+  }
+  if (duplicateAssistantsDropped > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_duplicate_assistant_dropped",
+      component: "mind",
+      message: "dropped consecutive assistant messages with identical content (retry/double-persist artifact)",
+      meta: { count: duplicateAssistantsDropped },
+    })
   }
 
   emitNervesEvent({
@@ -394,18 +515,26 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result.map(toProviderMessage)
 }
 
-function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+function repairToolCallSequences(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  inlineReasoningStrippedCallIds: Set<string> = new Set(),
+): OpenAI.ChatCompletionMessageParam[] {
   const normalized = messages.map(normalizeMessage)
-  const validCallIds = new Set<string>()
-  for (const msg of normalized) {
-    if (msg.role !== "assistant") continue
-    for (const toolCall of msg.toolCalls) validCallIds.add(toolCall.id)
-  }
 
+  // Position-aware orphan detection. A tool result is orphaned if there is
+  // no preceding assistant message in the array whose tool_calls contain the
+  // matching id. (The previous logic checked all assistant messages
+  // globally, which kept tool results that appeared BEFORE their matching
+  // assistant — invalid order — and triggered MiniMax error 2013 on replay.)
   let removed = 0
+  const seenCallIds = new Set<string>()
   const repaired = normalized.filter((msg) => {
+    if (msg.role === "assistant") {
+      for (const tc of msg.toolCalls) seenCallIds.add(tc.id)
+      return true
+    }
     if (msg.role !== "tool") return true
-    const keep = msg.toolCallId !== null && validCallIds.has(msg.toolCallId)
+    const keep = msg.toolCallId !== null && seenCallIds.has(msg.toolCallId)
     if (!keep) removed++
     return keep
   })
@@ -420,7 +549,80 @@ function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[])
     })
   }
 
+  let injected = 0
+  for (let i = 0; i < repaired.length; i++) {
+    const msg = repaired[i]!
+    if (msg.role !== "assistant" || msg.toolCalls.length === 0) continue
+
+    const resultIds = new Set<string>()
+    for (let j = i + 1; j < repaired.length; j++) {
+      const following = repaired[j]!
+      if (following.role === "tool" && following.toolCallId !== null) {
+        resultIds.add(following.toolCallId)
+        continue
+      }
+      if (following.role === "assistant" || following.role === "user") break
+    }
+
+    const missing = msg.toolCalls.filter((toolCall) => !resultIds.has(toolCall.id))
+    if (missing.length === 0) continue
+
+    const syntheticResults: NormalizedProviderMessage[] = missing.map((toolCall) => ({
+      role: "tool",
+      content: buildSyntheticToolResultMessage(toolCall.id, inlineReasoningStrippedCallIds),
+      name: null,
+      toolCallId: toolCall.id,
+      toolCalls: [],
+      hadToolCallsField: false,
+    }))
+    let insertAt = i + 1
+    while (insertAt < repaired.length && repaired[insertAt]!.role === "tool") insertAt++
+    repaired.splice(insertAt, 0, ...syntheticResults)
+    injected += syntheticResults.length
+  }
+
+  if (injected > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_orphan_tool_call_repair",
+      component: "mind",
+      message: "injected synthetic tool results for orphaned tool calls",
+      meta: { injected },
+    })
+  }
+
   return repaired.map(toProviderMessage)
+}
+
+function canonicalizeSystemMessageSequence(
+  messages: OpenAI.ChatCompletionMessageParam[],
+): OpenAI.ChatCompletionMessageParam[] {
+  const normalized = messages.map(normalizeMessage)
+  const firstSystemIndex = normalized.findIndex((msg) => msg.role === "system")
+  if (firstSystemIndex === -1) return normalized.map(toProviderMessage)
+
+  const extraSystemCount = normalized.filter((msg) => msg.role === "system").length - 1
+  if (firstSystemIndex === 0 && extraSystemCount === 0) {
+    return normalized.map(toProviderMessage)
+  }
+
+  const primarySystem = normalized[firstSystemIndex]!
+  const nonSystemMessages = normalized.filter((msg) => msg.role !== "system")
+  const repaired = [primarySystem, ...nonSystemMessages].map(toProviderMessage)
+
+  emitNervesEvent({
+    level: "info",
+    event: "mind.session_system_prompt_repair",
+    component: "mind",
+    message: "canonicalized session system prompt sequence",
+    meta: {
+      firstSystemIndex,
+      extraSystemCount,
+      finalMessageCount: repaired.length,
+    },
+  })
+
+  return repaired
 }
 
 export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
@@ -458,6 +660,108 @@ export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]):
   return safeMessages.map(normalizeMessage).map(toProviderMessage)
 }
 
+/**
+ * Strip inline `<think>...</think>` blocks from a string. Mirrors the
+ * helper at senses/shared-turn.ts (operator-facing) and core.ts
+ * (live-turn) — kept inline here because session-events.ts is the load-
+ * time repair path and needs its own copy to avoid sense/heart import
+ * cycles. If the close tag is missing, drops everything from the open
+ * tag onward.
+ */
+function stripInlineThinkBlocks(input: string): string {
+  let out = input
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
+/**
+ * Strip inline `<think>` content from any assistant message that ALSO has
+ * tool_calls. MiniMax-style models persist think-content + tool_calls on
+ * the same assistant turn; replaying that combination triggers MiniMax
+ * error 2013 ("tool result's tool id not found") and stalls the session.
+ *
+ * AX requirement: the agent MUST see that this happened. We don't silently
+ * paper over their previous turn — we strip for replay correctness AND
+ * collect the affected tool_call_ids in `inlineReasoningStrippedCallIds`
+ * so the downstream synthetic-tool-result repair can produce an
+ * explanatory message addressed to those specific calls. The agent sees:
+ * "your previous tool call's result was lost because the assistant message
+ * had inline reasoning blocks the provider couldn't replay — here's what
+ * happened, retry if needed." Full awareness, no silent corrections.
+ *
+ * This load-time repair self-heals existing sessions that were saved
+ * before the persist-time strip in core.ts landed.
+ */
+function repairInlineReasoningOnReplay(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  inlineReasoningStrippedCallIds: Set<string>,
+): OpenAI.ChatCompletionMessageParam[] {
+  let repaired = 0
+  const result = messages.map((msg) => {
+    if (msg.role !== "assistant") return msg
+    const a = msg as OpenAI.ChatCompletionAssistantMessageParam
+    if (!a.tool_calls || a.tool_calls.length === 0) return msg
+    if (typeof a.content !== "string") return msg
+    if (!a.content.includes("<think>")) return msg
+    const stripped = stripInlineThinkBlocks(a.content)
+    repaired++
+    for (const tc of a.tool_calls) inlineReasoningStrippedCallIds.add(tc.id)
+    return { ...a, content: stripped.length > 0 ? stripped : null } as OpenAI.ChatCompletionAssistantMessageParam
+  })
+  if (repaired > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_inline_reasoning_repair",
+      component: "mind",
+      message: "stripped inline <think> blocks from assistant messages with tool_calls so replay is valid; agent will see explanatory tool-result messages",
+      meta: { repaired, affectedCallIds: inlineReasoningStrippedCallIds.size },
+    })
+  }
+  return result
+}
+
+/**
+ * Compose the synthetic tool-result message the agent sees when their
+ * previous turn's tool call has no matching tool result. The default
+ * message tells the agent what happened (turn ended early, result lost)
+ * and what to do (retry if the work isn't done). When the parent
+ * assistant message had inline `<think>` reasoning that the provider
+ * rejected, the message is more specific so the agent can adjust.
+ *
+ * AX rule: every repair must produce a message the agent can read and
+ * act on. Silent strips are never OK.
+ */
+function buildSyntheticToolResultMessage(
+  toolCallId: string,
+  inlineReasoningStrippedCallIds: Set<string>,
+): string {
+  if (inlineReasoningStrippedCallIds.has(toolCallId)) {
+    return [
+      "error: this tool call's result was lost.",
+      "your previous assistant turn included inline `<think>...</think>` reasoning alongside tool_calls,",
+      "and the provider (likely MiniMax) rejects that combination on replay (error 2013).",
+      "the harness has stripped the inline reasoning from the persisted content so the next replay is valid;",
+      "your reasoning trace itself is preserved out-of-band and not lost.",
+      "if the underlying work still needs to be done, retry the tool call now —",
+      "the call may not have run, or it ran but the result didn't reach you.",
+    ].join(" ")
+  }
+  return [
+    "error: this tool call's result was lost — the previous turn ended before the tool finished",
+    "(provider rejection, daemon interrupt, or the tool itself errored).",
+    "if the work needs to be done, retry the tool call now.",
+  ].join(" ")
+}
+
 export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
   const safeMessages = messages.filter((message): message is OpenAI.ChatCompletionMessageParam => Boolean(message) && typeof message === "object")
   const normalized = safeMessages.map(normalizeMessage)
@@ -471,7 +775,22 @@ export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageP
       meta: { violations },
     })
   }
-  return migrateToolNames(stripOrphanedToolResults(repairSessionMessages(normalized.map(toProviderMessage))))
+  // Track which tool_call_ids belonged to assistant messages whose inline
+  // reasoning we just stripped. The synthetic-tool-result repair downstream
+  // uses this set to produce an explanatory message for those calls so the
+  // agent has full awareness of what happened.
+  const inlineReasoningStrippedCallIds = new Set<string>()
+  return canonicalizeSystemMessageSequence(
+    migrateToolNames(
+      repairToolCallSequences(
+        repairInlineReasoningOnReplay(
+          repairSessionMessages(normalized.map(toProviderMessage)),
+          inlineReasoningStrippedCallIds,
+        ),
+        inlineReasoningStrippedCallIds,
+      ),
+    ),
+  )
 }
 
 export function stampIngressTime(msg: OpenAI.ChatCompletionMessageParam): void {
@@ -730,18 +1049,19 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
     return null
   }
 
-  const events = record.events
+  const rawEvents = record.events
     .filter((event): event is Record<string, unknown> => event != null && typeof event === "object")
     .map((event, index) => {
       const role = normalizeRole(event.role)
       const time = event.time as Record<string, unknown> | undefined
       const relations = event.relations as Record<string, unknown> | undefined
       const provenance = event.provenance as Record<string, unknown> | undefined
+      const content = sanitizeConversationContent(role, normalizeContent(event.content))
       return {
         id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
         sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
         role,
-        content: normalizeContent(event.content),
+        content,
         name: typeof event.name === "string" ? event.name : null,
         toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
         toolCalls: normalizeToolCalls(event.toolCalls),
@@ -769,6 +1089,13 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
         },
       } satisfies SessionEvent
     })
+
+  // Self-heal duplicate event ids that may have been written by concurrent
+  // writers in older harness versions. Last-occurrence-wins by id (later
+  // entries in the persisted file are the more recent state for that id).
+  // We preserve the original document order otherwise, so projection.eventIds
+  // still resolves predictably.
+  const events = dedupeEventsByIdLastWins(rawEvents)
 
   const projection = record.projection as Record<string, unknown>
 
@@ -902,10 +1229,12 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
       currentEventIds.push(previousProjectionIds[i]!)
     } else {
       if (!isSystem) nonSystemSeen++
-      // Create a new event
+      // Create a new event. Use nextEventSequence(events) instead of
+      // `events.length + 1` so that any gap (from pruning, archive replay,
+      // or self-heal dedup) cannot collide with an existing id.
       const event = buildEventFromMessage(
         currentMessages[i]!,
-        events.length + 1,
+        nextEventSequence(events),
         options.recordedAt,
         "live",
         null,
@@ -1021,7 +1350,10 @@ export function appendSyntheticAssistantEvent(
   content: string,
   recordedAt: string,
 ): SessionEnvelope {
-  const sequence = envelope.events.length + 1
+  // Use nextEventSequence(events) instead of `events.length + 1` so any gap
+  // (from pruning, archive replay, or self-heal dedup) cannot collide with
+  // an existing event id. Same fix pattern as line 1046.
+  const sequence = nextEventSequence(envelope.events)
   const event = buildEventFromMessage(
     { role: "assistant", content },
     sequence,
