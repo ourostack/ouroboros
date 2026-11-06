@@ -78,3 +78,166 @@ describe("A2ATransport (direct rung)", () => {
       .rejects.toThrow(/503|failed/i)
   })
 })
+
+describe("A2ATransport (relay fallback, real fetch)", () => {
+  // These use Node's real fetch so the fallback rule is proven against real failure shapes, not a mock's.
+  const http = require("node:http") as typeof import("node:http")
+  const relayMessage = (): FriendsA2AMessage => ({
+    messageId: "m-r",
+    role: "agent",
+    parts: [{ kind: "data", data: { v: 1, sealed: { v: 1, ePk: "e", n: "n", ct: "c" } as never, recipientDid: "did:key:zPeer" } }],
+  })
+
+  async function serve(handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void): Promise<{ url: string; close: () => Promise<void> }> {
+    const server = http.createServer(handler)
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as import("node:net").AddressInfo).port
+    return { url: `http://127.0.0.1:${port}/a2a`, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  }
+
+  async function closedPortUrl(): Promise<string> {
+    const s = await serve(() => undefined)
+    await s.close()
+    return s.url
+  }
+
+  it("queues the same message at the relay when the peer's port is closed", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    try {
+      relay.registrations.set("h1", { did: "did:key:zPeer", inboxAuth: "ia", sendCredential: "sc", agentCard: {} })
+      relay.inbox.set("h1", [])
+      const rungs: string[] = []
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" }, onDelivered: (rung) => rungs.push(rung) })
+      const message = relayMessage()
+      await transport.send({ rung: "direct", address: await closedPortUrl() }, message)
+      expect(rungs).toEqual(["relay"])
+      expect(relay.inbox.get("h1")!.map((m) => m.message)).toEqual([message])
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it("does not fall back when the peer answers 413 with a JSON-RPC body", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    const peer = await serve((_req, res) => { res.writeHead(413, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "request body too large" } })) })
+    try {
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" } })
+      await expect(transport.send({ rung: "direct", address: peer.url }, relayMessage())).rejects.toThrow(/request body too large/)
+      expect(relay.requests).toHaveLength(0)
+    } finally {
+      await Promise.all([relay.close(), peer.close()])
+    }
+  })
+
+  it("says the direct copy may have arrived after a reset or a gateway timeout", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    const reset = await serve((req) => req.socket.destroy())
+    const gateway = await serve((_req, res) => { res.writeHead(504, { "content-type": "text/html" }); res.end("gateway timeout") })
+    const parked = await serve((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<html>parked</html>") })
+    try {
+      relay.registrations.set("h1", { did: "did:key:zPeer", inboxAuth: "ia", sendCredential: "sc", agentCard: {} })
+      relay.inbox.set("h1", [])
+      const details: unknown[] = []
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" }, onDelivered: (_rung, detail) => details.push(detail) })
+      await transport.send({ rung: "direct", address: reset.url }, relayMessage())
+      await transport.send({ rung: "direct", address: gateway.url }, relayMessage())
+      await transport.send({ rung: "direct", address: await closedPortUrl() }, relayMessage())
+      await transport.send({ rung: "direct", address: parked.url }, relayMessage())
+      expect(details).toEqual([{ directMayHaveArrived: true }, { directMayHaveArrived: true }, { directMayHaveArrived: false }, { directMayHaveArrived: false }])
+      relay.failNext("send", 503, "busy")
+      await expect(transport.send({ rung: "direct", address: gateway.url }, relayMessage())).rejects.toThrow(/relay 503 busy\); the message may not have been delivered/)
+      await expect(makeA2ATransport().send({ rung: "direct", address: reset.url }, relayMessage())).rejects.toThrow(/; it may not have been delivered, and the peer has shared no relay contact/)
+    } finally {
+      await Promise.all([relay.close(), reset.close(), gateway.close(), parked.close()])
+    }
+  })
+
+  it("marks nothing when the relay refuses and no callback was given", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    try {
+      await expect(makeA2ATransport({ relayContact: { url: relay.url, handle: "gone", sendCredential: "sc" } }).send({ rung: "direct", address: await closedPortUrl() }, relayMessage()))
+        .rejects.toThrow(/relay 404 unknown_handle/)
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it("falls back when the connection is reset and when a tunnel answers with a non-JSON-RPC page", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    const reset = await serve((req) => req.socket.destroy())
+    const tunnel = await serve((_req, res) => { res.writeHead(404, { "content-type": "text/html" }); res.end("<html>tunnel offline</html>") })
+    const htmlOk = await serve((_req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end("<html>parked</html>") })
+    try {
+      relay.registrations.set("h1", { did: "did:key:zPeer", inboxAuth: "ia", sendCredential: "sc", agentCard: {} })
+      relay.inbox.set("h1", [])
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" } })
+      await transport.send({ rung: "direct", address: reset.url }, relayMessage())
+      await transport.send({ rung: "direct", address: tunnel.url }, relayMessage())
+      await transport.send({ rung: "direct", address: htmlOk.url }, relayMessage())
+      expect(relay.inbox.get("h1")).toHaveLength(3)
+    } finally {
+      await Promise.all([relay.close(), reset.close(), tunnel.close(), htmlOk.close()])
+    }
+  })
+
+  it("does not fall back when the peer answers with a JSON-RPC error", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    const peer = await serve((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32003, message: "A2A share rejected: untrusted_source" } })) })
+    try {
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" } })
+      await expect(transport.send({ rung: "direct", address: peer.url }, relayMessage())).rejects.toThrow(/untrusted_source/)
+      expect(relay.requests).toHaveLength(0)
+    } finally {
+      await Promise.all([relay.close(), peer.close()])
+    }
+  })
+
+  it("reports delivery over direct to the callback", async () => {
+    const peer = await serve((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { id: "t" } })) })
+    try {
+      const rungs: string[] = []
+      await makeA2ATransport({ onDelivered: (rung) => rungs.push(rung) }).send({ rung: "direct", address: peer.url }, relayMessage())
+      expect(rungs).toEqual(["direct"])
+    } finally {
+      await peer.close()
+    }
+  })
+
+  it("says the peer shared no relay contact when there is none", async () => {
+    await expect(makeA2ATransport().send({ rung: "direct", address: await closedPortUrl() }, relayMessage()))
+      .rejects.toThrow(/fetch failed \(ECONNREFUSED\); it was not delivered, and the peer has shared no relay contact/)
+    // "localhost" resolves to two addresses, so the refusal arrives as an AggregateError with inner codes.
+    await expect(makeA2ATransport().send({ rung: "direct", address: (await closedPortUrl()).replace("127.0.0.1", "localhost") }, relayMessage()))
+      .rejects.toThrow(/; it was not delivered, and the peer has shared no relay contact/)
+  })
+
+  it("names both causes and marks the contact refused when the relay rejects the credential", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    try {
+      relay.registrations.set("h1", { did: "did:key:zPeer", inboxAuth: "ia", sendCredential: "rotated", agentCard: {} })
+      let refused = 0
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "old" }, onRelayContactRefused: () => { refused += 1 } })
+      await expect(transport.send({ rung: "direct", address: await closedPortUrl() }, relayMessage()))
+        .rejects.toThrow(/not reachable directly \(fetch failed \(ECONNREFUSED\)\) or through its relay \(relay 403 bad_send_credential\); the message was not delivered/)
+      expect(refused).toBe(1)
+      relay.failNext("send", 503, "busy")
+      await expect(transport.send({ rung: "direct", address: await closedPortUrl() }, relayMessage())).rejects.toThrow(/relay 503 busy/)
+      expect(refused).toBe(1)
+    } finally {
+      await relay.close()
+    }
+  })
+
+  it("names a relay that cannot be reached at all", async () => {
+    const transport = makeA2ATransport({ relayContact: { url: (await closedPortUrl()).replace(/\/a2a$/, ""), handle: "h1", sendCredential: "sc" } })
+    await expect(transport.send({ rung: "direct", address: await closedPortUrl() }, relayMessage()))
+      .rejects.toThrow(/or through its relay \(fetch failed \(ECONNREFUSED\)\)/)
+  })
+})

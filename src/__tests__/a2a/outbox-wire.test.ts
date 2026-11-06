@@ -56,6 +56,22 @@ describe("outbox command handling", () => {
     expect(outbox.list("them").entries).toHaveLength(1)
   })
 
+  it("hands this agent's relay contact only to an active friend or family peer", async () => {
+    const { agentRoot } = setup()
+    const relayContact = { url: "https://relay.example", handle: "h1", sendCredential: "sc" }
+    for (const trustLevel of ["family", "friend"] as const) {
+      expect(await handleOutboxCommand({ agentRoot, friend: friend("p", { trustLevel }), method: "relay/contact", params: {}, relayContact })).toEqual({ ok: true, result: { contact: relayContact } })
+    }
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("p"), method: "relay/contact", params: {}, relayContact: null })).toEqual({ ok: true, result: { contact: null } })
+    expect(await handleOutboxCommand({ agentRoot, friend: friend("p"), method: "relay/contact", params: {} })).toEqual({ ok: true, result: { contact: null } })
+    for (const sender of [friend("p", { trustLevel: "acquaintance" }), friend("p", { trustLevel: "stranger" }), friend("p", { trustLevel: undefined }), friend("p", { admissionState: "revoked" })]) {
+      const outcome = await handleOutboxCommand({ agentRoot, friend: sender, method: "relay/contact", params: {}, relayContact })
+      expect(outcome).toMatchObject({ ok: false, code: -32003 })
+      expect(JSON.stringify(outcome)).not.toContain("sc")
+    }
+    expect(isOutboxMethod("relay/contact")).toBe(true)
+  })
+
   it("rejects malformed list and ack parameters", async () => {
     const { agentRoot } = setup()
     const call = (method: "outbox/list" | "outbox/ack", params: Record<string, unknown>) => handleOutboxCommand({ agentRoot, friend: friend("me"), method, params })

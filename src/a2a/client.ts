@@ -69,9 +69,30 @@ export async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcReques
     body: JSON.stringify(request),
   })
   if (!response.ok) {
-    throw new Error(`A2A JSON-RPC request failed (${response.status} ${response.statusText})`)
+    // A JSON-RPC body on a non-2xx status is still the peer's answer (the server sends 400 and 413 that way).
+    const answer = parseJsonRpcEnvelope(await response.text().catch(() => ""))
+    if (answer) return answer
+    throw new A2AHttpStatusError(response.status, response.statusText)
   }
   return await response.json() as A2AJsonRpcResponse
+}
+
+/** A non-2xx HTTP reply that is not a JSON-RPC answer: something other than the agent (a tunnel, a proxy) replied. */
+export class A2AHttpStatusError extends Error {
+  readonly status: number
+  constructor(status: number, statusText: string) {
+    super(`A2A JSON-RPC request failed (${status} ${statusText})`)
+    this.status = status
+  }
+}
+
+function parseJsonRpcEnvelope(text: string): A2AJsonRpcResponse | null {
+  try {
+    const parsed = JSON.parse(text) as Partial<A2AJsonRpcResponse> | null
+    return parsed && parsed.jsonrpc === "2.0" && ("error" in parsed || "result" in parsed) ? parsed as A2AJsonRpcResponse : null
+  } catch {
+    return null
+  }
 }
 
 function methodNotFound(response: A2AJsonRpcResponse): boolean {

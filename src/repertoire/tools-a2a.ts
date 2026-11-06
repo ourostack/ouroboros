@@ -10,12 +10,14 @@ import {
   sealEnvelope,
   keyAgreementFromDidKey,
   parseDidKey,
+  type DidKeyIdentity,
 } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
-import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage, postA2AMessageEnvelope } from "../a2a/client"
+import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "../a2a/client"
 import { onboardA2APeer } from "../a2a/onboarding"
 import { loadSelfA2AIdentity } from "../a2a/identity"
-import { makeA2ATransport } from "../a2a/transport"
+import { makeA2ATransport, type DeliveredRung } from "../a2a/transport"
+import { markRelayContactStale, readRelayContact, refreshRelayContact, relayContactNeedsRefresh } from "../a2a/relay-contacts"
 import { delegationStoresFor } from "../a2a/delegation-stores"
 import { wrapMissionResultDataPart } from "../a2a/mission-result-wire"
 import type { A2ATask } from "../a2a/types"
@@ -155,13 +157,14 @@ function findImportedDelegation(missions: MissionRecord[], requestId: string): {
  * is unparseable (cannot seal) or the rung is unreachable.
  */
 async function sealEnvelopeToPeer(input: {
-  self: { did: string; keyId: string; ed25519Priv: Uint8Array }
+  agentRoot: string
+  self: DidKeyIdentity
   sodium: Awaited<ReturnType<typeof ready>>
   peer: FriendRecord
   did: string
   envelope: Record<string, unknown>
   friendsKind: "coordination" | "profile_share" | "mission_share"
-}): Promise<void> {
+}): Promise<Delivery> {
   const parsed = parseDidKey(input.did)
   if (!parsed) throw new Error(`cannot seal: peer DID is not a parseable did:key (${input.did})`)
   const reachability = resolveReachability(input.peer.agentMeta?.a2a, input.peer.agentMeta?.mailbox)
@@ -174,9 +177,10 @@ async function sealEnvelopeToPeer(input: {
     message: "sealing outbound A2A envelope to a DID-keyed peer",
     meta: { selfDid: input.self.did, peerDid: input.did, rung: reachability.rung, friendsKind: input.friendsKind },
   })
+  const relay = relayTransportFor(input)
   const result = await sendShare({
     sodium: input.sodium,
-    transport: makeA2ATransport(),
+    transport: relay.transport,
     fromIdentity: input.self,
     toPeer: { a2a: input.peer.agentMeta?.a2a },
     recipientDid: input.did,
@@ -188,6 +192,42 @@ async function sealEnvelopeToPeer(input: {
   if (!result.ok) {
     throw new Error(`sealed send failed (${result.reason})`)
   }
+  return relay.delivered()
+}
+
+/** Which rung carried a message, and whether a failed direct attempt may still have reached the peer. */
+interface Delivery {
+  rung: DeliveredRung
+  directMayHaveArrived: boolean
+}
+
+/**
+ * The transport for one send to a DID-keyed peer: direct first, then the relay contact the peer shared (if cached). A
+ * relay that refuses the contact marks it stale. After a direct delivery, the peer is online, so its contact is
+ * refreshed in the background when it is missing, stale or a day old.
+ */
+function relayTransportFor(input: { agentRoot: string; self: DidKeyIdentity; peer: FriendRecord; did: string }) {
+  const cached = readRelayContact(input.agentRoot, input.did)
+  let delivery: Delivery = { rung: "direct", directMayHaveArrived: false }
+  const transport = makeA2ATransport({
+    ...(cached?.contact ? { relayContact: cached.contact } : {}),
+    onRelayContactRefused: () => markRelayContactStale(input.agentRoot, input.did),
+    onDelivered: (rung, detail) => {
+      delivery = { rung, directMayHaveArrived: detail?.directMayHaveArrived ?? false }
+      const endpointUrl = input.peer.agentMeta?.a2a?.endpointUrl
+      if (rung !== "direct" || !endpointUrl || !relayContactNeedsRefresh(cached, Date.now())) return
+      const cardUrl = input.peer.agentMeta?.a2a?.cardUrl ?? new URL("/.well-known/agent-card.json", endpointUrl).toString()
+      void refreshRelayContact({ agentRoot: input.agentRoot, peerDid: input.did, cardUrl, identity: input.self })
+    },
+  })
+  return { transport, delivered: () => delivery }
+}
+
+/** The tool wording for a sealed delivery. */
+function deliveryText(peerName: string, did: string, delivery: Delivery, what = "sealed message"): string {
+  if (delivery.rung === "direct") return `${what} delivered to ${peerName} (${did}) over the direct rung.`
+  const head = delivery.directMayHaveArrived ? `direct delivery to ${peerName} (${did}) failed and the ${what} may have arrived; a copy` : `${peerName} (${did}) is not reachable directly; the ${what}`
+  return `${head} is queued at ${peerName}'s relay and is delivered when ${peerName} comes back online.`
 }
 
 /**
@@ -198,10 +238,11 @@ async function sealEnvelopeToPeer(input: {
  */
 async function sealAndSendToPeer(input: {
   agentName: string
+  agentRoot: string
   peer: FriendRecord
   did: string
   message: string
-}): Promise<void> {
+}): Promise<Delivery> {
   const sodium = await ready()
   const self = await loadSelfA2AIdentity({ agentName: input.agentName, sodium })
   const envelope: Record<string, unknown> = {
@@ -211,8 +252,8 @@ async function sealAndSendToPeer(input: {
     note: input.message,
     issuedAt: new Date().toISOString(),
   }
-  await sealEnvelopeToPeer({
-    self: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+  return await sealEnvelopeToPeer({
+    agentRoot: input.agentRoot, self,
     sodium, peer: input.peer, did: input.did, envelope, friendsKind: "coordination",
   })
 }
@@ -381,14 +422,17 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const did = peerDid(peer)
       if (did) {
         try {
-          await sealAndSendToPeer({
-            /* v8 ignore next -- in-turn a2a_send_message always carries a bundle agentRoot; the ambient-name fallback is defensive @preserve */
-            agentName: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
+          /* v8 ignore next -- in-turn a2a_send_message always carries a bundle agentRoot; the ambient-name fallback is defensive @preserve */
+          const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
+          const delivery = await sealAndSendToPeer({
+            agentName,
+            /* v8 ignore next -- same defensive ambient fallback as agentName @preserve */
+            agentRoot: ctx?.agentRoot ?? getAgentRoot(agentName),
             peer,
             did,
             message: args.message,
           })
-          return `sealed message delivered to ${peer.name} (${did}) over the direct rung.`
+          return deliveryText(peer.name, did, delivery)
         } catch (error) {
           return `A2A sealed send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures @preserve */ String(error)}`
         }
@@ -518,8 +562,10 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         }
         const requestId = prepared.envelope.task?.requestId
         // Seal + send the coordination envelope to the peer over direct.
-        await sealEnvelopeToPeer({
-          self: { did: self.did, keyId: self.keyId, ed25519Priv: self.ed25519Priv },
+        const delivery = await sealEnvelopeToPeer({
+          /* v8 ignore next -- in-turn coordinate always carries a bundle agentRoot; the ambient fallback is defensive @preserve */
+          agentRoot: ctx?.agentRoot ?? getAgentRoot(agentName),
+          self,
           sodium, peer, did,
           envelope: prepared.envelope as unknown as Record<string, unknown>,
           friendsKind: "coordination",
@@ -530,7 +576,8 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           message: "coordination delegated + sealed to peer",
           meta: { tool: "coordinate", peerDid: did, missionKey: args.mission_key, requestId },
         })
-        return `coordinated: delegated "${args.task_summary}" to ${peer.name} on mission ${args.mission_key} (requestId ${requestId}).`
+        const queued = delivery.rung === "relay" ? ` ${deliveryText(peer.name, did, delivery, "delegation")}` : ""
+        return `coordinated: delegated "${args.task_summary}" to ${peer.name} on mission ${args.mission_key} (requestId ${requestId}).${queued}`
       } catch (error) {
         return `coordinate error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
       }
@@ -665,8 +712,13 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           message: "delivering sealed mission result over the direct rung",
           meta: { selfDid: self.did, toDid: delegatorDid, requestId: args.request_id },
         })
-        await postA2AMessageEnvelope({ endpointUrl, message })
-        return `result sent to ${delegator.name} (${delegatorDid}) for requestId ${args.request_id}.`
+        /* v8 ignore next -- in-turn send_result always carries a bundle agentRoot; the ambient fallback is defensive @preserve */
+        const relay = relayTransportFor({ agentRoot: ctx?.agentRoot ?? getAgentRoot(agentName), self, peer: delegator, did: delegatorDid })
+        await relay.transport.send({ rung: "direct", address: endpointUrl }, message as unknown as Parameters<typeof relay.transport.send>[1])
+        const delivery = relay.delivered()
+        return delivery.rung === "direct"
+          ? `result sent to ${delegator.name} (${delegatorDid}) for requestId ${args.request_id}.`
+          : `${deliveryText(delegator.name, delegatorDid, delivery, "result")} (requestId ${args.request_id})`
       } catch (error) {
         return `send_result error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
       }

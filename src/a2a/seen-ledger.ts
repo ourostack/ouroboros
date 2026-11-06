@@ -113,6 +113,12 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
     return seen
   }
 
+  /** Whether a nonce was already processed, without the replay security event `isSeen` raises. The relay inbox uses
+   * it after a failed turn to learn whether friends verified the message before the turn threw. */
+  has(nonce: string): boolean {
+    return !!nonce && this.cache.has(nonce)
+  }
+
   markSeen(nonce: string): void {
     // An empty-string nonce is never a matchable key — stay inert.
     if (!nonce) return

@@ -21,6 +21,7 @@ import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import { admitDelegatedCommand, delegationRefusalGuidance, shieldDelegatedBanner, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
 import { receiveRefusalError } from "./refusals"
+import { startRelayInbox, type RelayConfigStore, type RelayInboxHandle, type RelayTimers } from "./relay-inbox"
 import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
 import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
@@ -67,6 +68,9 @@ export interface StartA2AServerOptions {
   notifyOwner?: (notice: { noticeId: string; text: string }) => Promise<void>
   /** Enables telling the owner when a resolved failure report's fix is live. Absent: reports can be resolved but never confirmed. */
   escalation?: ConfirmDeps & { confirmIntervalMs?: number }
+  /** This agent's friends-relay inbox (needs `identity`): peers queue sealed messages there while it is offline, and the
+   * server polls it and runs each one as a `message/send`. Absent: no relay inbox. */
+  relay?: { config: RelayConfigStore; fetchImpl?: typeof fetch; intervalMs?: number; timers?: RelayTimers }
 }
 
 export const ESCALATION_CONFIRM_INTERVAL_MS = 5 * 60 * 1000
@@ -75,6 +79,8 @@ export interface A2AServerHandle {
   server: http.Server
   url: string
   endpointUrl: string
+  /** The relay inbox poller, when `relay` was given with an identity. */
+  relay?: RelayInboxHandle
   close(): Promise<void>
 }
 
@@ -156,8 +162,8 @@ function metadataString(message: A2AMessage | null, key: string): string | undef
   return metadataStringFromRecord(metadataRecord(message), key)
 }
 
-function headerString(req: http.IncomingMessage, key: string): string | undefined {
-  const value = req.headers[key]
+function headerString(req: http.IncomingMessage | undefined, key: string): string | undefined {
+  const value = req?.headers[key]
   /* v8 ignore next -- Node lower-cases singular request headers here; array values are defensive compatibility @preserve */
   if (Array.isArray(value)) return value[0]
   return typeof value === "string" && value.trim() ? value.trim() : undefined
@@ -252,7 +258,7 @@ function rejectionErrorCode(reason: string): number {
   return -32003
 }
 
-function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): { idHint?: string; name: string } {
+function senderHintFromMessage(req: http.IncomingMessage | undefined, inbound: A2AMessage): { idHint?: string; name: string } {
   const idHint = metadataString(inbound, "senderAgentId")
     ?? metadataString(inbound, "senderCardUrl")
     ?? metadataString(inbound, "agentId")
@@ -459,6 +465,167 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   }
   let confirmTimer: NodeJS.Timeout | undefined
 
+  // The message/send branch as one function, so a sealed message that arrives through the relay inbox runs exactly the
+  // path a direct POST runs. `req` is absent for a relayed message: there are no HTTP headers to take a sender hint from.
+  const handleMessageSend = async (rpc: A2AJsonRpcRequest, req?: http.IncomingMessage): Promise<A2AJsonRpcResponse> => {
+    const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
+    const parsedInbound = messageFromParams(rpc.params)
+    const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
+
+    // HARNESS-OWNED RESULT WIRE (runs BEFORE the friends-share branch). A
+    // `mission_result`-tagged DataPart is NOT a FriendsKind — it routes to
+    // `importMissionResult` (assignee/correlation-gated, store-only, NO turn), never
+    // to `receiveShare`. Recognized by the `ouroKind` discriminator.
+    if (inbound && inboundShareDeps && isMissionResultDataPart(inbound)) {
+      const imported = await receiveInboundMissionResult(inbound, {
+        sodium: inboundShareDeps.sodium,
+        store: inboundShareDeps.store,
+        missionStore: inboundShareDeps.missionStore,
+        // The SAME authentication seam the share bridge uses — so a forged-sender
+        // result is rejected by the DidVerifier exactly like a forged share.
+        pinStore: inboundShareDeps.pinStore,
+        seen: inboundShareDeps.seen,
+        didResolution: inboundShareDeps.didResolution,
+        identity: inboundShareDeps.identity,
+      })
+      if (imported.outcome === "rejected") {
+        return refusalResponse(rpc.id, "result", imported.reason)
+      }
+      // imported (store-only, no turn): acknowledge with a minimal completed task.
+      /* v8 ignore next -- "not-a-result" is unreachable here (gated by isMissionResultDataPart) @preserve */
+      const ackText = imported.outcome === "imported"
+        ? `[a2a] imported mission result from ${imported.verifiedDid}`
+        /* v8 ignore next -- defensive: the gate above guarantees imported|rejected @preserve */
+        : "[a2a] mission result"
+      const contextId = inbound.contextId ?? "default"
+      const taskId = randomUUID()
+      const accessToken = randomUUID()
+      const ackTask = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: ackText })
+      taskStore.put(ackTask, accessTokenScope(accessToken))
+      return jsonResponse(rpc.id, publicTask(ackTask, accessToken, responseStyle, true))
+    }
+
+    // Inbound friends-DataPart branch (runs BEFORE the legacy text path). A
+    // sealed DataPart is unwrapped + verified through the bridge; the turn is
+    // then keyed on the VERIFIED sender DID (replacing the unauthenticated
+    // sentinel). A non-friends (text) message falls through unchanged.
+    let verifiedPeerAgentId: string | undefined
+    let verifiedPeerName: string | undefined
+    let verifiedShareText: string | undefined
+    let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal"; bindingId?: string; issuedAt?: string } | undefined
+    if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
+      const bridged = await receiveInboundShare(inbound, inboundShareDeps)
+      if (bridged.outcome === "rejected") {
+        return refusalResponse(rpc.id, "share", bridged.reason)
+      }
+      // A message with a data part always resolves to completed|rejected — the
+      // bridge only returns "not-a-share" when there is NO data part, which the
+      // `messageHasDataPart` gate above excludes. So this is the completed path.
+      /* v8 ignore next -- "not-a-share" is unreachable here (gated by messageHasDataPart) @preserve */
+      if (bridged.outcome === "completed") {
+        verifiedPeerAgentId = bridged.verifiedDid
+        verifiedPeerName = bridged.verifiedDid
+        if (bridged.message) {
+          // Authenticated chat: the signed, sealed text IS the turn.
+          verifiedShareText = bridged.message.text
+          /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
+          verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
+          verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}), bindingId: bridged.bindingId, issuedAt: bridged.message.issuedAt }
+        } else {
+          verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
+        }
+      }
+    }
+
+    const text = verifiedShareText ?? textFromMessage(inbound)
+    if (!inbound || !text) {
+      return errorResponse(rpc.id, -32602, "SendMessage requires a text message")
+    }
+    if (text.length > MAX_A2A_MESSAGE_TEXT_CHARS) {
+      return errorResponse(rpc.id, -32602, `SendMessage text exceeds ${MAX_A2A_MESSAGE_TEXT_CHARS} characters`)
+    }
+    const senderHint = senderHintFromMessage(req, inbound)
+    // The verified DID wins as the turn's peer identity; otherwise the legacy
+    // unauthenticated sentinel (text path, behavior-preserved).
+    const peerAgentId = verifiedPeerAgentId ?? untrustedTurnPeerExternalId()
+    const peerName = verifiedPeerName ?? senderHint.name
+    const continuationToken = accessTokenFromParams(rpc.params)
+    const continuationTask = inbound.taskId && continuationToken
+      ? taskStore.get(inbound.taskId, accessTokenScope(continuationToken))
+      : null
+    if (inbound.taskId && continuationToken && (!continuationTask || !taskAuthorized(continuationTask, continuationToken))) {
+      return errorResponse(rpc.id, -32001, "task not found")
+    }
+    if (continuationTask && isTerminalTaskState(continuationTask.status.state)) {
+      return errorResponse(rpc.id, -32002, "task is terminal; start a new task")
+    }
+    const contextId = inbound.contextId ?? continuationTask?.contextId ?? "default"
+    const taskId = continuationTask?.id ?? randomUUID()
+    const accessToken = continuationToken && continuationTask ? continuationToken : randomUUID()
+    const tokenScope = accessTokenScope(accessToken)
+    const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
+    let relationshipAuthorization = verifiedChat?.friend
+      ? a2aChatRelationship(agentRoot, verifiedChat.friend, taskId)
+      : undefined
+    let turnText = text
+    let delegatedCommand: DelegatedCommandContext | undefined
+    // Only the server writes the delegated banner. Any turn that is not about to be admitted as a delegated command
+    // (verified or not, including a plain unauthenticated text turn) gets a typed banner marked as the sender's own words.
+    if (verifiedChat?.onBehalfOf !== "principal") turnText = shieldDelegatedBanner(text)
+    if (verifiedChat?.onBehalfOf === "principal") {
+      // A delegated command runs with the principal's authority only after the
+      // server, never the model, has checked the grant and told the principal.
+      let registry
+      try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
+      /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
+      if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
+      const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: commandIdFor(verifiedChat), store: inboundShareDeps!.store, registry, options: options.delegation })
+      if (!admission.ok) {
+        // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
+        // Only an active family peer is told why: anyone else gets no_grant whatever the real reason was (a broken trust file, a key mismatch), which stays in the local log and nerves.
+        const activeFamily = verifiedChat.friend.trustLevel === "family" && verifiedChat.friend.admissionState === "active"
+        const shown = activeFamily ? admission.reason : "no_grant"
+        const guidance = delegationRefusalGuidance(shown, { legacyRecordGrant: activeFamily && verifiedChat.friend.delegationGrant !== undefined })
+        return errorResponse(rpc.id, -32004, `delegated command refused: ${shown} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: shown, nothingRan: true, retry: guidance.retry, next: guidance.next })
+      }
+      relationshipAuthorization = admission.relationship
+      turnText = admission.turnText
+      delegatedCommand = admission.context
+    }
+    taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
+    const turn = await turnRunner({
+      agentName: options.agentName,
+      peerAgentId,
+      peerName,
+      sessionKey: contextId,
+      message: turnText,
+      ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
+      ...(delegatedCommand ? { delegatedCommand } : {}),
+    })
+    let responseParts: A2AMessage["parts"] | undefined
+    if (verifiedChat) {
+      // A verified chat's reply is sealed to the sender and stored sealed, so neither
+      // the wire nor a later GetTask ever carries the plaintext.
+      const pinned = inboundShareDeps!.pinStore.get(verifiedChat.did)
+      /* v8 ignore next 4 -- receiveShare pins the verified sender before it reports a completed chat; refuse rather than reply in plaintext @preserve */
+      if (!pinned) {
+        return errorResponse(rpc.id, -32003, "A2A chat reply cannot be sealed to the sender")
+      }
+      responseParts = sealChatMessage({
+        sodium: inboundShareDeps!.sodium,
+        from: options.identity!,
+        recipientDid: verifiedChat.did,
+        recipientEd25519Pub: pinned.ed25519Pub,
+        text: turn.response,
+        conversationId: contextId,
+      }).parts
+    }
+    const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, responseParts, clientTaskId, previousTask: continuationTask ?? undefined })
+    taskStore.put(task, tokenScope)
+    return jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, true))
+  }
+
+  let relayInbox: RelayInboxHandle | undefined
   let publicBaseUrl = options.baseUrl
   const server = http.createServer(async (req, res) => {
     /* v8 ignore next -- Node always supplies url/host for accepted HTTP requests; fallback keeps malformed local calls safe @preserve */
@@ -516,7 +683,11 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, OUTBOX_ERROR_INVALID, "the signed method does not match the requested method"))
           return
         }
-        const outcome = await handleOutboxCommand({ agentRoot, friend: bridged.friend, method: command.method, params: command.params, verifiedDid: bridged.verifiedDid })
+        const ownRelay = relayInbox?.registration()
+        const outcome = await handleOutboxCommand({
+          agentRoot, friend: bridged.friend, method: command.method, params: command.params, verifiedDid: bridged.verifiedDid,
+          relayContact: ownRelay ? { url: ownRelay.relayUrl, handle: ownRelay.handle, sendCredential: ownRelay.sendCredential } : null,
+        })
         if (!outcome.ok) {
           writeJson(res, 200, errorResponse(rpc.id, outcome.code, outcome.message))
           return
@@ -538,170 +709,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       }
 
       if (rpc.method === "SendMessage" || rpc.method === "message/send") {
-        const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
-        const parsedInbound = messageFromParams(rpc.params)
-        const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
-
-        // HARNESS-OWNED RESULT WIRE (runs BEFORE the friends-share branch). A
-        // `mission_result`-tagged DataPart is NOT a FriendsKind — it routes to
-        // `importMissionResult` (assignee/correlation-gated, store-only, NO turn), never
-        // to `receiveShare`. Recognized by the `ouroKind` discriminator.
-        if (inbound && inboundShareDeps && isMissionResultDataPart(inbound)) {
-          const imported = await receiveInboundMissionResult(inbound, {
-            sodium: inboundShareDeps.sodium,
-            store: inboundShareDeps.store,
-            missionStore: inboundShareDeps.missionStore,
-            // The SAME authentication seam the share bridge uses — so a forged-sender
-            // result is rejected by the DidVerifier exactly like a forged share.
-            pinStore: inboundShareDeps.pinStore,
-            seen: inboundShareDeps.seen,
-            didResolution: inboundShareDeps.didResolution,
-            identity: inboundShareDeps.identity,
-          })
-          if (imported.outcome === "rejected") {
-            writeJson(res, 200, refusalResponse(rpc.id, "result", imported.reason))
-            return
-          }
-          // imported (store-only, no turn): acknowledge with a minimal completed task.
-          /* v8 ignore next -- "not-a-result" is unreachable here (gated by isMissionResultDataPart) @preserve */
-          const ackText = imported.outcome === "imported"
-            ? `[a2a] imported mission result from ${imported.verifiedDid}`
-            /* v8 ignore next -- defensive: the gate above guarantees imported|rejected @preserve */
-            : "[a2a] mission result"
-          const contextId = inbound.contextId ?? "default"
-          const taskId = randomUUID()
-          const accessToken = randomUUID()
-          const ackTask = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: ackText })
-          taskStore.put(ackTask, accessTokenScope(accessToken))
-          writeJson(res, 200, jsonResponse(rpc.id, publicTask(ackTask, accessToken, responseStyle, true)))
-          return
-        }
-
-        // Inbound friends-DataPart branch (runs BEFORE the legacy text path). A
-        // sealed DataPart is unwrapped + verified through the bridge; the turn is
-        // then keyed on the VERIFIED sender DID (replacing the unauthenticated
-        // sentinel). A non-friends (text) message falls through unchanged.
-        let verifiedPeerAgentId: string | undefined
-        let verifiedPeerName: string | undefined
-        let verifiedShareText: string | undefined
-        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal"; bindingId?: string; issuedAt?: string } | undefined
-        if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
-          const bridged = await receiveInboundShare(inbound, inboundShareDeps)
-          if (bridged.outcome === "rejected") {
-            writeJson(res, 200, refusalResponse(rpc.id, "share", bridged.reason))
-            return
-          }
-          // A message with a data part always resolves to completed|rejected — the
-          // bridge only returns "not-a-share" when there is NO data part, which the
-          // `messageHasDataPart` gate above excludes. So this is the completed path.
-          /* v8 ignore next -- "not-a-share" is unreachable here (gated by messageHasDataPart) @preserve */
-          if (bridged.outcome === "completed") {
-            verifiedPeerAgentId = bridged.verifiedDid
-            verifiedPeerName = bridged.verifiedDid
-            if (bridged.message) {
-              // Authenticated chat: the signed, sealed text IS the turn.
-              verifiedShareText = bridged.message.text
-              /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
-              verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
-              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}), bindingId: bridged.bindingId, issuedAt: bridged.message.issuedAt }
-            } else {
-              verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
-            }
-          }
-        }
-
-        const text = verifiedShareText ?? textFromMessage(inbound)
-        if (!inbound || !text) {
-          writeJson(res, 200, errorResponse(rpc.id, -32602, "SendMessage requires a text message"))
-          return
-        }
-        if (text.length > MAX_A2A_MESSAGE_TEXT_CHARS) {
-          writeJson(res, 200, errorResponse(rpc.id, -32602, `SendMessage text exceeds ${MAX_A2A_MESSAGE_TEXT_CHARS} characters`))
-          return
-        }
-        const senderHint = senderHintFromMessage(req, inbound)
-        // The verified DID wins as the turn's peer identity; otherwise the legacy
-        // unauthenticated sentinel (text path, behavior-preserved).
-        const peerAgentId = verifiedPeerAgentId ?? untrustedTurnPeerExternalId()
-        const peerName = verifiedPeerName ?? senderHint.name
-        const continuationToken = accessTokenFromParams(rpc.params)
-        const continuationTask = inbound.taskId && continuationToken
-          ? taskStore.get(inbound.taskId, accessTokenScope(continuationToken))
-          : null
-        if (inbound.taskId && continuationToken && (!continuationTask || !taskAuthorized(continuationTask, continuationToken))) {
-          writeJson(res, 200, errorResponse(rpc.id, -32001, "task not found"))
-          return
-        }
-        if (continuationTask && isTerminalTaskState(continuationTask.status.state)) {
-          writeJson(res, 200, errorResponse(rpc.id, -32002, "task is terminal; start a new task"))
-          return
-        }
-        const contextId = inbound.contextId ?? continuationTask?.contextId ?? "default"
-        const taskId = continuationTask?.id ?? randomUUID()
-        const accessToken = continuationToken && continuationTask ? continuationToken : randomUUID()
-        const tokenScope = accessTokenScope(accessToken)
-        const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
-        let relationshipAuthorization = verifiedChat?.friend
-          ? a2aChatRelationship(agentRoot, verifiedChat.friend, taskId)
-          : undefined
-        let turnText = text
-        let delegatedCommand: DelegatedCommandContext | undefined
-        // Only the server writes the delegated banner. Any turn that is not about to be admitted as a delegated command
-        // (verified or not, including a plain unauthenticated text turn) gets a typed banner marked as the sender's own words.
-        if (verifiedChat?.onBehalfOf !== "principal") turnText = shieldDelegatedBanner(text)
-        if (verifiedChat?.onBehalfOf === "principal") {
-          // A delegated command runs with the principal's authority only after the
-          // server, never the model, has checked the grant and told the principal.
-          let registry
-          try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
-          /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
-          if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
-          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: commandIdFor(verifiedChat), store: inboundShareDeps!.store, registry, options: options.delegation })
-          if (!admission.ok) {
-            // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
-            // Only an active family peer is told why: anyone else gets no_grant whatever the real reason was (a broken trust file, a key mismatch), which stays in the local log and nerves.
-            const activeFamily = verifiedChat.friend.trustLevel === "family" && verifiedChat.friend.admissionState === "active"
-            const shown = activeFamily ? admission.reason : "no_grant"
-            const guidance = delegationRefusalGuidance(shown, { legacyRecordGrant: activeFamily && verifiedChat.friend.delegationGrant !== undefined })
-            writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${shown} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: shown, nothingRan: true, retry: guidance.retry, next: guidance.next }))
-            return
-          }
-          relationshipAuthorization = admission.relationship
-          turnText = admission.turnText
-          delegatedCommand = admission.context
-        }
-        taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
-        const turn = await turnRunner({
-          agentName: options.agentName,
-          peerAgentId,
-          peerName,
-          sessionKey: contextId,
-          message: turnText,
-          ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
-          ...(delegatedCommand ? { delegatedCommand } : {}),
-        })
-        let responseParts: A2AMessage["parts"] | undefined
-        if (verifiedChat) {
-          // A verified chat's reply is sealed to the sender and stored sealed, so neither
-          // the wire nor a later GetTask ever carries the plaintext.
-          const pinned = inboundShareDeps!.pinStore.get(verifiedChat.did)
-          /* v8 ignore next 4 -- receiveShare pins the verified sender before it reports a completed chat; refuse rather than reply in plaintext @preserve */
-          if (!pinned) {
-            writeJson(res, 200, errorResponse(rpc.id, -32003, "A2A chat reply cannot be sealed to the sender"))
-            return
-          }
-          responseParts = sealChatMessage({
-            sodium: inboundShareDeps!.sodium,
-            from: options.identity!,
-            recipientDid: verifiedChat.did,
-            recipientEd25519Pub: pinned.ed25519Pub,
-            text: turn.response,
-            conversationId: contextId,
-          }).parts
-        }
-        const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, responseParts, clientTaskId, previousTask: continuationTask ?? undefined })
-        taskStore.put(task, tokenScope)
-        writeJson(res, 200, jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, true)))
+        writeJson(res, 200, await handleMessageSend(rpc, req))
         return
       }
 
@@ -791,6 +799,17 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     confirmTimer.unref()
   }
 
+  if (options.relay && inboundShareDeps) {
+    const seen = inboundShareDeps.seen as FileA2ASeenLedger
+    relayInbox = startRelayInbox({
+      ...options.relay,
+      did: inboundShareDeps.identity.did,
+      agentName: options.agentName,
+      handle: (rpc) => handleMessageSend(rpc),
+      seen: (nonce) => seen.has(nonce),
+    })
+  }
+
   emitNervesEvent({
     component: "channels",
     event: "channel.a2a_server_started",
@@ -802,8 +821,10 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     server,
     url: publicBaseUrl,
     endpointUrl: endpointUrl.toString(),
+    ...(relayInbox ? { relay: relayInbox } : {}),
     close: () => new Promise<void>((resolve, reject) => {
       if (confirmTimer) clearInterval(confirmTimer)
+      relayInbox?.stop()
       server.close((error) => {
         if (error) {
           reject(error)
