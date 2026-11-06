@@ -51,6 +51,8 @@ export interface PendingSyncRecord {
   firstFailedAt?: string
   /** Failed sync attempts in a row, counting this one. Missing means 1. */
   consecutiveFailures?: number
+  /** A `refs/ouro-sync/repair/*` ref holding work this record is about. Never pruned while named here. */
+  repairRef?: string
 }
 
 /** A changed file that sync left out of its commit because of its size. */
@@ -190,11 +192,12 @@ function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", LANG: "C", ...extra }
 }
 
-function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv): GitRun {
+function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv, input?: string): GitRun {
   const run = spawnSync("git", [...identityArgs(agentName), ...args], {
     cwd: agentRoot,
     env: gitEnv(env),
-    stdio: ["ignore", "pipe", "pipe"],
+    input,
+    stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     timeout: SYNC_GIT_TIMEOUT_MS,
     maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES,
   })
@@ -208,10 +211,24 @@ function gitFailure(args: string[], run: GitRun): Error {
 }
 
 /** Run git and return stdout; throw with git's message on a non-zero exit. */
-function git(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv): string {
-  const run = runGit(agentRoot, agentName, args, env)
+function git(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv, input?: string): string {
+  const run = runGit(agentRoot, agentName, args, env, input)
   if (run.status !== 0) throw gitFailure(args, run)
   return run.stdout
+}
+
+/**
+ * Run a git command over a list of paths, passed NUL-separated on stdin and
+ * matched literally. A list in argv dies with E2BIG past about 1 MB.
+ */
+function gitOnPaths(agentRoot: string, agentName: string, args: string[], paths: string[]): string {
+  return git(
+    agentRoot,
+    agentName,
+    ["--literal-pathspecs", ...args, "--pathspec-from-file=-", "--pathspec-file-nul"],
+    undefined,
+    paths.join("\0"),
+  )
 }
 
 interface AsyncGitRun {
@@ -320,11 +337,22 @@ function readPreviousFailure(agentRoot: string): BundleSyncFailure | null {
   }
 }
 
+/** The repair ref the pending record names, if any. */
+function pendingRepairRef(agentRoot: string): string | null {
+  try {
+    const record = JSON.parse(fs.readFileSync(pendingSyncPath(agentRoot), "utf-8")) as Partial<PendingSyncRecord> | null
+    return typeof record?.repairRef === "string" ? record.repairRef : null
+  } catch {
+    return null
+  }
+}
+
 function writePendingSync(
   agentRoot: string,
   error: string,
   classification: PendingSyncRecord["classification"],
   conflictFiles: string[],
+  repairRef?: string,
 ): void {
   const previous = readPreviousFailure(agentRoot)
   const failedAt = new Date().toISOString()
@@ -337,6 +365,7 @@ function writePendingSync(
     conflictFiles,
     firstFailedAt: previousFirst ?? failedAt,
     consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+    ...(repairRef === undefined ? {} : { repairRef }),
   }
   fs.writeFileSync(pendingSyncPath(agentRoot), JSON.stringify(record, null, 2), "utf-8")
 }
@@ -346,9 +375,12 @@ function recordPendingSync(
   error: string,
   classification: PendingSyncRecord["classification"],
   conflictFiles: string[],
+  repairRef?: string,
 ): void {
+  // An incomplete restore outranks later failures: it names the ref holding the agent's work.
+  if (classification !== "repair_restore_incomplete" && readPreviousFailure(agentRoot)?.classification === "repair_restore_incomplete") return
   try {
-    writePendingSync(agentRoot, error, classification, conflictFiles)
+    writePendingSync(agentRoot, error, classification, conflictFiles, repairRef)
   } catch {
     // Best effort: the caller's nerves event still records the failure.
   }
@@ -366,6 +398,16 @@ export function clearPendingSync(agentRoot: string): void {
   } catch {
     // Best effort: a stale record is reported again and cleared next time.
   }
+}
+
+/**
+ * Clear the pending record after a sync step succeeded, unless it reports an
+ * incomplete restore: that one stays until a person clears it
+ * (`clearPendingSync`), since the agent's work is only in the named ref.
+ */
+function settlePendingSync(agentRoot: string): void {
+  if (readPreviousFailure(agentRoot)?.classification === "repair_restore_incomplete") return
+  clearPendingSync(agentRoot)
 }
 
 function writeSkippedSyncFiles(agentRoot: string, files: SkippedSyncFile[]): void {
@@ -572,8 +614,8 @@ function unstageOversizedFiles(agentRoot: string, agentName: string): SkippedSyn
   if (oversized.length === 0) return oversized
 
   // An unborn HEAD has nothing to reset to; `rm --cached` drops the new entry instead.
-  if (refExists(agentRoot, agentName, "HEAD")) git(agentRoot, agentName, ["--literal-pathspecs", "reset", "-q", "--", ...unstage])
-  else git(agentRoot, agentName, ["--literal-pathspecs", "rm", "-q", "--cached", "--", ...unstage])
+  if (refExists(agentRoot, agentName, "HEAD")) gitOnPaths(agentRoot, agentName, ["reset", "-q"], unstage)
+  else gitOnPaths(agentRoot, agentName, ["rm", "-q", "--cached"], unstage)
   emitNervesEvent({
     level: "warn",
     component: "heart",
@@ -681,27 +723,65 @@ function ensureGitRepo(agentRoot: string, step: string): SyncResult {
   return { ok: false, error: `bundle is not a git repo; run \`git init\` inside ${agentRoot} to enable sync (or disable sync in agent.json)` }
 }
 
+const REPAIR_REF_PREFIX = "refs/ouro-sync/repair/"
+/** Repair refs kept regardless of age. */
+const REPAIR_REFS_KEPT = 10
+/** Repair refs younger than this are kept regardless of count. */
+const REPAIR_REF_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+interface RepairRef {
+  name: string
+  tree: string
+  committedMs: number
+}
+
+/** Repair refs, newest first (names are ISO timestamps, so they sort by time). */
+function listRepairRefs(agentRoot: string, agentName: string): RepairRef[] {
+  return git(agentRoot, agentName, ["for-each-ref", "--sort=-refname", "--format=%(refname) %(tree) %(committerdate:unix)", REPAIR_REF_PREFIX])
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [name, tree, seconds] = line.split(" ")
+      return { name, tree, committedMs: Number(seconds) * 1000 }
+    })
+}
+
+/** Drop repair refs past the newest ten that are 30 days old, except one the pending record names. */
+function pruneRepairRefs(agentRoot: string, agentName: string, refs: RepairRef[]): void {
+  const protectedRef = pendingRepairRef(agentRoot)
+  const now = Date.now()
+  const doomed = refs.filter(
+    (ref, i) => i >= REPAIR_REFS_KEPT && now - ref.committedMs >= REPAIR_REF_MAX_AGE_MS && ref.name !== protectedRef,
+  )
+  if (doomed.length === 0) return
+  git(agentRoot, agentName, ["update-ref", "--stdin"], undefined, doomed.map((ref) => `delete ${ref.name}\n`).join(""))
+}
+
 /**
  * Commit the whole working tree, as it is now, to `refs/ouro-sync/repair/<ts>`
  * without touching the real index. Its parent is the current HEAD, which for a
  * stranded rebase is the detached HEAD, so commits made there stay reachable.
+ * When the newest repair ref already holds this tree, that ref is reused.
  */
 function snapshotWorkingTree(agentRoot: string, agentName: string): string {
   const indexFile = gitDirEntry(agentRoot, `ouro-sync-repair-${process.pid}.index`)
   const env = { GIT_INDEX_FILE: indexFile }
-  let commit: string
+  let tree: string
   try {
     // Seed from HEAD so tracked files that match an ignore rule are kept.
     git(agentRoot, agentName, ["read-tree", "HEAD"], env)
     git(agentRoot, agentName, ["add", "-A"], env)
-    const tree = git(agentRoot, agentName, ["write-tree"], env).trim()
-    commit = git(agentRoot, agentName, ["commit-tree", tree, "-p", "HEAD", "-m", "sync: repair snapshot"]).trim()
+    tree = git(agentRoot, agentName, ["write-tree"], env).trim()
   } finally {
     fs.rmSync(indexFile, { force: true })
   }
+  const existing = listRepairRefs(agentRoot, agentName)
+  if (existing[0]?.tree === tree) return existing[0].name
+  const commit = git(agentRoot, agentName, ["commit-tree", tree, "-p", "HEAD", "-m", "sync: repair snapshot"]).trim()
   // A refname may not contain ":".
-  const ref = `refs/ouro-sync/repair/${new Date().toISOString().replace(/:/g, "-")}`
+  const ref = `${REPAIR_REF_PREFIX}${new Date().toISOString().replace(/:/g, "-")}`
   git(agentRoot, agentName, ["update-ref", ref, commit])
+  pruneRepairRefs(agentRoot, agentName, [{ name: ref, tree, committedMs: Date.now() }, ...existing])
   return ref
 }
 
@@ -713,44 +793,102 @@ function abortMergeThoroughly(agentRoot: string, agentName: string): string {
   return "reset --hard"
 }
 
-/** Put back every path that differs from the snapshot, except the ones the stranded operation conflicted on. */
-function restoreFromSnapshot(agentRoot: string, agentName: string, ref: string, conflicted: string[]): void {
-  const skip = new Set(conflicted)
-  const changed = git(agentRoot, agentName, ["diff", "--name-only", "--no-renames", "-z", "HEAD", ref])
+/** Paths whose content in the snapshot differs from HEAD. */
+function pathsChangedInSnapshot(agentRoot: string, agentName: string, ref: string): string[] {
+  return git(agentRoot, agentName, ["diff", "--name-only", "--no-renames", "-z", "HEAD", ref])
     .split("\0")
-    .filter((p) => p.length > 0 && !skip.has(p))
-  if (changed.length > 0) git(agentRoot, agentName, ["--literal-pathspecs", "restore", `--source=${ref}`, "--worktree", "--", ...changed])
+    .filter((p) => p.length > 0)
 }
+
+const refTimestamp = (ref: string): string => ref.slice(REPAIR_REF_PREFIX.length)
 
 /**
  * Abort a rebase or merge left in progress, keeping the work done since. The
  * working tree is snapshotted first; after the abort, every path the operation
  * did not conflict on is restored from it. Conflicted paths keep HEAD's
- * version, and their edits stay in the snapshot ref, which the owner is told about.
+ * version; edits to them stay in the snapshot ref, which the owner is told about.
+ *
+ * Returns null when there was nothing to repair or the repair completed, else
+ * the failure to report. A failed snapshot touches nothing, so the stranded
+ * state stays exactly as found for a later attempt.
  */
-function repairInterrupted(agentRoot: string, agentName: string): void {
+function repairInterrupted(agentRoot: string, agentName: string): SyncResult | null {
   const rebase = fs.existsSync(gitDirEntry(agentRoot, "rebase-merge")) || fs.existsSync(gitDirEntry(agentRoot, "rebase-apply"))
   const merge = fs.existsSync(gitDirEntry(agentRoot, "MERGE_HEAD"))
-  if (!rebase && !merge) return
+  if (!rebase && !merge) return null
+  const operation = rebase ? "rebase" : "merge"
   const conflicted = unmergedPaths(agentRoot, agentName)
-  const ref = snapshotWorkingTree(agentRoot, agentName)
+  let ref: string
+  try {
+    ref = snapshotWorkingTree(agentRoot, agentName)
+  } catch (err) {
+    return reportSnapshotFailure(agentRoot, agentName, operation, errorText(err))
+  }
   let abortedWith = "rebase --abort"
   if (rebase) git(agentRoot, agentName, ["rebase", "--abort"])
   else abortedWith = abortMergeThoroughly(agentRoot, agentName)
-  restoreFromSnapshot(agentRoot, agentName, ref, conflicted)
+
+  const changed = pathsChangedInSnapshot(agentRoot, agentName, ref)
+  const skip = new Set(conflicted)
+  const restore = changed.filter((p) => !skip.has(p))
+  const kept = changed.filter((p) => skip.has(p))
+  try {
+    if (restore.length > 0) gitOnPaths(agentRoot, agentName, ["restore", `--source=${ref}`, "--worktree"], restore)
+  } catch (err) {
+    return reportRestoreIncomplete(agentRoot, agentName, operation, ref, errorText(err))
+  }
   emitNervesEvent({
     level: "warn",
     component: "heart",
     event: "heart.sync_repaired",
     message: "sync: aborted a rebase or merge left in progress",
-    meta: { agentRoot, rebase, merge, ref, conflicted, abortedWith },
+    meta: { agentRoot, rebase, merge, ref, conflicted, kept, abortedWith },
   })
-  if (conflicted.length === 0) return
-  recordPendingSync(agentRoot, `an interrupted ${rebase ? "rebase" : "merge"} was aborted; edits to ${conflicted.join(", ")} are kept in ${ref}`, "unknown", conflicted)
+  if (kept.length === 0) return null
+  recordPendingSync(agentRoot, `an interrupted ${operation} was aborted; edits to ${kept.join(", ")} are kept in ${ref}`, "unknown", kept, ref)
   tellOwner(agentRoot, agentName, {
-    noticeId: `sync-repair:${agentName}:${ref.slice("refs/ouro-sync/repair/".length)}`,
-    text: `Sync found an interrupted ${rebase ? "rebase" : "merge"} in ${agentName}'s bundle and aborted it. Edits to ${conflicted.join(", ")} made since are kept in ${ref}.`,
+    noticeId: `sync-repair:${agentName}:${refTimestamp(ref)}`,
+    text: `Sync found an interrupted ${operation} in ${agentName}'s bundle and aborted it. Edits to ${kept.join(", ")} made since are kept in ${ref}.`,
   })
+  return null
+}
+
+function reportSnapshotFailure(agentRoot: string, agentName: string, operation: string, gitError: string): SyncResult {
+  const error = `an interrupted ${operation} was left in place: the working tree could not be saved first (${gitError})`
+  const previous = readPreviousFailure(agentRoot)
+  const repeat = previous?.classification === "repair_snapshot_failed" && previous.error === error
+  recordPendingSync(agentRoot, error, "repair_snapshot_failed", [])
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_repair_snapshot_failed",
+    message: "sync: could not snapshot before repair; nothing was changed",
+    meta: { agentRoot, operation, error: gitError },
+  })
+  if (!repeat) {
+    tellOwner(agentRoot, agentName, {
+      noticeId: `sync-repair-snapshot:${agentName}:${createHash("sha256").update(error).digest("hex").slice(0, 16)}`,
+      text: `Sync found an interrupted ${operation} in ${agentName}'s bundle but could not save the working tree first, so it left everything as it is and stopped syncing. git said: ${gitError}`,
+    })
+  }
+  return { ok: false, error }
+}
+
+function reportRestoreIncomplete(agentRoot: string, agentName: string, operation: string, ref: string, gitError: string): SyncResult {
+  const error = `an interrupted ${operation} was aborted but not every file was put back; the full working tree is in ${ref} (${gitError})`
+  recordPendingSync(agentRoot, error, "repair_restore_incomplete", [], ref)
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_repair_restore_incomplete",
+    message: "sync: repair could not restore every file from its snapshot",
+    meta: { agentRoot, operation, ref, error: gitError },
+  })
+  tellOwner(agentRoot, agentName, {
+    noticeId: `sync-repair-restore:${agentName}:${refTimestamp(ref)}`,
+    text: `Sync aborted an interrupted ${operation} in ${agentName}'s bundle but could not put every file back. The working tree as it was is in ${ref}; git said: ${gitError}`,
+  })
+  return { ok: false, error }
 }
 
 function abortMergeIfAny(agentRoot: string, agentName: string): void {
@@ -832,12 +970,14 @@ function settleIntegrated(agentRoot: string, config: SyncConfig, agentName: stri
   clearConflictState(agentRoot)
   const pending = readPreviousFailure(agentRoot)
   if (!pending) return
-  if (pending.classification === "pull_rebase_conflict" || commitsAhead(agentRoot, agentName, config) === 0) clearPendingSync(agentRoot)
+  if (pending.classification === "pull_rebase_conflict" || commitsAhead(agentRoot, agentName, config) === 0) settlePendingSync(agentRoot)
 }
 
 function integrateCore(agentRoot: string, config: SyncConfig, agentName: string): IntegrateOutcome {
+  // Outside the try: its catch aborts a merge, which must never run before a snapshot.
+  const repairFailure = repairInterrupted(agentRoot, agentName)
+  if (repairFailure) return { result: repairFailure }
   try {
-    repairInterrupted(agentRoot, agentName)
     commitLocalChanges(agentRoot, agentName, "sync: pre-turn update")
     const ref = remoteTrackingRef(config)
     if (!refExists(agentRoot, agentName, ref)) {
@@ -920,7 +1060,7 @@ export function fetchRemote(agentRoot: string, config: SyncConfig, signal?: Abor
 async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
   try {
     if (!hasRemote(agentRoot, agentName, config)) {
-      clearPendingSync(agentRoot)
+      settlePendingSync(agentRoot)
       emitNervesEvent({
         component: "heart",
         event: "heart.sync_push_end",
@@ -933,7 +1073,7 @@ async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: st
     const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
     const run = await runGitAsync(agentRoot, agentName, ["push", config.remote, `HEAD:refs/heads/${branch}`], timeoutMs, signal)
     if (run.status === 0) {
-      clearPendingSync(agentRoot)
+      settlePendingSync(agentRoot)
       emitNervesEvent({
         component: "heart",
         event: "heart.sync_push_end",
@@ -1018,7 +1158,7 @@ async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentNa
 /** An unborn HEAD (nothing ever committed) has nothing to push. */
 function pushIfBorn(agentRoot: string, config: SyncConfig, agentName: string): Promise<SyncResult> {
   if (refExists(agentRoot, agentName, "HEAD")) return pushUnlocked(agentRoot, config, agentName)
-  clearPendingSync(agentRoot)
+  settlePendingSync(agentRoot)
   return Promise.resolve({ ok: true })
 }
 
@@ -1142,7 +1282,8 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
     // Checked under the lock, so a pauser that saw the lock free sees no git after it.
     const paused = pausedResult(agentRoot, "post-turn push")
     if (paused) return paused
-    repairInterrupted(agentRoot, agentName)
+    const repairFailure = repairInterrupted(agentRoot, agentName)
+    if (repairFailure) return repairFailure
     commitLocalChanges(agentRoot, agentName, "sync: post-turn update")
     const remote = hasRemote(agentRoot, agentName, config)
     if (remote && readPreviousFailure(agentRoot)?.classification === "pull_rebase_conflict") {
@@ -1156,7 +1297,7 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
       return { ok: true }
     }
     if (remote && commitsAhead(agentRoot, agentName, config) === 0) {
-      clearPendingSync(agentRoot)
+      settlePendingSync(agentRoot)
       emitNervesEvent({
         component: "heart",
         event: "heart.sync_push_end",

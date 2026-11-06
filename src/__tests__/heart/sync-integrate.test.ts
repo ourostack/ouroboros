@@ -531,3 +531,170 @@ describe("bundle sync merges and never rebases or stashes", () => {
     expect(fs.statSync(path.join(agent, "big.bin")).size).toBe(SYNC_FILE_SIZE_LIMIT_BYTES + 1)
   })
 })
+
+describe("repair never loses a stranded state's work (fix round 2)", () => {
+  function strandMerge(owner: string, agent: string, ownerFiles: Record<string, string> = {}): void {
+    ownerCommitAndPush(owner, { "psyche/TACIT.md": tacitWith({ 5: "owner 5" }), ...ownerFiles })
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "merge", "origin/main"])).toThrow()
+  }
+  const repairRefs = (agent: string): string[] =>
+    git(agent, ["for-each-ref", "--format=%(refname)", "refs/ouro-sync/repair/"]).split("\n").filter(Boolean)
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+
+  it("repair leaves a stranded merge alone when the snapshot fails", async () => {
+    const { owner, agent } = setup()
+    strandMerge(owner, agent)
+    const edited = tacitWith({ 5: "agent 5", 15: "line 15 while stranded" })
+    write(agent, "psyche/TACIT.md", edited)
+    write(agent, "secret.txt", "x\n")
+    const secret = path.join(agent, "secret.txt")
+    fs.chmodSync(secret, 0o000)
+    try {
+      for (let i = 0; i < 2; i++) {
+        const result = integrateFetched(agent, CONFIG, AGENT)
+        expect(result.ok).toBe(false)
+        expect(result.error).toContain("Permission denied")
+        expect(postTurnPush(agent, CONFIG, AGENT).ok).toBe(false)
+      }
+      await tick()
+      expect(fs.statSync(secret).mode & 0o777).toBe(0)
+      expect(fs.existsSync(path.join(agent, ".git", "MERGE_HEAD"))).toBe(true)
+      expect(read(agent, "psyche/TACIT.md")).toBe(edited)
+      expect(git(agent, ["diff", "--name-only", "--diff-filter=U"])).toBe("psyche/TACIT.md")
+      expect(repairRefs(agent)).toEqual([])
+      expect(pendingSync(agent)).toMatchObject({ classification: "repair_snapshot_failed", error: expect.stringContaining("Permission denied") })
+      expect(notices.filter((n) => n.notice.noticeId.startsWith("sync-repair-snapshot:"))).toHaveLength(1)
+    } finally {
+      fs.chmodSync(secret, 0o644)
+    }
+    // Once the file is readable again, repair goes ahead and keeps the edit.
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    expect(fs.existsSync(path.join(agent, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(git(agent, ["show", `${repairRefs(agent)[0]}:psyche/TACIT.md`])).toContain("line 15 while stranded")
+  })
+
+  it("repair restores a change set larger than ARG_MAX", () => {
+    const { owner, agent } = setup()
+    // The owner pushes 25,000 paths of about 80 bytes each (2 MB of names), built in one write-tree.
+    const hash = (content: string): string =>
+      execFileSync(REAL_GIT, ["hash-object", "-w", "--stdin"], { cwd: owner, input: content }).toString().trim()
+    const name = (i: number): string => `journal/${"x".repeat(60)}-${String(i).padStart(6, "0")}.md`
+    const env = { ...process.env, GIT_INDEX_FILE: path.join(root, "big.index") }
+    const entry = hash("entry\n")
+    const lines = Array.from({ length: 25_000 }, (_, i) => `100644 ${entry}\t${name(i)}`)
+    lines.push(`100644 ${hash(tacitWith({ 5: "owner 5" }))}\tpsyche/TACIT.md`)
+    execFileSync(REAL_GIT, ["read-tree", "HEAD"], { cwd: owner, env })
+    execFileSync(REAL_GIT, ["update-index", "--index-info"], { cwd: owner, env, input: lines.join("\n") + "\n" })
+    const tree = execFileSync(REAL_GIT, ["write-tree"], { cwd: owner, env }).toString().trim()
+    const commit = ownerGit(owner, ["commit-tree", tree, "-p", "HEAD", "-m", "owner adds a big journal"])
+    ownerGit(owner, ["update-ref", "refs/heads/main", commit])
+    ownerGit(owner, ["push", "-q", "origin", "main"])
+
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5" }))
+    git(agent, [...OWNER, "commit", "-q", "-am", "agent edit"])
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(() => git(agent, [...OWNER, "rebase", "origin/main"])).toThrow()
+    write(agent, "notes.md", "tracked edit while stranded\n")
+
+    const started = Date.now()
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    events.push({ event: "test.timing", meta: { ms: Date.now() - started } } as unknown as LogEvent)
+    expect(read(agent, "notes.md")).toBe("tracked edit while stranded\n")
+    expect(git(agent, ["show", "HEAD:notes.md"])).toBe("tracked edit while stranded")
+    expect(fs.readdirSync(path.join(agent, "journal"))).toHaveLength(25_000)
+    expect(git(agent, ["status", "--porcelain"])).toBe("")
+    expect(events.some((e) => e.event === "heart.sync_repaired")).toBe(true)
+  }, 120_000)
+
+  it("a restore that fails partway names the ref and keeps the pending record", async () => {
+    const { owner, agent } = setup()
+    write(agent, "ro/kept.md", "agent only\n")
+    git(agent, [...OWNER, "add", "-A"])
+    git(agent, [...OWNER, "commit", "-q", "-m", "agent file"])
+    strandMerge(owner, agent)
+    write(agent, "notes.md", "notes edit while stranded\n")
+    write(agent, "ro/kept.md", "edit while stranded\n")
+    const ro = path.join(agent, "ro")
+    fs.chmodSync(ro, 0o555)
+    let result
+    try {
+      result = integrateFetched(agent, CONFIG, AGENT)
+    } finally {
+      fs.chmodSync(ro, 0o755)
+    }
+    const [ref] = repairRefs(agent)
+    expect(result).toEqual({ ok: false, error: expect.stringContaining(ref) })
+    expect(read(agent, "notes.md")).toBe("notes edit while stranded\n")
+    expect(pendingSync(agent)).toMatchObject({ classification: "repair_restore_incomplete", repairRef: ref })
+    await tick()
+    const restoreNotices = notices.filter((n) => n.notice.noticeId.startsWith("sync-repair-restore:"))
+    expect(restoreNotices).toHaveLength(1)
+    expect(restoreNotices[0].notice.text).toContain(ref)
+    // A later failure does not overwrite it.
+    ownerCommitAndPush(owner, { "notes.md": "owner notes\n" })
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(integrateFetched(agent, CONFIG, AGENT).ok).toBe(false)
+    expect(pendingSync(agent)).toMatchObject({ classification: "repair_restore_incomplete", repairRef: ref })
+    // Later syncs succeed, but only a person clears this record.
+    ownerCommitAndPush(owner, { "notes.md": "notes edit while stranded\n" })
+    git(agent, ["fetch", "-q", "origin", "main"])
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    const post = postTurnPush(agent, CONFIG, AGENT)
+    await post.push
+    expect(pendingSync(agent)).toMatchObject({ classification: "repair_restore_incomplete", repairRef: ref })
+  })
+
+  it("repair reuses the newest repair ref when the snapshot tree matches it", () => {
+    const { owner, agent } = setup()
+    strandMerge(owner, agent)
+    write(agent, "psyche/TACIT.md", tacitWith({ 5: "agent 5", 15: "edited" }))
+    const env = { ...process.env, GIT_INDEX_FILE: path.join(root, "probe.index") }
+    execFileSync(REAL_GIT, ["read-tree", "HEAD"], { cwd: agent, env })
+    execFileSync(REAL_GIT, ["add", "-A"], { cwd: agent, env })
+    const tree = execFileSync(REAL_GIT, ["write-tree"], { cwd: agent, env }).toString().trim()
+    const existing = "refs/ouro-sync/repair/2026-11-01T00-00-00.000Z"
+    git(agent, ["update-ref", existing, git(agent, [...OWNER, "commit-tree", tree, "-p", "HEAD", "-m", "earlier"])])
+
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    expect(repairRefs(agent)).toEqual([existing])
+    expect(pendingSync(agent)).toMatchObject({ repairRef: existing })
+  })
+
+  it("repair prunes old refs, keeping the newest ten, those under 30 days and the pending one", () => {
+    const { owner, agent } = setup()
+    const make = (ref: string, daysAgo: number): void => {
+      const date = `${Math.floor(Date.now() / 1000) - daysAgo * 86_400} +0000`
+      const commit = execFileSync(REAL_GIT, [...OWNER, "commit-tree", git(agent, ["rev-parse", "HEAD^{tree}"]), "-m", ref], {
+        cwd: agent,
+        env: { ...process.env, GIT_COMMITTER_DATE: date },
+      }).toString().trim()
+      git(agent, ["update-ref", ref, commit])
+    }
+    const old = (i: number): string => `refs/ouro-sync/repair/2026-01-${String(i).padStart(2, "0")}T00-00-00.000Z`
+    for (let i = 1; i <= 13; i++) make(old(i), 40)
+    const recent = "refs/ouro-sync/repair/2025-12-01T00-00-00.000Z"
+    make(recent, 1)
+    write(agent, "state/pending-sync.json", JSON.stringify({ error: "x", failedAt: "2026-01-01T00:00:00.000Z", classification: "unknown", conflictFiles: [], repairRef: old(1) }))
+    strandMerge(owner, agent)
+
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    const refs = repairRefs(agent)
+    // The new ref plus the nine newest old ones, the recent one and the pending one.
+    expect(refs).toHaveLength(12)
+    for (const gone of [old(2), old(3), old(4)]) expect(refs).not.toContain(gone)
+    for (const kept of [old(1), recent, ...[5, 6, 7, 8, 9, 10, 11, 12, 13].map(old)]) expect(refs).toContain(kept)
+  })
+
+  it("the repair notice claims kept edits only for conflicted paths that differ from HEAD", async () => {
+    const { owner, agent } = setup()
+    strandMerge(owner, agent)
+    git(agent, ["checkout", "--ours", "--", "psyche/TACIT.md"])
+    expect(integrateFetched(agent, CONFIG, AGENT)).toEqual({ ok: true })
+    await tick()
+    expect(notices.filter((n) => n.notice.noticeId.startsWith("sync-repair:"))).toEqual([])
+    expect(pendingSync(agent)).toBeNull()
+  })
+})
