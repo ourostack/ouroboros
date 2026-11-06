@@ -2,12 +2,26 @@
 // a file the package never overwrites. The packaged psyche writes {{owner}}, {{butler}}
 // and {{household}} where those names go, so one psyche serves every household.
 
+import { emitNervesEvent } from "../nerves/runtime"
+
 export type HouseNameKey = "owner" | "butler" | "household"
 
 const HOUSE_NAME_FIELDS: ReadonlyArray<readonly [HouseNameKey, string]> = [["owner", "ownerName"], ["butler", "butlerName"], ["household", "householdName"]]
 
 /** The names house.json gives, by placeholder key; a missing, empty or unparseable file gives none. */
 export function houseNameFields(houseJson: string | null): Partial<Record<HouseNameKey, string>> {
+  const names = readHouseNames(houseJson)
+  // Only how many names were given: the names themselves are the household's.
+  emitNervesEvent({
+    component: "mind",
+    event: "mind.house_names_read",
+    message: "read the household's names",
+    meta: { given: Object.keys(names).length },
+  })
+  return names
+}
+
+function readHouseNames(houseJson: string | null): Partial<Record<HouseNameKey, string>> {
   const names: Partial<Record<HouseNameKey, string>> = {}
   let parsed: unknown
   try {
