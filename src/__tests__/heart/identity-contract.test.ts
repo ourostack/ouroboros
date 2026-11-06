@@ -45,6 +45,7 @@ describe("readAgentConfigForAgent structural contract", () => {
       expect(config.phrases).toEqual(FULL_AGENT_JSON.phrases)
       expect(config.vault).toEqual(FULL_AGENT_JSON.vault)
       expect(config.sync).toEqual(FULL_AGENT_JSON.sync)
+      expect(config.plugins).toEqual(FULL_AGENT_JSON.plugins)
     } finally {
       tmp.cleanup()
     }
@@ -95,6 +96,8 @@ describe("readAgentConfigForAgent structural contract", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
       })
     } finally {
       tmp.cleanup()

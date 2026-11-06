@@ -21,6 +21,7 @@ vi.mock("../../repertoire/credential-access", () => ({
 interface MockClient {
   connect: ReturnType<typeof vi.fn>
   listTools: ReturnType<typeof vi.fn>
+  refreshTools: ReturnType<typeof vi.fn>
   callTool: ReturnType<typeof vi.fn>
   shutdown: ReturnType<typeof vi.fn>
   isConnected: ReturnType<typeof vi.fn>
@@ -38,6 +39,7 @@ function createMockClient(tools: McpToolInfo[] = [], shouldFailConnect = false):
       ? vi.fn().mockRejectedValue(new Error("connect failed"))
       : vi.fn().mockResolvedValue(undefined),
     listTools: vi.fn().mockResolvedValue(tools),
+    refreshTools: vi.fn().mockResolvedValue(tools),
     callTool: vi.fn().mockResolvedValue({
       content: [{ type: "text", text: "result" }],
     }),
@@ -49,9 +51,11 @@ function createMockClient(tools: McpToolInfo[] = [], shouldFailConnect = false):
 }
 
 vi.mock("../../repertoire/mcp-client", () => ({
+  isMcpTransportError: (error: unknown) => /transport|closed|disconnect/i.test(error instanceof Error ? error.message : String(error)),
   McpClient: class McpClient {
     connect: MockClient["connect"]
     listTools: MockClient["listTools"]
+    refreshTools: MockClient["refreshTools"]
     callTool: MockClient["callTool"]
     shutdown: MockClient["shutdown"]
     isConnected: MockClient["isConnected"]
@@ -61,6 +65,7 @@ vi.mock("../../repertoire/mcp-client", () => ({
       const mock = clientFactory()
       this.connect = mock.connect
       this.listTools = mock.listTools
+      this.refreshTools = mock.refreshTools
       this.callTool = mock.callTool
       this.shutdown = mock.shutdown
       this.isConnected = mock.isConnected
@@ -249,6 +254,218 @@ describe("McpManager", () => {
       })
 
       await expect(manager.callTool("ado", "get_items", {})).rejects.toThrow(/disconnected/i)
+    })
+
+    it("reconnects a stale disconnected transport before calling a tool", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const client = createMockClient()
+        if (clientIdx === 0) {
+          client.isConnected = vi.fn(() => false)
+        }
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+
+      const manager = new McpManager()
+
+      await manager.start({
+        ado: { command: "ado-server" },
+      })
+
+      const result = await manager.callTool("ado", "get_items", {})
+
+      expect(result.content[0].text).toBe("result")
+      expect(clientInstances).toHaveLength(2)
+      expect(clientInstances[1].connect).toHaveBeenCalled()
+      expect(clientInstances[1].callTool).toHaveBeenCalledWith("get_items", {})
+      expect(nervesEvents.some((e) => e.event === "mcp.transport_recovery")).toBe(true)
+    })
+
+    it("reconnects and retries once after a transport-level call failure", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const client = createMockClient()
+        if (clientIdx === 0) {
+          client.callTool = vi.fn().mockRejectedValue(new Error("Transport closed"))
+        }
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+
+      const manager = new McpManager()
+
+      await manager.start({
+        ado: { command: "ado-server" },
+      })
+
+      const result = await manager.callTool("ado", "get_items", { q: "x" })
+
+      expect(result.content[0].text).toBe("result")
+      expect(clientInstances).toHaveLength(2)
+      expect(clientInstances[0].shutdown).toHaveBeenCalled()
+      expect(clientInstances[1].callTool).toHaveBeenCalledWith("get_items", { q: "x" })
+    })
+
+    it("reports when transport recovery cannot reconnect after a call failure", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const client = createMockClient()
+        if (clientIdx === 0) {
+          client.callTool = vi.fn().mockRejectedValue(new Error("Transport closed"))
+        } else {
+          client.isConnected = vi.fn(() => false)
+        }
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+
+      const manager = new McpManager()
+
+      await manager.start({
+        ado: { command: "ado-server" },
+      })
+
+      await expect(manager.callTool("ado", "get_items", {})).rejects.toThrow(
+        'Server "ado" is disconnected after recovery: Transport closed',
+      )
+    })
+
+    it("recovers after a non-Error transport-level call failure", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const client = createMockClient()
+        if (clientIdx === 0) {
+          client.callTool = vi.fn().mockRejectedValue("transport closed as string")
+        }
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+
+      const manager = new McpManager()
+
+      await manager.start({
+        ado: { command: "ado-server" },
+      })
+
+      const result = await manager.callTool("ado", "get_items", {})
+
+      expect(result.content[0].text).toBe("result")
+      expect(clientInstances).toHaveLength(2)
+    })
+
+    it("does not retry application-level MCP tool errors", async () => {
+      clientFactory = () => {
+        const client = createMockClient()
+        client.callTool = vi.fn().mockRejectedValue(new Error("Method not found"))
+        clientInstances.push(client)
+        return client
+      }
+
+      const manager = new McpManager()
+
+      await manager.start({
+        ado: { command: "ado-server" },
+      })
+
+      await expect(manager.callTool("ado", "missing", {})).rejects.toThrow("Method not found")
+      expect(clientInstances).toHaveLength(1)
+    })
+  })
+
+  describe("runCanaries", () => {
+    it("refreshes each server's tools through a live request", async () => {
+      clientFactory = () => {
+        const client = createMockClient([{ name: "ping", description: "Ping", inputSchema: {} }])
+        clientInstances.push(client)
+        return client
+      }
+
+      const manager = new McpManager()
+      await manager.start({ ado: { command: "ado-server" } })
+
+      const results = await manager.runCanaries()
+
+      expect(results).toEqual([{ server: "ado", ok: true, detail: "1 tools listed" }])
+      expect(clientInstances[0].refreshTools).toHaveBeenCalled()
+    })
+
+    it("recovers a disconnected server during canary execution", async () => {
+      let clientIdx = 0
+      clientFactory = () => {
+        const client = createMockClient([{ name: "ping", description: "Ping", inputSchema: {} }])
+        if (clientIdx === 0) {
+          client.isConnected = vi.fn(() => false)
+        }
+        clientInstances.push(client)
+        clientIdx++
+        return client
+      }
+
+      const manager = new McpManager()
+      await manager.start({ ado: { command: "ado-server" } })
+
+      const results = await manager.runCanaries()
+
+      expect(results).toEqual([{ server: "ado", ok: true, detail: "1 tools listed" }])
+      expect(clientInstances).toHaveLength(2)
+      expect(clientInstances[1].refreshTools).toHaveBeenCalled()
+    })
+
+    it("reports a disconnected server when canary recovery cannot reconnect", async () => {
+      clientFactory = () => {
+        const client = createMockClient()
+        client.isConnected = vi.fn(() => false)
+        clientInstances.push(client)
+        return client
+      }
+
+      const manager = new McpManager()
+      await manager.start({ ado: { command: "ado-server" } })
+
+      const results = await manager.runCanaries()
+
+      expect(results).toEqual([{ server: "ado", ok: false, detail: "disconnected after recovery attempt" }])
+      expect(clientInstances).toHaveLength(2)
+    })
+
+    it("reports canary refresh failures and recovers transport-level errors", async () => {
+      clientFactory = () => {
+        const client = createMockClient()
+        client.refreshTools = vi.fn().mockRejectedValue(new Error("Transport closed during refresh"))
+        clientInstances.push(client)
+        return client
+      }
+
+      const manager = new McpManager()
+      await manager.start({ ado: { command: "ado-server" } })
+
+      const results = await manager.runCanaries()
+
+      expect(results).toEqual([{ server: "ado", ok: false, detail: "Transport closed during refresh" }])
+      expect(clientInstances).toHaveLength(2)
+      expect(nervesEvents.some((e) => e.event === "mcp.transport_recovery")).toBe(true)
+    })
+
+    it("reports non-Error canary refresh failures", async () => {
+      clientFactory = () => {
+        const client = createMockClient()
+        client.refreshTools = vi.fn().mockRejectedValue("plain refresh failure")
+        clientInstances.push(client)
+        return client
+      }
+
+      const manager = new McpManager()
+      await manager.start({ ado: { command: "ado-server" } })
+
+      const results = await manager.runCanaries()
+
+      expect(results).toEqual([{ server: "ado", ok: false, detail: "plain refresh failure" }])
+      expect(clientInstances).toHaveLength(1)
     })
   })
 

@@ -5,6 +5,7 @@ const path = require("path")
 const fs = require("fs")
 
 const { validateChangelog } = require("./changelog-gate.cjs")
+const { validatePackageAssets } = require("./package-assets.cjs")
 
 function splitLines(output) {
   return output
@@ -33,12 +34,144 @@ function parseArgs(argv) {
 
 function versionBumpRequired(changedFiles) {
   return changedFiles.some(
-    (file) => file.startsWith("skills/") || (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
+    (file) => file === "package.json" ||
+      file.startsWith("skills/") ||
+      file.startsWith("scripts/") ||
+      (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
   )
 }
 
 function wrapperPackageChanged(changedFiles) {
   return changedFiles.some((file) => file.startsWith("packages/ouro.bot/"))
+}
+
+function pathRequiresChangelogFreshness(file) {
+  return file.startsWith("scripts/") ||
+    file.startsWith("skills/") ||
+    (file.startsWith("src/") && !file.startsWith("src/__tests__/")) ||
+    (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
+}
+
+function shellQuote(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function latestCommitForPath(baseRef, file, execSyncImpl) {
+  try {
+    return execSyncImpl(
+      `git log --format=%H --max-count=1 ${shellQuote(`${baseRef}..HEAD`)} -- ${shellQuote(file)}`,
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim()
+  } catch {
+    return ""
+  }
+}
+
+function isAncestorCommit(ancestor, descendant, execSyncImpl) {
+  try {
+    execSyncImpl(`git merge-base --is-ancestor ${shellQuote(ancestor)} ${shellQuote(descendant)}`, {
+      stdio: ["ignore", "ignore", "ignore"],
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function collectUncommittedFiles(execSyncImpl) {
+  const workingTreeFiles = splitLines(
+    execSyncImpl("git diff --name-only HEAD", { encoding: "utf-8" }),
+  )
+  const untrackedFiles = splitLines(
+    execSyncImpl("git ls-files --others --exclude-standard", { encoding: "utf-8" }),
+  )
+
+  return new Set([...workingTreeFiles, ...untrackedFiles])
+}
+
+function formatPathList(files) {
+  const shown = files.slice(0, 8).join(", ")
+  return files.length > 8 ? `${shown}, and ${files.length - 8} more` : shown
+}
+
+function assessChangelogFreshness(input) {
+  const freshnessFiles = input.changedFiles.filter(pathRequiresChangelogFreshness)
+  if (freshnessFiles.length === 0) {
+    return { ok: true, message: "changelog freshness: skipped (no releasable implementation paths)" }
+  }
+
+  const topEntry = Array.isArray(input.changelog?.versions) ? input.changelog.versions[0] : undefined
+  if (!topEntry || topEntry.version !== input.currentVersion) {
+    return {
+      ok: false,
+      message:
+        `changelog entry for version ${input.currentVersion} must be the top changelog entry when releasable implementation paths change.`,
+    }
+  }
+
+  if (!input.changedFiles.includes("changelog.json")) {
+    return {
+      ok: false,
+      message:
+        `changelog.json must be updated alongside releasable implementation changes: ${formatPathList(freshnessFiles)}`,
+    }
+  }
+
+  const uncommittedFiles = collectUncommittedFiles(input.execSyncImpl)
+  const uncommittedFreshnessFiles = freshnessFiles.filter((file) => uncommittedFiles.has(file))
+  const changelogUncommitted = uncommittedFiles.has("changelog.json")
+  if (uncommittedFreshnessFiles.length > 0 && !changelogUncommitted) {
+    return {
+      ok: false,
+      message:
+        `changelog.json must be updated in the working tree after uncommitted releasable changes: ${formatPathList(uncommittedFreshnessFiles)}`,
+    }
+  }
+
+  if (changelogUncommitted) {
+    return { ok: true, message: "changelog freshness: pass" }
+  }
+
+  const changelogCommit = latestCommitForPath(input.baseRef, "changelog.json", input.execSyncImpl)
+  if (!changelogCommit) {
+    return {
+      ok: false,
+      message:
+        `changelog.json must be committed on this branch alongside releasable implementation changes: ${formatPathList(freshnessFiles)}`,
+    }
+  }
+
+  const staleFiles = freshnessFiles.filter((file) => {
+    if (uncommittedFiles.has(file)) {
+      return false
+    }
+    const fileCommit = latestCommitForPath(input.baseRef, file, input.execSyncImpl)
+    return fileCommit && !isAncestorCommit(fileCommit, changelogCommit, input.execSyncImpl)
+  })
+
+  if (staleFiles.length > 0) {
+    return {
+      ok: false,
+      message:
+        `changelog.json is older than releasable implementation changes; update it after touching: ${formatPathList(staleFiles)}`,
+    }
+  }
+
+  return { ok: true, message: "changelog freshness: pass" }
+}
+
+function collectChangedFiles(baseRef, execSyncImpl) {
+  const committedFiles = splitLines(
+    execSyncImpl(`git diff --name-only "${baseRef}...HEAD"`, { encoding: "utf-8" }),
+  )
+  const workingTreeFiles = splitLines(
+    execSyncImpl("git diff --name-only HEAD", { encoding: "utf-8" }),
+  )
+  const untrackedFiles = splitLines(
+    execSyncImpl("git ls-files --others --exclude-standard", { encoding: "utf-8" }),
+  )
+
+  return Array.from(new Set([...committedFiles, ...workingTreeFiles, ...untrackedFiles])).sort()
 }
 
 function assessWrapperPublishSync(input) {
@@ -89,13 +222,12 @@ function runReleasePreflight(options = {}, deps = {}) {
   const execSyncImpl = deps.execSyncImpl ?? execSync
   const readFileSyncImpl = deps.readFileSyncImpl ?? fs.readFileSync
   const packageJsonPath = deps.packageJsonPath ?? path.resolve(__dirname, "../package.json")
+  const packageRoot = deps.packageRoot ?? path.resolve(__dirname, "..")
   const wrapperPackageJsonPath =
     deps.wrapperPackageJsonPath ?? path.resolve(__dirname, "../packages/ouro.bot/package.json")
   const changelogPath = deps.changelogPath ?? path.resolve(__dirname, "../changelog.json")
 
-  const changedFiles = splitLines(
-    execSyncImpl(`git diff --name-only "${baseRef}...HEAD"`, { encoding: "utf-8" }),
-  )
+  const changedFiles = collectChangedFiles(baseRef, execSyncImpl)
   const releasableChanged = versionBumpRequired(changedFiles)
   const packageJson = readJson(packageJsonPath, readFileSyncImpl)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath, readFileSyncImpl)
@@ -110,7 +242,7 @@ function runReleasePreflight(options = {}, deps = {}) {
       errors.push(
         `@ouro.bot/cli@${packageJson.version} is already published on npm.\n\n` +
           `Bump the version before merging:\n` +
-          `  npm version prerelease --preid=alpha\n` +
+          `  npm run release:bump -- --version <next-version> --change "Describe this release."\n` +
           `  git push`,
       )
     } else {
@@ -125,6 +257,18 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(changelogResult.error)
   } else {
     messages.push(`changelog gate: pass (${packageJson.version})`)
+    const changelogFreshnessResult = assessChangelogFreshness({
+      baseRef,
+      changedFiles,
+      currentVersion: packageJson.version,
+      changelog,
+      execSyncImpl,
+    })
+    if (!changelogFreshnessResult.ok) {
+      errors.push(changelogFreshnessResult.message)
+    } else {
+      messages.push(changelogFreshnessResult.message)
+    }
   }
 
   const wrapperResult = assessWrapperPublishSync({
@@ -137,6 +281,13 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(wrapperResult.message)
   } else {
     messages.push(wrapperResult.message)
+  }
+
+  const packageAssetResult = validatePackageAssets(packageRoot)
+  if (!packageAssetResult.ok) {
+    errors.push(packageAssetResult.message)
+  } else {
+    messages.push(packageAssetResult.message)
   }
 
   return {
@@ -176,8 +327,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assessChangelogFreshness,
   assessWrapperPublishSync,
+  collectChangedFiles,
   parseArgs,
+  pathRequiresChangelogFreshness,
   runReleasePreflight,
   splitLines,
   versionBumpRequired,

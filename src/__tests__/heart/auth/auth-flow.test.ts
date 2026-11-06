@@ -35,7 +35,7 @@ const mockUpsertProviderCredential = vi.hoisted(() => vi.fn(async (input: {
 }) => {
   input.onProgress?.(`opening ${input.agentName}'s vault session...`)
   input.onProgress?.(`storing ${input.provider} credentials in ${input.agentName}'s vault...`)
-  input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
+  input.onProgress?.(`refreshing in-memory provider credential pool from ${input.agentName}'s vault...`)
   providerCredentialWrites.push({
     agentName: input.agentName,
     provider: input.provider,
@@ -92,6 +92,11 @@ function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)
   return dir
+}
+
+function makeJwtPayloadToken(payload: unknown): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
+  return `header.${encodedPayload}.sig`
 }
 
 function writeAgentConfig(
@@ -241,19 +246,31 @@ describe("runtime auth flow", () => {
     expect(() => readAgentConfigForAgent(agentName, bundlesRoot)).toThrow("unsupported provider 'not-real'")
   })
 
-  it("always runs codex login and writes the OpenAI Codex credential to the provider vault", async () => {
-    emitTestEvent("always refreshes codex token")
+  it("falls back to codex login when local Codex auth cannot be reused", async () => {
+    emitTestEvent("falls back from stale codex local auth")
     const homeDir = makeTempDir("auth-flow-home-codex-existing")
     const agentName = "CodexExisting"
     const progress: string[] = []
     fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
     fs.writeFileSync(
       path.join(homeDir, ".codex", "auth.json"),
-      `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
+      `${JSON.stringify({ tokens: { access_token: "header.not-json.sig" } }, null, 2)}\n`,
       "utf8",
     )
 
-    const spawnSync = vi.fn(() => ({ status: 0 })) as any
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT" }
+      }
+      if (args.length === 1 && args[0] === "login") {
+        fs.writeFileSync(
+          path.join(homeDir, ".codex", "auth.json"),
+          `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
+          "utf8",
+        )
+      }
+      return { status: 0 }
+    }) as any
     const result = await runRuntimeAuthFlow(
       {
         agentName,
@@ -271,18 +288,68 @@ describe("runtime auth flow", () => {
       `checking ${agentName}'s vault access...`,
       `reading vault items for ${agentName}...`,
       "parsing provider credentials...",
+      "checking local Codex login...",
       "starting openai-codex browser login...",
       "openai-codex login complete; reading local Codex token...",
       `opening ${agentName}'s vault session...`,
       `storing openai-codex credentials in ${agentName}'s vault...`,
-      `refreshing local provider snapshot from ${agentName}'s vault...`,
-      "credentials stored at providers/openai-codex; local provider snapshot refreshed.",
+      `refreshing in-memory provider credential pool from ${agentName}'s vault...`,
+      "credentials stored at providers/openai-codex; in-memory provider credential pool refreshed.",
     ])
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login", "status"], { encoding: "utf8" })
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))
 
     expect(result.credentialPath).toBe("providers/openai-codex")
     const write = expectProviderCredentialWrite(agentName, "openai-codex")
     expect(write.credentials.oauthAccessToken).toBe("oauth-token-refreshed")
+  })
+
+  it("falls back to codex login when local Codex JWT payload is not an object", async () => {
+    emitTestEvent("codex jwt payload must be object")
+    const cases = [
+      ["null", null],
+      ["string", "not-an-object"],
+      ["array", []],
+    ] as const
+
+    for (const [label, payload] of cases) {
+      const homeDir = makeTempDir(`auth-flow-home-codex-${label}-payload`)
+      const codexDir = path.join(homeDir, ".codex")
+      fs.mkdirSync(codexDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(codexDir, "auth.json"),
+        `${JSON.stringify({ tokens: { access_token: makeJwtPayloadToken(payload) } }, null, 2)}\n`,
+        "utf8",
+      )
+      const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+        if (args[0] === "login" && args[1] === "status") {
+          return { status: 0, stdout: "Logged in using ChatGPT" }
+        }
+        if (args.length === 1 && args[0] === "login") {
+          fs.writeFileSync(
+            path.join(codexDir, "auth.json"),
+            `${JSON.stringify({ tokens: { access_token: `oauth-token-after-${label}` } }, null, 2)}\n`,
+            "utf8",
+          )
+        }
+        return { status: 0 }
+      }) as any
+
+      const credentials = await collectRuntimeAuthCredentials(
+        {
+          agentName: `CodexBadPayload${label}`,
+          provider: "openai-codex",
+        },
+        {
+          homeDir,
+          spawnSync,
+        },
+      )
+
+      expect(spawnSync).toHaveBeenNthCalledWith(1, "codex", ["login", "status"], { encoding: "utf8" })
+      expect(spawnSync).toHaveBeenNthCalledWith(2, "codex", ["login"], { stdio: "inherit" })
+      expect(credentials.oauthAccessToken).toBe(`oauth-token-after-${label}`)
+    }
   })
 
   it("treats non-string Codex auth tokens as missing and re-runs login", async () => {
@@ -295,12 +362,17 @@ describe("runtime auth flow", () => {
       `${JSON.stringify({ tokens: { access_token: 123 } }, null, 2)}\n`,
       "utf8",
     )
-    const spawnSync = vi.fn(() => {
-      fs.writeFileSync(
-        path.join(homeDir, ".codex", "auth.json"),
-        `${JSON.stringify({ tokens: { access_token: "oauth-token-after-relogin" } }, null, 2)}\n`,
-        "utf8",
-      )
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT" }
+      }
+      if (args.length === 1 && args[0] === "login") {
+        fs.writeFileSync(
+          path.join(homeDir, ".codex", "auth.json"),
+          `${JSON.stringify({ tokens: { access_token: "oauth-token-after-relogin" } }, null, 2)}\n`,
+          "utf8",
+        )
+      }
       return { status: 0 }
     }) as any
 
@@ -315,7 +387,9 @@ describe("runtime auth flow", () => {
       },
     )
 
-    expect(spawnSync).toHaveBeenCalledOnce()
+    expect(spawnSync).toHaveBeenCalledTimes(2)
+    expect(spawnSync).toHaveBeenNthCalledWith(1, "codex", ["login", "status"], { encoding: "utf8" })
+    expect(spawnSync).toHaveBeenNthCalledWith(2, "codex", ["login"], { stdio: "inherit" })
     expect(
       expectProviderCredentialWrite(agentName, "openai-codex").credentials.oauthAccessToken,
     ).toBe("oauth-token-after-relogin")

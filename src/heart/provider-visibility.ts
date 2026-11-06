@@ -5,15 +5,14 @@ import {
   type EffectiveProviderBinding,
 } from "./provider-binding-resolver"
 import type {
-  ProviderBindingSource,
   ProviderLane,
   ProviderReadinessStatus,
-} from "./provider-state"
+} from "./provider-lanes"
 
 export type ProviderVisibilityStatus = "configured" | "unconfigured"
 
 export interface ProviderVisibilityCredential {
-  status: "present" | "missing" | "invalid-pool"
+  status: "present" | "missing" | "invalid-pool" | "not-loaded"
   source?: string
   revision?: string
   repairCommand?: string
@@ -32,7 +31,7 @@ interface ProviderVisibilityConfiguredLane {
   status: "configured"
   provider: AgentProvider
   model: string
-  source: ProviderBindingSource
+  source: "agent.json"
   readiness: ProviderVisibilityReadiness
   credential: ProviderVisibilityCredential
   warnings: string[]
@@ -89,7 +88,7 @@ function credentialVisibility(binding: EffectiveProviderBinding): ProviderVisibi
 
   return {
     status: credential.status,
-    repairCommand: credential.repair.command,
+    ...("repair" in credential ? { repairCommand: credential.repair.command } : {}),
   }
 }
 
@@ -160,6 +159,7 @@ export function buildAgentProviderVisibility(input: BuildAgentProviderVisibility
 function credentialLabel(credential: ProviderVisibilityCredential): string {
   if (credential.status === "present") return credential.source ?? "vault"
   if (credential.status === "invalid-pool") return "vault unavailable"
+  if (credential.status === "not-loaded") return "checked previously"
   return "missing"
 }
 
@@ -177,7 +177,7 @@ function readinessLabel(readiness: ProviderVisibilityReadiness): string {
 }
 
 function providerStatusDetail(lane: ProviderVisibilityConfiguredLane): string | undefined {
-  if (lane.credential.status !== "present") return undefined
+  if (lane.credential.status === "missing" || lane.credential.status === "invalid-pool") return undefined
   return lane.readiness.error
 }
 
@@ -200,13 +200,13 @@ export function formatProviderVisibilityLine(lane: ProviderVisibilityLane): stri
 export function formatAgentProviderVisibilityForPrompt(visibility: AgentProviderVisibility): string {
   if (visibility.lanes.every((lane) => lane.status === "unconfigured")) {
     return [
-      "provider bindings are not configured on this machine.",
+      "provider bindings are not configured in agent.json.",
       ...visibility.lanes.map((lane) => `- ${formatProviderVisibilityLine(lane)}`),
     ].join("\n")
   }
 
   return [
-    "runtime uses local provider bindings for this machine:",
+    "runtime uses provider bindings from agent.json:",
     ...visibility.lanes.map((lane) => `- ${formatProviderVisibilityLine(lane)}`),
   ].join("\n")
 }
