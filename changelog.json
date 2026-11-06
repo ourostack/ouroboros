@@ -6,6 +6,7 @@
       "changes": [
         "An agent can now reach a friend that is offline. A sealed A2A message goes direct first; if the friend does not answer, the same sealed message is queued at the friend's friends-relay inbox and the friend handles it when it comes back, through the same checks as a direct message. The relay only holds ciphertext.",
         "An agent learns where to queue mail for a friend by asking it over a sealed call after a direct message goes through; only active friend or family peers get the answer. The tools say when a message, delegation or result was queued rather than delivered, and when a failed direct attempt may still have arrived.",
+        "A sender keeps a friend's relay contact only when the friend's own DID answered with it, and counts a message as queued only when the relay returns a queue id. An agent moved to another relay drains the old inbox until it is empty before removing it, and moves one relay at a time.",
         "To make an agent reachable while offline, set `a2a.relay.url` and `a2a.relay.inviteToken` in its machine vault config and restart; the A2A sense registers, keeps the registration in the vault and polls the inbox. See docs/a2a-relay.md.",
         "Compatibility: agents without a relay behave as before. A peer on an older harness refuses the contact request; that is cached as no relay and asked again a day later."
       ]
