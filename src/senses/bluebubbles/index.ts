@@ -5,6 +5,7 @@ import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
 import { loadSession, postTurnTrim, deferPostTurnPersist } from "../../mind/context"
 import { accumulateFriendTokens } from "../../mind/friends/tokens"
@@ -16,9 +17,9 @@ import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pending"
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
-// getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
+import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
 import {
   BlueBubblesIgnoredEventError,
@@ -29,16 +30,29 @@ import {
   type BlueBubblesNormalizedMutation,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
-import { hasRecordedBlueBubblesInbound, recordBlueBubblesInbound, type BlueBubblesInboundSource } from "./inbound-log"
+import {
+  hasRecordedBlueBubblesInbound,
+  listRecordedBlueBubblesInbound,
+  recordBlueBubblesInbound,
+  type BlueBubblesInboundSource,
+} from "./inbound-log"
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./mutation-log"
+import { hasProcessedBlueBubblesMessage, hasProcessedBlueBubblesMessageGuid, recordProcessedBlueBubblesMessage } from "./processed-log"
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
+import {
+  beginBlueBubblesActiveTurn,
+  finishBlueBubblesActiveTurn,
+  noteBlueBubblesActiveTurnVisibleActivity,
+  snapshotBlueBubblesActiveTurns,
+} from "./active-turns"
 import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
 import { getDebugMode } from "../commands"
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
 
 const bbFailoverStates = new Map<string, FailoverState>()
+const bbInFlightMessageGuids = new Set<string>()
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
@@ -108,6 +122,27 @@ export interface BlueBubblesHandleResult {
   reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored"
 }
 
+function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
+  return `${sessionKey}:${messageGuid.trim()}`
+}
+
+function isBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+  if (!messageGuid.trim()) return false
+  return bbInFlightMessageGuids.has(blueBubblesMessageKey(sessionKey, messageGuid))
+}
+
+function beginBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+  if (!messageGuid.trim()) return true
+  const key = blueBubblesMessageKey(sessionKey, messageGuid)
+  if (bbInFlightMessageGuids.has(key)) return false
+  bbInFlightMessageGuids.add(key)
+  return true
+}
+
+function endBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): void {
+  bbInFlightMessageGuids.delete(blueBubblesMessageKey(sessionKey, messageGuid))
+}
+
 interface RuntimeDeps {
   getAgentName: typeof getAgentName
   buildSystem: typeof buildSystem
@@ -122,9 +157,10 @@ interface RuntimeDeps {
   createFriendStore: () => FileFriendStore
   createFriendResolver: (store: FileFriendStore, params: FriendResolverParams) => FriendResolver
   createServer: typeof http.createServer
+  getOwnHandles: () => readonly string[]
 }
 
-interface BlueBubblesReplyTargetController {
+export interface BlueBubblesReplyTargetController {
   getReplyToMessageGuid(): string | undefined
   setSelection(selection: BlueBubblesReplyTargetSelection): string
 }
@@ -144,7 +180,7 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -161,14 +197,32 @@ const defaultDeps: RuntimeDeps = {
   createFriendStore: () => new FileFriendStore(path.join(getAgentRoot(), "friends")),
   createFriendResolver: (store, params) => new FriendResolver(store, params),
   createServer: http.createServer,
+  getOwnHandles: () => [...getBlueBubblesConfig().ownHandles, ...discoveredOwnHandles],
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
+const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
+const BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS = 2 * 60_000
+const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
+const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
+const BLUEBUBBLES_SILENCE_WATCHDOG_MS = 75_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
 const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
 const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
+
+interface BlueBubblesHandleOptions {
+  timeoutMs?: number
+}
+
+class BlueBubblesRecoveryTurnTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`bluebubbles recovery turn timed out after ${timeoutMs}ms`)
+    this.name = "BlueBubblesRecoveryTurnTimeoutError"
+  }
+}
 
 function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverParams {
   if (event.chat.isGroup) {
@@ -477,15 +531,27 @@ function emitBlueBubblesMarkReadWarning(chat: BlueBubblesChatRef, error: unknown
   })
 }
 
-function createBlueBubblesCallbacks(
+export function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
   replyTarget: BlueBubblesReplyTargetController,
   isGroupChat: boolean,
+  onVisibleActivity?: () => void,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   let typingActive = false
   let queue = Promise.resolve()
+  let lastVisibleActivityMs = Date.now()
+  let silenceWatchdog: ReturnType<typeof setInterval> | null = null
+  // Per-turn outward-send dedupe. A single createBlueBubblesCallbacks lifetime
+  // serves one inbound turn, so collapsing identical outward bodies inside
+  // this closure is scoped tightly: each fresh inbound turn starts with an
+  // empty set. Mid-turn settle/proof retry loops historically caused the
+  // agent to re-emit the same answer through multiple speak calls and a
+  // final flush, surfacing as 4 near-identical iMessages from one ask
+  // (2026-05-08 06:18 incident). The guard lets the engine retry harmlessly
+  // without duplicating outward delivery to the friend.
+  const sentOutwardTextNorms = new Set<string>()
 
   function enqueue(operation: string, task: () => Promise<void>): void {
     queue = queue.then(task).catch((error) => {
@@ -517,6 +583,50 @@ function createBlueBubblesCallbacks(
     })
   }
 
+  function recordVisibleActivity(): void {
+    lastVisibleActivityMs = Date.now()
+    onVisibleActivity?.()
+  }
+
+  function isDuplicateOutwardText(trimmed: string): boolean {
+    const norm = trimmed.replace(/\s+/g, " ").trim().toLowerCase()
+    if (sentOutwardTextNorms.has(norm)) return true
+    sentOutwardTextNorms.add(norm)
+    return false
+  }
+
+  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush", messageLength: number): void {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "bluebubbles.duplicate_outward_suppressed",
+      message: "suppressed near-identical outward send within single inbound turn",
+      meta: {
+        site,
+        chatGuid: chat.chatGuid ?? null,
+        messageLength,
+      },
+    })
+  }
+
+  function stopSilenceWatchdog(): void {
+    if (silenceWatchdog === null) return
+    clearInterval(silenceWatchdog)
+    silenceWatchdog = null
+  }
+
+  function startSilenceWatchdog(): void {
+    if (silenceWatchdog !== null) return
+    silenceWatchdog = setInterval(() => {
+      if (Date.now() - lastVisibleActivityMs < BLUEBUBBLES_SILENCE_WATCHDOG_MS) return
+      sendStatus("still working on this...")
+    }, BLUEBUBBLES_SILENCE_WATCHDOG_MS)
+    /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+    if (typeof (silenceWatchdog as { unref?: () => void }).unref === "function") {
+      (silenceWatchdog as { unref: () => void }).unref()
+    }
+  }
+
   function sendStatus(text: string): void {
     enqueue("send_status", async () => {
       await client.sendText({
@@ -524,6 +634,7 @@ function createBlueBubblesCallbacks(
         text,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
+      recordVisibleActivity()
       // Re-enable typing indicator — sending a message clears the typing bubble
       await client.setTyping(chat, true)
     })
@@ -542,6 +653,7 @@ function createBlueBubblesCallbacks(
 
   return {
     onModelStart(): void {
+      startSilenceWatchdog()
       if (!isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
@@ -568,6 +680,21 @@ function createBlueBubblesCallbacks(
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
+      // observe + speak are flow-control: their visible output (or lack of it) is
+      // handled outside the tool-activity callbacks. speak in particular delivers
+      // its message via onTextChunk/flushNow — we MUST NOT enqueue a "speaking..."
+      // status sendText here, which would arrive as a separate iMessage right
+      // before the actual speak content.
+      if (name === "observe" || name === "speak") {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_tool_start",
+          message: "bluebubbles tool execution started",
+          meta: { name },
+        })
+        return
+      }
+
       // Tool activity is a reply commitment — start typing if not already
       if (!typingActive) startTypingNow()
       toolCallbacks.onToolStart(name, _args)
@@ -580,7 +707,10 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      toolCallbacks.onToolEnd(name, summary, success)
+      // observe + speak skip the tool-activity end callback (no ✓/✗ status sent).
+      if (name !== "observe" && name !== "speak") {
+        toolCallbacks.onToolEnd(name, summary, success)
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
@@ -604,6 +734,45 @@ function createBlueBubblesCallbacks(
       textBuffer = ""
     },
 
+    async flushNow(): Promise<void> {
+      // Contract: throws if delivery fails. We deliberately let `client.sendText`
+      // rejections propagate so the engine's speak interception can mark the
+      // tool call as failed and tell the agent the message did not reach the
+      // friend (rather than silently logging and pretending success).
+      const trimmed = textBuffer.trim()
+      if (!trimmed) return
+      textBuffer = ""
+      if (containsInternalMetaMarkers(trimmed)) {
+        emitBluebubblesMetaBlocked({
+          site: "flushNow",
+          message: "bluebubbles speak text blocked: internal meta markers",
+          meta: {
+            chatGuid: chat.chatGuid ?? null,
+            messageLength: trimmed.length,
+          },
+        })
+        return
+      }
+      if (isDuplicateOutwardText(trimmed)) {
+        emitDuplicateOutwardSuppressed("flushNow", trimmed.length)
+        return
+      }
+      await client.sendText({
+        chat,
+        text: trimmed,
+        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+      })
+      recordVisibleActivity()
+      // Note: do NOT call client.setTyping(chat, false) here — the agent is
+      // still mid-turn, so the typing indicator stays ACTIVE.
+      emitNervesEvent({
+        component: "senses",
+        event: "bluebubbles.speak_flush",
+        message: "bluebubbles flushed mid-turn speak",
+        meta: { messageLength: trimmed.length },
+      })
+    },
+
     async flush(): Promise<void> {
       statusBatcher.flush()
       await queue
@@ -623,14 +792,31 @@ function createBlueBubblesCallbacks(
         enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
         await queue
       }
+      if (containsInternalMetaMarkers(trimmed)) {
+        emitBluebubblesMetaBlocked({
+          site: "flush",
+          message: "bluebubbles outbound text blocked: internal meta markers",
+          meta: {
+            chatGuid: chat.chatGuid ?? null,
+            messageLength: trimmed.length,
+          },
+        })
+        return
+      }
+      if (isDuplicateOutwardText(trimmed)) {
+        emitDuplicateOutwardSuppressed("flush", trimmed.length)
+        return
+      }
       await client.sendText({
         chat,
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
+      recordVisibleActivity()
     },
 
     async finish(): Promise<void> {
+      stopSilenceWatchdog()
       statusBatcher.flush()
       if (!typingActive) {
         await queue
@@ -662,12 +848,119 @@ function isWebhookPasswordValid(url: URL, expectedPassword: string): boolean {
   return !provided || provided === expectedPassword
 }
 
+function normalizeHandleForSelfMatch(handle: string): string {
+  const trimmed = handle.trim().toLowerCase()
+  if (!trimmed) return ""
+  // Phone-shaped: strip everything but digits so +1 (415) 555-... matches 14155550000.
+  if (/[+\d]/.test(trimmed) && !trimmed.includes("@")) {
+    const digits = trimmed.replace(/\D/g, "")
+    if (digits.length >= 7) return digits
+  }
+  return trimmed
+}
+
+export function isAgentSelfHandle(senderExternalId: string | undefined, ownHandles: readonly string[]): boolean {
+  if (!senderExternalId || !senderExternalId.trim()) return false
+  const target = normalizeHandleForSelfMatch(senderExternalId)
+  /* v8 ignore start -- target is non-empty by construction since senderExternalId was just verified non-whitespace */
+  if (!target) return false
+  /* v8 ignore stop */
+  for (const own of ownHandles) {
+    if (normalizeHandleForSelfMatch(own) === target) return true
+  }
+  return false
+}
+
+/**
+ * In-memory store of agent iMessage handles auto-discovered from group-chat
+ * `event.fromMe === true` events. Bluebubbles can attribute the peer's handle
+ * as `event.sender.externalId` on 1:1 outbound messages, so discovery is
+ * intentionally limited to the group echo bug that motivated
+ * `bluebubbles.ownHandles` originally.
+ *
+ * Per-process. A daemon restart re-learns from the next outbound. The
+ * accompanying nerves event (`senses.bluebubbles_own_handle_discovered`)
+ * tells the operator what to add to `bluebubbles.ownHandles` for cross-
+ * restart durability.
+ */
+const discoveredOwnHandles = new Set<string>()
+
+export function getDiscoveredOwnHandles(): readonly string[] {
+  return [...discoveredOwnHandles]
+}
+
+export function clearDiscoveredOwnHandles(): void {
+  discoveredOwnHandles.clear()
+}
+
+export function recordDiscoveredOwnHandle(senderExternalId: string | undefined): boolean {
+  if (!senderExternalId || !senderExternalId.trim()) return false
+  const trimmed = senderExternalId.trim()
+  const normalized = normalizeHandleForSelfMatch(trimmed)
+  /* v8 ignore next -- defensive: normalizeHandleForSelfMatch only returns falsy for empty input, already guarded above @preserve */
+  if (!normalized) return false
+  for (const existing of discoveredOwnHandles) {
+    if (normalizeHandleForSelfMatch(existing) === normalized) return false
+  }
+  discoveredOwnHandles.add(trimmed)
+  emitNervesEvent({
+    level: "info",
+    component: "senses",
+    event: "senses.bluebubbles_own_handle_discovered",
+    message: "captured a new agent-owned bluebubbles handle from an isFromMe outbound — add to bluebubbles.ownHandles for cross-restart durability",
+    meta: { handle: trimmed, totalDiscovered: discoveredOwnHandles.size },
+  })
+  return true
+}
+
+function isSelfFriendRecord(friend: FriendRecord | null, agentName: string): boolean {
+  if (!friend || friend.kind !== "agent") return false
+  const normalizedAgent = agentName.trim().toLowerCase()
+  const name = friend.name?.trim().toLowerCase()
+  const bundleName = friend.agentMeta?.bundleName?.trim().toLowerCase()
+  return name === normalizedAgent || bundleName === normalizedAgent
+}
+
+async function shouldFilterAgentSelfHandle(
+  event: BlueBubblesNormalizedEvent,
+  resolvedDeps: RuntimeDeps,
+): Promise<boolean> {
+  if (!event.chat.isGroup) return false
+  if (!isAgentSelfHandle(event.sender.externalId, resolvedDeps.getOwnHandles())) return false
+
+  const store = resolvedDeps.createFriendStore()
+  const knownFriend = await store
+    .findByExternalId("imessage-handle", event.sender.externalId)
+    .catch(() => null)
+
+  if (knownFriend && !isSelfFriendRecord(knownFriend, resolvedDeps.getAgentName())) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_self_handle_bypassed_known_friend",
+      message: "did not filter bluebubbles sender even though it matched ownHandles because it resolves to a known non-self friend",
+      meta: {
+        messageGuid: event.messageGuid,
+        kind: event.kind,
+        senderExternalId: event.sender.externalId,
+        friendId: knownFriend.id,
+      },
+    })
+    return false
+  }
+
+  return true
+}
+
 async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
+  options: BlueBubblesHandleOptions = {},
 ): Promise<BlueBubblesHandleResult> {
   const client = resolvedDeps.createClient()
+  const agentName = resolvedDeps.getAgentName()
+  recoverRuntimeCwd()
   if (event.fromMe) {
     emitNervesEvent({
       component: "senses",
@@ -676,6 +969,28 @@ async function handleBlueBubblesNormalizedEvent(
       meta: {
         messageGuid: event.messageGuid,
         kind: event.kind,
+      },
+    })
+    if (event.chat.isGroup) recordDiscoveredOwnHandle(event.sender.externalId)
+    return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
+  }
+  // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat
+  // outbound message back through the webhook with `isFromMe` missing/false.
+  // Without this guard the agent ingests its own message and replies to it
+  // ("Slugger talking to himself"). Compare the sender's externalId against
+  // the agent's known iMessage handles. Keep this group-only: 1:1 outbound
+  // echoes can be attributed to the peer handle, and stale ownHandles entries
+  // must not make real DMs disappear.
+  if (await shouldFilterAgentSelfHandle(event, resolvedDeps)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_self_handle_filtered",
+      message: "filtered bluebubbles event whose sender matched an agent-owned handle (isFromMe was missing/false)",
+      meta: {
+        messageGuid: event.messageGuid,
+        kind: event.kind,
+        senderExternalId: event.sender.externalId,
       },
     })
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
@@ -712,32 +1027,72 @@ async function handleBlueBubblesNormalizedEvent(
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "mutation_state_only" }
   }
 
-  // ── Adapter setup: friend, session, content, callbacks ──────────
-
-  const store = resolvedDeps.createFriendStore()
-  const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
-  const baseContext = await resolver.resolve()
-  const context = { ...baseContext, isGroupChat: event.chat.isGroup }
-  const replyTarget = createReplyTargetController(event)
-
-  const friendId = context.friend.id
-  const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
-  try {
-    findObsoleteBlueBubblesThreadSessions(sessPath)
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.bluebubbles_thread_lane_cleanup_error",
-      message: "failed to inspect obsolete bluebubbles thread-lane sessions",
-      meta: {
-        sessionPath: sessPath,
-        reason: error instanceof Error ? error.message : String(error),
-      },
-    })
+  let ownsInFlightMessage = false
+  let releaseInFlightAfterTurnSettles = false
+  let activeTurnId: string | null = null
+  if (event.kind === "message") {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, event.messageGuid)
+    ) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_recovery_skip",
+        message: "skipped bluebubbles message already marked as handled",
+        meta: {
+          messageGuid: event.messageGuid,
+          sessionKey: event.chat.sessionKey,
+          source,
+          dedupeReason: "processed",
+        },
+      })
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+    }
+    if (!beginBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_recovery_skip",
+        message: "skipped bluebubbles message already in flight",
+        meta: {
+          messageGuid: event.messageGuid,
+          sessionKey: event.chat.sessionKey,
+          source,
+          dedupeReason: "in_flight",
+        },
+      })
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+    }
+    ownsInFlightMessage = true
+    activeTurnId = beginBlueBubblesActiveTurn(agentName, event)
   }
 
-  return withSharedTurnLock("bluebubbles", sessPath, async () => {
+  try {
+    // ── Adapter setup: friend, session, content, callbacks ──────────
+
+    const store = resolvedDeps.createFriendStore()
+    const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
+    const baseContext = await resolver.resolve()
+    const context = { ...baseContext, isGroupChat: event.chat.isGroup }
+    const replyTarget = createReplyTargetController(event)
+
+    const friendId = context.friend.id
+    const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
+    try {
+      findObsoleteBlueBubblesThreadSessions(sessPath)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        message: "failed to inspect obsolete bluebubbles thread-lane sessions",
+        meta: {
+          sessionPath: sessPath,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+
+    return await withSharedTurnLock("bluebubbles", sessPath, async () => {
     // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
     const existing = resolvedDeps.loadSession(sessPath)
     const mcpManager = await getSharedMcpManager() ?? undefined
@@ -747,23 +1102,8 @@ async function handleBlueBubblesNormalizedEvent(
         : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
     if (event.kind === "message") {
-      const agentName = resolvedDeps.getAgentName()
-      if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.bluebubbles_recovery_skip",
-          message: "skipped bluebubbles message already recorded as handled",
-          meta: {
-            messageGuid: event.messageGuid,
-            sessionKey: event.chat.sessionKey,
-            source,
-          },
-        })
-        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
-      }
-
-      // Record EARLY to prevent duplicate processing. BB webhooks can retry
-      // before the first turn completes — recording after the turn is too late.
+      // Record EARLY for audit and crash recovery. This is capture truth, not
+      // a claim that the agent turn completed successfully.
       const inboundSource: BlueBubblesInboundSource =
         source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
           ? "recovery-bootstrap"
@@ -781,6 +1121,7 @@ async function handleBlueBubblesNormalizedEvent(
             source,
           },
         })
+        recordProcessedBlueBubblesMessage(agentName, event, inboundSource, "session-bootstrap")
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
       }
     }
@@ -829,8 +1170,15 @@ async function handleBlueBubblesNormalizedEvent(
       event.chat,
       replyTarget,
       event.chat.isGroup,
+      activeTurnId
+        ? () => noteBlueBubblesActiveTurnVisibleActivity(agentName, activeTurnId!)
+        : undefined,
     )
     const controller = new AbortController()
+    let timeoutTimer!: ReturnType<typeof setTimeout>
+    let timeoutPromise!: Promise<never>
+    let timeoutReject: ((error: Error) => void) | undefined
+    let recoveryTimedOut = false
 
     // BB-specific tool context wrappers
     const summarize = createSummarize("human")
@@ -864,7 +1212,41 @@ async function handleBlueBubblesNormalizedEvent(
     /* v8 ignore stop */
 
     try {
-      const result = await handleInboundTurn({
+      const liveWebhookTimeout = source === "webhook" && options.timeoutMs === undefined
+      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+      timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutReject = reject
+      })
+      timeoutTimer = setTimeout(() => {
+        const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+        recoveryTimedOut = true
+        if (liveWebhookTimeout && ownsInFlightMessage && event.kind === "message") {
+          endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+          ownsInFlightMessage = false
+        } else {
+          releaseInFlightAfterTurnSettles = true
+        }
+        controller.abort(reason)
+        timeoutReject?.(reason)
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_turn_timeout",
+          message: "bluebubbles turn timed out",
+          meta: {
+            messageGuid: event.messageGuid,
+            sessionKey: event.chat.sessionKey,
+            source,
+            timeoutMs,
+          },
+        })
+      }, timeoutMs)
+      /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+      if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
+        (timeoutTimer as { unref: () => void }).unref()
+      }
+
+      const turnPromise = handleInboundTurn({
         channel: "bluebubbles",
         sessionKey: event.chat.sessionKey,
         capabilities: bbCapabilities,
@@ -925,6 +1307,42 @@ async function handleBlueBubblesNormalizedEvent(
           return bbFailoverStates.get(event.chat.sessionKey)!
         })(),
       })
+      /* v8 ignore start -- detached late-rejection telemetry is asserted in timeout tests, but V8 does not reliably attribute Promise.catch callbacks @preserve */
+      void turnPromise
+        .catch((error) => {
+          if (!recoveryTimedOut) return
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_recovery_error",
+            message: "bluebubbles recovery turn rejected after timeout",
+            meta: {
+              messageGuid: event.messageGuid,
+              sessionKey: event.chat.sessionKey,
+              source,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          })
+        })
+        .finally(() => {
+          if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && event.kind === "message") {
+            endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+          }
+        })
+      /* v8 ignore stop */
+      const result = await (async () => {
+        try {
+          return await Promise.race([turnPromise, timeoutPromise])
+        } catch (error) {
+          if (error instanceof BlueBubblesRecoveryTurnTimeoutError) {
+            callbacks.onError(
+              new Error("live iMessage turn timed out; I captured it for recovery instead of silently hanging"),
+              "terminal",
+            )
+          }
+          throw error
+        }
+      })()
 
       /* v8 ignore start -- failover display + error replay @preserve */
       if (result.failoverMessage) {
@@ -946,6 +1364,9 @@ async function handleBlueBubblesNormalizedEvent(
             text: result.gateResult.autoReply,
           })
         }
+        if (event.kind === "message") {
+          recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
+        }
 
         return {
           handled: true,
@@ -956,6 +1377,9 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Gate allowed — flush the agent's reply
       await callbacks.flush()
+      if (event.kind === "message") {
+        recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
+      }
 
       emitNervesEvent({
         component: "senses",
@@ -982,9 +1406,16 @@ async function handleBlueBubblesNormalizedEvent(
         bufferedTerminalError = null
       }
       /* v8 ignore stop */
+      clearTimeout(timeoutTimer)
       await callbacks.finish()
     }
-  })
+    })
+  } finally {
+    if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)
+    if (ownsInFlightMessage && event.kind === "message" && !releaseInFlightAfterTurnSettles) {
+      endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+    }
+  }
 }
 
 export async function handleBlueBubblesEvent(
@@ -1033,9 +1464,17 @@ export async function handleBlueBubblesEvent(
   // the downstream `already_processed` path fires its observability events
   // and the caller sees a consistent return shape.
   const agentName = resolvedDeps.getAgentName()
+  // normalizeBlueBubblesEvent rejects guidless payloads, so duplicate handling
+  // only needs to discriminate between known processed, in-flight, or new.
+  const duplicateReason = hasProcessedBlueBubblesMessage(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+    || hasProcessedBlueBubblesMessageGuid(agentName, normalized.messageGuid)
+    ? "processed"
+    : isBlueBubblesMessageInFlight(normalized.chat.sessionKey, normalized.messageGuid)
+      ? "in_flight"
+      : null
   if (
     normalized.messageGuid
-    && hasRecordedBlueBubblesInbound(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+    && duplicateReason
   ) {
     emitNervesEvent({
       level: "warn",
@@ -1047,6 +1486,7 @@ export async function handleBlueBubblesEvent(
         sessionKey: normalized.chat.sessionKey,
         eventType: normalized.eventType,
         normalizedKind: normalized.kind,
+        dedupeReason: duplicateReason,
       },
     })
     return handleBlueBubblesNormalizedEvent(normalized, resolvedDeps, "webhook")
@@ -1066,14 +1506,53 @@ export interface BlueBubblesCatchUpResult {
   inspected: number
   recovered: number
   skipped: number
+  queued?: number
   failed: number
   lastRecoveredMessageGuid?: string
 }
 
-function countPendingRecoveryCandidates(agentName: string): number {
-  return listBlueBubblesRecoveryCandidates(agentName)
-    .filter((entry) => !hasRecordedBlueBubblesInbound(agentName, entry.sessionKey, entry.messageGuid))
-    .length
+interface BlueBubblesPendingRecoveryEntry {
+  messageGuid: string
+  recordedAt: string
+}
+
+function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeof listRecordedBlueBubblesInbound> {
+  const seenMessageGuids = new Set<string>()
+  return listRecordedBlueBubblesInbound(agentName)
+    .filter((entry) => {
+      if (seenMessageGuids.has(entry.messageGuid)) return false
+      seenMessageGuids.add(entry.messageGuid)
+      return true
+    })
+    .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
+}
+
+function listPendingRecoveryEntries(agentName: string): BlueBubblesPendingRecoveryEntry[] {
+  const pendingByGuid = new Map<string, string>()
+  const add = (messageGuid: string, recordedAt: string): void => {
+    if (hasProcessedBlueBubblesMessageGuid(agentName, messageGuid)) return
+    const previous = pendingByGuid.get(messageGuid)
+    if (!previous) {
+      pendingByGuid.set(messageGuid, recordedAt)
+      return
+    }
+
+    const previousMs = Date.parse(previous)
+    const nextMs = Date.parse(recordedAt)
+    if (Number.isFinite(nextMs) && (!Number.isFinite(previousMs) || nextMs < previousMs)) {
+      pendingByGuid.set(messageGuid, recordedAt)
+    }
+  }
+
+  for (const entry of listPendingCapturedInboundMessages(agentName)) {
+    add(entry.messageGuid, entry.recordedAt)
+  }
+
+  for (const entry of listBlueBubblesRecoveryCandidates(agentName)) {
+    add(entry.messageGuid, entry.recordedAt)
+  }
+
+  return [...pendingByGuid].map(([messageGuid, recordedAt]) => ({ messageGuid, recordedAt }))
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -1095,8 +1574,38 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
   return nowMs - BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS
 }
 
-function formatRecoveredCount(count: number): string {
-  return `caught up ${count} missed message(s)`
+function formatBlueBubblesRuntimeDetail(
+  queued: number,
+  failed: number,
+  active: ReturnType<typeof snapshotBlueBubblesActiveTurns>,
+): string {
+  if (active.stalledTurnCount > 0) {
+    return `iMessage live turn appears stalled; ${active.stalledTurnCount} active turn(s) older than ${BLUEBUBBLES_LIVE_TURN_STALLED_MS}ms`
+  }
+  if (active.activeTurnCount > 0) return `upstream reachable; ${active.activeTurnCount} live turn(s) active`
+  if (queued > 0) return `upstream reachable but iMessage is not caught up; ${queued} recovery item(s) queued`
+  if (failed > 0) return `${failed} message(s) unrecoverable this cycle; upstream ok`
+  return "upstream reachable"
+}
+
+function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now()): {
+  pendingRecoveryCount: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+} {
+  const pendingEntries = listPendingRecoveryEntries(agentName)
+  const pendingRecordedAt = pendingEntries
+    .map((entry) => entry.recordedAt)
+    .map((value) => ({ value, ms: Date.parse(value) }))
+    .filter((entry): entry is { value: string; ms: number } => Number.isFinite(entry.ms))
+    .sort((left, right) => left.ms - right.ms)
+
+  const oldest = pendingRecordedAt[0]
+  return {
+    pendingRecoveryCount: pendingEntries.length,
+    oldestPendingRecoveryAt: oldest?.value,
+    oldestPendingRecoveryAgeMs: oldest ? Math.max(0, nowMs - oldest.ms) : undefined,
+  }
 }
 
 async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<void> {
@@ -1108,37 +1617,116 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
 
   try {
     await client.checkHealth()
-    const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
-    const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState)
-    const failed = recovery.failed + catchUp.failed
-    const recovered = recovery.recovered + catchUp.recovered
+    const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
+    const activeBeforeCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
-      upstreamStatus: recovery.pending > 0 || failed > 0 ? "error" : "ok",
-      detail: failed > 0
-        ? `recovery failures: ${failed}`
-        : recovery.pending > 0
-          ? `pending recovery: ${recovery.pending}`
-          : catchUp.recovered > 0
-            ? formatRecoveredCount(catchUp.recovered)
-          : "upstream reachable",
+      upstreamStatus: "ok",
+      detail: "upstream reachable; recovery pass running",
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: recovery.pending,
-      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
-      lastRecoveredMessageGuid: catchUp.lastRecoveredMessageGuid ?? previousState.lastRecoveredMessageGuid,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingBeforeCatchup,
+      ...activeBeforeCatchup,
+      lastRecoveredAt: previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
+    const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState, {
+      processTurns: false,
+    })
+    const failed = catchUp.failed
+    const pendingAfterCatchup = blueBubblesPendingRecoverySnapshot(agentName)
+    const activeAfterCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
+    const queued = pendingAfterCatchup.pendingRecoveryCount
+    // upstreamStatus reflects whether BlueBubbles itself and the local bridge
+    // can answer webhook traffic. The daemon status layer treats
+    // pendingRecoveryCount as unhealthy for user-facing iMessage reachability,
+    // while this field stays scoped to upstream transport reachability.
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "ok",
+      detail: formatBlueBubblesRuntimeDetail(queued, failed, activeAfterCatchup),
+      lastCheckedAt: checkedAt,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingAfterCatchup,
+      ...activeAfterCatchup,
+      pendingRecoveryCount: queued,
+      failedRecoveryCount: failed,
+      lastRecoveredAt: previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
   } catch (error) {
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "error",
       detail: error instanceof Error ? error.message : String(error),
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: countPendingRecoveryCandidates(agentName),
+      proofMethod: "bluebubbles.checkHealth",
+      ...blueBubblesPendingRecoverySnapshot(agentName),
+      ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
+      failedRecoveryCount: 0,
     })
   }
+}
+
+export interface BlueBubblesQueuedRecoveryResult {
+  recovered: number
+  skipped: number
+  failed: number
+  pendingRecoveryCount: number
+}
+
+export async function recoverQueuedBlueBubblesMessages(
+  deps: Partial<RuntimeDeps> = {},
+): Promise<BlueBubblesQueuedRecoveryResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const agentName = resolvedDeps.getAgentName()
+  const previousState = readBlueBubblesRuntimeState(agentName)
+  const initialPending = blueBubblesPendingRecoverySnapshot(agentName).pendingRecoveryCount
+  if (initialPending === 0) {
+    return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 }
+  }
+
+  const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps)
+  const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
+  const pendingSnapshot = blueBubblesPendingRecoverySnapshot(agentName)
+  const pendingRecoveryCount = pendingSnapshot.pendingRecoveryCount
+  const failed = captured.failed + recovery.failed
+  const recovered = captured.recovered + recovery.recovered
+  const skipped = captured.skipped + recovery.skipped
+  const checkedAt = new Date().toISOString()
+
+  try {
+    await resolvedDeps.createClient().checkHealth()
+    const activeSnapshot = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "ok",
+      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed, activeSnapshot),
+      lastCheckedAt: checkedAt,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingSnapshot,
+      ...activeSnapshot,
+      failedRecoveryCount: failed,
+      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
+  } catch (error) {
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "error",
+      detail: error instanceof Error ? error.message : String(error),
+      lastCheckedAt: checkedAt,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingSnapshot,
+      ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
+      failedRecoveryCount: failed,
+      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
+  }
+
+  return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
 export async function catchUpMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
   previousState?: BlueBubblesRuntimeState,
+  options: { processTurns?: boolean } = {},
 ): Promise<BlueBubblesCatchUpResult> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -1146,6 +1734,7 @@ export async function catchUpMissedBlueBubblesMessages(
   const result: BlueBubblesCatchUpResult = { inspected: 0, recovered: 0, skipped: 0, failed: 0 }
   const state = previousState ?? readBlueBubblesRuntimeState(agentName)
   const catchUpSince = resolveBlueBubblesCatchUpSince(state)
+  const processTurns = options.processTurns !== false
 
   /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
   if (!client.listRecentMessages) return result
@@ -1222,9 +1811,20 @@ export async function catchUpMissedBlueBubblesMessages(
     if (
       event.fromMe
       || event.timestamp < catchUpSince
-      || hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, event.messageGuid)
+      || isBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     ) {
       result.skipped++
+      continue
+    }
+
+    if (!processTurns) {
+      if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
+        result.skipped++
+        continue
+      }
+      recordBlueBubblesInbound(agentName, event, "upstream-catchup")
+      result.queued = (result.queued ?? 0) + 1
       continue
     }
 
@@ -1235,7 +1835,9 @@ export async function catchUpMissedBlueBubblesMessages(
         continue
       }
 
-      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup")
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup", {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
       if (handled.reason === "already_processed") {
         result.skipped++
       } else {
@@ -1269,6 +1871,108 @@ export async function catchUpMissedBlueBubblesMessages(
   return result
 }
 
+export interface BlueBubblesCapturedRecoveryResult {
+  recovered: number
+  skipped: number
+  failed: number
+}
+
+function inboundEntryToRecoveryEvent(entry: ReturnType<typeof listRecordedBlueBubblesInbound>[number]): BlueBubblesNormalizedMessage {
+  const chatIdentifier = entry.chatIdentifier ?? extractChatIdentifierFromSessionKey(entry.sessionKey) ?? "unknown"
+  const normalizedSessionKey = normalizeBlueBubblesSessionKey(entry.sessionKey)
+  const chatGuid = entry.chatGuid ?? (normalizedSessionKey.startsWith("chat:") ? normalizedSessionKey.slice("chat:".length) : undefined)
+  const isGroup = normalizedSessionKey.includes("+;")
+  return {
+    kind: "message",
+    eventType: "new-message",
+    messageGuid: entry.messageGuid,
+    timestamp: parseTimestampMs(entry.recordedAt) ?? Date.now(),
+    fromMe: false,
+    sender: {
+      provider: "imessage-handle",
+      externalId: chatIdentifier,
+      rawId: chatIdentifier,
+      displayName: chatIdentifier,
+    },
+    chat: {
+      chatGuid,
+      chatIdentifier,
+      isGroup,
+      sessionKey: normalizedSessionKey,
+      sendTarget: chatGuid
+        ? { kind: "chat_guid", value: chatGuid }
+        : { kind: "chat_identifier", value: chatIdentifier },
+      participantHandles: [],
+    },
+    text: entry.textForAgent,
+    textForAgent: entry.textForAgent,
+    attachments: [],
+    hasPayloadData: false,
+    requiresRepair: true,
+  }
+}
+
+export async function recoverCapturedBlueBubblesInboundMessages(
+  deps: Partial<RuntimeDeps> = {},
+): Promise<BlueBubblesCapturedRecoveryResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const agentName = resolvedDeps.getAgentName()
+  const client = resolvedDeps.createClient()
+  const result: BlueBubblesCapturedRecoveryResult = { recovered: 0, skipped: 0, failed: 0 }
+  const seenMessageGuids = new Set<string>()
+
+  const candidates = listRecordedBlueBubblesInbound(agentName)
+    .filter((entry) => {
+      if (seenMessageGuids.has(entry.messageGuid)) return false
+      seenMessageGuids.add(entry.messageGuid)
+      return true
+    })
+    .sort((left, right) => (parseTimestampMs(left.recordedAt) ?? 0) - (parseTimestampMs(right.recordedAt) ?? 0))
+
+  for (const entry of candidates) {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid)
+      || isBlueBubblesMessageInFlight(entry.sessionKey, entry.messageGuid)
+    ) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const repaired = await client.repairEvent(inboundEntryToRecoveryEvent(entry))
+      if (repaired.kind !== "message") {
+        result.skipped++
+        continue
+      }
+
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source, {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
+      if (handled.reason === "already_processed") {
+        result.skipped++
+      } else {
+        result.recovered++
+      }
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_capture_recovery_error",
+        message: "captured bluebubbles message recovery failed",
+        meta: {
+          messageGuid: entry.messageGuid,
+          sessionKey: entry.sessionKey,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  return result
+}
+
 export async function recoverMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
 ): Promise<BlueBubblesRecoveryResult> {
@@ -1278,7 +1982,11 @@ export async function recoverMissedBlueBubblesMessages(
   const result: BlueBubblesRecoveryResult = { recovered: 0, skipped: 0, pending: 0, failed: 0 }
 
   for (const candidate of listBlueBubblesRecoveryCandidates(agentName)) {
-    if (hasRecordedBlueBubblesInbound(agentName, candidate.sessionKey, candidate.messageGuid)) {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, candidate.sessionKey, candidate.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, candidate.messageGuid)
+      || isBlueBubblesMessageInFlight(candidate.sessionKey, candidate.messageGuid)
+    ) {
       result.skipped++
       continue
     }
@@ -1290,7 +1998,9 @@ export async function recoverMissedBlueBubblesMessages(
         continue
       }
 
-      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery")
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery", {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
       if (handled.reason === "already_processed") {
         result.skipped++
       } else {
@@ -1373,23 +2083,85 @@ export function createBlueBubblesWebhookHandler(
       return
     }
 
+    let normalized: BlueBubblesNormalizedEvent
     try {
-      const result = await handleBlueBubblesEvent(payload, deps)
-      writeJson(res, 200, result)
+      normalized = normalizeBlueBubblesEvent(payload)
     } catch (error) {
+      if (error instanceof BlueBubblesIgnoredEventError) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_event_skipped",
+          message: "skipped ignorable bluebubbles event",
+          meta: {
+            eventType: error.eventType,
+          },
+        })
+        writeJson(res, 200, {
+          handled: true,
+          notifiedAgent: false,
+          reason: "ignored",
+        })
+        return
+      }
       emitNervesEvent({
         level: "error",
         component: "senses",
         event: "senses.bluebubbles_webhook_error",
         message: "bluebubbles webhook handling failed",
         meta: {
+          /* v8 ignore next -- normalizeBlueBubblesEvent throws Error subclasses; String fallback is defensive @preserve */
           reason: error instanceof Error ? error.message : String(error),
         },
       })
       writeJson(res, 500, {
+        /* v8 ignore next -- normalizeBlueBubblesEvent throws Error subclasses; String fallback is defensive @preserve */
         error: error instanceof Error ? error.message : String(error),
       })
+      return
     }
+
+    const resolvedDeps = { ...defaultDeps, ...deps }
+    if (normalized.kind === "message" && !normalized.fromMe) {
+      recordBlueBubblesInbound(resolvedDeps.getAgentName(), normalized, "webhook")
+    } else if (normalized.kind === "mutation") {
+      try {
+        resolvedDeps.recordMutation(resolvedDeps.getAgentName(), normalized)
+      } catch (error) {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_mutation_log_error",
+          message: "failed recording bluebubbles mutation sidecar",
+          meta: {
+            messageGuid: normalized.messageGuid,
+            mutationType: normalized.mutationType,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+    }
+
+    writeJson(res, 200, {
+      handled: true,
+      notifiedAgent: false,
+      kind: normalized.kind,
+      queued: true,
+      reason: "queued",
+    })
+
+    setTimeout(() => {
+      void handleBlueBubblesEvent(payload, deps).catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_webhook_async_error",
+          message: "bluebubbles webhook async handling failed after durable capture",
+          meta: {
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      })
+    }, 0)
   }
 }
 
@@ -1464,6 +2236,18 @@ export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
 ): Promise<ProactiveBlueBubblesSessionSendResult> {
+  if (containsInternalMetaMarkers(params.text)) {
+    emitBluebubblesMetaBlocked({
+      site: "proactive",
+      message: "bluebubbles proactive send blocked: internal meta markers",
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+      },
+    })
+    return { delivered: false, reason: "blocked_meta_content" }
+  }
+
   const resolvedDeps = { ...defaultDeps, ...deps }
   const client = resolvedDeps.createClient()
   const store = resolvedDeps.createFriendStore()
@@ -1684,6 +2468,20 @@ export async function drainAndSendPendingBlueBubbles(
       continue
     }
 
+    if (containsInternalMetaMarkers(messageText)) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitBluebubblesMetaBlocked({
+        site: "drain",
+        message: "bluebubbles drain blocked: internal meta markers",
+        meta: {
+          friendId,
+          filePath,
+        },
+      })
+      continue
+    }
+
     const internalBlockReason = getProactiveInternalContentBlockReason(messageText)
     if (internalBlockReason) {
       result.skipped++
@@ -1794,11 +2592,50 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   resolvedDeps.createClient()
   const channelConfig = getBlueBubblesChannelConfig()
   const server = resolvedDeps.createServer(createBlueBubblesWebhookHandler(deps))
+  let recoveryPassRunning = false
+  let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
+
+  function triggerRecoveryPass(): void {
+    /* v8 ignore next -- re-entrant timer guard; difficult to force deterministically without timing the turn lock @preserve */
+    if (recoveryPassRunning) return
+    recoveryPassRunning = true
+    void recoverQueuedBlueBubblesMessages(resolvedDeps)
+      /* v8 ignore start -- defensive wrapper; expected per-message failures are handled inside recovery helpers @preserve */
+      .catch((error) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_recovery_error",
+          message: "bluebubbles queued recovery pass failed",
+          meta: { reason: error instanceof Error ? error.message : String(error) },
+        })
+      })
+      /* v8 ignore stop */
+      .finally(() => {
+        recoveryPassRunning = false
+      })
+  }
+
+  function scheduleRecoveryPass(): void {
+    /* v8 ignore next -- duplicate scheduling guard for overlapping health sync completions @preserve */
+    if (recoveryDelayTimer !== null) return
+    recoveryDelayTimer = setTimeout(() => {
+      recoveryDelayTimer = null
+      triggerRecoveryPass()
+    }, BLUEBUBBLES_RECOVERY_PASS_DELAY_MS)
+  }
+
   const runtimeTimer = setInterval(() => {
-    void syncBlueBubblesRuntime(resolvedDeps)
+    void syncBlueBubblesRuntime(resolvedDeps).then(scheduleRecoveryPass)
   }, BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS)
+  const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
   server.on?.("close", () => {
     clearInterval(runtimeTimer)
+    clearInterval(recoveryTimer)
+    if (recoveryDelayTimer !== null) {
+      clearTimeout(recoveryDelayTimer)
+      recoveryDelayTimer = null
+    }
   })
   server.listen(channelConfig.port, () => {
     emitNervesEvent({
@@ -1808,6 +2645,6 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       meta: { port: channelConfig.port, webhookPath: channelConfig.webhookPath },
     })
   })
-  void syncBlueBubblesRuntime(resolvedDeps)
+  void syncBlueBubblesRuntime(resolvedDeps).then(scheduleRecoveryPass)
   return server
 }

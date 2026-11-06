@@ -35,6 +35,26 @@ function userLaunchDomain(userUid: number): string {
   return `gui/${userUid}`
 }
 
+export function bootoutLaunchAgentByLabel(deps: Pick<LaunchdDeps, "exec" | "userUid">): void {
+  const domain = userLaunchDomain(deps.userUid)
+  try {
+    deps.exec(`launchctl bootout ${domain}/${DAEMON_PLIST_LABEL}`)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_label_bootout",
+      message: "booted out daemon launch agent by label",
+      meta: { label: DAEMON_PLIST_LABEL, domain },
+    })
+  } catch (error) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_label_bootout_skipped",
+      message: "daemon launch agent label bootout skipped",
+      meta: { label: DAEMON_PLIST_LABEL, domain, reason: error instanceof Error ? error.message : String(error) },
+    })
+  }
+}
+
 export function generateDaemonPlist(options: DaemonPlistOptions): string {
   emitNervesEvent({
     component: "daemon",
@@ -153,10 +173,9 @@ export function uninstallLaunchAgent(deps: LaunchdDeps): void {
   })
 
   const fullPath = plistFilePath(deps.homeDir)
-  const domain = userLaunchDomain(deps.userUid)
+  bootoutLaunchAgentByLabel(deps)
 
   if (deps.existsFile(fullPath)) {
-    try { deps.exec(`launchctl bootout ${domain} "${fullPath}"`) } catch { /* best effort */ }
     deps.removeFile(fullPath)
   }
 

@@ -3,7 +3,7 @@ import { getAzureConfig, type AzureProviderConfig } from "../config";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
-import { streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
+import { streamResponsesApi, toResponsesInput, toResponsesTools, truncateResponsesFunctionCallOutput } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
 
@@ -94,7 +94,7 @@ export function createAzureProviderRuntime(model: string, azureConfig: AzureProv
     },
     appendToolOutput(callId: string, output: string): void {
       if (!nativeInput) return;
-      nativeInput.push({ type: "function_call_output", call_id: callId, output });
+      nativeInput.push({ type: "function_call_output", call_id: callId, output: truncateResponsesFunctionCallOutput(output) });
     },
     async streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
       if (!nativeInput) this.resetTurnState(request.messages);

@@ -2,7 +2,7 @@
 
 This is the operator smoke guide for the current runtime. It focuses on the real user path:
 
-`npx ouro.bot` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
+`npx ouro.bot@latest` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
 
 For local development: `npm run dev` (builds and starts daemon from local repo) or `ouro dev` (if the `ouro` binary is current).
 
@@ -12,15 +12,22 @@ Run this from outside the repo so you exercise the published bootstrap path rath
 
 ```bash
 cd ~
-npx ouro.bot -v
-npx ouro.bot up
+npx ouro.bot@latest -v
+npx ouro.bot@latest up
 ouro -v
 ouro status
 ```
 
 Expected:
 
-- `npx ouro.bot -v` and `ouro -v` report the same version.
+- `npx ouro.bot@latest -v` and `ouro -v` report the same version.
+- `ouro up` opens the shared boot checklist instead of a raw transcript wall:
+  - the full startup path is visible up front
+  - the current step keeps live detail while work is happening
+  - provider verification names the selected providers Ouro is checking right now
+  - daemon boot waits keep narrating real startup progress instead of leaving a blinking cursor while the service is still warming up
+  - startup does not claim success unless the daemon survives the final handoff check
+  - if startup fails, the command exits non-zero and `ouro logs` shows the live daemon log tail that the diagnosis points to
 - `ouro status` shows:
   - daemon overview
   - version
@@ -83,7 +90,7 @@ Verify:
 
 ## 4. Provider Auth Recovery Smoke
 
-Provider credentials and provider selection are separate. `ouro auth` stores credentials in the owning agent's vault. Provider/model selection for each local machine lives in the bundle's `state/providers.json`.
+Provider credentials and provider selection are separate. `ouro auth` stores credentials in the owning agent's vault. Provider/model selection lives in the bundle's `agent.json`.
 
 When a provider needs first-time setup or reauth, use the installed runtime path instead of repo-local scripts:
 
@@ -98,11 +105,18 @@ Expected:
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
-- provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
+- `ouro logs` now tails the daemon/agent logs from the installed runtime path instead of falling back to a socket help message
+- bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
+- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path with a bounded one-attempt orientation policy, and opens the shared connect wizard without spending the full startup retry budget
+- a failed or timed-out root `ouro connect` orientation probe can mark the current menu as `needs attention`, but it must not mutate provider lane selection; `ouro up`, `ouro check`, `ouro auth verify`, and chat startup own full provider retry behavior
+- auth, vault, hatch, and guided connector completions land on the shared guide language with `What changed` and `Next moves` instead of raw transcript walls
+- `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
+- if the background service dies after startup work but before handoff is complete, `ouro up` fails with a daemon diagnosis instead of printing a false-ready board
+- provider lanes remain in `~/AgentBundles/Hatchling.ouro/agent.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
-- use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
+- use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory provider credential cache from the vault
 - use `ouro vault config status --agent <agent> --scope all` to inspect portable and machine-local runtime credential fields without printing values
-- use `ouro connect --agent <agent>` for the guided connect bay, or jump directly to `ouro connect providers|perplexity|embeddings|teams|bluebubbles --agent <agent>`
+- use `ouro connect --agent <agent>` for the guided connect bay, or jump directly to `ouro connect providers|perplexity|embeddings|teams|bluebubbles|voice --agent <agent>`
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -131,13 +145,32 @@ If BlueBubbles is enabled and attached on this machine:
 
 - `ouro status` should show `BlueBubbles` as `ready` or `running`
 - inbound iMessages should create or continue the correct chat trunk
+- the inbound sidecar under `state/senses/bluebubbles/inbound/` is capture truth, not completion truth; handled-message truth lives under `state/senses/bluebubbles/processed/`
 - typing and read behavior should feel immediate
 
 If BlueBubbles is enabled but not attached here, `ouro status` should show `not_attached`, not degrade daemon startup. Attach it with:
 
 ```bash
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ```
+
+### Voice
+
+Voice is a single transcript-first sense with multiple transports. The Twilio phone transport is the current end-to-end phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal stable `voice` session turn runs, ElevenLabs generates MP3 audio from tool-delivered `speak`/`settle` text, and Twilio plays that response before listening again. Managed Twilio playback defaults to a streaming Play URL so ElevenLabs chunks can reach Twilio as they arrive.
+
+For implementation work, keep the sense/transport boundary in [Sense Development Contract](sense-development.md) in view. In particular, outward sense turns run in tool-required mode: transports that need replayable text must recover `settle.answer` only after `(delivered)` and `speak.message` only after `(spoken)`, not by reading `assistant.content` directly.
+
+For a managed phone smoke, attach the transport to this machine and expose the Voice entrypoint through Cloudflare Tunnel:
+
+```bash
+ouro connect voice --agent <agent>
+ouro vault config set --agent <agent> --scope machine --key voice.twilioPublicUrl --value https://<cloudflare-tunnel-or-hostname>
+ouro vault config set --agent <agent> --scope machine --key voice.twilioBasePath --value /voice/agents/<agent>/twilio
+ouro up --agent <agent>
+```
+
+Then set the Twilio number's Voice webhook to `POST https://<cloudflare-tunnel-or-hostname>/voice/agents/<agent>/twilio/incoming` and call the number. The transcript should land under the ordinary `state/sessions/<friend>/voice/<stable-phone-channel>.json` session path; CallSid remains the per-call artifact directory under `state/voice/twilio-phone/`. The standalone bridge remains available for one-off local testing with `node dist/senses/voice-twilio-entry.js --agent <agent> --public-url https://<cloudflare-tunnel>`.
 
 ### Teams
 
@@ -166,6 +199,9 @@ For human-facing CLI changes, especially auth, repair, startup, and connector fl
 
 - any wait that may last more than a few seconds should have a current step on screen
 - output should be a short checklist, not a repeated wall of repair text
+- TTY surfaces should render through the shared Ouro board family rather than each command inventing its own ad hoc transcript
+- `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, and `ouro repair` should agree on provider/vault truth for the same machine state
+- `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell should visually read like the same CLI family
 - secret prompts must not echo or print the secret later
 - success output should include where the credential/config was stored and the next action
 - failure output should keep the last visible progress context and give one useful repair path
@@ -180,19 +216,61 @@ For runtime code changes inside the repo:
 npm test
 npx tsc --noEmit
 npm run test:coverage
+npm run test:integration
+npm run test:e2e:package
+npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json
 ```
 
-All three should pass before merge.
+The first five should pass before merge when the change touches runtime, daemon, provider, auth, or package-install behavior. The real-smoke lane is the live external check for sacrificial credentials; run it when you are working on provider auth, portable capability onboarding, or live verification behavior and you have the secrets file available.
+
+What each lane proves:
+
+- `npm test`: fast in-process behavior coverage
+- `npm run test:coverage`: enforced 100% coverage + nerves audit
+- `npm run test:integration`: built runtime in child processes against a hermetic fake machine (temp `HOME`, temp bundles, fake vault CLI/unlock store, fake provider server)
+- `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed for both version truth and a human-facing help surface
+- `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json`: real external provider/capability smoke with sacrificial credentials, using the same provider ping implementation as `ouro up`, `ouro auth verify`, and the connect bay while preserving each command's retry policy
+
+CI now mirrors that split on pull requests:
+
+- coverage gate
+- hermetic integration lane
+- local package e2e lane
+
+`main` also keeps:
+
+- the published-package smoke after `npm publish`
+- a scheduled `real-smoke` workflow that runs the live external lane whenever repo secret `OURO_REAL_SMOKE_SECRETS_JSON` is configured
+
+Recommended `OURO_REAL_SMOKE_SECRETS_JSON` shape:
+
+```json
+{
+  "providerCheck": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.5",
+    "config": {
+      "apiKey": "replace-me"
+    }
+  },
+  "portableChecks": {
+    "perplexityApiKey": "replace-me",
+    "openaiEmbeddingsApiKey": "replace-me"
+  }
+}
+```
+
+The workflow writes that secret into a temp file with restrictive permissions, runs the shared real-smoke script, and never prints the raw JSON or the secret values.
 
 ## Troubleshooting
 
-### `ouro` and `npx ouro.bot` disagree on version
+### `ouro` and `npx ouro.bot@latest` disagree on version
 
 Run:
 
 ```bash
 cd ~
-npx ouro.bot up
+npx ouro.bot@latest up
 ouro -v
 ```
 
@@ -241,12 +319,12 @@ If a repair message says the agent can run a refresh or verify command, that is 
 Check:
 
 - `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
-- `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
+- `~/AgentBundles/<agent>.ouro/agent.json` (check outward/inner provider+model)
 - the agent's vault provider credentials
 - portable runtime config in `runtime/config`
 - machine-local attachments in `runtime/machines/<machine-id>/config`
 
-Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; all raw credentials live in the owning agent's vault.
+Sense enablement and provider+model selection live in `agent.json`; all raw credentials live in the owning agent's vault.
 
 ### BlueBubbles or Teams behavior feels wrong
 
@@ -257,4 +335,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item. For Voice, `ouro connect voice --agent <agent>` names the required ElevenLabs portable key/voice ID and Whisper.cpp machine attachment fields, with Twilio phone transport setup, meeting URL intake, and local BlackHole/Multi-Output readiness checks available before live provider automation.
