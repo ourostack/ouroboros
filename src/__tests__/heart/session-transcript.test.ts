@@ -10,6 +10,41 @@ function stripTranscriptMetadata(text: string): string {
   return text.replace(/\[[^\]]*\|\s*(system|user|assistant|tool)\s*\|\s*evt-\d+\]\s*/g, "[$1] ")
 }
 
+function sessionEvent(sequence: number, role: string, content: string | null, toolCalls: unknown[] = [], at?: string) {
+  const timestamp = at ?? `2026-04-28T23:00:${String(sequence % 60).padStart(2, "0")}.000Z`
+  return {
+    id: `evt-${String(sequence).padStart(6, "0")}`,
+    sequence,
+    role,
+    content,
+    name: null,
+    toolCallId: role === "tool" ? "call_1" : null,
+    toolCalls,
+    attachments: [],
+    time: {
+      authoredAt: timestamp,
+      authoredAtSource: "local",
+      observedAt: null,
+      observedAtSource: "unknown",
+      recordedAt: timestamp,
+      recordedAtSource: "local",
+    },
+    relations: {
+      replyToEventId: null,
+      threadRootEventId: null,
+      references: [],
+      toolCallId: role === "tool" ? "call_1" : null,
+      supersedesEventId: null,
+      redactsEventId: null,
+    },
+    provenance: {
+      captureKind: "live",
+      legacyVersion: null,
+      sourceMessageIndex: null,
+    },
+  }
+}
+
 describe("session transcript", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -45,6 +80,270 @@ describe("session transcript", () => {
       expect(result.snapshot).toContain("recent focus:")
       expect(result.snapshot).toContain("latest user question")
       expect(result.snapshot).not.toContain("oldest question")
+    }
+  })
+
+  it("omits tool-result chatter from non-inner transcript tails", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "please check the release" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "shell", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "very long shell output that should stay out of the chat summary" },
+        { role: "assistant", content: "release is merged" },
+        { role: "tool", tool_call_id: "call_2", content: "(delivered)" },
+      ],
+    }))
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 10,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] please check the release\n[assistant] release is merged")
+      expect(result.snapshot).toContain("latest user: please check the release")
+      expect(result.snapshot).toContain("latest assistant: release is merged")
+      expect(result.transcript).not.toContain("shell output")
+      expect(result.transcript).not.toContain("(delivered)")
+    }
+  })
+
+  it("renders settle answers as assistant conversation text", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "user", content: "what changed?" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "settle", arguments: JSON.stringify({ answer: "the release is clean", intent: "complete" }) } }] },
+        { role: "tool", tool_call_id: "call_1", content: "(delivered)" },
+      ],
+    }))
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 10,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] what changed?\n[assistant] the release is clean")
+    }
+  })
+
+  it("renders same-session send_message calls and ignores malformed tool arguments", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "user", content: "are you seeing this?" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_bad", type: "function", function: { name: "settle", arguments: "{" } }] },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_array", type: "function", function: { name: "settle", arguments: "[]" } }] },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_missing_target",
+            type: "function",
+            function: {
+              name: "send_message",
+              arguments: JSON.stringify({ content: "missing target metadata" }),
+            },
+          }],
+        },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "send_message",
+              arguments: JSON.stringify({
+                friendId: "friend-1",
+                channel: "bluebubbles",
+                key: "chat",
+                content: "yes, I see the latest text now",
+              }),
+            },
+          }],
+        },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_2",
+            type: "function",
+            function: {
+              name: "send_message",
+              arguments: JSON.stringify({
+                friendId: "friend-2",
+                channel: "bluebubbles",
+                key: "chat",
+                content: "wrong friend",
+              }),
+            },
+          }],
+        },
+      ],
+    }))
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 10,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] are you seeing this?\n[assistant] yes, I see the latest text now")
+      expect(result.transcript).not.toContain("wrong friend")
+    }
+  })
+
+  it("uses the default transcript tail size when requested count is invalid", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "user", content: "default count please" },
+        { role: "assistant", content: "using default count" },
+      ],
+    }))
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 0,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] default count please\n[assistant] using default count")
+    }
+  })
+
+  it("can fall back to archived events when the projected tail has no visible user text", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+    const staleHighSequence = sessionEvent(1000, "assistant", "old high-sequence answer", [], "2026-04-22T17:15:00.000Z")
+    const archivedUser = sessionEvent(1, "user", "latest archived user text", [], "2026-04-28T23:01:00.000Z")
+    const projectedAssistant = sessionEvent(2, "assistant", null, [{
+      id: "call_1",
+      type: "function",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "latest delivered answer", intent: "complete" }) },
+    }], "2026-04-28T23:02:00.000Z")
+
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      if (String(filePath).endsWith(".archive.ndjson")) {
+        return `${JSON.stringify(staleHighSequence)}\n${JSON.stringify(archivedUser)}\n`
+      }
+      return JSON.stringify({
+        version: 2,
+        events: [projectedAssistant],
+        projection: { eventIds: [projectedAssistant.id] },
+        state: { lastFriendActivityAt: null, mustResolveBeforeHandoff: false },
+      })
+    })
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 2,
+      archiveFallback: true,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] latest archived user text\n[assistant] latest delivered answer")
+    }
+  })
+
+  it("keeps the latest visible user in small transcript tails after assistant-heavy turns", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+    const archivedUser = sessionEvent(10, "user", "latest inbound text", [], "2026-04-28T23:20:00.000Z")
+    const projectedAssistants = [11, 12, 13].map((sequence) => sessionEvent(sequence, "assistant", null, [{
+      id: `call_${sequence}`,
+      type: "function",
+      function: { name: "settle", arguments: JSON.stringify({ answer: `assistant visible update ${sequence}`, intent: "progress" }) },
+    }], `2026-04-28T23:2${sequence - 10}:00.000Z`))
+
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
+      if (String(filePath).endsWith(".archive.ndjson")) {
+        return `${JSON.stringify(archivedUser)}\n`
+      }
+      return JSON.stringify({
+        version: 2,
+        events: projectedAssistants,
+        projection: { eventIds: projectedAssistants.map((event) => event.id) },
+        state: { lastFriendActivityAt: null, mustResolveBeforeHandoff: false },
+      })
+    })
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      messageCount: 2,
+      archiveFallback: true,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe([
+        "[user] latest inbound text",
+        "[assistant] assistant visible update 12",
+        "[assistant] assistant visible update 13",
+      ].join("\n"))
+      expect(result.snapshot).toContain("latest user: latest inbound text")
+      expect(result.snapshot).toContain("latest assistant: assistant visible update 13")
+    }
+  })
+
+  it("keeps tool-result chatter for self inner transcript tails", async () => {
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "inner checkpoint" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "status", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "internal tool trace" },
+        { role: "assistant", content: "noted" },
+      ],
+    }))
+
+    const result = await summarizeSessionTail({
+      sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      friendId: "self",
+      channel: "inner",
+      key: "dialog",
+      messageCount: 10,
+    })
+
+    expect(result.kind).toBe("ok")
+    if (result.kind === "ok") {
+      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] inner checkpoint\n[tool] internal tool trace\n[assistant] noted")
     }
   })
 
@@ -325,6 +624,33 @@ describe("session transcript", () => {
     expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] yes, looking now")
     expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[user] the billing fix looked shaky earlier")
     expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] the billing fix is merged and stable now")
+  })
+
+  it("does not search external tool-result chatter as conversation text", async () => {
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      version: 1,
+      messages: [
+        { role: "user", content: "can you check the release?" },
+        { role: "assistant", content: "looking now" },
+        { role: "tool", tool_call_id: "call_1", content: "billing-only shell output" },
+        { role: "assistant", content: "release is clean" },
+      ],
+    }))
+
+    const result = await searchSessionTranscript({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
+      friendId: "friend-1",
+      channel: "bluebubbles",
+      key: "chat",
+      query: "billing-only",
+    })
+
+    expect(result.kind).toBe("no_match")
+    const snapshot = result.kind === "no_match" ? result.snapshot : ""
+    expect(snapshot).toContain("latest user: can you check the release?")
+    expect(snapshot).toContain("latest assistant: release is clean")
+    expect(snapshot).not.toContain("shell output")
   })
 
   it("returns a no-match search result with the latest turn context", async () => {

@@ -54,8 +54,51 @@ jobs:
           path: ${{ env.COVERAGE_ARTIFACT_ROOT }}
           if-no-files-found: ignore
 
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Hermetic Integration Lane
+        run: npm run test:integration
+
+  package-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Local Package E2E Lane
+        run: npm run test:e2e:package
+
   publish:
-    needs: coverage
+    needs:
+      - coverage
+      - integration
+      - package-e2e
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -79,14 +122,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Resolve @ouro.bot/cli publish tag
+        id: cli-publish-tag
+        run: |
+          TAG=$(node scripts/npm-dist-tag-policy.cjs publish-tag "@ouro.bot/cli" "$(node -p "require('./package.json').version")")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "publishing @ouro.bot/cli with dist-tag ${TAG}"
+
       - name: Publish @ouro.bot/cli
         run: |
           LOCAL=$(node -p "require('./package.json').version")
+          TAG="${{ steps.cli-publish-tag.outputs.tag }}"
           PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
           if [ "$LOCAL" = "$PUBLISHED" ]; then
             echo "@ouro.bot/cli@${LOCAL} already published — skipping"
           else
-            npm publish --access public --provenance --tag latest
+            npm publish --access public --provenance --tag "$TAG"
           fi
 
       - name: Build for wrapper publish guard
@@ -130,15 +181,24 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, 'should_publish=true\n')
           NODE
 
+      - name: Resolve ouro.bot wrapper publish tag
+        id: wrapper-publish-tag
+        run: |
+          TAG=$(node scripts/npm-dist-tag-policy.cjs publish-tag "ouro.bot" "$(node -p "require('./packages/ouro.bot/package.json').version")")
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "publishing ouro.bot with dist-tag ${TAG}"
+
       - name: Publish ouro.bot
         if: steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
-          npm publish --access public --provenance --tag latest
+          npm publish --access public --provenance --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
 
       - name: Verify supported npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
+          CLI_TAG="${{ steps.cli-publish-tag.outputs.tag }}"
+          WRAPPER_TAG="${{ steps.wrapper-publish-tag.outputs.tag }}"
 
           verify_tag() {
             package_ref="$1"
@@ -161,10 +221,10 @@ jobs:
             return 1
           }
 
-          verify_tag "@ouro.bot/cli@latest" "$LOCAL"
-          verify_tag "ouro.bot@latest" "$LOCAL"
+          verify_tag "@ouro.bot/cli@${CLI_TAG}" "$LOCAL"
+          verify_tag "ouro.bot@${WRAPPER_TAG}" "$LOCAL"
 
-          echo "supported npm dist-tags verified for ${LOCAL}"
+          echo "supported npm dist-tags verified for ${LOCAL} (cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 
       - name: Smoke published package binaries
         run: npm run release:smoke

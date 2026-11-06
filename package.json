@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.424",
+  "version": "0.1.0-alpha.601",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -10,6 +10,7 @@
   "files": [
     "dist/",
     "SerpentGuide.ouro/",
+    "RepairGuide.ouro/",
     "skills/",
     "assets/",
     "changelog.json"
@@ -25,13 +26,18 @@
     "ouro": "tsc && node dist/heart/daemon/ouro-entry.js",
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
+    "voice:eval": "npm run build && node dist/senses/voice-realtime-eval-entry.js",
     "test": "vitest run",
-    "typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json",
-    "test:outlook-ui": "npm test --prefix packages/outlook-ui",
+    "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
+    "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
+    "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
+    "typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json",
+    "test:mailbox-ui": "npm test --prefix packages/mailbox-ui",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
-    "build": "tsc && (cd packages/outlook-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cp -r dist ../../dist/outlook-ui) || echo 'outlook-ui build skipped'",
+    "build": "node scripts/clean-dist.cjs && tsc && (cd packages/mailbox-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cd ../.. && node scripts/copy-mailbox-ui.cjs) || echo 'mailbox-ui build skipped'",
     "lint": "eslint src/",
+    "release:bump": "node scripts/release-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:smoke": "node scripts/release-smoke.cjs",
     "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"
@@ -39,6 +45,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
+    "@azure/storage-blob": "^12.31.0",
     "@microsoft/teams.api": "2.0.5",
     "@microsoft/teams.apps": "^2.0.5",
     "@microsoft/teams.cards": "2.0.5",
@@ -46,12 +53,16 @@
     "@microsoft/teams.dev": "^2.0.5",
     "@microsoft/teams.graph": "2.0.5",
     "@types/react": "^17.0.91",
+    "@types/ws": "^8.18.1",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
+    "mailparser": "^3.9.8",
     "openai": "^6.27.0",
     "react": "^17.0.2",
     "semver": "^7.7.4",
-    "stripe": "^22.0.0"
+    "smtp-server": "^3.18.4",
+    "stripe": "^22.0.0",
+    "ws": "^8.20.0"
   },
   "repository": {
     "type": "git",
@@ -59,7 +70,9 @@
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
+    "@types/mailparser": "^3.4.6",
     "@types/semver": "^7.7.1",
+    "@types/smtp-server": "^3.5.13",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.2",
     "jsdom": "^29.0.2",

@@ -20,13 +20,22 @@ emitNervesEvent({
   meta: { entry: "bluebubbles", agentName },
 })
 import("../../heart/runtime-credentials")
-  .then(async ({ refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig }) => {
-    await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+  .then(async ({
+    readMachineRuntimeCredentialConfig,
+    refreshMachineRuntimeCredentialConfig,
+    refreshRuntimeCredentialConfig,
+    waitForRuntimeCredentialBootstrap,
+  }) => {
+    await waitForRuntimeCredentialBootstrap(agentName)
     const { loadOrCreateMachineIdentity } = await import("../../heart/machine-identity")
     const machine = loadOrCreateMachineIdentity()
-    await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
+    const machineConfig = readMachineRuntimeCredentialConfig(agentName)
+    if (!machineConfig.ok) {
+      await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
+    }
     const { startBlueBubblesApp } = await import("./index")
     await startBlueBubblesApp()
+    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
   })
   .catch((error) => {
     emitNervesEvent({
