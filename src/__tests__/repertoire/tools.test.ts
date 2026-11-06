@@ -12,6 +12,8 @@ vi.mock("fs", () => ({
   mkdirSync: vi.fn(),
   rmSync: vi.fn(),
   rmdirSync: vi.fn(),
+  // The write guard canonicalizes paths and refuses when it cannot; the mocked filesystem reports every path as already real.
+  realpathSync: { native: (p: string) => p },
 }))
 
 // Hard-mock the daemon socket client. The runtime guard in socket-client.ts
