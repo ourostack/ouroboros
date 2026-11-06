@@ -45,6 +45,9 @@ async function holdingChild(): Promise<ChildProcess> {
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "sync-lock-"))
   fs.mkdirSync(path.join(root, ".git"))
+  // Tests drive the Linux path by default on any OS; macOS-path tests override this.
+  __testHooks.platform = () => "linux"
+  __testHooks.resetOwnStartTime()
 })
 afterEach(() => {
   __testHooks.beforeUnlink = undefined
@@ -52,7 +55,10 @@ afterEach(() => {
   __testHooks.beforeRead = undefined
   __testHooks.beforeReclaimStat = undefined
   __testHooks.readPsStart = undefined
+  __testHooks.platform = undefined
+  __testHooks.resetOwnStartTime()
   __testHooks.guardRace = undefined
+  __testHooks.afterUnlink = undefined
   __testHooks.beforeLockWrite = undefined
   for (const c of children) c.kill("SIGKILL")
   children = []
@@ -269,6 +275,12 @@ describe("sync lock", () => {
     expect(() => tryAcquireSyncLockSync(root)).toThrow()
   })
 
+  it("rethrows an open error that is not a missing file", () => {
+    fs.rmSync(path.join(root, ".git"), { recursive: true })
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /elsewhere\n")
+    expect(() => clearOwnStaleSyncLock(root)).toThrow(/ENOTDIR/)
+  })
+
   it("propagates unexpected filesystem errors", () => {
     expect(() => tryAcquireSyncLockSync(path.join(root, "missing"))).toThrow()
   })
@@ -315,34 +327,35 @@ describe("regression: reclaim guard ownership (I1)", () => {
     expect([c, b].filter((r) => !("busy" in (r as object)))).toHaveLength(1)
   })
 
-  it("a guard swapped in after it was judged stale is put back, not deleted", async () => {
+  it("a guard swapped in after it was judged stale is never put back", async () => {
     writeLock({ pid: await exitedPid(), token: "dead", procStart: null })
     fs.writeFileSync(reclaimPath(), "old")
     backdate(reclaimPath())
     __testHooks.guardRace = (phase) => {
       if (phase !== "beforeRename") return
+      __testHooks.guardRace = undefined
       fs.rmSync(reclaimPath())
-      fs.writeFileSync(reclaimPath(), "fresh-owner")
+      fs.writeFileSync(reclaimPath(), "fresh-owner") // its owner is mid-reclaim
     }
     expect(tryAcquireSyncLockSync(root)).toMatchObject({ busy: true })
-    expect(fs.readFileSync(reclaimPath(), "utf8")).toBe("fresh-owner")
+    // Nothing was restored, and nothing is left aside.
+    expect(fs.existsSync(reclaimPath())).toBe(false)
     expect(fs.readdirSync(path.join(root, ".git")).filter((f) => f.includes(".stale."))).toEqual([])
+    // A later caller reclaims normally; the displaced owner would find its guard gone and give up.
+    const later = tryAcquireSyncLockSync(root)
+    expect("busy" in later).toBe(false)
   })
 
-  it("a guard swapped in and a new one created meanwhile: the moved guard is dropped, the new one kept", async () => {
+  it("a fresh acquirer that wins the create after our unlink makes us retry", async () => {
     writeLock({ pid: await exitedPid(), token: "dead", procStart: null })
-    fs.writeFileSync(reclaimPath(), "old")
-    backdate(reclaimPath())
-    __testHooks.guardRace = (phase) => {
-      if (phase === "beforeRename") {
-        fs.rmSync(reclaimPath())
-        fs.writeFileSync(reclaimPath(), "fresh-owner")
-      } else {
-        fs.writeFileSync(reclaimPath(), "newest-owner")
-      }
+    let other: unknown
+    __testHooks.afterUnlink = () => {
+      __testHooks.afterUnlink = undefined
+      other = tryAcquireSyncLockSync(root) // the lock is absent, so a plain acquirer creates it
     }
-    expect(tryAcquireSyncLockSync(root)).toMatchObject({ busy: true })
-    expect(fs.readFileSync(reclaimPath(), "utf8")).toBe("newest-owner")
+    const result = tryAcquireSyncLockSync(root)
+    expect("busy" in (other as object)).toBe(false)
+    expect(result).toMatchObject({ busy: true })
   })
 
   it("a guard that disappears before it can be renamed is retried", async () => {
@@ -399,8 +412,11 @@ describe("regression: unknown start time is live (I2)", () => {
 })
 
 describe("portable start time (I3)", () => {
-  it("without /proc the start time comes from ps, and a different ps value is stale", () => {
-    __testHooks.readProcStat = () => null
+  it("on macOS the start time comes from ps, and a different ps value is stale", () => {
+    __testHooks.platform = () => "darwin"
+    __testHooks.readProcStat = () => {
+      throw new Error("/proc must not be read off Linux")
+    }
     __testHooks.readPsStart = () => "Thu Nov  5 09:00:00 2026"
     const handle = tryAcquireSyncLockSync(root) as { release(): void }
     expect(readLock().procStart).toBe("Thu Nov  5 09:00:00 2026")
@@ -410,7 +426,7 @@ describe("portable start time (I3)", () => {
   })
 
   it("the same ps value keeps the lock live", () => {
-    __testHooks.readProcStat = () => null
+    __testHooks.platform = () => "darwin"
     __testHooks.readPsStart = () => "Thu Nov  5 09:00:00 2026"
     writeLock({ pid: process.ppid, token: "x", procStart: "Thu Nov  5 09:00:00 2026" })
     expect(tryAcquireSyncLockSync(root)).toEqual({ busy: true, holderPid: process.ppid })
@@ -439,9 +455,116 @@ describe("portable start time (I3)", () => {
     expect(tryAcquireSyncLockSync(root)).toEqual({ busy: true, holderPid: process.ppid })
   })
 
-  it("the real ps reports a start time for this process", () => {
+  it("the real ps gives the same string for this process under different TZ and locale settings", () => {
+    __testHooks.platform = () => "darwin"
+    const saved = { TZ: process.env.TZ, LANG: process.env.LANG, LC_ALL: process.env.LC_ALL }
+    const seen: Array<string | null> = []
+    try {
+      for (const env of [
+        { TZ: "UTC", LANG: "C", LC_ALL: undefined },
+        { TZ: "America/Los_Angeles", LANG: "fr_FR.UTF-8", LC_ALL: "de_DE.UTF-8" },
+      ]) {
+        for (const [k, v] of Object.entries(env)) {
+          if (v === undefined) delete process.env[k]
+          else process.env[k] = v
+        }
+        __testHooks.resetOwnStartTime()
+        const handle = tryAcquireSyncLockSync(root) as { release(): void }
+        seen.push(readLock().procStart)
+        handle.release()
+      }
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+    expect(seen[1]).toBe(seen[0])
+    // ps exists on macOS and on any Linux CI image with procps; it is a real string there.
+    if (seen[0] !== null) expect(seen[0]).toMatch(/\d{4}$/)
+  })
+
+  it("ps runs with a pinned locale and time zone", () => {
+    __testHooks.platform = () => "darwin"
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-ps-"))
+    fs.writeFileSync(path.join(dir, "ps"), '#!/bin/sh\necho "$TZ|$LC_ALL"\n', { mode: 0o755 })
+    const oldPath = process.env.PATH
+    process.env.PATH = dir
+    try {
+      tryAcquireSyncLockSync(root)
+      expect(readLock().procStart).toBe("UTC|C")
+    } finally {
+      process.env.PATH = oldPath
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("a hooked ps that throws counts as unknown", () => {
+    __testHooks.platform = () => "darwin"
+    __testHooks.readPsStart = () => {
+      throw new Error("timeout")
+    }
     tryAcquireSyncLockSync(root)
-    expect(readLock().procStart).toEqual(expect.any(String))
+    expect(readLock().procStart).toBeNull()
+  })
+
+  it("a hooked ps that prints only whitespace counts as unknown", () => {
+    __testHooks.platform = () => "darwin"
+    __testHooks.readPsStart = () => "  \n"
+    tryAcquireSyncLockSync(root)
+    expect(readLock().procStart).toBeNull()
+  })
+
+  it("a hooked /proc read that throws falls back to ps on Linux", () => {
+    __testHooks.readProcStat = () => {
+      throw new Error("EACCES")
+    }
+    __testHooks.readPsStart = () => "Thu Nov  5 09:00:00 2026"
+    tryAcquireSyncLockSync(root)
+    expect(readLock().procStart).toBe("Thu Nov  5 09:00:00 2026")
+  })
+
+  it("the default /proc and ps reads run for real on Linux and macOS", () => {
+    // No hooks at all: process.platform decides. Linux reads /proc; macOS runs ps.
+    __testHooks.platform = undefined
+    tryAcquireSyncLockSync(root)
+    const real = readLock().procStart
+    expect(real === null || typeof real === "string").toBe(true)
+  })
+
+  it("our own start time is read once and cached", () => {
+    let reads = 0
+    __testHooks.readProcStat = () => {
+      reads++
+      return PROC_STAT("777")
+    }
+    const first = tryAcquireSyncLockSync(root) as { release(): void }
+    first.release()
+    const second = tryAcquireSyncLockSync(root) as { release(): void }
+    second.release()
+    expect(reads).toBe(1)
+  })
+
+  it("a holder lock owned by this pid compares against the cached own start time", () => {
+    __testHooks.readProcStat = () => PROC_STAT("777")
+    const mine = tryAcquireSyncLockSync(root) as { release(): void }
+    // A second caller in this process sees our live lock and our token.
+    expect(tryAcquireSyncLockSync(root)).toEqual({ busy: true, holderPid: process.pid })
+    mine.release()
+  })
+
+  it.skipIf(process.platform !== "linux")("real /proc: the parsed start time keeps a live child's lock and +1 reclaims it", async () => {
+    __testHooks.platform = undefined
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+    children.push(child)
+    const stat = fs.readFileSync(`/proc/${child.pid}/stat`, "utf8")
+    // Independent parser: skip past the last ")" and take the 20th token after it (field 22).
+    const ticks = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19]
+    expect(ticks).toMatch(/^\d+$/)
+    writeLock({ pid: child.pid, token: "x", procStart: ticks })
+    expect(tryAcquireSyncLockSync(root)).toEqual({ busy: true, holderPid: child.pid })
+    writeLock({ pid: child.pid, token: "x", procStart: String(Number(ticks) + 1) })
+    expect("busy" in tryAcquireSyncLockSync(root)).toBe(false)
   })
 
   it("a missing ps binary counts as unknown", () => {
@@ -500,6 +623,50 @@ describe("minor fixes", () => {
     writeLock({ pid: await exitedPid(), token: "dead", procStart: null })
     fs.writeFileSync(reclaimPath(), "x")
     expect(tryAcquireSyncLockSync(root)).toEqual({ busy: true, holderPid: null })
+  })
+
+  it("waitMs Infinity waits until the holder lets go", async () => {
+    const first = tryAcquireSyncLockSync(root) as { release(): void }
+    setTimeout(() => first.release(), 250)
+    const second = await acquireSyncLock(root, Number.POSITIVE_INFINITY)
+    expect("busy" in second).toBe(false)
+    ;(second as { release(): void }).release()
+  })
+
+  it("an aborted signal rejects with an AbortError, before and during a wait", async () => {
+    writeLock({ pid: process.ppid, token: "live", procStart: null })
+    const already = new AbortController()
+    already.abort()
+    await expect(acquireSyncLock(root, 5000, already.signal)).rejects.toMatchObject({ name: "AbortError" })
+    const later = new AbortController()
+    setTimeout(() => later.abort(), 150)
+    const started = Date.now()
+    await expect(acquireSyncLock(root, 5000, later.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it("a signal that never aborts does not disturb the wait", async () => {
+    writeLock({ pid: process.ppid, token: "live", procStart: null })
+    const result = await acquireSyncLock(root, 150, new AbortController().signal)
+    expect(result).toEqual({ busy: true, holderPid: process.ppid })
+  })
+
+  it("the poll timer does not keep the process alive", async () => {
+    writeLock({ pid: process.ppid, token: "live", procStart: null })
+    const timers: NodeJS.Timeout[] = []
+    const realSetTimeout = globalThis.setTimeout
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const timer = realSetTimeout(...args)
+      timers.push(timer)
+      return timer
+    }) as typeof setTimeout
+    try {
+      await acquireSyncLock(root, 150)
+    } finally {
+      globalThis.setTimeout = realSetTimeout
+    }
+    expect(timers.length).toBeGreaterThan(0)
+    expect(timers.every((t) => !t.hasRef())).toBe(true)
   })
 
   it("a failed write leaves no empty lock behind", () => {

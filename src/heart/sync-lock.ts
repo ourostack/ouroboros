@@ -29,10 +29,16 @@ interface LockContent {
 export const __testHooks: {
   /** Runs while a reclaimer holds the guard, after it judged the lock stale and before it unlinks. */
   beforeUnlink?: () => void
-  /** Replaces the read of `/proc/<pid>/stat`. */
+  /** Runs after a reclaimer unlinked the stale lock and before it creates its own. */
+  afterUnlink?: () => void
+  /** Replaces `process.platform`. */
+  platform?: () => NodeJS.Platform
+  /** Replaces the raw read of `/proc/<pid>/stat`. May return null or throw for "unreadable". */
   readProcStat?: (pid: number) => string | null
-  /** Replaces the `ps -o lstart=` start-time read. */
+  /** Replaces the raw `ps -o lstart= -p <pid>` exec. May return null or throw for "failed". */
   readPsStart?: (pid: number) => string | null
+  /** Forgets the cached start time of this process. */
+  resetOwnStartTime(): void
   /** Runs at the start of every lock read. */
   beforeRead?: () => void
   /** Runs before the guard is inspected after an exclusive-create collision. */
@@ -41,7 +47,11 @@ export const __testHooks: {
   guardRace?: (phase: "beforeRename" | "afterRename") => void
   /** Runs before the lock content is written. */
   beforeLockWrite?: () => void
-} = {}
+} = {
+  resetOwnStartTime() {
+    ownStartTime = undefined
+  },
+}
 
 const heldTokens = new Set<string>()
 
@@ -49,24 +59,29 @@ function lockFilePath(agentRoot: string): string {
   return path.join(agentRoot, ".git", SYNC_LOCK_FILE)
 }
 
+const PS_ENV_OVERRIDES = { LC_ALL: "C", TZ: "UTC" }
+
 function readProcStat(pid: number): string | null {
-  if (__testHooks.readProcStat) return __testHooks.readProcStat(pid)
   try {
-    return fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    return __testHooks.readProcStat ? __testHooks.readProcStat(pid) : fs.readFileSync(`/proc/${pid}/stat`, "utf8")
   } catch {
     return null
   }
 }
 
 function readPsStart(pid: number): string | null {
-  if (__testHooks.readPsStart) return __testHooks.readPsStart(pid)
   try {
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 2000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim()
-    return out === "" ? null : out
+    const out = __testHooks.readPsStart
+      ? __testHooks.readPsStart(pid)
+      : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+          encoding: "utf8",
+          timeout: 2000,
+          stdio: ["ignore", "pipe", "ignore"],
+          // lstart prints local time in the caller's locale; pin both so every process sees one string.
+          env: { ...process.env, ...PS_ENV_OVERRIDES },
+        })
+    const trimmed = out === null ? "" : out.trim()
+    return trimmed === "" ? null : trimmed
   } catch {
     return null
   }
@@ -76,16 +91,25 @@ function readPsStart(pid: number): string | null {
  * Process start time as an opaque string, or null when unknown. Linux: field 22
  * of `/proc/<pid>/stat` (the command name, field 2, may hold spaces and parens,
  * so parse past the last `)`). Elsewhere, or when /proc is unreadable: the
- * trimmed output of `ps -o lstart=`.
+ * trimmed output of `ps -o lstart=` under a pinned locale and time zone.
  */
 function processStartTime(pid: number): string | null {
-  const stat = readProcStat(pid)
-  if (stat !== null) {
-    // `rest` begins at field 3.
-    const field = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[22 - 3]
-    if (field !== undefined) return field
+  if ((__testHooks.platform?.() ?? process.platform) === "linux") {
+    const stat = readProcStat(pid)
+    if (stat !== null) {
+      // `rest` begins at field 3.
+      const field = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[22 - 3]
+      if (field !== undefined) return field
+    }
   }
   return readPsStart(pid)
+}
+
+/** This process's own start time cannot change, so it is read once, lazily. */
+let ownStartTime: string | null | undefined
+function ownProcessStartTime(): string | null {
+  if (ownStartTime === undefined) ownStartTime = processStartTime(process.pid)
+  return ownStartTime
 }
 
 /** /proc ticks are all digits; `ps` lstart never is. Values of different formats cannot be compared. */
@@ -105,7 +129,7 @@ function isStale(content: LockContent): boolean {
   if (content.procStart !== null) {
     // Stale only when both start times are known, in the same format, and differ.
     // An unreadable start time means unknown, and a live pid with unknown start is live.
-    const now = processStartTime(content.pid)
+    const now = content.pid === process.pid ? ownProcessStartTime() : processStartTime(content.pid)
     if (now !== null && isProcFormat(now) === isProcFormat(content.procStart) && now !== content.procStart) return true
   }
   return content.pid === process.pid && !heldTokens.has(content.token)
@@ -118,12 +142,21 @@ type ReadResult =
 
 function readLock(lockPath: string): ReadResult {
   __testHooks.beforeRead?.()
-  let raw: string
+  let fd: number
   try {
-    raw = fs.readFileSync(lockPath, "utf8")
+    fd = fs.openSync(lockPath, "r")
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" }
     throw err
+  }
+  let raw: string
+  let ageMs: number
+  try {
+    // Content and mtime come from one descriptor, so the file cannot vanish between them.
+    raw = fs.readFileSync(fd, "utf8")
+    ageMs = Date.now() - fs.fstatSync(fd).mtimeMs
+  } finally {
+    fs.closeSync(fd)
   }
   try {
     const parsed = JSON.parse(raw)
@@ -135,12 +168,6 @@ function readLock(lockPath: string): ReadResult {
   }
   // Corrupt-lock rule: a lock that does not parse is busy while fresh, because a writer may be
   // between create and write. Once its mtime is older than 30 s it is stale and may be reclaimed.
-  let ageMs = 0
-  try {
-    ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
-  } catch /* v8 ignore next 3 -- the file vanished between read and stat @preserve */ {
-    return { kind: "missing" }
-  }
   return { kind: "malformed", raw, ageMs }
 }
 
@@ -162,7 +189,7 @@ function makeHandle(lockPath: string, token: string): SyncLockHandle {
 /** Exclusive create. Returns null if the lock already exists. */
 function createLock(lockPath: string): SyncLockHandle | null {
   const token = randomBytes(16).toString("hex")
-  const content: LockContent = { pid: process.pid, token, procStart: processStartTime(process.pid) }
+  const content: LockContent = { pid: process.pid, token, procStart: ownProcessStartTime() }
   let fd: number
   try {
     fd = fs.openSync(lockPath, "wx")
@@ -216,7 +243,8 @@ function createGuard(guardPath: string): string | null {
 
 /**
  * Clear a guard older than 30 s without ever deleting a guard that is not the one judged stale:
- * rename it aside, read the renamed file's token, delete only on a match, otherwise put it back.
+ * rename it aside, read the renamed file's token, and delete only on a match. On a mismatch it is
+ * not restored; the call reports busy.
  */
 function clearStaleGuard(guardPath: string): "busy" | "cleared" | "gone" {
   let judgedToken: string
@@ -241,12 +269,9 @@ function clearStaleGuard(guardPath: string): "busy" | "cleared" | "gone" {
     fs.rmSync(moved, { force: true })
     return "cleared"
   }
-  // We moved a guard that is not the one we judged. Put it back if the path is still free.
-  try {
-    fs.linkSync(moved, guardPath)
-  } catch {
-    // The path is taken again; that guard's owner will notice at its next ownership check.
-  }
+  // We moved a guard that is not the one we judged. Never put it back: restoring a guard that
+  // another reclaimer may already have outlived is how two processes end up holding the lock.
+  // Its owner's ownership re-check finds the guard gone and gives up. We delete only our aside copy.
   fs.rmSync(moved, { force: true })
   return "busy"
 }
@@ -275,8 +300,9 @@ function reclaim(lockPath: string, staleRaw: string): SyncLockHandle | SyncLockB
     __testHooks.beforeUnlink?.()
     if (!guardOwned(guardPath, token)) return { busy: true, holderPid: null }
     fs.rmSync(lockPath, { force: true })
+    __testHooks.afterUnlink?.()
     const handle = createLock(lockPath)
-    /* v8 ignore next -- the guard excludes other reclaimers; only a fresh acquirer could win the race @preserve */
+    // Only a fresh acquirer (not a reclaimer) can have created the lock since our unlink.
     if (!handle) return "retry"
     if (!guardOwned(guardPath, token)) {
       handle.release()
@@ -333,18 +359,42 @@ export function tryAcquireSyncLockSync(agentRoot: string): SyncLockHandle | Sync
   return result
 }
 
-/** Polls every 100 ms for up to `waitMs` (a non-finite or negative value means a single attempt). */
-export async function acquireSyncLock(agentRoot: string, waitMs: number): Promise<SyncLockHandle | SyncLockBusy> {
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new DOMException("The sync lock wait was aborted", "AbortError"))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    // A pending wait must not keep the process alive.
+    timer.unref()
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+/**
+ * Polls every 100 ms for up to `waitMs`. `Infinity` waits until the lock is acquired; NaN or a
+ * negative value is a single attempt. An aborted `signal` rejects with an AbortError.
+ */
+export async function acquireSyncLock(
+  agentRoot: string,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<SyncLockHandle | SyncLockBusy> {
   const lockPath = lockFilePath(agentRoot)
-  const deadline = Date.now() + (Number.isFinite(waitMs) ? waitMs : 0)
+  const deadline = Date.now() + (waitMs > 0 ? waitMs : 0)
   for (;;) {
+    if (signal?.aborted) throw new DOMException("The sync lock wait was aborted", "AbortError")
     const result = attemptOnce(lockPath)
     if (!("busy" in result)) return result
     if (Date.now() >= deadline) {
       emitBusy(lockPath, result)
       return result
     }
-    await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_MS, Math.max(1, deadline - Date.now()))))
+    await pause(Math.min(POLL_MS, Math.max(1, deadline - Date.now())), signal)
   }
 }
 
