@@ -802,6 +802,30 @@ describe("getBlueBubblesConfig", () => {
     expect(bb.accountId).toBe("default")
   })
 
+  it("normalizes ownHandles into a trimmed, non-empty list of strings", async () => {
+    const { getBlueBubblesConfig } = await importConfigModule({
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "secret-pass",
+        accountId: "personal",
+        ownHandles: ["+14155550000", "  ", "slugger@ouro.bot"],
+      },
+    })
+    const bb = getBlueBubblesConfig()
+    expect(bb.ownHandles).toEqual(["+14155550000", "slugger@ouro.bot"])
+  })
+
+  it("returns an empty ownHandles list when the field is missing", async () => {
+    const { getBlueBubblesConfig } = await importConfigModule({
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "secret-pass",
+        accountId: "personal",
+      },
+    })
+    expect(getBlueBubblesConfig().ownHandles).toEqual([])
+  })
+
   it("fails fast when bluebubbles serverUrl is missing", async () => {
     const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {

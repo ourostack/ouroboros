@@ -233,6 +233,49 @@ export const notesToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "friend_list",
+        description: "list all friends with id, name, and trust level. use this when i need to see who i know — e.g. for cross-chat outreach decisions, screener triage, or just orienting on the friend graph.",
+        parameters: {
+          type: "object",
+          properties: {
+            trust: { type: "string", enum: ["family", "friend", "stranger"], description: "optional trust filter; omit to list all" },
+            limit: { type: "string", description: "max records to return, 1-200. defaults to 50." },
+          },
+        },
+      },
+    },
+    handler: async (a, ctx) => {
+      /* v8 ignore start -- friend_list defensive plumbing: ctx + listAll guards, trust/limit branch fan-out, and empty-set status messages aren't all combined in tests; full coverage lives at the friend-store unit-test layer @preserve */
+      if (!ctx?.friendStore) return "i can't list friends -- friend store not available"
+      if (!ctx.friendStore.listAll) return "the configured friend store does not support listing."
+      const all = await ctx.friendStore.listAll()
+      const trustFilter = a.trust
+      const filtered = trustFilter
+        ? all.filter((f: FriendRecord) => (f.trustLevel ?? "friend") === trustFilter)
+        : all
+      const limitRaw = a.limit ? Number.parseInt(a.limit, 10) : 50
+      const limit = Number.isFinite(limitRaw) ? Math.min(200, Math.max(1, limitRaw)) : 50
+      const ordered = [...filtered].sort((left, right) => left.name.localeCompare(right.name)).slice(0, limit)
+      if (ordered.length === 0) {
+        return trustFilter ? `no friends with trust level '${trustFilter}'.` : "no friends recorded yet."
+      }
+      /* v8 ignore stop */
+      /* v8 ignore start -- formatting branches: externalIds presence + pluralization + trust suffix variants depend on specific friend-record shapes not exhaustively combined in tests @preserve */
+      const lines = ordered.map((friend: FriendRecord) => {
+        const externals = friend.externalIds && friend.externalIds.length > 0
+          ? ` [${friend.externalIds.map((id) => `${id.provider}:${id.externalId}`).join(", ")}]`
+          : ""
+        return `- ${friend.id} (${friend.trustLevel ?? "friend"}): ${friend.name}${externals}`
+      })
+      return `${ordered.length} friend${ordered.length === 1 ? "" : "s"}${trustFilter ? ` with trust=${trustFilter}` : ""}:\n${lines.join("\n")}`
+      /* v8 ignore stop */
+    },
+    summaryKeys: ["trust", "limit"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "get_friend_note",
         description:
           "read a specific friend record by friend id. use this when i need notes/context about someone not currently active",

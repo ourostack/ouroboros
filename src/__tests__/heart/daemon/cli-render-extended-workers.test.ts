@@ -8,7 +8,7 @@ function makeOverview(overrides: Record<string, unknown> = {}): Record<string, u
     daemon: "running",
     health: "ok",
     socketPath: "/tmp/test.sock",
-    outlookUrl: "http://localhost:6876",
+    mailboxUrl: "http://localhost:6876",
     version: "0.1.0-alpha.1",
     lastUpdated: "2026-04-09T12:00:00Z",
     repoRoot: "/repo",
@@ -33,6 +33,17 @@ function makeWorkerRow(overrides: Record<string, unknown> = {}): Record<string, 
     startedAt: "2026-04-09T12:00:00.000Z",
     errorReason: null,
     fixHint: null,
+    ...overrides,
+  }
+}
+
+function makeSenseRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    agent: "slugger",
+    sense: "bluebubbles",
+    enabled: true,
+    status: "running",
+    detail: ":18789 /bluebubbles-webhook",
     ...overrides,
   }
 }
@@ -164,6 +175,36 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(output).toContain("fix:   Run 'ouro auth ouroboros' to configure github-copilot credentials.")
   })
 
+  it("parses and renders BlueBubbles active-turn health fields", () => {
+    const senses = [makeSenseRow({
+      pendingRecoveryCount: 0,
+      failedRecoveryCount: 0,
+      activeTurnCount: 2,
+      stalledTurnCount: 1,
+      oldestActiveTurnStartedAt: "2026-04-30T23:00:00.000Z",
+      oldestActiveTurnAgeMs: 120_000,
+    })]
+    const data = {
+      overview: makeOverview({ senseCount: 1 }),
+      workers: [],
+      senses,
+    }
+
+    const payload = parseStatusPayload(data)
+    expect(payload?.senses[0]).toEqual(expect.objectContaining({
+      activeTurnCount: 2,
+      stalledTurnCount: 1,
+      oldestActiveTurnStartedAt: "2026-04-30T23:00:00.000Z",
+      oldestActiveTurnAgeMs: 120_000,
+    }))
+
+    const output = formatDaemonStatusOutput({ ok: true, data }, "fallback")
+    expect(output).toContain("activeTurns=2")
+    expect(output).toContain("stalledTurns=1")
+    expect(output).toContain("oldestActive=2026-04-30T23:00:00.000Z")
+    expect(output).toContain("oldestActiveAge=2m")
+  })
+
   it("parses and renders provider lane readiness without leaking credentials", () => {
     const output = formatDaemonStatusOutput({
       ok: true,
@@ -178,7 +219,7 @@ describe("parseStatusPayload extended worker fields", () => {
             lane: "outward",
             provider: "minimax",
             model: "MiniMax-M2.5",
-            source: "local",
+            source: "agent.json",
             readiness: "ready",
             credential: "auth-flow from slugger",
           },
@@ -187,7 +228,7 @@ describe("parseStatusPayload extended worker fields", () => {
             lane: "inner",
             provider: "openai-codex",
             model: "gpt-5.4",
-            source: "local",
+            source: "agent.json",
             readiness: "failed",
             detail: "400 status code",
             credential: "manual",
@@ -223,7 +264,7 @@ describe("parseStatusPayload extended worker fields", () => {
         lane: "inner",
         provider: "minimax",
         model: "MiniMax-M2.5",
-        source: "local",
+        source: "agent.json",
         readiness: "ready",
       }],
     })).toBeNull()
@@ -234,7 +275,7 @@ describe("parseStatusPayload extended worker fields", () => {
         lane: "inner",
         provider: "minimax",
         model: "MiniMax-M2.5",
-        source: "local",
+        source: "agent.json",
         readiness: "ready",
         credential: "auth-flow from slugger",
         detail: "fresh",
@@ -244,5 +285,35 @@ describe("parseStatusPayload extended worker fields", () => {
       lane: "inner",
       detail: "fresh",
     })
+  })
+
+  it("parses and rejects health check status payload rows", () => {
+    const base = {
+      overview: makeOverview(),
+      workers: [],
+      senses: [],
+    }
+
+    expect(parseStatusPayload({
+      ...base,
+      healthChecks: [{
+        name: "sense-probe:mcp-canary:slugger",
+        status: "critical",
+        message: "mcp canary failed",
+      }],
+    })?.healthChecks[0]).toEqual({
+      name: "sense-probe:mcp-canary:slugger",
+      status: "critical",
+      message: "mcp canary failed",
+    })
+    expect(parseStatusPayload({ ...base, healthChecks: { bad: true } })).toBeNull()
+    expect(parseStatusPayload({ ...base, healthChecks: [null] })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      healthChecks: [{
+        name: "sense-probe:mcp-canary:slugger",
+        status: "critical",
+      }],
+    })).toBeNull()
   })
 })
