@@ -47,7 +47,7 @@ describe("plugin-cli — derivePluginIdFromSource", () => {
   it("derives from github: source with subpath", () => {
     expect(
       derivePluginIdFromSource(
-        "github:ourostack/ouroboros-skills:plugins/desk",
+        "github:ourostack/desk:plugins/desk",
       ),
     ).toBe("desk")
   })
@@ -115,7 +115,7 @@ describe("plugin-cli — executePluginInstall", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
     )
@@ -179,7 +179,7 @@ describe("plugin-cli — executePluginInstall", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
     )
@@ -204,7 +204,7 @@ describe("plugin-cli — executePluginInstall", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
     )
@@ -258,7 +258,7 @@ describe("plugin-cli — executePluginInstall", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
     )
@@ -475,7 +475,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
         agent: "slugger",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
@@ -519,7 +519,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
         agent: "slugger",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
@@ -542,7 +542,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
         agent: "slugger",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
@@ -559,7 +559,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
         agent: "slugger",
         version: "0.1.0",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
@@ -572,7 +572,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     expect(parsed.plugins[0]).toMatchObject({
       id: "desk",
       enabled: true,
-      source: "github:ourostack/ouroboros-skills:plugins/desk",
+      source: "github:ourostack/desk:plugins/desk",
       version: "0.1.0",
     })
   })
@@ -595,7 +595,7 @@ describe("plugin-cli — --agent flag wire-up", () => {
     const out = await executePluginInstall(
       {
         kind: "plugin.install",
-        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        source: "github:ourostack/desk:plugins/desk",
         agent: "ghost",
       } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
       deps,
@@ -954,7 +954,7 @@ describe("plugin-cli — runOuroCli dispatch", () => {
     )
     const { runOuroCli } = await import("../../../heart/daemon/daemon-cli")
     const out = await runOuroCli(
-      ["plugin", "install", "github:ourostack/ouroboros-skills:plugins/desk"],
+      ["plugin", "install", "github:ourostack/desk:plugins/desk"],
       makeRunDeps(),
     )
     expect(out).toContain("already installed")

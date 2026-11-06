@@ -127,7 +127,7 @@ export interface PluginConfig {
   id: string
   /** When false, the plugin is installed-but-disabled for this agent. */
   enabled: boolean
-  /** Plugin source URL (e.g. github:ourostack/ouroboros-skills:plugins/desk). Optional; informational. */
+  /** Plugin source URL (e.g. github:ourostack/desk:plugins/desk). Optional; informational. */
   source?: string
   /** Plugin version this agent expects. Optional. */
   version?: string

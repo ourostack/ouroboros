@@ -83,7 +83,7 @@ export const FULL_AGENT_JSON = {
     {
       id: "desk",
       enabled: true,
-      source: "github:ourostack/ouroboros-skills:plugins/desk",
+      source: "github:ourostack/desk:plugins/desk",
       version: "0.1.0",
     },
   ],
