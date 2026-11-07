@@ -544,9 +544,15 @@ describe("owner notices", () => {
     await preTurnPull(bundle, CONFIG)
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
     expect(send).toHaveBeenCalledWith(AGENT, expect.objectContaining({ noticeId: expect.stringMatching(/^sync-conflict:agent:/), signal: expect.any(AbortSignal) }))
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice")).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Telegram sent it: nothing is queued for the agent to relay a second time.
+    const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+    const pendingDir = getPrivateRuntimePendingDir(AGENT, bundle)
+    expect(fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : []).toEqual([])
   })
 
-  it("default notice is queued for the agent to relay, with or without Telegram", async () => {
+  it("default notice is queued for the agent to relay when Telegram does not send it", async () => {
     vi.doMock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: async () => { throw new Error("no telegram for this agent") } }))
     setSyncOwnerNotifier(null)
     const { bundle, owner } = bundleWithRemote()
@@ -559,7 +565,7 @@ describe("owner notices", () => {
     const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
     expect(queued).toHaveLength(1)
     expect(queued[0]).toMatchObject({ from: AGENT, friendId: "self", channel: "inner", key: "dialog", packetId: expect.stringMatching(/^sync-conflict:agent:/) })
-    expect(String(queued[0].content)).toMatch(/^a notice for my owner: /)
+    expect(String(queued[0].content)).toMatch(/\n\ni should tell my owner\.$/)
     expect(emitted("heart.sync_owner_notice_telegram_skipped")[0].meta).toMatchObject({ error: "no telegram for this agent" })
   })
 

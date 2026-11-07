@@ -37,6 +37,7 @@ function row(agent: string, overrides: Partial<BundleSyncRow> = {}): BundleSyncR
     agent,
     enabled: true,
     remote: "origin",
+    branch: "main",
     gitInitialized: true,
     remoteUrl: `https://example.com/${agent}.git`,
     ...overrides,
@@ -429,6 +430,37 @@ describe("runBootSyncProbe against real git", () => {
     expect(fs.existsSync(path.join(agent, ".git", "ouro-sync.lock"))).toBe(false)
     expect(result.findings).toEqual([])
     expect(result.statuses).toEqual([{ agent: "butler", text: "1 ahead, 1 behind origin/main" }])
+  })
+
+  it("counts against the bundle's sync.branch, read from agent.json", async () => {
+    // A bundle that syncs to `develop`; the remote has no `main` at all.
+    const bundlesRoot = path.join(root, "bundles")
+    const remote = path.join(root, "develop-remote.git")
+    const owner = path.join(root, "develop-owner")
+    const agent = path.join(bundlesRoot, "butler.ouro")
+    fs.mkdirSync(bundlesRoot, { recursive: true })
+    git(root, ["init", "-q", "--bare", "-b", "develop", remote])
+    git(root, ["clone", "-q", remote, owner])
+    git(owner, ["checkout", "-q", "-b", "develop"])
+    write(owner, ".gitignore", "state/\n")
+    write(owner, "agent.json", JSON.stringify({ version: 2, enabled: true, sync: { enabled: true, remote: "origin", branch: "develop" } }))
+    commitAll(owner, "seed")
+    git(owner, [...OWNER, "push", "-q", "-u", "origin", "develop"])
+    git(bundlesRoot, ["clone", "-q", "-b", "develop", remote, agent])
+    write(owner, "a.md", "a\n")
+    commitAll(owner, "a")
+    write(owner, "b.md", "b\n")
+    commitAll(owner, "b")
+    git(owner, [...OWNER, "push", "-q", "origin", "develop"])
+
+    const { listBundleSyncRows } = await vi.importActual<typeof import("../../../heart/daemon/agent-discovery")>("../../../heart/daemon/agent-discovery")
+    const rows = listBundleSyncRows({ bundlesRoot })
+    expect(rows.map((r) => ({ agent: r.agent, remote: r.remote, branch: r.branch }))).toEqual([{ agent: "butler", remote: "origin", branch: "develop" }])
+
+    const result = await runBootSyncProbe(rows, { bundlesRoot })
+
+    expect(result.findings).toEqual([])
+    expect(result.statuses).toEqual([{ agent: "butler", text: "0 ahead, 2 behind origin/develop" }])
   })
 
   it("reports a pause from the marker's expiresAt and fetches nothing", async () => {

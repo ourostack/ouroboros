@@ -407,19 +407,15 @@ describe("tools-bundle", () => {
       expect(result.firstPush).toBe(true)
     })
 
-    it("accepts a custom remote argument (first push, with token)", async () => {
+    it("ignores a remote argument: it syncs only with agent.json's sync.remote", async () => {
       initGit(tmp.agentRoot)
       execFileSync("git", ["remote", "add", "upstream", "https://unresolvable.test.invalid/repo.git"], {
         cwd: tmp.agentRoot,
         stdio: "pipe",
       })
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
-      // First-push gate: need a token even when using a custom remote
-      const review = await invoke("bundle_first_push_review")
-      const token = String(review.confirmationToken)
-      const result = await invoke("bundle_push", { remote: "upstream", confirmation_token: token })
-      expect(result.ok).toBe(false)
-      expect(result.error).toBeDefined()
+      const result = await invoke("bundle_push", { remote: "upstream" })
+      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first' })
     })
   })
 
@@ -474,11 +470,11 @@ describe("tools-bundle", () => {
       for (const name of ["bundle_push", "bundle_pull_rebase"]) {
         const fn = tool(name).tool.function
         expect(fn.description).toBe("Sync my bundle with its remote now.")
-        expect(Object.keys((fn.parameters as { properties: Record<string, unknown> }).properties).sort()).toEqual(["confirmation_token", "remote"])
+        expect(Object.keys((fn.parameters as { properties: Record<string, unknown> }).properties).sort()).toEqual(["confirmation_token"])
       }
     })
 
-    it("accepts a custom remote argument", async () => {
+    it("ignores a remote argument", async () => {
       initGit(tmp.agentRoot)
       execFileSync("git", ["remote", "add", "upstream", "https://unresolvable.test.invalid/repo.git"], {
         cwd: tmp.agentRoot,
@@ -487,7 +483,7 @@ describe("tools-bundle", () => {
       execFileSync("git", ["add", "-A"], { cwd: tmp.agentRoot, stdio: "pipe" })
       execFileSync("git", ["commit", "-m", "baseline"], { cwd: tmp.agentRoot, stdio: "pipe" })
       const result = await invoke("bundle_pull_rebase", { remote: "upstream" })
-      expect(result.ok).toBe(false)
+      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first' })
     })
   })
 })
@@ -598,6 +594,47 @@ describe("bundle sync tools against a real remote", () => {
     expect(fs.readFileSync(path.join(agent, "owner.md"), "utf-8")).toBe("from owner\n")
     expect(git(remote, ["--git-dir", remote, "show", "main:journal.md"])).toBe("from agent")
     expect(fs.existsSync(path.join(agent, "state", "pending-sync.json"))).toBe(false)
+  })
+
+  it("a successful sync leaves a repair_restore_incomplete record for a person to clear", async () => {
+    const record = { error: "restore incomplete", classification: "repair_restore_incomplete", repairRef: "refs/ouro/repair/x", failedAt: "2026-11-05T00:00:00.000Z" }
+    fs.mkdirSync(path.join(agent, "state"), { recursive: true })
+    fs.writeFileSync(path.join(agent, "state", "pending-sync.json"), JSON.stringify(record))
+    fs.writeFileSync(path.join(agent, "journal.md"), "x\n")
+
+    const result = await invoke("bundle_push")
+
+    expect(result).toEqual({ ok: true, remote: "origin", branch: "main", firstPush: false })
+    expect(JSON.parse(fs.readFileSync(path.join(agent, "state", "pending-sync.json"), "utf-8"))).toEqual(record)
+  })
+
+  it("keeps a first-push token when the sync is busy, and spends it once the sync runs", async () => {
+    const empty = path.join(root, "empty.git")
+    git(root, ["init", "-q", "--bare", "-b", "main", empty])
+    git(agent, ["remote", "set-url", "origin", empty])
+    const review = await invoke("bundle_first_push_review")
+    const token = String(review.confirmationToken)
+
+    const lock = tryAcquireSyncLockSync(agent)
+    if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] })
+    try {
+      const pending = invoke("bundle_push", { confirmation_token: token })
+      await vi.advanceTimersByTimeAsync(11_000)
+      expect(await pending).toMatchObject({ ok: false, busy: true, firstPush: true })
+    } finally {
+      vi.useRealTimers()
+      lock.release()
+    }
+
+    expect(await invoke("bundle_push", { confirmation_token: token })).toEqual({ ok: true, remote: "origin", branch: "main", firstPush: true })
+    expect(git(empty, ["--git-dir", empty, "rev-parse", "main"])).toBe(git(agent, ["rev-parse", "HEAD"]))
+
+    // Spent: the next first push (to another empty remote) needs a new token.
+    const another = path.join(root, "another.git")
+    git(root, ["init", "-q", "--bare", "-b", "main", another])
+    git(agent, ["remote", "set-url", "origin", another])
+    expect(await invoke("bundle_push", { confirmation_token: token })).toMatchObject({ ok: false, kind: "confirmation_required" })
   })
 
   it("falls back to origin when agent.json names an empty remote, and uses its branch", async () => {

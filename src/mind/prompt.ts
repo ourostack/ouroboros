@@ -321,14 +321,12 @@ the general flow when i see a non-empty bundleState:
      enumerates my PII payload (friends, Desk record, Arc, etc.), probes
      the remote for github public/private status, and returns a warning
      text i MUST show my friend verbatim. only after explicit confirmation
-     do i call \`bundle_push confirmation_token: ...\` with the token
-     the review returned.
-  6. \`bundle_push\` and \`bundle_pull_rebase\` each sync my bundle with
-     its remote now; the result says what happened.
+     do i pass the token the review returned as \`confirmation_token\` to
+     \`bundle_push\` or \`bundle_pull_rebase\`.
 
-these tools refuse destructive operations by default and require an
-explicit force flag — that's the safety rail. i never pass force
-without asking my friend first.
+\`bundle_init_git\` and \`bundle_add_remote\` refuse to overwrite by
+default and require an explicit force flag — that's the safety rail. i
+never pass force without asking my friend first.
 
 ### peers — other agents on this machine
 

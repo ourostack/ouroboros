@@ -272,6 +272,28 @@ describe("post-turn sync in the turn pipeline", () => {
     expect(pushSettled).toBe(false)
   })
 
+  it("a sync that throws (EACCES on the lock) is logged and never replaces the turn's result", async () => {
+    postTurnPushMock.mockImplementation(() => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }) })
+    const nerves = await import("../../nerves/runtime")
+    const emit = vi.spyOn(nerves, "emitNervesEvent")
+    const { handleInboundTurn, startPostTurnSync } = await import("../../senses/pipeline")
+    const input = makeInput({
+      runAgent: vi.fn(async (_messages: unknown, callbacks: ChannelCallbacks) => {
+        callbacks.onTextChunk("hi there")
+        return { usage: {} as UsageData, outcome: "settled" }
+      }) as never,
+    })
+
+    const result = await handleInboundTurn(input)
+    expect(result.turnOutcome).toBe("settled")
+    postTurnPushMock.mockImplementation(() => { throw "plain" })
+    expect(() => startPostTurnSync("/tmp/AgentBundles/testagent.ouro", { enabled: true, remote: "origin" })).not.toThrow()
+
+    const failed = emit.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.post_turn_sync_error")
+    expect(failed.map((event) => event.meta?.error)).toEqual(["EACCES: permission denied", "plain"])
+    emit.mockRestore()
+  })
+
   it("a rejected push is logged and never surfaces as an unhandled rejection", async () => {
     const { startPostTurnSync } = await import("../../senses/pipeline")
     const nerves = await import("../../nerves/runtime")

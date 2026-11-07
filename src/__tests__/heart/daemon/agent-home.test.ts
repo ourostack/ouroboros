@@ -10,6 +10,8 @@ import {
   moveAgentHomeHere,
   readUpstreamAgentHome,
 } from "../../../heart/daemon/agent-home"
+import { fetchRemote, pushHeadToBranch, syncPausedPath } from "../../../heart/sync"
+import { tryAcquireSyncLockSync } from "../../../heart/sync-lock"
 
 // These tests drive real git against a local bare remote; give them room.
 vi.setConfig({ testTimeout: 30_000 })
@@ -67,7 +69,7 @@ function gitFixture(tmp: string) {
       git(tmp, "init", "--bare", "-q", "-b", "main", remote)
       const seed = clone(path.join(tmp, "seed"))
       git(seed, "checkout", "-q", "-b", "main")
-      fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ ...config, sync: { enabled: true, remote: "origin" } }, null, 2)}\n`)
+      fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ sync: { enabled: true, remote: "origin" }, ...config }, null, 2)}\n`)
       fs.writeFileSync(path.join(seed, "notes.md"), "notes\n")
       git(seed, "add", ".")
       git(seed, "commit", "-q", "-m", "seed")
@@ -100,13 +102,13 @@ describe("moveAgentHomeHere", () => {
     moveAgentHomeHere({ agent: "slugger", machineId: HERE, machineName: "here-mac", bundlesRoot, now: NOW, ...overrides })
   const bundle = () => path.join(bundlesRoot, "slugger.ouro")
 
-  it("fails without changing anything when agent.json is unreadable", () => {
-    expect(move({ agent: "ghost" })).toEqual(expect.objectContaining({ ok: false, changed: false, message: expect.stringContaining("cannot read") }))
+  it("fails without changing anything when agent.json is unreadable", async () => {
+    expect(await move({ agent: "ghost" })).toEqual(expect.objectContaining({ ok: false, changed: false, message: expect.stringContaining("cannot read") }))
   })
 
-  it("records the home and the previous home locally when bundle sync is off", () => {
+  it("records the home and the previous home locally when bundle sync is off", async () => {
     writeBundle(bundlesRoot, "slugger", agentConfig({ home: { machineId: THERE, machineName: "there-mac" } }))
-    expect(move()).toEqual({
+    expect(await move()).toEqual({
       ok: true,
       changed: true,
       message: "slugger now lives on here-mac (here) (moved from there-mac (there)); bundle sync is off, so only this machine sees the change",
@@ -119,123 +121,195 @@ describe("moveAgentHomeHere", () => {
     })
   })
 
-  it("says so when sync is on but the bundle is not a git repo", () => {
+  it("says so when sync is on but the bundle is not a git repo", async () => {
     writeBundle(bundlesRoot, "slugger", agentConfig({ sync: { enabled: true } }))
-    expect(move().message).toBe("slugger now lives on here-mac (here); the bundle is not a git repo, so only this machine sees the change")
+    expect((await move()).message).toBe("slugger now lives on here-mac (here); the bundle is not a git repo, so only this machine sees the change")
   })
 
-  it("leaves an agent already homed here unchanged", () => {
+  it("leaves an agent already homed here unchanged", async () => {
     writeBundle(bundlesRoot, "slugger", agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
-    expect(move()).toEqual({ ok: true, changed: false, message: "slugger already lives on this machine (here-mac (here))" })
+    expect(await move()).toEqual({ ok: true, changed: false, message: "slugger already lives on this machine (here-mac (here))" })
     const root = fixture.seed(path.join(tmp, "git-bundle.ouro"), agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
-    expect(move({ bundlesRoot: tmp, agent: "git-bundle" })).toEqual({ ok: true, changed: false, message: "git-bundle already lives on this machine (here-mac (here))" })
+    expect(await move({ bundlesRoot: tmp, agent: "git-bundle" })).toEqual({ ok: true, changed: false, message: "git-bundle already lives on this machine (here-mac (here))" })
     expect(git(root, "rev-list", "--count", "HEAD")).toBe("1")
   })
 
-  it("commits only agent.json and publishes the move", () => {
+  it("commits only agent.json and publishes the move", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     fs.writeFileSync(path.join(root, "notes.md"), "local edit\n")
     fs.writeFileSync(path.join(root, "scratch.md"), "untracked\n")
 
-    expect(move()).toEqual({ ok: true, changed: true, message: "slugger now lives on here-mac (here)" })
+    expect(await move()).toEqual({ ok: true, changed: true, message: "slugger now lives on here-mac (here)" })
     expect(fixture.remoteHome()).toEqual({ machineId: HERE, machineName: "here-mac", since: "2026-10-10T12:00:00.000Z" })
     expect(git(root, "log", "-1", "--format=%s")).toBe("home: slugger moves to here-mac")
     expect(git(root, "status", "--porcelain")).toBe("M notes.md\n?? scratch.md")
   })
 
-  it("brings a bundle that is behind its remote up to date before moving", () => {
+  it("brings a bundle that is behind its remote up to date before moving", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const other = fixture.clone(path.join(tmp, "other"))
     fixture.commitFile(other, "diary.md", "from the other machine\n")
     git(other, "push", "-q")
 
-    expect(move().ok).toBe(true)
+    expect((await move()).ok).toBe(true)
     expect(fs.readFileSync(path.join(root, "diary.md"), "utf-8")).toBe("from the other machine\n")
     expect(fixture.remoteHome()).toEqual(expect.objectContaining({ machineId: HERE }))
   })
 
-  it("commits locally when the bundle has no remote", () => {
+  it("commits locally when the bundle has no remote", async () => {
     const root = writeBundle(bundlesRoot, "slugger", agentConfig({ sync: { enabled: true, remote: " " } }))
     git(root, "init", "-q")
     git(root, "config", "user.email", "test@ouro.bot")
     git(root, "config", "user.name", "test")
     git(root, "add", "agent.json")
     git(root, "commit", "-q", "-m", "seed")
-    expect(move().message).toBe("slugger now lives on here-mac (here); the bundle has no remote, so only this machine sees the change")
+    expect((await move()).message).toBe("slugger now lives on here-mac (here); the bundle has no remote, so only this machine sees the change")
     expect(git(root, "log", "-1", "--format=%s")).toBe("home: slugger moves to here-mac")
   })
 
-  it("refuses when agent.json has uncommitted changes", () => {
+  it("refuses when agent.json has uncommitted changes", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     fs.writeFileSync(path.join(root, "agent.json"), `${JSON.stringify(agentConfig({ sync: { enabled: true }, note: "local" }))}\n`)
-    const result = move()
+    const result = await move()
     expect(result.ok).toBe(false)
     expect(result.message).toContain("agent.json has uncommitted changes, so nothing changed")
     expect(fixture.remoteHome()).toBeUndefined()
   })
 
-  it("refuses to publish unpushed bundle commits as a side effect", () => {
+  it("refuses to publish unpushed bundle commits as a side effect", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     fixture.commitFile(root, "diary.md", "never pushed\n")
     const head = git(root, "rev-parse", "HEAD")
 
-    const result = move()
+    const result = await move()
     expect(result).toEqual({
       ok: false,
       changed: false,
-      message: `slugger's bundle has 1 unpushed commit, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (run \`git -C ${root} push\` to see why they did not publish)`,
+      message: `slugger's bundle has 1 unpushed commit, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (run \`ouro sync --agent slugger\` to see why they did not publish)`,
     })
     expect(git(root, "rev-parse", "HEAD")).toBe(head)
     expect(fixture.remoteHome()).toBeUndefined()
 
     fs.mkdirSync(path.join(root, "state"))
     fs.writeFileSync(path.join(root, "state", "pending-sync.json"), JSON.stringify({ error: " " }))
-    expect(move().message).toContain("to see why they did not publish")
+    expect((await move()).message).toContain("to see why they did not publish")
     fixture.commitFile(root, "diary2.md", "also never pushed\n")
     fs.writeFileSync(path.join(root, "state", "pending-sync.json"), JSON.stringify({ error: "File is 113 MB; exceeds GitHub's 100 MB limit" }))
-    expect(move().message).toContain("has 2 unpushed commits, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (the last bundle push failed with: File is 113 MB; exceeds GitHub's 100 MB limit)")
+    expect((await move()).message).toContain("has 2 unpushed commits, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (the last bundle push failed with: File is 113 MB; exceeds GitHub's 100 MB limit)")
   })
 
-  it("refuses a bundle whose history has diverged from its remote", () => {
+  it("reports busy and never pushes while another sync holds the bundle lock", async () => {
+    const root = fixture.seed(bundle(), agentConfig())
+    const lock = tryAcquireSyncLockSync(root)
+    if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    const before = git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")
+    try {
+      const result = await move({ lockWaitMs: 50 })
+      expect(result).toEqual({
+        ok: false,
+        changed: false,
+        message: `another bundle sync holds slugger's lock (pid ${process.pid}), so nothing changed; try again in a moment`,
+      })
+    } finally {
+      lock.release()
+    }
+    expect(git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")).toBe(before)
+    expect(fixture.remoteHome()).toBeUndefined()
+    expect(readJson(path.join(root, "agent.json")).home).toBeUndefined()
+  })
+
+  it("reports busy without a pid when the lock's holder cannot be read", async () => {
+    const root = fixture.seed(bundle(), agentConfig())
+    fs.writeFileSync(path.join(root, ".git", "ouro-sync.lock"), "")
+    expect((await move({ lockWaitMs: 0 })).message).toBe("another bundle sync holds slugger's lock, so nothing changed; try again in a moment")
+    expect(fixture.remoteHome()).toBeUndefined()
+  })
+
+  it("says what failed when git throws something that is not an Error", async () => {
+    fixture.seed(bundle(), agentConfig())
+    const result = await move({
+      execFileSync: (command, args, options) => {
+        if (args.includes("commit")) throw "commit hook said no"
+        return execFileSync(command, args, options)
+      },
+    })
+    expect(result.message).toBe("could not commit the move, so nothing changed: commit hook said no")
+  })
+
+  it("waits for the lock, then moves", async () => {
+    const root = fixture.seed(bundle(), agentConfig())
+    const lock = tryAcquireSyncLockSync(root)
+    if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    setTimeout(() => lock.release(), 100)
+    expect(await move({ lockWaitMs: 5_000 })).toEqual({ ok: true, changed: true, message: "slugger now lives on here-mac (here)" })
+    expect(fixture.remoteHome()).toEqual(expect.objectContaining({ machineId: HERE }))
+    expect(fs.existsSync(path.join(root, ".git", "ouro-sync.lock"))).toBe(false)
+  })
+
+  it("honours a sync pause and touches nothing", async () => {
+    const root = fixture.seed(bundle(), agentConfig())
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    fs.mkdirSync(path.dirname(syncPausedPath(root)), { recursive: true })
+    fs.writeFileSync(syncPausedPath(root), JSON.stringify({ expiresAt }))
+    expect(await move()).toEqual({
+      ok: false,
+      changed: false,
+      message: `slugger's bundle sync is paused until ${expiresAt}, so nothing changed; run \`ouro move slugger here\` again after that`,
+    })
+    expect(fixture.remoteHome()).toBeUndefined()
+  })
+
+  it("syncs to the configured sync.branch, never the checked-out branch's upstream", async () => {
+    const root = fixture.seed(bundle(), agentConfig({ sync: { enabled: true, remote: "origin", branch: "develop" } }))
+    git(root, "push", "-q", "origin", "HEAD:refs/heads/develop")
+    const mainBefore = git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")
+    expect((await move()).ok).toBe(true)
+    expect(git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")).toBe(mainBefore)
+    expect(JSON.parse(git(fixture.remote, "--git-dir", fixture.remote, "show", "develop:agent.json")).home).toEqual(expect.objectContaining({ machineId: HERE }))
+  })
+
+  it("refuses a bundle whose history has diverged from its remote", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const other = fixture.clone(path.join(tmp, "other"))
     fixture.commitFile(other, "diary.md", "remote side\n")
     git(other, "push", "-q")
     fixture.commitFile(root, "local.md", "local side\n")
 
-    const result = move()
+    const result = await move()
     expect(result.ok).toBe(false)
     expect(result.message).toContain("slugger's bundle has 1 unpushed commit, so nothing changed")
     expect(fixture.remoteHome()).toBeUndefined()
   })
 
-  it("refuses when the remote cannot be reached", () => {
+  it("refuses when the remote cannot be reached", async () => {
     fixture.seed(bundle(), agentConfig())
     fs.renameSync(fixture.remote, `${fixture.remote}.gone`)
-    expect(move().message).toContain("could not reach slugger's bundle remote, so nothing changed")
+    expect((await move()).message).toContain("could not reach slugger's bundle remote, so nothing changed")
   })
 
-  it("refuses when the bundle branch has no upstream", () => {
+  it("refuses when the remote has no sync branch to publish to, whatever the local upstream", async () => {
     const root = fixture.seed(bundle(), agentConfig())
-    git(root, "checkout", "-q", "-b", "detached-work")
-    expect(move().message).toContain("slugger's bundle branch has no upstream to publish the move to, so nothing changed")
+    git(fixture.remote, "--git-dir", fixture.remote, "branch", "-m", "main", "elsewhere")
+    git(root, "update-ref", "-d", "refs/remotes/origin/main")
+    expect((await move()).message).toBe("slugger's bundle remote has no main branch to publish the move to, so nothing changed")
+    expect(git(fixture.remote, "--git-dir", fixture.remote, "branch", "--list", "main")).toBe("")
   })
 
-  it("refuses when local edits block catching up with the remote", () => {
+  it("refuses when local edits block catching up with the remote", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const other = fixture.clone(path.join(tmp, "other"))
     fixture.commitFile(other, "notes.md", "remote edit\n")
     git(other, "push", "-q")
     fs.writeFileSync(path.join(root, "notes.md"), "local edit\n")
-    expect(move().message).toContain("could not bring slugger's bundle up to date with its remote, so nothing changed")
+    expect((await move()).message).toContain("could not bring slugger's bundle up to date with its remote, so nothing changed")
   })
 
-  it("restores agent.json when the commit fails", () => {
+  it("restores agent.json when the commit fails", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const before = fs.readFileSync(path.join(root, "agent.json"), "utf-8")
-    const result = move({
+    const result = await move({
       execFileSync: (command, args, options) => {
-        if (args[0] === "commit") throw new Error("commit refused")
+        if (args.includes("commit")) throw new Error("commit refused")
         return execFileSync(command, args, options)
       },
     })
@@ -243,21 +317,24 @@ describe("moveAgentHomeHere", () => {
     expect(fs.readFileSync(path.join(root, "agent.json"), "utf-8")).toBe(before)
   })
 
-  it("loses cleanly to another machine that claims the agent at the same time", () => {
+  it("loses cleanly to another machine that claims the agent at the same time", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const rival = fixture.clone(path.join(tmp, "rival"))
     let raced = false
-    const result = move({
-      execFileSync: (command, args, options) => {
-        if (args[0] === "commit" && !raced) {
-          raced = true
-          // The other machine publishes its own move between our read and our push.
-          const rivalRoot = path.join(tmp, "rival-bundles")
-          fs.mkdirSync(rivalRoot)
-          fs.renameSync(rival, path.join(rivalRoot, "slugger.ouro"))
-          expect(moveAgentHomeHere({ agent: "slugger", machineId: THERE, machineName: "there-mac", bundlesRoot: rivalRoot }).ok).toBe(true)
-        }
-        return execFileSync(command, args, options)
+    const result = await move({
+      network: {
+        fetch: (agentRoot, config) => fetchRemote(agentRoot, config),
+        push: async (agentRoot, config) => {
+          if (!raced) {
+            raced = true
+            // The other machine publishes its own move between our read and our push.
+            const rivalRoot = path.join(tmp, "rival-bundles")
+            fs.mkdirSync(rivalRoot)
+            fs.renameSync(rival, path.join(rivalRoot, "slugger.ouro"))
+            expect((await moveAgentHomeHere({ agent: "slugger", machineId: THERE, machineName: "there-mac", bundlesRoot: rivalRoot })).ok).toBe(true)
+          }
+          return pushHeadToBranch(agentRoot, config)
+        },
       },
     })
     expect(result).toEqual({
@@ -270,37 +347,43 @@ describe("moveAgentHomeHere", () => {
     expect(git(root, "status", "--porcelain")).toBe("")
   })
 
-  it("names no machine when the home was cleared meanwhile", () => {
+  it("names no machine when the home was cleared meanwhile", async () => {
     fixture.seed(bundle(), agentConfig({ home: { machineId: THERE, machineName: "there-mac" } }))
     const rival = fixture.clone(path.join(tmp, "rival"))
     let raced = false
-    const result = move({
-      execFileSync: (command, args, options) => {
-        if (args[0] === "commit" && !raced) {
-          raced = true
-          const config = readJson(path.join(rival, "agent.json"))
-          delete config.home
-          fs.writeFileSync(path.join(rival, "agent.json"), `${JSON.stringify(config, null, 2)}\n`)
-          git(rival, "commit", "-qam", "clear home")
-          git(rival, "push", "-q")
-        }
-        return execFileSync(command, args, options)
+    const result = await move({
+      network: {
+        fetch: (agentRoot, config) => fetchRemote(agentRoot, config),
+        push: async (agentRoot, config) => {
+          if (!raced) {
+            raced = true
+            const rivalConfig = readJson(path.join(rival, "agent.json"))
+            delete rivalConfig.home
+            fs.writeFileSync(path.join(rival, "agent.json"), `${JSON.stringify(rivalConfig, null, 2)}\n`)
+            git(rival, "commit", "-qam", "clear home")
+            git(rival, "push", "-q")
+          }
+          return pushHeadToBranch(agentRoot, config)
+        },
       },
     })
     expect(result.message).toContain("(it now names no machine)")
   })
 
-  it("retries once when the remote moved on for an unrelated reason", () => {
+  it("retries once when the remote moved on for an unrelated reason", async () => {
     fixture.seed(bundle(), agentConfig())
     const other = fixture.clone(path.join(tmp, "other"))
     let pushes = 0
-    const result = move({
-      execFileSync: (command, args, options) => {
-        if (args[0] === "push" && ++pushes === 1) {
-          fixture.commitFile(other, "diary.md", "unrelated\n")
-          git(other, "push", "-q")
-        }
-        return execFileSync(command, args, options)
+    const result = await move({
+      network: {
+        fetch: (root, config) => fetchRemote(root, config),
+        push: (root, config) => {
+          if (++pushes === 1) {
+            fixture.commitFile(other, "diary.md", "unrelated\n")
+            git(other, "push", "-q")
+          }
+          return pushHeadToBranch(root, config)
+        },
       },
     })
     expect(result.ok).toBe(true)
@@ -308,14 +391,14 @@ describe("moveAgentHomeHere", () => {
     expect(fixture.remoteHome()).toEqual(expect.objectContaining({ machineId: HERE }))
   })
 
-  it("undoes the move when it cannot be pushed", () => {
+  it("undoes the move when it cannot be pushed", async () => {
     const root = fixture.seed(bundle(), agentConfig())
     const before = fs.readFileSync(path.join(root, "agent.json"), "utf-8")
     const head = git(root, "rev-parse", "HEAD")
-    const result = move({
-      execFileSync: (command, args, options) => {
-        if (args[0] === "push") throw "pre-receive hook declined"
-        return execFileSync(command, args, options)
+    const result = await move({
+      network: {
+        fetch: (root, config) => fetchRemote(root, config),
+        push: async () => ({ ok: false, error: "pre-receive hook declined" }),
       },
     })
     expect(result).toEqual({ ok: false, changed: false, message: "could not push the move, so nothing changed: pre-receive hook declined" })
@@ -324,21 +407,24 @@ describe("moveAgentHomeHere", () => {
     expect(git(root, "status", "--porcelain")).toBe("")
   })
 
-  it("says what to run when the failed move cannot be undone", () => {
+  it("says what to run when the failed move cannot be undone", async () => {
     const root = fixture.seed(bundle(), agentConfig())
-    const result = move({
+    const result = await move({
+      network: {
+        fetch: (root, config) => fetchRemote(root, config),
+        push: async () => ({ ok: false }),
+      },
       execFileSync: (command, args, options) => {
-        if (args[0] === "push") throw new Error("rejected")
         if (args[0] === "reset") throw new Error("index locked")
         return execFileSync(command, args, options)
       },
     })
-    expect(result.message).toBe(`the move could not be pushed (rejected) and its local commit could not be undone (index locked); run \`git -C ${root} reset --soft HEAD~1\` and restore agent.json`)
+    expect(result.message).toBe(`the move could not be pushed (push failed) and its local commit could not be undone (index locked); run \`git -C ${root} reset --soft HEAD~1\` and restore agent.json`)
   })
 
-  it("reports an unexpected git failure without changing anything", () => {
+  it("reports an unexpected git failure without changing anything", async () => {
     fixture.seed(bundle(), agentConfig())
-    const result = move({
+    const result = await move({
       execFileSync: (command, args, options) => {
         if (args[0] === "status") throw new Error("git exploded")
         return execFileSync(command, args, options)
@@ -365,13 +451,74 @@ describe("readUpstreamAgentHome", () => {
     const rivalRoot = path.join(tmp, "rival")
     fs.mkdirSync(rivalRoot)
     fixture.clone(path.join(rivalRoot, "slugger.ouro"))
-    expect(moveAgentHomeHere({ agent: "slugger", machineId: THERE, machineName: "there-mac", bundlesRoot: rivalRoot }).ok).toBe(true)
+    expect((await moveAgentHomeHere({ agent: "slugger", machineId: THERE, machineName: "there-mac", bundlesRoot: rivalRoot })).ok).toBe(true)
 
     await expect(readUpstreamAgentHome(root)).resolves.toEqual(expect.objectContaining({
       machineId: THERE,
       previous: { machineId: HERE, machineName: "here-mac" },
     }))
     expect((readJson(path.join(root, "agent.json")).home as { machineId: string }).machineId).toBe(HERE)
+  })
+
+  it("is fetch-only under the sync lock: busy or paused is unknown, and it never commits or pushes", async () => {
+    const fixture = gitFixture(tmp)
+    const root = fixture.seed(path.join(tmp, "slugger.ouro"), agentConfig({ home: { machineId: HERE, machineName: "here-mac" } }))
+    const rivalRoot = path.join(tmp, "rival")
+    fs.mkdirSync(rivalRoot)
+    fixture.clone(path.join(rivalRoot, "slugger.ouro"))
+    expect((await moveAgentHomeHere({ agent: "slugger", machineId: THERE, machineName: "there-mac", bundlesRoot: rivalRoot })).ok).toBe(true)
+    const tracking = () => git(root, "rev-parse", "refs/remotes/origin/main")
+    const fetchedBefore = tracking()
+    const headBefore = git(root, "rev-parse", "HEAD")
+    const remoteBefore = git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")
+
+    const lock = tryAcquireSyncLockSync(root)
+    if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    try {
+      await expect(readUpstreamAgentHome(root)).resolves.toBeUndefined()
+    } finally {
+      lock.release()
+    }
+    expect(tracking()).toBe(fetchedBefore)
+
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    fs.mkdirSync(path.dirname(syncPausedPath(root)), { recursive: true })
+    fs.writeFileSync(syncPausedPath(root), JSON.stringify({ expiresAt }))
+    await expect(readUpstreamAgentHome(root)).resolves.toBeUndefined()
+    expect(tracking()).toBe(fetchedBefore)
+    fs.rmSync(syncPausedPath(root))
+
+    await expect(readUpstreamAgentHome(root, async () => { throw new Error("show failed") })).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(root, ".git", "ouro-sync.lock"))).toBe(false)
+    await expect(readUpstreamAgentHome(root)).resolves.toEqual(expect.objectContaining({ machineId: THERE }))
+    expect(fs.existsSync(path.join(root, ".git", "ouro-sync.lock"))).toBe(false)
+    expect(git(root, "rev-parse", "HEAD")).toBe(headBefore)
+    expect(git(fixture.remote, "--git-dir", fixture.remote, "rev-parse", "main")).toBe(remoteBefore)
+  })
+
+  it("is unknown when the remote's agent.json cannot be read", async () => {
+    const fixture = gitFixture(tmp)
+    const root = fixture.seed(path.join(tmp, "slugger.ouro"), agentConfig())
+    const other = fixture.clone(path.join(tmp, "other"))
+    git(other, "rm", "-q", "agent.json")
+    git(other, "commit", "-qm", "drop agent.json")
+    git(other, "push", "-q")
+    await expect(readUpstreamAgentHome(root)).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(root, ".git", "ouro-sync.lock"))).toBe(false)
+  })
+
+  it("reads <remote>/<sync.branch>, not the checked-out branch's upstream", async () => {
+    const fixture = gitFixture(tmp)
+    const root = fixture.seed(path.join(tmp, "slugger.ouro"), agentConfig({ sync: { enabled: true, remote: "origin", branch: "develop" } }))
+    const other = fixture.clone(path.join(tmp, "other"))
+    git(other, "checkout", "-q", "-b", "develop")
+    const config = readJson(path.join(other, "agent.json"))
+    config.home = { machineId: THERE, machineName: "there-mac", since: "2026-11-06T00:00:00.000Z" }
+    fs.writeFileSync(path.join(other, "agent.json"), `${JSON.stringify(config, null, 2)}\n`)
+    git(other, "commit", "-qam", "home on develop")
+    git(other, "push", "-q", "origin", "develop")
+
+    await expect(readUpstreamAgentHome(root)).resolves.toEqual(expect.objectContaining({ machineId: THERE }))
   })
 
   it("is unknown when sync is off, the bundle is not a git repo, or git fails", async () => {

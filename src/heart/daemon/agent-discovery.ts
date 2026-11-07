@@ -343,6 +343,8 @@ export interface BundleSyncRow {
   agent: string
   enabled: boolean
   remote: string
+  /** The remote branch sync names explicitly; `sync.branch`, default "main" (as `SyncConfig`). */
+  branch: string
   /** Resolved URL of the configured remote, when one exists. Undefined when sync is
    * disabled, the bundle isn't a git repo, or the bundle has no git remote
    * configured (local-only mode). */
@@ -383,20 +385,24 @@ export function listBundleSyncRows(options: AgentDiscoveryOptions = {}): BundleS
     const configPath = path.join(bundleRoot, "agent.json")
     let enabled = false
     let remote = "origin"
+    let branch = "main"
     try {
       const raw = readFileSync(configPath, "utf-8")
-      const parsed = JSON.parse(raw) as { sync?: { enabled?: unknown; remote?: unknown } }
+      const parsed = JSON.parse(raw) as { sync?: { enabled?: unknown; remote?: unknown; branch?: unknown } }
       if (parsed.sync && typeof parsed.sync === "object") {
         if (typeof parsed.sync.enabled === "boolean") enabled = parsed.sync.enabled
         if (typeof parsed.sync.remote === "string" && parsed.sync.remote.length > 0) {
           remote = parsed.sync.remote
+        }
+        if (typeof parsed.sync.branch === "string" && parsed.sync.branch.length > 0) {
+          branch = parsed.sync.branch
         }
       }
     } catch {
       // Best-effort: bundle without readable config still gets a row with defaults
     }
 
-    const row: BundleSyncRow = { agent, enabled, remote }
+    const row: BundleSyncRow = { agent, enabled, remote, branch }
 
     if (enabled) {
       // Only meaningful when sync is enabled — we don't care about disabled bundles'

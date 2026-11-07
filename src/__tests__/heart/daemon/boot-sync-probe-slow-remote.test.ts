@@ -30,6 +30,7 @@ function makeRow(agent: string): BundleSyncRow {
     agent,
     enabled: true,
     remote: "origin",
+    branch: "main",
     gitInitialized: true,
     remoteUrl: `https://example.com/${agent}.git`,
   }

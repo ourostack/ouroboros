@@ -6,7 +6,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { SyncConfig } from "./config"
 import type { SyncClassification } from "./sync-classification"
 import { parseBundleSyncFailure, type BundleSyncFailure } from "./sync-health"
-import { acquireSyncLock, tryAcquireSyncLockSync, type SyncLockHandle } from "./sync-lock"
+import { acquireSyncLock, tryAcquireSyncLockSync, type SyncLockBusy, type SyncLockHandle } from "./sync-lock"
 
 export interface SyncResult {
   ok: boolean
@@ -340,19 +340,25 @@ export function abortInFlightSync(): void {
   })
 }
 
+/**
+ * The guard is prepended, so it runs before every other listener for the
+ * signal, `once` wrappers included, and sees them all still registered. It
+ * kills sync's git children and releases the locks synchronously, then steps
+ * aside: another component's own shutdown runs to completion. Only when no
+ * other listener exists does it re-raise, restoring the default exit.
+ */
 function onTerminationSignal(signal: TerminationSignal): void {
-  // Alone, this listener replaced the signal's default action, which is to exit.
-  const alone = process.listenerCount(signal) === 1
+  const others = process.rawListeners(signal).filter((listener) => listener !== terminationListeners[signal])
   abortInFlightSync()
   removeTerminationGuard()
   /* v8 ignore next -- re-raising ends the process; the SIGTERM child-process test covers it @preserve */
-  if (alone) process.kill(process.pid, signal)
+  if (others.length === 0) process.kill(process.pid, signal)
 }
 
 function installTerminationGuard(): void {
   if (guardInstalled) return
   guardInstalled = true
-  for (const signal of TERMINATION_SIGNALS) process.on(signal, terminationListeners[signal])
+  for (const signal of TERMINATION_SIGNALS) process.prependListener(signal, terminationListeners[signal])
   process.on("exit", abortInFlightSync)
 }
 
@@ -559,37 +565,38 @@ function clearConflictState(agentRoot: string): void {
 let ownerNotifier: SyncOwnerNotifier | null = null
 
 /**
- * Replace how sync tells the owner. Null restores the default: the notice goes
- * to the agent's private-runtime pending queue, which reaches the owner through
- * whatever sense the agent has, and also to Telegram when the agent has it.
+ * Replace how sync tells the owner. Null restores the default: Telegram when
+ * the agent has it; otherwise the notice goes to the agent's private-runtime
+ * pending queue, and the agent tells the owner through whatever sense it has.
  */
 export function setSyncOwnerNotifier(notifier: SyncOwnerNotifier | null): void {
   ownerNotifier = notifier
 }
 
 async function defaultOwnerNotifier(agentRoot: string, agentName: string, notice: SyncOwnerNotice): Promise<void> {
+  try {
+    const { sendTelegramOwnerNotice } = await import("../senses/telegram")
+    await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+    return
+  } catch (err) {
+    // Not every agent has Telegram: queue it once, for the agent to relay.
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.sync_owner_notice_telegram_skipped",
+      message: "sync: Telegram did not send the owner notice; queued it instead",
+      meta: { agentRoot, noticeId: notice.noticeId, error: errorText(err) },
+    })
+  }
   const { getPrivateRuntimePendingDir, queuePendingMessageOnce } = await import("../mind/pending")
   queuePendingMessageOnce(getPrivateRuntimePendingDir(agentName, agentRoot), {
     from: agentName,
     friendId: "self",
     channel: "inner",
     key: "dialog",
-    content: `a notice for my owner: ${notice.text}`,
+    content: `${notice.text}\n\ni should tell my owner.`,
     timestamp: Date.now(),
     packetId: notice.noticeId,
   })
-  try {
-    const { sendTelegramOwnerNotice } = await import("../senses/telegram")
-    await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
-  } catch (err) {
-    // Not every agent has Telegram; the pending queue already holds the notice.
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.sync_owner_notice_telegram_skipped",
-      message: "sync: owner notice queued; Telegram did not send it",
-      meta: { agentRoot, noticeId: notice.noticeId, error: errorText(err) },
-    })
-  }
 }
 
 /** Fire and forget: a turn never waits on a notice. */
@@ -1251,6 +1258,48 @@ export async function pushAsync(agentRoot: string, config: SyncConfig, handle: S
   } finally {
     handle.release()
   }
+}
+
+// ---------- building blocks for other bundle writers (ouro move, the home check) ----------
+
+/** The active pause's `expiresAt`, or null. Reads the marker and changes nothing. */
+export function syncPausedUntil(agentRoot: string): string | null {
+  const state = readPauseMarker(agentRoot)
+  return state.kind === "active" ? state.expiresAt : null
+}
+
+/** `refs/remotes/<remote>/<branch>`, the ref `fetchRemote` updates. */
+export function syncTrackingRef(config: SyncConfig): string {
+  return remoteTrackingRef(config)
+}
+
+/**
+ * Take the bundle sync lock, waiting up to `waitMs`. While it is held, a
+ * SIGTERM or SIGINT kills sync's git children and releases it, as for sync itself.
+ */
+export async function holdSyncLock(agentRoot: string, waitMs: number): Promise<SyncLockHandle | SyncLockBusy> {
+  const acquired = waitMs > 0 ? await acquireSyncLock(agentRoot, waitMs) : tryAcquireSyncLockSync(agentRoot)
+  return "busy" in acquired ? acquired : trackLock(acquired)
+}
+
+export interface BranchPushResult {
+  ok: boolean
+  /** The remote moved on: a fast-forward push was refused. */
+  rejected?: boolean
+  error?: string
+}
+
+/**
+ * `git push <remote> HEAD:refs/heads/<branch>` as a detached child, killed by
+ * process group at 60 s. It records nothing in `state/pending-sync.json`: the
+ * caller, which holds the lock, decides what a refusal means.
+ */
+export async function pushHeadToBranch(agentRoot: string, config: SyncConfig, signal?: AbortSignal): Promise<BranchPushResult> {
+  const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
+  const run = await runGitAsync(agentRoot, agentNameFromRoot(agentRoot), ["push", config.remote, `HEAD:refs/heads/${branchOf(config)}`], timeoutMs, signal)
+  if (run.status === 0) return { ok: true }
+  const rejected = !run.timedOut && !run.aborted && /\[rejected\]|non-fast-forward|fetch first/.test(run.stderr)
+  return { ok: false, rejected, error: describeAsyncFailure("push", run, timeoutMs) }
 }
 
 /** The same conflict recurred: put the agent's side where the owner can merge it from the Mac. */

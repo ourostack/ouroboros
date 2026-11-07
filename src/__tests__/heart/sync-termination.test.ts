@@ -3,7 +3,7 @@
  * lock is released. One test runs a real child process that has no SIGTERM
  * handler of its own (like the agent worker); the rest run in-process.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { execFileSync, spawn } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
@@ -85,6 +85,10 @@ beforeAll(async () => {
   await build({ input: SYNC_SOURCE, platform: "node", external: [/^node:/], output: { file: syncBundle, format: "cjs", codeSplitting: false }, logLevel: "silent" })
 }, 60_000)
 
+afterAll(() => {
+  fs.rmSync(bundleDir, { recursive: true, force: true })
+})
+
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sync-termination-")))
   savedHome = process.env.HOME
@@ -112,9 +116,7 @@ describe("signals during a sync", () => {
       `if (!result.ok || !result.push) { console.error(JSON.stringify(result)); process.exit(3) }`,
       `setInterval(() => {}, 1000)`,
     ].join("\n")
-    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, OURO_NERVES_SILENT: "1" } })
-    let stderr = ""
-    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
+    const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, OURO_NERVES_SILENT: "1" } })
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       child.on("exit", (code, signal) => resolve({ code, signal }))
     })
@@ -128,10 +130,50 @@ describe("signals during a sync", () => {
       child.kill("SIGTERM")
       const exit = await exited
 
-      expect({ ...exit, stderr }).toEqual({ code: null, signal: "SIGTERM", stderr: "" })
+      expect(exit).toEqual({ code: null, signal: "SIGTERM" })
       expect(fs.existsSync(path.join(agent, ".git", "ouro-sync.lock"))).toBe(false)
       await waitFor(() => !alive(group!.pid), 5_000)
       expect(alive(group.pid)).toBe(false)
+      expect(alive(-group.pgid)).toBe(false)
+      expect(git(remote, ["--git-dir", remote, "rev-parse", "main"])).toBe(before)
+    } finally {
+      fs.writeFileSync(gate, "")
+      if (group) killGroup(group.pgid)
+      child.kill("SIGKILL")
+    }
+  }, 30_000)
+
+  it("a process.once stop handler still finishes its graceful shutdown, and the sync children are dead", async () => {
+    // Like telegram-entry.ts: process.once("SIGTERM", stop), where stop is async.
+    const { agent, remote, started, gate } = setup()
+    const before = git(remote, ["--git-dir", remote, "rev-parse", "main"])
+    const done = path.join(root, "graceful-done")
+    const script = [
+      `const fs = require("fs")`,
+      `const sync = require(${JSON.stringify(syncBundle)})`,
+      `process.once("SIGTERM", () => { setTimeout(() => { fs.writeFileSync(${JSON.stringify(done)}, "ok"); process.exit(0) }, 300) })`,
+      `const result = sync.postTurnPush(${JSON.stringify(agent)}, { enabled: true, remote: "origin" }, "butler")`,
+      `if (!result.ok || !result.push) process.exit(3)`,
+      `setInterval(() => {}, 1000)`,
+    ].join("\n")
+    const child = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, OURO_NERVES_SILENT: "1" } })
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.on("exit", (code, signal) => resolve({ code, signal }))
+    })
+    let group: { pid: number; pgid: number } | undefined
+    try {
+      await waitFor(() => fs.existsSync(started) && fs.readFileSync(started, "utf-8").includes(" "))
+      group = hanging(started)
+
+      child.kill("SIGTERM")
+      // Synchronously at the signal: the git group is killed and the lock released,
+      // before the graceful handler's 300 ms are up.
+      await waitFor(() => !alive(group!.pid), 250)
+      const exit = await exited
+
+      expect(exit).toEqual({ code: 0, signal: null })
+      expect(fs.readFileSync(done, "utf-8")).toBe("ok")
+      expect(fs.existsSync(path.join(agent, ".git", "ouro-sync.lock"))).toBe(false)
       expect(alive(-group.pgid)).toBe(false)
       expect(git(remote, ["--git-dir", remote, "rev-parse", "main"])).toBe(before)
     } finally {

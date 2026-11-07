@@ -713,7 +713,20 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
  * the next turn commits it whole.
  */
 export function startPostTurnSync(agentRoot: string, config: SyncConfig): void {
-  const result = postTurnPush(agentRoot, config)
+  let result: ReturnType<typeof postTurnPush>
+  try {
+    result = postTurnPush(agentRoot, config)
+  } catch (err) {
+    // In the turn's `finally`: a throw here would replace the turn's result.
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.post_turn_sync_error",
+      message: "post-turn sync threw",
+      meta: { agentRoot, error: err instanceof Error ? err.message : String(err) },
+    })
+    return
+  }
   result.push?.catch((err: unknown) => {
     emitNervesEvent({
       level: "warn",

@@ -42,7 +42,7 @@ import type { ToolDefinition, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
-import { clearPendingSync, syncNow } from "../heart/sync"
+import { syncNow } from "../heart/sync"
 import type { SyncConfig } from "../heart/config"
 import { BUNDLE_GITIGNORE_TEMPLATE, PII_BUNDLE_DIRECTORIES } from "./bundle-templates"
 
@@ -150,7 +150,7 @@ const checkSyncStatusHandler: ToolHandler = () => {
     }
     if (hasRemote && firstCommitExists) {
       // Against the last fetched sync branch, named explicitly; no upstream config is assumed.
-      const config = bundleSyncConfig(bundleRoot, undefined)
+      const config = bundleSyncConfig(bundleRoot)
       const counts = gitExec(bundleRoot, ["rev-list", "--left-right", "--count", `HEAD...refs/remotes/${config.remote}/${config.branch}`])
       if (counts.code === 0) {
         const [a, b] = counts.stdout.trim().split("\t").map((n) => parseInt(n, 10))
@@ -737,8 +737,8 @@ export function isFirstPushToRemote(bundleRoot: string, remote: string, branch?:
 /** How long a bundle tool waits for the bundle sync lock before reporting busy. */
 const BUNDLE_TOOL_SYNC_WAIT_MS = 10_000
 
-/** The bundle's sync remote and branch from agent.json, with an explicit remote argument winning. */
-function bundleSyncConfig(bundleRoot: string, remoteArg: string | undefined): SyncConfig {
+/** The bundle's sync remote and branch from agent.json: the agent cannot name another remote. */
+function bundleSyncConfig(bundleRoot: string): SyncConfig {
   let remote = "origin"
   let branch = "main"
   try {
@@ -748,7 +748,7 @@ function bundleSyncConfig(bundleRoot: string, remoteArg: string | undefined): Sy
   } catch {
     // No readable agent.json: the defaults.
   }
-  return { enabled: true, remote: remoteArg ?? remote, branch }
+  return { enabled: true, remote, branch }
 }
 
 /**
@@ -759,12 +759,11 @@ function bundleSyncConfig(bundleRoot: string, remoteArg: string | undefined): Sy
 function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: { now?: () => number } = {}): ToolHandler {
   return async (args) => {
     const bundleRoot = getAgentRoot()
-    const remoteArg = typeof args.remote === "string" && args.remote.length > 0 ? args.remote : undefined
     const confirmationToken = typeof (args as { confirmation_token?: unknown }).confirmation_token === "string"
       ? (args as { confirmation_token: string }).confirmation_token
       : undefined
     const now = deps.now ?? Date.now
-    const config = bundleSyncConfig(bundleRoot, remoteArg)
+    const config = bundleSyncConfig(bundleRoot)
     const remote = config.remote
 
     emitNervesEvent({
@@ -831,8 +830,6 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
         message: "first push confirmed by valid token",
         meta: { bundleRoot },
       })
-      // One-shot: consume the token on successful validation.
-      _confirmationTokens.delete(confirmationToken)
     }
 
     const agentName = path.basename(bundleRoot).replace(/\.ouro$/, "")
@@ -840,6 +837,8 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
     const where = { remote, branch: config.branch, firstPush: isFirstPush }
     if (result.paused) return finish(false, { ...where, paused: true, pausedUntil: result.pausedUntil, error: `sync paused until ${result.pausedUntil}` })
     if (result.busy) return finish(false, { ...where, busy: true, holderPid: result.holderPid, error: result.error })
+    // One-shot: the token is spent once sync actually ran, not on a busy or paused refusal.
+    if (confirmationToken !== undefined && isFirstPush) _confirmationTokens.delete(confirmationToken)
     if (!result.ok) {
       const failure = readPendingFailure(bundleRoot)
       return finish(false, {
@@ -849,7 +848,6 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
         ...(failure?.conflictFiles && failure.conflictFiles.length > 0 ? { conflictFiles: failure.conflictFiles } : {}),
       })
     }
-    clearPendingSync(bundleRoot)
     return finish(true, where)
   }
 }
@@ -951,7 +949,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "bundle_first_push_review",
-        description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, Desk record, Arc, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push on first push. Required before the first push to any new remote.",
+        description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, Desk record, Arc, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push or bundle_pull_rebase on first push. Required before the first push to any new remote.",
         parameters: { type: "object", properties: {} },
       },
     },
@@ -966,7 +964,6 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         parameters: {
           type: "object",
           properties: {
-            remote: { type: "string", description: "Remote name. Defaults to agent.json's sync.remote, else 'origin'." },
             confirmation_token: { type: "string", description: "Opaque token from bundle_first_push_review. Required on the first push to a new remote; ignored on subsequent pushes." },
           },
         },
@@ -984,7 +981,6 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         parameters: {
           type: "object",
           properties: {
-            remote: { type: "string", description: "Remote name. Defaults to agent.json's sync.remote, else 'origin'." },
             confirmation_token: { type: "string", description: "Opaque token from bundle_first_push_review. Required on the first push to a new remote; ignored on subsequent pushes." },
           },
         },

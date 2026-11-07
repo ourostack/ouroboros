@@ -149,7 +149,7 @@ export async function runBootSyncProbe(
       continue
     }
 
-    const syncConfig: SyncConfig = { enabled: bundle.enabled, remote: bundle.remote }
+    const syncConfig: SyncConfig = { enabled: bundle.enabled, remote: bundle.remote, branch: bundle.branch }
 
     // A lock this pid left in an earlier life (PID 1 in the container) would read as busy forever.
     try {
@@ -249,5 +249,5 @@ function describeProbeResult(result: SyncProbeResult, config: SyncConfig): strin
   if (result.paused) return `sync paused until ${result.pausedUntil}`
   if (result.busy) return `sync busy: another sync holds the lock${result.holderPid == null ? "" : ` (pid ${result.holderPid})`}`
   if (result.ahead === undefined || result.behind === undefined) return null
-  return `${result.ahead} ahead, ${result.behind} behind ${config.remote}/${config.branch ?? "main"}`
+  return `${result.ahead} ahead, ${result.behind} behind ${config.remote}/${config.branch}`
 }
