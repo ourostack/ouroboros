@@ -41,6 +41,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "evolution_status",
   "evolution_verify",
   "external_event_disposition",
+  "fetch_url",
   "flight_book",
   "flight_cancel",
   "flight_hold",

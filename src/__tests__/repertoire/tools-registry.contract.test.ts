@@ -99,7 +99,8 @@ describe("tool registry contract", () => {
     // Added in H2: edit_file
     expect(names).toContain("edit_file");
 
-    // Added with home tools: ls
+    // Added with home tools: fetch_url, ls
+    expect(names).toContain("fetch_url");
     expect(names).toContain("ls");
 
     // Added in H3: glob
@@ -264,7 +265,7 @@ describe("tool registry contract", () => {
     // Added in identity link codes: 1 family-only tool that issues a one-time link code
     expect(names).toContain("friend_link_code");
 
-    // Exact count: 121 tools
-    expect(names).toHaveLength(121);
+    // Exact count: 122 tools
+    expect(names).toHaveLength(122);
   });
 });

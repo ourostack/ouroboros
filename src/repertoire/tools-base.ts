@@ -11,6 +11,7 @@ import type { McpToolBinding } from "./mcp-manager";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
+import { webToolDefinitions } from "./tools-web";
 import { notesToolDefinitions } from "./tools-notes";
 import { recordToolDefinitions } from "./tools-record";
 import { bridgeToolDefinitions } from "./tools-bridge";
@@ -301,6 +302,7 @@ export const editFileReadTracker = new Set<string>();
 export const baseToolDefinitions: ToolDefinition[] = [
   ...fileToolDefinitions,
   ...shellToolDefinitions,
+  ...webToolDefinitions,
   ...notesToolDefinitions,
   ...recordToolDefinitions,
   ...bridgeToolDefinitions,
