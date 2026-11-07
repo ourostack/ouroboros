@@ -9,7 +9,10 @@
 //   run [--cases a,b] [--plant <id>] [--baseline <file>]
 //                                     open the replay window, run the cases, close the window, print one JSON line per case.
 //                                     --baseline (or OURO_REPLAY_BASELINE) names the live version's run of this gate: a case
-//                                     that failed there too is reported as failing-on-live-too and does not block
+//                                     that failed there too is reported as failing-on-live-too and does not block.
+//                                     Once the bundle syncs (bundle-backup/cutover-done), the run pauses sync for its length,
+//                                     syncs once after the restores, checks the remote gained none of its residue, checks git
+//                                     tracks the psyche and nothing excluded, and times sync on one read-only turn
 //   self-test                         run every case's readback against built-in pass and fail fixtures (used by CI)
 //
 // The replay window routes owner notices and A2A await deliveries for the replay peers to
@@ -38,6 +41,22 @@ const [BUTLER_UID, BUTLER_GID] = BUTLER_USER.split(":").map(Number)
 /** The psyche files that say who the Butler is. TACIT, what he learns, is the one he writes himself. */
 export const IDENTITY_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "ASPIRATIONS.md"]
 export const CLI_ENTRY = "/opt/ouro/dist/heart/daemon/ouro-entry.js"
+// Bundle sync (M1c). The cutover marker is root's, beside the old backup repository; the pause marker is sync's own (src/heart/sync.ts).
+export const DEFAULT_BACKUP_DIR = "/mnt/user/appdata/ouro-butler/bundle-backup"
+export const SYNC_PAUSE_MS = 2 * 60 * 60 * 1000
+export const SYNC_LOCK_WAIT_MS = 120 * 1000
+export const SYNC_LOCK_POLL_MS = 1000
+export const SYNC_LATENCY_LIMIT_MS = 2000
+export const SYNC_EVENTS_WAIT_MS = 60 * 1000
+export const SYNC_EVENTS_POLL_MS = 2000
+export const LATENCY_WORDS = "(replay) what time is it?"
+/** The psyche files git must track once the bundle syncs. */
+export const PSYCHE_FILES = ["ASPIRATIONS.md", "IDENTITY.md", "LORE.md", "SOUL.md", "TACIT.md"]
+/** Files each release installs, which sync must never track (SANCTUARY_PACKAGE_MANAGED_FILES, pinned by a test), and the release's bookkeeping. */
+export const NEVER_TRACKED = ["provider-readiness.json", "tool-profiles.json", "mcp/media-mcp.mjs", "habits/sanctuary-health.md", "awaiting/house-care-sweep.md", "product/PRODUCT.md", "bundle-meta.json"]
+export const SECRET_PATH = /credential|secret|token|\.key$|\.pem$|(^|\/)\.env($|\.)/i
+/** Text the gate's cases plant (the learns-into-tacit rule, the outbox canary, the replay prefix). None may reach the remote. */
+export const GATE_PLANTED_STRINGS = ["english subtitles", "ISOLATION-CANARY", "(replay)"]
 // Long enough for every case at its slowest (nine chat messages at up to 5.5 minutes each, plus the await case's 8 minute wait),
 // and well inside the 2 hour cap: an await that has not resolved when the window closes is cancelled by the Butler.
 // Waits for cut turns come out of the same budget and stop five minutes before the window closes (runSuite).
@@ -873,7 +892,7 @@ export function withTurnNote(checks, turn) {
 }
 
 // Safety checks a live failure never excuses: each guards the owner and the house, not the Butler's answers.
-export const NEVER_EXCUSED = ["window-trusted", "no-telegram", "owner-policy-untouched", "tacit-restored", "replay-friend-restored"]
+export const NEVER_EXCUSED = ["window-trusted", "no-telegram", "owner-policy-untouched", "tacit-restored", "replay-friend-restored", "no-sync-residue", "psyche-git-tracked"]
 export const FAILING_ON_LIVE_TOO = "failing-on-live-too"
 
 /**
@@ -895,7 +914,8 @@ export function summarize(all) {
   const ids = (status) => all.filter((entry) => entry.status === status).map((entry) => entry.id)
   const failed = ids("fail")
   const failingOnLiveToo = ids(FAILING_ON_LIVE_TOO)
-  return { ok: failed.length === 0, passed: ids("pass").length, skipped: ids("skipped").length, failed, warned: ids("warn"), ...(failingOnLiveToo.length > 0 ? { failingOnLiveToo } : {}) }
+  const pending = ids("pending")
+  return { ok: failed.length === 0, passed: ids("pass").length, skipped: ids("skipped").length, failed, warned: ids("warn"), ...(failingOnLiveToo.length > 0 ? { failingOnLiveToo } : {}), ...(pending.length > 0 ? { pending } : {}) }
 }
 
 /** Case lines of an earlier `run` (its stdout, or a log holding it), for --baseline. A missing, stale or empty baseline excuses nothing. */
@@ -963,11 +983,161 @@ function replayFriendRestoredResult(host, learned) {
   return { id: "replay-friend-restored", status: detail ? "fail" : "pass", checks: [check("the replay friend's notes and preferences hold what they had before the run", !detail, detail)] }
 }
 
-export async function runSuite(host, { cases = CASES.map((entry) => entry.id), plant, windowMinutes = DEFAULT_WINDOW_MINUTES, liveResults, log = console.error } = {}) {
+// ---- bundle sync around the run (M1c) -------------------------------------------------------------------------------
+
+const pendingSync = (id, name) => ({ id, status: "pending", checks: [check(name, true, "the bundle has not moved to bundle sync yet (bundle-backup/cutover-done is absent)")] })
+
+/**
+ * Pauses sync for the run: a leftover marker from a crashed run goes first, then a fresh one that expires on its own in two hours,
+ * then the gate waits (at most two minutes) for a sync already running to let go of the lock, and records HEAD.
+ */
+export async function openSyncBracket(sync, { waitMs = SYNC_LOCK_WAIT_MS } = {}) {
+  sync.resume()
+  sync.pause(SYNC_PAUSE_MS)
+  if (!(await sync.waitLockFree(waitMs))) return { ok: false, detail: `sync lock busy: .git/ouro-sync.lock was still held after ${Math.round(waitMs / 1000)} s` }
+  return { ok: true, head: sync.head() }
+}
+
+const touches = (paths, prefixes) => paths.filter((file) => prefixes.some((prefix) => (prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix)))
+
+/**
+ * Ends the pause, runs one sync, and checks what the Butler pushed since the recorded HEAD: none of its commits touches a path the
+ * gate touched or adds a line holding one of the gate's planted strings. Owner pushes, and household turns made during the run,
+ * are allowed: only the Butler's own non-merge commits are read, and a restored file commits as an unchanged tree.
+ */
+export async function closeSyncBracket(sync, head, { touched, planted }) {
+  sync.resume()
+  const synced = await sync.runSync()
+  const ran = check("ouro sync ran once after the restores", synced.ok, synced.ok ? "" : synced.error)
+  if (!synced.ok) return { id: "no-sync-residue", status: "fail", checks: [ran] }
+  let changes
+  try { changes = sync.agentChanges(head) } catch (error) {
+    return { id: "no-sync-residue", status: "fail", checks: [ran, check("the Butler's commits since the run began could be read", false, String(error?.message ?? error))] }
+  }
+  const paths = touches(changes.paths, touched)
+  const strings = planted.filter((text) => changes.added.some((line) => line.toLowerCase().includes(text.toLowerCase())))
+  const checks = [
+    ran,
+    check("the Butler's commits pushed since the run began touch no path the gate touched", paths.length === 0, paths.length ? `${paths.join(", ")} (${changes.commits} commits up to ${changes.remoteHead})` : ""),
+    check("those commits add none of the gate's planted strings", strings.length === 0, strings.join(", ")),
+  ]
+  return { id: "no-sync-residue", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
+}
+
+/** The path of each `git status --porcelain` line (the new name of a rename), unquoted. */
+export function porcelainPaths(status) {
+  return String(status ?? "").split("\n").filter((line) => line.length > 3).map((line) => {
+    const file = line.slice(3).split(" -> ").at(-1)
+    return file.startsWith('"') && file.endsWith('"') ? file.slice(1, -1) : file
+  })
+}
+
+/** The check `psyche is git-tracked`: pending until the cutover, then git tracks the psyche and nothing the release or a secret owns. */
+export function trackingResult(sync) {
+  if (!sync.cutoverDone()) return pendingSync("psyche-git-tracked", "git tracks the psyche and nothing excluded")
+  let seen
+  try { seen = sync.tracking() } catch (error) {
+    return { id: "psyche-git-tracked", status: "fail", checks: [check("the bundle's git state could be read", false, String(error?.message ?? error))] }
+  }
+  const missing = PSYCHE_FILES.filter((name) => !seen.psyche.includes(`psyche/${name}`))
+  const dirty = porcelainPaths(seen.status).filter((file) => NEVER_TRACKED.includes(file) || SECRET_PATH.test(file))
+  const checks = [
+    check("git tracks all five psyche files", missing.length === 0, missing.length ? `not tracked: ${missing.join(", ")}` : ""),
+    check("git tracks nothing the exclude list covers", seen.excludedTracked.length === 0, seen.excludedTracked.join(", ")),
+    check("git status shows no package-managed or secret path", dirty.length === 0, dirty.join(", ")),
+  ]
+  return { id: "psyche-git-tracked", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
+}
+
+const PULL_ENDS = ["heart.sync_pull_end", "heart.sync_pull_error", "heart.sync_pull_aborted", "heart.sync_paused", "heart.sync_not_a_repo"]
+const PUSH_ENDS = ["heart.sync_push_end", "heart.sync_push_error", "heart.sync_paused", "heart.sync_not_a_repo"]
+
+/** The pre-turn pull (start to end) and the post-turn commit (start to its end) in a turn's sync events, in order. */
+export function syncIntervals(events) {
+  const sorted = [...events].sort((a, b) => a.at - b.at)
+  const span = (startName, ends, from) => {
+    const start = sorted.findIndex((event, index) => index >= from && event.event === startName)
+    if (start < 0) return { ms: null, problem: `no ${startName} was logged`, next: from }
+    const end = sorted.findIndex((event, index) => index > start && ends.includes(event.event))
+    if (end < 0) return { ms: null, problem: `no end was logged after ${startName}`, next: start + 1 }
+    const ended = sorted[end].event
+    return ended === ends[0] ? { ms: sorted[end].at - sorted[start].at, next: end + 1 } : { ms: null, problem: `it ended with ${ended}`, next: end + 1 }
+  }
+  const pull = span("heart.sync_pull_start", PULL_ENDS, 0)
+  const push = span("heart.sync_push_start", PUSH_ENDS, pull.next)
+  return { pull, push, complete: pull.ms !== null && push.ms !== null }
+}
+
+/** The check `sync latency`: one read-only turn after the run; its pull and its post-turn commit each stay under two seconds. */
+export async function syncLatencyResult(host) {
+  const sync = host.sync
+  const since = host.now()
+  host.openWindow(10)
+  let sent
+  try { sent = await host.send({ who: "principal", text: LATENCY_WORDS, delegated: false, context: randomUUID() }) } finally { host.closeWindow() }
+  if (sent.error) return { id: "sync-latency", status: "fail", checks: [check("the read-only turn answered", false, sent.error)] }
+  const deadline = host.now() + SYNC_EVENTS_WAIT_MS
+  let intervals = syncIntervals(sync.events(since))
+  while (!intervals.complete && host.now() < deadline) {
+    await host.sleep(SYNC_EVENTS_POLL_MS)
+    intervals = syncIntervals(sync.events(since))
+  }
+  const judge = (name, span) => check(`${name} took under ${SYNC_LATENCY_LIMIT_MS} ms`, span.ms !== null && span.ms < SYNC_LATENCY_LIMIT_MS, span.ms === null ? span.problem : `${span.ms} ms`)
+  const checks = [judge("the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end)", intervals.pull), judge("the post-turn commit (heart.sync_push_start to heart.sync_push_end)", intervals.push)]
+  return { id: "sync-latency", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
+}
+
+/**
+ * The replay run. On a bundle that syncs, the cases run inside the sync bracket: sync is paused from before the window opens until
+ * the restores are done (a `finally` removes the pause whatever happens), then one sync runs and the gate checks that the remote
+ * gained none of its residue. After the bracket come the tracking check and one read-only turn that times sync.
+ */
+export async function runSuite(host, options = {}) {
+  const sync = host.sync
+  if (!sync) return runCases(host, options)
+  validateCases(options)
+  await host.waitReady?.()
+  if (!sync.cutoverDone()) {
+    const suite = await runCases(host, { ...options, ready: true })
+    return withSyncResults(suite, [pendingSync("no-sync-residue", "the remote gains none of the gate's residue"), trackingResult(sync), pendingSync("sync-latency", "sync's pull and commit each stay under two seconds")], options)
+  }
+  const bracket = await openSyncBracket(sync, options.syncLockWaitMs === undefined ? {} : { waitMs: options.syncLockWaitMs })
+  if (!bracket.ok) {
+    sync.resume()
+    const busy = { id: "no-sync-residue", status: "fail", checks: [check("sync let go of the bundle before the run", false, bracket.detail)] }
+    return { results: [busy], summary: summarize([busy]) }
+  }
+  let suite
+  try {
+    suite = await runCases(host, { ...options, ready: true })
+  } finally {
+    // The pause never outlives the run. A crash that skips this leaves a marker that expires on its own.
+    sync.resume()
+  }
+  const touched = ["psyche/TACIT.md", "state/replay/", ...[host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean).map((id) => `friends/${id}.json`)]
+  const planted = [...GATE_PLANTED_STRINGS, ...[host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean)]
+  const residue = await closeSyncBracket(sync, bracket.head, { touched, planted })
+  const tracking = trackingResult(sync)
+  const windowRefused = suite.results.some((entry) => entry.id === "window-trusted")
+  const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] } : await syncLatencyResult(host)
+  return withSyncResults(suite, [residue, tracking, latency], options)
+}
+
+function withSyncResults(suite, extra, { liveResults, plant } = {}) {
+  const judged = liveResults ? applyBaseline(extra, liveResults, { plant }) : extra
+  const results = [...suite.results, ...judged]
+  return { results, summary: summarize(results) }
+}
+
+function validateCases({ cases = CASES.map((entry) => entry.id), plant } = {}) {
   const unknown = [...cases, ...(plant ? [plant] : [])].filter((id) => !CASES.some((entry) => entry.id === id))
   if (unknown.length) throw new Error(`unknown case(s): ${unknown.join(", ")}. Known: ${CASES.map((entry) => entry.id).join(", ")}`)
+}
+
+async function runCases(host, { cases = CASES.map((entry) => entry.id), plant, windowMinutes = DEFAULT_WINDOW_MINUTES, liveResults, log = console.error, ready = false } = {}) {
+  validateCases({ cases, plant })
   const selected = CASES.filter((entry) => cases.includes(entry.id))
-  await host.waitReady?.()
+  if (!ready) await host.waitReady?.()
   const runStart = host.now()
   const baseline = await host.observe()
   const results = []
@@ -1338,7 +1508,95 @@ function retireRecordInContainer(friendId, did) {
   sh("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", "-e", RETIRE_RECORD_SCRIPT, CONTAINER_BUNDLE, friendId, did ?? ""])
 }
 
-export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, chainRoot, cardUrl, log = console.error, exec = sh, stage = dockerStage(exec), rootUid = 0, rootGid = 0 } = {}) {
+/**
+ * Git on the bundle's own repository, from the host, as root. It names the repository and work tree, so git never discovers one and
+ * never refuses it for dubious ownership; it runs no hooks and no fsmonitor, and takes no optional lock, so root never rewrites the
+ * index the Butler owns. This is the gate's only git call.
+ */
+export function bundleGit(bundle, args, run = sh) {
+  return run("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", `--git-dir=${path.join(bundle, ".git")}`, `--work-tree=${bundle}`, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 256 * 1024 * 1024 })
+}
+
+/**
+ * The host side of bundle sync for the gate: the cutover marker, sync's own pause marker, the lock, one `ouro sync` in the container,
+ * and read-only git. `sleep` and `now` come from the host, so tests drive the clock.
+ */
+export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh, git = (args) => bundleGit(bundle, args), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now(), pollMs = SYNC_LOCK_POLL_MS }) {
+  const state = path.join(bundle, "state")
+  const marker = path.join(state, "sync-paused")
+  const agentName = path.basename(bundle, ".ouro")
+  const branch = () => {
+    try { return readJsonNoFollow(path.join(bundle, "agent.json"))?.sync?.branch ?? "main" } catch { return "main" }
+  }
+  const lines = (text) => text.split("\n").filter(Boolean)
+  return {
+    cutoverDone: () => lstatOrNull(path.join(backupDir, "cutover-done")) !== null,
+    /** Sync's pause marker, written as root for the owner of state/ with no link followed. */
+    pause(ms) {
+      const owner = refuseLinkOrWrongType(state, "directory")
+      if (!owner) throw new Error(`${state} does not exist`)
+      const startedAt = new Date(now())
+      writeFileAsRoot(state, "sync-paused", `${JSON.stringify({ startedAt: startedAt.toISOString(), expiresAt: new Date(startedAt.getTime() + ms).toISOString() })}\n`, 0o644, { uid: owner.uid, gid: owner.gid }, "state")
+    },
+    resume() { rmSync(marker, { force: true }) },
+    async waitLockFree(waitMs) {
+      const lock = path.join(bundle, ".git", "ouro-sync.lock")
+      const deadline = now() + waitMs
+      while (lstatOrNull(lock)) {
+        if (now() >= deadline) return false
+        await sleep(pollMs)
+      }
+      return true
+    },
+    head: () => git(["rev-parse", "HEAD"]).trim(),
+    async runSync() {
+      try {
+        exec("docker", ["exec", "-u", BUTLER_USER, CONTAINER, "node", CLI_ENTRY, "sync", "--agent", agentName], { timeout: 120_000 })
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, error: `${error.stderr ?? ""} ${error.stdout ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }
+      }
+    },
+    /** The Butler's own non-merge commits between `head` and the remote branch: their paths and their added lines. */
+    agentChanges(head) {
+      const remoteHead = git(["rev-parse", `refs/remotes/origin/${branch()}`]).trim()
+      const commits = lines(git(["log", "--no-merges", `--author=<${agentName}@ouro.local>`, "--format=%H", `${head}..${remoteHead}`]))
+      if (commits.length === 0) return { remoteHead, commits: 0, paths: [], added: [] }
+      const paths = [...new Set(lines(git(["show", "--format=", "--name-only", ...commits])))]
+      const added = git(["show", "--format=", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv", ...commits]).split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).map((line) => line.slice(1))
+      return { remoteHead, commits: commits.length, paths, added }
+    },
+    tracking: () => ({
+      psyche: lines(git(["ls-files", "--", "psyche/"])),
+      excludedTracked: lines(git(["ls-files", "-ci", "--exclude-standard"])),
+      status: git(["status", "--porcelain", "--untracked-files=all"]),
+    }),
+    /** Sync's events since `sinceMs` from the bundle's daemon logs, read through no link. */
+    events(sinceMs) {
+      const dir = path.join(state, "daemon", "logs")
+      const stat = lstatOrNull(dir)
+      if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return []
+      const out = []
+      for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".ndjson")).sort()) {
+        let text
+        try { text = readTextNoFollow(path.join(dir, name)) } catch { continue }
+        for (const line of text.split("\n")) {
+          if (!line.includes('"heart.sync_')) continue
+          try {
+            const entry = JSON.parse(line)
+            const at = Date.parse(entry.ts)
+            if (typeof entry.event !== "string" || !(at >= sinceMs)) continue
+            if (entry.meta?.agentRoot !== undefined && entry.meta.agentRoot !== CONTAINER_BUNDLE) continue
+            out.push({ event: entry.event, at })
+          } catch { /* a torn line */ }
+        }
+      }
+      return out
+    },
+  }
+}
+
+export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR, clientDir = DEFAULT_CLIENT_DIR, backupDir = DEFAULT_BACKUP_DIR, chainRoot, cardUrl, log = console.error, exec = sh, stage = dockerStage(exec), rootUid = 0, rootGid = 0 } = {}) {
   const state = path.join(bundle, "state")
   const replayDir = path.join(state, "replay")
   const clientIssue = rootOwnedDirectoryIssue(clientDir, rootUid)
@@ -1373,6 +1631,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
   }
   return {
     friends: { principal: provisioned.principal.friendId, stranger: provisioned.stranger.friendId, escalation: provisioned.escalation.friendId },
+    sync: makeSyncHost({ bundle, backupDir, exec }),
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     /** The Butler's A2A card must answer before the window opens: a fresh container needs a moment after it turns healthy. */
@@ -2064,6 +2323,7 @@ export function parseArgs(argv) {
     else if (flag === "--trust-dir" && rest[i + 1]) options.trustDir = rest[++i]
     else if (flag === "--card-url" && rest[i + 1]) options.cardUrl = rest[++i]
     else if (flag === "--client-dir" && rest[i + 1]) options.clientDir = rest[++i]
+    else if (flag === "--backup-dir" && rest[i + 1]) options.backupDir = rest[++i]
     else if (flag === "--retire-friend" && rest[i + 1]) options.retire = [...(options.retire ?? []), rest[++i]]
     else if (flag === "--rotate-replay-identities") options.rotate = true
     else if (flag === "--window-minutes" && rest[i + 1]) options.windowMinutes = Number(rest[++i])
@@ -2087,7 +2347,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
   }
   if (options.command === "run") {
     let host
-    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
+    try { host = deps.makeHost({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.backupDir ? { backupDir: options.backupDir } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), log: io.err }) } catch (error) { io.err(error.message); return 1 }
     // butler-ship runs this gate against the live version first and hands the upgrade that log through the environment.
     const baselineFile = options.baseline ?? env.OURO_REPLAY_BASELINE
     let baseline
@@ -2105,7 +2365,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(JSON.stringify({ summary: suite.summary }))
     return suite.summary.ok ? 0 : 1
   }
-  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n] [--baseline <file>]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--client-dir <dir>] [--card-url <url>]")
+  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n] [--baseline <file>]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--client-dir <dir>] [--backup-dir <dir>] [--card-url <url>]")
   return 2
 }
 
