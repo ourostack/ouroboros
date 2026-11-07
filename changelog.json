@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.996",
       "changes": [
-        "A grep or glob of your whole home leaves out state/ (the runtime's own mail, sessions and logs) and says so at the end; pass path or cwd \"state\" to search it."
+        "A grep or glob of your whole home leaves out state/ (the runtime's own mail, sessions and logs) and says so at the end; pass path or cwd \"state\" to search it.",
+        "When grep stops at 100 matches it says how many there were in all (\"100 of 41,000 matches shown\"), so a capped search never reads as an absent fact."
       ]
     },
     {
