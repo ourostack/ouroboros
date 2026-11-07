@@ -151,7 +151,7 @@ function syncConflictStatePath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sync-conflict.json")
 }
 
-function agentNameFromRoot(agentRoot: string): string {
+export function agentNameFromRoot(agentRoot: string): string {
   return path.basename(agentRoot).replace(/\.ouro$/, "")
 }
 

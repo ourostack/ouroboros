@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as childProcess from "child_process"
 import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
@@ -7,6 +8,11 @@ import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 import { loadPsycheAt, resetPsycheCache } from "../../mind/prompt"
 import { setSyncOwnerNotifier, type SyncOwnerNotice } from "../../heart/sync"
 import { voicePsycheExcerpts } from "../../senses/voice/twilio-phone"
+
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>()
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) }
+})
 
 const ID = ["-c", "user.name=Owner", "-c", "user.email=owner@example.invalid", "-c", "commit.gpgsign=false"]
 const CONFLICTED = "mine\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\nafter\n"
@@ -80,12 +86,44 @@ describe("psyche conflict markers", () => {
     expect(loadPsycheAt(root).soul).toBe("")
     expect(markerEvents()).toHaveLength(1)
     expect(markerEvents()[0].meta).toMatchObject({ path: soulPath() })
-    await vi_waitFor(() => notices.length === 1)
+    await waitUntil(() => notices.length === 1)
     expect(notices[0].text).toBe("psyche/SOUL.md has unresolved merge conflict markers.")
     expect(notices[0].text).not.toMatch(/<<<<<<<|>>>>>>>/)
     write(CONFLICTED + "more\n")
     loadPsycheAt(root)
     expect(markerEvents()).toHaveLength(2)
+  })
+
+  it("a marked file runs git show once across prompt builds, until the file changes", () => {
+    write("committed soul")
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    write(CONFLICTED)
+    const shows = () => vi.mocked(childProcess.execFileSync).mock.calls.filter((c) => c[1]?.includes("show")).length
+    const before = shows()
+    expect(loadPsycheAt(root).soul).toBe("committed soul")
+    expect(loadPsycheAt(root).soul).toBe("committed soul")
+    expect(shows() - before).toBe(1)
+    write(CONFLICTED + "changed\n")
+    loadPsycheAt(root)
+    expect(shows() - before).toBe(1) // memory now holds the committed text; git is not asked again
+  })
+
+  it("a failed git show is remembered too, and a changed file clears it", () => {
+    write(CONFLICTED)
+    const shows = () => vi.mocked(childProcess.execFileSync).mock.calls.filter((c) => c[1]?.includes("show")).length
+    const before = shows()
+    loadPsycheAt(root)
+    loadPsycheAt(root)
+    expect(shows() - before).toBe(1)
+    write(CONFLICTED + "changed\n")
+    loadPsycheAt(root)
+    expect(shows() - before).toBe(2)
+    write("clean")
+    expect(loadPsycheAt(root).soul).toBe("clean")
+    write(CONFLICTED)
+    expect(loadPsycheAt(root).soul).toBe("clean")
   })
 
   it("a lone ======= line is valid", () => {
@@ -118,6 +156,6 @@ describe("psyche conflict markers", () => {
   })
 })
 
-async function vi_waitFor(cond: () => boolean): Promise<void> {
+async function waitUntil(cond: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
 }
