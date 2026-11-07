@@ -43,7 +43,6 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
   return parsed
 }
 
-/** A JSON-RPC error answer from the peer. `data` carries the peer's structured detail (for a refused delegated command: reason, nothingRan, retry, next). */
 /**
  * The error for a reply this side refused to open. The request was already delivered, so the peer may have acted on it
  * (an older peer replies unbound, which is refused): say so, so the caller does not resend a command and run it twice.
@@ -52,6 +51,7 @@ export function replyRefusedError(what: string, reason: string): Error {
   return new Error(`A2A ${what} reply rejected: ${reason}; the call may already have run on the peer`)
 }
 
+/** A JSON-RPC error answer from the peer. `data` carries the peer's structured detail (for a refused delegated command: reason, nothingRan, retry, next). */
 export class A2ARpcError extends Error {
   readonly code: number
   readonly data: unknown

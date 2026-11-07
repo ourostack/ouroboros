@@ -3,7 +3,11 @@ import {
   ready,
   didKeyIdentityFromEd25519,
   sealEnvelope,
+  openSealed,
+  sealTo,
+  wrapInDataPart,
   type DidKeyIdentity,
+  type SealedBlob,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
 import {
@@ -23,6 +27,7 @@ import {
   receiveInboundMissionResult,
   type InboundResultDeps,
 } from "../../a2a/mission-result-wire"
+import { receiveInboundShare } from "../../a2a/inbound-share"
 import type { A2AMessage } from "../../a2a/types"
 import type { A2AIdentity } from "../../a2a/identity"
 
@@ -553,10 +558,42 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
       expect(deps.seen.isSeen(realNonce)).toBe(false)
     })
 
-    it("still treats a bare seal nonce an older version marked as already received", async () => {
-      const { deps, message } = await delegatedTo("result-legacy-nonce", "mk-legacy-nonce")
-      deps.seen.markSeen((message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n)
-      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
+    it("is not burned by a stranger's validly signed share that reuses the result's seal nonce", async () => {
+      const { a, b, deps, message } = await delegatedTo("result-share-nonce", "mk-share-nonce")
+      const realNonce = (message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n
+      const attacker = mintIdentity()
+      const original = sodium.randombytes_buf.bind(sodium)
+      const patchable = sodium as unknown as { randombytes_buf: (n: number) => Uint8Array }
+      patchable.randombytes_buf = (n: number) => (n === 24 ? sodium.from_base64(realNonce, sodium.base64_variants.ORIGINAL) : original(n))
+      let share: A2AMessage
+      try {
+        const sealed = sealEnvelope({
+          sodium,
+          envelope: { subject: { missionKey: "mk-other", title: "T" }, fromAgentId: attacker.did, intent: "request", issuedAt: new Date().toISOString() },
+          friendsKind: "coordination",
+          fromIdentity: { did: attacker.did, keyId: attacker.keyId, ed25519Priv: attacker.ed25519Priv },
+          recipientDid: a.did,
+          recipientX25519Pub: a.x25519Pub,
+        })
+        share = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: a.did }) as unknown as A2AMessage
+      } finally {
+        patchable.randombytes_buf = original
+      }
+      // friends' share path marks the bare nonce once the stranger's signature verifies, then refuses it on trust.
+      expect(await receiveInboundShare(share, deps)).toEqual({ outcome: "rejected", reason: "untrusted_source" })
+      expect(deps.seen.isSeen(realNonce)).toBe(true)
+      expect(await receiveInboundMissionResult(message, deps)).toEqual({ outcome: "imported", verifiedDid: b.did })
+    })
+
+    it("refuses a re-sealed copy of the same signed result (a new blob carrying the same signed message id)", async () => {
+      const { a, deps, message } = await delegatedTo("result-reseal", "mk-reseal")
+      const data = (message.parts[0] as unknown as { data: { v: number; sealed: SealedBlob } }).data
+      const plaintextBytes = openSealed({ sodium, blob: data.sealed, recipientX25519Priv: a.x25519Priv, recipientX25519Pub: a.x25519Pub, recipientDid: a.did })
+      const resealed = { v: data.v, sealed: sealTo({ sodium, plaintextBytes, recipientX25519Pub: a.x25519Pub, recipientDid: a.did, v: data.v }) }
+      expect(resealed.sealed.n).not.toBe(data.sealed.n)
+      const copy = wrapMissionResultDataPart({ sealedEnvelope: resealed, recipientDid: a.did }) as unknown as A2AMessage
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("imported")
+      expect(await receiveInboundMissionResult(copy, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
     })
 
     it("refuses a result from a retired DID", async () => {

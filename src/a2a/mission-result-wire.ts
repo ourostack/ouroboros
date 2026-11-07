@@ -160,8 +160,8 @@ export type InboundResultOutcome =
  *
  * Ordering (mirrors the share bridge's trust trap + authentication gate):
  *   1. recognize + unwrap the harness `mission_result` carrier (else `not-a-result`).
- *   2. replay dedup on a hash of the whole sealed blob (and, as a legacy read, the
- *      bare seal nonce older versions wrote), then the in-flight claim on that hash.
+ *   2. replay dedup on a hash of the whole sealed blob, then the in-flight claim on
+ *      that hash. The bare seal nonce is never consulted.
  *   3. `openSealedEnvelope` → AEAD-decrypt only (unseal/recipient failures → reject).
  *   4. sender binding — reject unless `opened.signerDid === opened.fromAgentId` (and
  *      non-empty): the advisory `signerDid` (outer, unsigned) must match the claimed
@@ -186,11 +186,12 @@ export async function receiveInboundMissionResult(message: A2AMessage, deps: Inb
   const payload = unwrapMissionResultDataPart(message)
   if (!payload) return { outcome: "not-a-result" }
 
-  // Replay dedup BEFORE any state change, keyed on a hash of the whole sealed blob as friends' receiveShare does. The
-  // sender picks the seal nonce, so a key on the nonce alone would let one sender's result burn another's. A bare-nonce
-  // entry written by an older version still counts as seen; this version never writes one.
+  // Replay dedup BEFORE any state change, keyed only on a hash of the whole sealed blob. The sender picks the seal
+  // nonce, and friends' share path marks a bare nonce for any share whose signature verifies, so reading the bare nonce
+  // here would let a stranger's share or result burn a real result. A re-sealed copy of the same signed result is still
+  // refused by its `mid:` key, and re-importing a result changes nothing (the first result per request wins).
   const blobKey = sealedBlobKey(deps.sodium, payload.sealed.sealed)
-  if (deps.seen.isSeen(payload.sealed.sealed.n) || deps.seen.isSeen(blobKey)) {
+  if (deps.seen.isSeen(blobKey)) {
     return rejectResult("replayed", "rejected inbound mission_result (already received)")
   }
   const inFlight = inFlightFor(deps.seen)
@@ -293,8 +294,8 @@ async function processClaimedResult(
     envelope: opened.envelope,
   })
   // The result is consumed the moment its signature verifies (and not before), so a failure before that leaves it
-  // redeliverable. The keys are the whole-blob hash and the sender-scoped `mid:` id, so another sender's validly
-  // signed result cannot burn this one by reusing its seal nonce.
+  // redeliverable. The keys are the whole-blob hash and the sender-scoped `mid:` id, so no other sender's message,
+  // share or result, can burn this one by reusing its seal nonce.
   const verifier = {
     verify(fromAgentId: string, proof: unknown): boolean {
       const ok = didVerifier.verify(fromAgentId, proof as Parameters<DidVerifier["verify"]>[1])

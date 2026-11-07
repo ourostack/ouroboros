@@ -238,7 +238,12 @@ describe("DidResolution.settleSender", () => {
     const notifyOwner = vi.fn(async (_notice: OwnerNotice) => { throw new Error("telegram down") })
     const didRes = makeDidResolution({ sodium, store, notifyOwner })
     expect(await didRes.settleSender({ did: next.did, pinStore })).toBe(false)
-    expect(notifyOwner.mock.calls[0]![0].text).toContain(`The move failed with rotation_not_accepted. Link the record to the new DID: ouro friend link <agent> --friend ${peer.id} --provider a2a-agent --external-id ${next.did}`)
+    expect(notifyOwner.mock.calls[0]![0].text).toBe([
+      `Peer changed its A2A key to ${next.did}, but its friend record could not move to the new key, so this agent refuses its messages until this is fixed.`,
+      "The record could not move because this agent's saved keys do not show the change cleanly. Link the record to the new key. Run:",
+      `ouro friend link <agent> --friend ${peer.id} --provider a2a-agent --external-id ${next.did}`,
+      "Peer's next message then moves the record.",
+    ].join("\n\n"))
     await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "channel.a2a_rotation_notice_failed", meta: expect.objectContaining({ error: "telegram down" }) })))
     // A channel that fails with something other than an Error is logged too.
     expect(await makeDidResolution({ sodium, store, notifyOwner: () => Promise.reject("offline") }).settleSender({ did: next.did, pinStore })).toBe(false)

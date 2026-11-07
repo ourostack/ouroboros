@@ -153,8 +153,12 @@ describe("a rotation whose record could not follow", () => {
     expect(await receiveInboundMissionResult(await resultFrom(next, self, root, next.did), deps)).toEqual({ outcome: "rejected", reason: "resolve_failed" })
     await vi.waitFor(() => expect(notifyOwner).toHaveBeenCalled())
     expect(notifyOwner).toHaveBeenCalledTimes(1)
-    expect(notices[0]!.text).toContain("Peer")
-    expect(notices[0]!.text).toContain(`ouro friend merge --agent slugger --into ${peer.id} ${squatter.id} --apply`)
+    expect(notices[0]!.text).toBe([
+      `Peer changed its A2A key to ${next.did}, but its friend record could not move to the new key, so this agent refuses its messages until this is fixed.`,
+      `Its new key is already linked to another friend record, Squatter (${squatter.id}). If that is the same peer, merge the two records. Run:`,
+      `ouro friend merge --agent slugger --into ${peer.id} ${squatter.id} --apply`,
+      "Peer's next message then moves the record.",
+    ].join("\n\n"))
     expect(notices[0]!.noticeId).toMatch(/^a2a-rotation-unmoved:/)
 
     // The operator applies the fix; the next message finishes the move and is accepted at the old record's trust.

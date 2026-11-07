@@ -3,6 +3,7 @@ import {
   parseDidKey,
   pinOnFirstContact,
   evaluateRotation,
+  type ApplyRotationResult,
   type DidResolution,
   type PinStore,
   type Sodium,
@@ -66,6 +67,16 @@ export interface HarnessDidResolution extends DidResolution {
   settleSender(args: { did: string; pinStore: PinStore }): Promise<boolean>
 }
 
+type RecordMoveFailure = Extract<ApplyRotationResult, { ok: false }>["reason"]
+
+/** Why a record could not move, in words an owner can read. A reason a later friends adds fails the type check. */
+const MOVE_FAILURE_WORDS = {
+  rotation_not_accepted: "this agent's saved keys do not show the change cleanly",
+  rotation_chain_invalid: "its chain of key changes loops or is too long",
+  record_not_found: "its friend record was not found under any of its earlier keys",
+  successor_already_linked: "another friend record already holds the new key",
+} satisfies Record<RecordMoveFailure, string>
+
 /** At most this many earlier DIDs are followed back from a rotated pin (friends' `MAX_ROTATION_HOPS`). */
 const MAX_PREDECESSOR_HOPS = 16
 
@@ -90,18 +101,30 @@ export function makeDidResolution(input: MakeDidResolutionInput): HarnessDidReso
   const toldOwner = new Set<string>()
 
   /** Tell the owner, once per rotation, that the record could not follow and how to fix it. */
-  function tellOwner(oldDid: string, newDid: string, record: FriendRecord, holder: FriendRecord | null, reason: string): void {
+  function tellOwner(oldDid: string, newDid: string, record: FriendRecord, holder: FriendRecord | null, reason: RecordMoveFailure): void {
     const notify = input.notifyOwner
     const key = `${oldDid}>${newDid}`
     if (!notify || toldOwner.has(key)) return
     toldOwner.add(key)
     const agent = input.agentName ?? "<agent>"
-    const fix = holder
-      ? `Its new DID is already linked to friend ${holder.name} (${holder.id}). If that is the same peer, merge the two records: ouro friend merge --agent ${agent} --into ${record.id} ${holder.id} --apply`
-      : `The move failed with ${reason}. Link the record to the new DID: ouro friend link ${agent} --friend ${record.id} --provider a2a-agent --external-id ${newDid}`
+    const [cause, command] = holder
+      ? [
+          `Its new key is already linked to another friend record, ${holder.name} (${holder.id}). If that is the same peer, merge the two records`,
+          `ouro friend merge --agent ${agent} --into ${record.id} ${holder.id} --apply`,
+        ]
+      : [
+          `The record could not move because ${MOVE_FAILURE_WORDS[reason]}. Link the record to the new key`,
+          `ouro friend link ${agent} --friend ${record.id} --provider a2a-agent --external-id ${newDid}`,
+        ]
+    // The command sits on its own line with nothing after it, so it can be copied as is.
     const notice: OwnerNotice = {
       noticeId: `a2a-rotation-unmoved:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
-      text: `${record.name} changed its A2A key to ${newDid}, but its friend record could not move to the new key, so this agent refuses its messages. ${fix}. Its next message then moves the record.`,
+      text: [
+        `${record.name} changed its A2A key to ${newDid}, but its friend record could not move to the new key, so this agent refuses its messages until this is fixed.`,
+        `${cause}. Run:`,
+        command,
+        `${record.name}'s next message then moves the record.`,
+      ].join("\n\n"),
     }
     notify(notice).catch((error: unknown) => {
       emitNervesEvent({
