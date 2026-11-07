@@ -330,6 +330,16 @@ describe("daemon runtime logging", () => {
     expect(content).not.toContain("senses.shepherd_stream_connected")
   })
 
+  it("persists info-level A2A turn events by default, so a peer turn's sync timing is on record", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    configureDaemonRuntimeLogger("a2a", { homeDir: tmpRoot, agentName: "sanctuary" })
+    emitNervesEvent({ component: "heart", event: "heart.sync_pull_start", message: "pre-turn pull starting", meta: {} })
+
+    const logFile = path.join(tmpRoot, "AgentBundles", "sanctuary.ouro", "state", "daemon", "logs", "a2a.ndjson")
+    expect(await waitForLogContent(logFile, "\"event\":\"heart.sync_pull_start\"")).toContain("heart.sync_pull_start")
+  })
+
   it("persists info-level Telegram audit events by default", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     configureDaemonRuntimeLogger("telegram", { homeDir: tmpRoot, agentName: "sanctuary" })

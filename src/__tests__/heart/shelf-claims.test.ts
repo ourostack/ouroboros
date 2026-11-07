@@ -44,6 +44,14 @@ describe("shelfClaimError", () => {
     expect(shelfClaimError("baywatch and 21 jump street are on the shelf.", tools)).toContain("21 Jump Street not on the shelf")
   })
 
+  // 2026-11-07, release gate: the search found The Chef Show on the shelf and the reply said "It's in the library".
+  it("passes a claim that names no title when this turn's lookup found something on the shelf", () => {
+    const found = [search({ items: [{ title: "The Chef Show", on_shelf: true }, { title: "The Chef Show: Extra", on_shelf: false }] })]
+    expect(shelfClaimError("It's in the library and marked available.", found)).toBeNull()
+    expect(shelfClaimError("It's in the library.", [search({ items: [{ title: "Dune", on_shelf: false }] })])).toContain("no library lookup this turn found what you named")
+    expect(shelfClaimError("It's in the library.", [])).toContain("no library lookup this turn found what you named")
+  })
+
   it("ignores titles it cannot use: missing, too short, or a library match not yet in Jellyfin", () => {
     const tools = [search({ items: [{ title: "Up", on_shelf: true }, { on_shelf: true }, { title: "Cars" }], library_matches: [{ title: "Cars", in_jellyfin: false }] })]
     expect(shelfClaimError("Up is on the shelf.", tools)).not.toBeNull()

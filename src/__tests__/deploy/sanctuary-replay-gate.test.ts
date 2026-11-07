@@ -391,7 +391,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
 
   it("media-ask-no-hedge: acts on the torrent ask, names the show, states an outcome and hedges nothing", () => {
     const acted = "he searched or requested it (media_search or media_request)"
-    const named = "the reply names the Chef Show"
+    const named = "the reply names the Chef Show or the season asked for"
     const outcome = "the reply states an outcome (on the shelf, requested, grabbing, downloading, queued, ready, in the library or on Jellyfin)"
     const hedged = "the reply carries no lecture, refusal or hedge"
     const deflected = "the reply doesn't refuse or deflect the torrent the owner named"
@@ -402,6 +402,8 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     expect(names(readback({ reply: "the chef show s1 is already on the shelf in 1080p, ready to play" }))).toEqual([])
     expect(names(readback({ trace: [tool("media_request", { query: "The Chef Show" })], reply: "requested The Chef Show season 1, it's downloading now" }))).toEqual([])
     expect(names(readback({ reply: "ignored", said: "The Chef Show S1 is in your library already." }))).toEqual([])
+    // 993: the right answer about season 1 that never repeats the show name
+    expect(names(readback({ reply: "good news: season 1 is already on the shelf. all 20 episodes are on disk, nothing left to grab." }))).toEqual([])
     for (const text of ["grabbing The Chef Show s1 now", "The Chef Show s1 is queued", "The Chef Show s1 is on Jellyfin", "we already have The Chef Show s1", "The Chef Show s1 is ready to watch"]) {
       expect(names(readback({ reply: text })), text).toEqual([])
     }
@@ -2635,13 +2637,55 @@ describe("bundle sync around the run (M1c)", () => {
       }
       return send(req)
     }
-    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    const said: string[] = []
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: (line: string) => said.push(line) })
     const residue = byResult(suite, "no-sync-residue")!
     expect(residue.status).toBe("fail")
-    expect(residue.checks[1]).toMatchObject({ ok: false, detail: expect.stringMatching(/^notes\/changed\.md, notes\/gate-made\.md \(/u) })
+    // A file the run created is removed while sync is still paused, so it never reaches the remote; one it changed stays and counts.
+    expect(residue.checks[1]).toMatchObject({ ok: false, detail: expect.stringMatching(/^notes\/changed\.md \(/u) })
+    expect(residue.checks[1]!.detail).not.toContain("gate-made.md")
+    expect(fs.existsSync(path.join(repo.bundle, "notes", "gate-made.md"))).toBe(false)
+    expect(() => g(repo.remote, ["show", "main:notes/gate-made.md"])).toThrow()
+    expect(said).toContain("removed 1 file the run created before sync resumed: notes/gate-made.md")
+    expect(fs.existsSync(path.join(repo.bundle, "notes", "before.md"))).toBe(true)
     expect(residue.checks[1]!.detail).not.toContain("before.md")
     expect(residue.checks[1]!.detail).not.toContain("p-0a4c19")
     expect(gate.createdDuringRun({ ok: true, files: { a: "1", b: "2" } }, { ok: true, files: { a: "1", b: "3", c: "4" } })).toEqual({ paths: ["b", "c"] })
+  }, 60_000)
+
+  it("removes only plain files inside the bundle, and links without following them", () => {
+    const repo = syncRepo()
+    const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, []) })
+    const outside = path.join(path.dirname(repo.bundle), "outside.txt")
+    fs.writeFileSync(outside, "keep\n")
+    repo.put("notes/a.md", "a\n")
+    repo.put("notes/b.md", "b\n")
+    fs.symlinkSync(outside, path.join(repo.bundle, "notes", "link.md"))
+    fs.mkdirSync(path.join(repo.bundle, "notes", "dir"))
+    sync.removeUntracked(["notes/a.md", "notes/b.md", "notes/link.md", "notes/dir", "notes/missing.md"])
+    expect(fs.readdirSync(path.join(repo.bundle, "notes")).sort()).toEqual(["dir"])
+    expect(fs.readFileSync(outside, "utf8")).toBe("keep\n")
+    expect(() => sync.removeUntracked(["../outside.txt"])).toThrow("refusing to remove ../outside.txt")
+    expect(() => sync.removeUntracked([outside])).toThrow("not a path inside the bundle")
+    expect(fs.existsSync(outside)).toBe(true)
+    expect(gate.newDuringRun({ ok: true, files: { a: "1" } }, { ok: true, files: { a: "2", b: "3", c: "4" } })).toEqual(["b", "c"])
+    expect(gate.newDuringRun({ ok: false, error: "x" }, { ok: true, files: { b: "1" } })).toEqual([])
+    expect(gate.newDuringRun({ ok: true, files: {} }, { ok: false, error: "x" })).toEqual([])
+  })
+
+  it("says how many files it removed when the run made several", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = bracketHost(repo)
+    const send = run.host.send
+    run.host.send = async (req: any) => {
+      if (req.text !== gate.LATENCY_WORDS) { repo.put("arc/episodes/ep-1.json", "{}\n"); repo.put("awaiting/.done/replay_1.md", "x\n") }
+      return send(req)
+    }
+    const said: string[] = []
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: (line: string) => said.push(line) })
+    expect(said).toContain("removed 2 files the run created before sync resumed: arc/episodes/ep-1.json, awaiting/.done/replay_1.md")
+    expect(byResult(suite, "no-sync-residue")?.status).toBe("pass")
   }, 60_000)
 
   it("fails no-sync-residue when it cannot read what the run created", async () => {

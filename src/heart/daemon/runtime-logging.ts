@@ -44,14 +44,15 @@ function defaultLoggingForProcess(processName: RuntimeProcessName): RuntimeLoggi
     }
   }
 
-  if (processName === "telegram" || processName === "teams") {
+  // A2A turns are first-class conversations (peers, the release gate): their info-level record, sync timing included, is kept.
+  if (processName === "telegram" || processName === "teams" || processName === "a2a") {
     return {
       level: "info",
       sinks: ["terminal", "ndjson"],
     }
   }
 
-  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "a2a" || processName === "shepherd") {
+  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "shepherd") {
     return {
       level: "warn",
       sinks: ["terminal", "ndjson"],

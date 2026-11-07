@@ -66,7 +66,8 @@ describe("shell at home", () => {
   })
 
   it("gives a failing command's output the same tail cap and saved file", async () => {
-    const failing = node('for (let i=1;i<=2500;i++) console.error("err"+i); process.exit(3)')
+    // exitCode, not exit(): exit() can drop stderr still queued for the pipe, and a short stderr has nothing to cut
+    const failing = node('for (let i=1;i<=2500;i++) console.error("err"+i); process.exitCode = 3')
     const error = await shell.handler({ command: failing }, ctx as any).then(() => undefined, (e: Error & { stderr: string }) => e)
     expect(error).toBeDefined()
     expect(error!.message).toContain("[output cut to its last 2000")
