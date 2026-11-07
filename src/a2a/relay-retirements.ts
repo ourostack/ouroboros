@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../nerves/runtime"
 import type { RelayRegistration, RelayRetirementRecord, RelayRetirements } from "./relay-inbox"
 
 function markerKey(registration: RelayRegistration): string {
@@ -43,6 +44,7 @@ export function fileRelayRetirements(agentRoot: string): RelayRetirements {
       const temp = `${file(key)}.${randomBytes(6).toString("hex")}.tmp`
       fs.writeFileSync(temp, `${JSON.stringify({ relayUrl: registration.relayUrl, handle: registration.handle, ...record, updatedAt: new Date().toISOString() })}\n`, { mode: 0o600 })
       fs.renameSync(temp, file(key))
+      emitNervesEvent({ component: "channels", event: "channel.a2a_relay_retirement_recorded", message: record.retired ? "an old relay registration is retired" : "an old relay registration is still being retired", meta: { relayUrl: registration.relayUrl, retired: record.retired === true } })
     },
     clear: (registration) => {
       const key = markerKey(registration)

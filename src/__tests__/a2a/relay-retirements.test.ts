@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { fileRelayRetirements } from "../../a2a/relay-retirements"
 
@@ -35,6 +35,22 @@ describe("fileRelayRetirements", () => {
     second.clear(b)
     expect(second.read(a)).toEqual({})
     expect(fs.readdirSync(dir)).toHaveLength(0)
+  })
+
+  it("logs each record it writes, with the relay but never its credentials", async () => {
+    tmp = createTmpBundle({ agentName: "retirements" })
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    try {
+      const store = fileRelayRetirements(tmp.agentRoot)
+      store.write(a, { firstFailedAt: 1 })
+      store.write(a, { firstFailedAt: 1, retired: true })
+      const events = nerves.mock.calls.map(([e]) => e).filter((e) => e.event === "channel.a2a_relay_retirement_recorded")
+      expect(events.map((e) => e.meta)).toEqual([{ relayUrl: a.relayUrl, retired: false }, { relayUrl: a.relayUrl, retired: true }])
+      expect(JSON.stringify(events)).not.toContain(a.inboxAuth)
+      expect(JSON.stringify(events)).not.toContain(a.sendCredential)
+    } finally {
+      nerves.mockRestore()
+    }
   })
 
   it("reads a damaged record as empty and ignores fields it does not know", () => {
