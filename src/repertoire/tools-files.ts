@@ -39,6 +39,17 @@ function homeOf(ctx?: ToolContext): string {
   return ctx?.agentRoot ?? getAgentRoot()
 }
 
+/** state/ holds the runtime's own data (mail, sessions, logs, saved tool output): a search of the whole home leaves it out and says so. */
+const RUNTIME_DATA_DIR = "state"
+
+function searchesWholeHome(target: string, home: string): boolean {
+  return path.resolve(target) === path.resolve(home) && fs.statSync(path.join(home, RUNTIME_DATA_DIR), { throwIfNoEntry: false })?.isDirectory() === true
+}
+
+function skippedStateNote(param: "path" | "cwd"): string {
+  return `[skipped state/, the runtime's own data; pass ${param} "state" to search it]`
+}
+
 /** Keep the whole lines that fit the line and character caps. A first line over the character cap is cut to it. */
 function fitLines(lines: string[]): string[] {
   const kept: string[] = []
@@ -271,7 +282,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "glob",
-        description: "Find files in your home matching a glob pattern, sorted. Skips .git and node_modules and shows at most 500 matches.",
+        description: "Find files in your home matching a glob pattern, sorted. Skips .git, node_modules and, from the top of your home, state/, and shows at most 500 matches.",
         parameters: {
           type: "object",
           properties: {
@@ -284,9 +295,13 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     handler: (a, ctx) => {
       const cwd = a.cwd ? resolveLocalToolPath(a.cwd, ctx) : homeOf(ctx)
-      const matches = fg.globSync(a.pattern, { cwd, dot: true, ignore: SKIP_DIRS.map((d) => `**/${d}/**`) }).sort()
-      if (matches.length <= LIST_CAP) return matches.join("\n")
-      return [...matches.slice(0, LIST_CAP), cutNotice("glob", `[${LIST_CAP} of ${matches.length} matches shown; narrow the pattern or cwd]`, { pattern: a.pattern })].join("\n")
+      // A cwd the caller chose is searched as asked; only the default (the whole home) leaves state/ out.
+      const skipsState = !a.cwd && searchesWholeHome(cwd, cwd)
+      const ignore = [...SKIP_DIRS.map((d) => `**/${d}/**`), ...(skipsState ? [`${RUNTIME_DATA_DIR}/**`] : [])]
+      const matches = fg.globSync(a.pattern, { cwd, dot: true, ignore }).sort()
+      const note = skipsState ? [skippedStateNote("cwd")] : []
+      if (matches.length <= LIST_CAP) return [...matches, ...note].join("\n")
+      return [...matches.slice(0, LIST_CAP), cutNotice("glob", `[${LIST_CAP} of ${matches.length} matches shown; narrow the pattern or cwd]`, { pattern: a.pattern }), ...note].join("\n")
     },
     summaryKeys: ["pattern", "cwd"],
   },
@@ -295,7 +310,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "grep",
-        description: "Search file contents in your home for a regex, with file path and line numbers; skips .git, node_modules and binary files. Shows at most 100 matches and tells you to narrow the search when it stops.",
+        description: "Search file contents in your home for a regex, with file path and line numbers; skips .git, node_modules, binary files and, from the top of your home, state/. Shows at most 100 matches and tells you to narrow the search when it stops.",
         parameters: {
           type: "object",
           properties: {
@@ -322,6 +337,8 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const clipLine = (line: string) => line.length > GREP_MAX_LINE_CHARS ? `${line.slice(0, GREP_MAX_LINE_CHARS - 3)}...` : line
 
       const home = homeOf(ctx)
+      const skipsState = searchesWholeHome(targetPath, home)
+      const stateDir = path.join(home, RUNTIME_DATA_DIR)
       // Paths inside the home are shown relative to it.
       const shown = (filePath: string): string => {
         const relative = path.relative(home, filePath)
@@ -376,7 +393,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
           for (const entry of entries) {
             const fullPath = path.join(dir, entry.name)
             if (entry.isDirectory()) {
-              if (!SKIP_DIRS.includes(entry.name)) walk(fullPath)
+              if (!SKIP_DIRS.includes(entry.name) && !(skipsState && fullPath === stateDir)) walk(fullPath)
             } else if (entry.isFile()) {
               files.push(fullPath)
             }
@@ -409,6 +426,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
         if (stopped) break
       }
       if (stopped) results.push(cutNotice("grep", `[stopped at ${GREP_MAX_MATCHES} matches; narrow the pattern or path]`, { pattern: a.pattern }))
+      if (skipsState) results.push(skippedStateNote("path"))
       return results.join("\n")
     },
     summaryKeys: ["pattern", "path", "include"],
