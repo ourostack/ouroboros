@@ -310,7 +310,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "grep",
-        description: "Search file contents in your home for a regex, with file path and line numbers; skips .git, node_modules, binary files and, from the top of your home, state/. Shows at most 100 matches and tells you to narrow the search when it stops.",
+        description: "Search file contents in your home for a regex, with file path and line numbers; skips .git, node_modules, binary files and, from the top of your home, state/. Shows at most 100 matches and says how many there were in all.",
         parameters: {
           type: "object",
           properties: {
@@ -333,6 +333,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const filesOnly = Boolean(a.files_only)
       let matchCount = 0
       let stopped = false
+      let totalMatches = 0
 
       const clipLine = (line: string) => line.length > GREP_MAX_LINE_CHARS ? `${line.slice(0, GREP_MAX_LINE_CHARS - 3)}...` : line
 
@@ -357,9 +358,12 @@ export const fileToolDefinitions: ToolDefinition[] = [
         const matchIndices = new Set<number>()
         for (let i = 0; i < lines.length; i++) {
           if (!regex.test(lines[i])) continue
+          // Past the cap, matches are still counted so the notice can say how much was left unseen.
+          totalMatches++
           if (matchCount >= GREP_MAX_MATCHES) {
             stopped = true
-            break
+            if (filesOnly) break
+            continue
           }
           matchCount++
           matchIndices.add(i)
@@ -423,9 +427,8 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const results: string[] = []
       for (const file of files) {
         results.push(...searchFile(file))
-        if (stopped) break
       }
-      if (stopped) results.push(cutNotice("grep", `[stopped at ${GREP_MAX_MATCHES} matches; narrow the pattern or path]`, { pattern: a.pattern }))
+      if (stopped) results.push(cutNotice("grep", `[${GREP_MAX_MATCHES} of ${totalMatches} ${filesOnly ? "files" : "matches"} shown; narrow the pattern or path]`, { pattern: a.pattern }))
       if (skipsState) results.push(skippedStateNote("path"))
       return results.join("\n")
     },

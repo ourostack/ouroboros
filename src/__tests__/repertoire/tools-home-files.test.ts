@@ -229,13 +229,13 @@ describe("file tools work from the agent's home", () => {
       put("b.md", "hit")
       const out = (await run("grep", { pattern: "hit" })).split("\n")
       expect(out).toHaveLength(101)
-      expect(out[100]).toBe("[stopped at 100 matches; narrow the pattern or path]")
+      expect(out[100]).toBe("[100 of 151 matches shown; narrow the pattern or path]")
     })
     it("caps files_only at 100 files", async () => {
       for (let i = 0; i < 101; i++) put(`f${i}.md`, "hit")
       const out = (await run("grep", { pattern: "hit", files_only: true })).split("\n")
       expect(out).toHaveLength(101)
-      expect(out[100]).toContain("stopped at 100")
+      expect(out[100]).toBe("[100 of 101 files shown; narrow the pattern or path]")
     })
     it("cuts long lines at 500 characters", async () => {
       put("a.md", "hit" + "z".repeat(1000))
