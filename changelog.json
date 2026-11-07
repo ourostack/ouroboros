@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.994",
+      "changes": [
+        "Every agent wakes up with a home kit: paths start in its own home, ls, fetch_url for reading web pages (local and private addresses refused), read, grep, glob and shell that cap their output and say how to see the rest, and multi-edit. The Butler also gets ls, fetch_url, note and diary_write."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.993",
       "changes": [
         "An agent's reply on Anthropic no longer turns into an earlier note when its answer contains a bracket or a brace: streamed tool arguments stay intact."
