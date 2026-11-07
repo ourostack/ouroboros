@@ -1959,3 +1959,200 @@ describe("protected folders resolve paths the way the file tools do", () => {
     })
   })
 })
+
+describe("sync owns the bundle's git, and its key is closed to the read-only file tools", () => {
+  let tmp: string
+  let bundle: string
+
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bundle-git-guard-")))
+    bundle = path.join(tmp, "agent.ouro")
+    fs.mkdirSync(path.join(bundle, ".git"), { recursive: true })
+    fs.mkdirSync(path.join(bundle, "psyche"))
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    const { __testHooks } = await import("../../heart/sync")
+    delete __testHooks.syncSecretDir
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
+
+  async function shell(command: string) {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    return guardInvocation("shell", { command }, { readPaths: new Set(), agentRoot: bundle, trustLevel: "family" })
+  }
+  // The psyche guard runs first and keeps its own line for the commands in `psycheFirst`, which it refuses anyway.
+  async function expectRefused(commands: string[], reason: string, psycheFirst: string[]) {
+    const { PSYCHE_REFUSAL } = await import("../../repertoire/guardrails")
+    const results = []
+    for (const command of commands) results.push({ command, result: await shell(command) })
+    expect(results).toEqual(commands.map((command) => ({ command, result: { allowed: false, reason: psycheFirst.includes(command) ? PSYCHE_REFUSAL : reason } })))
+    // The bundle guard refuses every one of them on its own too, including the ones the psyche guard answers first.
+    const { bundleGitRefused } = await import("../../repertoire/guardrails")
+    expect(commands.filter((command) => !bundleGitRefused(command, bundle))).toEqual([])
+  }
+
+  it("refuses each way of aiming git at the bundle with one plain line", async () => {
+    const { BUNDLE_GIT_REFUSAL } = await import("../../repertoire/guardrails")
+    expect(BUNDLE_GIT_REFUSAL).toBe("my bundle syncs itself; I don't run git in it.")
+    fs.symlinkSync(bundle, path.join(tmp, "link"))
+    const refused = [
+      `cd ${bundle} && git commit -am x`,
+      `cd ${bundle}/psyche; git log`,
+      `cd ${tmp} && git -C agent.ouro status`,
+      `cd ${tmp} && cd agent.ouro && git status`,
+      `cd -L ${bundle} && git status`,
+      `pushd ${bundle} && git status`,
+      `git -C ${bundle} status`,
+      `git -C ${tmp} -C agent.ouro push origin HEAD:main`,
+      `git -C ${tmp}/link status`,
+      `git --git-dir=${bundle}/.git log`,
+      `git --git-dir ${bundle}/.git log`,
+      `git --work-tree=${bundle} --git-dir=${tmp}/other.git status`,
+      `git --work-tree ${bundle} status`,
+      `git -c core.worktree=${bundle} status`,
+      `GIT_DIR=${bundle}/.git git log`,
+      `GIT_WORK_TREE=${bundle} git status`,
+      `export GIT_DIR=${bundle}/.git; git status`,
+      `cd ${tmp} && GIT_DIR=agent.ouro/.git git log`,
+      `env -C ${bundle} git status`,
+      `env -C${bundle} git status`,
+      `env --chdir=${bundle} git status`,
+      `env --chdir ${bundle} git status`,
+      `env GIT_DIR=${bundle}/.git git log`,
+      `env -S "git -C ${bundle} status"`,
+      `sudo -u ouro git -C ${bundle} status`,
+      `timeout 5 git -C ${bundle} fetch`,
+      `cd ${tmp} && ls | xargs git -C agent.ouro status`,
+      `sh -c "cd ${bundle} && git push"`,
+      `bash -lc 'git -C ${bundle} add -A'`,
+      `eval "git -C ${bundle} reset --hard"`,
+      `echo $(git -C ${bundle} rev-parse HEAD)`,
+      `git init ${bundle}`,
+      `git init --separate-git-dir=${bundle}/.git ${tmp}/fresh`,
+      `git init --separate-git-dir ${bundle}/.git ${tmp}/fresh`,
+      `cd ${tmp} && git --git-dir agent.ouro/.git log`,
+      `GIT_DIR=${bundle}/.git; git log`,
+      `git clone ${tmp}/remote.git ${bundle}/copy`,
+    ]
+    await expectRefused(refused, BUNDLE_GIT_REFUSAL, [`cd ${bundle}/psyche; git log`, `echo $(git -C ${bundle} rev-parse HEAD)`])
+  })
+
+  it("refuses git while the shell itself starts in the bundle", async () => {
+    vi.spyOn(process, "cwd").mockReturnValue(bundle)
+    const { BUNDLE_GIT_REFUSAL, PSYCHE_REFUSAL } = await import("../../repertoire/guardrails")
+    expect(await shell("git status")).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
+    expect(await shell("cd psyche && git log")).toEqual({ allowed: false, reason: PSYCHE_REFUSAL })
+    expect(await shell("git -C /tmp/repo status")).toEqual({ allowed: true })
+  })
+
+  it("refuses git whose directory it cannot work out", async () => {
+    const { BUNDLE_GIT_REFUSAL } = await import("../../repertoire/guardrails")
+    fs.symlinkSync("loop", path.join(tmp, "loop"))
+    const refused = [
+      "git -C $REPO status",
+      "git --git-dir $REPO/.git log",
+      "git --git-dir=$REPO/.git log",
+      "git -c core.worktree=$REPO status",
+      "GIT_DIR=$REPO git log",
+      "cd - && git -C repo status",
+      "pushd && git status",
+      "cd $REPO && git status",
+      "git init $REPO",
+      "git -C",
+      "$RUN git status",
+      `cd ${tmp} && find . -execdir git status \;`,
+      `echo "git -C ${bundle} push" | sh`,
+      `${"eval ".repeat(33)}git status`,
+      `git -C ${tmp}/loop status`,
+      "cd - && cd agent.ouro && git status",
+    ]
+    await expectRefused(refused, BUNDLE_GIT_REFUSAL, ["git -C $REPO status", "git --git-dir $REPO/.git log", "cd $REPO && git status", "git init $REPO", "$RUN git status"])
+  })
+
+  it("allows git elsewhere and commands that only mention git", async () => {
+    const allowed = [
+      "git status",
+      "cd /tmp/repo && git status",
+      "git -C /tmp/repo status",
+      "cd - && git -C /tmp/repo log",
+      "cd && git -C /tmp/repo log",
+      "git -p --namespace x -c user.name=a --bare log",
+      "git clone https://example.invalid/x.git",
+      `git -C /tmp/repo init`,
+      `GIT_DIR=/tmp/repo/.git git log`,
+      "echo git is great",
+      `grep -r git ${bundle}/psyche`,
+      `ls ${bundle}`,
+      "timeout 5 ls",
+      "find /tmp/repo -name '*.md'",
+      "bash ./build.sh git",
+      "export PATH=/usr/bin:$PATH && git --version",
+      "env -C /tmp/repo; git status",
+      "sh -c; git status",
+      "xargs ls; git status",
+      "git -C /tmp/repo -c",
+    ]
+    for (const command of allowed) expect({ command, result: await shell(command) }).toEqual({ command, result: { allowed: true } })
+    const { bundleGitRefused, guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", { command: `git -C ${bundle} status` }, { readPaths: new Set() })).toEqual({ allowed: true })
+    // A runner's unreadable argument is not its command; the psyche guard answers this one first in a turn.
+    expect(bundleGitRefused("find /tmp/repo -exec $X git -C /tmp/repo log \\;", bundle)).toBe(false)
+    // An unreadable command word with no git after it runs something else; the later git is read on its own.
+    expect(bundleGitRefused("$RUN ls; git -C /tmp/repo log", bundle)).toBe(false)
+    // An unset stable variable stays unknown, so git aimed through it is refused.
+    const savedTmp = process.env.TMPDIR
+    delete process.env.TMPDIR
+    try {
+      expect(bundleGitRefused("git -C $TMPDIR/repo log", bundle)).toBe(true)
+    } finally {
+      process.env.TMPDIR = savedTmp
+    }
+  })
+
+  it("read_file, glob and grep refuse /run/ouro-sync, the key in it and a symlink to it", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    const refused = { allowed: false, reason: "that path is protected — i can't read it." }
+    expect(guardInvocation("read_file", { path: "/run/ouro-sync/deploy_key" }, ctx)).toEqual(refused)
+    expect(guardInvocation("read_file", {}, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("glob", {}, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("glob", { pattern: "*", cwd: "/run/ouro-sync" }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN", path: "/run/ouro-sync" }, ctx)).toEqual(refused)
+
+    const { __testHooks } = await import("../../heart/sync")
+    const secret = path.join(tmp, "ouro-sync")
+    fs.mkdirSync(secret)
+    fs.writeFileSync(path.join(secret, "deploy_key"), "key\n")
+    fs.symlinkSync(path.join(secret, "deploy_key"), path.join(bundle, "notes.txt"))
+    fs.symlinkSync(secret, path.join(tmp, "keys"))
+    fs.writeFileSync(path.join(bundle, "real.txt"), "fine\n")
+    __testHooks.syncSecretDir = secret
+
+    expect(guardInvocation("read_file", { path: path.join(secret, "deploy_key") }, ctx)).toEqual(refused)
+    expect(guardInvocation("read_file", { path: path.join(bundle, "notes.txt") }, ctx)).toEqual(refused)
+    expect(guardInvocation("read_file", { path: path.join(tmp, "keys", "deploy_key") }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "*", cwd: path.join(tmp, "keys") }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: `${secret}/*` }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "ouro-sync/deploy_key", cwd: tmp }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN", path: path.join(bundle, "notes.txt") }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN", path: tmp }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN", path: "/" }, ctx)).toEqual(refused)
+
+    expect(guardInvocation("read_file", { path: path.join(bundle, "real.txt") }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("read_file", { path: "src/index.ts" }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("glob", { pattern: "**/*.txt", cwd: bundle }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("glob", { pattern: "*.ts" }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("grep", { pattern: "fine", path: bundle }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("grep", { pattern: "fine" }, ctx)).toEqual({ allowed: true })
+  })
+
+  it("refuses a read whose landing place the filesystem cannot report", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    fs.symlinkSync("loop", path.join(tmp, "loop"))
+    expect(guardInvocation("read_file", { path: path.join(tmp, "loop") }, { readPaths: new Set() })).toEqual({ allowed: false, reason: "that path is protected — i can't read it." })
+  })
+})

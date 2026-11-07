@@ -856,3 +856,49 @@ describe("the psyche survives every ship and rollback", () => {
     expect(gate.indexOf("removePsycheMarker(psycheDir, planted.token)")).toBeLessThan(gate.indexOf("if (!outcome.passed) process.exit(1)"))
   })
 })
+
+describe("the bundle sync key mount", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs")
+  const installed = [
+    '<?xml version="1.0"?>\n',
+    '<Container version="2">\n',
+    "  <Name>ouro-butler</Name>\n",
+    '  <Config Name="Trust" Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>\n',
+    "</Container>\n",
+  ].join("")
+
+  it("is mounted read-only by docker create", () => {
+    expect(upgrade.SYNC_MOUNT).toBe("/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro")
+    const recreate = source.slice(source.indexOf("function recreateResident("), source.indexOf("export function psycheProblems"))
+    expect(recreate).toContain('"-v", SYNC_MOUNT')
+    expect(recreate.indexOf('"-v", SYNC_MOUNT')).toBeLessThan(recreate.indexOf("image(version)])"))
+  })
+  it("adds the read-only Config to the DockerMan template before </Container>, once", () => {
+    const after = upgrade.withSyncConfig(installed, parseDockerManTemplateXml)
+    expect(after).toBe(installed.replace("</Container>", `${upgrade.SYNC_CONFIG}\n</Container>`))
+    const config = parseDockerManTemplateXml(after).children.find((child: { attributes: Record<string, string> }) => child.attributes.Target === "/run/ouro-sync")
+    expect(config.attributes.Mode).toBe("ro")
+    expect(config.attributes.Default).toBe("/mnt/user/appdata/ouro-butler/sync")
+    expect(upgrade.withSyncConfig(after, parseDockerManTemplateXml)).toBe(after)
+  })
+  it("leaves a template the parser cannot read, or an insertion it does not accept, unchanged", () => {
+    const broken = installed.replace("</Container>\n", "")
+    expect(upgrade.withSyncConfig(broken, parseDockerManTemplateXml)).toBe(broken)
+    let calls = 0
+    const rejectsInsertion = (text: string) => (calls++ === 0 ? parseDockerManTemplateXml(text) : null)
+    expect(upgrade.withSyncConfig(installed, rejectsInsertion)).toBe(installed)
+  })
+  it("is applied by pinTemplate, which warns when the Config is still missing", () => {
+    const pin = source.slice(source.indexOf("function pinTemplate("), source.indexOf("// Every release pulls"))
+    expect(pin).toContain("withSyncConfig(withoutPsycheConfig(")
+    expect(pin).toContain("Config; add it before the next DockerMan Apply")
+  })
+  it("matches the Config the shipped sanctuary.xml carries", () => {
+    const shipped = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.xml"), "utf8")
+    expect(shipped).toContain(`${upgrade.SYNC_CONFIG}\n</Container>`)
+    const config = parseDockerManTemplateXml(shipped).children.filter((child: { name: string; attributes: Record<string, string> }) => child.name === "Config" && child.attributes.Target === "/run/ouro-sync")
+    expect(config).toHaveLength(1)
+    expect(config[0].attributes.Mode).toBe("ro")
+  })
+})

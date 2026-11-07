@@ -127,6 +127,7 @@ export type OuroCliCommand =
   | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
   | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
   | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
+  | { kind: "sanctuary.git-exclude" }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "acp-serve"; agent: string; friendId?: string; socketOverride?: string; workbenchMcp?: string | true; observeOnly?: boolean }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }

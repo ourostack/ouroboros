@@ -134,6 +134,7 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
       calls.push(`ssh ${cmd}`)
       sshN += 1
       if (script.ssh) { const r = script.ssh(cmd, sshN); if (r) return r }
+      if (cmd.includes("@@CUTOVER")) return ok("@@CUTOVER:0\n")
       if (cmd.includes("manifest inspect")) return ok()
       if (cmd.includes("docker inspect")) return ok("ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.868\n")
       if (cmd.includes(" preflight ")) return ok("PREFLIGHT GREEN — run `upgrade` (detached).\n")
@@ -526,7 +527,7 @@ describe("butler-ship CLI", () => {
     const { main } = await cli()
     const dry = await main(["0.1.0-alpha.870", "--dry-run"], {}, baseDeps({
       gh: async (a: string[]) => (a[0] === "api" ? ok(JSON.stringify([{ sha: "s", commit: { message: "x (0.1.0-alpha.870)" } }])) : ok(JSON.stringify([{ status: "completed", conclusion: "success" }]))),
-      ssh: async (_h: string, cmd: string) => (cmd.includes("preflight") ? ok("PREFLIGHT GREEN\n") : ok()),
+      ssh: async (_h: string, cmd: string) => (cmd.includes("preflight") ? ok("PREFLIGHT GREEN\n") : cmd.includes("@@CUTOVER") ? ok("@@CUTOVER:0\n") : ok()),
     }))
     expect(dry).toBe(0)
   })
@@ -541,4 +542,50 @@ describe("butler-ship CLI", () => {
     const g = d.gh(["--version"])
     expect(typeof g.code).toBe("number")
   }, 30_000)
+})
+
+describe("butler-ship after the bundle sync cutover", () => {
+  const MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
+  const cutoverDone = (cmd: string) => (cmd.includes("@@CUTOVER") ? ok("@@CUTOVER:1\n") : (undefined as unknown as Res))
+  const releaseFile = (res: Res) => (a: string[]) => (a.join(" ").includes("contents/deploy/unraid/github_known_hosts?ref=") ? res : (undefined as unknown as Res))
+
+  it("checks the host's cutover marker right after resolving the release, and ships normally without it", async () => {
+    const h = await harness()
+    const r = await h.run()
+    expect(r.exitCode).toBe(0)
+    const probe = h.calls.findIndex((c) => c.startsWith("ssh ") && c.includes("@@CUTOVER"))
+    expect(h.calls[probe]).toBe(`ssh [ -e ${MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
+    expect(probe).toBeGreaterThan(h.calls.findIndex((c) => c.includes("commits?")))
+    expect(probe).toBeLessThan(h.calls.findIndex((c) => c.startsWith("gh run list")))
+    expect(h.calls.some((c) => c.includes("github_known_hosts"))).toBe(false)
+  })
+
+  it("ships a release that carries bundle sync after the cutover", async () => {
+    const h = await harness({ ssh: cutoverDone, gh: releaseFile(ok("github.com ssh-ed25519 AAAA")) })
+    const r = await h.run()
+    expect(r.exitCode).toBe(0)
+    expect(h.calls).toContain(`gh api repos/ourostack/ouroboros/contents/deploy/unraid/github_known_hosts?ref=${SHA}`)
+  })
+
+  it.each([false, true])("refuses a release without bundle sync after the cutover and names the rollback first (dry run: %s)", async (dryRun) => {
+    const h = await harness({ ssh: cutoverDone, gh: releaseFile(nok("gh: Not Found (HTTP 404)")) }, { dryRun })
+    const refusal = h.run()
+    await expect(refusal).rejects.toThrow(`${V} has no git in its image, and this host's bundle has already moved to bundle sync (${MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${V}.`)
+    expect(h.calls.some((c) => c.startsWith("gh run list") || c.includes("manifest inspect") || c.includes(" preflight ") || c.includes("upgrade "))).toBe(false)
+    expect(h.scp).toEqual([])
+  })
+
+  it("stops when it cannot tell whether the release carries bundle sync", async () => {
+    const h = await harness({ ssh: cutoverDone, gh: releaseFile(nok("gh: Bad Gateway (HTTP 502)")) })
+    await expect(h.run()).rejects.toThrow(`checking whether ${V} carries bundle sync failed (exit 1): gh: Bad Gateway (HTTP 502)`)
+  })
+
+  it.each([
+    ["the probe fails", nok("ssh: connect to host sanctuary port 22: Connection refused", 255), "exit 255"],
+    ["the probe prints no marker", ok("weird\n"), "exit 0"],
+  ])("stops when %s", async (_name, res, exit) => {
+    const h = await harness({ ssh: (cmd) => (cmd.includes("@@CUTOVER") ? res : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(`could not check ${MARKER} on the host (${exit})`)
+    expect(h.calls.some((c) => c.startsWith("gh run list"))).toBe(false)
+  })
 })

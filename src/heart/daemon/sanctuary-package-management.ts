@@ -4,6 +4,7 @@ import {
   ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryDirectoryFromBase,
   sanctuaryDirectoriesShareIdentity,
+  writeSanctuaryGitExclude,
   type SanctuaryPackageManagedBundleInspection,
 } from "./sanctuary-bundle-migration"
 import { createSanctuaryBundlePreparationFailure } from "./daemon-bootstrap-startup"
@@ -56,7 +57,7 @@ export function requireSanctuaryPackageManagementDecision(decision: SanctuaryPac
 
 export function prepareSanctuaryPackageManagedBundle(
   decision: SanctuaryPackageManagementDecision,
-  deps: { ensure?: typeof ensureSanctuaryPackageManagedBundle } = {},
+  deps: { ensure?: typeof ensureSanctuaryPackageManagedBundle; writeGitExclude?: typeof writeSanctuaryGitExclude } = {},
 ): SanctuaryPackageManagedBundleInspection | undefined {
   requireSanctuaryPackageManagementDecision(decision)
   if (decision.kind === "inactive") return undefined
@@ -73,6 +74,12 @@ export function prepareSanctuaryPackageManagedBundle(
   if (!inspection.ok || !inspection.data.ready) {
     const action = inspection.ok ? inspection.data.repair.action : inspection.error.repair.action
     throw createSanctuaryBundlePreparationFailure(action === "none" ? "run_verified_update_recovery" : action)
+  }
+  // Without the exclude, sync would commit secrets and package-managed files, so a bundle that cannot get one does not boot.
+  try {
+    (deps.writeGitExclude ?? writeSanctuaryGitExclude)(decision.agentRoot)
+  } catch {
+    throw createSanctuaryBundlePreparationFailure("run_verified_update_recovery")
   }
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_package_management_prepared", message: "prepared Sanctuary package-managed bundle", meta: { runtimePackageVersion: inspection.data.runtimePackageVersion, journalState: inspection.data.journalState } })
   return inspection

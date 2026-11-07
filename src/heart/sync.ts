@@ -109,6 +109,20 @@ export const SYNC_GIT_TIMEOUT_MS = 120_000
 export const SYNC_FETCH_TIMEOUT_MS = 10_000
 export const SYNC_PUSH_TIMEOUT_MS = 60_000
 
+/**
+ * The container's read-only mount for the sync deploy key. The key can push to
+ * the owner's repo, so the agent's file tools refuse this directory.
+ */
+export const SYNC_SECRET_DIR = "/run/ouro-sync"
+
+/** Where the image's Dockerfile installs GitHub's pinned host keys. */
+export const SYNC_KNOWN_HOSTS = "/etc/ssh/ssh_known_hosts"
+
+/** The deploy key directory: SYNC_SECRET_DIR, unless a test points it elsewhere. */
+export function syncSecretDir(): string {
+  return __testHooks.syncSecretDir ?? SYNC_SECRET_DIR
+}
+
 /** Message of the merge commit in which the owner's psyche edits win. */
 export const OWNER_WINS_MESSAGE = "sync: owner's psyche edit wins"
 
@@ -130,6 +144,8 @@ export const __testHooks: {
   extraGitConfig?: string[]
   /** Replaces `merge --abort` in repair; no real git refuses it and then accepts `reset --merge`. */
   mergeAbortArgs?: string[]
+  /** Replaces SYNC_SECRET_DIR; a test host has no /run/ouro-sync. */
+  syncSecretDir?: string
 } = {}
 
 /** A pause marker longer than this is garbage: a crashed pauser must not stop sync for good. */
@@ -194,6 +210,17 @@ function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C", LANG: "C", ...extra }
 }
 
+/**
+ * The environment of a fetch or push. When the container has the deploy key,
+ * ssh uses only that key and only GitHub's pinned host keys. Without the key
+ * (the Mac, or before the cutover) ssh is left to the host's own setup.
+ */
+export function syncNetworkEnv(): NodeJS.ProcessEnv {
+  const key = path.join(syncSecretDir(), "deploy_key")
+  if (!fs.existsSync(key)) return gitEnv()
+  return gitEnv({ GIT_SSH_COMMAND: `ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${SYNC_KNOWN_HOSTS}` })
+}
+
 function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv, input?: string): GitRun {
   const run = spawnSync("git", [...identityArgs(agentName), ...args], {
     cwd: agentRoot,
@@ -255,7 +282,7 @@ function runGitAsync(
   return new Promise((resolve) => {
     const child = spawn("git", [...identityArgs(agentName), ...args], {
       cwd: agentRoot,
-      env: gitEnv(),
+      env: syncNetworkEnv(),
       stdio: ["ignore", "ignore", "pipe"],
       detached: true,
     })

@@ -477,6 +477,11 @@ function enableResidentAutostart() {
 // read-only at /etc/ouro/trust/sanctuary. The bundle's recursive chown cannot reach it, and the resident cannot write it.
 export const TRUST_HOST_DIR = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
 export const TRUST_MOUNT = `${TRUST_HOST_DIR}:/etc/ouro/trust/sanctuary:ro`
+// The bundle sync deploy key: root places it on the host, and the Butler reads it through a read-only mount. The key can
+// push to the owner's repo, so nothing inside the Butler can write the mount.
+export const SYNC_HOST_DIR = "/mnt/user/appdata/ouro-butler/sync"
+export const SYNC_TARGET = "/run/ouro-sync"
+export const SYNC_MOUNT = `${SYNC_HOST_DIR}:${SYNC_TARGET}:ro`
 
 /** What is wrong with a host trust directory's stat, or null when it is a real root-owned directory closed to group and other writes. */
 export function trustDirIssue(stat) {
@@ -544,6 +549,7 @@ function recreateResident(version) {
     "-v", "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
     "-v", "/run/ouro-authority:/run/ouro-authority:ro",
     "-v", TRUST_MOUNT,
+    "-v", SYNC_MOUNT,
     image(version)])
   const ref = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}}"]).trim()
   if (ref !== image(version)) fail(`recreated resident is ${ref}, expected ${image(version)}`)
@@ -1195,6 +1201,23 @@ export function withoutPsycheConfig(text, parse) {
   return after && psycheConfigs(after) === 0 && after.children.length === before.children.length - 1 ? next : text
 }
 
+export const SYNC_CONFIG = `  <Config Name="Bundle sync key (read-only)" Target="${SYNC_TARGET}" Default="${SYNC_HOST_DIR}" Mode="ro" Description="Root-owned deploy key the Butler's bundle sync pushes with. Read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">${SYNC_HOST_DIR}</Config>`
+
+/**
+ * The DockerMan template with the sync key's read-only Config added before </Container>, so a DockerMan Apply keeps the
+ * mount. `parse` is docker-man-template-xml.cjs's parseDockerManTemplateXml: a template it cannot read, one that already
+ * has a Config for the target, or one where the insertion does not add exactly that element comes back unchanged.
+ */
+export function withSyncConfig(text, parse) {
+  const syncConfigs = (document) => document?.children.filter((child) => child.name === "Config" && child.attributes.Target === SYNC_TARGET).length
+  const before = parse(text)
+  if (!before || syncConfigs(before) !== 0) return text
+  const close = text.lastIndexOf("</Container>")
+  const next = `${text.slice(0, close)}${SYNC_CONFIG}\n${text.slice(close)}`
+  const after = parse(next)
+  return after && syncConfigs(after) === 1 && after.children.length === before.children.length + 1 ? next : text
+}
+
 // Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image, without the old psyche mount.
 // Runs after the commit, so the parser comes from the installed package (this script is staged on its own, without siblings).
 function pinTemplate(version) {
@@ -1204,9 +1227,10 @@ function pinTemplate(version) {
   if (!next.includes(`<Repository>${image(version)}</Repository>`)) { console.log("  WARN: DockerMan template Repository not recognised; left unchanged"); return }
   try {
     const { parseDockerManTemplateXml } = createRequire(import.meta.url)(`${ROOT}/package/deploy/unraid/docker-man-template-xml.cjs`)
-    next = withoutPsycheConfig(next, parseDockerManTemplateXml)
-  } catch (error) { console.log(`  WARN: could not load the DockerMan template parser (${error.message}); psyche Config left in place`) }
+    next = withSyncConfig(withoutPsycheConfig(next, parseDockerManTemplateXml), parseDockerManTemplateXml)
+  } catch (error) { console.log(`  WARN: could not load the DockerMan template parser (${error.message}); psyche Config left in place, sync key Config not added`) }
   if (next.includes(`Target="${PSYCHE_TARGET}"`)) console.log("  WARN: DockerMan template still has a psyche Config; remove it before the next DockerMan Apply")
+  if (!next.includes(`Target="${SYNC_TARGET}"`)) console.log(`  WARN: DockerMan template has no ${SYNC_TARGET} Config; add it before the next DockerMan Apply`)
   if (next !== text) { writeFileSync(`${TEMPLATE}.prev`, text); writeFileSync(TEMPLATE, next) }
   ok(`DockerMan template pins ${image(version)}`)
 }

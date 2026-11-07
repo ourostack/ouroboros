@@ -289,6 +289,29 @@ describe("Sanctuary package-management activation", () => {
     expect(inactiveEnsure).not.toHaveBeenCalled()
   })
 
+  it("writes the bundle's git exclude once the bundle is ready, and does not boot without it", () => {
+    const { decision } = resolve()
+    const ready = vi.fn(() => ({
+      ok: true as const,
+      data: {
+        runtimePackageVersion: VERSION,
+        packagedBundleVersion: VERSION,
+        liveBundleVersion: VERSION,
+        parity: "exact" as const,
+        mismatchCodes: [],
+        journalState: "absent" as const,
+        ready: true,
+        repair: { actor: "none" as const, action: "none" as const },
+      },
+    }))
+    const writeGitExclude = vi.fn(() => ({ initialized: false, written: true }))
+    prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude })
+    expect(writeGitExclude).toHaveBeenCalledWith(decision.kind === "active" ? decision.agentRoot : "")
+
+    const failing = vi.fn(() => { throw new Error("EACCES .git/info/exclude") })
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude: failing })).toThrow("human-required: resume the reviewed Butler update recovery procedure")
+  })
+
   it("translates invalid activation, stale inspection, and dependency errors into controlled guidance", () => {
     const invalid = resolve({ managedAgents: [] }).decision
     const ensure = vi.fn()

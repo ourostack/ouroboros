@@ -234,6 +234,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro work sentinel --agent my-agent --format json",
     subcommands: ["card", "gauntlet", "sentinel"],
   },
+  sanctuary: {
+    category: "Internal",
+    description: "Print the git exclude list for the Butler's bundle, one entry per line. Starts nothing and reads nothing.",
+    usage: "ouro sanctuary git-exclude --print",
+    example: "ouro sanctuary git-exclude --print",
+  },
   "nerves-review": {
     category: "Internal",
     description: `Read-only review of recent nerves events from one agent log stream (default: ${DEFAULT_NERVES_PROCESS})`,

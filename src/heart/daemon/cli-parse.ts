@@ -2949,6 +2949,10 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "event") return parseEventCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
+  if (head === "sanctuary") {
+    if (args.length === 3 && args[1] === "git-exclude" && args[2] === "--print") return { kind: "sanctuary.git-exclude" }
+    throw new Error("Usage: ouro sanctuary git-exclude --print")
+  }
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "acp-serve") return parseAcpServeCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))

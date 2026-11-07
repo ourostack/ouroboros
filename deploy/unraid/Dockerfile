@@ -7,7 +7,7 @@ ARG TARGETARCH
 ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
 ARG SUPERCRONIC_ARM64_SHA256=c0576a8eb092e3f79108ed0a2155a25c7766af78456e5a6070e54757ef513bfe
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ \
+  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ git openssh-client \
   && rm -rf /var/lib/apt/lists/* \
   && case "$TARGETARCH" in amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_AMD64_SHA256" ;; arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_ARM64_SHA256" ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
   && curl -fsSLo /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-${TARGETARCH}" \
@@ -35,6 +35,8 @@ COPY skills ./skills
 COPY changelog.json ./changelog.json
 COPY deploy/unraid/container-runtime.json ./container-runtime.json
 COPY deploy/unraid /opt/ouro/deploy/unraid
+# Bundle sync pushes over ssh with the deploy key mounted at /run/ouro-sync, trusting only GitHub's published host keys.
+COPY deploy/unraid/github_known_hosts /etc/ssh/ssh_known_hosts
 COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
 

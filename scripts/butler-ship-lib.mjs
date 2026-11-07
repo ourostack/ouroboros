@@ -6,6 +6,10 @@ export const IMAGE_REPO = "ghcr.io/ourostack/ouroboros-butler"
 export const REMOTE_UPGRADE = "/tmp/butler-upgrade.mjs"
 export const REMOTE_GATE = "/tmp/sanctuary-replay-gate.mjs"
 export const REMOTE_NODE = "/usr/local/bin/node"
+// Written by sanctuary-sync-cutover.sh once the bundle owns its own git. From then on the Butler's image must have git.
+export const CUTOVER_MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
+// A file that every release with bundle sync (git and ssh in the image) carries in its tree.
+export const BUNDLE_SYNC_RELEASE_FILE = "deploy/unraid/github_known_hosts"
 export const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
@@ -214,6 +218,15 @@ export async function ship(opts, deps, timing = {}) {
   if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)
   const mergedAt = commitDate(commits, sha)
   deps.log(`  ok   ${version} is ${sha}`)
+  const cutover = await deps.ssh(host, `[ -e ${CUTOVER_MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
+  const cutoverState = /^@@CUTOVER:([01])$/m.exec(cutover.stdout)
+  if (cutover.code !== 0 || !cutoverState) throw new ShipError(`could not check ${CUTOVER_MARKER} on the host (exit ${cutover.code})`)
+  if (cutoverState[1] === "1") {
+    const file = await deps.gh(["api", `repos/${REPO}/contents/${BUNDLE_SYNC_RELEASE_FILE}?ref=${sha}`])
+    if (file.code !== 0 && /HTTP 404/.test(String(file.stderr))) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
+    must(file, `checking whether ${version} carries bundle sync`)
+    deps.log(`  ok   ${version} carries bundle sync, which this host's bundle uses`)
+  }
 
   say("2. wait for coverage-gate")
   await waitFor(`coverage-gate on ${sha}`, t.coverage, async () => {

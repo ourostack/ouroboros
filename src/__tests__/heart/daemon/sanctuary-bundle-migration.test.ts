@@ -73,8 +73,12 @@ vi.mock("node:fs", async (importOriginal) => {
 })
 
 import { consumeRoutineActionGrant, readRoutineActionReceipts, readStewardPolicy, updateStewardPolicy } from "../../../heart/steward-policy"
+import { execFileSync } from "node:child_process"
+import { pendingSyncPath, postTurnPush } from "../../../heart/sync"
+import { prepareSanctuaryPackageManagedBundle } from "../../../heart/daemon/sanctuary-package-management"
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
+  SANCTUARY_GIT_EXCLUDES,
   SANCTUARY_PACKAGE_MANAGED_FILES,
   SANCTUARY_STARTER_PSYCHE_FILES,
   commitSanctuaryPackageManagedBundle,
@@ -83,7 +87,9 @@ import {
   inspectSanctuaryPackageManagedBundleRollback,
   migrateSanctuaryPackageManagedBundle,
   rollbackSanctuaryPackageManagedBundle,
+  sanctuaryGitExcludeText,
   seedSanctuaryPsycheIfAbsent,
+  writeSanctuaryGitExclude,
 } from "../../../heart/daemon/sanctuary-bundle-migration"
 
 const roots: string[] = []
@@ -213,7 +219,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "state/sessions/owner.json", "private history\n")
     const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
-    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(17)
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(18)
     expect(result.managedFilesUpdated).toBe(1)
     expect(fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")).toBe(ownedIdentity)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
@@ -1501,5 +1507,97 @@ describe("Sanctuary product rules", () => {
     expect(fs.existsSync(path.join(agentRoot, "product", "PRODUCT.md"))).toBe(false)
     // The folder the release created goes too, so a rollback to 979 leaves no non-canonical entry behind.
     expect(fs.existsSync(path.join(agentRoot, "product"))).toBe(false)
+  })
+})
+
+describe("the bundle's git exclude", () => {
+  const OWNER = ["-c", "user.name=Owner", "-c", "user.email=owner@example.invalid", "-c", "commit.gpgsign=false"]
+  const git = (cwd: string, args: string[]): string => execFileSync("git", [...OWNER, ...args], { cwd, stdio: "pipe", env: { ...process.env, LC_ALL: "C" } }).toString().trim()
+  const BACKUP_LIST = ["**/credentials.json", "mcp/media-credentials.json", "books/hey/.config/", "**/*.key", "**/*.pem", "**/.env", "state/", "inbox/", "arc/flight-recorder/", "arc/obligations/", "arc/packets/", "books/bin/", "books/vendor/", "books/work/", "books/fonts/", "mcp/*.pre-*", "books/hey/", "**/__pycache__/"]
+
+  it("lists the backup's excludes, MCP credentials, every package-managed file and the release's bookkeeping", () => {
+    expect(SANCTUARY_GIT_EXCLUDES).toEqual([...BACKUP_LIST, "mcp/*credentials*", ...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", ".sanctuary-package-managed-rollback.json*", ".psyche-seed.*"])
+    expect(sanctuaryGitExcludeText()).toBe(`${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`)
+  })
+
+  it("writes exactly SANCTUARY_GIT_EXCLUDES and leaves a tracked .gitignore alone", () => {
+    const agentRoot = makeRoot("sanctuary-git-exclude")
+    git(agentRoot, ["init", "-q", "-b", "main"])
+    write(agentRoot, ".gitignore", "notes/scratch/\n")
+    git(agentRoot, ["add", ".gitignore"])
+    git(agentRoot, ["commit", "-q", "-m", "owner's ignore"])
+    write(agentRoot, ".git/info/exclude", "# git's sample\n")
+
+    expect(writeSanctuaryGitExclude(agentRoot)).toEqual({ initialized: false, written: true })
+    expect(fs.readFileSync(path.join(agentRoot, ".git/info/exclude"), "utf8")).toBe(`${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`)
+    expect(fs.readFileSync(path.join(agentRoot, ".gitignore"), "utf8")).toBe("notes/scratch/\n")
+    expect(git(agentRoot, ["status", "--porcelain"])).toBe("")
+    expect(writeSanctuaryGitExclude(agentRoot)).toEqual({ initialized: false, written: false })
+
+    fs.rmSync(path.join(agentRoot, ".git/info"), { recursive: true })
+    expect(writeSanctuaryGitExclude(agentRoot)).toEqual({ initialized: false, written: true })
+    expect(fs.readFileSync(path.join(agentRoot, ".git/info/exclude"), "utf8")).toBe(sanctuaryGitExcludeText())
+  })
+
+  it("leaves a bundle with sync off and no repository alone, and reports a failed init or an unreadable exclude", () => {
+    const off = makeRoot("sanctuary-git-exclude-off")
+    expect(writeSanctuaryGitExclude(off)).toEqual({ initialized: false, written: false })
+    write(off, "agent.json", { sync: { enabled: false } })
+    expect(writeSanctuaryGitExclude(off)).toEqual({ initialized: false, written: false })
+    write(off, "agent.json", "{ not json")
+    expect(writeSanctuaryGitExclude(off)).toEqual({ initialized: false, written: false })
+    expect(fs.existsSync(path.join(off, ".git"))).toBe(false)
+
+    const blocked = makeRoot("sanctuary-git-exclude-blocked")
+    write(blocked, "agent.json", { sync: { enabled: true } })
+    fs.chmodSync(blocked, 0o555)
+    try {
+      expect(() => writeSanctuaryGitExclude(blocked)).toThrow(/^git init failed: /u)
+    } finally {
+      fs.chmodSync(blocked, 0o755)
+    }
+    // No git on PATH: the spawn itself fails, and the error says so.
+    const savedPath = process.env.PATH
+    process.env.PATH = path.join(blocked, "no-bin")
+    try {
+      expect(() => writeSanctuaryGitExclude(blocked)).toThrow(/^git init failed: spawnSync git ENOENT$/u)
+    } finally {
+      process.env.PATH = savedPath
+    }
+
+    const odd = makeRoot("sanctuary-git-exclude-odd")
+    fs.mkdirSync(path.join(odd, ".git/info/exclude"), { recursive: true })
+    expect(() => writeSanctuaryGitExclude(odd)).toThrow(/EISDIR/u)
+  })
+
+  it("fresh install: init, exclude, local commits", async () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const runtimePackageVersion = JSON.parse(fs.readFileSync(path.join(packageRoot, "bundle-meta.json"), "utf8")).runtimeVersion as string
+    const agentRoot = path.join(makeRoot("sanctuary-fresh-install"), "sanctuary.ouro")
+    fs.mkdirSync(agentRoot)
+    fs.copyFileSync(path.join(packageRoot, "agent.json"), path.join(agentRoot, "agent.json"))
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf8")).sync).toEqual({ enabled: true, branch: "main" })
+
+    // Boot.
+    prepareSanctuaryPackageManagedBundle({ kind: "active", packageRoot, agentRoot, runtimePackageVersion })
+    expect(git(agentRoot, ["symbolic-ref", "HEAD"])).toBe("refs/heads/main")
+    expect(fs.readFileSync(path.join(agentRoot, ".git/info/exclude"), "utf8")).toBe(sanctuaryGitExcludeText())
+    write(agentRoot, "state/sessions/owner.json", "private\n")
+    write(agentRoot, "mcp/media-credentials.json", "{}\n")
+    write(agentRoot, "arc/notes/learned.md", "learned\n")
+
+    // One turn.
+    const result = postTurnPush(agentRoot, { enabled: true, remote: "origin", branch: "main" }, "sanctuary")
+    expect(result.ok).toBe(true)
+    await result.push
+    expect(git(agentRoot, ["rev-list", "--count", "HEAD"])).toBe("1")
+    expect(fs.existsSync(pendingSyncPath(agentRoot))).toBe(false)
+    expect(git(agentRoot, ["ls-files", "-ci", "--exclude-standard"])).toBe("")
+    const tracked = git(agentRoot, ["ls-files"]).split("\n")
+    for (const relative of SANCTUARY_STARTER_PSYCHE_FILES) expect(tracked).toContain(relative)
+    expect(tracked).toContain("agent.json")
+    expect(tracked).toContain("arc/notes/learned.md")
+    for (const relative of [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", "state/sessions/owner.json", "mcp/media-credentials.json"]) expect(tracked).not.toContain(relative)
+    expect(git(agentRoot, ["status", "--porcelain"])).toBe("")
   })
 })
