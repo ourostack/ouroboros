@@ -6130,6 +6130,68 @@ describe("anthropic setup-token provider contract", () => {
     ])
   })
 
+  it("keeps streamed Anthropic arguments intact when a fragment starts with a bracket or the text so far ends in a brace", async () => {
+    vi.resetModules()
+    vi.mocked(execSync).mockReturnValue(JSON.stringify({
+      claudeAiOauth: {
+        accessToken: makeAnthropicSetupToken(),
+        expiresAt: Date.now() + 60_000,
+      },
+    }) as any)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupConfig({
+      providers: {
+        anthropic: {
+          setupToken: makeAnthropicSetupToken(),
+        },
+      },
+    })
+
+    const answer = "Season 1 {queued} [1080p] is on its way"
+    const full = JSON.stringify({ answer })
+    // Split so one fragment ends right after "}" and the next starts with "[" or "{".
+    const cutBrace = full.indexOf("}") + 1
+    const cutBracket = full.indexOf("[")
+    const fragments = [full.slice(0, cutBrace), full.slice(cutBrace, cutBracket), full.slice(cutBracket)]
+    mockAnthropicMessagesCreate.mockResolvedValue(makeAnthropicEventStream([
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "call0", name: "lookup", input: {} },
+      },
+      ...fragments.map((partial_json) => ({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json },
+      })),
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: "" },
+      },
+    ]))
+
+    const core = await import("../../heart/core")
+    const runtime = await resolveTestProviderRuntime(core)
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hi" }],
+      activeTools: [{ type: "function", function: { name: "lookup" } }],
+      callbacks: {
+        onModelStart: vi.fn(),
+        onModelStreamStart: vi.fn(),
+        onTextChunk: vi.fn(),
+        onReasoningChunk: vi.fn(),
+        onToolStart: vi.fn(),
+        onToolEnd: vi.fn(),
+        onError: vi.fn(),
+      },
+      signal: new AbortController().signal,
+    })
+
+    expect(fragments[1].startsWith("{") || fragments[2].startsWith("[")).toBe(true)
+    expect(result.toolCalls).toEqual([{ id: "call0", name: "lookup", arguments: full }])
+  })
+
   it("returns early when Anthropic stream signal is aborted", async () => {
     vi.resetModules()
     vi.mocked(execSync).mockReturnValue(JSON.stringify({

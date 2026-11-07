@@ -201,21 +201,32 @@ function toAnthropicUsage(raw: Record<string, unknown>): UsageData {
   };
 }
 
+function parsesAsJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
 function mergeAnthropicToolArguments(current: string, partial: string): string {
   if (!partial) return current
 
-  const trimmedCurrent = current.trim()
+  // Restart and merge only apply while the text so far is a complete JSON value (the
+  // block's starting input). Mid-stream, a fragment may legitimately start with "{" or
+  // "[", or the text so far may end in "}", inside a string: those fragments append.
+  const completed = parsesAsJson(current)
   const trimmedPartial = partial.trim()
 
   // If streaming restarts with a full JSON object/array fragment, trust it.
-  if (trimmedPartial.startsWith("{") || trimmedPartial.startsWith("[")) {
+  if (completed !== undefined && (trimmedPartial.startsWith("{") || trimmedPartial.startsWith("["))) {
     return partial
   }
 
   // Anthropic can emit block.input as a complete object and then emit
   // additional members as ',\"k\":v' deltas; merge those safely.
-  if (trimmedCurrent.startsWith("{") && trimmedCurrent.endsWith("}")) {
-    const inner = trimmedCurrent.slice(1, -1).trim()
+  if (completed !== null && typeof completed === "object" && !Array.isArray(completed)) {
+    const inner = current.trim().slice(1, -1).trim()
     let suffix = partial
     if (!inner && suffix.startsWith(",")) {
       suffix = suffix.slice(1)
