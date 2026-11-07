@@ -1701,7 +1701,7 @@ describe("the product rules change only by release", () => {
         expect(guardInvocation(tool, { path: target }, ctx(target)), `${tool} ${target}`).toEqual({ allowed: false, reason: PROTECTED })
       }
     }
-    for (const command of ["echo x > /bundle/product/PRODUCT.md", "cp a /bundle/product/PRODUCT.md", "cd /bundle && sed -i s/a/b/ product/PRODUCT.md", "sed -i s/a/b/ /bundle/prod*/PRODUCT.md"]) {
+    for (const command of ["echo x > /bundle/product/PRODUCT.md", "cp a /bundle/product/PRODUCT.md", "cd /bundle && sed -i s/a/b/ product/PRODUCT.md", "cd /tmp && cd ~-/product && echo x > PRODUCT.md", "cd /tmp && echo x > ~-/product/PRODUCT.md", "sed -i s/a/b/ /bundle/prod*/PRODUCT.md"]) {
       expect(guardInvocation("shell", { command }, ctx("")), command).toEqual({ allowed: false, reason: PROTECTED })
     }
   })
@@ -2071,6 +2071,10 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
       `${"eval ".repeat(33)}git status`,
       `git -C ${tmp}/loop status`,
       "cd - && cd agent.ouro && git status",
+      "cd /tmp && cd ~- && git push --force",
+      "cd /tmp && git -C ~- push",
+      "cd /tmp && git -C ~+ status",
+      "cd ~someone && git status",
     ]
     await expectRefused(refused, BUNDLE_GIT_REFUSAL, ["git -C $REPO status", "git --git-dir $REPO/.git log", "cd $REPO && git status", "git init $REPO", "$RUN git status"])
   })

@@ -369,7 +369,7 @@ function friendsShellWriteRefused(command: string, agentRoot: string | undefined
 // A command can name one of this agent's folders by an absolute path, by ~/ or $HOME/, or relative to wherever it cd's (or
 // git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
 // working in, lexically and canonically, and counts when it lands in this agent's <name>/.
-const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
+const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`=<>])~[^/\s]|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
 
 /** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
 function namedFolderWords(command: string, name: string): string[] {
@@ -1479,7 +1479,8 @@ function unknownShellWord(word: string): boolean {
 }
 
 function shellPathWord(word: string | undefined): string | null {
-  return word === undefined || unknownShellWord(word) ? null : expandHome(word)
+  // ~-, ~+ and ~user expand to directories this guard cannot know (the previous one, the current one, another home).
+  return word === undefined || unknownShellWord(word) || /^~[^/]/.test(word) ? null : expandHome(word)
 }
 
 function noteGitAssignment(token: string, scan: GitShellScan, known: Map<string, string>): boolean {
