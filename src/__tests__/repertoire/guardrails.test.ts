@@ -1657,7 +1657,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "psyche-guard-"))
         vi.mocked(fs.existsSync).mockReturnValue(true)
-        for (const command of ["echo hello > /tmp/out.txt", "cp a b", "git commit -m 'psyche is fine'", "cp src/psyche/a.ts src/psyche/b.ts", "cp psyche-old/a b"]) {
+        for (const command of ["echo hello > /tmp/out.txt", "cp a b", "git -C /tmp/elsewhere commit -m 'psyche is fine'", "cp src/psyche/a.ts src/psyche/b.ts", "cp psyche-old/a b"]) {
           expect(guardInvocation("shell", { command }, ctx({ agentRoot: root, readPaths: new Set() })), command).toEqual({ allowed: true })
         }
         expect(guardInvocation("shell", { command: "cp a /bundle/psyche/b" }, ctx({ agentRoot: undefined, readPaths: new Set() }))).toEqual({ allowed: true })
@@ -1701,7 +1701,7 @@ describe("the product rules change only by release", () => {
         expect(guardInvocation(tool, { path: target }, ctx(target)), `${tool} ${target}`).toEqual({ allowed: false, reason: PROTECTED })
       }
     }
-    for (const command of ["echo x > /bundle/product/PRODUCT.md", "cp a /bundle/product/PRODUCT.md", "cd /bundle && sed -i s/a/b/ product/PRODUCT.md", "sed -i s/a/b/ /bundle/prod*/PRODUCT.md"]) {
+    for (const command of ["echo x > /bundle/product/PRODUCT.md", "cp a /bundle/product/PRODUCT.md", "cd /bundle && sed -i s/a/b/ product/PRODUCT.md", "cd /tmp && cd ~-/product && echo x > PRODUCT.md", "cd /tmp && echo x > ~-/product/PRODUCT.md", "sed -i s/a/b/ /bundle/prod*/PRODUCT.md"]) {
       expect(guardInvocation("shell", { command }, ctx("")), command).toEqual({ allowed: false, reason: PROTECTED })
     }
   })
@@ -1710,16 +1710,18 @@ describe("the product rules change only by release", () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const ctx = { readPaths: new Set(["/home/x/code/app/product/notes.md"]), agentRoot: "/bundle", trustLevel: "family" as const }
     expect(guardInvocation("write_file", { path: "/home/x/code/app/product/notes.md" }, ctx)).toEqual({ allowed: true })
-    for (const command of ["cd ~/code/app && sed -i s/a/b/ product/x.md", "git add product/", "cat /bundle/product/PRODUCT.md"]) {
+    for (const command of ["sed -i s/a/b/ ~/code/app/product/x.md", "git -C /tmp/elsewhere add /tmp/elsewhere/product/", "cat /bundle/product/PRODUCT.md"]) {
       expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: true })
     }
   })
 
-  it("counts a relative product/ as the agent's when the shell already runs in the agent root", async () => {
+  it("counts a relative product/ as the agent's because the shell starts in the agent root", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const agentRoot = process.cwd()
     expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot, trustLevel: "family" })).toEqual({ allowed: false, reason: PROTECTED })
-    expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: true })
+    // The shell starts in the agent's home, so a relative product/ is the agent's wherever that home is.
+    expect(guardInvocation("shell", { command: "sed -i s/a/b/ product/PRODUCT.md" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: false, reason: PROTECTED })
+    expect(guardInvocation("shell", { command: "sed -i s/a/b/ /elsewhere/product/PRODUCT.md" }, { readPaths: new Set(), agentRoot: "/bundle", trustLevel: "family" })).toEqual({ allowed: true })
   })
 
   it("refuses every spelling of a shell path that lands in product/", async () => {
@@ -2069,34 +2071,38 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
       `${"eval ".repeat(33)}git status`,
       `git -C ${tmp}/loop status`,
       "cd - && cd agent.ouro && git status",
+      "cd /tmp && cd ~- && git push --force",
+      "cd /tmp && git -C ~- push",
+      "cd /tmp && git -C ~+ status",
+      "cd ~someone && git status",
     ]
     await expectRefused(refused, BUNDLE_GIT_REFUSAL, ["git -C $REPO status", "git --git-dir $REPO/.git log", "cd $REPO && git status", "git init $REPO", "$RUN git status"])
   })
 
   it("allows git elsewhere and commands that only mention git", async () => {
     const allowed = [
-      "git status",
-      "cd /tmp/repo && git status",
       "git -C /tmp/repo status",
       "cd - && git -C /tmp/repo log",
       "cd && git -C /tmp/repo log",
-      "git -p --namespace x -c user.name=a --bare log",
-      "git clone https://example.invalid/x.git",
+      "git -C /tmp/repo -p --namespace x -c user.name=a --bare log",
+      "git -C /tmp/elsewhere clone https://example.invalid/x.git",
       `git -C /tmp/repo init`,
-      `GIT_DIR=/tmp/repo/.git git log`,
+      `GIT_DIR=/tmp/repo/.git git -C /tmp/repo log`,
       "echo git is great",
       `grep -r git ${bundle}/psyche`,
       `ls ${bundle}`,
       "timeout 5 ls",
       "find /tmp/repo -name '*.md'",
       "bash ./build.sh git",
-      "export PATH=/usr/bin:$PATH && git --version",
-      "env -C /tmp/repo; git status",
-      "sh -c; git status",
-      "xargs ls; git status",
+      "export PATH=/usr/bin:$PATH && git -C /tmp/repo --version",
+      "env -C /tmp/repo; git -C /tmp/repo status",
+      "sh -c; git -C /tmp/repo status",
+      "xargs ls; git -C /tmp/repo status",
       "git -C /tmp/repo -c",
     ]
-    for (const command of allowed) expect({ command, result: await shell(command) }).toEqual({ command, result: { allowed: true } })
+    const bad = []
+    for (const command of allowed) { const r = await shell(command); if (!r.allowed) bad.push(command) }
+    expect(bad).toEqual([])
     const { bundleGitRefused, guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("shell", { command: `git -C ${bundle} status` }, { readPaths: new Set() })).toEqual({ allowed: true })
     // A runner's unreadable argument is not its command; the psyche guard answers this one first in a turn.
@@ -2139,19 +2145,19 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     process.env.CDPATH = tmp
     try {
       expect(await shell("cd agent.ouro && git status")).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
-      expect(await shell("cd /tmp/repo && git status")).toEqual({ allowed: true })
+      expect(await shell("git -C /tmp/repo status")).toEqual({ allowed: true })
     } finally {
       if (savedCdpath === undefined) delete process.env.CDPATH
       else process.env.CDPATH = savedCdpath
     }
     for (const command of [
       "git -c user.name=a -C /tmp/repo log",
-      `CDPATH=${tmp} cd /tmp/repo && git status`,
+      `CDPATH=${tmp} cd /tmp/repo && git -C /tmp/repo status`,
       "echo x | xargs -n1 git -C /tmp/repo log",
       "echo it is quoted: \"g\"o",
       "GIT_CONFIG_NOSYSTEM=1 git -C /tmp/x status",
       "GIT_CONFIG_GLOBAL=/tmp/gitconfig git -C /tmp/x log",
-      "export GIT_CONFIG_COUNT=1; git status",
+      "export GIT_CONFIG_COUNT=1; git -C /tmp/repo status",
     ]) expect({ command, result: await shell(command) }).toEqual({ command, result: { allowed: true } })
   })
 
@@ -2200,6 +2206,68 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     expect(guardInvocation("glob", { pattern: "*.ts" }, ctx)).toEqual({ allowed: true })
     expect(guardInvocation("grep", { pattern: "fine", path: bundle }, ctx)).toEqual({ allowed: true })
     expect(guardInvocation("grep", { pattern: "fine" }, ctx)).toEqual({ allowed: true })
+  })
+
+  it("reads from the agent's home: relative paths and the default path are checked against the key's directory", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const { __testHooks } = await import("../../heart/sync")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    const refused = { allowed: false, reason: "that path is protected — i can't read it." }
+    fs.mkdirSync(path.join(bundle, "keys-here"))
+    __testHooks.syncSecretDir = path.join(bundle, "keys-here")
+
+    expect(guardInvocation("read_file", { path: "keys-here/deploy_key" }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN" }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "keys-here/*" }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "*", cwd: "keys-here" }, ctx)).toEqual(refused)
+    expect(guardInvocation("read_file", { path: "psyche/SOUL.md" }, ctx)).toEqual({ allowed: true })
+  })
+
+  it("treats the agent's home as where a shell starts: bundle git and product writes are refused with no cd", async () => {
+    const { guardInvocation, BUNDLE_GIT_REFUSAL } = await import("../../repertoire/guardrails")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    expect(guardInvocation("shell", { command: "git commit -am x" }, ctx)).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
+    expect(guardInvocation("shell", { command: "git push --force" }, ctx)).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
+    expect(guardInvocation("shell", { command: "echo x > product/PRODUCT.md" }, ctx)).toEqual({ allowed: false, reason: "that path is protected — i can read it but not modify it." })
+    // Anything else in the home, and git with no bundle at all, stays as it was.
+    expect(guardInvocation("shell", { command: "echo x > notes.txt" }, ctx)).toEqual({ allowed: true })
+    // A leading `cd /elsewhere &&` takes everything after it out of the home; anything that can run apart from the cd does not.
+    for (const command of ["cd /tmp/repo && git status", "cd /tmp/repo && git add . && git commit -m x"]) expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: true })
+    for (const command of ["cd /tmp/repo; git status", "cd /tmp/repo || git status", "cd /tmp/repo && ls; git status", "cd /tmp/repo && (git status)", "cd /tmp/repo & git status", `cd /tmp/repo && git -C ${bundle} status`, `cd ${tmp} && cd agent.ouro && git status`]) {
+      expect(guardInvocation("shell", { command }, ctx), command).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
+    }
+    expect(guardInvocation("shell", { command: "git status" }, { ...ctx, agentRoot: undefined })).toEqual({ allowed: true })
+  })
+
+  it("ls is read-guarded like read_file for the sync key's directory", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const { __testHooks } = await import("../../heart/sync")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    fs.mkdirSync(path.join(bundle, "keys-here"))
+    __testHooks.syncSecretDir = path.join(bundle, "keys-here")
+    const refused = { allowed: false, reason: "that path is protected — i can't read it." }
+    expect(guardInvocation("ls", { path: "keys-here" }, ctx)).toEqual(refused)
+    expect(guardInvocation("ls", { path: path.join(bundle, "keys-here") }, ctx)).toEqual(refused)
+    expect(guardInvocation("ls", {}, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("ls", { path: "psyche" }, ctx)).toEqual({ allowed: true })
+  })
+
+  it("lets edit_file and write_file use a relative path after a read, and still demands the read", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    fs.mkdirSync(path.join(bundle, "notes"))
+    fs.writeFileSync(path.join(bundle, "notes", "x.md"), "hi")
+    const existing = path.join(bundle, "notes", "x.md")
+    vi.mocked(fs.existsSync).mockImplementation((p) => p === existing)
+    const read = new Set<string>()
+    const ctx = { readPaths: read, agentRoot: bundle, trustLevel: "family" as const }
+    expect(guardInvocation("edit_file", { path: "notes/x.md" }, ctx).allowed).toBe(false)
+    expect(guardInvocation("write_file", { path: "notes/x.md" }, ctx).allowed).toBe(false)
+    expect(guardInvocation("write_file", { path: "notes/new.md" }, ctx).allowed).toBe(true)
+    read.add(path.join(bundle, "notes", "x.md"))
+    expect(guardInvocation("edit_file", { path: "notes/x.md" }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("write_file", { path: "notes/x.md" }, ctx)).toEqual({ allowed: true })
+    // With no agent root the argument is compared as given.
+    expect(guardInvocation("edit_file", { path: "notes/x.md" }, { readPaths: read, trustLevel: "family" }).allowed).toBe(false)
   })
 
   it("refuses a read whose landing place the filesystem cannot report", async () => {

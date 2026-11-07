@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 18,
+      "version": 19,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -53,7 +53,11 @@
         "edit_file",
         "glob",
         "grep",
+        "ls",
         "web_search",
+        "fetch_url",
+        "note",
+        "diary_write",
         "search_facts",
         "consult_diary",
         "consult_notes",
@@ -148,7 +152,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 8,
+      "version": 9,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -192,6 +196,7 @@
         "glob",
         "grep",
         "web_search",
+        "fetch_url",
         "search_facts",
         "consult_diary",
         "consult_notes",

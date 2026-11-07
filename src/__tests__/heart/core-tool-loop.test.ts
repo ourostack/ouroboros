@@ -186,9 +186,9 @@ describe("relationship-scoped canonical option boundaries", () => {
     const { runAgent } = await import("../../heart/core")
     vi.mocked(childProcess.spawn).mockReset().mockImplementation(actualChildProcess.spawn)
     vi.mocked(childProcess.exec).mockReset().mockImplementation(actualChildProcess.exec)
-    const owner = { agentName: "sanctuary", agentRoot: "/mock/repo/sanctuary" }
+    const owner = { agentName: "sanctuary", agentRoot: "/tmp" }
     const command = `exec ${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdin.resume(); process.stdout.write('owned-ready')")}`
-    const live = context()
+    const live = { ...context(), agentRoot: "/tmp" }
     live.relationshipAuthorization.profileId = "sanctuary-owner"
     live.relationshipAuthorization.advertisedToolNames = ["shell", "settle"]
     mockCreate

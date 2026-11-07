@@ -100,18 +100,10 @@ describe("glob tool", () => {
 
   // --- Defaults ---
 
-  it("defaults cwd to process.cwd() when not provided", async () => {
-    // Write a file in actual cwd to test the default
-    const marker = `glob-test-marker-${Date.now()}.tmp`
-    const markerPath = path.join(process.cwd(), marker)
-    fs.writeFileSync(markerPath, "marker", "utf-8")
-
-    try {
-      const handler = getGlobHandler()
-      const result = await handler({ pattern: marker })
-      expect(result).toContain(marker)
-    } finally {
-      fs.unlinkSync(markerPath)
-    }
+  it("defaults cwd to the agent's home when not provided", async () => {
+    fs.writeFileSync(path.join(tmpDir, "marker.tmp"), "marker", "utf-8")
+    const handler = getGlobHandler()
+    const result = await handler({ pattern: "marker.tmp" }, { signin: async () => undefined, agentRoot: tmpDir })
+    expect(result).toBe("marker.tmp")
   })
 })

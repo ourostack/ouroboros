@@ -1,12 +1,17 @@
 import * as fs from "fs";
 import * as fg from "fast-glob";
 import * as path from "path";
-import { getAgentRoot, getRepoRoot } from "../heart/identity";
+import { getAgentRoot } from "../heart/identity";
 import { fileStateCache } from "../mind/file-state";
 import { trackModifiedFile, getModifiedFileCount, getPostImplementationScrutiny } from "../mind/scrutiny";
 import type { ToolDefinition } from "./tools-base";
 import { editFileReadTracker, type ToolContext } from "./tools-base";
 import { psycheEditNote, psycheFileClass } from "./guardrails";
+import { SKIP_DIRS, TOOL_MAX_CHARS, TOOL_MAX_LINES, cutNotice, looksBinary } from "./tool-limits";
+
+const LIST_CAP = 500
+const GREP_MAX_MATCHES = 100
+const GREP_MAX_LINE_CHARS = 500
 
 /** The psyche edit note for a write that landed on one of the agent's identity files, or "" for any other file. */
 function psycheNoteFor(resolvedPath: string, ctx: ToolContext | undefined): string {
@@ -22,11 +27,28 @@ function psycheNoteFor(resolvedPath: string, ctx: ToolContext | undefined): stri
   }
 }
 
-function resolveLocalToolPath(targetPath: string): string {
+/** Relative paths start in the agent's home (its bundle); absolute paths are used as given. */
+function resolveLocalToolPath(targetPath: string, ctx?: ToolContext): string {
   if (!path.isAbsolute(targetPath)) {
-    return path.resolve(getRepoRoot(), targetPath)
+    return path.resolve(ctx?.agentRoot ?? getAgentRoot(), targetPath)
   }
   return targetPath
+}
+
+function homeOf(ctx?: ToolContext): string {
+  return ctx?.agentRoot ?? getAgentRoot()
+}
+
+/** Keep the whole lines that fit the line and character caps. A first line over the character cap is cut to it. */
+function fitLines(lines: string[]): string[] {
+  const kept: string[] = []
+  let chars = 0
+  for (const line of lines.slice(0, TOOL_MAX_LINES)) {
+    if (chars + line.length + 1 > TOOL_MAX_CHARS) break
+    kept.push(line)
+    chars += line.length + 1
+  }
+  return kept.length > 0 || lines.length === 0 ? kept : [lines[0].slice(0, TOOL_MAX_CHARS)]
 }
 
 function buildContextDiff(lines: string[], changeStart: number, changeEnd: number, contextSize = 3): string {
@@ -41,47 +63,67 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
   return result.join("\n")
 }
 
+/** A file's bytes, whatever readFileSync handed back (a stubbed reader may return a string). */
+function asBuffer(raw: Buffer | string): Buffer {
+  return Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+}
+
 export const fileToolDefinitions: ToolDefinition[] = [
   {
     tool: {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read file contents. Results include line numbers. Use offset/limit for large files -- don't read the whole thing if you only need a section. Use this tool before editing any file. When reading code, read enough context to understand the surrounding logic, not just the target line.",
+        description: "Read a file in your home, with a relative path or an absolute one. Shows up to 2000 lines or 30,000 characters and tells you the offset to read on from; binary files are not shown.",
         parameters: {
           type: "object",
           properties: {
             path: { type: "string" },
             offset: { type: "number", description: "1-based line number to start reading from" },
             limit: { type: "number", description: "maximum number of lines to return" },
+            char_offset: { type: "number", description: "1-based character to start from within the first line shown, to read on through a line over 30,000 characters" },
           },
           required: ["path"],
         },
       },
     },
-    handler: (a) => {
-      const resolvedPath = resolveLocalToolPath(a.path)
-      const content = fs.readFileSync(resolvedPath, "utf-8")
+    handler: (a, ctx) => {
+      const resolvedPath = resolveLocalToolPath(a.path, ctx)
+      const raw = asBuffer(fs.readFileSync(resolvedPath))
+      if (looksBinary(raw)) return `[binary file, ${raw.length} bytes; not shown]`
+      const full = raw.toString("utf-8")
+      // A final newline ends the last line; it is not another, empty line.
+      const endsWithNewline = full.endsWith("\n")
+      const lines = (endsWithNewline ? full.slice(0, -1) : full).split("\n")
       editFileReadTracker.add(resolvedPath)
       const offset = a.offset ? parseInt(a.offset, 10) : undefined
       const limit = a.limit ? parseInt(a.limit, 10) : undefined
+      const charStart = a.char_offset ? Math.max(0, parseInt(a.char_offset, 10) - 1) : 0
+      const start = offset ? offset - 1 : 0
+      const wanted = lines.slice(start, limit !== undefined ? start + limit : undefined)
+      const firstLine = wanted.length > 0 ? wanted[0].slice(charStart) : ""
+      const kept = fitLines(wanted.length > 0 ? [firstLine, ...wanted.slice(1)] : wanted)
+      // The first line alone is over the character cap: show its next stretch and say where to continue.
+      const firstLineCut = kept.length === 1 && wanted.length > 0 && kept[0].length < firstLine.length
+      const text = kept.join("\n") + (!firstLineCut && start + kept.length >= lines.length && endsWithNewline && kept.length > 0 ? "\n" : "")
+      const whole = offset === undefined && limit === undefined && charStart === 0 && !firstLineCut && kept.length === wanted.length
 
       // Record in file state cache for staleness detection
       try {
         const mtime = fs.statSync(resolvedPath).mtimeMs
-        const readContent = (offset === undefined && limit === undefined)
-          ? content
-          : content.split("\n").slice(offset ? offset - 1 : 0, limit !== undefined ? (offset ? offset - 1 : 0) + limit : undefined).join("\n")
-        fileStateCache.record(resolvedPath, readContent, mtime, offset, limit)
+        if (whole) fileStateCache.record(resolvedPath, text, mtime)
+        else fileStateCache.record(resolvedPath, text, mtime, start + 1, kept.length)
       } catch {
         // stat failed -- skip cache recording
       }
 
-      if (offset === undefined && limit === undefined) return content
-      const lines = content.split("\n")
-      const start = offset ? offset - 1 : 0
-      const end = limit !== undefined ? start + limit : lines.length
-      return lines.slice(start, end).join("\n")
+      if (firstLineCut) {
+        const shownTo = charStart + kept[0].length
+        return `${text}\n${cutNotice("read_file", `[line ${start + 1} is ${wanted[0].length} characters; characters ${charStart + 1}-${shownTo} shown; read on with offset=${start + 1} and char_offset=${shownTo + 1}]`, { path: resolvedPath })}`
+      }
+      if (kept.length === wanted.length) return text
+      const last = start + kept.length
+      return `${text}\n${cutNotice("read_file", `[lines ${start + 1}-${last} of ${lines.length} shown; read on with offset=${last + 1}]`, { path: resolvedPath })}`
     },
     summaryKeys: ["path"],
   },
@@ -90,7 +132,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "write_file",
-        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff. Do not create documentation files (*.md, README) by default; only do so when explicitly asked or when documentation is clearly part of the requested change.",
+        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff.",
         parameters: {
           type: "object",
           properties: { path: { type: "string" }, content: { type: "string" } },
@@ -99,7 +141,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a, ctx) => {
-      const resolvedPath = resolveLocalToolPath(a.path)
+      const resolvedPath = resolveLocalToolPath(a.path, ctx)
       fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
       trackModifiedFile(resolvedPath)
@@ -130,7 +172,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a, ctx) => {
-      const resolvedPath = resolveLocalToolPath(a.path)
+      const resolvedPath = resolveLocalToolPath(a.path, ctx)
       if (!editFileReadTracker.has(resolvedPath)) {
         return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
       }
@@ -207,22 +249,44 @@ export const fileToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "ls",
+        description: "List a directory in your home (default: home itself), one entry per line; directories end in /, files show their size. Shows at most 500 entries.",
+        parameters: { type: "object", properties: { path: { type: "string", description: "directory to list (defaults to your home)" } } },
+      },
+    },
+    handler: (a, ctx) => {
+      const dir = a.path ? resolveLocalToolPath(a.path, ctx) : homeOf(ctx)
+      const names = fs.readdirSync(dir).sort()
+      const lines = names.slice(0, LIST_CAP).map((name) => {
+        const info = fs.statSync(path.join(dir, name), { throwIfNoEntry: false })
+        return info?.isDirectory() ? `${name}/` : `${name}  ${info?.size ?? 0}`
+      })
+      if (names.length > LIST_CAP) lines.push(cutNotice("ls", `[${LIST_CAP} of ${names.length} entries shown; pass a subdirectory path to see the rest]`, { path: dir }))
+      return lines.length > 0 ? lines.join("\n") : "(empty)"
+    },
+    summaryKeys: ["path"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "glob",
-        description: "Find files matching a glob pattern, sorted alphabetically. Use this instead of shell commands like `find` or `ls`. For broad exploratory searches that would require multiple rounds of globbing and grepping, consider using claude or coding_spawn.",
+        description: "Find files in your home matching a glob pattern, sorted. Skips .git and node_modules and shows at most 500 matches.",
         parameters: {
           type: "object",
           properties: {
-            pattern: { type: "string", description: "glob pattern (e.g. **/*.ts)" },
-            cwd: { type: "string", description: "directory to search from (defaults to process.cwd())" },
+            pattern: { type: "string", description: "glob pattern (e.g. **/*.md)" },
+            cwd: { type: "string", description: "directory to search from (defaults to your home)" },
           },
           required: ["pattern"],
         },
       },
     },
-    handler: (a) => {
-      const cwd = a.cwd ? resolveLocalToolPath(a.cwd) : process.cwd()
-      const matches = fg.globSync(a.pattern, { cwd, dot: true })
-      return matches.sort().join("\n")
+    handler: (a, ctx) => {
+      const cwd = a.cwd ? resolveLocalToolPath(a.cwd, ctx) : homeOf(ctx)
+      const matches = fg.globSync(a.pattern, { cwd, dot: true, ignore: SKIP_DIRS.map((d) => `**/${d}/**`) }).sort()
+      if (matches.length <= LIST_CAP) return matches.join("\n")
+      return [...matches.slice(0, LIST_CAP), cutNotice("glob", `[${LIST_CAP} of ${matches.length} matches shown; narrow the pattern or cwd]`, { pattern: a.pattern })].join("\n")
     },
     summaryKeys: ["pattern", "cwd"],
   },
@@ -231,41 +295,61 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "grep",
-        description:
-          "Search file contents for lines matching a regex pattern. Searches recursively in directories. Use this instead of shell commands like `grep` or `rg`. Returns matching lines with file path and line numbers. Use context_lines for surrounding context. Use include to filter file types (e.g., '*.ts').",
+        description: "Search file contents in your home for a regex, with file path and line numbers; skips .git, node_modules and binary files. Shows at most 100 matches and tells you to narrow the search when it stops.",
         parameters: {
           type: "object",
           properties: {
             pattern: { type: "string", description: "regex pattern to search for" },
-            path: { type: "string", description: "file or directory to search" },
+            path: { type: "string", description: "file or directory to search (defaults to your home)" },
             context_lines: { type: "number", description: "number of surrounding context lines (default 0)" },
-            include: { type: "string", description: "glob filter to limit searched files (e.g. *.ts)" },
+            include: { type: "string", description: "glob filter to limit searched files (e.g. *.md)" },
+            ignore_case: { type: "boolean", description: "match without regard to case" },
+            files_only: { type: "boolean", description: "list only the names of files that match" },
           },
-          required: ["pattern", "path"],
+          required: ["pattern"],
         },
       },
     },
-    handler: (a) => {
-      const targetPath = resolveLocalToolPath(a.path)
-      const regex = new RegExp(a.pattern)
+    handler: (a, ctx) => {
+      const targetPath = a.path ? resolveLocalToolPath(a.path, ctx) : homeOf(ctx)
+      const regex = new RegExp(a.pattern, a.ignore_case ? "i" : "")
       const contextLines = parseInt(a.context_lines || "0", 10)
       const includeGlob = a.include || undefined
+      const filesOnly = Boolean(a.files_only)
+      let matchCount = 0
+      let stopped = false
+
+      const clipLine = (line: string) => line.length > GREP_MAX_LINE_CHARS ? `${line.slice(0, GREP_MAX_LINE_CHARS - 3)}...` : line
+
+      const home = homeOf(ctx)
+      // Paths inside the home are shown relative to it.
+      const shown = (filePath: string): string => {
+        const relative = path.relative(home, filePath)
+        return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : filePath
+      }
 
       function searchFile(filePath: string): string[] {
-        let content: string
+        let buffer: Buffer
         try {
-          content = fs.readFileSync(filePath, "utf-8")
+          buffer = asBuffer(fs.readFileSync(filePath))
         } catch {
           return []
         }
-        const lines = content.split("\n")
+        if (looksBinary(buffer)) return []
+        const lines = buffer.toString("utf-8").split("\n")
         const matchIndices = new Set<number>()
         for (let i = 0; i < lines.length; i++) {
-          if (regex.test(lines[i])) {
-            matchIndices.add(i)
+          if (!regex.test(lines[i])) continue
+          if (matchCount >= GREP_MAX_MATCHES) {
+            stopped = true
+            break
           }
+          matchCount++
+          matchIndices.add(i)
+          if (filesOnly) break
         }
         if (matchIndices.size === 0) return []
+        if (filesOnly) return [shown(filePath)]
 
         const outputIndices = new Set<number>()
         for (const idx of matchIndices) {
@@ -276,17 +360,8 @@ export const fileToolDefinitions: ToolDefinition[] = [
           }
         }
 
-        const sortedIndices = [...outputIndices].sort((a, b) => a - b)
-        const results: string[] = []
-        for (const idx of sortedIndices) {
-          const lineNum = idx + 1
-          if (matchIndices.has(idx)) {
-            results.push(`${filePath}:${lineNum}: ${lines[idx]}`)
-          } else {
-            results.push(`-${filePath}:${lineNum}: ${lines[idx]}`)
-          }
-        }
-        return results
+        return [...outputIndices].sort((x, y) => x - y).map((idx) =>
+          `${matchIndices.has(idx) ? "" : "-"}${shown(filePath)}:${idx + 1}: ${clipLine(lines[idx])}`)
       }
 
       function collectFiles(dirPath: string): string[] {
@@ -301,7 +376,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
           for (const entry of entries) {
             const fullPath = path.join(dir, entry.name)
             if (entry.isDirectory()) {
-              walk(fullPath)
+              if (!SKIP_DIRS.includes(entry.name)) walk(fullPath)
             } else if (entry.isFile()) {
               files.push(fullPath)
             }
@@ -322,20 +397,19 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const stat = fs.statSync(targetPath, { throwIfNoEntry: false })
       if (!stat) return ""
 
-      if (stat.isFile()) {
-        return searchFile(targetPath).join("\n")
+      let files = [targetPath]
+      if (!stat.isFile()) {
+        files = collectFiles(targetPath)
+        if (includeGlob) files = files.filter((f) => matchesGlob(f, includeGlob))
       }
 
-      let files = collectFiles(targetPath)
-      if (includeGlob) {
-        files = files.filter((f) => matchesGlob(f, includeGlob))
-      }
-
-      const allResults: string[] = []
+      const results: string[] = []
       for (const file of files) {
-        allResults.push(...searchFile(file))
+        results.push(...searchFile(file))
+        if (stopped) break
       }
-      return allResults.join("\n")
+      if (stopped) results.push(cutNotice("grep", `[stopped at ${GREP_MAX_MATCHES} matches; narrow the pattern or path]`, { pattern: a.pattern }))
+      return results.join("\n")
     },
     summaryKeys: ["pattern", "path", "include"],
   },

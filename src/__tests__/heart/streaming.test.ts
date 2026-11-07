@@ -84,7 +84,7 @@ describe("toResponsesTools", () => {
     expect(readFile).toBeDefined()
     expect(readFile.type).toBe("function")
     expect(readFile.strict).toBe(false)
-    expect(readFile.description).toContain("Read file contents")
+    expect(readFile.description).toContain("Read a file in your home")
 
     const shell = result.find((t: any) => t.name === "shell")
     expect(shell).toBeDefined()

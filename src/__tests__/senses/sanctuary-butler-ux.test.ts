@@ -34,6 +34,21 @@ const withoutMediaMcp = (names: string[]) => names.filter((name) => !MEDIA_MCP_T
 
 const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))
 
+// fetch_url talks through node:http; the one page this test reads is answered here, everything else is the real module.
+vi.mock("node:http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:http")>()
+  const { Readable } = await import("node:stream")
+  const { EventEmitter } = await import("node:events")
+  const request = (url: URL, options: unknown, cb: (res: unknown) => void) => {
+    if (String(url) !== "http://93.184.216.34/") return (actual.request as (...a: unknown[]) => unknown)(url, options, cb)
+    const req = Object.assign(new EventEmitter(), {
+      end: () => cb(Object.assign(Readable.from([Buffer.from("<title>resident page</title><p>resident fetch marker</p>")]), { statusCode: 200, headers: { "content-type": "text/html" } })),
+    })
+    return req
+  }
+  return { ...actual, default: actual, request }
+})
+
 vi.mock("../../heart/identity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../heart/identity")>()
   return {
@@ -85,6 +100,7 @@ function deniedResidentCalls(root: string) {
     get_friend_note: { friendId: RESIDENT_OWNER }, session_summary: { runId: "resident-run" },
     query_session: { friendId: RESIDENT_OWNER, channel: "cli", key: "resident-target" }, set_reasoning_effort: { level: "high" },
     restart_runtime: { reason: "resident recovery fixture" }, revive_sense: { sense: "telegram", reason: "resident recovery fixture" },
+    ls: { path: root }, fetch_url: { url: "https://example.invalid/forbidden" }, note: { content: "forbidden" }, diary_write: { entry: "forbidden" },
   }
   expect(Object.keys(args).toSorted()).toEqual([...SANCTUARY_OWNER_ADDITIONS].toSorted())
   return SANCTUARY_OWNER_ADDITIONS.map((name) => residentCall(name, args[name]))
@@ -150,6 +166,7 @@ async function residentFixture() {
   })
   const http = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url) === "https://api.perplexity.ai/search") return Response.json({ results: [{ title: "resident web marker", url: "https://example.invalid/resident", snippet: "controlled current search result" }] })
+    if (String(url) === "http://93.184.216.34/") return new Response("<title>resident page</title><p>resident fetch marker</p>", { headers: { "content-type": "text/html" } })
     if (String(url) === "https://api.openai.com/v1/embeddings") {
       const request = JSON.parse(String(init?.body))
       return Response.json({ data: request.input.map(() => ({ embedding: [1, 0] })) })
@@ -300,6 +317,8 @@ describe("Ouro Butler household UX", () => {
           residentCall("glob", { cwd: path.dirname(file), pattern: "*.txt" }),
           residentCall("grep", { path: path.dirname(file), pattern: "resident-updated", include: "*.txt" }),
           residentCall("web_search", { query: "resident web query" }),
+          residentCall("ls", { path: path.dirname(file) }), residentCall("fetch_url", { url: "http://93.184.216.34/" }),
+          residentCall("note", { content: "resident note content" }), residentCall("diary_write", { entry: "resident diary entry" }),
           residentCall("search_facts", { query: "resident diary" }), residentCall("consult_diary", {}),
           residentCall("consult_notes", { query: "resident note" }), residentCall("get_friend_note", { friendId: RESIDENT_OWNER }),
           residentCall("session_summary", { runId: "resident-run" }),
@@ -328,6 +347,8 @@ describe("Ouro Butler household UX", () => {
     expect(scripted.outputs.get("glob")).toBe("resident.txt")
     expect(scripted.outputs.get("grep")).toContain("resident-updated")
     expect(scripted.outputs.get("web_search")).toContain("resident web marker")
+    expect(scripted.outputs.get("ls")).toBe("resident.txt  17")
+    expect(scripted.outputs.get("fetch_url")).toBe("resident page\n\nresident fetch marker")
     expect(scripted.outputs.get("search_facts")).toContain("resident diary marker")
     expect(scripted.outputs.get("consult_diary")).toContain("resident diary marker")
     expect(scripted.outputs.get("consult_notes")).toContain("resident note marker")
@@ -574,7 +595,7 @@ describe("Ouro Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 18,
+        version: 19,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["bundle_push", "bundle_pull_rebase", "steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),

@@ -1,9 +1,46 @@
 import { exec } from "child_process";
+import { randomBytes } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
 import { spawnBackgroundShell, getShellSession, listShellSessions, tailShellSession, detectDestructivePatterns, type ShellSessionOwner } from "./shell-sessions";
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ToolContext, ToolDefinition } from "./tools-base";
 import { assertRelationshipToolOwner } from "./tool-arguments";
+import { TOOL_MAX_CHARS, TOOL_MAX_LINES, cutNotice } from "./tool-limits";
+
+const MAX_BUFFER = 16 * 1024 * 1024
+
+/** The agent's home, or the process directory for a legacy caller that has no agent. */
+function shellHome(ctx?: ToolContext): string {
+  try {
+    return ctx?.agentRoot ?? getAgentRoot()
+  } catch {
+    return process.cwd()
+  }
+}
+
+/**
+ * Keep the last 2000 lines or 30,000 characters of a command's output. When something is cut, the whole output
+ * is saved under the home's state/tool-output folder (owner-only) and the notice names that file.
+ */
+function tailWithNotice(output: string, home: string): string {
+  const body = output.endsWith("\n") ? output.slice(0, -1) : output
+  const lines = body.split("\n")
+  let tail = lines.slice(-TOOL_MAX_LINES).join("\n")
+  if (tail.length > TOOL_MAX_CHARS) {
+    tail = tail.slice(tail.length - TOOL_MAX_CHARS)
+    const firstBreak = tail.indexOf("\n")
+    if (firstBreak >= 0) tail = tail.slice(firstBreak + 1)
+  }
+  if (tail.length === body.length) return output
+  const dir = path.join(home, "state", "tool-output")
+  const file = path.join(dir, `${Date.now()}-${randomBytes(3).toString("hex")}.txt`)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(file, output, { mode: 0o600 })
+  const shown = tail.split("\n").length
+  return `${cutNotice("shell", `[output cut to its last ${shown} of ${lines.length} lines; full output saved to ${file}; read_file it with an offset]`, { file })}\n${tail}`
+}
 
 function shellOwner(ctx?: ToolContext): ShellSessionOwner {
   assertRelationshipToolOwner(ctx)
@@ -17,7 +54,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "shell",
-        description: "Run a shell command and return stdout/stderr. Each call starts in the runtime's working directory; cd does not persist between calls. Use dedicated tools instead of shell when available: read_file instead of cat, edit_file instead of sed, glob instead of find, grep instead of grep/rg. Reserve shell for operations that genuinely need the shell: installing packages, running builds/tests, git operations, process management. Be careful with destructive commands -- consider reversibility before running. If a command fails, read the error output before retrying with a different approach.",
+        description: "Run a shell command in your home; cd does not persist between calls. Keeps the last 2000 lines or 30,000 characters of output and saves the full output to a file it names when it cuts.",
         parameters: {
           type: "object",
           properties: {
@@ -84,14 +121,20 @@ export const shellToolDefinitions: ToolDefinition[] = [
       }
       const baseTimeout = requestedTimeout > 0 ? requestedTimeout : configDefault
       const timeout = Math.min(baseTimeout, MAX_TIMEOUT)
-      const output = await new Promise<string>((resolve, reject) => {
-        const child = exec(a.command, { encoding: "utf-8", timeout }, (error, stdout, stderr) => {
-          if (error) reject(Object.assign(error, { stdout, stderr }))
+      const home = shellHome(ctx)
+      const raw = await new Promise<string>((resolve, reject) => {
+        const child = exec(a.command, { encoding: "utf-8", timeout, cwd: home, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
+          if (error) {
+            // A failing command's output gets the same tail cap and saved file.
+            error.message = tailWithNotice(error.message, home)
+            reject(Object.assign(error, { stdout: tailWithNotice(stdout, home), stderr: tailWithNotice(stderr, home) }))
+          }
           else resolve(stdout)
         })
         child.stdin?.end()
       })
 
+      const output = tailWithNotice(raw, home)
       if (destructivePatterns.length > 0) {
         return `${output}\n\n--- destructive pattern detected: ${destructivePatterns.join(", ")} ---`
       }

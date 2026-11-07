@@ -734,14 +734,14 @@ describe("shell tool", () => {
 
     it("shell handler includes warning in result for destructive commands", async () => {
       mockShellOutput("pushed")
-      const result = await execTool("shell", { command: "git reset --hard HEAD~1" })
+      const result = await execTool("shell", { command: "cd /mock/repo && git reset --hard HEAD~1" })
       expect(result).toContain("pushed")
       expect(result).toContain("destructive pattern detected")
     })
 
     it("shell handler does NOT block execution of destructive commands (friction only)", async () => {
       mockShellOutput("executed")
-      const result = await execTool("shell", { command: "git reset --hard HEAD~1" })
+      const result = await execTool("shell", { command: "cd /mock/repo && git reset --hard HEAD~1" })
       // The command still executes (returns its output) -- detection is friction, not a gate
       expect(result).toContain("executed")
       expect(result).toContain("destructive pattern detected")

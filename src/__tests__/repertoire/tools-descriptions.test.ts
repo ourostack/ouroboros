@@ -26,15 +26,14 @@ describe("Phase 2: tool description enrichment", () => {
   describe("Unit 2.1 - file tool descriptions", () => {
     it("read_file description contains behavioral guidance", () => {
       const desc = getBaseDescription("read_file")
-      expect(desc).toContain("Use offset/limit for large files")
-      expect(desc).toContain("Use this tool before editing any file")
+      expect(desc).toContain("2000 lines or 30,000 characters")
+      expect(desc).toContain("read on from")
     })
 
     it("write_file description contains behavioral guidance", () => {
       const desc = getBaseDescription("write_file")
       expect(desc).toContain("You MUST read an existing file with read_file before overwriting")
       expect(desc).toContain("Prefer edit_file for modifying existing files")
-      expect(desc).toContain("Do not create documentation files")
     })
 
     it("edit_file description contains behavioral guidance", () => {
@@ -45,25 +44,20 @@ describe("Phase 2: tool description enrichment", () => {
 
     it("glob description contains behavioral guidance", () => {
       const desc = getBaseDescription("glob")
-      expect(desc).toContain("Use this instead of shell commands like `find` or `ls`")
+      expect(desc).toContain("at most 500 matches")
     })
 
     it("grep description contains behavioral guidance", () => {
       const desc = getBaseDescription("grep")
-      expect(desc).toContain("Use this instead of shell commands like `grep` or `rg`")
+      expect(desc).toContain("at most 100 matches")
     })
   })
 
   describe("Unit 2.2 - shell tool description", () => {
     it("shell description contains tool preference guidance", () => {
       const desc = getBaseDescription("shell")
-      expect(desc).toContain("Use dedicated tools instead of shell when available")
-      expect(desc).toContain("read_file instead of cat, edit_file instead of sed, glob instead of find, grep instead of grep/rg")
-    })
-
-    it("shell description contains reversibility warning", () => {
-      const desc = getBaseDescription("shell")
-      expect(desc).toContain("consider reversibility before running")
+      expect(desc).toContain("in your home")
+      expect(desc).toContain("last 2000 lines or 30,000 characters")
     })
   })
 

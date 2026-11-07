@@ -468,7 +468,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         agentRoot, profileId, providerRuntime: { id: "minimax", model: "fixture", capabilities: new Set(["reasoning-effort"]) },
       })
       expect(receipts.filter(({ invoked }) => invoked)).toEqual([expect.objectContaining({ name: "unraid_get_system", reason: "dispatched", sideEffect: false })])
-      expect(receipts.filter(({ reason }) => reason === "profile_excluded")).toHaveLength(profileId === "sanctuary-owner" ? 4 : 22)
+      expect(receipts.filter(({ reason }) => reason === "profile_excluded")).toHaveLength(profileId === "sanctuary-owner" ? 4 : 26)
       expect(read).toHaveBeenCalledExactlyOnceWith(SANCTUARY_SYSTEM_QUERY, {})
       for (const effect of effects) expect(effect).not.toHaveBeenCalled()
     } finally {

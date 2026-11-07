@@ -26,6 +26,7 @@ const MAX_OUTPUT_LINES = 200
 export function spawnBackgroundShell(command: string, owner: ShellSessionOwner): ShellSession {
   const id = randomUUID()
   const proc = spawn("sh", ["-c", command], {
+    cwd: owner.agentRoot,
     stdio: ["pipe", "pipe", "pipe"],
   })
 
