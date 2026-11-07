@@ -39,9 +39,10 @@ You need a GitHub account, and shell access to the server that runs the Butler.
    ```
 
    The template mounts this folder read-only at `/run/ouro-sync` ("Bundle sync key"). Leave that mapping as it is.
-4. **Point the bundle at the repository.** Run git inside the container as the Butler, so the files keep the Butler as owner:
+4. **Point the bundle at the repository.** Run git inside the container as the Butler, so the files keep the Butler as owner. On a fresh install the bundle has no repository yet, so make one first (skip the `init` line if `.git` already exists):
 
    ```sh
+   docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/sanctuary.ouro init -q -b main
    docker exec -u 10001 ouro-butler git -C /home/ouro/AgentBundles/sanctuary.ouro remote add origin git@github.com:<you>/butler.ouro.git
    ```
 

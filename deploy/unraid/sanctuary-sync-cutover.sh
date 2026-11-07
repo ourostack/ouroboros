@@ -1,14 +1,20 @@
 #!/bin/bash
 # Moves the Butler's bundle from the hourly host backup onto bundle sync. Runs as root on the Unraid host.
 #
-#   sanctuary-sync-cutover.sh [--dry-run]   read the before-state, print it and save it to bundle-backup/cutover-before.txt (the default)
-#   sanctuary-sync-cutover.sh --apply       cut over; any failure rolls back to the saved before-state
-#   sanctuary-sync-cutover.sh --rollback    put the hourly backup back, from cutover-before.txt
+#   sanctuary-sync-cutover.sh [--dry-run]   read the before-state, print it and save it to bundle-backup/cutover-before-<time>.txt (the default)
+#   sanctuary-sync-cutover.sh --apply       cut over; any failure rolls back to that saved before-state
+#   sanctuary-sync-cutover.sh --rollback    put the hourly backup back, from the before-state the apply recorded
 #   sanctuary-sync-cutover.sh --verify-live after --apply: the sync path reaches GitHub, the key stays unreadable, a stalled fetch ends
 #
+# --apply and --rollback run detached (a new session, all output to bundle-backup/cutover-<time>.log). This process only
+# follows that log and exits with the detached run's status, so a dropped ssh session or a closed terminal never stops a
+# cutover or a rollback halfway. Once a rollback starts it ignores INT, TERM and HUP, runs every step, and when a step fails
+# it writes bundle-backup/cutover-ROLLBACK-INCOMPLETE and says whether the Butler is running. --rollback can be run again.
+#
 # Every git call names its repository and work tree (`git --git-dir=... --work-tree=...`), so git never discovers the
-# repository and never refuses it for dubious ownership after the move or the chown. Root's git calls also run no hooks
-# and no fsmonitor, and `git status` takes no optional locks, so root never rewrites the index behind the Butler.
+# repository and never refuses it for dubious ownership after the move or the chown. Root's git calls also run no hooks,
+# no fsmonitor and no global excludes file, and `git status` takes no optional locks, so root never rewrites the index
+# behind the Butler.
 set -Eeuo pipefail
 umask 022
 
@@ -18,12 +24,22 @@ BUNDLE_REPO_NAME=sanctuary.ouro
 BUNDLE_REMOTE="git@github.com:${BUNDLE_REPO_OWNER}/${BUNDLE_REPO_NAME}.git"
 BUNDLE_BRANCH=main
 AGENT_NAME=sanctuary
+# backup.sh's commit identity and the fetch refspec the moved repository must have.
+BACKUP_COMMIT_NAME="Sanctuary backup"
+BACKUP_COMMIT_EMAIL=16390116+arimendelow@users.noreply.github.com
+DEFAULT_FETCH='+refs/heads/*:refs/remotes/origin/*'
+PSYCHE_FILES="ASPIRATIONS.md IDENTITY.md LORE.md SOUL.md TACIT.md"
 
 CONTAINER=ouro-butler
 CONTAINER_BUNDLE=/home/ouro/AgentBundles/sanctuary.ouro
 CLI_ENTRY=/opt/ouro/dist/heart/daemon/ouro-entry.js
+GATE_ENTRY=/opt/ouro/deploy/unraid/sanctuary-replay-gate.mjs
 SYNC_SSH_WRAPPER=/usr/local/libexec/ouro-sync-ssh
 CONTAINER_KEY=/run/ouro-sync/deploy_key
+# The image's ouro-sync user, which alone reads the key and runs sync's ssh. The stall probe drops its port-22 traffic.
+SYNC_USER=ouro-sync
+SYNC_CONTAINER_UID=10002
+PROBE_COMMENT=sanctuary-sync-cutover-probe
 AUDIT_ICON=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
 # git status and git add -A --dry-run on the live bundle must each stay under this (M5).
 TIMING_LIMIT_MS=300
@@ -37,9 +53,12 @@ BUNDLE=$APPDATA/agent/sanctuary.ouro
 BACKUP=$APPDATA/bundle-backup
 BACKUP_GIT=$BACKUP/repo.git
 BACKUP_KEY=$BACKUP/deploy_key
+KNOWN_HOSTS=$BACKUP/known_hosts
 LOCK_FILE=$BACKUP/lock
-BEFORE=$BACKUP/cutover-before.txt
+CUTOVER_LOCK=$BACKUP/cutover.lock
 MARKER=$BACKUP/cutover-done
+APPLYING=$BACKUP/cutover-applying
+INCOMPLETE=$BACKUP/cutover-ROLLBACK-INCOMPLETE
 CRON_DISABLED=$BACKUP/sanctuary-bundle-backup.cron.disabled
 SYNC_DIR=$APPDATA/sync
 SYNC_KEY=$SYNC_DIR/deploy_key
@@ -61,22 +80,42 @@ BUTLER_UID=${BUTLER_OWNER%%:*}
 SYNC_UID=${SYNC_OWNER%%:*}
 SYNC_GID=${SYNC_OWNER##*:}
 
-# Paths sync must never commit, besides what the exclude list covers. Pinned to SANCTUARY_PACKAGE_MANAGED_FILES by a test.
-PACKAGE_MANAGED_FILES="provider-readiness.json tool-profiles.json mcp/media-mcp.mjs habits/sanctuary-health.md awaiting/house-care-sweep.md product/PRODUCT.md bundle-meta.json"
+# Secret-looking names. The gate's SECRET_PATH is the same pattern; a test pins the two together.
 SECRET_NAME_PATTERN='credential|secret|token|\.key$|\.pem$|(^|/)\.env($|\.)'
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'cutover: %s\n' "$*" >&2; exit 1; }
 
-# Git on the backup repository (before step 5) and on the bundle's own .git (from step 5).
-backup_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false --git-dir="$BACKUP_GIT" --work-tree="$BUNDLE" "$@"; }
-bundle_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false --git-dir="$BUNDLE/.git" --work-tree="$BUNDLE" "$@"; }
-BACKUP_SSH="ssh -i $BACKUP_KEY -o IdentitiesOnly=yes -o BatchMode=yes"
+# Git on the backup repository (before step 5) and on the bundle's own .git (from step 5). No hooks, no fsmonitor, and no
+# global excludes file, so root's view of what is ignored is the repository's own (M5).
+GIT_SAFE="-c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.excludesFile=/dev/null"
+# shellcheck disable=SC2086
+backup_git() { git $GIT_SAFE --git-dir="$BACKUP_GIT" --work-tree="$BUNDLE" "$@"; }
+# shellcheck disable=SC2086
+bundle_git() { git $GIT_SAFE --git-dir="$BUNDLE/.git" --work-tree="$BUNDLE" "$@"; }
+# backup.sh's ssh, with the host key it already accepted into bundle-backup/known_hosts now required (I2).
+BACKUP_SSH="ssh -i $BACKUP_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"
 
-# A config value, or "(unset)".
+# A config value, or "(unset)" when git says it is unset (exit 1). Any other failure is a failure (M9).
 config_value() {
-  local gitfn=$1 key=$2 value
-  if value=$("$gitfn" config --get "$key"); then printf '%s' "$value"; else printf '(unset)'; fi
+  local gitfn=$1 key=$2 value rc=0
+  value=$("$gitfn" config --get "$key") || rc=$?
+  case "$rc" in
+    0) printf '%s' "$value" ;;
+    1) printf '(unset)' ;;
+    *) die "git config --get $key failed (exit $rc)" ;;
+  esac
+}
+
+# Every value of a multi-valued key, joined with " ; ", or "(unset)".
+config_all() {
+  local gitfn=$1 key=$2 value rc=0
+  value=$("$gitfn" config --get-all "$key") || rc=$?
+  case "$rc" in
+    0) printf '%s' "$value" | awk 'NR > 1 { printf " ; " } { printf "%s", $0 }' ;;
+    1) printf '(unset)' ;;
+    *) die "git config --get-all $key failed (exit $rc)" ;;
+  esac
 }
 
 # Sets a config value, or unsets it for "(unset)".
@@ -89,10 +128,14 @@ restore_config() {
   fi
 }
 
-# One saved value from cutover-before.txt.
+# One "key: value" line from a file.
+file_value() {
+  awk -v k="$2: " 'index($0, k) == 1 { print substr($0, length(k) + 1); found = 1; exit } END { exit found ? 0 : 1 }' "$1"
+}
+
+# One saved value from the before-state.
 before_value() {
-  awk -v k="$1: " 'index($0, k) == 1 { print substr($0, length(k) + 1); found = 1; exit } END { exit found ? 0 : 1 }' "$BEFORE" \
-    || die "cutover-before.txt has no \"$1\" line"
+  file_value "$BEFORE" "$1" || die "$(basename "$BEFORE") has no \"$1\" line"
 }
 
 container_image() {
@@ -106,6 +149,11 @@ container_image() {
   printf '%s' "$image"
 }
 
+# "true", "false", or "unknown" when docker cannot say.
+container_running() {
+  docker inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null || printf 'unknown'
+}
+
 # The exclude list from the release's own code, into $1.
 print_exclude() {
   local image=$1 out=$2
@@ -117,44 +165,139 @@ print_exclude() {
   grep -qx '\*\*/\*\.key' "$out" || die "the release's exclude list has no **/*.key entry"
 }
 
-# Milliseconds for git status and git add -A --dry-run, inside the release image as the Butler's uid, on the live bundle.
+# Milliseconds for git status and git add -A --dry-run. Arguments: the git dir, the work tree and the new exclude list, all
+# of which may be read-only. Both run on a private copy of the index (git add --dry-run still takes index.lock), and status
+# takes no optional lock, so nothing under the repository is written (I1). No single quotes below: a test runs this text.
+# shellcheck disable=SC2016
+MEASURE_GIT_SCRIPT='
+  repo=$1 w=$2 exclude=$3
+  tmp=$(mktemp -d) || exit 1
+  cleanup() { rm -rf "$tmp"; }
+  trap cleanup EXIT
+  if [ -f "$repo/index" ]; then cp "$repo/index" "$tmp/index" || exit 1; fi
+  g() { GIT_OPTIONAL_LOCKS=0 GIT_INDEX_FILE="$tmp/index" git -c safe.directory="*" -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.excludesFile="$exclude" --git-dir="$repo" --work-tree="$w" "$@"; }
+  a=$(date +%s%N); g status --porcelain >/dev/null || exit 1
+  b=$(date +%s%N); g add -A --dry-run >/dev/null || exit 1
+  c=$(date +%s%N); echo "$(( (b - a) / 1000000 )) $(( (c - b) / 1000000 ))"
+'
+
+# The timings inside the release image as the Butler's uid, with the repository and the live bundle mounted read-only.
 measure_git() {
   local image=$1 exclude=$2
   docker run --rm --pull=never --network none --user 10001:10001 --entrypoint sh \
     --mount "type=bind,src=$BACKUP_GIT,dst=/cutover/repo.git,readonly" \
     --mount "type=bind,src=$BUNDLE,dst=$CONTAINER_BUNDLE,readonly" \
     --mount "type=bind,src=$exclude,dst=/cutover/exclude,readonly" \
-    "$image" -c '
-      w=$1
-      g() { git -c safe.directory="*" -c core.fsmonitor=false -c core.excludesFile=/cutover/exclude --git-dir=/cutover/repo.git --work-tree="$w" "$@"; }
-      a=$(date +%s%N); GIT_OPTIONAL_LOCKS=0 g status --porcelain >/dev/null || exit 1
-      b=$(date +%s%N); g add -A --dry-run >/dev/null || exit 1
-      c=$(date +%s%N); echo "$(( (b - a) / 1000000 )) $(( (c - b) / 1000000 ))"' sh "$CONTAINER_BUNDLE"
+    "$image" -c "$MEASURE_GIT_SCRIPT" sh /cutover/repo.git "$CONTAINER_BUNDLE" /cutover/exclude
 }
 
 # Paths in the tracked list ($1, one per line) that look like secrets.
 secret_paths() { grep -Ei "$SECRET_NAME_PATTERN" "$1" || true; }
 
-# Status lines naming a package-managed or secret path. Prints them; empty means clean.
-dirty_status_paths() {
-  local status=$1 file
-  for file in $PACKAGE_MANAGED_FILES; do
-    awk -v f="$file" 'substr($0, 4) == f' "$status"
-  done
-  cut -c4- "$status" | grep -Ei "$SECRET_NAME_PATTERN" || true
+# The paths in a `git status --porcelain --untracked-files=all` file that sync must never commit, from the replay gate's own
+# scan inside the release image, so step 10 and the gate cannot drift (I3).
+status_problems() {
+  local image=$1 status=$2
+  docker run --rm -i --pull=never --network none --entrypoint node "$image" "$GATE_ENTRY" status-scan <"$status"
+}
+
+# The owner ("uid:gid") and mode ("755") of a path, read without following a link.
+owner_and_mode() {
+  "$HOST_NODE" -e '
+    const s = require("node:fs").lstatSync(process.argv[1]);
+    process.stdout.write(s.uid + ":" + s.gid + " " + (s.mode & 0o7777).toString(8));
+  ' "$1"
+}
+
+# agent.json's "sync" value as JSON, or "(absent)".
+agent_sync_value() {
+  "$HOST_NODE" -e '
+    const fs = require("node:fs");
+    const fd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!fs.fstatSync(fd).isFile()) throw new Error(process.argv[1] + " is not a regular file");
+    const agent = JSON.parse(fs.readFileSync(fd, "utf8"));
+    process.stdout.write(Object.prototype.hasOwnProperty.call(agent, "sync") ? JSON.stringify(agent.sync) : "(absent)");
+  ' "$BUNDLE/agent.json"
+}
+
+# Edits agent.json's "sync" through a temp file and a rename, keeping its owner and mode. "enable" turns sync on for the
+# branch; "restore <json|(absent)>" puts back exactly what the before-state recorded.
+edit_agent_sync() {
+  "$HOST_NODE" -e '
+    const fs = require("node:fs"), path = require("node:path");
+    const [file, action, value, branch] = process.argv.slice(1);
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error(file + " is not a regular file");
+    const agent = JSON.parse(fs.readFileSync(fd, "utf8"));
+    fs.closeSync(fd);
+    if (action === "enable") {
+      const sync = agent.sync && typeof agent.sync === "object" ? agent.sync : {};
+      agent.sync = { ...sync, enabled: true, branch: sync.branch ?? branch };
+    } else if (value === "(absent)") {
+      delete agent.sync;
+    } else {
+      agent.sync = JSON.parse(value);
+    }
+    const temp = path.join(path.dirname(file), ".agent.json.cutover-" + process.pid);
+    const out = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+      fs.writeFileSync(out, JSON.stringify(agent, null, 2) + "\n");
+      fs.fchownSync(out, stat.uid, stat.gid);
+      fs.fchmodSync(out, stat.mode & 0o7777);
+      fs.fsyncSync(out);
+    } finally { fs.closeSync(out); }
+    fs.renameSync(temp, file);
+  ' "$BUNDLE/agent.json" "$1" "${2:-}" "$BUNDLE_BRANCH"
+}
+
+# Runs `docker exec "$@"`, its stdout in $EXEC_OUT (default $WORK/exec.out) and its status in $EXEC_STATUS. Dies when the
+# check itself could not run (exit 125, 126 or 127, or no such container), so that is never read as the result (M3).
+exec_check() {
+  EXEC_STATUS=0
+  docker exec "$@" >"${EXEC_OUT:-$WORK/exec.out}" 2>"$WORK/exec.err" || EXEC_STATUS=$?
+  if { [ "$EXEC_STATUS" -ge 125 ] && [ "$EXEC_STATUS" -le 127 ]; } || grep -qiE 'no such container|is not running' "$WORK/exec.err"; then
+    die "the check could not run: docker exec $* exited $EXEC_STATUS: $(head -c 300 "$WORK/exec.err" | tr '\n' ' ')"
+  fi
+}
+
+# The check that the Butler's uid cannot read the key: `cat` and `test -r` must both exit 1.
+assert_key_unreadable() {
+  EXEC_OUT=/dev/null exec_check -u 10001 "$CONTAINER" cat "$CONTAINER_KEY"
+  case "$EXEC_STATUS" in
+    0) die "the Butler's uid can read $CONTAINER_KEY" ;;
+    1) ;;
+    *) die "cat $CONTAINER_KEY as the Butler's uid exited $EXEC_STATUS, not 1" ;;
+  esac
+  exec_check -u 10001 "$CONTAINER" test -r "$CONTAINER_KEY"
+  case "$EXEC_STATUS" in
+    0) die "the Butler's uid can read $CONTAINER_KEY" ;;
+    1) ;;
+    *) die "test -r $CONTAINER_KEY as the Butler's uid exited $EXEC_STATUS, not 1" ;;
+  esac
 }
 
 # ---------- dry run ----------
 
-# Reads the before-state, prints it and saves it. Changes nothing else. Leaves the exclude list in $WORK/exclude.
-preflight() {
+# Refuses a state the cutover cannot start from. Changes nothing.
+refuse_unless_ready() {
   [ -d "$BACKUP_GIT" ] || die "$BACKUP_GIT is missing"
   [ -d "$BUNDLE" ] || die "$BUNDLE is missing"
+  [ ! -e "$INCOMPLETE" ] || die "a rollback did not finish ($INCOMPLETE); run --rollback again"
+  [ ! -e "$APPLYING" ] || die "an apply is running or was interrupted ($APPLYING); run --rollback"
   [ ! -e "$BUNDLE/.git" ] || die "$BUNDLE/.git already exists"
   [ ! -e "$MARKER" ] || die "the cutover is already done ($MARKER)"
   [ -f "$CRON_FILE" ] || die "the backup cron file $CRON_FILE is missing"
   [ -f "$BACKUP_KEY" ] || die "the backup deploy key $BACKUP_KEY is missing"
+  [ -f "$KNOWN_HOSTS" ] || die "$KNOWN_HOSTS is missing; backup.sh's pushes fill it, and the cutover's ssh requires it"
+}
+
+# Reads the before-state, prints it and saves it to a new timestamped file, never overwriting one. Changes nothing else.
+# Sets BEFORE, and leaves the exclude list in $WORK/exclude.
+preflight() {
+  refuse_unless_ready
   local image branch upstream remote merge stash tracked timings status_ms add_ms excluded secrets out
+  local origin_url fetch bare worktree sshcmd ucache manyfiles agent_sync repo_stat repo_owner repo_mode key_state
   image=$(container_image)
   print_exclude "$image" "$WORK/exclude"
   chmod 0644 "$WORK/exclude"
@@ -168,6 +311,18 @@ preflight() {
   merge=$(config_value backup_git "branch.$branch.merge")
   upstream=$(backup_git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream="(none)"
   stash=$(backup_git rev-list --walk-reflogs --count refs/stash 2>/dev/null) || stash=0
+  origin_url=$(config_value backup_git remote.origin.url)
+  fetch=$(config_all backup_git remote.origin.fetch)
+  bare=$(config_value backup_git core.bare)
+  worktree=$(config_value backup_git core.worktree)
+  sshcmd=$(config_value backup_git core.sshCommand)
+  ucache=$(config_value backup_git core.untrackedCache)
+  manyfiles=$(config_value backup_git feature.manyFiles)
+  agent_sync=$(agent_sync_value)
+  repo_stat=$(owner_and_mode "$BACKUP_GIT")
+  repo_owner=${repo_stat% *}
+  repo_mode=${repo_stat#* }
+  if [ -e "$SYNC_KEY" ]; then key_state=present; else key_state=absent; fi
   tracked=$WORK/tracked
   backup_git ls-files >"$tracked"
   excluded=$(backup_git ls-files -ci --exclude-per-directory=.gitignore --exclude-from="$WORK/exclude")
@@ -175,18 +330,24 @@ preflight() {
   out=$WORK/before
   {
     say "# Bundle sync cutover: the before-state, read $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    say "origin.url: $(config_value backup_git remote.origin.url)"
+    say "origin.url: $origin_url"
     say "target.url: $BUNDLE_REMOTE"
+    say "remote.origin.fetch: $fetch"
     say "image: $image"
     say "branch: $branch"
     say "upstream: $upstream"
     say "branch.remote: $remote"
     say "branch.merge: $merge"
-    say "core.bare: $(config_value backup_git core.bare)"
-    say "core.worktree: $(config_value backup_git core.worktree)"
-    say "core.sshCommand: $(config_value backup_git core.sshCommand)"
-    say "core.untrackedCache: $(config_value backup_git core.untrackedCache)"
-    say "feature.manyFiles: $(config_value backup_git feature.manyFiles)"
+    say "core.bare: $bare"
+    say "core.worktree: $worktree"
+    say "core.sshCommand: $sshcmd"
+    say "core.untrackedCache: $ucache"
+    say "feature.manyFiles: $manyfiles"
+    say "repo.git owner: $repo_owner"
+    say "repo.git mode: $repo_mode"
+    say "agent.json sync: $agent_sync"
+    say "sync key: $key_state"
+    say "known_hosts: $KNOWN_HOSTS"
     say "stash count: $stash"
     say "git status ms: $status_ms"
     say "git add -A --dry-run ms: $add_ms"
@@ -207,7 +368,9 @@ preflight() {
     fi
   } >"$out"
   cat "$out"
-  mv -f -- "$out" "$BEFORE"
+  # A new file each time; noclobber refuses to replace one that exists (M10).
+  BEFORE=$BACKUP/cutover-before-$(date -u +%Y%m%dT%H%M%SZ)-$$.txt
+  (set -C; cat "$out" >"$BEFORE") || die "could not write $BEFORE"
   local problems=0
   if [ "$status_ms" -gt "$TIMING_LIMIT_MS" ] || [ "$add_ms" -gt "$TIMING_LIMIT_MS" ]; then
     say "FAIL: git status took $status_ms ms and git add -A --dry-run $add_ms ms; each must be at most $TIMING_LIMIT_MS ms" >&2
@@ -223,38 +386,109 @@ preflight() {
 
 # ---------- rollback ----------
 
-# Undoes every step up to $1 (15 for a full rollback), from cutover-before.txt. Keeps going past a failure and reports it.
-rollback_from() {
-  local reached=$1 failed=0 branch
-  set +e
-  say "rolling back from step $reached" >&2
-  step_try() { "$@" || { failed=1; say "rollback: failed: $*" >&2; }; }
-  # Apply stopped the container at step 1 and starts it only at step 15.
-  if [ "$reached" -ge 15 ]; then step_try docker stop "$CONTAINER" >/dev/null; fi
-  if [ "$reached" -ge 12 ]; then step_try set_sync_enabled false; fi
-  if [ "$reached" -ge 5 ] && [ -d "$BUNDLE/.git" ] && [ ! -e "$BACKUP_GIT" ]; then step_try mv -- "$BUNDLE/.git" "$BACKUP_GIT"; fi
-  if [ "$reached" -ge 5 ] && [ -d "$BACKUP_GIT" ]; then
-    step_try restore_backup_repo
-    step_try chown -R -h "$ROOT_OWNER" "$BACKUP_GIT"
+ROLLBACK_FAILED=""
+
+# Runs one rollback step and records its result. A failed step never stops the steps after it.
+rollback_step() {
+  local name=$1
+  shift
+  if "$@"; then
+    say "rollback: $name: ok"
+  else
+    say "rollback: $name: FAILED"
+    ROLLBACK_FAILED="${ROLLBACK_FAILED:+$ROLLBACK_FAILED, }$name"
   fi
-  if [ "$reached" -ge 11 ] && [ "${SYNC_KEY_CREATED:-0}" = 1 ]; then step_try rm -f -- "$SYNC_KEY"; fi
-  if [ "$reached" -ge 2 ] && [ -f "$CRON_DISABLED" ] && [ ! -e "$CRON_FILE" ]; then
-    step_try mv -- "$CRON_DISABLED" "$CRON_FILE"
-    step_try update_cron
-  fi
-  if [ "$reached" -ge 14 ]; then step_try rm -f -- "$MARKER"; fi
-  if [ "$reached" -ge 1 ]; then step_try docker start "$CONTAINER" >/dev/null; fi
-  set -e
-  if [ "$failed" -ne 0 ]; then say "rollback finished with failures; see above" >&2; return 1; fi
-  say "rolled back: the hourly backup owns the bundle again; commits already pushed stay on GitHub" >&2
 }
 
-# Puts back the backup repository's config, branch and exclude from cutover-before.txt.
+# Undoes the cutover from the before-state in $BEFORE. Every step reads the state it finds, so a rollback can run again
+# after one that was cut short. $1 is the step the apply reached (15 for --rollback): the container is stopped only when
+# the apply started it, and started again only when the apply stopped it.
+rollback_from() {
+  local reached=$1 running
+  # Nothing interrupts a rollback: a second Ctrl-C, a TERM or a lost terminal is ignored, here and in every child (C1).
+  trap '' INT TERM HUP PIPE
+  set +e
+  ROLLBACK_FAILED=""
+  say "rolling back from step $reached, from $BEFORE"
+  if [ "$reached" -ge 15 ]; then rollback_step "stop the Butler" docker stop "$CONTAINER"; fi
+  rollback_step "restore agent.json's sync value" restore_agent_sync
+  rollback_step "move .git back to repo.git" move_git_back
+  rollback_step "clear a stale index.lock" clear_stale_index_lock
+  rollback_step "restore repo.git's config, branch and exclude" restore_backup_repo
+  rollback_step "restore repo.git's owner and mode" restore_repo_owner
+  rollback_step "remove the sync key the apply installed" remove_installed_key
+  rollback_step "restore the backup cron" restore_cron
+  rollback_step "remove the cutover marker" rm -f -- "$MARKER"
+  if [ "$reached" -ge 1 ]; then
+    rollback_step "start the Butler" docker start "$CONTAINER"
+    rollback_step "check the Butler is running" butler_is_running
+  fi
+  running=$(container_running)
+  case "$running" in
+    true) running="running" ;;
+    false) running="STOPPED" ;;
+    *) running="in an unknown state (docker inspect failed)" ;;
+  esac
+  if [ -n "$ROLLBACK_FAILED" ]; then
+    {
+      say "before: $BEFORE"
+      say "failed: $ROLLBACK_FAILED"
+      say "at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      say "butler: $running"
+    } >"$INCOMPLETE" || say "could not write $INCOMPLETE"
+    say "ROLLBACK INCOMPLETE: these steps failed: $ROLLBACK_FAILED. The Butler is $running. See $INCOMPLETE; fix the cause, then run --rollback again."
+    return 1
+  fi
+  rm -f -- "$INCOMPLETE" "$APPLYING"
+  say "rolled back: the hourly backup owns the bundle again; commits already pushed stay on GitHub. The Butler is $running."
+  [ "$reached" -lt 1 ] || [ "$running" = running ]
+}
+
+butler_is_running() { [ "$(container_running)" = true ]; }
+
+restore_agent_sync() {
+  local value
+  value=$(file_value "$BEFORE" "agent.json sync") || { say "the before-state has no agent.json sync line"; return 1; }
+  [ "$(agent_sync_value)" = "$value" ] || edit_agent_sync restore "$value"
+}
+
+move_git_back() {
+  if [ -e "$BUNDLE/.git" ] && [ -e "$BACKUP_GIT" ]; then say "both $BUNDLE/.git and $BACKUP_GIT exist"; return 1; fi
+  if [ -e "$BUNDLE/.git" ]; then mv -- "$BUNDLE/.git" "$BACKUP_GIT"; fi
+  [ -d "$BACKUP_GIT" ]
+}
+
+# A git that a stop killed mid-write leaves index.lock behind, and every hourly backup would then fail unseen. It is removed
+# only when no git runs on the host or in the container (M16).
+clear_stale_index_lock() {
+  [ -e "$BACKUP_GIT/index.lock" ] || return 0
+  if pgrep -x git >/dev/null; then say "a git process is running on the host; $BACKUP_GIT/index.lock is left in place"; return 1; fi
+  if [ "$(container_running)" != false ]; then
+    local rc=0
+    docker exec "$CONTAINER" pgrep -x git >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ]; then say "git may be running in $CONTAINER (pgrep exited $rc); $BACKUP_GIT/index.lock is left in place"; return 1; fi
+  fi
+  rm -f -- "$BACKUP_GIT/index.lock" && say "removed a stale $BACKUP_GIT/index.lock (no git was running)"
+}
+
+# Puts back the backup repository's config, branch, HEAD and exclude from the before-state.
 restore_backup_repo() {
-  local branch key value encoded
+  local branch key value encoded head current
+  [ -d "$BACKUP_GIT" ] || return 1
   branch=$(before_value branch) || return 1
-  if [ "$branch" != "$BUNDLE_BRANCH" ] && backup_git rev-parse --verify -q "refs/heads/$BUNDLE_BRANCH" >/dev/null; then
-    [ "$(backup_git symbolic-ref --short HEAD)" = "$BUNDLE_BRANCH" ] && backup_git branch -M "$BUNDLE_BRANCH" "$branch"
+  if [ "$branch" != "$BUNDLE_BRANCH" ] && backup_git rev-parse --verify -q "refs/heads/$BUNDLE_BRANCH" >/dev/null \
+    && [ "$(backup_git symbolic-ref --short HEAD)" = "$BUNDLE_BRANCH" ]; then
+    backup_git branch -M "$BUNDLE_BRANCH" "$branch" || return 1
+  fi
+  # A commit the apply made and never pushed (step 9 stopped before its push) is dropped from the branch, so the hourly
+  # backup never pushes it. The work tree is not touched.
+  head=$(file_value "$APPLYING" head 2>/dev/null || true)
+  if [ -n "$head" ]; then
+    current=$(backup_git rev-parse HEAD) || return 1
+    if [ "$current" != "$head" ] && [ "$current" != "$(backup_git rev-parse -q --verify "refs/remotes/origin/$BUNDLE_BRANCH" || true)" ]; then
+      backup_git reset -q --mixed "$head" || return 1
+      say "reset $branch to $head, dropping a commit that was never pushed"
+    fi
   fi
   value=$(before_value origin.url) || return 1
   restore_config backup_git remote.origin.url "$value" || return 1
@@ -276,47 +510,76 @@ restore_backup_repo() {
   fi
 }
 
-# Sets agent.json's sync.enabled (and the branch), through a temp file and a rename, keeping its owner and mode.
-set_sync_enabled() {
-  "$HOST_NODE" -e '
-    const fs = require("node:fs"), path = require("node:path");
-    const [file, enabled, branch] = process.argv.slice(1);
-    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile()) throw new Error(file + " is not a regular file");
-    const agent = JSON.parse(fs.readFileSync(fd, "utf8"));
-    fs.closeSync(fd);
-    const sync = agent.sync && typeof agent.sync === "object" ? agent.sync : {};
-    agent.sync = { ...sync, enabled: enabled === "true", branch: sync.branch ?? branch };
-    const temp = path.join(path.dirname(file), ".agent.json.cutover-" + process.pid);
-    const out = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-    try {
-      fs.writeFileSync(out, JSON.stringify(agent, null, 2) + "\n");
-      fs.fchownSync(out, stat.uid, stat.gid);
-      fs.fchmodSync(out, stat.mode & 0o7777);
-      fs.fsyncSync(out);
-    } finally { fs.closeSync(out); }
-    fs.renameSync(temp, file);
-  ' "$BUNDLE/agent.json" "$1" "$BUNDLE_BRANCH"
+# repo.git's owner (recursively) and mode, as the before-state recorded them (M8).
+restore_repo_owner() {
+  local owner mode
+  [ -d "$BACKUP_GIT" ] || return 1
+  owner=$(before_value "repo.git owner") || return 1
+  mode=$(before_value "repo.git mode") || return 1
+  chown -R -h "$owner" "$BACKUP_GIT" && chmod "$mode" "$BACKUP_GIT"
+}
+
+remove_installed_key() {
+  local state
+  state=$(before_value "sync key") || return 1
+  [ "$state" = present ] || rm -f -- "$SYNC_KEY" "$SYNC_DIR/.deploy_key.cutover"
+}
+
+restore_cron() {
+  if [ ! -e "$CRON_FILE" ] && [ -f "$CRON_DISABLED" ]; then mv -- "$CRON_DISABLED" "$CRON_FILE" || return 1; fi
+  [ -f "$CRON_FILE" ] || { say "$CRON_FILE is missing"; return 1; }
+  update_cron || return 1
+  grep -q 'backup\.sh' "$CRON_TABLE" || { say "$CRON_TABLE has no backup.sh entry after update_cron"; return 1; }
+}
+
+# Whether nothing of a cutover is on disk: no marker, no .git in the bundle, no apply in progress, no unfinished rollback
+# and no disabled cron file.
+nothing_to_roll_back() {
+  [ ! -e "$MARKER" ] && [ ! -e "$BUNDLE/.git" ] && [ ! -e "$APPLYING" ] && [ ! -e "$INCOMPLETE" ] && [ ! -e "$CRON_DISABLED" ]
+}
+
+# The before-state the apply recorded: in the in-progress file, the unfinished rollback's file, or the marker.
+recorded_before() {
+  local file value
+  for file in "$APPLYING" "$INCOMPLETE" "$MARKER"; do
+    if [ -f "$file" ] && value=$(file_value "$file" before) && [ -f "$value" ]; then printf '%s' "$value"; return 0; fi
+  done
+  return 1
+}
+
+rollback() {
+  if nothing_to_roll_back; then say "nothing to roll back: no cutover marker and no .git in the bundle"; return 0; fi
+  BEFORE=$(recorded_before) || die "no recorded before-state: none of $APPLYING, $INCOMPLETE or $MARKER names one"
+  exec 9>>"$LOCK_FILE"
+  flock -w 900 9 || die "the backup lock stayed busy for 15 minutes"
+  rollback_from 15
 }
 
 # ---------- apply ----------
 
 STEP=0
 APPLIED=0
-SYNC_KEY_CREATED=0
 IPTABLES_RULE=""
-# The one EXIT trap: an apply that did not finish rolls back from the step it reached; the iptables rule and the
-# work directory never outlive the script.
+BEFORE=""
+DETACHED_LOG=${OURO_CUTOVER_DETACHED:-}
+
+# The one EXIT trap: an apply that did not finish rolls back from the step it reached; the iptables rule and the work
+# directory never outlive the script; a detached run records its final status for the process following its log.
 on_exit() {
   local status=$?
+  trap '' INT TERM HUP PIPE
+  # A failure inside a redirected command (`f >/dev/null`) runs this trap under that redirection: write to the script's own output.
+  exec 1>&5 2>&6
   if [ "$MODE" = apply ] && [ "$APPLIED" -ne 1 ] && [ "$STEP" -gt 0 ]; then
-    say "cutover failed at step $STEP (exit $status); rolling back" >&2
+    say "cutover failed at step $STEP (exit $status); rolling back"
     rollback_from "$STEP" || true
     status=1
   fi
-  remove_drop_rule
+  remove_drop_rule || status=1
   [ -z "${WORK:-}" ] || rm -rf -- "$WORK"
+  if [ -n "$DETACHED_LOG" ]; then
+    printf '%s\n' "$status" >"$DETACHED_LOG.status.tmp" && mv -f -- "$DETACHED_LOG.status.tmp" "$DETACHED_LOG.status"
+  fi
   exit "$status"
 }
 
@@ -338,6 +601,14 @@ assert_sync_key() {
   ' "$SYNC_DIR" "$SYNC_KEY" "$SYNC_UID" "$SYNC_GID" "${ROOT_OWNER%%:*}"
 }
 
+# Every psyche file is still tracked (M5).
+assert_psyche_tracked() {
+  local name
+  for name in $PSYCHE_FILES; do
+    bundle_git ls-files --error-unmatch -- "psyche/$name" >/dev/null 2>&1 || die "psyche/$name would no longer be tracked; nothing was pushed"
+  done
+}
+
 # The effective audit of the started container, with sync on, so a missing /run/ouro-sync mount fails the apply (13b).
 audit_started_container() {
   local image=$1 reference
@@ -354,10 +625,17 @@ audit_started_container() {
 
 apply() {
   preflight
-  local image head remote_head untrack status
+  local image head remote_head untrack status dirty fetch
   image=$(before_value image)
+  # The moved repository must fetch every branch into refs/remotes/origin/, so a push moves the tracking ref (I4).
+  fetch=$(before_value remote.origin.fetch)
+  [ "$fetch" = "$DEFAULT_FETCH" ] || die "repo.git's remote.origin.fetch is \"$fetch\", not \"$DEFAULT_FETCH\"; nothing was changed"
+  exec 8>>"$CUTOVER_LOCK"
+  flock -n 8 || die "another cutover run holds $CUTOVER_LOCK; nothing was changed"
 
   STEP=1; say "1. stopping $CONTAINER"
+  printf 'before: %s\nstarted: %s\n' "$BEFORE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$APPLYING.tmp"
+  mv -f -- "$APPLYING.tmp" "$APPLYING"
   docker stop "$CONTAINER" >/dev/null
 
   STEP=2; say "2. disabling the hourly backup cron"
@@ -369,12 +647,13 @@ apply() {
   exec 9>>"$LOCK_FILE"
   flock -w 900 9 || die "the backup lock stayed busy for 15 minutes"
 
-  STEP=4; say "4. the last backup commit and push"
+  STEP=4; say "4. the last backup commit and push, as backup.sh makes them"
   backup_git add -A
   if ! backup_git diff --cached --quiet; then
-    backup_git -c "user.name=$AGENT_NAME" -c "user.email=$AGENT_NAME@ouro.local" commit -q -m "backup: last hourly backup before bundle sync"
+    backup_git -c "user.name=$BACKUP_COMMIT_NAME" -c "user.email=$BACKUP_COMMIT_EMAIL" commit -q -m "backup $(date -u +%Y-%m-%dT%H:%MZ)"
   fi
   GIT_SSH_COMMAND=$BACKUP_SSH backup_git push -q origin "HEAD:$BUNDLE_BRANCH"
+  printf 'head: %s\n' "$(backup_git rev-parse HEAD)" >>"$APPLYING"
 
   STEP=5; say "5. moving the repository into the bundle"
   mv -- "$BACKUP_GIT" "$BUNDLE/.git"
@@ -404,69 +683,82 @@ apply() {
   if [ -s "$untrack" ]; then
     bundle_git --literal-pathspecs rm --cached --quiet --pathspec-from-file="$untrack" --pathspec-file-nul
     bundle_git -c "user.name=$AGENT_NAME" -c "user.email=$AGENT_NAME@ouro.local" commit -q -m "sync: stop tracking package-managed and excluded files"
+    assert_psyche_tracked
     GIT_SSH_COMMAND=$BACKUP_SSH bundle_git push -q origin "HEAD:$BUNDLE_BRANCH"
   fi
+  assert_psyche_tracked
   bundle_git config core.untrackedCache true
   bundle_git config feature.manyFiles true
 
   STEP=10; say "10. checking nothing excluded is tracked"
   [ -z "$(bundle_git ls-files -ci --exclude-standard)" ] || die "excluded files are still tracked"
   status=$WORK/status
-  GIT_OPTIONAL_LOCKS=0 bundle_git status --porcelain >"$status"
-  [ -z "$(dirty_status_paths "$status")" ] || die "git status shows package-managed or secret paths: $(dirty_status_paths "$status" | tr '\n' ' ')"
+  GIT_OPTIONAL_LOCKS=0 bundle_git status --porcelain --untracked-files=all >"$status"
+  dirty=$(status_problems "$image" "$status")
+  [ -z "$dirty" ] || die "git status shows package-managed or secret paths: $(printf '%s' "$dirty" | tr '\n' ' ')"
 
   STEP=11; say "11. installing the sync key for ouro-sync"
   [ ! -L "$SYNC_DIR" ] || die "$SYNC_DIR is a symlink"
-  [ -e "$SYNC_KEY" ] || SYNC_KEY_CREATED=1
   mkdir -p -- "$SYNC_DIR"
   chown -h "$ROOT_OWNER" "$SYNC_DIR"
   chmod 0755 "$SYNC_DIR"
   rm -f -- "$SYNC_DIR/.deploy_key.cutover"
-  cp -- "$BACKUP_KEY" "$SYNC_DIR/.deploy_key.cutover"
+  # The copy is born 0600, so it is never readable to anyone else, even before the chmod (M6).
+  (umask 077; cp -- "$BACKUP_KEY" "$SYNC_DIR/.deploy_key.cutover")
   chown "$SYNC_OWNER" "$SYNC_DIR/.deploy_key.cutover"
   chmod 0400 "$SYNC_DIR/.deploy_key.cutover"
   mv -f -- "$SYNC_DIR/.deploy_key.cutover" "$SYNC_KEY"
   assert_sync_key
 
   STEP=12; say "12. turning sync on in agent.json"
-  set_sync_enabled true
+  edit_agent_sync enable
 
   STEP=13; say "13. handing .git to the Butler"
   chown -R -h "$BUTLER_OWNER" "$BUNDLE/.git"
   assert_owned_by_butler
 
   STEP=14; say "14. writing $MARKER"
-  date -u +%Y-%m-%dT%H:%M:%SZ >"$MARKER"
+  printf 'before: %s\ndone: %s\n' "$BEFORE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$MARKER"
 
   STEP=15; say "15. starting $CONTAINER"
   docker start "$CONTAINER" >/dev/null
   say "13b. auditing the started container with sync on"
   audit_started_container "$image" >/dev/null
-  if docker exec -u 10001 "$CONTAINER" test -r "$CONTAINER_KEY"; then die "the Butler's uid can read $CONTAINER_KEY"; fi
+  exec_check -u 10001 "$CONTAINER" test -r "$CONTAINER_KEY"
+  case "$EXEC_STATUS" in
+    0) die "the Butler's uid can read $CONTAINER_KEY" ;;
+    1) ;;
+    *) die "test -r $CONTAINER_KEY as the Butler's uid exited $EXEC_STATUS, not 1" ;;
+  esac
 
+  rm -f -- "$APPLYING"
   APPLIED=1
   say "cutover done. Run --verify-live next."
 }
 
 # ---------- verify live ----------
 
+# Removes the stall probe's rule and proves it is gone (`iptables -C` must then fail).
 remove_drop_rule() {
-  if [ -n "$IPTABLES_RULE" ]; then
-    # shellcheck disable=SC2086
-    iptables -D $IPTABLES_RULE || say "verify: could not remove the iptables rule: iptables -D $IPTABLES_RULE" >&2
-    IPTABLES_RULE=""
+  [ -n "$IPTABLES_RULE" ] || return 0
+  local rule=$IPTABLES_RULE
+  IPTABLES_RULE=""
+  # shellcheck disable=SC2086
+  iptables -D $rule || say "verify: could not remove the iptables rule: iptables -D $rule" >&2
+  # shellcheck disable=SC2086
+  if iptables -C $rule 2>/dev/null; then
+    say "verify: THE IPTABLES RULE IS STILL IN PLACE; remove it by hand: iptables -D $rule" >&2
+    return 1
   fi
-}
-
-container_ip() {
-  docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CONTAINER" | awk '{ print $1 }'
 }
 
 butler_sync() { docker exec -u 10001 "$CONTAINER" timeout 60 node "$CLI_ENTRY" sync --agent "$AGENT_NAME"; }
 
 verify_live() {
   [ -e "$MARKER" ] || die "the cutover is not done ($MARKER is missing)"
-  local heads ip start elapsed status leftover
+  local heads uid start elapsed status out leftover
+  trap 'trap "" INT TERM HUP; exit 130' INT TERM
+  trap 'trap "" INT TERM HUP; exit 129' HUP
 
   say "the sync path reaches GitHub as ouro-sync"
   heads=$(docker exec -u 10001 -e "GIT_SSH_COMMAND=sudo -n -u ouro-sync $SYNC_SSH_WRAPPER" -e GIT_SSH_VARIANT=ssh "$CONTAINER" \
@@ -474,23 +766,34 @@ verify_live() {
   [ -n "$heads" ] || die "git ls-remote through $SYNC_SSH_WRAPPER returned no $BUNDLE_BRANCH"
 
   say "the Butler's uid cannot read the key"
-  if docker exec -u 10001 "$CONTAINER" cat "$CONTAINER_KEY" >/dev/null 2>&1; then die "the Butler's uid can read $CONTAINER_KEY"; fi
-  if docker exec -u 10001 "$CONTAINER" test -r "$CONTAINER_KEY"; then die "the Butler's uid can read $CONTAINER_KEY"; fi
+  assert_key_unreadable
 
   say "a stalled fetch ends on its own"
-  ip=$(container_ip)
-  [ -n "$ip" ] || die "the container has no IP address to scope the iptables rule to"
-  IPTABLES_RULE="FORWARD -s $ip -p tcp --dport 22 -j DROP"
+  # The container shares the host's network, so the rule drops port 22 for the sync user's uid alone (M4).
+  exec_check "$CONTAINER" id -u "$SYNC_USER"
+  uid=$(tr -d '[:space:]' <"$WORK/exec.out")
+  [ "$EXEC_STATUS" -eq 0 ] && [ "$uid" = "$SYNC_CONTAINER_UID" ] || die "the image's $SYNC_USER uid is \"$uid\", not $SYNC_CONTAINER_UID"
+  IPTABLES_RULE="OUTPUT -m owner --uid-owner $uid -p tcp --dport 22 -m comment --comment $PROBE_COMMENT -j DROP"
   # shellcheck disable=SC2086
   iptables -I $IPTABLES_RULE
   start=$(date +%s)
-  if butler_sync; then status=0; else status=$?; fi
+  status=0
+  out=$(butler_sync 2>&1) || status=$?
   elapsed=$(( $(date +%s) - start ))
-  remove_drop_rule
+  remove_drop_rule || die "the stall probe's iptables rule could not be removed"
+  printf '%s\n' "$out"
   [ "$status" -ne 0 ] || die "ouro sync succeeded while TCP 22 was dropped, so the rule did not stall it"
+  if printf '%s' "$out" | grep -qi 'paused'; then die "ouro sync was paused, so the stall proves nothing; remove state/sync-paused and run again"; fi
+  # The stall must end the way a stall ends: a timeout or a failed connect, not some other fast failure (M2).
+  printf '%s' "$out" | grep -Eqi 'timed out|connect to host' || die "the stalled ouro sync failed without a timeout or a connect failure (exit $status)"
   [ "$elapsed" -le "$STALL_LIMIT_S" ] || die "the stalled ouro sync took ${elapsed}s; it must end within ${STALL_LIMIT_S}s"
-  leftover=$(docker exec "$CONTAINER" ps -u 10002 -o pid= || true)
-  [ -z "$leftover" ] || die "ouro-sync processes outlived the stalled sync: $leftover"
+  exec_check "$CONTAINER" ps -u "$uid" -o pid=
+  leftover=$(tr -d '[:space:]' <"$WORK/exec.out")
+  case "$EXEC_STATUS" in
+    0) die "ouro-sync processes outlived the stalled sync: $leftover" ;;
+    1) [ -z "$leftover" ] || die "ouro-sync processes outlived the stalled sync: $leftover" ;;
+    *) die "ps -u $uid exited $EXEC_STATUS, not 0 or 1" ;;
+  esac
   say "the stalled sync ended in ${elapsed}s with nothing left running"
 
   say "ouro sync works again"
@@ -498,10 +801,53 @@ verify_live() {
   say "verify-live ok"
 }
 
+# ---------- detaching ----------
+
+# Starts this script again for $1 in a new session with all output in a new log, then follows that log and exits with
+# the detached run's status. Losing this process (Ctrl-C, a closed terminal, a dropped ssh session) never stops the run.
+run_detached() {
+  local mode=$1 log
+  [ -d "$BACKUP" ] || die "$BACKUP is missing"
+  log=$BACKUP/cutover-$(date -u +%Y%m%dT%H%M%SZ)-$$.log
+  (set -C; umask 077; : >"$log") || die "could not create $log"
+  OURO_CUTOVER_DETACHED=$log setsid -f bash "$0" "$mode" </dev/null >>"$log" 2>&1 || die "could not start the detached run"
+  say "running detached; its log is $log"
+  follow_log "$log"
+}
+
+follow_log() {
+  local log=$1 printed=0 size pid="" waited=0
+  trap 'say ""; say "stopped following. The run continues detached; its log is $log"; exit 130' INT TERM HUP
+  while :; do
+    size=$(wc -c <"$log" | tr -d ' ')
+    if [ "$size" -gt "$printed" ]; then
+      tail -c +"$((printed + 1))" "$log" | head -c "$((size - printed))" || true
+      printed=$size
+    fi
+    if [ -f "$log.status" ]; then
+      size=$(wc -c <"$log" | tr -d ' ')
+      [ "$size" -le "$printed" ] || tail -c +"$((printed + 1))" "$log"
+      exit "$(cat "$log.status")"
+    fi
+    [ -n "$pid" ] || pid=$(cat "$log.pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null && [ ! -f "$log.status" ]; then
+      tail -c +"$((printed + 1))" "$log"
+      say "THE DETACHED RUN (pid $pid) ENDED WITHOUT A STATUS. Read $log; if the Butler is not back, run --rollback."
+      exit 1
+    fi
+    if [ -z "$pid" ]; then
+      waited=$((waited + 1))
+      [ "$waited" -lt 100 ] || { say "the detached run never started; see $log"; exit 1; }
+    fi
+    sleep 0.2
+  done
+}
+
 # ---------- main ----------
 
 MODE=dry-run
-case "${1:-}" in
+MODE_ARG=${1:-}
+case "$MODE_ARG" in
   "" | --dry-run) MODE=dry-run ;;
   --apply) MODE=apply ;;
   --rollback) MODE=rollback ;;
@@ -510,18 +856,28 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || die "usage: sanctuary-sync-cutover.sh [--dry-run|--apply|--rollback|--verify-live]"
 if [ -z "$TEST_ROOT" ] && [ "$(id -u)" -ne 0 ]; then die "run this as root on the host"; fi
+
+if [ -z "$DETACHED_LOG" ] && { [ "$MODE" = apply ] || [ "$MODE" = rollback ]; }; then
+  if [ "$MODE" = rollback ] && nothing_to_roll_back; then say "nothing to roll back: no cutover marker and no .git in the bundle"; exit 0; fi
+  run_detached "$MODE_ARG"
+fi
+
+if [ -n "$DETACHED_LOG" ]; then
+  # A detached run outlives its terminal: HUP is ignored, as under nohup. INT and TERM end an apply into its rollback.
+  trap '' HUP
+  printf '%s\n' "$$" >"$DETACHED_LOG.pid"
+fi
+exec 5>&1 6>&2
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sanctuary-sync-cutover.XXXXXX")
 trap on_exit EXIT
-trap 'exit 130' INT TERM
+trap 'trap "" INT TERM HUP; exit 130' INT TERM
 
 case "$MODE" in
   dry-run) preflight ;;
   apply) apply ;;
   rollback)
-    [ -f "$BEFORE" ] || die "$BEFORE is missing, so there is no before-state to restore"
-    exec 9>>"$LOCK_FILE"
-    flock -w 900 9 || die "the backup lock stayed busy for 15 minutes"
-    rollback_from 15
+    trap '' INT TERM HUP PIPE
+    rollback
     ;;
   verify-live) verify_live ;;
 esac
