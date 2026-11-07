@@ -124,7 +124,11 @@ export const shellToolDefinitions: ToolDefinition[] = [
       const home = shellHome(ctx)
       const raw = await new Promise<string>((resolve, reject) => {
         const child = exec(a.command, { encoding: "utf-8", timeout, cwd: home, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
-          if (error) reject(Object.assign(error, { stdout, stderr }))
+          if (error) {
+            // A failing command's output gets the same tail cap and saved file.
+            error.message = tailWithNotice(error.message, home)
+            reject(Object.assign(error, { stdout: tailWithNotice(stdout, home), stderr: tailWithNotice(stderr, home) }))
+          }
           else resolve(stdout)
         })
         child.stdin?.end()

@@ -1,19 +1,24 @@
 import { lookup } from "node:dns/promises"
-import { isIP } from "node:net"
+import * as http from "node:http"
+import * as https from "node:https"
+import { isIP, type LookupFunction } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 import { TOOL_MAX_CHARS } from "./tool-limits"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
 const MAX_REDIRECTS = 5
-const TIMEOUT_MS = 20_000
+/** Test hook: the request deadline. */
+export const webTestHooks = { timeoutMs: 20_000 }
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
 
-function ipv4Private(a: number, b: number): boolean {
+function ipv4Private(a: number, b: number, c: number): boolean {
   return a === 0 || a === 10 || a === 127 || a >= 224
     || (a === 100 && b >= 64 && b <= 127)
     || (a === 169 && b === 254)
     || (a === 172 && b >= 16 && b <= 31)
     || (a === 192 && b === 168)
+    || (a === 192 && b === 0 && c === 0)
+    || (a === 198 && (b === 18 || b === 19))
 }
 
 function ipv6Groups(ip: string): number[] {
@@ -27,14 +32,14 @@ function ipv6Groups(ip: string): number[] {
 /** True for loopback, private, link-local, CGNAT, multicast and other addresses that are not on the public internet. */
 export function isPrivateAddress(ip: string): boolean {
   if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number)
-    return ipv4Private(a, b)
+    const [a, b, c] = ip.split(".").map(Number)
+    return ipv4Private(a, b, c)
   }
   const g = ipv6Groups(ip)
-  const embeddedV4 = ipv4Private(g[6] >> 8, g[6] & 255)
+  const embeddedV4 = ipv4Private(g[6] >> 8, g[6] & 255, g[7] >> 8)
   if (g.slice(0, 5).every((n) => n === 0) && (g[5] === 0 || g[5] === 0xffff)) return embeddedV4
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((n) => n === 0)) return embeddedV4
-  return (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xff00) === 0xff00
+  return (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0 || (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xff00) === 0xff00
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " }
@@ -60,33 +65,54 @@ export function htmlToText(html: string): string {
   return heading ? `${heading}\n\n${text}`.trim() : text
 }
 
-/** Refuse a host that is, or resolves to, a non-public address. Returns the reason, or undefined when the host is fine. */
-async function refusalForHost(hostname: string): Promise<string | undefined> {
-  const host = hostname.replace(/^\[|\]$/g, "")
-  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map((r) => r.address)
-  const bad = addresses.find(isPrivateAddress)
-  return bad ? `error: refused: ${hostname} resolves to a private or local address (${bad})` : undefined
+class RefusedError extends Error {
+  constructor(hostname: string, address: string) {
+    super(`refused: ${hostname} resolves to a private or local address (${address})`)
+  }
 }
 
-/** A person in the family circle, not another agent: they may fetch addresses inside the house. */
+/** A person in the family circle, not an agent: they may fetch addresses inside the house. */
 function isFamilyHuman(ctx?: ToolContext): boolean {
   const friend = ctx?.context?.friend
-  return friend?.trustLevel === "family" && !friend.agentMeta
+  return friend?.kind === "human" && friend.trustLevel === "family"
 }
 
-async function readCapped(response: Response): Promise<{ bytes: Uint8Array; cut: boolean }> {
-  const reader = response.body!.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  while (size < MAX_DOWNLOAD_BYTES) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-    size += value.length
+/** Resolves the name, refuses private addresses, and hands the socket the address that was checked. */
+function checkedLookup(exempt: boolean): LookupFunction {
+  return (hostname, options, callback) => {
+    lookup(hostname, { all: true }).then((records) => {
+      const bad = exempt ? undefined : records.map((r) => r.address).find(isPrivateAddress)
+      if (bad) return callback(new RefusedError(hostname, bad), "", 4)
+      if (options.all) return callback(null, records as never)
+      return callback(null, records[0].address, records[0].family)
+    }, (error: Error) => callback(error, "", 4))
   }
-  const cut = size >= MAX_DOWNLOAD_BYTES
-  if (cut) await reader.cancel()
-  return { bytes: Buffer.concat(chunks).subarray(0, MAX_DOWNLOAD_BYTES), cut }
+}
+
+function get(url: URL, exempt: boolean, signal: AbortSignal): Promise<http.IncomingMessage> {
+  const lib = url.protocol === "https:" ? https : http
+  return new Promise((resolve, reject) => {
+    const req = lib.request(url, {
+      method: "GET", signal, lookup: checkedLookup(exempt),
+      headers: { "user-agent": "ouro-agent/1.0", accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5" },
+    }, resolve)
+    req.on("error", reject)
+    req.end()
+  })
+}
+
+async function readCapped(response: http.IncomingMessage): Promise<{ bytes: Buffer; cut: boolean }> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of response) {
+    chunks.push(chunk as Buffer)
+    size += (chunk as Buffer).length
+    if (size >= MAX_DOWNLOAD_BYTES) {
+      response.destroy()
+      break
+    }
+  }
+  return { bytes: Buffer.concat(chunks).subarray(0, MAX_DOWNLOAD_BYTES), cut: size >= MAX_DOWNLOAD_BYTES }
 }
 
 async function fetchPage(rawUrl: string, offset: number, exempt: boolean): Promise<string> {
@@ -96,24 +122,34 @@ async function fetchPage(rawUrl: string, offset: number, exempt: boolean): Promi
   } catch {
     return `error: not a valid URL: ${rawUrl}`
   }
-  const signal = AbortSignal.timeout(TIMEOUT_MS)
+  const signal = AbortSignal.timeout(webTestHooks.timeoutMs)
   for (let hop = 0; ; hop++) {
     if (url.protocol !== "http:" && url.protocol !== "https:") return `error: only http and https URLs can be fetched, not ${url.protocol}`
-    if (!exempt) {
-      const refusal = await refusalForHost(url.hostname)
-      if (refusal) return refusal
-    }
-    const response = await fetch(url, { redirect: "manual", signal, headers: { "user-agent": "ouro-agent/1.0", accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5" } })
-    const location = response.headers.get("location")
-    if (response.status >= 300 && response.status < 400 && location) {
+    const literal = url.hostname.replace(/^\[|\]$/g, "")
+    if (!exempt && isIP(literal) && isPrivateAddress(literal)) return `error: ${new RefusedError(url.hostname, literal).message}`
+    const response = await get(url, exempt, signal)
+    const status = response.statusCode as number
+    const location = response.headers.location
+    if (status >= 300 && status < 400 && location) {
+      response.destroy()
       if (hop >= MAX_REDIRECTS) return `error: more than ${MAX_REDIRECTS} redirects fetching ${rawUrl}`
       url = new URL(location, url)
       continue
     }
-    if (!response.ok) return `error: HTTP ${response.status} fetching ${url.href}`
-    const type = (response.headers.get("content-type") ?? "text/plain").split(";")[0].trim().toLowerCase()
+    if (status === 204) {
+      response.destroy()
+      return "(no content: HTTP 204)"
+    }
+    if (status < 200 || status >= 300) {
+      response.destroy()
+      return `error: HTTP ${status} fetching ${url.href}`
+    }
+    const type = (response.headers["content-type"] ?? "text/plain").split(";")[0].trim().toLowerCase()
     const isHtml = type === "text/html" || type === "application/xhtml+xml"
-    if (!isHtml && !type.startsWith("text/") && !type.includes("json") && !type.endsWith("xml")) return `[content type ${type}; not shown]`
+    if (!isHtml && !type.startsWith("text/") && !type.includes("json") && !type.endsWith("xml")) {
+      response.destroy()
+      return `[content type ${type}; not shown]`
+    }
     const { bytes, cut } = await readCapped(response)
     const decoded = new TextDecoder().decode(bytes)
     const text = isHtml ? htmlToText(decoded) : decoded
@@ -122,7 +158,7 @@ async function fetchPage(rawUrl: string, offset: number, exempt: boolean): Promi
     const notes: string[] = []
     if (end < text.length) notes.push(`[characters ${offset}-${end} of ${text.length}; read on with offset=${end}]`)
     if (cut) notes.push("[download cut at 2 MB]")
-    emitNervesEvent({ component: "repertoire", event: "repertoire.fetch_url", message: "fetched a web page", meta: { host: url.hostname, status: response.status, chars: text.length, cut } })
+    emitNervesEvent({ component: "repertoire", event: "repertoire.fetch_url", message: "fetched a web page", meta: { host: url.hostname, status, chars: text.length, cut } })
     return notes.length > 0 ? `${page}\n${notes.join("\n")}` : page
   }
 }
@@ -148,8 +184,9 @@ export const webToolDefinitions: ToolDefinition[] = [
       try {
         return await fetchPage(a.url, a.offset ? Math.max(0, parseInt(a.offset, 10) || 0) : 0, isFamilyHuman(ctx))
       } catch (error) {
+        if (error instanceof RefusedError) return `error: ${error.message}`
         const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
-        return timedOut ? `error: timed out after ${TIMEOUT_MS / 1000} seconds fetching ${a.url}` : `error: could not fetch ${a.url}: ${error instanceof Error ? error.message : String(error)}`
+        return timedOut ? `error: timed out after ${webTestHooks.timeoutMs / 1000} seconds fetching ${a.url}` : `error: could not fetch ${a.url}: ${error instanceof Error ? error.message : String(error)}`
       }
     },
     summaryKeys: ["url"],

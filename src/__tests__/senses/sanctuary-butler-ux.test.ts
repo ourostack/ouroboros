@@ -34,6 +34,21 @@ const withoutMediaMcp = (names: string[]) => names.filter((name) => !MEDIA_MCP_T
 
 const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))
 
+// fetch_url talks through node:http; the one page this test reads is answered here, everything else is the real module.
+vi.mock("node:http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:http")>()
+  const { Readable } = await import("node:stream")
+  const { EventEmitter } = await import("node:events")
+  const request = (url: URL, options: unknown, cb: (res: unknown) => void) => {
+    if (String(url) !== "http://93.184.216.34/") return (actual.request as (...a: unknown[]) => unknown)(url, options, cb)
+    const req = Object.assign(new EventEmitter(), {
+      end: () => cb(Object.assign(Readable.from([Buffer.from("<title>resident page</title><p>resident fetch marker</p>")]), { statusCode: 200, headers: { "content-type": "text/html" } })),
+    })
+    return req
+  }
+  return { ...actual, default: actual, request }
+})
+
 vi.mock("../../heart/identity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../heart/identity")>()
   return {

@@ -6,6 +6,7 @@ const identityRoot = vi.hoisted(() => ({ value: "" }))
 vi.mock("../../heart/identity", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../heart/identity")>()), getAgentRoot: () => identityRoot.value }))
 
 import { baseToolDefinitions, editFileReadTracker, type ToolContext } from "../../repertoire/tools-base"
+import { execTool } from "../../repertoire/tools"
 import { TOOL_MAX_CHARS, TOOL_MAX_LINES, looksBinary } from "../../repertoire/tool-limits"
 
 describe("file tools work from the agent's home", () => {
@@ -47,6 +48,19 @@ describe("file tools work from the agent's home", () => {
       await run("read_file", { path: "notes/a.md" })
       await run("edit_file", { path: "notes/a.md", old_string: "two", new_string: "three" })
       expect(fs.readFileSync(path.join(home, "notes/a.md"), "utf-8")).toBe("one three")
+    })
+    it("a relative edit and overwrite work through the guarded call path after a read, and still demand the read", async () => {
+      put("notes/x.md", "alpha beta")
+      const guarded = { ...ctx, context: { friend: { kind: "human", trustLevel: "family" } } } as unknown as ToolContext
+      // Not read yet: the guard refuses both.
+      expect(await execTool("edit_file", { path: "notes/x.md", old_string: "alpha", new_string: "gamma" }, guarded)).toContain("read")
+      expect(await execTool("write_file", { path: "notes/x.md", content: "new" }, guarded)).toContain("read")
+      expect(await execTool("read_file", { path: "notes/x.md" }, guarded)).toBe("alpha beta")
+      expect(await execTool("edit_file", { path: "notes/x.md", old_string: "alpha", new_string: "gamma" }, guarded)).not.toContain("error")
+      expect(fs.readFileSync(path.join(home, "notes", "x.md"), "utf-8")).toBe("gamma beta")
+      expect(await execTool("write_file", { path: "notes/x.md", content: "whole" }, guarded)).toContain("ok")
+      expect(fs.readFileSync(path.join(home, "notes", "x.md"), "utf-8")).toBe("whole")
+      expect(await execTool("write_file", { path: "notes/fresh.md", content: "f" }, guarded)).toContain("ok")
     })
     it("an absolute path is unchanged", async () => {
       const abs = path.join(home, "abs.txt")
@@ -95,7 +109,28 @@ describe("file tools work from the agent's home", () => {
       put("one.txt", "y".repeat(TOOL_MAX_CHARS * 2) + "\nnext")
       const out = await run("read_file", { path: "one.txt" })
       expect(out.startsWith("y".repeat(TOOL_MAX_CHARS))).toBe(true)
-      expect(out).toContain("[lines 1-1 of 2 shown; read on with offset=2]")
+      expect(out).toContain(`[line 1 is ${TOOL_MAX_CHARS * 2} characters; characters 1-${TOOL_MAX_CHARS} shown; read on with offset=1 and char_offset=${TOOL_MAX_CHARS + 1}]`)
+    })
+    it("reads on through one enormous line with char_offset, then on to the next line", async () => {
+      const long = "y".repeat(TOOL_MAX_CHARS) + "z".repeat(100)
+      put("one.txt", `${long}\nnext\n`)
+      const second = await run("read_file", { path: "one.txt", offset: 1, char_offset: TOOL_MAX_CHARS + 1 })
+      expect(second).toBe(`${"z".repeat(100)}\nnext\n`)
+    })
+    it("shows every line of a file that is exactly 2000 lines, with or without a final newline", async () => {
+      const body = Array.from({ length: TOOL_MAX_LINES }, (_, i) => `l${i + 1}`).join("\n")
+      put("exact.txt", body)
+      put("exact-nl.txt", `${body}\n`)
+      expect(await run("read_file", { path: "exact.txt" })).toBe(body)
+      expect(await run("read_file", { path: "exact-nl.txt" })).toBe(`${body}\n`)
+      put("over.txt", `${body}\nextra\n`)
+      expect(await run("read_file", { path: "over.txt" })).toContain(`[lines 1-${TOOL_MAX_LINES} of ${TOOL_MAX_LINES + 1} shown; read on with offset=${TOOL_MAX_LINES + 1}]`)
+    })
+    it("shows a file that is only a newline, and an empty file", async () => {
+      put("nl.txt", "\n")
+      put("empty.txt", "")
+      expect(await run("read_file", { path: "nl.txt" })).toBe("\n")
+      expect(await run("read_file", { path: "empty.txt" })).toBe("")
     })
     it("refuses a binary file", async () => {
       put("b.bin", Buffer.from([1, 2, 0, 3]))
@@ -149,7 +184,7 @@ describe("file tools work from the agent's home", () => {
       put("node_modules/p/i.js", "needle")
       put("bin.dat", Buffer.from("needle\0\0"))
       const out = await run("grep", { pattern: "needle" })
-      expect(out).toBe(`${path.join(home, "a.md")}:1: needle here`)
+      expect(out).toBe("a.md:1: needle here")
     })
     it("ignore_case and relative path", async () => {
       put("d/a.md", "Needle")
@@ -160,7 +195,7 @@ describe("file tools work from the agent's home", () => {
       put("a.md", "n\nn\nn")
       put("b.md", "n")
       put("c.md", "zzz")
-      expect(await run("grep", { pattern: "n", files_only: true })).toBe(`${path.join(home, "a.md")}\n${path.join(home, "b.md")}`)
+      expect(await run("grep", { pattern: "n", files_only: true })).toBe("a.md\nb.md")
     })
     it("caps at 100 matches with a notice", async () => {
       put("a.md", Array.from({ length: 150 }, () => "hit").join("\n"))
@@ -178,18 +213,31 @@ describe("file tools work from the agent's home", () => {
     it("cuts long lines at 500 characters", async () => {
       put("a.md", "hit" + "z".repeat(1000))
       const out = await run("grep", { pattern: "hit" })
-      expect(out).toBe(`${path.join(home, "a.md")}:1: ${("hit" + "z".repeat(1000)).slice(0, 497)}...`)
+      expect(out).toBe(`a.md:1: ${("hit" + "z".repeat(1000)).slice(0, 497)}...`)
     })
     it("shows context lines, searches a single file, and returns empty for a missing path", async () => {
       put("a.md", "x\nhit\ny\nz")
       expect(await run("grep", { pattern: "hit", path: "a.md", context_lines: 1 })).toBe(
-        `-${path.join(home, "a.md")}:1: x\n${path.join(home, "a.md")}:2: hit\n-${path.join(home, "a.md")}:3: y`)
+        "-a.md:1: x\na.md:2: hit\n-a.md:3: y")
       expect(await run("grep", { pattern: "hit", path: "nope" })).toBe("")
     })
     it("include filters files", async () => {
       put("a.md", "hit")
       put("a.txt", "hit")
-      expect(await run("grep", { pattern: "hit", include: "*.txt" })).toContain("a.txt")
+      put("sub/b.txt", "hit")
+      put("sub/c.md", "hit")
+      expect(await run("grep", { pattern: "hit", include: "*.txt" })).toBe("a.txt:1: hit\nsub/b.txt:1: hit")
+      expect(await run("grep", { pattern: "hit", include: "*.md" })).toBe("a.md:1: hit\nsub/c.md:1: hit")
+    })
+    it("shows a path outside the home as it is", async () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"))
+      try {
+        fs.writeFileSync(path.join(outside, "o.md"), "hit")
+        expect(await run("grep", { pattern: "hit", path: outside })).toBe(`${path.join(outside, "o.md")}:1: hit`)
+        expect(await run("grep", { pattern: "hit", path: path.join(home, "..") , include: "o.md" })).not.toContain("..")
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true })
+      }
     })
     it("skips unreadable files", async () => {
       put("a.md", "hit")

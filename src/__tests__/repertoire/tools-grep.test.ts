@@ -20,7 +20,7 @@ describe("grep tool", () => {
   function getGrepHandler() {
     const def = baseToolDefinitions.find((d) => d.tool.function.name === "grep")
     if (!def) throw new Error("grep tool not found in baseToolDefinitions")
-    return def.handler
+    return (args: Record<string, string>) => def.handler(args, { signin: async () => undefined, agentRoot: tmpDir }) as Promise<string>
   }
 
   // --- Tool definition ---

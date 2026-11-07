@@ -43,7 +43,7 @@ const REASONS = {
 
 // --- read-only tools that never need guardrails ---
 
-const READ_ONLY_TOOLS = new Set(["read_file", "glob", "grep"])
+const READ_ONLY_TOOLS = new Set(["read_file", "ls", "glob", "grep"])
 
 // --- protected path detection ---
 
@@ -377,7 +377,7 @@ function namedFolderWords(command: string, name: string): string[] {
   return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
 }
 
-function commandMentionsAgentFolder(command: string, words: readonly string[], agentRoot: string, name: string): boolean {
+function commandMentionsAgentFolder(command: string, words: readonly string[], agentRoot: string, name: string, startIn: readonly string[] = [process.cwd()]): boolean {
   const lexicalFolder = path.resolve(agentRoot, name)
   if (globOrExpansionCouldReach(command, lexicalFolder, agentRoot)) return true
   const candidates = namedFolderWords(command, name)
@@ -394,7 +394,7 @@ function commandMentionsAgentFolder(command: string, words: readonly string[], a
   if (candidates.some((candidate) => anchored.test(candidate))) return true
   const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
   // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
-  const cwds = [process.cwd()]
+  const cwds = [...startIn]
   for (const [index, word] of words.entries()) {
     // `git -C <dir>` works in <dir> just as `cd <dir>` does.
     if (words[index - 1] !== "cd" && words[index - 1] !== "-C") continue
@@ -416,7 +416,7 @@ function commandMentionsAgentFolder(command: string, words: readonly string[], a
 function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
   try {
-    return protectedFolderShellWriteRefused(command, (words) => commandMentionsAgentFolder(command, words, agentRoot, "product"))
+    return protectedFolderShellWriteRefused(command, (words) => commandMentionsAgentFolder(command, words, agentRoot, "product", [path.resolve(agentRoot)]))
   } catch {
     // The filesystem could not say where a path that names product/ lands: refuse rather than guess.
     return true
@@ -426,13 +426,15 @@ function productShellWriteRefused(command: string, agentRoot: string | undefined
 // --- structural guardrail checks (always on, all trust levels) ---
 
 function checkReadBeforeWrite(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  // The file tools start relative paths in the agent's home and record what they read by absolute path.
+  const target = (p: string): string => path.isAbsolute(p) || !context.agentRoot ? p : path.resolve(context.agentRoot, p)
   if (toolName === "edit_file") {
-    const filePath = args.path || ""
+    const filePath = target(args.path || "")
     if (!context.readPaths.has(filePath)) return deny(REASONS.readBeforeEdit)
   }
 
   if (toolName === "write_file") {
-    const filePath = args.path || ""
+    const filePath = target(args.path || "")
     if (context.readPaths.has(filePath)) return allow
     if (!fs.existsSync(filePath)) return allow
     return deny(REASONS.readBeforeOverwrite)
@@ -1638,8 +1640,11 @@ export function bundleGitRefused(command: string, agentRoot: string | undefined)
     scanShellForGit(command, scan, 0)
     if (scan.opaqueShell && /(?:^|[^A-Za-z0-9_-])git(?:$|[^A-Za-z0-9_-])/.test(plain)) return true
     if (scan.calls.length === 0) return false
-    // Every directory the command could be working in: where the shell starts, and each change, from each earlier one.
-    const cwds: Array<string | null> = [process.cwd()]
+    // Every directory the command could be working in: where the shell starts (the agent's home), and each change, from each earlier one.
+    // `cd /abs && ...` with nothing that can run apart from the cd succeeding: the rest never runs in the home.
+    const chained = /^\s*cd\s+\/[^\s;&|<>$`'"\\()]*\s*&&(.*)$/s.exec(command)
+    const startsAway = chained !== null && !/[;&|\n`$()<>]/.test(chained[1].replace(/&&/g, ""))
+    const cwds: Array<string | null> = startsAway ? [] : [path.resolve(agentRoot)]
     for (const target of scan.cwdTargets) {
       if (target === null) cwds.push(null)
       else cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => cwd === null ? null : path.resolve(cwd, target))))
@@ -1673,7 +1678,7 @@ export function bundleGitRefused(command: string, agentRoot: string | undefined)
 function readToolTargets(toolName: string, args: Record<string, string>, agentRoot: string | undefined): Array<{ target: string; recursive: boolean }> {
   const home = agentRoot ? [agentRoot] : []
   const local = (p: string): string[] => path.isAbsolute(p) ? [p] : [...home, getRepoRoot()].map((base) => path.resolve(base, p))
-  if (toolName === "read_file") return local(args.path ?? "").map((target) => ({ target, recursive: false }))
+  if (toolName === "read_file" || toolName === "ls") return local(args.path ?? "").map((target) => ({ target, recursive: false }))
   if (toolName === "grep") return local(args.path ?? "").map((target) => ({ target, recursive: true }))
   const cwds = args.cwd ? local(args.cwd) : [...home, process.cwd()]
   // The part of the pattern before its first glob segment is a directory the glob reads.

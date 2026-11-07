@@ -65,6 +65,34 @@ describe("shell at home", () => {
     expect(out.length).toBeLessThan(30_400)
   })
 
+  it("gives a failing command's output the same tail cap and saved file", async () => {
+    const failing = node('for (let i=1;i<=2500;i++) console.error("err"+i); process.exit(3)')
+    const error = await shell.handler({ command: failing }, ctx as any).then(() => undefined, (e: Error & { stderr: string }) => e)
+    expect(error).toBeDefined()
+    expect(error!.message).toContain("[output cut to its last 2000")
+    expect(error!.message).toContain("err2500")
+    expect(error!.message).not.toContain("err500\n")
+    expect(error!.stderr).toContain("full output saved to")
+    expect(fs.readdirSync(path.join(home, "state", "tool-output")).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("keeps a short failure whole", async () => {
+    const error = await shell.handler({ command: "echo bad >&2; exit 2" }, ctx as any).then(() => undefined, (e: Error) => e)
+    expect(error!.message).toContain("bad")
+    expect(fs.existsSync(path.join(home, "state", "tool-output"))).toBe(false)
+  })
+
+  it("starts a background shell in the agent's home", async () => {
+    const started = JSON.parse(await shell.handler({ command: "pwd", background: true } as any, ctx as any))
+    const tail = shellToolDefinitions.find((entry) => entry.tool.function.name === "shell_tail")!
+    let out = ""
+    for (let i = 0; i < 100 && !out.includes(home); i++) {
+      await new Promise((r) => setTimeout(r, 50))
+      out = String(await tail.handler({ id: started.id }, ctx as any))
+    }
+    expect(out).toContain(home)
+  })
+
   it("does not throw on output beyond Node's old 1 MB buffer", async () => {
     const out = await shell.handler({ command: node('process.stdout.write("a".repeat(3000000))') }, ctx as any)
     expect(out).toContain("full output saved to")

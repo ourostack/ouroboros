@@ -34,7 +34,6 @@ describe("Phase 2: tool description enrichment", () => {
       const desc = getBaseDescription("write_file")
       expect(desc).toContain("You MUST read an existing file with read_file before overwriting")
       expect(desc).toContain("Prefer edit_file for modifying existing files")
-      expect(desc).toContain("Do not create documentation files")
     })
 
     it("edit_file description contains behavioral guidance", () => {

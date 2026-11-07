@@ -76,6 +76,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
             path: { type: "string" },
             offset: { type: "number", description: "1-based line number to start reading from" },
             limit: { type: "number", description: "maximum number of lines to return" },
+            char_offset: { type: "number", description: "1-based character to start from within the first line shown, to read on through a line over 30,000 characters" },
           },
           required: ["path"],
         },
@@ -85,15 +86,22 @@ export const fileToolDefinitions: ToolDefinition[] = [
       const resolvedPath = resolveLocalToolPath(a.path, ctx)
       const raw = fs.readFileSync(resolvedPath)
       if (looksBinary(raw)) return `[binary file, ${raw.length} bytes; not shown]`
-      const lines = raw.toString("utf-8").split("\n")
+      const full = raw.toString("utf-8")
+      // A final newline ends the last line; it is not another, empty line.
+      const endsWithNewline = full.endsWith("\n")
+      const lines = (endsWithNewline ? full.slice(0, -1) : full).split("\n")
       editFileReadTracker.add(resolvedPath)
       const offset = a.offset ? parseInt(a.offset, 10) : undefined
       const limit = a.limit ? parseInt(a.limit, 10) : undefined
+      const charStart = a.char_offset ? Math.max(0, parseInt(a.char_offset, 10) - 1) : 0
       const start = offset ? offset - 1 : 0
       const wanted = lines.slice(start, limit !== undefined ? start + limit : undefined)
-      const kept = fitLines(wanted)
-      const text = kept.join("\n")
-      const whole = offset === undefined && limit === undefined && kept.length === wanted.length
+      const firstLine = wanted.length > 0 ? wanted[0].slice(charStart) : ""
+      const kept = fitLines(wanted.length > 0 ? [firstLine, ...wanted.slice(1)] : wanted)
+      // The first line alone is over the character cap: show its next stretch and say where to continue.
+      const firstLineCut = kept.length === 1 && wanted.length > 0 && kept[0].length < firstLine.length
+      const text = kept.join("\n") + (!firstLineCut && start + kept.length >= lines.length && endsWithNewline && kept.length > 0 ? "\n" : "")
+      const whole = offset === undefined && limit === undefined && charStart === 0 && !firstLineCut && kept.length === wanted.length
 
       // Record in file state cache for staleness detection
       try {
@@ -104,6 +112,10 @@ export const fileToolDefinitions: ToolDefinition[] = [
         // stat failed -- skip cache recording
       }
 
+      if (firstLineCut) {
+        const shownTo = charStart + kept[0].length
+        return `${text}\n${cutNotice("read_file", `[line ${start + 1} is ${wanted[0].length} characters; characters ${charStart + 1}-${shownTo} shown; read on with offset=${start + 1} and char_offset=${shownTo + 1}]`, { path: resolvedPath })}`
+      }
       if (kept.length === wanted.length) return text
       const last = start + kept.length
       return `${text}\n${cutNotice("read_file", `[lines ${start + 1}-${last} of ${lines.length} shown; read on with offset=${last + 1}]`, { path: resolvedPath })}`
@@ -115,7 +127,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "write_file",
-        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff. Do not create documentation files (*.md, README) by default; only do so when explicitly asked or when documentation is clearly part of the requested change.",
+        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff.",
         parameters: {
           type: "object",
           properties: { path: { type: "string" }, content: { type: "string" } },
@@ -304,6 +316,13 @@ export const fileToolDefinitions: ToolDefinition[] = [
 
       const clipLine = (line: string) => line.length > GREP_MAX_LINE_CHARS ? `${line.slice(0, GREP_MAX_LINE_CHARS - 3)}...` : line
 
+      const home = homeOf(ctx)
+      // Paths inside the home are shown relative to it.
+      const shown = (filePath: string): string => {
+        const relative = path.relative(home, filePath)
+        return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : filePath
+      }
+
       function searchFile(filePath: string): string[] {
         let buffer: Buffer
         try {
@@ -325,7 +344,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
           if (filesOnly) break
         }
         if (matchIndices.size === 0) return []
-        if (filesOnly) return [filePath]
+        if (filesOnly) return [shown(filePath)]
 
         const outputIndices = new Set<number>()
         for (const idx of matchIndices) {
@@ -337,7 +356,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
         }
 
         return [...outputIndices].sort((x, y) => x - y).map((idx) =>
-          `${matchIndices.has(idx) ? "" : "-"}${filePath}:${idx + 1}: ${clipLine(lines[idx])}`)
+          `${matchIndices.has(idx) ? "" : "-"}${shown(filePath)}:${idx + 1}: ${clipLine(lines[idx])}`)
       }
 
       function collectFiles(dirPath: string): string[] {

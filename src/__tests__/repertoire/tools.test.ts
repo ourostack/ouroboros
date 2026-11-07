@@ -389,7 +389,7 @@ describe("execTool", () => {
     expect(exec).not.toHaveBeenCalled()
 
     mockShellOutput("repo status\n")
-    await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
+    await expect(execTool("shell", { command: "cd /mock/repo && git status --short" }, ctx)).resolves.toBe("repo status\n")
   })
 
   it("orientation hold blocks fake Ouro runtime shell commands and points at the first-class tool", async () => {
