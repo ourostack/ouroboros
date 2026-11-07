@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.995",
+      "changes": [
+        "The release gate removes the files its own run created before sync resumes, so test residue never reaches the agent's repo.",
+        "A reply that says the library has it without naming a title is backed when this turn's lookup found something on the shelf; no false \"haven't checked\" note goes in front of it.",
+        "A2A turns keep their info-level log, so a peer turn's sync timing is on record."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.994",
       "changes": [
         "Every agent wakes up with a home kit: paths start in its own home, ls, fetch_url for reading web pages (local and private addresses refused), read, grep, glob and shell that cap their output and say how to see the rest, and multi-edit. The Butler also gets ls, fetch_url, note and diary_write.",
