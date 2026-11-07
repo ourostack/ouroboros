@@ -8,6 +8,7 @@ export const SANCTUARY_OWNER_ADDITIONS = [
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
   "web_search", "search_facts", "consult_diary", "consult_notes", "get_friend_note",
   "session_summary", "query_session", "set_reasoning_effort", "restart_runtime", "revive_sense",
+  "ls", "fetch_url", "note", "diary_write",
 ]
 
 export function sanctuaryContainmentBoundariesFixture(providerCapabilities: ProviderCapability[] = ["reasoning-effort"]) {
@@ -36,7 +37,7 @@ export function sanctuaryContainmentBoundariesFixture(providerCapabilities: Prov
     }
   }
   return {
-    "sanctuary-owner": boundary("sanctuary-owner", 18),
+    "sanctuary-owner": boundary("sanctuary-owner", 19),
     "sanctuary-household": boundary("sanctuary-household", 5),
     "sanctuary-event": boundary("sanctuary-event", 4),
   }
