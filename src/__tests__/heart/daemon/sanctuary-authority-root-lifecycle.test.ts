@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, predecessorHasBundleSync, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -1643,6 +1643,36 @@ describe("in-place authority upgrade", () => {
       .map(([, args]) => args as string[]).map((args) => args.flatMap((arg, index) => (arg === "-v" ? [args[index + 1]!] : [])))
   }
   const psycheBind = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro"
+  const syncBind = "/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro"
+
+  it("recreates the upgraded resident with the read-only bundle sync key mount", async () => {
+    const f = await upgradeFixture()
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    const mounts = createMounts().at(-1)!
+    expect(mounts).toContain(syncBind)
+    expect(mounts.indexOf("/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro")).toBeLessThan(mounts.indexOf(syncBind))
+  })
+
+  for (const [release, expected] of [["0.1.0-alpha.991", true], ["0.1.0-alpha.990", false], ["0.1.0-alpha.978", false]] as const) {
+    it(`recreates a rolled-back predecessor ${release} ${expected ? "with" : "without"} the sync key mount`, async () => {
+      const f = await upgradeFixture()
+      f.resident.reference = `ghcr.io/ourostack/ouroboros-butler:${release}`
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, holdCommit: true })
+      await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+      expect(createMounts().at(-1)!.includes(syncBind)).toBe(expected)
+    })
+  }
+
+  describe("predecessorHasBundleSync", () => {
+    const ref = (tag: string) => `ghcr.io/ourostack/ouroboros-butler:${tag}`
+    it("is true for alpha 991 or later and for a release without a prerelease tag", () => {
+      for (const tag of ["0.1.0-alpha.991", "0.1.0-alpha.1200", "0.1.0", "0.2.3"]) expect(predecessorHasBundleSync(ref(tag)), tag).toBe(true)
+    })
+    it("is false for an earlier alpha and any other tag shape", () => {
+      for (const tag of ["0.1.0-alpha.990", "0.1.0-alpha.99", "0.1.0-alpha.991.1", "0.2.0-beta.1", "latest", ""]) expect(predecessorHasBundleSync(ref(tag)), tag).toBe(false)
+      expect(predecessorHasBundleSync("no-tag-here")).toBe(false)
+    })
+  })
 
   it("recreates the upgraded resident without a separate psyche mount", async () => {
     const f = await upgradeFixture()
