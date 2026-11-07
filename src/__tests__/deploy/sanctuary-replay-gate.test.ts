@@ -391,7 +391,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
 
   it("media-ask-no-hedge: acts on the torrent ask, names the show, states an outcome and hedges nothing", () => {
     const acted = "he searched or requested it (media_search or media_request)"
-    const named = "the reply names the Chef Show"
+    const named = "the reply names the Chef Show or the season asked for"
     const outcome = "the reply states an outcome (on the shelf, requested, grabbing, downloading, queued, ready, in the library or on Jellyfin)"
     const hedged = "the reply carries no lecture, refusal or hedge"
     const deflected = "the reply doesn't refuse or deflect the torrent the owner named"
@@ -402,6 +402,8 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     expect(names(readback({ reply: "the chef show s1 is already on the shelf in 1080p, ready to play" }))).toEqual([])
     expect(names(readback({ trace: [tool("media_request", { query: "The Chef Show" })], reply: "requested The Chef Show season 1, it's downloading now" }))).toEqual([])
     expect(names(readback({ reply: "ignored", said: "The Chef Show S1 is in your library already." }))).toEqual([])
+    // 993: the right answer about season 1 that never repeats the show name
+    expect(names(readback({ reply: "good news: season 1 is already on the shelf. all 20 episodes are on disk, nothing left to grab." }))).toEqual([])
     for (const text of ["grabbing The Chef Show s1 now", "The Chef Show s1 is queued", "The Chef Show s1 is on Jellyfin", "we already have The Chef Show s1", "The Chef Show s1 is ready to watch"]) {
       expect(names(readback({ reply: text })), text).toEqual([])
     }

@@ -48,7 +48,10 @@ function unbackedClaim(answer: string, tools: readonly TurnToolRecord[]): { miss
   const said = normalize(clauses.filter((clause) => !SHELF_CLAIM.test(clause) || !denied(clause)).join(" "))
   const { onShelf, offShelf } = titlesFrom(tools)
   const missing = offShelf.filter((title) => said.includes(title.key)).map((title) => title.name)
-  return onShelf.some((title) => said.includes(title.key)) && missing.length === 0 ? null : { missing }
+  if (missing.length > 0) return { missing }
+  // "It's in the library" names no title: it is backed when this turn's lookup found something on the shelf.
+  const namesAny = [...onShelf, ...offShelf].some((title) => said.includes(title.key))
+  return onShelf.some((title) => said.includes(title.key)) || (!namesAny && onShelf.length > 0) ? null : { missing }
 }
 
 /** The correction for a reply that says something is on the shelf without this turn's lookup finding it there, or null. */
