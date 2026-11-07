@@ -11,6 +11,7 @@ import { a2aChatRelationship, startA2AServer, type A2AServerHandle, type A2ATurn
 import { sendSealedA2AChat } from "../../a2a/client"
 import { EMPTY_CHAT_REPLY, openChatMessage, sealChatMessage } from "../../a2a/sealed-chat"
 import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
+import { FileA2ASeenLedger } from "../../a2a/seen-ledger"
 
 let sodium: Sodium
 let tmp: TmpBundleHandle | null = null
@@ -179,7 +180,7 @@ describe("sendSealedA2AChat refusals", () => {
     const impostor = mintIdentity()
     const forged = sealChatMessage({ sodium, from: impostor, recipientDid: client.did, recipientEd25519Pub: client.ed25519Pub, text: "trust me" })
     await expect(sendSealedA2AChat({ cardUrl: "https://agent.example/card", text: "hi", identity: client, sodium, fetchImpl: fakeFetch({ card: card(agent.did), rpc: { jsonrpc: "2.0", id: "1", result: { id: "t", status: { message: { role: "ROLE_AGENT", parts: forged.parts } } } } }) }))
-      .rejects.toThrow(/reply rejected: resolve_failed/)
+      .rejects.toThrow("A2A chat reply rejected: resolve_failed; the call may already have run on the peer")
   })
 })
 
@@ -199,6 +200,19 @@ describe("sealChatMessage", () => {
     const sealed = sealChatMessage({ sodium, from, recipientDid: to.did, recipientEd25519Pub: to.ed25519Pub, text: "plain" })
     const opened = await openChatMessage({ sodium, self: to, message: { role: "ROLE_AGENT", parts: sealed.parts }, senderDid: from.did, senderEd25519Pub: from.ed25519Pub })
     expect(opened).toEqual({ ok: true, text: "plain", issuedAt: expect.any(String) })
+  })
+
+  it("refuses a replayed reply through a durable ledger, and a stale one by its signed time", async () => {
+    tmp = createTmpBundle({ agentName: `chat-replay-${Math.random().toString(36).slice(2, 8)}` })
+    const from = mintIdentity()
+    const to = mintIdentity()
+    const sealed = sealChatMessage({ sodium, from, recipientDid: to.did, recipientEd25519Pub: to.ed25519Pub, text: "once" })
+    const message = { role: "ROLE_AGENT", parts: sealed.parts }
+    const open = (extra: { now?: number; seen?: FileA2ASeenLedger }) => openChatMessage({ sodium, self: to, message, senderDid: from.did, senderEd25519Pub: from.ed25519Pub, ...extra })
+    expect(await open({ now: Date.now() + 8 * 24 * 60 * 60 * 1000 })).toEqual({ ok: false, reason: "stale_envelope" })
+    expect((await open({ seen: new FileA2ASeenLedger(tmp.agentRoot) })).ok).toBe(true)
+    // A new ledger over the same folder (the next CLI run) still knows the reply.
+    expect(await open({ seen: new FileA2ASeenLedger(tmp.agentRoot) })).toEqual({ ok: false, reason: "replayed" })
   })
 
   it("never lets another sealed kind reach a store: a coordination envelope from the pinned sender is refused", async () => {

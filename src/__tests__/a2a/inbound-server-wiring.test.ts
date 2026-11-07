@@ -45,6 +45,7 @@ function sealedCoordination(from: DidKeyIdentity, recipient: DidKeyIdentity, sig
     subject: { missionKey: `mk-${Math.random().toString(36).slice(2, 8)}`, title: "Mission" },
     fromAgentId: from.did,
     intent: "request",
+    issuedAt: new Date().toISOString(),
   }
   const sealed = sealEnvelope({
     sodium,

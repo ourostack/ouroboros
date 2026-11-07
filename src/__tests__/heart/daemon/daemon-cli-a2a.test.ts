@@ -285,4 +285,27 @@ describe("ouro A2A client commands (identity + sealed message)", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("says a delegated command may already have run when the CLI refuses the peer's reply", async () => {
+    const { ready, didKeyIdentityFromEd25519 } = await import("@ouro.bot/friends/a2a-client")
+    const { sealChatMessage } = await import("../../../a2a/sealed-chat")
+    const { loadOrMintA2AIdentityFile } = await import("../../../a2a/identity")
+    const sodium = await ready()
+    const dir = mkdtempSync(join(tmpdir(), "ouro-a2a-reply-refused-"))
+    const identityFile = join(dir, "client.json")
+    try {
+      const client = await loadOrMintA2AIdentityFile({ filePath: identityFile, sodium })
+      const mint = () => { const kp = sodium.crypto_sign_keypair(); return didKeyIdentityFromEd25519({ sodium, ed25519Pub: kp.publicKey, ed25519Priv: kp.privateKey }) }
+      const agent = mint()
+      // The peer ran the command, but its reply does not open here (here: sealed by a key the card does not name).
+      const reply = sealChatMessage({ sodium, from: mint(), recipientDid: client.did, recipientEd25519Pub: client.ed25519Pub, text: "done" })
+      const card = { name: "Agent", url: "https://agent.example/a2a", preferredTransport: "JSONRPC", did: agent.did }
+      const rpc = { jsonrpc: "2.0", id: "1", result: { id: "t", status: { message: { role: "ROLE_AGENT", parts: reply.parts } } } }
+      const fetchImpl: typeof fetch = async (_input, init) => new Response(JSON.stringify(init?.method === "POST" ? rpc : card), { status: 200, headers: { "content-type": "application/json" } })
+      await expect(runOuroCli(["a2a", "message", "--to", "https://agent.example/card", "--text", "books on", "--delegated", "--identity-file", identityFile], createMockDeps({ fetchImpl })))
+        .rejects.toThrow("A2A chat reply rejected: resolve_failed; the call may already have run on the peer")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

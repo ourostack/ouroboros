@@ -78,7 +78,12 @@ export interface DelegationRefusalGuidance {
   message: string
   /** The one thing to do next. */
   next: string
-  /** True when sending the same command again, unchanged, may work. */
+  /**
+   * True when running the same command again may work. This differs from `retry` on a receive refusal (`refusals.ts`),
+   * which means the same sealed envelope can be resent: a delegated command that reached this check is already
+   * consumed, so `retry` here means sending the command again as a new message (the CLI seals a fresh one each run).
+   * Both travel as `data.retry` on the wire, so the name stays.
+   */
   retry: boolean
 }
 

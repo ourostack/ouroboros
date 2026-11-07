@@ -3,7 +3,11 @@ import {
   ready,
   didKeyIdentityFromEd25519,
   sealEnvelope,
+  openSealed,
+  sealTo,
+  wrapInDataPart,
   type DidKeyIdentity,
+  type SealedBlob,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
 import {
@@ -23,6 +27,7 @@ import {
   receiveInboundMissionResult,
   type InboundResultDeps,
 } from "../../a2a/mission-result-wire"
+import { receiveInboundShare } from "../../a2a/inbound-share"
 import type { A2AMessage } from "../../a2a/types"
 import type { A2AIdentity } from "../../a2a/identity"
 
@@ -479,5 +484,123 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
     const textMsg: A2AMessage = { role: "user", parts: [{ text: "hello" }] }
     const out = await receiveInboundMissionResult(textMsg, depsFor(tmp.agentRoot, a, aStore))
     expect(out.outcome).toBe("not-a-result")
+  })
+
+  describe("signed binding, in-flight claims and retired pins (friends 0.1.0-alpha.17)", () => {
+    async function delegatedTo(agentName: string, missionKey: string, issuedAt = new Date().toISOString()) {
+      tmp = createTmpBundle({ agentName })
+      const a = mintIdentity()
+      const b = mintIdentity()
+      const aStore = new FileFriendStore(`${tmp.agentRoot}/friends`)
+      await upsertAgentPeer(aStore, { name: "B", agentId: b.did, trustLevel: "family", a2a: { did: b.did, agentId: b.did, endpointUrl: "https://b.example/a2a" } })
+      const { missionStore } = delegationStoresFor(tmp.agentRoot)
+      const mission = await recordMission(missionStore, { missionKey, title: "M" })
+      await missionStore.put(mission.id, {
+        ...mission,
+        delegations: { "req-1": { task: { requestId: "req-1", summary: "x" }, assignee: { agentId: b.did, displayName: "B" }, provenance: { assertedBy: { agentId: a.did, displayName: "A" }, assertedAt: issuedAt } } },
+      })
+      const envelope: MissionResultEnvelope = {
+        subject: { missionKey, title: "M" }, fromAgentId: b.did, requestId: "req-1",
+        result: { requestId: "req-1", summary: "done", provenance: { assertedBy: { agentId: b.did, displayName: "B" }, assertedAt: issuedAt } },
+        issuedAt,
+      }
+      return { a, b, deps: depsFor(tmp.agentRoot, a, aStore), message: sealedResultFrom(b, a, envelope), agentRoot: tmp.agentRoot }
+    }
+
+    it("refuses a stale result without consuming it, so the same result imports once the clock is right", async () => {
+      const issuedAt = "2026-01-01T00:00:00.000Z"
+      const { deps, message } = await delegatedTo("result-stale", "mk-stale", issuedAt)
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "stale_envelope" })
+      const fresh = await receiveInboundMissionResult(message, { ...deps, bindingOptions: { now: Date.parse(issuedAt) + 60_000 } })
+      expect(fresh.outcome).toBe("imported")
+    })
+
+    it("answers a concurrent duplicate with the retryable in_flight, and the duplicate is then a replay", async () => {
+      const { deps, message } = await delegatedTo("result-in-flight", "mk-in-flight")
+      const [first, second] = await Promise.all([receiveInboundMissionResult(message, deps), receiveInboundMissionResult(message, deps)])
+      expect(first.outcome).toBe("imported")
+      expect(second).toMatchObject({ outcome: "rejected", reason: "in_flight" })
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
+    })
+
+    it("marks nothing seen when the signature fails, so a forged copy cannot burn the real result", async () => {
+      const { deps, message, b } = await delegatedTo("result-no-burn", "mk-no-burn")
+      // Pin a different key under B's DID: verification fails, and nothing is marked.
+      const other = mintIdentity()
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: other.ed25519Pub })
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("rejected")
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: b.ed25519Pub })
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("imported")
+    })
+
+    it("keys replay on the whole sealed blob: another sender's valid result that reuses the seal nonce cannot burn the real one", async () => {
+      const { a, b, deps, message } = await delegatedTo("result-nonce-reuse", "mk-nonce-reuse")
+      const realNonce = (message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n
+      // A stranger seals its own validly signed result with the real result's seal nonce (a sender picks its nonce).
+      const attacker = mintIdentity()
+      const original = sodium.randombytes_buf.bind(sodium)
+      const patchable = sodium as unknown as { randombytes_buf: (n: number) => Uint8Array }
+      patchable.randombytes_buf = (n: number) => (n === 24 ? sodium.from_base64(realNonce, sodium.base64_variants.ORIGINAL) : original(n))
+      let forged: A2AMessage
+      try {
+        const issuedAt = new Date().toISOString()
+        forged = sealedResultFrom(attacker, a, {
+          subject: { missionKey: "mk-nonce-reuse", title: "M" }, fromAgentId: attacker.did, requestId: "req-1",
+          result: { requestId: "req-1", summary: "mine", provenance: { assertedBy: { agentId: attacker.did, displayName: "X" }, assertedAt: issuedAt } },
+          issuedAt,
+        })
+      } finally {
+        patchable.randombytes_buf = original
+      }
+      expect((forged.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n).toBe(realNonce)
+      expect(await receiveInboundMissionResult(forged, deps)).toMatchObject({ outcome: "rejected", reason: "untrusted_source" })
+      expect(await receiveInboundMissionResult(message, deps)).toEqual({ outcome: "imported", verifiedDid: b.did })
+      expect(deps.seen.isSeen(realNonce)).toBe(false)
+    })
+
+    it("is not burned by a stranger's validly signed share that reuses the result's seal nonce", async () => {
+      const { a, b, deps, message } = await delegatedTo("result-share-nonce", "mk-share-nonce")
+      const realNonce = (message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n
+      const attacker = mintIdentity()
+      const original = sodium.randombytes_buf.bind(sodium)
+      const patchable = sodium as unknown as { randombytes_buf: (n: number) => Uint8Array }
+      patchable.randombytes_buf = (n: number) => (n === 24 ? sodium.from_base64(realNonce, sodium.base64_variants.ORIGINAL) : original(n))
+      let share: A2AMessage
+      try {
+        const sealed = sealEnvelope({
+          sodium,
+          envelope: { subject: { missionKey: "mk-other", title: "T" }, fromAgentId: attacker.did, intent: "request", issuedAt: new Date().toISOString() },
+          friendsKind: "coordination",
+          fromIdentity: { did: attacker.did, keyId: attacker.keyId, ed25519Priv: attacker.ed25519Priv },
+          recipientDid: a.did,
+          recipientX25519Pub: a.x25519Pub,
+        })
+        share = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: a.did }) as unknown as A2AMessage
+      } finally {
+        patchable.randombytes_buf = original
+      }
+      // friends' share path marks the bare nonce once the stranger's signature verifies, then refuses it on trust.
+      expect(await receiveInboundShare(share, deps)).toEqual({ outcome: "rejected", reason: "untrusted_source" })
+      expect(deps.seen.isSeen(realNonce)).toBe(true)
+      expect(await receiveInboundMissionResult(message, deps)).toEqual({ outcome: "imported", verifiedDid: b.did })
+    })
+
+    it("refuses a re-sealed copy of the same signed result (a new blob carrying the same signed message id)", async () => {
+      const { a, deps, message } = await delegatedTo("result-reseal", "mk-reseal")
+      const data = (message.parts[0] as unknown as { data: { v: number; sealed: SealedBlob } }).data
+      const plaintextBytes = openSealed({ sodium, blob: data.sealed, recipientX25519Priv: a.x25519Priv, recipientX25519Pub: a.x25519Pub, recipientDid: a.did })
+      const resealed = { v: data.v, sealed: sealTo({ sodium, plaintextBytes, recipientX25519Pub: a.x25519Pub, recipientDid: a.did, v: data.v }) }
+      expect(resealed.sealed.n).not.toBe(data.sealed.n)
+      const copy = wrapMissionResultDataPart({ sealedEnvelope: resealed, recipientDid: a.did }) as unknown as A2AMessage
+      expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("imported")
+      expect(await receiveInboundMissionResult(copy, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
+    })
+
+    it("refuses a result from a retired DID", async () => {
+      const { deps, message, b } = await delegatedTo("result-retired", "mk-retired")
+      deps.pinStore.set(b.did, { did: b.did, ed25519Pub: b.ed25519Pub })
+      deps.pinStore.retire(b.did, "did:key:zSuccessor", "2026-11-06T00:00:00.000Z")
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "retired_pin" })
+    })
   })
 })

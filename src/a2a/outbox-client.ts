@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
-import { cardDid, endpointForCard, fetchA2AAgentCard, postJsonRpc } from "./client"
+import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
+import { cardDid, endpointForCard, fetchA2AAgentCard, postJsonRpc, replyRefusedError } from "./client"
 import { encodeOutboxCommand, type OutboxMethod } from "./outbox-wire"
 import { openChatMessage, sealChatMessage } from "./sealed-chat"
 import type { A2AJsonRpcRequest, A2AMessage } from "./types"
@@ -18,6 +18,8 @@ export async function callOutboxMethod(input: {
   identity: DidKeyIdentity
   sodium?: Sodium
   fetchImpl?: typeof fetch
+  /** A durable seen ledger for replies (see `openChatMessage`). */
+  seen?: SeenLedgerLike
 }): Promise<Record<string, unknown>> {
   const fetchImpl = input.fetchImpl ?? fetch
   const sodium = input.sodium ?? await ready()
@@ -43,8 +45,8 @@ export async function callOutboxMethod(input: {
   if ("error" in rpc) throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
   const reply = rpc.result as A2AMessage | undefined
   if (!reply || !Array.isArray(reply.parts)) throw new Error("A2A outbox call returned no reply message")
-  const opened = await openChatMessage({ sodium, self: input.identity, message: reply, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub })
-  if (!opened.ok) throw new Error(`A2A outbox reply rejected: ${opened.reason}`)
+  const opened = await openChatMessage({ sodium, self: input.identity, message: reply, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub, ...(input.seen ? { seen: input.seen } : {}) })
+  if (!opened.ok) throw replyRefusedError("outbox", opened.reason)
   let result: unknown
   try {
     result = JSON.parse(opened.text)

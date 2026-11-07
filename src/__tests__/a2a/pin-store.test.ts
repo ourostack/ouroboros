@@ -206,4 +206,23 @@ describe("durable a2a PinStore (harness-owned, backed by state/a2a/pins)", () =>
     expect(read?.did).toBe(did)
     expect(Buffer.from(read!.ed25519Pub).equals(Buffer.from(pinned.ed25519Pub))).toBe(true)
   })
+
+  it("retires a pin into a tombstone that survives a restart, and ignores an unknown or empty id", () => {
+    tmp = createTmpBundle({ agentName: "pin-retire" })
+    const pinStore = new FileA2APinStore(tmp.agentRoot)
+    const oldDid = "did:key:zPinRetireOldAAAAAAAAAAAAAAAAAAAAAA"
+    const newDid = "did:key:zPinRetireNewAAAAAAAAAAAAAAAAAAAAAA"
+    pinStore.set(oldDid, makePinned(oldDid))
+    pinStore.set(newDid, { ...makePinned(newDid), rotatedAt: "2026-11-06T00:00:00.000Z" })
+    pinStore.retire(oldDid, newDid, "2026-11-06T00:00:00.000Z")
+    pinStore.retire("did:key:zNeverPinned", newDid, "2026-11-06T00:00:00.000Z")
+    pinStore.retire("", newDid, "2026-11-06T00:00:00.000Z")
+    expect(pinStore.size).toBe(2)
+
+    const reloaded = new FileA2APinStore(tmp.agentRoot)
+    expect(reloaded.get(oldDid)).toMatchObject({ did: oldDid, retiredBy: newDid, rotatedAt: "2026-11-06T00:00:00.000Z" })
+    expect(reloaded.get(newDid)).toMatchObject({ did: newDid, rotatedAt: "2026-11-06T00:00:00.000Z" })
+    expect(reloaded.get(newDid)?.retiredBy).toBeUndefined()
+    expect(Buffer.from(reloaded.get(oldDid)!.ed25519Pub).equals(Buffer.from(makePinned(oldDid).ed25519Pub))).toBe(true)
+  })
 })

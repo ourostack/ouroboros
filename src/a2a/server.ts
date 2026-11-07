@@ -20,6 +20,7 @@ import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import { admitDelegatedCommand, delegationRefusalGuidance, shieldDelegatedBanner, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
+import { receiveRefusalError } from "./refusals"
 import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
 import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
@@ -62,6 +63,8 @@ export interface StartA2AServerOptions {
   identity?: A2AIdentity
   /** Enables delegated principal commands. Absent: every delegated marker is refused. */
   delegation?: A2ADelegationOptions
+  /** Tells the owner about a problem only they can fix (a rotated peer whose friend record could not follow). Absent: nerves records it. */
+  notifyOwner?: (notice: { noticeId: string; text: string }) => Promise<void>
   /** Enables telling the owner when a resolved failure report's fix is live. Absent: reports can be resolved but never confirmed. */
   escalation?: ConfirmDeps & { confirmIntervalMs?: number }
 }
@@ -222,6 +225,23 @@ function messageHasDataPart(message: A2AMessage): boolean {
   /* v8 ignore next -- defensive: callers pass a parsed inbound whose `parts` is always an array; guards malformed direct input @preserve */
   if (!Array.isArray(message.parts)) return false
   return message.parts.some((part) => part && part.kind === "data")
+}
+
+/**
+ * A delegated command's id: a hash of the sender's DID, its signed message id and its signed issue time. A redelivery of
+ * the same message names the same command, while a sender reusing a message id on a new message (possible once the
+ * old one ages out of the seen ledger) gets a new command, so it can never ride an earlier command's owner notice or
+ * effect record. A message without a binding (unbound, so refused upstream) falls back to a random id.
+ */
+export function commandIdFor(chat: { did: string; bindingId?: string; issuedAt?: string }): string {
+  /* v8 ignore next -- unbound envelopes are refused before a delegated command is admitted @preserve */
+  if (!chat.bindingId) return randomUUID()
+  return createHash("sha256").update(JSON.stringify([chat.did, chat.bindingId, chat.issuedAt ?? ""])).digest("hex").slice(0, 32)
+}
+
+function refusalResponse(id: A2AJsonRpcRequest["id"], what: string, reason: string): A2AJsonRpcResponse {
+  const refusal = receiveRefusalError(what, reason)
+  return errorResponse(id, rejectionErrorCode(reason), refusal.message, refusal.data)
 }
 
 /** Map a friends `receiveShare` rejection reason → a JSON-RPC error code.
@@ -413,15 +433,16 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   let inboundShareDeps: InboundShareDeps | undefined
   if (options.identity) {
     const friendsDir = `${agentRoot}/friends`
+    const friendStore = new FileFriendStore(friendsDir)
     inboundShareDeps = {
       sodium: await ready(),
-      store: new FileFriendStore(friendsDir),
+      store: friendStore,
       // The SAME canonical mission store the Slice-4 delegation tools use, so an
       // inbound `importCoordination` write lands where the read/prepare surface reads.
       missionStore: delegationStoresFor(agentRoot).missionStore,
       pinStore: new FileA2APinStore(agentRoot),
       seen: new FileA2ASeenLedger(agentRoot),
-      didResolution: makeDidResolution({ sodium: await ready() }),
+      didResolution: makeDidResolution({ sodium: await ready(), store: friendStore, agentName: options.agentName, notifyOwner: options.notifyOwner }),
       identity: options.identity,
     }
   }
@@ -483,7 +504,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         }
         const bridged = await receiveInboundShare({ ...outboxInbound, kind: outboxInbound.kind ?? "message" }, inboundShareDeps)
         if (bridged.outcome === "rejected") {
-          writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(bridged.reason), `A2A outbox call rejected: ${bridged.reason}`))
+          writeJson(res, 200, refusalResponse(rpc.id, "outbox call", bridged.reason))
           return
         }
         if (bridged.outcome !== "completed" || !bridged.message) {
@@ -538,7 +559,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
             identity: inboundShareDeps.identity,
           })
           if (imported.outcome === "rejected") {
-            writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(imported.reason), `A2A result rejected: ${imported.reason}`))
+            writeJson(res, 200, refusalResponse(rpc.id, "result", imported.reason))
             return
           }
           // imported (store-only, no turn): acknowledge with a minimal completed task.
@@ -563,11 +584,11 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         let verifiedPeerAgentId: string | undefined
         let verifiedPeerName: string | undefined
         let verifiedShareText: string | undefined
-        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal" } | undefined
+        let verifiedChat: { did: string; friend?: FriendRecord; onBehalfOf?: "principal"; bindingId?: string; issuedAt?: string } | undefined
         if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
           const bridged = await receiveInboundShare(inbound, inboundShareDeps)
           if (bridged.outcome === "rejected") {
-            writeJson(res, 200, errorResponse(rpc.id, rejectionErrorCode(bridged.reason), `A2A share rejected: ${bridged.reason}`))
+            writeJson(res, 200, refusalResponse(rpc.id, "share", bridged.reason))
             return
           }
           // A message with a data part always resolves to completed|rejected — the
@@ -582,7 +603,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
               verifiedShareText = bridged.message.text
               /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
               verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
-              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}) }
+              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend, ...(bridged.message.onBehalfOf ? { onBehalfOf: bridged.message.onBehalfOf } : {}), bindingId: bridged.bindingId, issuedAt: bridged.message.issuedAt }
             } else {
               verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
             }
@@ -635,7 +656,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
           /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
           if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
-          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: randomUUID(), store: inboundShareDeps!.store, registry, options: options.delegation })
+          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: commandIdFor(verifiedChat), store: inboundShareDeps!.store, registry, options: options.delegation })
           if (!admission.ok) {
             // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
             // Only an active family peer is told why: anyone else gets no_grant whatever the real reason was (a broken trust file, a key mismatch), which stays in the local log and nerves.

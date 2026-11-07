@@ -83,6 +83,11 @@ export interface OpenChatMessageInput {
   /** The sender the opener expects, and its Ed25519 key, pinned before opening. */
   senderDid: string
   senderEd25519Pub: Uint8Array
+  /** A durable seen ledger, so a replayed reply is refused across runs (the CLI keeps one beside its identity file).
+   * Omitted: a fresh in-memory ledger, which still refuses unbound, stale and misaddressed replies. */
+  seen?: SeenLedgerLike
+  /** Clock override for the binding freshness check (tests). */
+  now?: Date | number
 }
 
 export type OpenChatMessageResult =
@@ -116,12 +121,13 @@ export async function openChatMessage(input: OpenChatMessageInput): Promise<Open
         return pinned ? { ed25519Pub: pinned.ed25519Pub } : null
       },
     },
-    seen: new MemorySeenLedger(),
+    seen: input.seen ?? new MemorySeenLedger(),
     a2aMessage: input.message as unknown as FriendsA2AMessage,
     recipientDid: input.self.did,
     recipientIdentity: { x25519Priv: input.self.x25519Priv, x25519Pub: input.self.x25519Pub },
     // The opener chose this sender; the signature, not this level, is the gate.
     trustOfSource: "family",
+    options: { rejectUnboundEnvelopes: true, ...(input.now !== undefined ? { now: input.now } : {}) },
   })
   if (result.state === "rejected") {
     emitNervesEvent({

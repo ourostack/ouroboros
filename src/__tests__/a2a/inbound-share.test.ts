@@ -76,12 +76,13 @@ function makeHarness(): Harness {
 function sealedCoordinationFrom(
   from: DidKeyIdentity,
   recipient: DidKeyIdentity,
-  opts: { missionKey?: string } = {},
+  opts: { missionKey?: string; issuedAt?: string } = {},
 ): A2AMessage {
   const envelope: Record<string, unknown> = {
     subject: { missionKey: opts.missionKey ?? `mk-${Math.random().toString(36).slice(2, 8)}`, title: "Test mission" },
     fromAgentId: from.did,
     intent: "request",
+    issuedAt: opts.issuedAt ?? new Date().toISOString(),
     note: "please take the API side",
   }
   const sealed = sealEnvelope({
@@ -140,6 +141,7 @@ describe("inbound-share bridge (receiveShare → verified-DID keying)", () => {
       subject: { missionKey: "mk-forge", title: "Forge" },
       fromAgentId: a.did,
       intent: "request",
+      issuedAt: new Date().toISOString(),
     }
     const sealed = sealEnvelope({
       sodium,
@@ -227,5 +229,19 @@ describe("inbound-share bridge (receiveShare → verified-DID keying)", () => {
     // rejected malformed message (it WAS a data part, so not "not-a-share").
     expect(out.outcome).toBe("rejected")
     if (out.outcome === "rejected") expect(out.reason).toBe("malformed_message")
+  })
+
+  it("checks the signed binding: a stale envelope is refused, the same one passes at its own time, and carries its binding id", async () => {
+    const { deps, store, recipient } = makeHarness()
+    const a = mintIdentity()
+    await seedFriend(store, a.did, "family")
+    const issuedAt = "2026-01-01T00:00:00.000Z"
+    const message = sealedCoordinationFrom(a, recipient, { issuedAt })
+    const stale = await receiveInboundShare(message, deps)
+    expect(stale).toMatchObject({ outcome: "rejected", reason: "stale_envelope" })
+    // Refused before the signature check, so nothing was marked seen and the clock-corrected receive succeeds.
+    const fresh = await receiveInboundShare(message, { ...deps, bindingOptions: { now: Date.parse(issuedAt) + 60_000 } })
+    expect(fresh.outcome).toBe("completed")
+    if (fresh.outcome === "completed") expect(fresh.bindingId).toMatch(/.+/)
   })
 })

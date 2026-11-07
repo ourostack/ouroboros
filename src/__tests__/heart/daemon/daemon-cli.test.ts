@@ -6974,7 +6974,7 @@ describe("ouro friend CLI execution", () => {
     expect(mockFriendStore.findByExternalId).toHaveBeenCalledWith("imessage-handle", "+1234567890")
   })
 
-  it("ouro friend link merges orphan friend when externalId found on another record", async () => {
+  it("ouro friend link refuses to fold an orphan's other ids onto a family record (operator decision)", async () => {
     const targetFriend = {
       id: "friend-1",
       name: "Ari",
@@ -7017,26 +7017,13 @@ describe("ouro friend CLI execution", () => {
       "--external-id", "+1234567890",
     ], deps)
 
-    expect(result).toContain("linked")
-    expect(result).toContain("merged")
-    // Orphan should be deleted
-    expect(mockFriendStore.delete).toHaveBeenCalledWith("orphan-1")
-    // Target should get orphan's extra externalIds and notes merged
-    const putCall = mockFriendStore.put.mock.calls[0]
-    const savedRecord = putCall[1]
-    // Should have original + new + orphan's other externalId
-    expect(savedRecord.externalIds).toEqual(expect.arrayContaining([
-      expect.objectContaining({ provider: "imessage-handle", externalId: "+0987654321" }),
-      expect.objectContaining({ provider: "imessage-handle", externalId: "+1234567890" }),
-    ]))
-    // Notes should be merged
-    expect(savedRecord.notes.phone).toBeDefined()
-    expect(savedRecord.notes.role).toBeDefined()
-    // Trust level should keep the higher one (family > stranger)
-    expect(savedRecord.trustLevel).toBe("family")
+    // friends 0.1.0-alpha.17: handing the orphan's other ids the target's authority is the operator's call.
+    expect(result).toMatch(/^not linked: imessage-handle:\+1234567890 \(conflict_requires_operator: /)
+    expect(mockFriendStore.put).not.toHaveBeenCalled()
+    expect(mockFriendStore.delete).not.toHaveBeenCalled()
   })
 
-  it("ouro friend link handles undefined trust levels when merging", async () => {
+  it("ouro friend link merges an orphan at the same standing and keeps the target's own trust", async () => {
     const targetFriend = {
       id: "friend-1",
       name: "Ari",
@@ -7069,18 +7056,21 @@ describe("ouro friend CLI execution", () => {
       listAll: vi.fn(),
     }
     const deps = makeDeps({ friendStore: mockFriendStore as any })
-    await runOuroCli([
+    const result = await runOuroCli([
       "friend", "link", "slugger",
       "--friend", "friend-1",
       "--provider", "imessage-handle",
       "--external-id", "+111",
     ], deps)
 
+    expect(result).toBe("linked imessage-handle:+111 to friend-1 (merged orphan)")
+    expect(mockFriendStore.delete).toHaveBeenCalledWith("orphan-1")
     const putCall = mockFriendStore.put.mock.calls[0]
-    expect(putCall[1].trustLevel).toBe("stranger")
+    expect(putCall[1].trustLevel).toBeUndefined()
+    expect(putCall[1].externalIds).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "imessage-handle", externalId: "+111" })]))
   })
 
-  it("ouro friend link keeps orphan's higher trust when merging", async () => {
+  it("ouro friend link refuses to merge an orphan at a different trust level", async () => {
     const targetFriend = {
       id: "friend-1",
       name: "Ari",
@@ -7113,17 +7103,16 @@ describe("ouro friend CLI execution", () => {
       listAll: vi.fn(),
     }
     const deps = makeDeps({ friendStore: mockFriendStore as any })
-    await runOuroCli([
+    const result = await runOuroCli([
       "friend", "link", "slugger",
       "--friend", "friend-1",
       "--provider", "imessage-handle",
       "--external-id", "+1234567890",
     ], deps)
 
-    const putCall = mockFriendStore.put.mock.calls[0]
-    const savedRecord = putCall[1]
-    // Orphan had family (higher than acquaintance), so merged record should be family
-    expect(savedRecord.trustLevel).toBe("family")
+    // A link never moves trust between records; the orphan's family standing needs an operator decision.
+    expect(result).toContain("not linked: imessage-handle:+1234567890 (conflict_requires_operator: ")
+    expect(mockFriendStore.put).not.toHaveBeenCalled()
   })
 
   it("ouro friend unlink removes matching externalId", async () => {

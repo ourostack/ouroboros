@@ -48,10 +48,23 @@ interface StoredPin {
   did: string
   /** The pinned Ed25519 public key, base58btc-encoded. */
   pinnedKey: string
+  /** When a verified rotation last moved this pin (friends' replay guard for successor statements). */
+  rotatedAt?: string
+  /** Set on a retired pin (a tombstone): the DID this one rotated to. A retired pin verifies nothing. */
+  retiredBy?: string
 }
 
 function pinFileName(fromAgentId: string): string {
   return `${createHash("sha256").update(fromAgentId).digest("hex")}.json`
+}
+
+function pinnedFromStored(stored: StoredPin, ed25519Pub: Uint8Array): PinnedDid {
+  return {
+    did: stored.did,
+    ed25519Pub,
+    ...(typeof stored.rotatedAt === "string" ? { rotatedAt: stored.rotatedAt } : {}),
+    ...(typeof stored.retiredBy === "string" ? { retiredBy: stored.retiredBy } : {}),
+  }
 }
 
 export class FileA2APinStore implements DurablePinStore {
@@ -92,25 +105,49 @@ export class FileA2APinStore implements DurablePinStore {
     // pin). Stay inert rather than writing an unkeyed pin file.
     if (!fromAgentId) return
     const existed = this.cache.has(fromAgentId)
-    // Faithfully persist the pinned identity's DID (which may differ from
-    // fromAgentId after a rotation), not fromAgentId itself.
-    const stored: StoredPin = {
-      fromAgentId,
-      did: pinned.did,
-      pinnedKey: base58btcEncode(pinned.ed25519Pub),
-    }
-    fs.writeFileSync(
-      path.join(this.dir, pinFileName(fromAgentId)),
-      `${JSON.stringify(stored, null, 2)}\n`,
-      "utf-8",
-    )
-    this.cache.set(fromAgentId, { did: pinned.did, ed25519Pub: pinned.ed25519Pub })
+    this.write(fromAgentId, pinned)
     emitNervesEvent({
       component: "channels",
       event: "channel.a2a_pin_set",
       message: "set durable A2A pin",
       meta: { fromAgentId, did: pinned.did, rotated: existed },
     })
+  }
+
+  /** Keep a tombstone under `fromAgentId`: the old DID and key, marked retired in favour of `retiredBy`. friends
+   * calls this after it moves the pin to the successor DID; `receiveShare` then refuses the old DID as `retired_pin`. */
+  retire(fromAgentId: string, retiredBy: string, rotatedAt: string): void {
+    const pinned = this.cache.get(fromAgentId)
+    if (!fromAgentId || !pinned) return
+    this.write(fromAgentId, { ...pinned, retiredBy, rotatedAt })
+    emitNervesEvent({
+      level: "warn",
+      component: "channels",
+      event: "channel.a2a_pin_retired",
+      message: "retired an A2A pin after a verified rotation",
+      meta: { fromAgentId, retiredBy, rotatedAt },
+    })
+  }
+
+  /** The DID whose retired pin names `did` as its successor, if any (a rotation chain followed backwards). */
+  predecessorOf(did: string): string | undefined {
+    for (const [fromAgentId, pinned] of this.cache) {
+      if (pinned.retiredBy === did) return fromAgentId
+    }
+    return undefined
+  }
+
+  /** Persist a pin (its DID, which may differ from fromAgentId, its key, and the rotation fields) and cache it. */
+  private write(fromAgentId: string, pinned: PinnedDid): void {
+    const stored: StoredPin = {
+      fromAgentId,
+      did: pinned.did,
+      pinnedKey: base58btcEncode(pinned.ed25519Pub),
+      ...(pinned.rotatedAt !== undefined ? { rotatedAt: pinned.rotatedAt } : {}),
+      ...(pinned.retiredBy !== undefined ? { retiredBy: pinned.retiredBy } : {}),
+    }
+    fs.writeFileSync(path.join(this.dir, pinFileName(fromAgentId)), `${JSON.stringify(stored, null, 2)}\n`, "utf-8")
+    this.cache.set(fromAgentId, pinnedFromStored(stored, pinned.ed25519Pub))
   }
 
   /** Reload every persisted pin from disk into the in-memory cache (the restart
@@ -138,7 +175,7 @@ export class FileA2APinStore implements DurablePinStore {
       if (!key || !stored.did || !stored.pinnedKey) continue
       const ed25519Pub = base58btcDecode(stored.pinnedKey)
       if (!ed25519Pub) continue
-      this.cache.set(key, { did: stored.did, ed25519Pub })
+      this.cache.set(key, pinnedFromStored(stored, ed25519Pub))
     }
   }
 }
