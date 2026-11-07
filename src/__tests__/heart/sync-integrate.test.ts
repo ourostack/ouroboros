@@ -16,6 +16,9 @@ import {
   SYNC_FILE_SIZE_LIMIT_BYTES,
   syncNow,
   type SyncOwnerNotice,
+  FIRST_PUSH_HELD_NOTICE,
+  firstPushHeldPath,
+  listRemoteRefs,
 } from "../../heart/sync"
 import { tryAcquireSyncLockSync, type SyncLockHandle } from "../../heart/sync-lock"
 import type { SyncConfig } from "../../heart/config"
@@ -448,7 +451,8 @@ describe("bundle sync merges and never rebases or stashes", () => {
     const kills: Array<{ pid: number; sig: string; at: number }> = []
     const realKill = process.kill.bind(process)
     const spy = vi.spyOn(process, "kill").mockImplementation((pid: number, sig?: string | number) => {
-      if (pid < 0) kills.push({ pid, sig: String(sig), at: Date.now() })
+      // Signal 0 is the probe that asks whether the group is still there, not a signal.
+      if (pid < 0 && sig !== 0) kills.push({ pid, sig: String(sig), at: Date.now() })
       return realKill(pid, sig)
     })
     // Only this fetch's group: an earlier test's grace timer can still fire into the spy.
@@ -760,5 +764,86 @@ describe("repair never loses a stranded state's work (fix round 2)", () => {
     await tick()
     expect(notices.filter((n) => n.notice.noticeId.startsWith("sync-repair:"))).toEqual([])
     expect(pendingSync(agent)).toBeNull()
+  })
+})
+
+describe("the first push to an empty remote waits for the owner's yes (spec R3.10)", () => {
+  /** A bundle with a commit and an `origin` that has no refs at all. */
+  function emptyRemoteBundle(): { remote: string; agent: string } {
+    const remote = path.join(root, "empty.git")
+    const agent = path.join(root, `${AGENT}.ouro`)
+    git(root, ["init", "-q", "--bare", "-b", "main", remote])
+    git(root, ["init", "-q", "-b", "main", agent])
+    write(agent, ".gitignore", "state/\n")
+    write(agent, "notes.md", "agent\n")
+    git(agent, ["remote", "add", "origin", remote])
+    return { remote, agent }
+  }
+  const remoteRefs = (remote: string): string => git(remote, ["--git-dir", remote, "for-each-ref"])
+  const heldNotices = (): string[] => notices.filter((n) => n.notice.noticeId.startsWith("sync-first-push-held:")).map((n) => n.notice.text)
+
+  it("post-turn push holds off, tells the owner once in first person, and pushes nothing", async () => {
+    const { remote, agent } = emptyRemoteBundle()
+    for (let turn = 0; turn < 2; turn++) {
+      write(agent, "journal.md", `turn ${turn}\n`)
+      const result = postTurnPush(agent, CONFIG, AGENT)
+      expect(result.ok).toBe(true)
+      expect(await result.push!).toEqual({ ok: false, firstPushHeld: true, error: "origin is empty, so the first push waits for the owner's yes (bundle_first_push_review)" })
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(remoteRefs(remote)).toBe("")
+    expect(heldNotices()).toEqual([FIRST_PUSH_HELD_NOTICE])
+    expect(FIRST_PUSH_HELD_NOTICE).toBe("My bundle's GitHub repo is empty. Before I push to it for the first time, please look over what would go up and tell me yes.")
+    // A hold is not a sync failure.
+    expect(pendingSync(agent)).toBeNull()
+    expect(fs.existsSync(path.join(agent, ".git", "ouro-sync.lock"))).toBe(false)
+  })
+
+  it("ouro sync holds off too, and pushes once the owner's yes comes with it", async () => {
+    const { remote, agent } = emptyRemoteBundle()
+    expect(await syncNow(agent, CONFIG, AGENT, 0)).toMatchObject({ ok: false, firstPushHeld: true })
+    expect(remoteRefs(remote)).toBe("")
+    expect(fs.existsSync(firstPushHeldPath(agent))).toBe(true)
+
+    expect(await syncNow(agent, CONFIG, AGENT, 0, { firstPushApproved: true })).toEqual({ ok: true })
+    expect(git(remote, ["--git-dir", remote, "rev-parse", "main"])).toBe(git(agent, ["rev-parse", "HEAD"]))
+    // Asked once, and the record goes once a push lands.
+    expect(heldNotices()).toHaveLength(1)
+    expect(fs.existsSync(firstPushHeldPath(agent))).toBe(false)
+
+    // From now on the remote has history: no yes needed.
+    write(agent, "journal.md", "later\n")
+    expect(await syncNow(agent, CONFIG, AGENT, 0)).toEqual({ ok: true })
+  })
+
+  it("does not push when it cannot ask the remote whether it is empty", async () => {
+    const { agent } = emptyRemoteBundle()
+    git(agent, ["remote", "set-url", "origin", path.join(root, "missing.git")])
+    write(agent, "journal.md", "x\n")
+    const result = postTurnPush(agent, CONFIG, AGENT)
+    const pushed = await result.push!
+    expect(pushed.ok).toBe(false)
+    expect(pushed.firstPushHeld).toBeUndefined()
+    expect(pushed.error).toMatch(/^could not check whether origin is empty before pushing to it: git ls-remote failed: /)
+    expect(heldNotices()).toEqual([])
+  })
+
+  it("pushes to a remote with history even with no remote-tracking ref (the live cutover's remote)", async () => {
+    const { remote, owner, agent } = setup()
+    git(agent, ["update-ref", "-d", "refs/remotes/origin/main"])
+    git(agent, ["branch", "--unset-upstream"])
+    write(agent, "journal.md", "after the cutover\n")
+    const result = postTurnPush(agent, CONFIG, AGENT)
+    expect(await result.push!).toEqual({ ok: true })
+    expect(remoteShow(remote, "main:journal.md")).toBe("after the cutover")
+    expect(heldNotices()).toEqual([])
+    expect(owner).toBeTruthy()
+  })
+
+  it("lists a remote's refs through sync's own ls-remote", async () => {
+    const { remote, agent } = setup()
+    expect(await listRemoteRefs(agent, "origin")).toEqual({ ok: true, refs: ["HEAD", "refs/heads/main"] })
+    expect(await listRemoteRefs(agent, "origin", ["refs/heads/nope"])).toEqual({ ok: true, refs: [] })
+    expect(remote).toBeTruthy()
   })
 })

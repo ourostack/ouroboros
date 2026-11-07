@@ -2468,6 +2468,14 @@ describe("bundle sync around the run (M1c)", () => {
   /** The container, for the gate's sync host: `ouro sync`, `git ls-remote` through the sync path, and /proc for the lock holder. */
   function containerExec(repo: ReturnType<typeof syncRepo>, calls: string[][], opts: ExecOpts = {}) {
     return (file: string, args: string[]) => {
+      // git in the container on the bundle: run on the test's bundle, with the same flags. Only ls-remote is recorded.
+      const at = args.indexOf(gate.CONTAINER_BUNDLE)
+      const gitArgs = at > 0 && args[at - 1] === "-C" ? args.slice(at + 1) : null
+      if (gitArgs && gitArgs[0] !== "ls-remote") {
+        expect(args.slice(0, 3)).toEqual(["exec", "-u", "10001:10001"])
+        expect(args.slice(at - 6, at - 1)).toEqual(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+        return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...gitArgs], { cwd: repo.bundle, encoding: "utf8", stdio: "pipe", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" } })
+      }
       calls.push([file, ...args])
       if (args.includes("ls-remote")) return opts.lsRemote ? opts.lsRemote() : `${g(repo.bundle, ["ls-remote", "origin", "refs/heads/main"])}\n`
       const proc = args.find((arg) => arg.startsWith("/proc/"))
@@ -2480,7 +2488,7 @@ describe("bundle sync around the run (M1c)", () => {
     }
   }
   const SYNC_CALL = ["docker", "exec", "-u", "10001:10001", "ouro-butler", "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "sync", "--agent", "sanctuary"]
-  const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "--git-dir=/home/ouro/AgentBundles/sanctuary.ouro/.git", "ls-remote", "origin", "refs/heads/main"]
+  const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_OPTIONAL_LOCKS=0", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro", "ls-remote", "origin", "refs/heads/main"]
 
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
   function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
@@ -2523,7 +2531,7 @@ describe("bundle sync around the run (M1c)", () => {
   const byResult = (suite: { results: Array<{ id: string }> }, id: string) => suite.results.find((entry) => entry.id === id) as { status: string; checks: Array<{ name: string; ok: boolean; detail?: string }> } | undefined
 
   it("pins what it never tracks and the psyche to the release's own lists", () => {
-    expect(gate.NEVER_TRACKED).toEqual([...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"])
+    expect(gate.NEVER_TRACKED).toEqual([...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", "psyche/.release-marker"])
     expect(gate.PSYCHE_FILES.map((name: string) => `psyche/${name}`)).toEqual([...SANCTUARY_STARTER_PSYCHE_FILES])
     expect(gate.NEVER_EXCUSED).toEqual(expect.arrayContaining(["no-sync-residue", "psyche-git-tracked"]))
   })
@@ -2563,6 +2571,91 @@ describe("bundle sync around the run (M1c)", () => {
     ] })
     expect(suite.summary).toMatchObject({ ok: true, failed: [] })
     expect(suite.summary.pending).toBeUndefined()
+  }, 60_000)
+
+  it("runs every git call on the bundle inside the container as the Butler, never as host root (C1)", async () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs"), "utf8")
+    // No host git: git appears only as the command docker exec runs, and nothing names the bundle's .git or work tree from the host.
+    const gitCalls = source.split("\n").filter((line) => /["'`]git["'`]/u.test(line) && !line.trim().startsWith("*") && !line.trim().startsWith("//"))
+    expect(gitCalls).toHaveLength(1)
+    expect(gitCalls[0]).toContain('run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", CONTAINER_BUNDLE')
+    expect(source).not.toMatch(/--git-dir|--work-tree|execFileSync\(\s*["'`]git|spawnSync\(\s*["'`]git|spawn\(\s*["'`]git/u)
+    expect(gate.BUTLER_USER).toBe("10001:10001")
+
+    // And at run time: every call the sync host makes is docker, and every git one is the Butler's, with hooks and fsmonitor off.
+    const repo = syncRepo()
+    repo.cutover()
+    const seen: string[][] = []
+    const inner = containerExec(repo, [])
+    const run = bracketHost(repo, { exec: (file: string, args: string[]) => { seen.push([file, ...args]); return inner(file, args) } })
+    await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(new Set(seen.map((call) => call[0]))).toEqual(new Set(["docker"]))
+    const gitRuns = seen.filter((call) => call.includes("git"))
+    expect(gitRuns.length).toBeGreaterThanOrEqual(6)
+    for (const call of gitRuns) {
+      expect(call.slice(0, 4)).toEqual(["docker", "exec", "-u", "10001:10001"])
+      expect(call.slice(call.indexOf("git"), call.indexOf("git") + 7)).toEqual(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro"])
+    }
+    expect(new Set(gitRuns.map((call) => call[call.indexOf("-C") + 2]))).toEqual(new Set(["rev-parse", "status", "hash-object", "ls-remote", "log", "show", "ls-files"]))
+  }, 60_000)
+
+  it("pushes nothing under psyche/ when the release marker is there for the read-only turn (I1)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    repo.put("psyche/.release-marker", "0.1.0-alpha.989 token\n")
+    const run = bracketHost(repo)
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(g(repo.remote, ["ls-tree", "-r", "--name-only", "main", "--", "psyche/"]).split("\n").sort()).toEqual([...SANCTUARY_STARTER_PSYCHE_FILES].sort())
+    expect(byResult(suite, "no-sync-residue")?.status).toBe("pass")
+    expect(byResult(suite, "psyche-git-tracked")?.status).toBe("pass")
+  }, 60_000)
+
+  it("fails both sync checks when a bundle without the marker's exclude commits it (I1)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    fs.writeFileSync(path.join(repo.bundle, ".git", "info", "exclude"), sanctuaryGitExcludeText().replace("psyche/.release-marker*\n", ""))
+    repo.put("psyche/.release-marker", "0.1.0-alpha.989 token\n")
+    const tracking = gate.trackingResult(gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, []) }))
+    expect(tracking.checks[2]).toMatchObject({ ok: false, detail: "psyche/.release-marker" })
+    const suite = await gate.runSuite(bracketHost(repo).host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(byResult(suite, "no-sync-residue")!.checks[1]).toMatchObject({ ok: false, detail: expect.stringMatching(/^psyche\/\.release-marker \(/u) })
+  }, 60_000)
+
+  it("counts any untracked file the run created or changed as touched, but not a replay friend's record (I1)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    repo.put("notes/before.md", "there before\n")
+    repo.put("notes/changed.md", "first\n")
+    const run = bracketHost(repo)
+    const send = run.host.send
+    run.host.send = async (req: any) => {
+      if (req.text !== gate.LATENCY_WORDS) {
+        repo.put("notes/gate-made.md", "made by the run\n")
+        repo.put("notes/changed.md", "second\n")
+      }
+      return send(req)
+    }
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    const residue = byResult(suite, "no-sync-residue")!
+    expect(residue.status).toBe("fail")
+    expect(residue.checks[1]).toMatchObject({ ok: false, detail: expect.stringMatching(/^notes\/changed\.md, notes\/gate-made\.md \(/u) })
+    expect(residue.checks[1]!.detail).not.toContain("before.md")
+    expect(residue.checks[1]!.detail).not.toContain("p-0a4c19")
+    expect(gate.createdDuringRun({ ok: true, files: { a: "1", b: "2" } }, { ok: true, files: { a: "1", b: "3", c: "4" } })).toEqual({ paths: ["b", "c"] })
+  }, 60_000)
+
+  it("fails no-sync-residue when it cannot read what the run created", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = bracketHost(repo)
+    const sync = (run.host as Record<string, any>).sync
+    let reads = 0
+    const untracked = sync.untracked
+    sync.untracked = () => { reads += 1; if (reads === 2) throw new Error("docker exec failed"); return untracked() }
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(byResult(suite, "no-sync-residue")).toMatchObject({ status: "fail", checks: [{ ok: true }, { ok: true }, { ok: true }, { name: "the files the run created in the bundle could be read", ok: false, detail: "docker exec failed" }] })
+    expect(gate.createdDuringRun({ ok: false, error: "before" }, { ok: true, files: {} })).toEqual({ paths: [], error: "before" })
+    expect(gate.untrackedSnapshot({ untracked: () => { throw "plain" } })).toEqual({ ok: false, error: "plain" })
   }, 60_000)
 
   it("fails no-sync-residue when the gate's TACIT write reaches the remote, and never excuses it", async () => {
@@ -2626,7 +2719,7 @@ describe("bundle sync around the run (M1c)", () => {
     const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, calls, live), sleep, now: () => clock.t, pollMs: 1000 })
     expect(procLine("77", "4242").slice(procLine("77", "4242").lastIndexOf(")") + 2).split(" ")[19]).toBe("4242")
     const opened = await gate.openSyncBracket(sync)
-    expect(opened).toEqual({ ok: true, head: g(repo.bundle, ["rev-parse", "HEAD"]) })
+    expect(opened).toEqual({ ok: true, head: g(repo.bundle, ["rev-parse", "HEAD"]), untracked: { ok: true, files: {} } })
     expect(polls).toBe(3)
     expect(calls).toContainEqual(["docker", "exec", "ouro-butler", "cat", "/proc/77/stat"])
     expect(JSON.parse(fs.readFileSync(repo.marker, "utf8")).startedAt).not.toBe("left over")
@@ -2727,7 +2820,7 @@ describe("bundle sync around the run (M1c)", () => {
 
   it("the tracking check is pending before the cutover, and passes and fails correctly after it", async () => {
     const repo = syncRepo()
-    const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir })
+    const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, []) })
     // The backup tracked tool-profiles.json; the cutover untracks it.
     g(repo.bundle, ["add", "-f", "tool-profiles.json"])
     g(repo.bundle, [...AS_OWNER, "commit", "-q", "-m", "backup"])
@@ -2747,7 +2840,7 @@ describe("bundle sync around the run (M1c)", () => {
     expect(failing.status).toBe("fail")
     expect(failing.checks[0]).toMatchObject({ ok: false, detail: "not tracked: LORE.md" })
     expect(failing.checks[2]).toMatchObject({ ok: false, detail: "notes/api-token.txt" })
-    // Root's status takes no optional lock, so the index stays as the Butler's git left it.
+    // The status takes no optional lock, so the index stays as the Butler's git left it.
     expect(fs.existsSync(path.join(repo.bundle, ".git", "index.lock"))).toBe(false)
     expect(gate.trackingResult({ cutoverDone: () => true, tracking: () => { throw new Error("not a git repository") } })).toEqual({ id: "psyche-git-tracked", status: "fail", checks: [{ name: "the bundle's git state could be read", ok: false, detail: "not a git repository" }] })
   }, 60_000)

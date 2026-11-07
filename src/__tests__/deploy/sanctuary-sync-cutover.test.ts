@@ -232,7 +232,8 @@ async function waitFor(check: () => boolean, ms = 60_000) {
 beforeEach(() => setup())
 afterEach(() => fs.rmSync(T, { recursive: true, force: true }))
 
-describe("sanctuary-sync-cutover.sh", () => {
+// Each test runs the script several times with spawnSync; under a loaded full suite one can pass 5 s.
+describe("sanctuary-sync-cutover.sh", { timeout: 60_000 }, () => {
   it("is bash, passes bash -n, and names the repository and branch once at the top", () => {
     expect(SOURCE.startsWith("#!/bin/bash\n")).toBe(true)
     expect(spawnSync("bash", ["-n", SCRIPT]).status).toBe(0)
@@ -253,13 +254,12 @@ describe("sanctuary-sync-cutover.sh", () => {
       if (/git ls-remote "\$BUNDLE_REMOTE"/u.test(line)) continue
       expect(line, line).toMatch(/--git-dir=/u)
     }
+    // The gate runs no host-side git at all: its one git call runs inside the container as the Butler, on the bundle (C1).
     const gate = fs.readFileSync(GATE, "utf8")
     const gateCalls = code(gate).filter((line) => /["'`]git["'`]/u.test(line))
-    expect(gateCalls).toHaveLength(2)
-    for (const line of gateCalls) expect(line).toMatch(/--git-dir=/u)
-    // The host-side one names its work tree; the other runs inside the container, only to ls-remote.
-    expect(gateCalls.filter((line) => line.includes("--work-tree="))).toHaveLength(1)
-    expect(gateCalls.find((line) => !line.includes("--work-tree="))).toMatch(/"docker".*"ls-remote"/u)
+    expect(gateCalls).toHaveLength(1)
+    expect(gateCalls[0]).toMatch(/run\("docker", \["exec", "-u", BUTLER_USER, .*CONTAINER, "git", "-c", "core\.hooksPath=\/dev\/null", "-c", "core\.fsmonitor=false", "-C", CONTAINER_BUNDLE/u)
+    expect(gate).not.toMatch(/--git-dir|--work-tree/u)
   })
 
   it("names secrets with the gate's pattern, and every host-side ssh uses backup.sh's key and known_hosts with strict checking", async () => {
@@ -758,6 +758,110 @@ kill -9 $PPID
       expect(fs.existsSync(path.join(appdata(), "sync/deploy_key"))).toBe(false)
     })
 
+    it("puts back repo.git's config, hooks and attributes before any git, so nothing the Butler planted in .git runs as root (C1)", () => {
+      const configBefore = fs.readFileSync(path.join(repoGit(), "config"))
+      const hooksBefore = fs.readdirSync(path.join(repoGit(), "hooks")).sort()
+      const before = beforeState()
+      expect(run("--apply").status).toBe(0)
+      const snapshots = fs.readdirSync(backup()).filter((name) => /^cutover-git-snapshot-.*\.tar$/u.test(name))
+      expect(snapshots).toHaveLength(1)
+      expect(fs.statSync(path.join(backup(), snapshots[0]!)).mode & 0o777).toBe(0o600)
+      expect(fs.readFileSync(path.join(backup(), "cutover-done"), "utf8")).toContain(`git snapshot: ${path.join(backup(), snapshots[0]!)}\ngit snapshot hooks: present\ngit snapshot attributes: absent\n`)
+
+      // What a prompt-injected Butler could write into the .git it owns from step 13: a clean filter (in config and through an
+      // [include]), an ext:: push URL, a worktree config, and hooks.
+      const gitDir = path.join(bundle(), ".git")
+      const marker = (name: string) => path.join(T, `planted-${name}`)
+      const markers = ["filter", "include", "ext", "worktree", "hook-pre-push", "hook-reference-transaction", "hook-pre-commit", "hook-post-commit"]
+      write(path.join(T, "planted.inc"), `[filter "inc"]\n\tclean = touch ${marker("include")} && cat\n`)
+      fs.appendFileSync(path.join(gitDir, "config"), [
+        `[filter "pwn"]\n\tclean = touch ${marker("filter")} && cat\n`,
+        `[include]\n\tpath = ${path.join(T, "planted.inc")}\n`,
+        `[protocol "ext"]\n\tallow = always\n`,
+        `[remote "origin"]\n\tpushurl = ext::sh -c touch% ${marker("ext")}\n`,
+        `[extensions]\n\tworktreeConfig = true\n`,
+      ].join(""))
+      write(path.join(gitDir, "config.worktree"), `[filter "wt"]\n\tclean = touch ${marker("worktree")} && cat\n`)
+      write(path.join(gitDir, "info/attributes"), "*.json filter=pwn\n*.md filter=inc\nagent.json filter=wt\n")
+      for (const hook of ["pre-push", "reference-transaction", "pre-commit", "post-commit"]) write(path.join(gitDir, "hooks", hook), `#!/bin/sh\ntouch ${marker(`hook-${hook}`)}\n`, 0o755)
+      write(path.join(bundle(), "psyche/SOUL.md"), "# SOUL.md\nchanged by a turn\n")
+      write(path.join(bundle(), "friends/f1.json"), "{\"changed\":true}\n")
+
+      // The plants work: root's own git calls, hooks off, on a copy of the planted .git, run every config route.
+      const copy = path.join(T, "planted-copy.git")
+      fs.cpSync(gitDir, copy, { recursive: true })
+      git(["-c", "core.hooksPath=/dev/null", `--git-dir=${copy}`, `--work-tree=${bundle()}`, "add", "-A"])
+      spawnSync("git", ["-c", "core.hooksPath=/dev/null", `--git-dir=${copy}`, `--work-tree=${bundle()}`, "push", "--dry-run", "origin", "HEAD:main"], { env, encoding: "utf8" })
+      fs.rmSync(copy, { recursive: true, force: true })
+      expect(markers.filter((name) => fs.existsSync(marker(name)))).toEqual(["filter", "include", "ext", "worktree"])
+      for (const name of markers) fs.rmSync(marker(name), { force: true })
+
+      const result = run("--rollback")
+      expect(result.status, result.out).toBe(0)
+      expect(markers.filter((name) => fs.existsSync(marker(name)))).toEqual([])
+      // The restore runs right after the move, before the first step that runs git.
+      const order = ["move .git back to repo.git: ok", "give repo.git back to root and put back its config, hooks and attributes: ok", "restore repo.git's config, branch and exclude: ok", "check the hourly backup can push: ok"]
+      expect(order.map((line) => result.out.indexOf(`rollback: ${line}`))).toEqual([...order.map((line) => result.out.indexOf(`rollback: ${line}`))].sort((a, b) => a - b))
+      expect(order.every((line) => result.out.includes(`rollback: ${line}`))).toBe(true)
+
+      // config byte for byte, no worktree config or attributes, and every planted hook moved aside, not deleted.
+      expect(fs.readFileSync(path.join(repoGit(), "config")).equals(configBefore)).toBe(true)
+      expect(fs.existsSync(path.join(repoGit(), "config.worktree"))).toBe(false)
+      expect(fs.existsSync(path.join(repoGit(), "info/attributes"))).toBe(false)
+      const hooks = fs.readdirSync(path.join(repoGit(), "hooks")).sort()
+      expect(hooks.filter((name) => !name.includes(".disabled-"))).toEqual(hooksBefore)
+      for (const hook of ["pre-push", "reference-transaction", "pre-commit", "post-commit"]) {
+        expect(hooks.filter((name) => name.startsWith(`${hook}.disabled-`)), hook).toHaveLength(1)
+      }
+      expect(beforeState()).toEqual(before)
+
+      // backup.sh's next run: root's git with hooks on, on the restored repo, runs nothing the Butler planted.
+      bg(["add", "-A"])
+      bg(["-c", "user.name=backup", "-c", "user.email=backup@example.invalid", "commit", "-q", "-m", "hourly backup"])
+      bg(["push", "-q", "--dry-run", "origin", "HEAD:main"])
+      expect(markers.filter((name) => fs.existsSync(marker(name)))).toEqual([])
+    })
+
+    it("moves aside a hooks or info link and a commondir before any git (C1)", () => {
+      expect(run("--apply").status).toBe(0)
+      const gitDir = path.join(bundle(), ".git")
+      const elsewhere = path.join(T, "elsewhere")
+      write(path.join(elsewhere, "hooks/pre-push"), `#!/bin/sh\ntouch ${path.join(T, "planted-linked-hook")}\n`, 0o755)
+      fs.renameSync(path.join(gitDir, "hooks"), path.join(T, "real-hooks"))
+      fs.symlinkSync(path.join(elsewhere, "hooks"), path.join(gitDir, "hooks"))
+      fs.renameSync(path.join(gitDir, "info"), path.join(T, "real-info"))
+      fs.symlinkSync(elsewhere, path.join(gitDir, "info"))
+      write(path.join(gitDir, "commondir"), `${elsewhere}\n`)
+      const result = run("--rollback")
+      expect(result.status, result.out).toBe(0)
+      const entries = fs.readdirSync(repoGit())
+      for (const name of ["hooks", "info", "commondir"]) {
+        expect(entries.filter((entry) => entry.startsWith(`${name}.disabled-`)), name).toHaveLength(1)
+        expect(fs.lstatSync(path.join(repoGit(), name === "commondir" ? "config" : name)).isSymbolicLink()).toBe(false)
+      }
+      expect(fs.existsSync(path.join(repoGit(), "commondir"))).toBe(false)
+      expect(fs.readFileSync(path.join(repoGit(), "info/exclude"), "utf8")).toBe(OLD_EXCLUDE)
+      expect(fs.existsSync(path.join(elsewhere, "hooks/pre-push"))).toBe(true)
+      expect(fs.existsSync(path.join(T, "planted-linked-hook"))).toBe(false)
+    })
+
+    it("runs no git at all when the snapshot to restore from is gone, and the rollback is incomplete (C1)", () => {
+      expect(run("--apply").status).toBe(0)
+      const done = path.join(backup(), "cutover-done")
+      const snapshot = /^git snapshot: (.*)$/mu.exec(fs.readFileSync(done, "utf8"))![1]!
+      fs.rmSync(snapshot)
+      write(path.join(bundle(), ".git/hooks/pre-push"), `#!/bin/sh\ntouch ${path.join(T, "planted-late-hook")}\n`, 0o755)
+      const blind = run("--rollback")
+      expect(blind.status).toBe(1)
+      expect(blind.out).toContain(`the git snapshot ${snapshot} is missing, so no git runs on ${repoGit()}`)
+      for (const step of ["restore repo.git's config, branch and exclude", "drop an apply commit GitHub never got", "check the hourly backup can push"]) {
+        expect(blind.out).toContain(`rollback: ${step}: FAILED`)
+      }
+      expect(blind.out.match(/skipped: repo\.git's config and hooks were not put back, so no git runs on it/gu)).toHaveLength(3)
+      expect(fs.readFileSync(incomplete(), "utf8")).toContain(`git snapshot: ${snapshot}\n`)
+      expect(fs.existsSync(path.join(T, "planted-late-hook"))).toBe(false)
+    })
+
     it("keeps a sync key and a sync value that were there before", () => {
       const original = `${JSON.stringify({ name: "sanctuary", sync: { enabled: false, branch: "main", extra: 1 } }, null, 2)}\n`
       write(path.join(bundle(), "agent.json"), original, 0o640)
@@ -801,7 +905,8 @@ kill -9 $PPID
       expect(result.status).toBe(1)
       expect(result.out).toContain("ROLLBACK INCOMPLETE: these steps failed: start the Butler, check the Butler is running. The Butler is STOPPED.")
       expect(fs.readFileSync(incomplete(), "utf8")).toContain("butler: STOPPED\n")
-      expect(run("--rollback").status).toBe(0)
+      const again = run("--rollback")
+      expect(again.status, again.out).toBe(0)
       expect(fs.readFileSync(path.join(T, "container"), "utf8")).toBe("running\n")
     })
 
@@ -823,6 +928,16 @@ kill -9 $PPID
     beforeEach(() => {
       expect(run("--apply").status).toBe(0)
       fs.writeFileSync(path.join(T, "docker.log"), "")
+    })
+
+    it("runs no host git once the Butler owns .git: not in --verify-live, a dry run or an apply run again (C1)", () => {
+      stub("git", `printf '%s\\n' "$*" >>"${T}/host-git.log"\nexec "${REAL_GIT}" "$@"`)
+      expect(run("--verify-live").status).toBe(0)
+      expect(run().status).toBe(1)
+      const again = run("--apply")
+      expect(again.status).toBe(1)
+      expect(again.out).toContain(`${repoGit()} is missing`)
+      expect(fs.existsSync(path.join(T, "host-git.log"))).toBe(false)
     })
 
     it("reaches GitHub through the sync path, proves the key unreadable, stalls a fetch behind one owner-scoped rule, and syncs again", () => {

@@ -19,7 +19,7 @@ vi.mock("../../heart/identity", () => ({
 import { getAgentRoot } from "../../heart/identity"
 import { bundleToolDefinitions } from "../../repertoire/tools-bundle"
 import { createTmpBundle } from "../test-helpers/tmpdir-bundle"
-import { setSyncOwnerNotifier } from "../../heart/sync"
+import { __testHooks, setSyncOwnerNotifier } from "../../heart/sync"
 import { tryAcquireSyncLockSync } from "../../heart/sync-lock"
 
 function tool(name: string) {
@@ -36,6 +36,26 @@ function initGit(dir: string): void {
 
 function addRemoteDirect(dir: string, url: string, name = "origin"): void {
   execFileSync("git", ["remote", "add", name, url], { cwd: dir, stdio: "pipe" })
+}
+
+/** An empty bare repo beside the bundle, for a first push. */
+/**
+ * Moves fake time on while real I/O (the first-push probe's git ls-remote) gets
+ * its turn between steps, until the promise settles.
+ */
+async function advanceUntilSettled(pending: Promise<unknown>): Promise<void> {
+  let settled = false
+  void pending.then(() => { settled = true }, () => { settled = true })
+  for (let step = 0; !settled && step < 5000; step++) {
+    await vi.advanceTimersByTimeAsync(250)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+function emptyRemote(bundleRoot: string): string {
+  const remote = `${bundleRoot}-remote.git`
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" })
+  return remote
 }
 
 function commitFile(dir: string, relPath: string, content: string, message: string): void {
@@ -384,7 +404,7 @@ describe("tools-bundle", () => {
 
     it("refuses first push without a confirmation token (Directive D)", async () => {
       initGit(tmp.agentRoot)
-      addRemoteDirect(tmp.agentRoot, "https://unresolvable.test.invalid/repo.git")
+      addRemoteDirect(tmp.agentRoot, emptyRemote(tmp.agentRoot))
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
       const result = await invoke("bundle_push")
       expect(result.ok).toBe(false)
@@ -392,19 +412,16 @@ describe("tools-bundle", () => {
       expect(String(result.error)).toContain("confirmation token")
     })
 
-    it("proceeds past the token gate when a valid token is provided, then fails on network", async () => {
+    it("says it couldn't reach GitHub, rather than asking for a first-push token, when the remote cannot be asked", async () => {
       initGit(tmp.agentRoot)
       addRemoteDirect(tmp.agentRoot, "https://unresolvable.test.invalid/repo.git")
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
-      // Get a real token via bundle_first_push_review
-      const review = await invoke("bundle_first_push_review")
-      const token = String(review.confirmationToken)
-      const result = await invoke("bundle_push", { confirmation_token: token })
-      expect(result.ok).toBe(false)
-      // Past the token gate: the sync itself failed and says how.
-      expect(result.kind).not.toBe("confirmation_required")
-      expect(String(result.error)).toMatch(/^git fetch failed: /)
-      expect(result.firstPush).toBe(true)
+      for (const args of [{}, { confirmation_token: "anything" }]) {
+        const result = await invoke("bundle_push", args)
+        expect(result.ok).toBe(false)
+        expect(result.kind).toBe("remote_unreachable")
+        expect(String(result.error)).toMatch(/^I couldn't reach GitHub to check whether this would be my first push, so I didn't sync: git ls-remote failed: /)
+      }
     })
 
     it("ignores a remote argument: it syncs only with agent.json's sync.remote", async () => {
@@ -435,7 +452,7 @@ describe("tools-bundle", () => {
 
     it("refuses a first sync without a confirmation token, like bundle_push", async () => {
       initGit(tmp.agentRoot)
-      addRemoteDirect(tmp.agentRoot, "https://example.test/repo.git")
+      addRemoteDirect(tmp.agentRoot, emptyRemote(tmp.agentRoot))
       commitFile(tmp.agentRoot, "clean.txt", "x", "init")
       const result = await invoke("bundle_pull_rebase")
       expect(result.ok).toBe(false)
@@ -445,7 +462,7 @@ describe("tools-bundle", () => {
 
     it("refuses an invalid or foreign confirmation token", async () => {
       initGit(tmp.agentRoot)
-      addRemoteDirect(tmp.agentRoot, "https://example.test/repo.git")
+      addRemoteDirect(tmp.agentRoot, emptyRemote(tmp.agentRoot))
       commitFile(tmp.agentRoot, "clean.txt", "x", "init")
       const bogus = await invoke("bundle_pull_rebase", { confirmation_token: "not-a-token" })
       expect(bogus.kind).toBe("confirmation_required")
@@ -455,7 +472,7 @@ describe("tools-bundle", () => {
       const other = createTmpBundle({ agentName: "bundle-tools-other" })
       try {
         initGit(other.agentRoot)
-        addRemoteDirect(other.agentRoot, "https://example.test/repo.git")
+        addRemoteDirect(other.agentRoot, emptyRemote(other.agentRoot))
         commitFile(other.agentRoot, "clean.txt", "x", "init")
         vi.mocked(getAgentRoot).mockReturnValue(other.agentRoot)
         const foreign = await invoke("bundle_pull_rebase", { confirmation_token: String(review.confirmationToken) })
@@ -617,13 +634,16 @@ describe("bundle sync tools against a real remote", () => {
 
     const lock = tryAcquireSyncLockSync(agent)
     if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    // The first-push probe asks the remote before the lock wait; its timeout is a fake timer too.
+    __testHooks.fetchTimeoutMs = 3_600_000
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] })
     try {
       const pending = invoke("bundle_push", { confirmation_token: token })
-      await vi.advanceTimersByTimeAsync(11_000)
+      await advanceUntilSettled(pending)
       expect(await pending).toMatchObject({ ok: false, busy: true, firstPush: true })
     } finally {
       vi.useRealTimers()
+      delete __testHooks.fetchTimeoutMs
       lock.release()
     }
 
@@ -659,15 +679,18 @@ describe("bundle sync tools against a real remote", () => {
   it("reports a busy lock", async () => {
     const lock = tryAcquireSyncLockSync(agent)
     if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    // The first-push probe asks the remote before the lock wait; its timeout is a fake timer too.
+    __testHooks.fetchTimeoutMs = 3_600_000
     vi.useFakeTimers({ toFake: ["setTimeout", "Date"] })
     try {
       const pending = invoke("bundle_push")
-      await vi.advanceTimersByTimeAsync(11_000)
+      await advanceUntilSettled(pending)
       const result = await pending
       expect(result).toMatchObject({ ok: false, busy: true, holderPid: process.pid })
       expect(String(result.error)).toBe(`bundle sync lock is held by pid ${process.pid}`)
     } finally {
       vi.useRealTimers()
+      delete __testHooks.fetchTimeoutMs
       lock.release()
     }
   })

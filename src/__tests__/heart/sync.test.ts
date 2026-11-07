@@ -316,12 +316,13 @@ describe("postTurnPush", () => {
     expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true })
   })
 
-  it("first push to an empty remote creates the branch", async () => {
+  it("first push to an empty remote waits for the owner's yes and leaves the remote empty", async () => {
     const { bundle, remote } = bundleWithRemote(false)
     expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
     write(bundle, "notes.md", "first\n")
-    expect(await settled(postTurnPush(bundle, CONFIG))).toEqual({ ok: true })
-    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("first")
+    const result = await settled(postTurnPush(bundle, CONFIG))
+    expect(result).toMatchObject({ ok: false, firstPushHeld: true })
+    expect(git(remote, ["--git-dir", remote, "for-each-ref"])).toBe("")
   })
 
   it("while a non-psyche conflict is unresolved, commits and does not push", async () => {

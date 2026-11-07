@@ -57,7 +57,7 @@ export const LATENCY_WORDS = "(replay) what time is it?"
 /** The psyche files git must track once the bundle syncs. */
 export const PSYCHE_FILES = ["ASPIRATIONS.md", "IDENTITY.md", "LORE.md", "SOUL.md", "TACIT.md"]
 /** Files each release installs, which sync must never track (SANCTUARY_PACKAGE_MANAGED_FILES, pinned by a test), and the release's bookkeeping. */
-export const NEVER_TRACKED = ["provider-readiness.json", "tool-profiles.json", "mcp/media-mcp.mjs", "habits/sanctuary-health.md", "awaiting/house-care-sweep.md", "product/PRODUCT.md", "bundle-meta.json"]
+export const NEVER_TRACKED = ["provider-readiness.json", "tool-profiles.json", "mcp/media-mcp.mjs", "habits/sanctuary-health.md", "awaiting/house-care-sweep.md", "product/PRODUCT.md", "bundle-meta.json", "psyche/.release-marker"]
 export const SECRET_PATH = /credential|secret|token|\.key$|\.pem$|(^|\/)\.env($|\.)/i
 /** Text the gate's cases plant (the learns-into-tacit rule, the outbox canary, the replay prefix). None may reach the remote. */
 export const GATE_PLANTED_STRINGS = ["english subtitles", "ISOLATION-CANARY", "(replay)"]
@@ -999,17 +999,33 @@ export async function openSyncBracket(sync, { waitMs = SYNC_LOCK_WAIT_MS } = {})
   sync.resume()
   sync.pause(SYNC_PAUSE_MS)
   if (!(await sync.waitLockFree(waitMs))) return { ok: false, detail: `sync lock busy: .git/ouro-sync.lock was still held after ${Math.round(waitMs / 1000)} s` }
-  return { ok: true, head: sync.head() }
+  return { ok: true, head: sync.head(), untracked: untrackedSnapshot(sync) }
 }
 
-const touches = (paths, prefixes) => paths.filter((file) => prefixes.some((prefix) => (prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix)))
+/** The bundle's untracked files and their hashes, or why they could not be read. */
+export function untrackedSnapshot(sync) {
+  try { return { ok: true, files: sync.untracked() } } catch (error) { return { ok: false, error: String(error?.message ?? error) } }
+}
+
+/**
+ * The untracked paths the run created or changed: in `after` and not in `before`, or with another hash. A tracked file the run
+ * changed cannot be told apart from a household turn's edit this way, so those stay on the hand-kept list (TACIT).
+ */
+export function createdDuringRun(before, after) {
+  if (!before.ok) return { paths: [], error: before.error }
+  if (!after.ok) return { paths: [], error: after.error }
+  return { paths: Object.keys(after.files).filter((file) => before.files[file] !== after.files[file]).sort() }
+}
+
+// An entry ending in "/" covers a folder, one ending in "*" covers names that start with it, and any other names one path.
+const touches = (paths, prefixes) => paths.filter((file) => prefixes.some((prefix) => (prefix.endsWith("/") ? file.startsWith(prefix) : prefix.endsWith("*") ? file.startsWith(prefix.slice(0, -1)) : file === prefix)))
 
 /**
  * Ends the pause, runs one sync, and checks what the Butler pushed since the recorded HEAD: none of its commits touches a path the
  * gate touched or adds a line holding one of the gate's planted strings. Owner pushes, and household turns made during the run,
  * are allowed: only the Butler's own non-merge commits are read, and a restored file commits as an unchanged tree.
  */
-export async function closeSyncBracket(sync, head, { touched, planted }) {
+export async function closeSyncBracket(sync, head, { touched, planted, snapshotError }) {
   sync.resume()
   const synced = await sync.runSync()
   const ran = check("ouro sync ran once after the restores", synced.ok, synced.ok ? "" : synced.error)
@@ -1024,6 +1040,7 @@ export async function closeSyncBracket(sync, head, { touched, planted }) {
     ran,
     check("the Butler's commits pushed since the run began touch no path the gate touched", paths.length === 0, paths.length ? `${paths.join(", ")} (${changes.commits} commits up to ${changes.remoteHead})` : ""),
     check("those commits add none of the gate's planted strings", strings.length === 0, strings.join(", ")),
+    ...(snapshotError === undefined ? [] : [check("the files the run created in the bundle could be read", false, snapshotError)]),
   ]
   return { id: "no-sync-residue", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
 }
@@ -1121,9 +1138,14 @@ export async function runSuite(host, options = {}) {
   }
   let bracket
   let suite
+  let untrackedAfter
   try {
     bracket = await openSyncBracket(sync, options.syncLockWaitMs === undefined ? {} : { waitMs: options.syncLockWaitMs })
-    if (bracket.ok) suite = await runCases(host, { ...options, ready: true })
+    if (bracket.ok) {
+      suite = await runCases(host, { ...options, ready: true })
+      // Read while sync is still paused, so nothing the run created has been committed yet.
+      untrackedAfter = untrackedSnapshot(sync)
+    }
   } finally {
     // The pause never outlives the run. A crash that skips this leaves a marker that expires on its own.
     sync.resume()
@@ -1135,10 +1157,13 @@ export async function runSuite(host, options = {}) {
   const windowRefused = suite.results.some((entry) => entry.id === "window-trusted")
   const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] } : await syncLatencyResult(host)
   // A replay friend's record changes on every turn (its token count), so its path is not residue; what a case could teach the
-  // Butler is, and the planted strings and the friend ids catch that in any file.
-  const touched = ["psyche/TACIT.md", "state/replay/"]
-  const planted = [...GATE_PLANTED_STRINGS, ...[host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean)]
-  const residue = await closeSyncBracket(sync, bracket.head, { touched, planted })
+  // Butler is, and the planted strings and the friend ids catch that in any file. Every other untracked file the run created or
+  // changed is the gate's, and so is the release marker the upgrade plants before the gate runs.
+  const replayFriends = [host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean)
+  const created = createdDuringRun(bracket.untracked, untrackedAfter)
+  const touched = ["psyche/TACIT.md", "state/replay/", "psyche/.release-marker*", ...created.paths.filter((file) => !replayFriends.some((id) => file === `friends/${id}.json`))]
+  const planted = [...GATE_PLANTED_STRINGS, ...replayFriends]
+  const residue = await closeSyncBracket(sync, bracket.head, { touched, planted, snapshotError: created.error })
   const tracking = trackingResult(sync)
   return withSyncResults(suite, [residue, tracking, latency], options)
 }
@@ -1529,19 +1554,33 @@ function retireRecordInContainer(friendId, did) {
 }
 
 /**
- * Git on the bundle's own repository, from the host, as root. It names the repository and work tree, so git never discovers one and
- * never refuses it for dubious ownership; it runs no hooks and no fsmonitor, and takes no optional lock, so root never rewrites the
- * index the Butler owns. This is the gate's only git call.
+ * Git on the bundle's own repository, run inside the container as the Butler, never as root on the host: after the cutover the
+ * Butler owns `.git`, so its config, hooks and attributes may name any command (a clean filter, a pushurl through `ext::`), and
+ * that command must run with no more than the Butler's own rights. It runs no hooks and no fsmonitor, and takes no optional lock.
+ * `env` adds `-e NAME=value` pairs (ls-remote's ssh). This is the gate's only git call.
  */
-export function bundleGit(bundle, args, run = sh) {
-  return run("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", `--git-dir=${path.join(bundle, ".git")}`, `--work-tree=${bundle}`, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, maxBuffer: 256 * 1024 * 1024 })
+export function bundleGit(args, run = sh, { env = [], timeout = 120_000 } = {}) {
+  const envArgs = ["GIT_OPTIONAL_LOCKS=0", ...env].flatMap((pair) => ["-e", pair])
+  return run("docker", ["exec", "-u", BUTLER_USER, ...envArgs, CONTAINER, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", CONTAINER_BUNDLE, ...args], { timeout, maxBuffer: 256 * 1024 * 1024 })
+}
+
+/** The untracked, unignored paths in the bundle and a hash of each (git's, with no filter run), read in the container. */
+export function untrackedFiles(git) {
+  const listed = String(git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0").filter((entry) => entry.startsWith("?? ")).map((entry) => entry.slice(3))
+  const files = {}
+  for (let i = 0; i < listed.length; i += 200) {
+    const chunk = listed.slice(i, i + 200)
+    const hashes = String(git(["hash-object", "--no-filters", "--", ...chunk])).split("\n").filter(Boolean)
+    chunk.forEach((file, j) => { files[file] = hashes[j] })
+  }
+  return files
 }
 
 /**
  * The host side of bundle sync for the gate: the cutover marker, sync's own pause marker, the lock, one `ouro sync` in the container,
  * and read-only git. `sleep` and `now` come from the host, so tests drive the clock.
  */
-export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh, git = (args) => bundleGit(bundle, args), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now(), pollMs = SYNC_LOCK_POLL_MS }) {
+export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh, git = (args) => bundleGit(args, exec), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = () => Date.now(), pollMs = SYNC_LOCK_POLL_MS }) {
   const state = path.join(bundle, "state")
   const marker = path.join(state, "sync-paused")
   const agentName = path.basename(bundle, ".ouro")
@@ -1605,7 +1644,7 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
      * not move.
      */
     agentChanges(head) {
-      const listed = exec("docker", ["exec", "-u", BUTLER_USER, "-e", `GIT_SSH_COMMAND=${SYNC_SSH_COMMAND}`, "-e", "GIT_SSH_VARIANT=ssh", CONTAINER, "git", `--git-dir=${CONTAINER_BUNDLE}/.git`, "ls-remote", "origin", `refs/heads/${branch()}`], { timeout: 60_000 })
+      const listed = bundleGit(["ls-remote", "origin", `refs/heads/${branch()}`], exec, { env: [`GIT_SSH_COMMAND=${SYNC_SSH_COMMAND}`, "GIT_SSH_VARIANT=ssh"], timeout: 60_000 })
       const remoteHead = /^([0-9a-f]{40})\s/u.exec(listed)?.[1]
       if (!remoteHead) throw new Error(`git ls-remote origin refs/heads/${branch()} listed no head`)
       const commits = lines(git(["log", "--no-merges", `--author=<${agentName}@ouro.local>`, "--format=%H", `${head}..${remoteHead}`]))
@@ -1614,6 +1653,7 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
       const added = git(["show", "--format=", "--unified=0", "--no-color", "--no-ext-diff", "--no-textconv", ...commits]).split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).map((line) => line.slice(1))
       return { remoteHead, commits: commits.length, paths, added }
     },
+    untracked: () => untrackedFiles(git),
     tracking: () => ({
       psyche: lines(git(["ls-files", "--", "psyche/"])),
       excludedTracked: lines(git(["ls-files", "-ci", "--exclude-standard"])),

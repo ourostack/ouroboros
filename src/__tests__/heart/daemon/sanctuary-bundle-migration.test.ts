@@ -1517,8 +1517,23 @@ describe("the bundle's git exclude", () => {
 
   it("lists the backup's excludes, MCP credentials, every package-managed file and the release's bookkeeping", () => {
     const KEY_FILES = ["**/deploy_key*", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*"]
-    expect(SANCTUARY_GIT_EXCLUDES).toEqual([...BACKUP_LIST.slice(0, 5), ...KEY_FILES, ...BACKUP_LIST.slice(5), "mcp/*credentials*", ...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", ".sanctuary-package-managed-rollback.json*", ".psyche-seed.*"])
+    expect(SANCTUARY_GIT_EXCLUDES).toEqual([...BACKUP_LIST.slice(0, 5), ...KEY_FILES, ...BACKUP_LIST.slice(5), "mcp/*credentials*", ...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", ".sanctuary-package-managed-rollback.json*", ".psyche-seed.*", "psyche/.release-marker*", "*.tmp", "*.tmp-*", "*.tmp.*", "*.lock", "*.lock.reclaim", "*.turn.lock-*", ".locks/"])
     expect(sanctuaryGitExcludeText()).toBe(`${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`)
+  })
+
+  it("ignores the release marker and the transient files the runtime and the gate write, and keeps ordinary content", () => {
+    const agentRoot = makeRoot("sanctuary-git-exclude-transients")
+    git(agentRoot, ["init", "-q", "-b", "main"])
+    fs.writeFileSync(path.join(agentRoot, ".git", "info", "exclude"), sanctuaryGitExcludeText())
+    const ignored = [
+      "psyche/.release-marker", "psyche/.release-marker.3f9c", // sanctuary-butler-upgrade.mjs
+      "psyche/.TACIT.md.4242.0f0e.tmp", "friends/.p-0a4c19.json.4242.0f0e.tmp", // the replay gate's writeFileAsRoot
+      "friends/abc.json.4242.tmp", "arc/cares/x.json.tmp-4242-uuid", "daemon-health.json.tmp.4242", // atomic writes
+      "commerce/c1.json.lock", "a2a/.lock", "a2a/.lock.reclaim", "friends/x.json.turn.lock", "friends/x.json.turn.lock-wal", "a2a/.locks/one",
+    ]
+    const kept = ["psyche/TACIT.md", "diary/today.md", "friends/abc.json", "notes/locksmith.md", "notes/tmp-ideas.md"]
+    const listed = execFileSync("git", ["check-ignore", "--no-index", "--stdin"], { cwd: agentRoot, input: [...ignored, ...kept].join("\n"), encoding: "utf8" }).split("\n").filter(Boolean)
+    expect(listed).toEqual(ignored)
   })
 
   it("writes exactly SANCTUARY_GIT_EXCLUDES and leaves a tracked .gitignore alone", () => {

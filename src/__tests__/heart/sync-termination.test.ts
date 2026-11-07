@@ -9,7 +9,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-import { __testHooks, abortInFlightSync, postTurnPush } from "../../heart/sync"
+import { __testHooks, abortInFlightSync, postTurnPush, syncGroupExists } from "../../heart/sync"
 
 const OWNER = ["-c", "user.name=Owner", "-c", "user.email=owner@example.invalid", "-c", "commit.gpgsign=false"]
 const SYNC_SOURCE = path.resolve(__dirname, "../../heart/sync.ts")
@@ -42,7 +42,7 @@ async function waitFor(check: () => boolean, ms = 10_000): Promise<void> {
 }
 
 /** A bundle whose push hangs on the remote side, recording the hanging process. */
-function setup(name = "butler"): { agent: string; remote: string; started: string; gate: string } {
+function setup(name = "butler", { ignoreTerm = false } = {}): { agent: string; remote: string; started: string; gate: string } {
   const remote = path.join(root, `${name}-remote.git`)
   const owner = path.join(root, `${name}-owner`)
   const agent = path.join(root, `${name}.ouro`)
@@ -58,7 +58,7 @@ function setup(name = "butler"): { agent: string; remote: string; started: strin
   const started = path.join(root, `${name}-push-started`)
   const gate = path.join(root, `${name}-push-gate`)
   const wrapper = path.join(root, `${name}-hanging-receive-pack.sh`)
-  fs.writeFileSync(wrapper, `#!/bin/sh\necho "$$ $(ps -o pgid= -p $$ | tr -d ' ')" > '${started}'\nwhile [ ! -f '${gate}' ]; do sleep 0.05; done\nexec git receive-pack "$@"\n`, { mode: 0o755 })
+  fs.writeFileSync(wrapper, `#!/bin/sh\n${ignoreTerm ? "trap '' TERM\n" : ""}echo "$$ $(ps -o pgid= -p $$ | tr -d ' ')" > '${started}'\nwhile [ ! -f '${gate}' ]; do sleep 0.05; done\nexec git receive-pack "$@"\n`, { mode: 0o755 })
   git(agent, ["config", "remote.origin.receivepack", wrapper])
   fs.writeFileSync(path.join(agent, "journal.md"), "turn\n")
   return { agent, remote, started, gate }
@@ -232,16 +232,31 @@ describe("signals during a sync", () => {
     }
   }, 30_000)
 
-  it("shutdown sends the push's group SIGTERM first, so sudo can relay it, then SIGKILL after the grace", async () => {
-    const { agent, started, gate } = setup()
-    let group: { pid: number; pgid: number } | undefined
-    __testHooks.killGraceMs = 400
-    const kills: Array<{ pid: number; sig: string; at: number }> = []
+  /**
+   * Records the signals (not the existence probes) sent to one process group.
+   * Other tests' groups are left out: their own timers may still fire while
+   * this test runs, which is what made this test flaky.
+   */
+  function recordSignals(pgid: () => number | undefined): { kills: Array<{ sig: string; at: number }>; probes: () => number; restore: () => void } {
+    const kills: Array<{ sig: string; at: number }> = []
+    let probes = 0
     const realKill = process.kill.bind(process)
     const spy = vi.spyOn(process, "kill").mockImplementation((pid: number, sig?: string | number) => {
-      if (pid < 0) kills.push({ pid, sig: String(sig), at: Date.now() })
+      const group = pgid()
+      if (group !== undefined && pid === -group) {
+        if (sig === 0) probes++
+        else kills.push({ sig: String(sig), at: Date.now() })
+      }
       return realKill(pid, sig)
     })
+    return { kills, probes: () => probes, restore: () => spy.mockRestore() }
+  }
+
+  it("shutdown sends the push's group SIGTERM first, so sudo can relay it, then SIGKILL after the grace to what outlived it", async () => {
+    const { agent, started, gate } = setup("butler", { ignoreTerm: true })
+    let group: { pid: number; pgid: number } | undefined
+    __testHooks.killGraceMs = 400
+    const signals = recordSignals(() => group?.pgid)
     try {
       const result = postTurnPush(agent, { enabled: true, remote: "origin" }, "butler")
       await waitFor(() => fs.existsSync(started) && fs.readFileSync(started, "utf-8").includes(" "))
@@ -249,19 +264,88 @@ describe("signals during a sync", () => {
 
       abortInFlightSync()
 
-      expect(kills.map((k) => k.sig)).toEqual(["SIGTERM"])
+      expect(signals.kills.map((k) => k.sig)).toEqual(["SIGTERM"])
       expect((await result.push!).ok).toBe(false)
-      await waitFor(() => kills.length >= 2, 5_000)
-      expect(kills.map((k) => k.sig)).toEqual(["SIGTERM", "SIGKILL"])
-      expect(kills[1]!.pid).toBe(kills[0]!.pid)
-      expect(kills[1]!.at - kills[0]!.at).toBeGreaterThanOrEqual(350)
+      // The wrapper ignores SIGTERM, so the group is still there for the SIGKILL.
+      await waitFor(() => signals.kills.length >= 2, 5_000)
+      expect(signals.kills.map((k) => k.sig)).toEqual(["SIGTERM", "SIGKILL"])
+      expect(signals.kills[1]!.at - signals.kills[0]!.at).toBeGreaterThanOrEqual(350)
+      await waitFor(() => !alive(group!.pid), 5_000)
     } finally {
-      spy.mockRestore()
+      signals.restore()
       __testHooks.killGraceMs = undefined
       fs.writeFileSync(gate, "")
       if (group) killGroup(group.pgid)
     }
   }, 30_000)
+
+  it("sends no SIGKILL to a group the SIGTERM ended, and stops probing it", async () => {
+    const { agent, started, gate } = setup()
+    let group: { pid: number; pgid: number } | undefined
+    __testHooks.killGraceMs = 600
+    const signals = recordSignals(() => group?.pgid)
+    try {
+      const result = postTurnPush(agent, { enabled: true, remote: "origin" }, "butler")
+      await waitFor(() => fs.existsSync(started) && fs.readFileSync(started, "utf-8").includes(" "))
+      group = hanging(started)
+
+      abortInFlightSync()
+
+      expect((await result.push!).ok).toBe(false)
+      await waitFor(() => !alive(group!.pid), 5_000)
+      await new Promise((resolve) => setTimeout(resolve, 900))
+      expect(signals.kills.map((k) => k.sig)).toEqual(["SIGTERM"])
+      // The probe found the group gone and cleared both timers.
+      const probes = signals.probes()
+      expect(probes).toBeGreaterThan(0)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(signals.probes()).toBe(probes)
+    } finally {
+      signals.restore()
+      __testHooks.killGraceMs = undefined
+      fs.writeFileSync(gate, "")
+      if (group) killGroup(group.pgid)
+    }
+  }, 30_000)
+
+  it("at the grace, sends no SIGKILL when the group is already gone, even before a probe saw it", async () => {
+    const { agent, started, gate } = setup()
+    let group: { pid: number; pgid: number } | undefined
+    __testHooks.killGraceMs = 300
+    __testHooks.killProbeMs = 60_000
+    const signals = recordSignals(() => group?.pgid)
+    try {
+      const result = postTurnPush(agent, { enabled: true, remote: "origin" }, "butler")
+      await waitFor(() => fs.existsSync(started) && fs.readFileSync(started, "utf-8").includes(" "))
+      group = hanging(started)
+      // Killed in the same tick as the abort, so git is still in flight when the SIGTERM goes out.
+      killGroup(group.pgid)
+      abortInFlightSync()
+
+      expect((await result.push!).ok).toBe(false)
+      await waitFor(() => !syncGroupExists(group!.pgid), 5_000)
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      expect(signals.kills.map((k) => k.sig)).toEqual(["SIGKILL", "SIGTERM"])
+    } finally {
+      signals.restore()
+      __testHooks.killGraceMs = undefined
+      __testHooks.killProbeMs = undefined
+      fs.writeFileSync(gate, "")
+      if (group) killGroup(group.pgid)
+    }
+  }, 30_000)
+
+  it("counts a group as still there when the probe is refused (a member this uid cannot signal)", () => {
+    const refused = (): never => {
+      throw Object.assign(new Error("kill EPERM"), { code: "EPERM" })
+    }
+    const gone = (): never => {
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" })
+    }
+    expect(syncGroupExists(123, refused)).toBe(true)
+    expect(syncGroupExists(123, gone)).toBe(false)
+    expect(syncGroupExists(123, () => true)).toBe(true)
+  })
 
   it("SIGINT aborts too, and two pushes at once are both aborted", async () => {
     const first = setup("first")

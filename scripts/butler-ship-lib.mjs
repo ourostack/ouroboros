@@ -9,6 +9,9 @@ export const REMOTE_GATE = "/tmp/sanctuary-replay-gate.mjs"
 export const REMOTE_NODE = "/usr/local/bin/node"
 // Written by sanctuary-sync-cutover.sh once the bundle owns its own git. From then on the Butler's image must have git.
 export const CUTOVER_MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
+// While either of these exists, a cutover apply is running or a rollback did not finish, so no image may change under it.
+export const CUTOVER_UNFINISHED = ["/mnt/user/appdata/ouro-butler/bundle-backup/cutover-applying", "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-ROLLBACK-INCOMPLETE"]
+export const CUTOVER_PROBE = `for f in ${CUTOVER_UNFINISHED.join(" ")}; do [ -e "$f" ] && echo "@@CUTOVER-UNFINISHED:$f"; done; [ -e ${CUTOVER_MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`
 // The first release whose image has git, ssh and the sync wrapper. Set at the M1c release bump; a test keeps it
 // above the last release known to ship without sync and no newer than package.json.
 export const BUNDLE_SYNC_FIRST_RELEASE = "0.1.0-alpha.989"
@@ -220,9 +223,11 @@ export async function ship(opts, deps, timing = {}) {
   if (!sha) throw new ShipError(`no commit on main names ${version} in its subject (looked at the latest 100); is the release merged?`)
   const mergedAt = commitDate(commits, sha)
   deps.log(`  ok   ${version} is ${sha}`)
-  const cutover = await deps.ssh(host, `[ -e ${CUTOVER_MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
+  const cutover = await deps.ssh(host, CUTOVER_PROBE)
   const cutoverState = /^@@CUTOVER:([01])$/m.exec(cutover.stdout)
   if (cutover.code !== 0 || !cutoverState) throw new ShipError(`could not check ${CUTOVER_MARKER} on the host (exit ${cutover.code})`)
+  const unfinished = [...cutover.stdout.matchAll(/^@@CUTOVER-UNFINISHED:(.+)$/gm)].map((m) => m[1])
+  if (unfinished.length > 0) throw new ShipError(`${unfinished.join(" and ")} exists on the host, so a bundle sync cutover is still applying or its rollback did not finish. Let it finish (or run sanctuary-sync-cutover.sh --rollback again) until that file is gone, then ship ${version}.`)
   if (cutoverState[1] === "1") {
     const body = must(await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${sha}`]), `reading package.json at ${sha}`)
     let releaseVersion

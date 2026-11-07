@@ -19,7 +19,21 @@ export interface SyncResult {
   busy?: boolean
   /** When `busy`: the pid holding the lock, or null when unknown. */
   holderPid?: number | null
+  /** The remote is empty and the owner has not said yes to a first push, so nothing was pushed. */
+  firstPushHeld?: boolean
 }
+
+/** What a push may do. */
+export interface SyncPushOptions {
+  /**
+   * The owner said yes to the first push to an empty remote. Only the bundle
+   * tools set it, after a valid confirmation token from bundle_first_push_review.
+   */
+  firstPushApproved?: boolean
+}
+
+/** What sync tells the owner, once, when it holds off a first push to an empty remote. */
+export const FIRST_PUSH_HELD_NOTICE = "My bundle's GitHub repo is empty. Before I push to it for the first time, please look over what would go up and tell me yes."
 
 /** `postTurnPush` returns after the commit; the push runs on, holding the lock. */
 export interface PostTurnPushResult extends SyncResult {
@@ -151,6 +165,7 @@ export const __testHooks: {
   pushTimeoutMs?: number
   preTurnLockWaitMs?: number
   killGraceMs?: number
+  killProbeMs?: number
   /** Appended after sync's own `-c` flags, so a test can re-enable hooks. */
   extraGitConfig?: string[]
   /** Replaces `merge --abort` in repair; no real git refuses it and then accepts `reset --merge`. */
@@ -172,6 +187,11 @@ export function skippedSyncFilesPath(agentRoot: string): string {
 
 export function syncPausedPath(agentRoot: string): string {
   return path.join(agentRoot, "state", "sync-paused")
+}
+
+/** Present once the owner has been told a first push is held, so they are told only once. */
+export function firstPushHeldPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "sync-first-push-held.json")
 }
 
 function syncConflictStatePath(agentRoot: string): string {
@@ -274,6 +294,7 @@ function gitOnPaths(agentRoot: string, agentName: string, args: string[], paths:
 
 interface AsyncGitRun {
   status: number | null
+  stdout: string
   stderr: string
   timedOut: boolean
   aborted: boolean
@@ -296,15 +317,17 @@ function runGitAsync(
     const child = spawn("git", [...identityArgs(agentName), ...args], {
       cwd: agentRoot,
       env: syncNetworkEnv(),
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     })
+    let stdout = ""
     let stderr = ""
     let timedOut = false
     let aborted = false
     let settled = false
     const pid = child.pid as number
     inFlightChildren.add(pid)
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString() })
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
     const killGroup = (): void => killSyncGroup(pid)
     const onAbort = (): void => {
@@ -323,7 +346,7 @@ function runGitAsync(
       inFlightChildren.delete(pid)
       clearTimeout(timer)
       signal?.removeEventListener("abort", onAbort)
-      resolve({ status, stderr: extra + stderr, timedOut, aborted })
+      resolve({ status, stdout, stderr: extra + stderr, timedOut, aborted })
     }
     /* v8 ignore next -- spawning git itself failing needs a host without git @preserve */
     child.on("error", (err) => finish(null, `${err.message}\n`))
@@ -340,15 +363,43 @@ function signalSyncGroup(pid: number, name: NodeJS.Signals): void {
   }
 }
 
+/** How often a killed group is probed during the grace, so its timers stop once it is gone. */
+export const SYNC_KILL_PROBE_MS = 50
+
+/**
+ * Whether anything is left in process group `pid`. EPERM means a member this
+ * uid cannot signal (the ouro-sync ssh) is still there.
+ */
+export function syncGroupExists(pid: number, kill: (pid: number, signal: number) => unknown = process.kill.bind(process)): boolean {
+  try {
+    kill(-pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
 /**
  * SIGTERM to a network git child's process group, then SIGKILL after the
  * grace. sudo relays only the SIGTERM to the ouro-sync ssh, which the agent's
- * uid cannot signal. The SIGKILL timer is not cleared when git closes: whatever
- * in the group outlived the SIGTERM still gets it.
+ * uid cannot signal. The timers are not tied to git closing: whatever in the
+ * group outlived the SIGTERM still gets the SIGKILL. They stop as soon as a
+ * probe finds the group gone, and the SIGKILL goes only to a group that still
+ * exists, so a reused group id is never signalled.
  */
 function killSyncGroup(pid: number): void {
   signalSyncGroup(pid, "SIGTERM")
-  setTimeout(() => signalSyncGroup(pid, "SIGKILL"), __testHooks.killGraceMs ?? SYNC_KILL_GRACE_MS).unref()
+  const probe = setInterval(() => {
+    if (syncGroupExists(pid)) return
+    clearInterval(probe)
+    clearTimeout(kill)
+  }, __testHooks.killProbeMs ?? SYNC_KILL_PROBE_MS)
+  probe.unref()
+  const kill = setTimeout(() => {
+    clearInterval(probe)
+    if (syncGroupExists(pid)) signalSyncGroup(pid, "SIGKILL")
+  }, __testHooks.killGraceMs ?? SYNC_KILL_GRACE_MS)
+  kill.unref()
 }
 
 // ---------- termination ----------
@@ -1241,7 +1292,49 @@ export function fetchRemote(agentRoot: string, config: SyncConfig, signal?: Abor
   return fetchUnlocked(agentRoot, config, agentNameFromRoot(agentRoot), signal)
 }
 
-async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal): Promise<SyncResult> {
+export type RemoteRefsResult = { ok: true; refs: string[] } | { ok: false; error: string }
+
+/**
+ * `git ls-remote <remote> [patterns]` the way sync's own fetch and push reach
+ * the remote: the same flags and environment (in the container, the ouro-sync
+ * ssh), detached and killed by process group at the fetch timeout. `refs` are
+ * the ref names listed; an empty remote lists none.
+ */
+export async function listRemoteRefs(agentRoot: string, remote: string, patterns: string[] = [], signal?: AbortSignal): Promise<RemoteRefsResult> {
+  const timeoutMs = __testHooks.fetchTimeoutMs ?? SYNC_FETCH_TIMEOUT_MS
+  const run = await runGitAsync(agentRoot, agentNameFromRoot(agentRoot), ["ls-remote", remote, ...patterns], timeoutMs, signal)
+  if (run.status !== 0) return { ok: false, error: describeAsyncFailure("ls-remote", run, timeoutMs) }
+  const refs = run.stdout.split("\n").map((line) => line.split("\t")[1]).filter((ref): ref is string => ref !== undefined && ref.length > 0)
+  return { ok: true, refs }
+}
+
+/**
+ * Spec R3.10: sync never makes the first push to an empty remote (one with no
+ * refs) without the owner's yes. A remote branch fetched before means the
+ * remote has history, and no network is needed. Otherwise the remote is asked;
+ * when it is empty and no yes came with this push, the push is held and the
+ * owner is told once. A remote that cannot be asked is not pushed to.
+ */
+async function holdFirstPush(agentRoot: string, config: SyncConfig, agentName: string, options: SyncPushOptions, signal?: AbortSignal): Promise<SyncResult | null> {
+  if (options.firstPushApproved === true || refExists(agentRoot, agentName, remoteTrackingRef(config))) return null
+  const listed = await listRemoteRefs(agentRoot, config.remote, [], signal)
+  if (!listed.ok) return { ok: false, error: `could not check whether ${config.remote} is empty before pushing to it: ${listed.error}` }
+  if (listed.refs.length > 0) return null
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.sync_first_push_held",
+    message: "sync: remote is empty; holding the first push for the owner's yes",
+    meta: { agentRoot, remote: config.remote },
+  })
+  if (!fs.existsSync(firstPushHeldPath(agentRoot))) {
+    fs.mkdirSync(path.dirname(firstPushHeldPath(agentRoot)), { recursive: true })
+    fs.writeFileSync(firstPushHeldPath(agentRoot), `${JSON.stringify({ remote: config.remote, at: new Date().toISOString() })}\n`)
+    tellOwner(agentRoot, agentName, { noticeId: `sync-first-push-held:${agentName}`, text: FIRST_PUSH_HELD_NOTICE })
+  }
+  return { ok: false, firstPushHeld: true, error: `${config.remote} is empty, so the first push waits for the owner's yes (bundle_first_push_review)` }
+}
+
+async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: string, signal?: AbortSignal, options: SyncPushOptions = {}): Promise<SyncResult> {
   try {
     if (!hasRemote(agentRoot, agentName, config)) {
       settlePendingSync(agentRoot)
@@ -1253,11 +1346,14 @@ async function pushUnlocked(agentRoot: string, config: SyncConfig, agentName: st
       })
       return { ok: true }
     }
+    const held = await holdFirstPush(agentRoot, config, agentName, options, signal)
+    if (held) return held
     const branch = branchOf(config)
     const timeoutMs = __testHooks.pushTimeoutMs ?? SYNC_PUSH_TIMEOUT_MS
     const run = await runGitAsync(agentRoot, agentName, ["push", config.remote, `HEAD:refs/heads/${branch}`], timeoutMs, signal)
     if (run.status === 0) {
       settlePendingSync(agentRoot)
+      fs.rmSync(firstPushHeldPath(agentRoot), { force: true })
       emitNervesEvent({
         component: "heart",
         event: "heart.sync_push_end",
@@ -1382,8 +1478,8 @@ async function pushConflictBranch(agentRoot: string, config: SyncConfig, agentNa
 }
 
 /** An unborn HEAD (nothing ever committed) has nothing to push. */
-function pushIfBorn(agentRoot: string, config: SyncConfig, agentName: string): Promise<SyncResult> {
-  if (refExists(agentRoot, agentName, "HEAD")) return pushUnlocked(agentRoot, config, agentName)
+function pushIfBorn(agentRoot: string, config: SyncConfig, agentName: string, options: SyncPushOptions): Promise<SyncResult> {
+  if (refExists(agentRoot, agentName, "HEAD")) return pushUnlocked(agentRoot, config, agentName, undefined, options)
   settlePendingSync(agentRoot)
   return Promise.resolve({ ok: true })
 }
@@ -1604,7 +1700,7 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
  * `waitMs`, fetch, integrate and push. Built on the unlocked internals, so it
  * never waits on its own lock.
  */
-export async function syncNow(agentRoot: string, config: SyncConfig, agentName: string, waitMs: number): Promise<SyncResult> {
+export async function syncNow(agentRoot: string, config: SyncConfig, agentName: string, waitMs: number, options: SyncPushOptions = {}): Promise<SyncResult> {
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_now_start",
@@ -1633,7 +1729,7 @@ export async function syncNow(agentRoot: string, config: SyncConfig, agentName: 
     const pausedNow = pausedResult(agentRoot, "sync now")
     if (pausedNow) return pausedNow
     const pulled = await pullUnlocked(agentRoot, config, agentName, undefined, "sync: update")
-    const result = pulled.ok ? await pushIfBorn(agentRoot, config, agentName) : pulled
+    const result = pulled.ok ? await pushIfBorn(agentRoot, config, agentName, options) : pulled
     if (result.ok) {
       emitNervesEvent({ component: "heart", event: "heart.sync_now_end", message: "sync now complete", meta: { agentRoot } })
     } else {

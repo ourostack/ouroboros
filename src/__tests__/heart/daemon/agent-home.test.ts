@@ -259,6 +259,25 @@ describe("moveAgentHomeHere", () => {
     expect(fixture.remoteHome()).toBeUndefined()
   })
 
+  it("looks at the pause again once it holds the lock, because a pause can begin while it waits", async () => {
+    const root = fixture.seed(bundle(), agentConfig())
+    const lock = tryAcquireSyncLockSync(root)
+    if ("busy" in lock) throw new Error("lock unexpectedly busy")
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    setTimeout(() => {
+      fs.mkdirSync(path.dirname(syncPausedPath(root)), { recursive: true })
+      fs.writeFileSync(syncPausedPath(root), JSON.stringify({ expiresAt }))
+      lock.release()
+    }, 100)
+    expect(await move({ lockWaitMs: 5_000 })).toEqual({
+      ok: false,
+      changed: false,
+      message: `slugger's bundle sync is paused until ${expiresAt}, so nothing changed; run \`ouro move slugger here\` again after that`,
+    })
+    expect(fixture.remoteHome()).toBeUndefined()
+    expect(fs.existsSync(path.join(root, ".git", "ouro-sync.lock"))).toBe(false)
+  })
+
   it("syncs to the configured sync.branch, never the checked-out branch's upstream", async () => {
     const root = fixture.seed(bundle(), agentConfig({ sync: { enabled: true, remote: "origin", branch: "develop" } }))
     git(root, "push", "-q", "origin", "HEAD:refs/heads/develop")

@@ -28,7 +28,7 @@ const SANCTUARY_BUNDLE_COMMITTING_FILE = `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.comm
 /**
  * What sync never commits from the Butler's bundle. The first block is the hourly host backup's own list, copied from
  * bundle-backup/repo.git/info/exclude on 2026-11-06. Then any MCP credential file, the files each release installs, and
- * the release's own bookkeeping. The cutover writes this list with `ouro sanctuary git-exclude --print`, and every boot
+ * the release's own bookkeeping, then the transient temp and lock files written inside the bundle. The cutover writes this list with `ouro sanctuary git-exclude --print`, and every boot
  * writes it again.
  */
 export const SANCTUARY_GIT_EXCLUDES: readonly string[] = [
@@ -59,6 +59,16 @@ export const SANCTUARY_GIT_EXCLUDES: readonly string[] = [
   "bundle-meta.json",
   `${SANCTUARY_BUNDLE_ROLLBACK_FILE}*`,
   `${PSYCHE_SEED_STAGE_PREFIX}*`,
+  // The upgrade's release marker and its staged copy, planted in psyche/ for the length of a gated ship.
+  "psyche/.release-marker*",
+  // Transient files the runtime and the replay gate write inside the bundle: atomic-write temps and lock files.
+  "*.tmp",
+  "*.tmp-*",
+  "*.tmp.*",
+  "*.lock",
+  "*.lock.reclaim",
+  "*.turn.lock-*",
+  ".locks/",
 ]
 
 /** The exclude file's content: one entry per line. */

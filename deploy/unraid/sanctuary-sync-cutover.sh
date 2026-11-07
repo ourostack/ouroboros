@@ -15,6 +15,13 @@
 # repository and never refuses it for dubious ownership after the move or the chown. Root's git calls also run no hooks,
 # no fsmonitor and no global excludes file, and `git status` takes no optional locks, so root never rewrites the index
 # behind the Butler.
+#
+# From step 13 the Butler owns .git, so its config, hooks and info/attributes may name any command (a clean filter, an
+# [include], an ext:: URL). Root runs no git on it after that: --verify-live runs git only inside the container as the
+# Butler, an apply refuses while .git is in the bundle, and --rollback first moves .git back, hands it to root and puts
+# back config, hooks/ and info/attributes from the root-owned snapshot the apply took before step 1, and only then runs
+# git. The hourly backup.sh, which runs git as root with hooks on, therefore only ever runs on that restored, root-owned
+# repo.git: never on a .git the Butler has owned.
 set -Eeuo pipefail
 umask 022
 
@@ -60,6 +67,8 @@ MARKER=$BACKUP/cutover-done
 APPLYING=$BACKUP/cutover-applying
 INCOMPLETE=$BACKUP/cutover-ROLLBACK-INCOMPLETE
 CRON_DISABLED=$BACKUP/sanctuary-bundle-backup.cron.disabled
+# What of repo.git can make git run a command, saved as root before step 1 and put back first on rollback (C1).
+GIT_SNAPSHOT_PREFIX=$BACKUP/cutover-git-snapshot
 SYNC_DIR=$APPDATA/sync
 SYNC_KEY=$SYNC_DIR/deploy_key
 CRON_FILE=$TEST_ROOT/boot/config/plugins/dynamix/sanctuary-bundle-backup.cron
@@ -409,18 +418,24 @@ rollback_from() {
   trap '' INT TERM HUP PIPE
   set +e
   ROLLBACK_FAILED=""
+  # Read now: the marker goes, and the INCOMPLETE record is rewritten, before the rollback ends.
+  ROLLBACK_SNAPSHOT=$(recorded_value "git snapshot") || ROLLBACK_SNAPSHOT=""
+  ROLLBACK_SNAPSHOT_HOOKS=$(recorded_value "git snapshot hooks") || ROLLBACK_SNAPSHOT_HOOKS=""
+  ROLLBACK_SNAPSHOT_ATTRIBUTES=$(recorded_value "git snapshot attributes") || ROLLBACK_SNAPSHOT_ATTRIBUTES=""
   say "rolling back from step $reached, from $BEFORE"
   if [ "$reached" -ge 15 ]; then rollback_step "stop the Butler" docker stop "$CONTAINER"; fi
   rollback_step "restore agent.json's sync value" restore_agent_sync
   rollback_step "move .git back to repo.git" move_git_back
+  # Before any git: root owns repo.git again and nothing the Butler wrote into it can run (C1).
+  rollback_step "give repo.git back to root and put back its config, hooks and attributes" secure_backup_git
   rollback_step "clear a stale index.lock" clear_stale_index_lock
-  rollback_step "restore repo.git's config, branch and exclude" restore_backup_repo
-  rollback_step "drop an apply commit GitHub never got" drop_unpushed_commit
+  rollback_step "restore repo.git's config, branch and exclude" git_step restore_backup_repo
+  rollback_step "drop an apply commit GitHub never got" git_step drop_unpushed_commit
   rollback_step "restore repo.git's owner and mode" restore_repo_owner
   rollback_step "remove the sync key the apply installed" remove_installed_key
   rollback_step "restore the backup cron" restore_cron
   rollback_step "remove the cutover marker" rm -f -- "$MARKER"
-  rollback_step "check the hourly backup can push" check_backup_can_push
+  rollback_step "check the hourly backup can push" git_step check_backup_can_push
   if [ "$reached" -ge 1 ]; then
     rollback_step "start the Butler" docker start "$CONTAINER"
     rollback_step "check the Butler is running" butler_is_running
@@ -434,6 +449,9 @@ rollback_from() {
   if [ -n "$ROLLBACK_FAILED" ]; then
     {
       say "before: $BEFORE"
+      [ -z "$ROLLBACK_SNAPSHOT" ] || say "git snapshot: $ROLLBACK_SNAPSHOT"
+      [ -z "$ROLLBACK_SNAPSHOT_HOOKS" ] || say "git snapshot hooks: $ROLLBACK_SNAPSHOT_HOOKS"
+      [ -z "$ROLLBACK_SNAPSHOT_ATTRIBUTES" ] || say "git snapshot attributes: $ROLLBACK_SNAPSHOT_ATTRIBUTES"
       say "failed: $ROLLBACK_FAILED"
       say "at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       say "butler: $running"
@@ -447,6 +465,98 @@ rollback_from() {
 }
 
 butler_is_running() { [ "$(container_running)" = true ]; }
+
+# Before step 1, while root still owns repo.git: a root-owned 0600 tar of what in it can make git run a command, which
+# the Butler can change once it owns .git: config, hooks/ and info/attributes. Sets SNAPSHOT and SNAPSHOT_LINES, the lines
+# the apply records with its state so a rollback finds the snapshot.
+take_git_snapshot() {
+  local hooks=absent attributes=absent
+  local -a members=(config)
+  [ ! -L "$BACKUP_GIT" ] && [ -d "$BACKUP_GIT" ] || die "$BACKUP_GIT is not a real directory"
+  [ ! -L "$BACKUP_GIT/config" ] && [ -f "$BACKUP_GIT/config" ] || die "$BACKUP_GIT/config is not a regular file"
+  if [ -d "$BACKUP_GIT/hooks" ] && [ ! -L "$BACKUP_GIT/hooks" ]; then hooks=present; members+=(hooks); fi
+  if [ -f "$BACKUP_GIT/info/attributes" ] && [ ! -L "$BACKUP_GIT/info/attributes" ]; then attributes=present; members+=(info/attributes); fi
+  SNAPSHOT=$GIT_SNAPSHOT_PREFIX-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar
+  (set -C; umask 077; : >"$SNAPSHOT") || die "could not create $SNAPSHOT"
+  tar -C "$BACKUP_GIT" -cf "$SNAPSHOT" -- "${members[@]}" || die "could not save $BACKUP_GIT's config and hooks to $SNAPSHOT"
+  if ! { chown "$ROOT_OWNER" "$SNAPSHOT" && chmod 0600 "$SNAPSHOT"; }; then die "could not make $SNAPSHOT root-only"; fi
+  SNAPSHOT_LINES=$(printf 'git snapshot: %s\ngit snapshot hooks: %s\ngit snapshot attributes: %s' "$SNAPSHOT" "$hooks" "$attributes")
+}
+
+# A value the apply recorded: in the in-progress file, the unfinished rollback's file, or the marker.
+recorded_value() {
+  local file value
+  for file in "$APPLYING" "$INCOMPLETE" "$MARKER"; do
+    if [ -f "$file" ] && value=$(file_value "$file" "$1"); then printf '%s' "$value"; return 0; fi
+  done
+  return 1
+}
+
+# Moves a path aside as <path>.disabled-<time>-<pid>, never deleting it.
+disable_path() {
+  local target
+  target="$1.disabled-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  mv -- "$1" "$target" && say "moved aside $1 (now $target)"
+}
+
+# The first thing a rollback does to repo.git, before any git runs on it: root owns it again, config is the snapshot's
+# byte for byte (so no [include], filter, alias, sshCommand, insteadOf, hooksPath, fsmonitor or extension the Butler
+# added survives), config.worktree and commondir are gone, hooks/ holds exactly the snapshot's hooks (anything else moved
+# aside, never deleted), and info/attributes is the snapshot's or absent. GIT_READY says whether git may run on it.
+GIT_READY=0
+secure_backup_git() {
+  local snapshot hooks attributes owner mode tmp entry name rc=0
+  GIT_READY=0
+  snapshot=$ROLLBACK_SNAPSHOT hooks=$ROLLBACK_SNAPSHOT_HOOKS attributes=$ROLLBACK_SNAPSHOT_ATTRIBUTES
+  [ -n "$snapshot" ] && [ -n "$hooks" ] && [ -n "$attributes" ] || { say "no git snapshot is recorded, so no git runs on $BACKUP_GIT"; return 1; }
+  [ -f "$snapshot" ] && [ ! -L "$snapshot" ] || { say "the git snapshot $snapshot is missing, so no git runs on $BACKUP_GIT"; return 1; }
+  [ -d "$BACKUP_GIT" ] && [ ! -L "$BACKUP_GIT" ] || { say "$BACKUP_GIT is not a real directory"; return 1; }
+  owner=$(before_value "repo.git owner") || return 1
+  mode=$(before_value "repo.git mode") || return 1
+  chown -R -h "$owner" "$BACKUP_GIT" && chmod "$mode" "$BACKUP_GIT" || return 1
+  tmp=$(umask 077; mktemp -d "$BACKUP/.cutover-git-restore.XXXXXX") || return 1
+  # In a subshell, so the work directory is removed whichever step fails.
+  (
+    tar -C "$tmp" -xf "$snapshot" || exit 1
+    # Each copy goes to a fresh name first (rm never follows a link the Butler may have planted there), then over the old file.
+    rm -f -- "$BACKUP_GIT/.config.cutover-restore" && cp -p -- "$tmp/config" "$BACKUP_GIT/.config.cutover-restore" && mv -f -- "$BACKUP_GIT/.config.cutover-restore" "$BACKUP_GIT/config" || exit 1
+    rm -f -- "$BACKUP_GIT/config.worktree" || exit 1
+    if [ -e "$BACKUP_GIT/commondir" ] || [ -L "$BACKUP_GIT/commondir" ]; then disable_path "$BACKUP_GIT/commondir" || exit 1; fi
+    if [ -L "$BACKUP_GIT/hooks" ] || { [ -e "$BACKUP_GIT/hooks" ] && [ ! -d "$BACKUP_GIT/hooks" ]; }; then disable_path "$BACKUP_GIT/hooks" || exit 1; fi
+    if [ "$hooks" = present ] || [ -d "$BACKUP_GIT/hooks" ]; then
+      mkdir -p -- "$BACKUP_GIT/hooks" || exit 1
+      for entry in "$BACKUP_GIT/hooks"/* "$BACKUP_GIT/hooks"/.[!.]* "$BACKUP_GIT/hooks"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        name=${entry##*/}
+        case "$name" in *.disabled-*) continue ;; esac
+        if [ -f "$tmp/hooks/$name" ] && [ ! -L "$tmp/hooks/$name" ] && [ -f "$entry" ] && [ ! -L "$entry" ] && cmp -s -- "$entry" "$tmp/hooks/$name"; then continue; fi
+        disable_path "$entry" || exit 1
+      done
+      for entry in "$tmp/hooks"/* "$tmp/hooks"/.[!.]* "$tmp/hooks"/..?*; do
+        [ -f "$entry" ] && [ ! -L "$entry" ] || continue
+        name=${entry##*/}
+        rm -f -- "$BACKUP_GIT/hooks/.$name.cutover-restore" && cp -p -- "$entry" "$BACKUP_GIT/hooks/.$name.cutover-restore" && mv -f -- "$BACKUP_GIT/hooks/.$name.cutover-restore" "$BACKUP_GIT/hooks/$name" || exit 1
+      done
+    fi
+    if [ -L "$BACKUP_GIT/info" ] || { [ -e "$BACKUP_GIT/info" ] && [ ! -d "$BACKUP_GIT/info" ]; }; then disable_path "$BACKUP_GIT/info" || exit 1; fi
+    if [ "$attributes" = present ]; then
+      mkdir -p -- "$BACKUP_GIT/info" || exit 1
+      rm -f -- "$BACKUP_GIT/info/.attributes.cutover-restore" && cp -p -- "$tmp/info/attributes" "$BACKUP_GIT/info/.attributes.cutover-restore" && mv -f -- "$BACKUP_GIT/info/.attributes.cutover-restore" "$BACKUP_GIT/info/attributes" || exit 1
+    elif [ -e "$BACKUP_GIT/info/attributes" ] || [ -L "$BACKUP_GIT/info/attributes" ]; then
+      rm -f -- "$BACKUP_GIT/info/attributes" || exit 1
+    fi
+    chown -R -h "$owner" "$BACKUP_GIT" && chmod "$mode" "$BACKUP_GIT"
+  ) || rc=1
+  rm -rf -- "$tmp"
+  [ "$rc" -eq 0 ] || return 1
+  GIT_READY=1
+}
+
+# A rollback step that runs git on repo.git: only once secure_backup_git has put it back.
+git_step() {
+  if [ "$GIT_READY" -ne 1 ]; then say "skipped: repo.git's config and hooks were not put back, so no git runs on it"; return 1; fi
+  "$@"
+}
 
 restore_agent_sync() {
   local value
@@ -497,6 +607,7 @@ restore_backup_repo() {
     rm -f -- "$BACKUP_GIT/info/exclude"
   else
     mkdir -p -- "$BACKUP_GIT/info" || return 1
+    rm -f -- "$BACKUP_GIT/info/exclude.restore" || return 1
     printf '%s' "$encoded" | base64 -d >"$BACKUP_GIT/info/exclude.restore" || return 1
     mv -f -- "$BACKUP_GIT/info/exclude.restore" "$BACKUP_GIT/info/exclude"
   fi
@@ -666,8 +777,9 @@ apply() {
   exec 8>>"$CUTOVER_LOCK"
   flock -n 8 || die "another cutover run holds $CUTOVER_LOCK; nothing was changed"
 
+  take_git_snapshot
   STEP=1; say "1. stopping $CONTAINER"
-  printf 'before: %s\nlog: %s\nstarted: %s\n' "$BEFORE" "${DETACHED_LOG:-(none)}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$APPLYING.tmp"
+  printf 'before: %s\nlog: %s\nstarted: %s\n%s\n' "$BEFORE" "${DETACHED_LOG:-(none)}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SNAPSHOT_LINES" >"$APPLYING.tmp"
   mv -f -- "$APPLYING.tmp" "$APPLYING"
   docker stop "$CONTAINER" >/dev/null
 
@@ -751,7 +863,7 @@ apply() {
   assert_owned_by_butler
 
   STEP=14; say "14. writing $MARKER"
-  printf 'before: %s\ndone: %s\n' "$BEFORE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$MARKER"
+  printf 'before: %s\n%s\ndone: %s\n' "$BEFORE" "$SNAPSHOT_LINES" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$MARKER"
 
   STEP=15; say "15. starting $CONTAINER"
   docker start "$CONTAINER" >/dev/null

@@ -153,15 +153,19 @@ export async function moveAgentHomeHere(options: MoveAgentHomeOptions): Promise<
     return finish({ ok: true, changed: true, message: `${movedMessage(current)}; ${why}, so only this machine sees the change` })
   }
 
+  const pausedRefusal = (until: string): MoveAgentHomeResult =>
+    refuse(`${agent}'s bundle sync is paused until ${until}, so nothing changed; run \`ouro move ${agent} here\` again after that`)
   const pausedUntil = syncPausedUntil(agentRoot)
-  if (pausedUntil !== null) {
-    return refuse(`${agent}'s bundle sync is paused until ${pausedUntil}, so nothing changed; run \`ouro move ${agent} here\` again after that`)
-  }
+  if (pausedUntil !== null) return pausedRefusal(pausedUntil)
   const lock = await holdSyncLock(agentRoot, options.lockWaitMs ?? MOVE_LOCK_WAIT_MS)
   if ("busy" in lock) {
     return refuse(`another bundle sync holds ${agent}'s lock${lock.holderPid === null ? "" : ` (pid ${lock.holderPid})`}, so nothing changed; try again in a moment`)
   }
   try {
+    // A pause can begin while this move waited for the lock (the replay gate
+    // pauses, then takes the lock), so look again now that the lock is ours.
+    const pausedNow = syncPausedUntil(agentRoot)
+    if (pausedNow !== null) return pausedRefusal(pausedNow)
     if (run(["status", "--porcelain", "--", "agent.json"]).length > 0) {
       return refuse(`${agent}'s agent.json has uncommitted changes, so nothing changed; commit or discard them first (git -C ${agentRoot} diff agent.json)`)
     }

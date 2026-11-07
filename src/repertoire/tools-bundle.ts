@@ -42,7 +42,7 @@ import type { ToolDefinition, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
-import { syncNow } from "../heart/sync"
+import { listRemoteRefs, syncNow } from "../heart/sync"
 import type { SyncConfig } from "../heart/config"
 import { BUNDLE_GITIGNORE_TEMPLATE, PII_BUNDLE_DIRECTORIES } from "./bundle-templates"
 
@@ -707,31 +707,21 @@ const firstPushReviewHandler = makeFirstPushReviewHandler()
 
 // ─── tools: bundle_push and bundle_pull_rebase ─────────────────────────
 
+export type FirstPushProbe = { kind: "first" } | { kind: "pushed" } | { kind: "unreachable"; error: string }
+
 /**
- * Detect whether this is a first push to the remote.
- *
- * Returns true if the remote branch does not yet exist (bundle has local
- * commits but has never been pushed). Also returns true — conservatively —
- * when git fails to probe the remote (network unreachable, git error).
- * The token requirement is a security gate; if we can't verify the remote
- * state, we assume the worst and force the agent to get confirmation. An
- * unreachable remote should NOT be a bypass vector.
- *
- * `branch` is the remote branch sync pushes to; without it, the current
- * local branch is probed.
+ * Whether a push to `remote` would be the first push of `branch`: "first" when
+ * the remote has no such branch, "pushed" when it has. The remote is asked
+ * through sync's own ls-remote (the same flags and environment as sync's push,
+ * so in the container it goes through the ouro-sync ssh). A failed ls-remote
+ * is "unreachable", never taken for a first push or for a pushed one.
  *
  * Exported for direct unit testing in bundle-push-first-push.test.ts.
  */
-export function isFirstPushToRemote(bundleRoot: string, remote: string, branch?: string): boolean {
-  let target = branch
-  if (target === undefined) {
-    const branchResult = gitExec(bundleRoot, ["symbolic-ref", "--short", "HEAD"])
-    if (branchResult.code !== 0) return true
-    target = branchResult.stdout.trim()
-  }
-  const lsRemote = gitExec(bundleRoot, ["ls-remote", "--heads", remote, target], 10000)
-  if (lsRemote.code !== 0) return true
-  return lsRemote.stdout.trim().length === 0
+export async function probeFirstPush(bundleRoot: string, remote: string, branch: string): Promise<FirstPushProbe> {
+  const listed = await listRemoteRefs(bundleRoot, remote, [`refs/heads/${branch}`])
+  if (!listed.ok) return { kind: "unreachable", error: listed.error }
+  return listed.refs.length === 0 ? { kind: "first" } : { kind: "pushed" }
 }
 
 /** How long a bundle tool waits for the bundle sync lock before reporting busy. */
@@ -808,7 +798,11 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
     // previously called bundle_first_push_review and obtained a
     // confirmation token. This forces a PII-review gate between
     // "bundle built locally" and "bundle contents on the internet".
-    const isFirstPush = isFirstPushToRemote(bundleRoot, remote, config.branch)
+    const probe = await probeFirstPush(bundleRoot, remote, config.branch!)
+    if (probe.kind === "unreachable") {
+      return finish(false, { error: `I couldn't reach GitHub to check whether this would be my first push, so I didn't sync: ${probe.error}`, kind: "remote_unreachable" })
+    }
+    const isFirstPush = probe.kind === "first"
     if (isFirstPush) {
       if (!confirmationToken) {
         return refuse(
@@ -833,7 +827,8 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
     }
 
     const agentName = path.basename(bundleRoot).replace(/\.ouro$/, "")
-    const result = await syncNow(bundleRoot, config, agentName, BUNDLE_TOOL_SYNC_WAIT_MS)
+    // The valid token is the owner's recorded yes, which sync needs before a first push to an empty remote.
+    const result = await syncNow(bundleRoot, config, agentName, BUNDLE_TOOL_SYNC_WAIT_MS, { firstPushApproved: isFirstPush })
     const where = { remote, branch: config.branch, firstPush: isFirstPush }
     if (result.paused) return finish(false, { ...where, paused: true, pausedUntil: result.pausedUntil, error: `sync paused until ${result.pausedUntil}` })
     if (result.busy) return finish(false, { ...where, busy: true, holderPid: result.holderPid, error: result.error })

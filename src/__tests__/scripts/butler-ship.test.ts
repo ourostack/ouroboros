@@ -546,6 +546,8 @@ describe("butler-ship CLI", () => {
 
 describe("butler-ship after the bundle sync cutover", () => {
   const MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
+  const APPLYING = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-applying"
+  const INCOMPLETE = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-ROLLBACK-INCOMPLETE"
   const cutoverDone = (cmd: string) => (cmd.includes("@@CUTOVER") ? ok("@@CUTOVER:1\n") : (undefined as unknown as Res))
   const releasePackage = (res: Res) => (a: string[]) => (a.join(" ").includes(`contents/package.json?ref=${SHA}`) ? res : (undefined as unknown as Res))
   const versioned = (version: string) => releasePackage(ok(JSON.stringify({ name: "@ouro.bot/cli", version })))
@@ -555,7 +557,7 @@ describe("butler-ship after the bundle sync cutover", () => {
     const r = await h.run()
     expect(r.exitCode).toBe(0)
     const probe = h.calls.findIndex((c) => c.startsWith("ssh ") && c.includes("@@CUTOVER"))
-    expect(h.calls[probe]).toBe(`ssh [ -e ${MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
+    expect(h.calls[probe]).toBe(`ssh for f in ${APPLYING} ${INCOMPLETE}; do [ -e "$f" ] && echo "@@CUTOVER-UNFINISHED:$f"; done; [ -e ${MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
     expect(probe).toBeGreaterThan(h.calls.findIndex((c) => c.includes("commits?")))
     expect(probe).toBeLessThan(h.calls.findIndex((c) => c.startsWith("gh run list")))
     expect(h.calls.some((c) => c.includes(`contents/package.json?ref=${SHA}`))).toBe(false)
@@ -570,6 +572,15 @@ describe("butler-ship after the bundle sync cutover", () => {
     // A branch cut before main reached alpha.988 still carries an older package.json; the release bump sets both.
     if (semver.gt(packageVersion, LAST_KNOWN_WITHOUT_SYNC)) expect(semver.lte(BUNDLE_SYNC_FIRST_RELEASE, packageVersion)).toBe(true)
     else expect(BUNDLE_SYNC_FIRST_RELEASE).toBe("0.1.0-alpha.989")
+  })
+
+  // Expected to fail until the release that bumps package.json to BUNDLE_SYNC_FIRST_RELEASE writes its changelog entry.
+  it("has a changelog entry for the first sync release that mentions sync", async () => {
+    const { BUNDLE_SYNC_FIRST_RELEASE } = await lib()
+    const changelog = JSON.parse(readFileSync("changelog.json", "utf8")) as { versions: Array<{ version: string; changes?: unknown }> }
+    const entry = changelog.versions.find((v) => v.version === BUNDLE_SYNC_FIRST_RELEASE)
+    expect(entry, `changelog.json has no entry for ${BUNDLE_SYNC_FIRST_RELEASE}`).toBeDefined()
+    expect(JSON.stringify(entry?.changes ?? [])).toMatch(/sync/i)
   })
 
   it.each(["0.1.0-alpha.989", "0.1.0-alpha.1200", "0.1.0", "0.2.0-beta.1"])("ships release %s, the first sync release or later, after the cutover", async (version) => {
@@ -598,6 +609,19 @@ describe("butler-ship after the bundle sync cutover", () => {
     await expect(refusal).rejects.toThrow(`${V} has no git in its image, and this host's bundle has already moved to bundle sync (${MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${V}.`)
     expect(h.calls.some((c) => c.startsWith("gh run list") || c.includes("manifest inspect") || c.includes(" preflight ") || c.includes("upgrade "))).toBe(false)
     expect(h.scp).toEqual([])
+  })
+
+  it.each([
+    ["an apply is running", (m: string) => `@@CUTOVER-UNFINISHED:${APPLYING}\n${m}`, () => APPLYING],
+    ["a rollback did not finish", (m: string) => `@@CUTOVER-UNFINISHED:${INCOMPLETE}\n${m}`, () => INCOMPLETE],
+    ["both files exist", (m: string) => `@@CUTOVER-UNFINISHED:${APPLYING}\n@@CUTOVER-UNFINISHED:${INCOMPLETE}\n${m}`, () => `${APPLYING} and ${INCOMPLETE}`],
+  ])("refuses to ship while %s, naming the file, whatever the marker says", async (_name, out, named) => {
+    for (const marker of ["@@CUTOVER:0\n", "@@CUTOVER:1\n"]) {
+      const h = await harness({ ssh: (cmd) => (cmd.includes("@@CUTOVER") ? ok(out(marker)) : (undefined as unknown as Res)), gh: versioned("0.1.0-alpha.1200") })
+      await expect(h.run()).rejects.toThrow(`${named()} exists on the host, so a bundle sync cutover is still applying or its rollback did not finish. Let it finish (or run sanctuary-sync-cutover.sh --rollback again) until that file is gone, then ship ${V}.`)
+      expect(h.calls.some((c) => c.startsWith("gh run list") || c.includes("upgrade "))).toBe(false)
+      expect(h.scp).toEqual([])
+    }
   })
 
   it("stops when it cannot read the release's package.json", async () => {
