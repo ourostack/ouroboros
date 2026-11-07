@@ -54,6 +54,8 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/a2a/escalation-grants.json",
   // Where to queue mail for offline peers; a model that rewrote a contact could send a peer's mail to its own relay.
   "state/a2a/relay-contacts/",
+  // Relay retirements awaiting their vault write; a forged marker would skip draining an old relay inbox.
+  "state/a2a/relay-retired/",
   "state/outbox/",
   "state/reports/",
 ]

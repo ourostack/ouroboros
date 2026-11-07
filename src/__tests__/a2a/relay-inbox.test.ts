@@ -7,6 +7,7 @@ import {
   ensureRelayRegistration,
   rebuildRelayedMessage,
   retirePreviousRegistration,
+  memoryRelayRetirements,
   startRelayInbox,
   type RelayConfig,
   type RelayConfigStore,
@@ -127,6 +128,29 @@ describe("ensureRelayRegistration", () => {
     expect(relay.registrations.size).toBe(0)
   })
 
+  it("says what the move is waiting for without promising that a restart fixes it", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const current = { relayUrl: "https://b.example", handle: "b-h", inboxAuth: "b-ia", sendCredential: "b-sc" }
+    const previous = { relayUrl: "https://a.example", handle: "a-h", inboxAuth: "a-ia", sendCredential: "a-sc" }
+    await ensureRelayRegistration({ config: memoryConfig({ url: relay.url, registration: current, previousRegistration: previous }), did: DID, agentName: "me" })
+    const waiting = nerves.mock.calls.map(([event]) => event).find((event) => event.event === "channel.a2a_relay_move_waiting")!
+    expect(waiting.message).not.toMatch(/restart/i)
+    expect(waiting.message).toMatch(/still holds messages/)
+    nerves.mockRestore()
+  })
+
+  it("moves while the relay before the current one is retired but its removal is not saved yet", async () => {
+    const current = { relayUrl: "https://b.example", handle: "b-h", inboxAuth: "b-ia", sendCredential: "b-sc" }
+    const previous = { relayUrl: "https://a.example", handle: "a-h", inboxAuth: "a-ia", sendCredential: "a-sc" }
+    const retirements = memoryRelayRetirements()
+    retirements.markPending(previous)
+    const config = memoryConfig({ url: relay.url, inviteToken: "inv", registration: current, previousRegistration: previous })
+    const registration = await ensureRelayRegistration({ config, did: DID, agentName: "me", retirements })
+    expect(registration?.relayUrl).toBe(relay.url)
+    expect(config.value).toEqual({ url: relay.url, registration, previousRegistration: current })
+    expect(retirements.isPending(previous)).toBe(false)
+  })
+
   it("returns null when a first registration fails", async () => {
     const config = memoryConfig({ url: relay.url })
     relay.failNext("register", 503, "busy")
@@ -193,6 +217,31 @@ describe("drainRelayInbox", () => {
     expect(result).toBe("ok")
     expect(handled).toEqual(["replayed", "resolve", "inflight"])
     expect(relay.inbox.get("h1")!.map((m) => m.queueId)).toEqual([keep])
+  })
+
+  it("keeps only refusals.ts refusals marked retry: a refused delegated command or a look-alike is acked, not kept", async () => {
+    const registration = registered()
+    enqueue("h1", sealedMessage("delegated"))
+    enqueue("h1", sealedMessage("lookalike"))
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const handled: string[] = []
+    const handle = async (rpc: A2AJsonRpcRequest): Promise<A2AJsonRpcResponse> => {
+      const id = (rpc.params as { message: { messageId: string } }).message.messageId
+      handled.push(id)
+      if (id === "delegated") {
+        // What server.ts sends for a delegated command the owner could not be told about (delegated-command.ts notify_failed).
+        return { jsonrpc: "2.0", id: rpc.id, error: { code: -32004, message: "delegated command refused: notify_failed. Nothing ran.", data: { reason: "notify_failed", nothingRan: true, retry: true, next: "Retry in a minute." } } }
+      }
+      return { jsonrpc: "2.0", id: rpc.id, error: { code: -32003, message: "A2A share rejected: in_flight", data: { reason: "in_flight", retry: true, next: "Retry in a moment." } } }
+    }
+    expect(await drainRelayInbox({ registration, seen: () => false, handle })).toBe("ok")
+    expect(relay.inbox.get("h1")).toEqual([])
+    // Nothing was kept, so the next pass has nothing to replay.
+    expect(await drainRelayInbox({ registration, seen: () => false, handle })).toBe("ok")
+    expect(handled).toEqual(["delegated", "lookalike"])
+    const events = nerves.mock.calls.map(([event]) => event.event)
+    expect(events).not.toContain("channel.a2a_relay_message_deferred")
+    nerves.mockRestore()
   })
 
   it("handles at most 20 messages per pass", async () => {
@@ -287,6 +336,162 @@ describe("retirePreviousRegistration", () => {
   })
 })
 
+describe("retirePreviousRegistration when the old relay is gone", () => {
+  const ok2 = async (rpc: A2AJsonRpcRequest) => ok(rpc.id)
+  async function closedUrl(): Promise<string> {
+    const http = await import("node:http")
+    const server = http.createServer()
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as import("node:net").AddressInfo).port
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    return `http://127.0.0.1:${port}`
+  }
+  function notices() {
+    const sent: Array<{ noticeId: string; text: string }> = []
+    return { sent, notifyOwner: async (notice: { noticeId: string; text: string }) => { sent.push(notice) } }
+  }
+
+  it("retires a registration the old relay no longer knows (401 on pull), warns, and tells the owner once in plain words", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const previous = { relayUrl: relay.url, handle: "forgotten", inboxAuth: "ia", sendCredential: "sc" }
+    const config = memoryConfig({ previousRegistration: previous })
+    const owner = notices()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, notifyOwner: owner.notifyOwner })
+    expect(config.value).toEqual({})
+    expect(owner.sent).toHaveLength(1)
+    expect(owner.sent[0].noticeId).toMatch(/^a2a-relay-gone-[0-9a-f]{16}$/)
+    expect(owner.sent[0].text).toMatch(/couldn't be reached/)
+    expect(owner.sent[0].text).toMatch(/messages still waiting there are lost/)
+    expect(owner.sent[0].text).toMatch(/will need to send it again; new messages reach me through the new relay or directly/)
+    expect(owner.sent[0].text).not.toContain(previous.inboxAuth)
+    const gone = nerves.mock.calls.map(([event]) => event).find((event) => event.event === "channel.a2a_relay_previous_gone")
+    expect(gone).toMatchObject({ level: "warn", meta: { relayUrl: relay.url, reason: "relay 401 unauthorized" } })
+    nerves.mockRestore()
+  })
+
+  it("treats a 404 on pull, a refused connection and a failed DNS lookup as gone", async () => {
+    const previous = registered("old")
+    relay.failNext("pull", 404, "unknown_handle")
+    const config404 = memoryConfig({ previousRegistration: previous })
+    await retirePreviousRegistration({ config: config404, seen: () => false, handle: ok2 })
+    expect(config404.value).toEqual({})
+
+    const refusedConfig = memoryConfig({ previousRegistration: { ...previous, relayUrl: await closedUrl() } })
+    const owner = notices()
+    await retirePreviousRegistration({ config: refusedConfig, seen: () => false, handle: ok2, notifyOwner: owner.notifyOwner })
+    expect(refusedConfig.value).toEqual({})
+    expect(owner.sent).toHaveLength(1)
+
+    // "localhost" resolves to two addresses, so the refusal arrives with one code per address.
+    const localhostConfig = memoryConfig({ previousRegistration: { ...previous, relayUrl: (await closedUrl()).replace("127.0.0.1", "localhost") } })
+    await retirePreviousRegistration({ config: localhostConfig, seen: () => false, handle: ok2 })
+    expect(localhostConfig.value).toEqual({})
+
+    const dnsFetch = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND old.example"), { code: "ENOTFOUND" }) }) }) as unknown as typeof fetch
+    const dnsConfig = memoryConfig({ previousRegistration: { ...previous, relayUrl: "https://old.example" } })
+    await retirePreviousRegistration({ config: dnsConfig, seen: () => false, handle: ok2, fetchImpl: dnsFetch })
+    expect(dnsConfig.value).toEqual({})
+  })
+
+  it("keeps the old registration on a failure that can pass (a temporary DNS failure, a busy relay)", async () => {
+    const previous = { relayUrl: "https://old.example", handle: "old", inboxAuth: "ia", sendCredential: "sc" }
+    const config = memoryConfig({ previousRegistration: previous })
+    const owner = notices()
+    const flaky = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" }) }) }) as unknown as typeof fetch
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, fetchImpl: flaky, notifyOwner: owner.notifyOwner })
+    const plain = (async () => { throw new Error("socket hang up") }) as unknown as typeof fetch
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, fetchImpl: plain, notifyOwner: owner.notifyOwner })
+    expect(config.value.previousRegistration).toEqual(previous)
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it("treats a registration lost mid-drain as gone", async () => {
+    const previous = registered("old")
+    enqueue("old", sealedMessage("m1"))
+    let pulls = 0
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "GET" && ++pulls === 2) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })
+      return fetch(url, init)
+    }) as typeof fetch
+    const config = memoryConfig({ previousRegistration: previous })
+    const owner = notices()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, fetchImpl, notifyOwner: owner.notifyOwner })
+    expect(config.value).toEqual({})
+    expect(owner.sent).toHaveLength(1)
+  })
+
+  it("does not tell the owner anything was lost when the old inbox was drained empty and only the deregistration found it gone", async () => {
+    const previous = registered("old")
+    enqueue("old", sealedMessage("m1"))
+    relay.failNext("deregister", 404, "unknown_handle")
+    const config = memoryConfig({ previousRegistration: previous })
+    const owner = notices()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, notifyOwner: owner.notifyOwner })
+    expect(config.value).toEqual({})
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it("still retires the registration when the owner notice cannot be sent", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const config = memoryConfig({ previousRegistration: { relayUrl: relay.url, handle: "forgotten", inboxAuth: "ia", sendCredential: "sc" } })
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, notifyOwner: async () => { throw new Error("telegram down") } })
+    expect(config.value).toEqual({})
+    expect(nerves.mock.calls.map(([event]) => event.event)).toContain("channel.a2a_relay_owner_notice_failed")
+    nerves.mockRestore()
+  })
+
+  it("records a retirement whose vault write failed as pending, then retries only the write, without notifying again", async () => {
+    const previous = registered("old")
+    const config = memoryConfig({ previousRegistration: previous })
+    config.failWrites = 1
+    const retirements = memoryRelayRetirements()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements })
+    expect(relay.registrations.has("old")).toBe(false)
+    expect(config.value.previousRegistration).toEqual(previous)
+    expect(retirements.isPending(previous)).toBe(true)
+
+    const requestsBefore = relay.requests.length
+    const owner = notices()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements, notifyOwner: owner.notifyOwner })
+    expect(relay.requests.length).toBe(requestsBefore)
+    expect(config.value).toEqual({})
+    expect(retirements.isPending(previous)).toBe(false)
+    expect(owner.sent).toHaveLength(0)
+  })
+
+  it("records a gone relay whose vault write failed as pending, and notifies the owner only once", async () => {
+    const previous = { relayUrl: relay.url, handle: "forgotten", inboxAuth: "ia", sendCredential: "sc" }
+    const config = memoryConfig({ previousRegistration: previous })
+    config.failWrites = 2
+    const retirements = memoryRelayRetirements()
+    const owner = notices()
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements, notifyOwner: owner.notifyOwner })
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements, notifyOwner: owner.notifyOwner })
+    expect(config.value.previousRegistration).toEqual(previous)
+    await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements, notifyOwner: owner.notifyOwner })
+    expect(config.value).toEqual({})
+    expect(owner.sent).toHaveLength(1)
+  })
+
+  it("still finishes a retirement when its local record cannot be written or removed", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const previous = registered("old")
+    const config = memoryConfig({ previousRegistration: previous })
+    const broken = { isPending: () => false, markPending: () => { throw new Error("disk full") }, clear: () => { throw new Error("read-only") } }
+    expect(await retirePreviousRegistration({ config, seen: () => false, handle: ok2, retirements: broken })).toBe("retired")
+    expect(config.value).toEqual({})
+    expect(nerves.mock.calls.map(([event]) => event.event).filter((event) => event === "channel.a2a_relay_retirement_record_failed")).toHaveLength(2)
+    nerves.mockRestore()
+  })
+
+  it("skips retiring when the vault cannot be read, without throwing", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    await retirePreviousRegistration({ config: { read: async () => { throw new Error("vault unreachable") }, write: async () => undefined }, seen: () => false, handle: ok2 })
+    expect(nerves.mock.calls.map(([event]) => event).find((event) => event.event === "channel.a2a_relay_previous_read_failed")).toMatchObject({ level: "warn" })
+    nerves.mockRestore()
+  })
+})
+
 /** Timers the test fires by hand: each `set` is recorded with its delay, and `fire()` runs the latest one. */
 function manualTimers() {
   const scheduled: Array<{ ms: number; fn: () => void; cleared: boolean }> = []
@@ -377,6 +582,71 @@ describe("startRelayInbox", () => {
     release()
     expect(await again).toBe("ok")
     expect(calls).toBe(1)
+    inbox.stop()
+  })
+
+  it("keeps the inbox on when the vault read for retiring fails", async () => {
+    const clock = manualTimers()
+    const registration = registered()
+    const config = memoryConfig({ url: relay.url, registration })
+    let reads = 0
+    config.onRead = () => { reads += 1; if (reads === 1) throw new Error("vault busy") }
+    const inbox = startRelayInbox({ config, did: DID, agentName: "me", seen: () => false, timers: clock.timers, handle: async (rpc) => ok(rpc.id) })
+    await inbox.ready
+    expect(inbox.registration()).toEqual(registration)
+    expect(clock.delays()).toEqual([30_000])
+    inbox.stop()
+  })
+
+  it("retires a gone relay first, so a move the operator asked for happens in the same start, then retires the relay it moved from", async () => {
+    const http = await import("node:http")
+    const server = http.createServer()
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const dead = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    const clock = manualTimers()
+    const current = { relayUrl: `${dead}/b`, handle: "b-h", inboxAuth: "b-ia", sendCredential: "b-sc" }
+    const previous = { relayUrl: `${dead}/a`, handle: "a-h", inboxAuth: "a-ia", sendCredential: "a-sc" }
+    const config = memoryConfig({ url: relay.url, inviteToken: "inv", registration: current, previousRegistration: previous })
+    const sent: string[] = []
+    const inbox = startRelayInbox({ config, did: DID, agentName: "me", seen: () => false, timers: clock.timers, handle: async (rpc) => ok(rpc.id), notifyOwner: async (notice) => { sent.push(notice.noticeId) } })
+    await inbox.ready
+    expect(inbox.registration()?.relayUrl).toBe(relay.url)
+    expect(config.value).toEqual({ url: relay.url, registration: inbox.registration() })
+    expect(new Set(sent).size).toBe(2)
+    inbox.stop()
+  })
+
+  it("retries a pending retirement's vault write on the next pass, with no deregistration", async () => {
+    const clock = manualTimers()
+    const registration = registered()
+    const previous = registered("old")
+    const config = memoryConfig({ url: relay.url, registration, previousRegistration: previous })
+    config.failWrites = 1
+    const inbox = startRelayInbox({ config, did: DID, agentName: "me", seen: () => false, timers: clock.timers, handle: async (rpc) => ok(rpc.id) })
+    // The deregistration succeeds and the vault write after it fails; the first pass after that saves the removal.
+    await inbox.ready
+    expect(config.value.previousRegistration).toBeUndefined()
+    expect(relay.requests.filter((r) => r.method === "DELETE")).toHaveLength(1)
+    expect(relay.registrations.has("h1")).toBe(true)
+    inbox.stop()
+  })
+
+  it("keeps retrying a pending retirement's vault write on later passes while it fails, and keeps polling", async () => {
+    const clock = manualTimers()
+    const registration = registered()
+    const previous = registered("old")
+    const config = memoryConfig({ url: relay.url, registration, previousRegistration: previous })
+    config.failWrites = 2
+    const delivered: string[] = []
+    const inbox = startRelayInbox({ config, did: DID, agentName: "me", seen: () => false, timers: clock.timers, handle: async (rpc) => { delivered.push((rpc.params as { message: { messageId: string } }).message.messageId); return ok(rpc.id) } })
+    await inbox.ready
+    expect(config.value.previousRegistration).toEqual(previous)
+    enqueue("h1", sealedMessage("still-polled"))
+    await inbox.tick()
+    expect(delivered).toEqual(["still-polled"])
+    expect(config.value.previousRegistration).toBeUndefined()
+    expect(relay.requests.filter((r) => r.method === "DELETE")).toHaveLength(1)
     inbox.stop()
   })
 

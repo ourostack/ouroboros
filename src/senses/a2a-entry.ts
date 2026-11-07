@@ -101,7 +101,7 @@ Promise.all([
       // A friends-relay inbox for messages sent while this agent is offline, when the operator set a2a.relay.url
       // (or a registration on a relay it moved away from still has to be drained and removed).
       ...(relaySettings.url || relaySettings.previousRegistration
-        ? { relay: { config: vaultRelayConfigStore(agentName, machineId) } }
+        ? { relay: { config: vaultRelayConfigStore(agentName, machineId), notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice) } }
         : {}),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),

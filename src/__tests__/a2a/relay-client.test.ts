@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { RelayHttpError, relayAck, relayDeregister, relayPull, relayRegister, relaySend } from "../../a2a/relay-client"
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: unknown }
@@ -75,6 +75,18 @@ describe("relay client", () => {
     expect(calls[0]).toMatchObject({ url: "https://r/register/h%2F1", method: "DELETE", body: undefined })
     expect(calls[0].headers.authorization).toBe("Bearer ia")
     await expect(relayDeregister({ url: "https://r", handle: "h", inboxAuth: "bad", fetchImpl: fakeFetch(401, { error: "unauthorized" }) })).rejects.toMatchObject({ status: 401, code: "unauthorized" })
+  })
+
+  it("skips pulled entries without a queue id, logging no payload, and keeps the rest of the queue", async () => {
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    const good = { queueId: "q2", message }
+    const pulled = [null, "x", { message: { secret: "payload" } }, { queueId: 7, message }, { queueId: "", message }, good]
+    expect(await relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(200, { messages: pulled }) })).toEqual([good])
+    const skipped = nerves.mock.calls.map(([event]) => event).filter((event) => event.event === "channel.a2a_relay_entry_skipped")
+    expect(skipped).toHaveLength(5)
+    expect(JSON.stringify(skipped)).not.toContain("payload")
+    expect(skipped[0]).toMatchObject({ level: "warn", meta: { relayUrl: "https://r", position: 0 } })
+    nerves.mockRestore()
   })
 
   it("treats a pull with no message list as empty", async () => {

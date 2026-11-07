@@ -73,10 +73,24 @@ export async function relaySend(input: RelayCall & { handle: string; sendCredent
   return result.taskId
 }
 
-/** The queued messages in `handle`'s inbox (still sealed). */
+/**
+ * The queued messages in `handle`'s inbox (still sealed). An entry without a queue id cannot be acked, so it is logged
+ * (without its content) and skipped, and the rest of the queue is still handled. The relay has no way to drop an entry
+ * without its id, so a skipped entry stays queued until the relay's own expiry removes it.
+ */
 export async function relayPull(input: RelayCall & { handle: string; inboxAuth: string }): Promise<RelayQueuedMessage[]> {
   const result = await relayRequest({ ...input, method: "GET", path: `/inbox/${encodeURIComponent(input.handle)}`, bearer: input.inboxAuth })
-  return Array.isArray(result.messages) ? result.messages as RelayQueuedMessage[] : []
+  const entries: unknown[] = Array.isArray(result.messages) ? result.messages : []
+  const valid: RelayQueuedMessage[] = []
+  entries.forEach((entry, position) => {
+    const queueId = (entry as { queueId?: unknown } | null)?.queueId
+    if (entry && typeof entry === "object" && typeof queueId === "string" && queueId.length > 0) {
+      valid.push({ queueId, message: (entry as { message?: unknown }).message })
+      return
+    }
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_entry_skipped", message: "skipped a relay inbox entry with no queue id; it cannot be acked and stays at the relay until it expires", meta: { relayUrl: input.url, position } })
+  })
+  return valid
 }
 
 /** Remove one delivered message from `handle`'s inbox. Re-acking is harmless. */

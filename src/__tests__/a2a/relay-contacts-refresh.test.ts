@@ -5,7 +5,7 @@ import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bu
 const { callOutboxMethod } = vi.hoisted(() => ({ callOutboxMethod: vi.fn() }))
 vi.mock("../../a2a/outbox-client", () => ({ callOutboxMethod }))
 
-const { readRelayContact, refreshRelayContact, writeRelayContact } = await import("../../a2a/relay-contacts")
+const { RELAY_CONTACT_REFRESH_MS, readRelayContact, refreshRelayContact, relayContactNeedsRefresh, writeRelayContact } = await import("../../a2a/relay-contacts")
 
 let tmp: TmpBundleHandle | null = null
 beforeEach(() => {
@@ -51,7 +51,18 @@ describe("refreshRelayContact", () => {
     expect(readRelayContact(tmp.agentRoot, peerDid)).toEqual({ did: peerDid, fetchedAt: "2026-11-06T12:00:00.000Z" })
 
     writeRelayContact(tmp.agentRoot, { did: peerDid, fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true })
-    await refreshRelayContact({ agentRoot: tmp.agentRoot, peerDid, cardUrl: "https://peer.example/card", identity })
-    expect(readRelayContact(tmp.agentRoot, peerDid)).toEqual({ did: peerDid, fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true })
+    await refreshRelayContact({ agentRoot: tmp.agentRoot, peerDid, cardUrl: "https://peer.example/card", identity, now: NOW })
+    expect(readRelayContact(tmp.agentRoot, peerDid)).toEqual({ did: peerDid, fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true, attemptedAt: "2026-11-06T12:00:00.000Z" })
+  })
+
+  it("after a failed refresh of a stale contact, waits a day before asking again", async () => {
+    tmp = createTmpBundle({ agentName: "refresh-backoff" })
+    callOutboxMethod.mockRejectedValue(new Error("A2A error -32003: refused"))
+    writeRelayContact(tmp.agentRoot, { did: peerDid, fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true })
+    expect(relayContactNeedsRefresh(readRelayContact(tmp.agentRoot, peerDid), NOW)).toBe(true)
+    await refreshRelayContact({ agentRoot: tmp.agentRoot, peerDid, cardUrl: "https://peer.example/card", identity, now: NOW })
+    const after = readRelayContact(tmp.agentRoot, peerDid)
+    expect(relayContactNeedsRefresh(after, NOW + 60_000)).toBe(false)
+    expect(relayContactNeedsRefresh(after, NOW + RELAY_CONTACT_REFRESH_MS + 1)).toBe(true)
   })
 })

@@ -21,7 +21,8 @@ import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
 import { admitDelegatedCommand, delegationRefusalGuidance, shieldDelegatedBanner, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
 import { receiveRefusalError } from "./refusals"
-import { startRelayInbox, type RelayConfigStore, type RelayInboxHandle, type RelayTimers } from "./relay-inbox"
+import { startRelayInbox, type RelayConfigStore, type RelayInboxHandle, type RelayOwnerNotifier, type RelayTimers } from "./relay-inbox"
+import { fileRelayRetirements } from "./relay-retirements"
 import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
 import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
@@ -70,7 +71,7 @@ export interface StartA2AServerOptions {
   escalation?: ConfirmDeps & { confirmIntervalMs?: number }
   /** This agent's friends-relay inbox (needs `identity`): peers queue sealed messages there while it is offline, and the
    * server polls it and runs each one as a `message/send`. Absent: no relay inbox. */
-  relay?: { config: RelayConfigStore; fetchImpl?: typeof fetch; intervalMs?: number; timers?: RelayTimers }
+  relay?: { config: RelayConfigStore; fetchImpl?: typeof fetch; intervalMs?: number; timers?: RelayTimers; notifyOwner?: RelayOwnerNotifier }
 }
 
 export const ESCALATION_CONFIRM_INTERVAL_MS = 5 * 60 * 1000
@@ -803,6 +804,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     const seen = inboundShareDeps.seen as FileA2ASeenLedger
     relayInbox = startRelayInbox({
       ...options.relay,
+      // A retirement finished at the old relay but not yet saved to the vault survives a restart here.
+      retirements: fileRelayRetirements(agentRoot),
       did: inboundShareDeps.identity.did,
       agentName: options.agentName,
       handle: (rpc) => handleMessageSend(rpc),

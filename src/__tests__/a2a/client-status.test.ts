@@ -26,3 +26,29 @@ describe("postJsonRpc on a non-2xx reply", () => {
     await expect(postJsonRpc("https://peer/a2a", request, fetchImpl)).rejects.toMatchObject({ status: 502 })
   })
 })
+
+describe("postJsonRpc on a 2xx reply", () => {
+  it("returns only a JSON-RPC response for this request", async () => {
+    const answer = { jsonrpc: "2.0", id: "1", result: { ok: true } }
+    expect(await postJsonRpc("https://peer/a2a", request, (async () => new Response(JSON.stringify(answer), { status: 200 })) as typeof fetch, "1.0", { strict: true })).toEqual(answer)
+  })
+
+  it("leaves a 2xx reply as it is unless the caller asks for a strict answer", async () => {
+    expect(await postJsonRpc("https://peer/a2a", request, (async () => new Response("{}", { status: 200 })) as typeof fetch)).toEqual({})
+  })
+
+  it("treats a 2xx body that is not a JSON-RPC response for this request as not an answer", async () => {
+    const bodies = [
+      "{}",
+      "<html>ok</html>",
+      JSON.stringify({ jsonrpc: "2.0", id: "other", result: {} }),
+      JSON.stringify({ jsonrpc: "2.0", id: "1" }),
+      JSON.stringify({ jsonrpc: "1.0", id: "1", result: {} }),
+    ]
+    for (const text of bodies) {
+      const error = await postJsonRpc("https://peer/a2a", request, (async () => new Response(text, { status: 200, statusText: "OK" })) as typeof fetch, "1.0", { strict: true }).catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(A2AHttpStatusError)
+      expect(error).toMatchObject({ status: 200, message: "A2A JSON-RPC request failed (200 OK, not a JSON-RPC answer)" })
+    }
+  })
+})

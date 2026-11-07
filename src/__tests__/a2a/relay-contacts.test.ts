@@ -65,6 +65,17 @@ describe("relay contact cache", () => {
     expect(readRelayContact(tmp.agentRoot, "did:key:zPeer")).toEqual({ did: "did:key:zPeer", fetchedAt: "2026-11-06T00:00:00.000Z", contact, stale: true })
   })
 
+  it("keeps a failed refresh's attempt time, and a new refusal clears it so the next send asks again", () => {
+    tmp = createTmpBundle({ agentName: "contacts-attempt" })
+    writeRelayContact(tmp.agentRoot, { did: "did:key:zPeer", fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true, attemptedAt: "2026-11-06T00:00:00.000Z" })
+    expect(readRelayContact(tmp.agentRoot, "did:key:zPeer")).toEqual({ did: "did:key:zPeer", fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true, attemptedAt: "2026-11-06T00:00:00.000Z" })
+    markRelayContactStale(tmp.agentRoot, "did:key:zPeer")
+    expect(readRelayContact(tmp.agentRoot, "did:key:zPeer")).toEqual({ did: "did:key:zPeer", fetchedAt: "2026-11-01T00:00:00.000Z", contact, stale: true })
+    writeRelayContact(tmp.agentRoot, { did: "did:key:zNone", fetchedAt: "2026-11-01T00:00:00.000Z", attemptedAt: "2026-11-06T00:00:00.000Z" })
+    markRelayContactStale(tmp.agentRoot, "did:key:zNone")
+    expect(readRelayContact(tmp.agentRoot, "did:key:zNone")).toEqual({ did: "did:key:zNone", fetchedAt: "2026-11-01T00:00:00.000Z", stale: true })
+  })
+
   it("needs a refresh when missing, stale, undated or older than a day", () => {
     const now = Date.parse("2026-11-06T12:00:00.000Z")
     const fresh = { did: "d", fetchedAt: new Date(now - 1000).toISOString(), contact }
@@ -73,5 +84,15 @@ describe("relay contact cache", () => {
     expect(relayContactNeedsRefresh({ ...fresh, stale: true }, now)).toBe(true)
     expect(relayContactNeedsRefresh({ ...fresh, fetchedAt: "garbage" }, now)).toBe(true)
     expect(relayContactNeedsRefresh({ ...fresh, fetchedAt: new Date(now - RELAY_CONTACT_REFRESH_MS - 1).toISOString() }, now)).toBe(true)
+  })
+
+  it("counts a failed attempt like a fetch: a stale or day-old contact tried in the last day waits", () => {
+    const now = Date.parse("2026-11-06T12:00:00.000Z")
+    const old = new Date(now - 3 * RELAY_CONTACT_REFRESH_MS).toISOString()
+    const recent = new Date(now - 1000).toISOString()
+    expect(relayContactNeedsRefresh({ did: "d", fetchedAt: old, contact, stale: true, attemptedAt: recent }, now)).toBe(false)
+    expect(relayContactNeedsRefresh({ did: "d", fetchedAt: old, contact, attemptedAt: recent }, now)).toBe(false)
+    expect(relayContactNeedsRefresh({ did: "d", fetchedAt: old, contact, stale: true, attemptedAt: old }, now)).toBe(true)
+    expect(relayContactNeedsRefresh({ did: "d", fetchedAt: old, contact, stale: true, attemptedAt: "garbage" }, now)).toBe(true)
   })
 })

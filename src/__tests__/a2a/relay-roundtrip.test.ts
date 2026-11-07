@@ -1,11 +1,15 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
-import { ready, didKeyIdentityFromEd25519, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { ready, didKeyIdentityFromEd25519, openSealed, sealEnvelope, sealTo, wrapInDataPart, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { FileFriendStore, upsertAgentPeer, type FriendRecord, type SenseType } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { startFakeRelay, type FakeRelay } from "../test-helpers/fake-relay"
 import { startA2AServer, type A2AServerHandle, type A2ATurnRunnerInput } from "../../a2a/server"
 import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { readRelayContact } from "../../a2a/relay-contacts"
+import { relaySend } from "../../a2a/relay-client"
+import { FileA2ASeenLedger } from "../../a2a/seen-ledger"
 import type { RelayConfig, RelayConfigStore } from "../../a2a/relay-inbox"
 import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
 import type { ToolContext } from "../../repertoire/tools-base"
@@ -131,5 +135,73 @@ describe("A2A relay round trip (two agents, a friends-relay, real HTTP)", () => 
     await peerServer.relay!.tick()
     expect(turns).toHaveLength(2)
     expect(relay.inbox.get(handle)).toEqual([])
+  }, 30_000)
+
+  it("refuses a tampered message and a rebound one (right signature, other recipient or kind) through the relay, marking neither seen", async () => {
+    const relay: FakeRelay = await startFakeRelay()
+    closers.push(() => relay.close())
+    const peerBundle = createTmpBundle({ agentName: "relay-forge-peer" })
+    bundles.push(peerBundle)
+    const sender = seededIdentity()
+    const peer = seededIdentity()
+    const bystander = seededIdentity()
+    const peerFriends = new FileFriendStore(`${peerBundle.agentRoot}/friends`)
+    await upsertAgentPeer(peerFriends, { name: "Sender", agentId: sender.did, trustLevel: "family", a2a: { did: sender.did, agentId: sender.did, endpointUrl: "https://sender.example/a2a" } })
+    const senderOnPeer = (await peerFriends.findByExternalId("a2a-agent", sender.did))!
+    await peerFriends.put(senderOnPeer.id, { ...senderOnPeer, admissionState: "active" })
+
+    const turns: A2ATurnRunnerInput[] = []
+    const relayConfig = memoryRelayConfig({ url: relay.url, inviteToken: "invite-1" })
+    const peerServer = await startA2AServer({
+      agentName: peerBundle.agentName, agentRoot: peerBundle.agentRoot, port: 0, identity: peer,
+      turnRunner: async (input) => { turns.push(input); return { response: "ran" } },
+      relay: { config: relayConfig, intervalMs: 60 * 60_000 },
+    })
+    closers.push(() => peerServer.close())
+    await peerServer.relay!.ready
+    const registration = relayConfig.current.registration!
+
+    const envelope = { fromAgentId: sender.did, note: "hello", issuedAt: new Date().toISOString() }
+    const sealFor = (to: DidKeyIdentity, friendsKind: "coordination" | "message" = "coordination") =>
+      sealEnvelope({ sodium, envelope, friendsKind, fromIdentity: sender, recipientDid: to.did, recipientX25519Pub: to.x25519Pub })
+    /** Open a sealed envelope with `holder`'s keys, edit its signed-over plaintext's outer fields, and seal it to the peer. */
+    const reseal = (sealed: ReturnType<typeof sealEnvelope>, holder: DidKeyIdentity, edit: (plaintext: Record<string, unknown>) => void) => {
+      const bytes = openSealed({ sodium, blob: sealed.sealed, recipientX25519Priv: holder.x25519Priv, recipientX25519Pub: holder.x25519Pub, recipientDid: holder.did })
+      const plaintext = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+      edit(plaintext)
+      const blob = sealTo({ sodium, plaintextBytes: new TextEncoder().encode(JSON.stringify(plaintext)), recipientX25519Pub: peer.x25519Pub, recipientDid: peer.did, v: sealed.v })
+      return { v: sealed.v, sealed: blob }
+    }
+
+    // Tampered: a real message to the peer with one ciphertext character changed.
+    const genuine = sealFor(peer)
+    const flipped = genuine.sealed.ct[10] === "A" ? "B" : "A"
+    const tampered = { ...genuine, sealed: { ...genuine.sealed, ct: `${genuine.sealed.ct.slice(0, 10)}${flipped}${genuine.sealed.ct.slice(11)}` } }
+    // Rebound to another recipient: signed for the bystander, opened by it and resealed to the peer.
+    const otherRecipient = reseal(sealFor(bystander), bystander, (plaintext) => { plaintext.recipient = peer.did })
+    // Rebound to another kind: signed as a coordination, relabelled as a message.
+    const otherKind = reseal(sealFor(peer), peer, (plaintext) => { plaintext.friendsKind = "message" })
+
+    const seenDir = path.join(peerBundle.agentRoot, "state", "a2a", "seen")
+    const seenBefore = fs.readdirSync(seenDir).sort()
+    const nerves = vi.spyOn(await import("../../nerves/runtime"), "emitNervesEvent")
+    for (const sealed of [tampered, otherRecipient, otherKind]) {
+      await relaySend({ url: relay.url, handle: registration.handle, sendCredential: registration.sendCredential, message: wrapInDataPart({ sealedEnvelope: sealed, recipientDid: peer.did }) })
+    }
+    expect(relay.inbox.get(registration.handle)).toHaveLength(3)
+
+    expect(await peerServer.relay!.tick()).toBe("ok")
+    const refusals = nerves.mock.calls.map(([event]) => event).filter((event) => event.event === "channel.a2a_relay_message_delivered").map((event) => String((event.meta as { refusal?: unknown }).refusal))
+    nerves.mockRestore()
+    expect(refusals).toHaveLength(3)
+    expect(refusals[0]).toMatch(/rejected: unseal_failed/)
+    expect(refusals[1]).toMatch(/rejected: signed_recipient_mismatch/)
+    expect(refusals[2]).toMatch(/rejected: signed_kind_mismatch/)
+    // Refused for good, so acked; no turn ran; nothing reached the seen ledger.
+    expect(relay.inbox.get(registration.handle)).toEqual([])
+    expect(turns).toEqual([])
+    expect(fs.readdirSync(seenDir).sort()).toEqual(seenBefore)
+    const ledger = new FileA2ASeenLedger(peerBundle.agentRoot)
+    for (const sealed of [tampered, otherRecipient, otherKind]) expect(ledger.has(sealed.sealed.n)).toBe(false)
   }, 30_000)
 })

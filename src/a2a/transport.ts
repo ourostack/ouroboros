@@ -29,7 +29,6 @@ const MAY_HAVE_ARRIVED_STATUSES = new Set([502, 504, 520, 521, 522, 523, 524])
  * something other than the agent (a tunnel or proxy page, except a gateway answer that can follow a delivery). */
 function certainlyNotArrived(error: unknown): boolean {
   if (error instanceof A2AHttpStatusError) return !MAY_HAVE_ARRIVED_STATUSES.has(error.status)
-  if (error instanceof SyntaxError) return true
   /* v8 ignore next -- fetch only throws Error instances @preserve */
   if (!(error instanceof Error)) return false
   const codes = causeCodes(error)

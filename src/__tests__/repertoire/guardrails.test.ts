@@ -409,6 +409,7 @@ describe("guardInvocation — structural guardrails", () => {
     "/bundle/tool-profiles.json",
     "/bundle/state/a2a/escalation-grants.json",
     "/bundle/state/a2a/relay-contacts/0f1e2d.json",
+    "/bundle/state/a2a/relay-retired/0f1e2d.json",
     "/bundle/state/outbox/claude/1760000000000-abcdef.json",
     "/bundle/state/reports/3f2b8c10-aaaa-4bbb-8ccc-1234567890ab.json",
     "state/outbox/claude/x.json",

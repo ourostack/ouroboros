@@ -16,7 +16,7 @@ describe("A2ATransport (direct rung)", () => {
     const calls: Array<{ url: string; body: unknown }> = []
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { id: "task-1", contextId: "c", status: { state: "completed", timestamp: "" }, history: [] } }), {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: (calls.at(-1)!.body as { id: string }).id, result: { id: "task-1", contextId: "c", status: { state: "completed", timestamp: "" }, history: [] } }), {
         status: 200, headers: { "content-type": "application/json" },
       })
     }) as unknown as typeof fetch
@@ -49,14 +49,14 @@ describe("A2ATransport (direct rung)", () => {
   it("retries with SendMessage when the server replies method-not-found to message/send", async () => {
     const methods: string[] = []
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { method: string }
+      const body = JSON.parse(String(init?.body)) as { method: string; id: string }
       methods.push(body.method)
       if (body.method === "message/send") {
         // First attempt: the server doesn't speak message/send → -32601.
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32601, message: "method not found" } }), { status: 200, headers: { "content-type": "application/json" } })
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "method not found" } }), { status: 200, headers: { "content-type": "application/json" } })
       }
       // Fallback SendMessage succeeds.
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { id: "t", contextId: "c", status: { state: "completed", timestamp: "" }, history: [] } }), { status: 200, headers: { "content-type": "application/json" } })
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { id: "t", contextId: "c", status: { state: "completed", timestamp: "" }, history: [] } }), { status: 200, headers: { "content-type": "application/json" } })
     }) as unknown as typeof fetch
 
     const transport = makeA2ATransport({ fetchImpl })
@@ -65,7 +65,7 @@ describe("A2ATransport (direct rung)", () => {
   })
 
   it("throws when the server returns a JSON-RPC error (not method-not-found)", async () => {
-    const fetchImpl = (async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32000, message: "boom" } }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => new Response(JSON.stringify({ jsonrpc: "2.0", id: (JSON.parse(String(init?.body)) as { id: string }).id, error: { code: -32000, message: "boom" } }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch
     const transport = makeA2ATransport({ fetchImpl })
     await expect(transport.send({ rung: "direct", address: "https://peer.example/a2a" }, dataPartMessage()))
       .rejects.toThrow(/boom|-32000/i)
@@ -93,6 +93,18 @@ describe("A2ATransport (relay fallback, real fetch)", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
     const port = (server.address() as import("node:net").AddressInfo).port
     return { url: `http://127.0.0.1:${port}/a2a`, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  }
+
+  /** A peer that answers 200 with `reply(the request's id)`, as the A2A server does. */
+  function serveJsonRpc(reply: (id: unknown) => unknown): ReturnType<typeof serve> {
+    return serve((req, res) => {
+      let raw = ""
+      req.on("data", (chunk) => { raw += String(chunk) })
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify(reply((JSON.parse(raw) as { id: unknown }).id)))
+      })
+    })
   }
 
   async function closedPortUrl(): Promise<string> {
@@ -187,10 +199,27 @@ describe("A2ATransport (relay fallback, real fetch)", () => {
     }
   })
 
+  it("falls back when something answers 200 with JSON that is not a JSON-RPC response (another service on the peer's host)", async () => {
+    const { startFakeRelay } = await import("../test-helpers/fake-relay")
+    const relay = await startFakeRelay()
+    const other = await serve((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end("{}") })
+    try {
+      relay.registrations.set("h1", { did: "did:key:zPeer", inboxAuth: "ia", sendCredential: "sc", agentCard: {} })
+      relay.inbox.set("h1", [])
+      const deliveries: Array<[string, unknown]> = []
+      const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" }, onDelivered: (rung, detail) => deliveries.push([rung, detail]) })
+      await transport.send({ rung: "direct", address: other.url }, relayMessage())
+      expect(deliveries).toEqual([["relay", { directMayHaveArrived: false }]])
+      expect(relay.inbox.get("h1")).toHaveLength(1)
+    } finally {
+      await Promise.all([relay.close(), other.close()])
+    }
+  })
+
   it("does not fall back when the peer answers with a JSON-RPC error", async () => {
     const { startFakeRelay } = await import("../test-helpers/fake-relay")
     const relay = await startFakeRelay()
-    const peer = await serve((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: "1", error: { code: -32003, message: "A2A share rejected: untrusted_source" } })) })
+    const peer = await serveJsonRpc((id) => ({ jsonrpc: "2.0", id, error: { code: -32003, message: "A2A share rejected: untrusted_source" } }))
     try {
       const transport = makeA2ATransport({ relayContact: { url: relay.url, handle: "h1", sendCredential: "sc" } })
       await expect(transport.send({ rung: "direct", address: peer.url }, relayMessage())).rejects.toThrow(/untrusted_source/)
@@ -201,7 +230,7 @@ describe("A2ATransport (relay fallback, real fetch)", () => {
   })
 
   it("reports delivery over direct to the callback", async () => {
-    const peer = await serve((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { id: "t" } })) })
+    const peer = await serveJsonRpc((id) => ({ jsonrpc: "2.0", id, result: { id: "t" } }))
     try {
       const rungs: string[] = []
       await makeA2ATransport({ onDelivered: (rung) => rungs.push(rung) }).send({ rung: "direct", address: peer.url }, relayMessage())

@@ -1,6 +1,7 @@
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { RelayHttpError, relayAck, relayDeregister, relayPull, relayRegister, type RelayQueuedMessage } from "./relay-client"
+import { isRetryableReceiveRefusal } from "./refusals"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage } from "./types"
 
 /**
@@ -14,6 +15,7 @@ import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage } from "./types"
  *   registration           { relayUrl, handle, inboxAuth, sendCredential }, written here
  *   pendingRegistration    { relayUrl, handle } of an attempt in progress, so a retry reuses the handle
  *   previousRegistration   the registration on a relay the operator moved away from, kept until drained and removed
+ *                          (or found gone)
  */
 export interface RelayRegistration {
   relayUrl: string
@@ -36,6 +38,31 @@ export interface RelayConfigStore {
   write(patch: { [K in keyof RelayConfig]?: RelayConfig[K] | undefined }): Promise<void>
 }
 
+/**
+ * Retirements of a previous registration that are finished at the relay (drained and deregistered, or found gone) but
+ * whose removal from the vault failed. A pending retirement is finished by the vault write alone, and it never holds
+ * up a move to another relay. The server keeps them on disk (`relay-retirements.ts`) so they survive a restart.
+ */
+export interface RelayRetirements {
+  isPending(registration: RelayRegistration): boolean
+  markPending(registration: RelayRegistration): void
+  clear(registration: RelayRegistration): void
+}
+
+/** Retirements kept in memory only (the default, and for tests). */
+export function memoryRelayRetirements(): RelayRetirements {
+  const pending = new Set<string>()
+  const key = (registration: RelayRegistration): string => `${registration.relayUrl}\n${registration.handle}`
+  return {
+    isPending: (registration) => pending.has(key(registration)),
+    markPending: (registration) => { pending.add(key(registration)) },
+    clear: (registration) => { pending.delete(key(registration)) },
+  }
+}
+
+/** Sends the owner a notice (the A2A sense passes its owner-notice channel). The id makes a repeat of the same notice a no-op. */
+export type RelayOwnerNotifier = (notice: { noticeId: string; text: string }) => Promise<void>
+
 export const RELAY_POLL_INTERVAL_MS = 30_000
 export const RELAY_MAX_BACKOFF_MS = 5 * 60_000
 export const RELAY_MAX_PER_TICK = 20
@@ -54,16 +81,30 @@ export async function ensureRelayRegistration(input: {
   did: string
   agentName: string
   fetchImpl?: typeof fetch
+  retirements?: RelayRetirements
 }): Promise<RelayRegistration | null> {
+  return (await ensureRelayRegistrationAndMove(input)).registration
+}
+
+async function ensureRelayRegistrationAndMove(input: {
+  config: RelayConfigStore
+  did: string
+  agentName: string
+  fetchImpl?: typeof fetch
+  retirements?: RelayRetirements
+}): Promise<{ registration: RelayRegistration | null; moved: boolean }> {
   const config = await input.config.read()
   const url = config.url
   const current = config.registration
-  if (!url) return null
-  if (current && current.relayUrl === url && !config.inviteToken) return current
-  // One move at a time: while an older relay still holds mail, moving again would forget it.
-  if (current && current.relayUrl !== url && config.previousRegistration) {
-    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_move_waiting", message: "not moving to the new relay yet: the relay before the current one is still being drained; restart once it is retired", meta: { relayUrl: url, current: current.relayUrl, previous: config.previousRegistration.relayUrl } })
-    return current
+  if (!url) return { registration: null, moved: false }
+  if (current && current.relayUrl === url && !config.inviteToken) return { registration: current, moved: false }
+  // One move at a time: while an older relay still holds mail, moving again would forget it. A previous registration
+  // that is already retired at its relay (only its removal from the vault is pending) holds nothing, so it does not wait.
+  const previous = config.previousRegistration
+  const previousPending = previous !== undefined && input.retirements?.isPending(previous) === true
+  if (current && current.relayUrl !== url && previous && !previousPending) {
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_move_waiting", message: "not moving to the new relay yet: the relay before the current one still holds messages this agent could not handle yet (see the relay warnings before this one). The move happens at the first start after they are handled, or after that relay is gone", meta: { relayUrl: url, current: current.relayUrl, previous: previous.relayUrl } })
+    return { registration: current, moved: false }
   }
 
   const handle = config.pendingRegistration?.relayUrl === url
@@ -81,10 +122,11 @@ export async function ensureRelayRegistration(input: {
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_register_failed", message: "relay registration failed; offline messages wait until it succeeds", meta: { relayUrl: url, error: errorText(error) } })
     // Keep using a registration that still exists (the old relay, or the same relay before a rotation).
-    return current ?? null
+    return { registration: current ?? null, moved: false }
   }
 
   const registration: RelayRegistration = { relayUrl: url, handle, inboxAuth: grant.inboxAuth, sendCredential: grant.sendCredential }
+  const moved = current !== undefined && current.relayUrl !== url
   try {
     // Re-read so an invite token the operator set meanwhile survives.
     const latest = await input.config.read()
@@ -92,12 +134,14 @@ export async function ensureRelayRegistration(input: {
       registration,
       pendingRegistration: undefined,
       ...(latest.inviteToken !== undefined && latest.inviteToken === config.inviteToken ? { inviteToken: undefined } : {}),
-      ...(current && current.relayUrl !== url ? { previousRegistration: current } : {}),
+      ...(moved ? { previousRegistration: current } : {}),
     })
+    // The move replaced a previous registration whose retirement was only waiting for this vault write.
+    if (moved && previousPending) input.retirements!.clear(previous!)
   } catch (error) {
     emitNervesEvent({ level: "error", component: "channels", event: "channel.a2a_relay_config_write_failed", message: "registered at the relay but could not save the credentials; they last only until this process stops", meta: { relayUrl: url, handle, error: errorText(error) } })
   }
-  return registration
+  return { registration, moved }
 }
 
 /** The single DataPart of a queued message, rebuilt into a fresh message so nothing else the relay added survives. */
@@ -133,7 +177,7 @@ export async function drainRelayInbox(input: {
     queued = await relayPull(call)
   } catch (error) {
     if (error instanceof RelayHttpError && error.status === 401) {
-      emitNervesEvent({ level: "error", component: "channels", event: "channel.a2a_relay_unauthorized", message: "the relay no longer accepts this agent's inbox credential; polling stopped (set a2a.relay.inviteToken to register again)", meta: { relayUrl: registration.relayUrl } })
+      emitNervesEvent({ level: "error", component: "channels", event: "channel.a2a_relay_unauthorized", message: "the relay no longer accepts this agent's inbox credential; polling stopped. To register again, set a new a2a.relay.inviteToken and restart the A2A sense", meta: { relayUrl: registration.relayUrl } })
       return "stop"
     }
     emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_pull_failed", message: "could not pull the relay inbox", meta: { relayUrl: registration.relayUrl, error: errorText(error) } })
@@ -157,9 +201,10 @@ export async function drainRelayInbox(input: {
         return "backoff"
       }
       const refusal = "error" in response ? response.error.message : undefined
-      // A refusal that can pass on a later try (refusals.ts marks it retry, such as a copy another process is handling)
-      // stays queued; any other answer is final and is acked.
-      if ("error" in response && (response.error.data as { retry?: unknown } | undefined)?.retry === true) {
+      // A receive refusal that can pass on a later try (refusals.ts marks it retry: a copy being handled right now) stays
+      // queued. Any other answer is final and is acked, including errors that merely carry `retry` (a delegated-command
+      // refusal is already marked seen, so a retry could only come back as a replay).
+      if ("error" in response && isRetryableReceiveRefusal(response.error.data)) {
         emitNervesEvent({ component: "channels", event: "channel.a2a_relay_message_deferred", message: "a relayed message was refused for now; it stays queued", meta: { queueId: item.queueId, refusal } })
         continue
       }
@@ -173,35 +218,111 @@ export async function drainRelayInbox(input: {
   return "ok"
 }
 
-/** Drain and then remove the registration on a relay the operator moved away from. Retried at each start until done. */
+/** Failures that mean the old relay is gone: it refused the connection, its name no longer resolves, or it answered
+ * 401 or 404 (it no longer knows this registration). A temporary DNS failure (EAI_AGAIN) or a busy relay is not gone. */
+const GONE_CODES = new Set(["ECONNREFUSED", "ENOTFOUND"])
+
+function goneReason(error: unknown): string | undefined {
+  if (error instanceof RelayHttpError) return error.status === 401 || error.status === 404 ? error.message : undefined
+  /* v8 ignore next -- the relay client only throws Error instances @preserve */
+  if (!(error instanceof Error)) return undefined
+  const cause = error.cause as { code?: unknown; errors?: Array<{ code?: unknown }> } | undefined
+  const codes = [cause?.code, ...(cause?.errors ?? []).map((inner) => inner.code)].filter((code): code is string => typeof code === "string")
+  return codes.length > 0 && codes.every((code) => GONE_CODES.has(code)) ? `${error.message} (${codes[0]})` : undefined
+}
+
+type RetireAtRelay = { state: "kept" } | { state: "retired" } | { state: "gone"; reason: string; maybeLost: boolean }
+
+/** Drain the old inbox until a pull comes back empty, then deregister. Deregistering deletes whatever is still queued. */
+async function drainAndDeregister(previous: RelayRegistration, input: { handle: (rpc: A2AJsonRpcRequest) => Promise<A2AJsonRpcResponse>; seen: (nonce: string) => boolean; fetchImpl?: typeof fetch }): Promise<RetireAtRelay> {
+  const inbox = { url: previous.relayUrl, handle: previous.handle, inboxAuth: previous.inboxAuth, fetchImpl: input.fetchImpl }
+  let emptied = false
+  try {
+    let left = (await relayPull(inbox)).length
+    while (left > 0) {
+      const result = await drainRelayInbox({ registration: previous, handle: input.handle, seen: input.seen, fetchImpl: input.fetchImpl })
+      // "stop" is a 401 on the pull: the relay no longer knows this registration.
+      if (result === "stop") return { state: "gone", reason: "relay 401 unauthorized", maybeLost: true }
+      if (result !== "ok") return { state: "kept" }
+      const after = (await relayPull(inbox)).length
+      if (after >= left) {
+        emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_kept", message: "the previous relay still holds messages this agent cannot handle yet; it is kept and tried again at the next start", meta: { relayUrl: previous.relayUrl, queued: after } })
+        return { state: "kept" }
+      }
+      left = after
+    }
+    emptied = true
+    await relayDeregister(inbox)
+    return { state: "retired" }
+  } catch (error) {
+    const reason = goneReason(error)
+    if (reason) return { state: "gone", reason, maybeLost: !emptied }
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_retire_failed", message: "could not retire the registration on the previous relay this time (a failure that can pass, such as a busy relay); it is tried again at the next start, and retired anyway once that relay is gone", meta: { relayUrl: previous.relayUrl, error: errorText(error) } })
+    return { state: "kept" }
+  }
+}
+
+function attempt(what: string, fn: () => void): void {
+  try {
+    fn()
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_retirement_record_failed", message: `could not ${what} the local record of a relay retirement`, meta: { error: errorText(error) } })
+  }
+}
+
+export type RelayRetireResult = "none" | "kept" | "pending" | "retired"
+
+/**
+ * Drain and then remove the registration on a relay the operator moved away from. Kept and tried again at each start
+ * while the old inbox holds messages that cannot be handled yet or the relay fails in a way that can pass. A relay that
+ * is gone (see `goneReason`) is retired anyway: a warning, and one plain-words notice to the owner when messages may
+ * have been waiting there. When the relay side is done but the vault write fails, the retirement is recorded as
+ * pending; the next try (the next poll, or the next start) only repeats the vault write. Never throws.
+ */
 export async function retirePreviousRegistration(input: {
   config: RelayConfigStore
   handle: (rpc: A2AJsonRpcRequest) => Promise<A2AJsonRpcResponse>
   seen: (nonce: string) => boolean
   fetchImpl?: typeof fetch
-}): Promise<void> {
-  const previous = (await input.config.read()).previousRegistration
-  if (!previous) return
-  const inbox = { url: previous.relayUrl, handle: previous.handle, inboxAuth: previous.inboxAuth, fetchImpl: input.fetchImpl }
+  retirements?: RelayRetirements
+  notifyOwner?: RelayOwnerNotifier
+}): Promise<RelayRetireResult> {
+  const retirements = input.retirements ?? memoryRelayRetirements()
+  let previous: RelayRegistration | undefined
   try {
-    // Deregistering deletes whatever is still queued, so drain until a pull comes back empty. A pass that leaves as
-    // many messages as before (refused for now) keeps the registration until the next start.
-    let left = (await relayPull(inbox)).length
-    while (left > 0) {
-      if (await drainRelayInbox({ registration: previous, handle: input.handle, seen: input.seen, fetchImpl: input.fetchImpl }) !== "ok") return
-      const after = (await relayPull(inbox)).length
-      if (after >= left) {
-        emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_kept", message: "the previous relay still holds messages that cannot be handled yet; it is kept and retried at the next start", meta: { relayUrl: previous.relayUrl, queued: after } })
-        return
-      }
-      left = after
-    }
-    await relayDeregister({ url: previous.relayUrl, handle: previous.handle, inboxAuth: previous.inboxAuth, fetchImpl: input.fetchImpl })
-    await input.config.write({ previousRegistration: undefined })
-    emitNervesEvent({ component: "channels", event: "channel.a2a_relay_previous_retired", message: "drained and removed the registration on the previous relay", meta: { relayUrl: previous.relayUrl } })
+    previous = (await input.config.read()).previousRegistration
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_retire_failed", message: "could not remove the registration on the previous relay; it is retried at the next start", meta: { relayUrl: previous.relayUrl, error: errorText(error) } })
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_read_failed", message: "could not read the relay settings, so the previous relay is not retired this time; the relay inbox keeps running, and retiring is tried again at the next start", meta: { error: errorText(error) } })
+    return "kept"
   }
+  if (!previous) return "none"
+
+  if (!retirements.isPending(previous)) {
+    const outcome = await drainAndDeregister(previous, input)
+    if (outcome.state === "kept") return "kept"
+    // Recorded before the owner is told, so a crash after the notice does not send it twice.
+    attempt("save", () => retirements.markPending(previous))
+    if (outcome.state === "gone") {
+      emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_gone", message: "the previous relay cannot be reached or no longer knows this agent; its registration is retired anyway, and anything still queued there is lost", meta: { relayUrl: previous.relayUrl, reason: outcome.reason, maybeLost: outcome.maybeLost } })
+      if (outcome.maybeLost && input.notifyOwner) {
+        const noticeId = `a2a-relay-gone-${createHash("sha256").update(`${previous.relayUrl}\n${previous.handle}`).digest("hex").slice(0, 16)}`
+        const text = `I moved to a new relay for messages that arrive while I'm offline, but my old relay (${new URL(previous.relayUrl).host}) couldn't be reached, so any messages still waiting there are lost. Anyone who sent one will need to send it again; new messages reach me through the new relay or directly.`
+        await input.notifyOwner({ noticeId, text }).catch((error: unknown) => {
+          emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_owner_notice_failed", message: "could not tell the owner that the previous relay was gone", meta: { relayUrl: previous.relayUrl, error: errorText(error) } })
+        })
+      }
+    }
+  }
+
+  try {
+    await input.config.write({ previousRegistration: undefined })
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_retire_pending", message: "the previous relay registration is retired, but removing it from the vault failed; the vault write is tried again at the next poll and at each start, and it does not hold up a move to another relay", meta: { relayUrl: previous.relayUrl, error: errorText(error) } })
+    return "pending"
+  }
+  attempt("remove", () => retirements.clear(previous))
+  emitNervesEvent({ component: "channels", event: "channel.a2a_relay_previous_retired", message: "removed the registration on the previous relay", meta: { relayUrl: previous.relayUrl } })
+  return "retired"
 }
 
 /** How the poller waits between passes; the default never keeps the process alive on its own. */
@@ -225,7 +346,7 @@ export interface RelayInboxHandle {
   stop(): void
 }
 
-/** Register, retire a previous relay, then poll every 30 s, backing off (doubling to 5 minutes) after a failure. */
+/** Retire a previous relay, register (and retire the relay a move left behind), then poll every 30 s, backing off (doubling to 5 minutes) after a failure. */
 export function startRelayInbox(input: {
   config: RelayConfigStore
   did: string
@@ -236,18 +357,28 @@ export function startRelayInbox(input: {
   intervalMs?: number
   /** Timer seam for tests; defaults to the global setTimeout and clearTimeout. */
   timers?: RelayTimers
+  /** Where pending retirements are kept; defaults to memory. */
+  retirements?: RelayRetirements
+  /** Tells the owner when a previous relay was gone with messages possibly still on it. */
+  notifyOwner?: RelayOwnerNotifier
 }): RelayInboxHandle {
   const interval = input.intervalMs ?? RELAY_POLL_INTERVAL_MS
   const timers = input.timers ?? DEFAULT_TIMERS
+  const retirements = input.retirements ?? memoryRelayRetirements()
   let registration: RelayRegistration | null = null
   let stopped = false
   let delay = interval
   let timer: unknown
   let running: Promise<RelayDrainResult> | undefined
+  let retirePending = false
+  const retire = async (): Promise<void> => {
+    retirePending = await retirePreviousRegistration({ ...input, retirements }) === "pending"
+  }
 
   const tick = (): Promise<RelayDrainResult> => {
     // One pass at a time: a manual tick during a timed pass waits for it instead of handling the same messages twice.
     running ??= (async () => {
+      if (retirePending) await retire()
       if (!registration) return "stop" as const
       const result = await drainRelayInbox({ registration, handle: input.handle, seen: input.seen, fetchImpl: input.fetchImpl })
       if (result === "stop") registration = null
@@ -266,9 +397,13 @@ export function startRelayInbox(input: {
   }
 
   const ready = (async () => {
+    // Retire first, so a relay that is gone or already drained does not hold up a move the operator asked for; then
+    // retire the relay this start moved away from.
+    await retire()
     try {
-      registration = await ensureRelayRegistration(input)
-      await retirePreviousRegistration(input)
+      const ensured = await ensureRelayRegistrationAndMove({ ...input, retirements })
+      registration = ensured.registration
+      if (ensured.moved) await retire()
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_start_failed", message: "could not read the relay configuration; the relay inbox is off", meta: { error: errorText(error) } })
       registration = null
