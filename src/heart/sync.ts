@@ -110,13 +110,16 @@ export const SYNC_FETCH_TIMEOUT_MS = 10_000
 export const SYNC_PUSH_TIMEOUT_MS = 60_000
 
 /**
- * The container's read-only mount for the sync deploy key. The key can push to
- * the owner's repo, so the agent's file tools refuse this directory.
+ * The container's read-only mount for the sync deploy key. The key is owned by
+ * ouro-sync (10002) mode 0400, so the agent's uid cannot read it.
  */
 export const SYNC_SECRET_DIR = "/run/ouro-sync"
 
-/** Where the image's Dockerfile installs GitHub's pinned host keys. */
-export const SYNC_KNOWN_HOSTS = "/etc/ssh/ssh_known_hosts"
+/**
+ * git's ssh in the container: the root-owned wrapper, run as ouro-sync, is the
+ * only thing that reads the key. It accepts only git's call for one GitHub repo.
+ */
+export const SYNC_SSH_COMMAND = "sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh"
 
 /** The deploy key directory: SYNC_SECRET_DIR, unless a test points it elsewhere. */
 export function syncSecretDir(): string {
@@ -201,6 +204,7 @@ function identityArgs(agentName: string): string[] {
     "-c", "rerere.enabled=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "merge.verifySignatures=false",
+    "-c", "core.fsmonitor=false",
     ...(__testHooks.extraGitConfig ?? []),
   ]
 }
@@ -211,14 +215,14 @@ function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 /**
- * The environment of a fetch or push. When the container has the deploy key,
- * ssh uses only that key and only GitHub's pinned host keys. Without the key
- * (the Mac, or before the cutover) ssh is left to the host's own setup.
+ * The environment of a fetch or push. When the container has the key mount,
+ * git's ssh is the sync wrapper under sudo. `GIT_SSH_VARIANT=ssh` stops git
+ * probing an unknown "sudo" with `-G`. Without the mount (the Mac, or before
+ * the cutover) ssh is left to the host's own setup.
  */
 export function syncNetworkEnv(): NodeJS.ProcessEnv {
-  const key = path.join(syncSecretDir(), "deploy_key")
-  if (!fs.existsSync(key)) return gitEnv()
-  return gitEnv({ GIT_SSH_COMMAND: `ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${SYNC_KNOWN_HOSTS}` })
+  if (!fs.existsSync(syncSecretDir())) return gitEnv()
+  return gitEnv({ GIT_SSH_COMMAND: SYNC_SSH_COMMAND, GIT_SSH_VARIANT: "ssh" })
 }
 
 function runGit(agentRoot: string, agentName: string, args: string[], env?: NodeJS.ProcessEnv, input?: string): GitRun {

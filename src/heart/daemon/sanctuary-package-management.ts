@@ -4,6 +4,7 @@ import {
   ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryDirectoryFromBase,
   sanctuaryDirectoriesShareIdentity,
+  bundleSyncEnabled,
   writeSanctuaryGitExclude,
   type SanctuaryPackageManagedBundleInspection,
 } from "./sanctuary-bundle-migration"
@@ -57,7 +58,7 @@ export function requireSanctuaryPackageManagementDecision(decision: SanctuaryPac
 
 export function prepareSanctuaryPackageManagedBundle(
   decision: SanctuaryPackageManagementDecision,
-  deps: { ensure?: typeof ensureSanctuaryPackageManagedBundle; writeGitExclude?: typeof writeSanctuaryGitExclude } = {},
+  deps: { ensure?: typeof ensureSanctuaryPackageManagedBundle; writeGitExclude?: typeof writeSanctuaryGitExclude; syncEnabled?: typeof bundleSyncEnabled } = {},
 ): SanctuaryPackageManagedBundleInspection | undefined {
   requireSanctuaryPackageManagementDecision(decision)
   if (decision.kind === "inactive") return undefined
@@ -75,11 +76,13 @@ export function prepareSanctuaryPackageManagedBundle(
     const action = inspection.ok ? inspection.data.repair.action : inspection.error.repair.action
     throw createSanctuaryBundlePreparationFailure(action === "none" ? "run_verified_update_recovery" : action)
   }
-  // Without the exclude, sync would commit secrets and package-managed files, so a bundle that cannot get one does not boot.
+  // With sync on, a missing exclude would commit secrets and package-managed files, so that bundle does not boot.
+  // With sync off nothing is committed, so the failure is logged and the boot goes on.
   try {
     (deps.writeGitExclude ?? writeSanctuaryGitExclude)(decision.agentRoot)
-  } catch {
-    throw createSanctuaryBundlePreparationFailure("run_verified_update_recovery")
+  } catch (error) {
+    if ((deps.syncEnabled ?? bundleSyncEnabled)(decision.agentRoot)) throw createSanctuaryBundlePreparationFailure("run_verified_update_recovery")
+    emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_git_exclude_failed", message: "could not write the bundle's git exclude; sync is off, so the boot continues", meta: { reason: error instanceof Error ? error.message : String(error) } })
   }
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_package_management_prepared", message: "prepared Sanctuary package-managed bundle", meta: { runtimePackageVersion: inspection.data.runtimePackageVersion, journalState: inspection.data.journalState } })
   return inspection

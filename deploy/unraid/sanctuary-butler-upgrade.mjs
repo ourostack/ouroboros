@@ -1201,7 +1201,7 @@ export function withoutPsycheConfig(text, parse) {
   return after && psycheConfigs(after) === 0 && after.children.length === before.children.length - 1 ? next : text
 }
 
-export const SYNC_CONFIG = `  <Config Name="Bundle sync key (read-only)" Target="${SYNC_TARGET}" Default="${SYNC_HOST_DIR}" Mode="ro" Description="Root-owned deploy key the Butler's bundle sync pushes with. Read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">${SYNC_HOST_DIR}</Config>`
+export const SYNC_CONFIG = `  <Config Name="Bundle sync key (read-only)" Target="${SYNC_TARGET}" Default="${SYNC_HOST_DIR}" Mode="ro" Description="Deploy key the Butler's bundle sync pushes with, owned by 10002:10002 mode 0400 so only the sync wrapper reads it. Read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">${SYNC_HOST_DIR}</Config>`
 
 /**
  * The DockerMan template with the sync key's read-only Config added before </Container>, so a DockerMan Apply keeps the

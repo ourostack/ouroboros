@@ -1,5 +1,6 @@
 // Pure logic and the injected-I/O orchestrator behind scripts/butler-ship.mjs.
 // Nothing here touches the network or the host directly: every effect goes through `deps`.
+import semver from "semver"
 
 export const REPO = "ourostack/ouroboros"
 export const IMAGE_REPO = "ghcr.io/ourostack/ouroboros-butler"
@@ -8,8 +9,8 @@ export const REMOTE_GATE = "/tmp/sanctuary-replay-gate.mjs"
 export const REMOTE_NODE = "/usr/local/bin/node"
 // Written by sanctuary-sync-cutover.sh once the bundle owns its own git. From then on the Butler's image must have git.
 export const CUTOVER_MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
-// A file that every release with bundle sync (git and ssh in the image) carries in its tree.
-export const BUNDLE_SYNC_RELEASE_FILE = "deploy/unraid/github_known_hosts"
+// The last release whose image has no git or ssh. Every later release carries bundle sync.
+export const LAST_RELEASE_WITHOUT_BUNDLE_SYNC = "0.1.0-alpha.986"
 export const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
@@ -222,9 +223,11 @@ export async function ship(opts, deps, timing = {}) {
   const cutoverState = /^@@CUTOVER:([01])$/m.exec(cutover.stdout)
   if (cutover.code !== 0 || !cutoverState) throw new ShipError(`could not check ${CUTOVER_MARKER} on the host (exit ${cutover.code})`)
   if (cutoverState[1] === "1") {
-    const file = await deps.gh(["api", `repos/${REPO}/contents/${BUNDLE_SYNC_RELEASE_FILE}?ref=${sha}`])
-    if (file.code !== 0 && /HTTP 404/.test(String(file.stderr))) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
-    must(file, `checking whether ${version} carries bundle sync`)
+    const body = must(await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${sha}`]), `reading package.json at ${sha}`)
+    let releaseVersion
+    try { releaseVersion = JSON.parse(body).version } catch { releaseVersion = undefined }
+    if (typeof releaseVersion !== "string" || !semver.valid(releaseVersion)) throw new ShipError(`could not read a version from package.json at ${sha}, so cannot tell whether ${version} carries bundle sync`)
+    if (!semver.gt(releaseVersion, LAST_RELEASE_WITHOUT_BUNDLE_SYNC)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
     deps.log(`  ok   ${version} carries bundle sync, which this host's bundle uses`)
   }
 

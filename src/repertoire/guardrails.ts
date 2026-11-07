@@ -478,6 +478,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (productShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (bundleGitRefused(command, context.agentRoot)) return deny(BUNDLE_GIT_REFUSAL)
+    if (syncSecretShellRefused(command)) return deny(REASONS.unreadablePath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 
@@ -1454,7 +1455,7 @@ const DECLARATION_BUILTINS = new Set(["export", "declare", "typeset", "local", "
 // Commands that run another command given as their arguments; the guard looks for git (or a shell) among those arguments.
 const COMMAND_RUNNERS = new Set(["xargs", "find", "timeout", "nice", "ionice", "stdbuf", "setsid", "flock", "watch", "parallel", "doas", "chronic", "unbuffer", "chroot"])
 /** git global options that take their value as the next word. */
-const GIT_VALUE_OPTIONS = new Set(["--namespace", "--config-env", "--exec-path", "--super-prefix", "--attr-source"])
+const GIT_VALUE_OPTIONS = new Set(["--namespace", "--exec-path", "--super-prefix", "--attr-source"])
 
 interface GitShellScan {
   /** Directories the command changes to, in order (null: one the guard cannot work out). */
@@ -1463,8 +1464,10 @@ interface GitShellScan {
   gitPaths: string[]
   /** The words after each `git`. */
   calls: string[][]
-  /** A shell reading its script from stdin, which the guard cannot see. */
+  /** A shell reading its script from stdin, which the guard cannot see; or git config set from the environment. */
   opaqueShell: boolean
+  /** CDPATH is set, so a relative cd could land anywhere. */
+  cdpath: boolean
 }
 
 function unknownShellWord(word: string): boolean {
@@ -1480,6 +1483,9 @@ function noteGitAssignment(token: string, scan: GitShellScan, known: Map<string,
   if (!assignment) return false
   const [, name, value] = assignment as unknown as [string, string, string]
   if (GIT_PATH_VARIABLES.has(name)) scan.gitPaths.push(value)
+  // GIT_CONFIG_COUNT/KEY/VALUE and GIT_CONFIG_PARAMETERS can define an alias that runs anything, anywhere.
+  if (/^GIT_CONFIG(?:_|$)/.test(name)) scan.opaqueShell = true
+  if (name === "CDPATH") scan.cdpath = true
   if (unknownShellWord(value)) known.delete(name)
   else known.set(name, value)
   return true
@@ -1532,7 +1538,8 @@ function scanCommandForGit(tokens: readonly string[], start: number, scan: GitSh
     }
     if (executable === "cd" || executable === "pushd") {
       const target = tokens.slice(index + 1).find((word) => !/^-[LPe@]+$/.test(word))
-      scan.cwdTargets.push(target === undefined ? (executable === "cd" ? os.homedir() : null) : target === "-" ? null : shellPathWord(target))
+      const viaCdpath = target !== undefined && scan.cdpath && !path.isAbsolute(expandHome(target))
+      scan.cwdTargets.push(target === undefined ? (executable === "cd" ? os.homedir() : null) : target === "-" || viaCdpath ? null : shellPathWord(target))
       return
     }
     if (GIT_GUARD_SHELLS.has(executable)) {
@@ -1545,6 +1552,8 @@ function scanCommandForGit(tokens: readonly string[], start: number, scan: GitSh
     if (!COMMAND_RUNNERS.has(executable)) return
     // find -execdir runs its command in each directory it finds.
     if (executable === "find" && tokens.some((word, k) => k > index && (word === "-execdir" || word === "-okdir"))) scan.cwdTargets.push(null)
+    // xargs -I/-i/--replace puts its input into the command's words.
+    if (executable === "xargs" && tokens.some((word, k) => k > index && /^(?:-I|-i|--replace)/.test(word))) scan.cwdTargets.push(null)
     const next = tokens.findIndex((word, k) => k > index && RUNNER_GIT_TARGETS.has(exactShellExecutable(word)))
     if (next < 0) return
     index = next
@@ -1582,6 +1591,8 @@ function gitCallPaths(args: readonly string[], cwds: ReadonlyArray<string | null
     }
     if (word === "-c") {
       const setting = args[index + 1] ?? ""
+      // An alias can run any command, git in any directory included.
+      if (/^alias\./i.test(setting)) return null
       const worktree = setting.match(/^core\.worktree=(.*)$/is)
       if (worktree) {
         const dir = value(worktree[1])
@@ -1591,6 +1602,7 @@ function gitCallPaths(args: readonly string[], cwds: ReadonlyArray<string | null
       index += 2
       continue
     }
+    if (word === "--config-env" || word.startsWith("--config-env=")) return null
     if (GIT_VALUE_OPTIONS.has(word)) {
       index += 2
       continue
@@ -1617,11 +1629,13 @@ function gitCallPaths(args: readonly string[], cwds: ReadonlyArray<string | null
 
 /** Whether a shell command could run git in the agent's bundle. Exported for tests. */
 export function bundleGitRefused(command: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot || !command.includes("git")) return false
+  // Quotes and backslashes can split the word (g''it, "g"it, g\it); the shell joins it back.
+  const plain = command.replace(/['"\\]/g, "")
+  if (!agentRoot || !plain.includes("git")) return false
   try {
-    const scan: GitShellScan = { cwdTargets: [], gitPaths: [], calls: [], opaqueShell: false }
+    const scan: GitShellScan = { cwdTargets: [], gitPaths: [], calls: [], opaqueShell: false, cdpath: !!process.env.CDPATH }
     scanShellForGit(command, scan, 0)
-    if (scan.opaqueShell && /(?:^|[^A-Za-z0-9_-])git(?:$|[^A-Za-z0-9_-])/.test(command)) return true
+    if (scan.opaqueShell && /(?:^|[^A-Za-z0-9_-])git(?:$|[^A-Za-z0-9_-])/.test(plain)) return true
     if (scan.calls.length === 0) return false
     // Every directory the command could be working in: where the shell starts, and each change, from each earlier one.
     const cwds: Array<string | null> = [process.cwd()]
@@ -1671,6 +1685,14 @@ function syncSecretReadRefused(toolName: string, args: Record<string, string>): 
   } catch {
     return true
   }
+}
+
+/**
+ * A shell command that names the key's directory. The agent's uid cannot read
+ * the key; this only turns an accidental attempt into a plain refusal.
+ */
+function syncSecretShellRefused(command: string): boolean {
+  return command.includes(path.resolve(syncSecretDir()))
 }
 
 // --- main entry point ---

@@ -2113,6 +2113,55 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     }
   })
 
+  it("refuses split command words, git config from the command line or environment, xargs replacement and CDPATH", async () => {
+    const { BUNDLE_GIT_REFUSAL } = await import("../../repertoire/guardrails")
+    const refused = [
+      `g''it -C ${bundle} status`,
+      `"g"it -C ${bundle} status`,
+      `g\\it -C ${bundle} status`,
+      `git -c alias.s='!git -C ${bundle} status' s`,
+      `git -c ALIAS.s='!cd ${bundle} && git push origin HEAD:main' s`,
+      "git --config-env alias.s=CMD s",
+      "git --config-env=alias.s=CMD s",
+      `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.s GIT_CONFIG_VALUE_0='!git -C ${bundle} status' git s`,
+      "GIT_CONFIG_PARAMETERS=\"'alias.s'='!true'\" git s",
+      "export GIT_CONFIG_COUNT=1; git status",
+      `echo ${bundle} | xargs -I D git -C D status`,
+      `echo ${bundle} | xargs -ID git -C D status`,
+      `echo ${bundle} | xargs --replace=D git -C D status`,
+      `echo ${bundle} | xargs -i git -C {} status`,
+      `CDPATH=${tmp} cd agent.ouro && git status`,
+      `export CDPATH=${tmp}; cd agent.ouro; git status`,
+    ]
+    // An unreadable directory word reaches the psyche guard first.
+    await expectRefused(refused, BUNDLE_GIT_REFUSAL, [`echo ${bundle} | xargs -i git -C {} status`])
+    const savedCdpath = process.env.CDPATH
+    process.env.CDPATH = tmp
+    try {
+      expect(await shell("cd agent.ouro && git status")).toEqual({ allowed: false, reason: BUNDLE_GIT_REFUSAL })
+      expect(await shell("cd /tmp/repo && git status")).toEqual({ allowed: true })
+    } finally {
+      if (savedCdpath === undefined) delete process.env.CDPATH
+      else process.env.CDPATH = savedCdpath
+    }
+    for (const command of [
+      "git -c user.name=a -C /tmp/repo log",
+      `CDPATH=${tmp} cd /tmp/repo && git status`,
+      "echo x | xargs -n1 git -C /tmp/repo log",
+      "echo it is quoted: \"g\"o",
+    ]) expect({ command, result: await shell(command) }).toEqual({ command, result: { allowed: true } })
+  })
+
+  it("refuses any shell command that names the key's directory, with the plain unreadable line", async () => {
+    const refused = { allowed: false, reason: "that path is protected — i can't read it." }
+    for (const command of ["cat /run/ouro-sync/deploy_key", "cp /run/ouro-sync/deploy_key /tmp/k", "ssh -i /run/ouro-sync/deploy_key git@github.com", "ls /run/ouro-sync"]) {
+      expect({ command, result: await shell(command) }).toEqual({ command, result: refused })
+    }
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("shell", { command: "cat /run/ouro-sync/deploy_key" }, { readPaths: new Set() })).toEqual(refused)
+    expect(await shell("ls /run")).toEqual({ allowed: true })
+  })
+
   it("read_file, glob and grep refuse /run/ouro-sync, the key in it and a symlink to it", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }

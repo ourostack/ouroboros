@@ -1,0 +1,2 @@
+Defaults!/usr/local/libexec/ouro-sync-ssh env_reset
+ouro ALL=(ouro-sync) NOPASSWD: /usr/local/libexec/ouro-sync-ssh

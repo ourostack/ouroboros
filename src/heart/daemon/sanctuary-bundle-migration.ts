@@ -37,6 +37,10 @@ export const SANCTUARY_GIT_EXCLUDES: readonly string[] = [
   "books/hey/.config/",
   "**/*.key",
   "**/*.pem",
+  "**/deploy_key*",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/id_ecdsa*",
   "**/.env",
   "state/",
   "inbox/",
@@ -62,7 +66,8 @@ export function sanctuaryGitExcludeText(): string {
   return `${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`
 }
 
-function bundleSyncEnabled(agentRoot: string): boolean {
+/** Whether the bundle's agent.json turns sync on. An unreadable agent.json reads as off. */
+export function bundleSyncEnabled(agentRoot: string): boolean {
   try {
     const sync = readObject(path.join(agentRoot, "agent.json")).sync as Record<string, unknown> | undefined
     return sync?.enabled === true

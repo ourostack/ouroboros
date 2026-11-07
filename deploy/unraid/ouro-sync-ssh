@@ -1,0 +1,63 @@
+#!/bin/sh
+# Bundle sync's ssh for git. Runs as ouro-sync under sudo, so only ouro-sync can read the deploy key.
+# It accepts only git's own ssh invocation for one GitHub repository and passes nothing else to ssh.
+set -u
+
+refuse() {
+  printf 'ouro-sync-ssh: refused: %s\n' "$1" >&2
+  exit 2
+}
+
+login=""
+host=""
+command=""
+have_host=0
+have_command=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      [ "$#" -ge 2 ] && [ "$2" = "SendEnv=GIT_PROTOCOL" ] || refuse "only -o SendEnv=GIT_PROTOCOL is allowed"
+      shift 2
+      ;;
+    -p)
+      [ "$#" -ge 2 ] && [ "$2" = "22" ] || refuse "only -p 22 is allowed"
+      shift 2
+      ;;
+    -l)
+      [ "$#" -ge 2 ] && [ "$2" = "git" ] || refuse "only -l git is allowed"
+      login=git
+      shift 2
+      ;;
+    -*)
+      refuse "option $1 is not allowed"
+      ;;
+    *)
+      if [ "$have_host" -eq 0 ]; then
+        host=$1
+        have_host=1
+      elif [ "$have_command" -eq 0 ]; then
+        command=$1
+        have_command=1
+      else
+        refuse "too many arguments"
+      fi
+      shift
+      ;;
+  esac
+done
+
+case "$host" in
+  git@github.com) [ -z "$login" ] || refuse "host must be git@github.com" ;;
+  github.com) [ "$login" = git ] || refuse "host must be git@github.com" ;;
+  *) refuse "host must be git@github.com" ;;
+esac
+[ "$have_command" -eq 1 ] || refuse "a git command is required"
+case "$command" in
+  *"
+"*) refuse "the git command must be one line" ;;
+esac
+printf '%s\n' "$command" | grep -Eqx "git-(upload|receive)-pack '?[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?'?" \
+  || refuse "only git-upload-pack or git-receive-pack for one repository is allowed"
+
+exec /usr/bin/ssh -i /run/ouro-sync/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes -F /dev/null git@github.com "$command"

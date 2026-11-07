@@ -25,9 +25,10 @@ describe("the Butler image carries git and ssh for bundle sync", () => {
     expect(DOCKERFILE).toContain("rm -rf /var/lib/apt/lists/*")
   })
 
-  it("installs GitHub's pinned host keys as the system known_hosts, before dropping root", () => {
-    expect(DOCKERFILE).toContain("COPY deploy/unraid/github_known_hosts /etc/ssh/ssh_known_hosts\n")
-    expect(DOCKERFILE.indexOf("/etc/ssh/ssh_known_hosts")).toBeLessThan(DOCKERFILE.indexOf("USER 10001:10001"))
+  it("installs GitHub's pinned host keys where only the sync wrapper reads them, before dropping root", () => {
+    expect(DOCKERFILE).toContain("COPY deploy/unraid/github_known_hosts /etc/ouro/github_known_hosts\n")
+    expect(DOCKERFILE).not.toContain("/etc/ssh/ssh_known_hosts")
+    expect(DOCKERFILE.indexOf("/etc/ouro/github_known_hosts")).toBeLessThan(DOCKERFILE.indexOf("USER 10001:10001"))
   })
 
   it("pins exactly GitHub's ed25519, ecdsa and rsa keys", () => {
@@ -40,5 +41,46 @@ describe("the Butler image carries git and ssh for bundle sync", () => {
       expect(rest).toEqual([])
       expect(fingerprint(key!)).toBe(GITHUB_FINGERPRINTS[type!])
     }
+  })
+})
+
+describe("the Butler image keeps the deploy key away from the agent's uid", () => {
+  const SUDOERS = readFileSync("deploy/unraid/ouro-sync.sudoers", "utf8")
+  const beforeUser = (text: string) => {
+    const index = DOCKERFILE.indexOf(text)
+    expect(index).toBeGreaterThan(-1)
+    expect(index).toBeLessThan(DOCKERFILE.indexOf("USER 10001:10001"))
+  }
+
+  it("installs sudo in the root layer", () => {
+    const install = DOCKERFILE.split("\n").find((line) => line.includes("apt-get install"))
+    expect(install).toMatch(/apt-get install -y --no-install-recommends .*\bsudo\b/u)
+  })
+
+  it("creates ouro-sync as uid and gid 10002 with no home and no login shell", () => {
+    expect(DOCKERFILE).toContain("groupadd --system --gid 10002 ouro-sync")
+    expect(DOCKERFILE).toContain("useradd --system --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ouro-sync")
+    beforeUser("useradd --system --uid 10002")
+  })
+
+  it("installs the wrapper root-owned 0755 outside the agent-owned tree", () => {
+    expect(DOCKERFILE).toContain("COPY deploy/unraid/ouro-sync-ssh /usr/local/libexec/ouro-sync-ssh\n")
+    expect(DOCKERFILE).toMatch(/RUN chown root:root [^\n]*\/usr\/local\/libexec\/ouro-sync-ssh/u)
+    expect(DOCKERFILE).toMatch(/chmod 0755 [^\n]*\/usr\/local\/libexec\/ouro-sync-ssh/u)
+    beforeUser("COPY deploy/unraid/ouro-sync-ssh")
+    expect(DOCKERFILE).not.toMatch(/chown -R 10001:10001 [^\n]*\/usr\/local/u)
+  })
+
+  it("installs exactly one sudo rule, root-owned 0440 and checked by visudo", () => {
+    expect(DOCKERFILE).toContain("COPY deploy/unraid/ouro-sync.sudoers /etc/sudoers.d/ouro-sync\n")
+    expect(DOCKERFILE).toMatch(/RUN chown root:root [^\n]*\/etc\/sudoers\.d\/ouro-sync/u)
+    expect(DOCKERFILE).toContain("chmod 0440 /etc/sudoers.d/ouro-sync")
+    expect(DOCKERFILE).toContain("visudo -cf /etc/sudoers.d/ouro-sync")
+    beforeUser("COPY deploy/unraid/ouro-sync.sudoers")
+    expect(SUDOERS).toBe([
+      "Defaults!/usr/local/libexec/ouro-sync-ssh env_reset",
+      "ouro ALL=(ouro-sync) NOPASSWD: /usr/local/libexec/ouro-sync-ssh",
+      "",
+    ].join("\n"))
   })
 })

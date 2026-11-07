@@ -2072,7 +2072,7 @@ await_post_audit_health`
     const activation = production.slice(production.indexOf('if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")'))
 
     expect(activation).toContain('&& create_sanctuary_container "$IMAGE_ID" "$VERSION_IMAGE" "$TARGET_MOUNT_CONTRACT" \\')
-    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" \\')
+    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" bundle \\')
     expect(activation).toContain('&& /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-activate >/dev/null \\')
     expect(activation).toContain("&& wait_butler_ready ouro-butler \\")
     expect(activation).toContain("&& enable_butler_autostart \\")
@@ -2883,7 +2883,7 @@ recover_test`
     expect(restoreRuntime).toBeGreaterThan(stopOld)
     expect(restoreBundle).toBeGreaterThan(restoreRuntime)
     expect(create).toBeGreaterThan(restoreBundle)
-    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \\')
+    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png bundle \\')
     expect(restore).toContain('&& verify_dockerman_and_community_apps "$RESTORE_VERSION_IMAGE" "$RESTORE_INSTALL_PROOF_ROOT/install.json" \\')
     expect(restore).toContain("&& docker start ouro-butler \\")
     expect(restore).toContain("&& wait_butler_ready ouro-butler \\")
@@ -2915,6 +2915,7 @@ recover_test`
       fs.writeFileSync(templatePath, "<Container/>\n", { mode: 0o600 })
       const script = String.raw`set -u
 validate_exact_image_id() { return 0; }
+bundle_sync_enabled() { command printf false; }
 docker() { return 23; }
 ${helper}
 if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pre-gateway; then command printf 'MUTATION\n'; else exit $?; fi`
@@ -2924,6 +2925,81 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  describe("bundle sync in the production audits", () => {
+    const agentJsonPath = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json"
+    function runAudit(agentJson: string | null, extra: string, call: string) {
+      const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+      const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sync-audit-"))
+      try {
+        const agentPath = path.join(testRoot, "agent.json")
+        if (agentJson !== null) fs.writeFileSync(agentPath, agentJson)
+        const helpers = ["bundle_sync_enabled", "audit_effective", "audit_registered_dockerman_template"]
+          .map((name) => extractRunbookFunction(runbook, name)).join("\n")
+          .replace("/usr/local/bin/node", JSON.stringify(process.execPath))
+          .replace(agentJsonPath, "$AUDIT_TEST_ROOT/agent.json")
+          .replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+          .replaceAll("/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml", "$AUDIT_TEST_ROOT/template.xml")
+        fs.writeFileSync(path.join(testRoot, "template.xml"), "<Container/>\n")
+        const script = String.raw`set -u
+validate_exact_image_id() { return 0; }
+docker() {
+  case "$1 $2" in
+    "run --rm") shift 2; command printf 'RUN %s\n' "$*" ;;
+    *) command printf '{}\n' ;;
+  esac
+}
+${helpers}
+${call}`
+        return runConditionalHelper(script, "unused", { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}`, RUNNER: `sha256:${"b".repeat(64)}`, VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.987", ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png", EXTRA: extra })
+      } finally {
+        fs.rmSync(testRoot, { recursive: true, force: true })
+      }
+    }
+    const effective = 'audit_effective ouro-butler "$IMAGE_ID" "$RUNNER" canonical-gateway "$VERSION_IMAGE" "$ICON" $EXTRA'
+    const registered = 'audit_registered_dockerman_template "$RUNNER" "$VERSION_IMAGE" canonical-gateway'
+
+    it.each([
+      ['{"sync":{"enabled":true}}', "true"],
+      ['{"sync":{"enabled":false}}', "false"],
+      ["{}", "false"],
+    ])("passes the bundle's sync setting %s to the auditor as --sync-enabled %s", (agentJson, flag) => {
+      const effectiveRun = runAudit(agentJson, "bundle", effective)
+      expect(effectiveRun.status, effectiveRun.stderr).toBe(0)
+      expect(effectiveRun.stdout.trim()).toMatch(new RegExp(`^RUN .* --sync-enabled ${flag}$`, "u"))
+      const registeredRun = runAudit(agentJson, "", registered)
+      expect(registeredRun.status, registeredRun.stderr).toBe(0)
+      expect(registeredRun.stdout.trim()).toMatch(new RegExp(`^RUN .* --sync-enabled ${flag}$`, "u"))
+    })
+
+    it("fails closed without running the auditor when agent.json is unreadable", () => {
+      for (const [extra, call] of [["bundle", effective], ["", registered]] as const) {
+        const result = runAudit(null, extra, call)
+        expect(result.status).not.toBe(0)
+        expect(result.stdout).not.toContain("RUN")
+      }
+      const malformed = runAudit("{", "bundle", effective)
+      expect(malformed.status).not.toBe(0)
+      expect(malformed.stdout).not.toContain("RUN")
+    })
+
+    it("leaves the flag off the source audit and rejects an unknown sync source", () => {
+      const source = runAudit(null, "", effective)
+      expect(source.status, source.stderr).toBe(0)
+      expect(source.stdout).not.toContain("--sync-enabled")
+      const unknown = runAudit('{"sync":{"enabled":true}}', "maybe", effective)
+      expect(unknown.status).toBe(1)
+      expect(unknown.stdout).not.toContain("RUN")
+    })
+
+    it("passes the bundle's sync setting to both staged template audits", () => {
+      const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+      expect(runbook).toContain("    STAGED_SYNC_ENABLED=$(bundle_sync_enabled)\n")
+      expect(runbook).toContain('--expected-image-reference "$VERSION_IMAGE" --mount-contract "$TARGET_MOUNT_CONTRACT" --sync-enabled "$STAGED_SYNC_ENABLED"\n')
+      expect(runbook).toContain('--expected-image "$IMAGE_ID" --mount-contract "$TARGET_MOUNT_CONTRACT" --sync-enabled "$STAGED_SYNC_ENABLED"\n')
+      expect(runbook.match(/audit_effective ouro-butler "\$IMAGE_ID" [^\n]* bundle( \\|\n| \|\|)/gu)).toHaveLength(5)
+    })
   })
 
   it("ships Ouro Butler with the exact persistent roots and complete bootstrap bundle", () => {

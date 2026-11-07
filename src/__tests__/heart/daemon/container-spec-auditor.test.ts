@@ -811,6 +811,60 @@ describe("canonical-gateway bundle sync key mount", () => {
     for (const result of auditTemplates(gatewayTemplate([syncConfig("rw")]), true)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
   })
 
+  describe("through the auditor CLI", () => {
+    function withFiles(files: Record<string, string>, run: (dir: string) => void) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sync-audit-cli-"))
+      try {
+        for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text)
+        run(dir)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    function cli(args: string[]) {
+      const output: string[] = []
+      const status = runAuditorCli(args, { write: (text) => output.push(text) })
+      return { status, output: output.join("") }
+    }
+
+    it.each([[false, 0], [true, 1]] as const)("audits a running container with no key mount (--sync-enabled %s exits %i)", (syncEnabled, expected) => {
+      withFiles({ "inspect.json": JSON.stringify([validInspect(true)]), "image.json": JSON.stringify([validImageInspect()]) }, (dir) => {
+        const args = ["--inspect", path.join(dir, "inspect.json"), "--image-inspect", path.join(dir, "image.json"), "--expected-image", image, "--expected-image-reference", expectedImageReference, "--expected-icon", expectedIcon, "--mount-contract", "canonical-gateway"]
+        expect(cli([...args, "--sync-enabled", String(syncEnabled)]).status).toBe(expected)
+        expect(cli(["--sync-enabled", String(syncEnabled), ...args]).status).toBe(expected)
+      })
+    })
+
+    it("passes a running container with the key mount when sync is on", () => {
+      withFiles({ "inspect.json": JSON.stringify([validInspect(true, { syncMount: true })]), "image.json": JSON.stringify([validImageInspect()]) }, (dir) => {
+        expect(cli(["--sync-enabled", "true", "--inspect", path.join(dir, "inspect.json"), "--image-inspect", path.join(dir, "image.json"), "--expected-image", image, "--expected-image-reference", expectedImageReference, "--expected-icon", expectedIcon, "--mount-contract", "canonical-gateway"])).toEqual({ status: 0, output: '{"ok":true,"violations":[]}\n' })
+      })
+    })
+
+    it("audits staged and persistent templates with no key Config against the flag", () => {
+      withFiles({ "staged.xml": gatewayTemplate([]).replace(expectedImageReference, image), "persistent.xml": gatewayTemplate([]), "policy.json": policy }, (dir) => {
+        const staged = ["--template", path.join(dir, "staged.xml"), "--runtime-policy", path.join(dir, "policy.json"), "--expected-image", image, "--mount-contract", "canonical-gateway"]
+        const persistent = ["--persistent-template", path.join(dir, "persistent.xml"), "--runtime-policy", path.join(dir, "policy.json"), "--expected-image-reference", expectedImageReference, "--mount-contract", "canonical-gateway"]
+        for (const args of [staged, persistent]) {
+          expect(cli([...args, "--sync-enabled", "true"]).status).toBe(1)
+          expect(cli([...args, "--sync-enabled", "false"]).status).toBe(0)
+          expect(cli(args).status).toBe(0)
+        }
+      })
+    })
+
+    it.each([
+      [["--sync-enabled"]],
+      [["--sync-enabled", ""]],
+      [["--sync-enabled", "yes"]],
+      [["--sync-enabled", "true", "--sync-enabled", "true"]],
+    ])("rejects a malformed sync flag %j as usage", (flag) => {
+      const result = cli(["--template", "/x.xml", "--runtime-policy", "/p.json", "--expected-image", image, "--mount-contract", "canonical-gateway", ...flag])
+      expect(result.status).toBe(2)
+      expect(result.output).toContain("--sync-enabled true|false")
+    })
+  })
+
   it("the shipped sanctuary.xml mounts the key read-only", () => {
     const shipped = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/unraid/sanctuary.xml"), "utf8")
     expect(shipped).toMatch(/<Config Name="Bundle sync key \(read-only\)" Target="\/run\/ouro-sync" Default="\/mnt\/user\/appdata\/ouro-butler\/sync" Mode="ro" [^>]*>\/mnt\/user\/appdata\/ouro-butler\/sync<\/Config>/u)

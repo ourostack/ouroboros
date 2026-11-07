@@ -1516,7 +1516,8 @@ describe("the bundle's git exclude", () => {
   const BACKUP_LIST = ["**/credentials.json", "mcp/media-credentials.json", "books/hey/.config/", "**/*.key", "**/*.pem", "**/.env", "state/", "inbox/", "arc/flight-recorder/", "arc/obligations/", "arc/packets/", "books/bin/", "books/vendor/", "books/work/", "books/fonts/", "mcp/*.pre-*", "books/hey/", "**/__pycache__/"]
 
   it("lists the backup's excludes, MCP credentials, every package-managed file and the release's bookkeeping", () => {
-    expect(SANCTUARY_GIT_EXCLUDES).toEqual([...BACKUP_LIST, "mcp/*credentials*", ...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", ".sanctuary-package-managed-rollback.json*", ".psyche-seed.*"])
+    const KEY_FILES = ["**/deploy_key*", "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*"]
+    expect(SANCTUARY_GIT_EXCLUDES).toEqual([...BACKUP_LIST.slice(0, 5), ...KEY_FILES, ...BACKUP_LIST.slice(5), "mcp/*credentials*", ...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", ".sanctuary-package-managed-rollback.json*", ".psyche-seed.*"])
     expect(sanctuaryGitExcludeText()).toBe(`${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`)
   })
 
@@ -1531,6 +1532,8 @@ describe("the bundle's git exclude", () => {
     expect(writeSanctuaryGitExclude(agentRoot)).toEqual({ initialized: false, written: true })
     expect(fs.readFileSync(path.join(agentRoot, ".git/info/exclude"), "utf8")).toBe(`${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`)
     expect(fs.readFileSync(path.join(agentRoot, ".gitignore"), "utf8")).toBe("notes/scratch/\n")
+    // A private key copied in without an extension stays out of the repo.
+    for (const key of ["notes/deploy_key", "notes/deploy_key.bak", ".ssh/id_rsa", ".ssh/id_ed25519", "id_ed25519.pub", "keys/id_ecdsa"]) write(agentRoot, key, "key\n")
     expect(git(agentRoot, ["status", "--porcelain"])).toBe("")
     expect(writeSanctuaryGitExclude(agentRoot)).toEqual({ initialized: false, written: false })
 

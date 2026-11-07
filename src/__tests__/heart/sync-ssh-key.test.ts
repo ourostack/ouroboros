@@ -4,12 +4,14 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { registerGlobalLogSink } from "../../nerves"
-import { __testHooks, fetchRemote, SYNC_KNOWN_HOSTS, SYNC_SECRET_DIR, syncNetworkEnv, syncSecretDir } from "../../heart/sync"
+import { __testHooks, fetchRemote, SYNC_SECRET_DIR, SYNC_SSH_COMMAND, syncNetworkEnv, syncSecretDir } from "../../heart/sync"
 
-// A fake `ssh` first on PATH records how git called it, then fails the
-// connection, so a fetch from an ssh:// remote shows the ssh command line.
+// Fakes first on PATH: `ssh` records a plain call; `sudo` records its own
+// arguments and runs the real wrapper (with /usr/bin/ssh swapped for a
+// recorder), so a fetch shows exactly what git hands the wrapper and what the
+// wrapper hands ssh. Every connection fails with 255.
 
-const SAVED = ["PATH", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_CONFIG_NOSYSTEM"] as const
+const SAVED = ["PATH", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT", "GIT_CONFIG_NOSYSTEM"] as const
 let root: string
 let saved: Record<string, string | undefined>
 let unregister: () => void
@@ -18,16 +20,30 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim()
 }
 
-function bundleWithSshRemote(): { bundle: string; record: string } {
+function setUp(): { bundle: string; sshRecord: string; sudoRecord: string; wrappedSshRecord: string } {
   const bin = path.join(root, "bin")
-  const record = path.join(root, "ssh-calls.txt")
+  const sshRecord = path.join(root, "ssh-calls.txt")
+  const sudoRecord = path.join(root, "sudo-calls.txt")
+  const wrappedSshRecord = path.join(root, "wrapped-ssh-argv.txt")
   fs.mkdirSync(bin)
-  fs.writeFileSync(path.join(bin, "ssh"), `#!/bin/sh\nprintf '%s\\n' "LC_ALL=$LC_ALL $*" >> '${record}'\nexit 255\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, "ssh"), `#!/bin/sh\nprintf '%s\\n' "LC_ALL=$LC_ALL $*" >> '${sshRecord}'\nexit 255\n`, { mode: 0o755 })
+  const wrappedSsh = path.join(root, "wrapped-ssh")
+  fs.writeFileSync(wrappedSsh, `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > '${wrappedSshRecord}'\nexit 255\n`, { mode: 0o755 })
+  const wrapper = path.join(root, "ouro-sync-ssh")
+  fs.writeFileSync(wrapper, fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/ouro-sync-ssh"), "utf8").replace("exec /usr/bin/ssh ", `exec ${wrappedSsh} `))
+  fs.writeFileSync(path.join(bin, "sudo"), [
+    "#!/bin/sh",
+    `printf '%s\\n' "$*" >> '${sudoRecord}'`,
+    'test "$1 $2 $3 $4" = "-n -u ouro-sync /usr/local/libexec/ouro-sync-ssh" || exit 1',
+    "shift 4",
+    `exec sh '${wrapper}' "$@"`,
+    "",
+  ].join("\n"), { mode: 0o755 })
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`
   const bundle = path.join(root, "agent.ouro")
   git(root, ["init", "-q", "-b", "main", bundle])
-  git(bundle, ["remote", "add", "origin", "ssh://git@github.invalid/owner/agent.ouro.git"])
-  return { bundle, record }
+  git(bundle, ["remote", "add", "origin", "git@github.com:owner/agent.ouro.git"])
+  return { bundle, sshRecord, sudoRecord, wrappedSshRecord }
 }
 
 beforeEach(() => {
@@ -35,6 +51,7 @@ beforeEach(() => {
   saved = Object.fromEntries(SAVED.map((key) => [key, process.env[key]]))
   delete process.env.GIT_SSH_COMMAND
   delete process.env.GIT_SSH
+  delete process.env.GIT_SSH_VARIANT
   process.env.GIT_CONFIG_NOSYSTEM = "1"
   unregister = registerGlobalLogSink(() => undefined)
 })
@@ -50,34 +67,39 @@ afterEach(() => {
 })
 
 describe("the sync deploy key", () => {
-  it("GIT_SSH_COMMAND is set only when the key exists", async () => {
+  it("git reaches ssh through the sudo wrapper only when the key mount exists", async () => {
     expect(SYNC_SECRET_DIR).toBe("/run/ouro-sync")
     expect(syncSecretDir()).toBe("/run/ouro-sync")
+    expect(SYNC_SSH_COMMAND).toBe("sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh")
     const secret = path.join(root, "ouro-sync")
-    fs.mkdirSync(secret)
     __testHooks.syncSecretDir = secret
-    const { bundle, record } = bundleWithSshRemote()
+    const { bundle, sshRecord, sudoRecord, wrappedSshRecord } = setUp()
     const config = { enabled: true, remote: "origin", branch: "main" }
 
     expect(syncNetworkEnv().GIT_SSH_COMMAND).toBeUndefined()
-    const withoutKey = await fetchRemote(bundle, config)
-    expect(withoutKey.ok).toBe(false)
-    const plain = fs.readFileSync(record, "utf-8")
-    expect(plain).toContain("LC_ALL=C ")
-    expect(plain).not.toContain("-i ")
-    expect(plain).not.toContain("IdentitiesOnly")
-    fs.rmSync(record)
+    expect(syncNetworkEnv().GIT_SSH_VARIANT).toBeUndefined()
+    const withoutMount = await fetchRemote(bundle, config)
+    expect(withoutMount.ok).toBe(false)
+    expect(fs.readFileSync(sshRecord, "utf-8")).toContain("LC_ALL=C ")
+    expect(fs.existsSync(sudoRecord)).toBe(false)
 
-    fs.writeFileSync(path.join(secret, "deploy_key"), "not a real key\n", { mode: 0o600 })
-    const key = path.join(secret, "deploy_key")
-    expect(syncNetworkEnv().GIT_SSH_COMMAND).toBe(`ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/ssh/ssh_known_hosts`)
-    expect(syncNetworkEnv().LC_ALL).toBe("C")
-    expect(SYNC_KNOWN_HOSTS).toBe("/etc/ssh/ssh_known_hosts")
-    const withKey = await fetchRemote(bundle, config)
-    expect(withKey.ok).toBe(false)
-    const keyed = fs.readFileSync(record, "utf-8")
-    expect(keyed).toContain("LC_ALL=C ")
-    expect(keyed).toContain(`-i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/ssh/ssh_known_hosts`)
-    expect(keyed).toContain("github.invalid")
+    // The agent's uid cannot read the key, so only the directory is checked.
+    fs.mkdirSync(secret)
+    expect(syncNetworkEnv()).toMatchObject({ GIT_SSH_COMMAND: SYNC_SSH_COMMAND, GIT_SSH_VARIANT: "ssh", LC_ALL: "C" })
+    fs.rmSync(sshRecord)
+    const withMount = await fetchRemote(bundle, config)
+    expect(withMount.ok).toBe(false)
+    expect(fs.existsSync(sshRecord)).toBe(false)
+    expect(fs.readFileSync(sudoRecord, "utf-8")).toMatch(/^-n -u ouro-sync \/usr\/local\/libexec\/ouro-sync-ssh (-o SendEnv=GIT_PROTOCOL )?git@github\.com git-upload-pack 'owner\/agent\.ouro\.git'\n$/u)
+    expect(fs.readFileSync(wrappedSshRecord, "utf-8").trimEnd().split("\n")).toEqual([
+      "-i", "/run/ouro-sync/deploy_key",
+      "-o", "IdentitiesOnly=yes",
+      "-o", "StrictHostKeyChecking=yes",
+      "-o", "UserKnownHostsFile=/etc/ouro/github_known_hosts",
+      "-o", "BatchMode=yes",
+      "-F", "/dev/null",
+      "git@github.com",
+      "git-upload-pack 'owner/agent.ouro.git'",
+    ])
   })
 })

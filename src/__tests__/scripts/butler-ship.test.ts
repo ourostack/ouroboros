@@ -547,7 +547,8 @@ describe("butler-ship CLI", () => {
 describe("butler-ship after the bundle sync cutover", () => {
   const MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
   const cutoverDone = (cmd: string) => (cmd.includes("@@CUTOVER") ? ok("@@CUTOVER:1\n") : (undefined as unknown as Res))
-  const releaseFile = (res: Res) => (a: string[]) => (a.join(" ").includes("contents/deploy/unraid/github_known_hosts?ref=") ? res : (undefined as unknown as Res))
+  const releasePackage = (res: Res) => (a: string[]) => (a.join(" ").includes(`contents/package.json?ref=${SHA}`) ? res : (undefined as unknown as Res))
+  const versioned = (version: string) => releasePackage(ok(JSON.stringify({ name: "@ouro.bot/cli", version })))
 
   it("checks the host's cutover marker right after resolving the release, and ships normally without it", async () => {
     const h = await harness()
@@ -557,27 +558,45 @@ describe("butler-ship after the bundle sync cutover", () => {
     expect(h.calls[probe]).toBe(`ssh [ -e ${MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`)
     expect(probe).toBeGreaterThan(h.calls.findIndex((c) => c.includes("commits?")))
     expect(probe).toBeLessThan(h.calls.findIndex((c) => c.startsWith("gh run list")))
+    expect(h.calls.some((c) => c.includes(`contents/package.json?ref=${SHA}`))).toBe(false)
+  })
+
+  it.each(["0.1.0-alpha.987", "0.1.0-alpha.1200", "0.1.0", "0.2.0-beta.1"])("ships release %s, later than the last one without bundle sync, after the cutover", async (version) => {
+    const { LAST_RELEASE_WITHOUT_BUNDLE_SYNC } = await lib()
+    expect(LAST_RELEASE_WITHOUT_BUNDLE_SYNC).toBe("0.1.0-alpha.986")
+    const h = await harness({ ssh: cutoverDone, gh: versioned(version) })
+    const r = await h.run()
+    expect(r.exitCode).toBe(0)
+    expect(h.calls).toContain(`gh api -H Accept: application/vnd.github.raw repos/ourostack/ouroboros/contents/package.json?ref=${SHA}`)
+  })
+
+  it("ships a later release whose tree no longer has deploy/unraid/github_known_hosts", async () => {
+    const h = await harness({ ssh: cutoverDone, gh: (a) => a.join(" ").includes("github_known_hosts") ? nok("gh: Not Found (HTTP 404)") : versioned("0.1.0-alpha.1500")(a) })
+    expect((await h.run()).exitCode).toBe(0)
     expect(h.calls.some((c) => c.includes("github_known_hosts"))).toBe(false)
   })
 
-  it("ships a release that carries bundle sync after the cutover", async () => {
-    const h = await harness({ ssh: cutoverDone, gh: releaseFile(ok("github.com ssh-ed25519 AAAA")) })
-    const r = await h.run()
-    expect(r.exitCode).toBe(0)
-    expect(h.calls).toContain(`gh api repos/ourostack/ouroboros/contents/deploy/unraid/github_known_hosts?ref=${SHA}`)
-  })
-
-  it.each([false, true])("refuses a release without bundle sync after the cutover and names the rollback first (dry run: %s)", async (dryRun) => {
-    const h = await harness({ ssh: cutoverDone, gh: releaseFile(nok("gh: Not Found (HTTP 404)")) }, { dryRun })
+  it.each([
+    [false, "0.1.0-alpha.986"],
+    [true, "0.1.0-alpha.986"],
+    [false, "0.1.0-alpha.870"],
+    [false, "0.1.0-alpha.99"],
+  ])("refuses a release without bundle sync after the cutover and names the rollback first (dry run: %s, package %s)", async (dryRun, version) => {
+    const h = await harness({ ssh: cutoverDone, gh: versioned(version) }, { dryRun })
     const refusal = h.run()
     await expect(refusal).rejects.toThrow(`${V} has no git in its image, and this host's bundle has already moved to bundle sync (${MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${V}.`)
     expect(h.calls.some((c) => c.startsWith("gh run list") || c.includes("manifest inspect") || c.includes(" preflight ") || c.includes("upgrade "))).toBe(false)
     expect(h.scp).toEqual([])
   })
 
-  it("stops when it cannot tell whether the release carries bundle sync", async () => {
-    const h = await harness({ ssh: cutoverDone, gh: releaseFile(nok("gh: Bad Gateway (HTTP 502)")) })
-    await expect(h.run()).rejects.toThrow(`checking whether ${V} carries bundle sync failed (exit 1): gh: Bad Gateway (HTTP 502)`)
+  it("stops when it cannot read the release's package.json", async () => {
+    const h = await harness({ ssh: cutoverDone, gh: releasePackage(nok("gh: Bad Gateway (HTTP 502)")) })
+    await expect(h.run()).rejects.toThrow(`reading package.json at ${SHA} failed (exit 1): gh: Bad Gateway (HTTP 502)`)
+    for (const body of ["not json", JSON.stringify({ version: 7 }), JSON.stringify({ version: "next" })]) {
+      const bad = await harness({ ssh: cutoverDone, gh: releasePackage(ok(body)) })
+      await expect(bad.run()).rejects.toThrow(`could not read a version from package.json at ${SHA}, so cannot tell whether ${V} carries bundle sync`)
+      expect(bad.calls.some((c) => c.startsWith("gh run list"))).toBe(false)
+    }
   })
 
   it.each([
