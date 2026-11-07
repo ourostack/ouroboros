@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.992",
+      "changes": [
+        "The Butler's container keeps its bundle sync key mount through a release: the root authority's activation, which recreates the container after the upgrade, now mounts the key folder read-only as the upgrade does, and a rollback gives it back only to a release that has bundle sync."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.991",
       "changes": [
         "The Butler's home now syncs to its own private GitHub repository: the bundle carries its own git, pushes through a deploy key it can never read, holds its first push for the owner's yes, and the host's hourly backup hands over through a cutover that can always roll back."
