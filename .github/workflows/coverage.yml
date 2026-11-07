@@ -90,6 +90,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 3
+          overwrite: true
 
   # The required `coverage` check and the gate itself: lint, changelog,
   # mailbox-ui, then the shards' merged coverage against the real thresholds

@@ -175,9 +175,23 @@ function merge(argv) {
 
   const blobsDir = path.join(shardsDir, ".blobs")
   mkdirSync(blobsDir, { recursive: true })
+  const missingBlobs = []
   for (const list of lists) {
     const blob = path.join(list.dir, "blob", `blob-${list.index}-${count}.json`)
     if (existsSync(blob)) copyFileSync(blob, path.join(blobsDir, path.basename(blob)))
+    else missingBlobs.push(`shard ${list.index} produced no blob report`)
+  }
+  if (missingBlobs.length > 0) {
+    fail(summaryPath, {
+      overall_status: "fail",
+      lint: { status: "pass" },
+      changelog: { status: "pass" },
+      mailbox_ui_typecheck: { status: "pass" },
+      mailbox_ui_tests: { status: "pass" },
+      code_coverage: { status: "fail", shards: missingBlobs },
+      nerves_coverage: { status: "skip" },
+      required_actions: [{ type: "coverage", target: "coverage-shards", reason: missingBlobs.join("; ") }],
+    })
   }
   const vitestExit = runNpm(["run", "test:coverage:vitest", "--", "--merge-reports", blobsDir])
   printCoverageTotals()
