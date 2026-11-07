@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.995.1",
+      "changes": [
+        "Red-gate probe: an untested line must turn the sharded coverage gate red. Throwaway, never merged."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.995",
       "changes": [
         "The release gate removes the files its own run created before sync resumes, so test residue never reaches the agent's repo.",

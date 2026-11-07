@@ -120,3 +120,9 @@ export function checkErrorContext(data: PerTestData): ErrorContextResult {
     violations,
   }
 }
+
+// Red-gate probe (throwaway draft PR, never merged): no test calls this, so the
+// sharded coverage gate must fail on it.
+export function redGateProbeUntested(value: number): number {
+  return value * 2 + 1
+}
