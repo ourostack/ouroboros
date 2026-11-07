@@ -600,7 +600,7 @@ async function defaultOwnerNotifier(agentRoot: string, agentName: string, notice
 }
 
 /** Fire and forget: a turn never waits on a notice. */
-function tellOwner(agentRoot: string, agentName: string, notice: SyncOwnerNotice): void {
+export function tellOwner(agentRoot: string, agentName: string, notice: SyncOwnerNotice): void {
   emitNervesEvent({
     component: "heart",
     event: "heart.sync_owner_notice",
