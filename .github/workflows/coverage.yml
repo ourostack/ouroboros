@@ -37,7 +37,14 @@ jobs:
         run: npm ci
 
       - name: Pre-pass
-        run: node .github/scripts/ci-prepass.cjs ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            node .github/scripts/ci-prepass.cjs --base-ref "origin/$BASE_REF"
+          else
+            node .github/scripts/ci-prepass.cjs
+          fi
 
   coverage:
     needs: prepass

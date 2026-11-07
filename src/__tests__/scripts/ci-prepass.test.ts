@@ -21,6 +21,16 @@ describe("ci-prepass", () => {
     expect(errors.every((error: string) => error.startsWith("src/__tests__/broken.test.ts:"))).toBe(true)
   })
 
+  it("parses declaration files without crashing", () => {
+    const sources: Record<string, string> = {
+      "src/types/ok.d.ts": "declare module \"x\" { export const y: number }\n",
+      "src/types/broken.d.ts": "declare module \"x\" {\n",
+    }
+    const errors = syntaxErrors(ts, Object.keys(sources), (file: string) => sources[file])
+    expect(errors.length).toBeGreaterThan(0)
+    expect(errors.every((error: string) => error.startsWith("src/types/broken.d.ts:"))).toBe(true)
+  })
+
   it("ignores type errors, which tsc owns", () => {
     expect(syntaxErrors(ts, ["src/typed.ts"], () => "export const x: number = 'nope'\n")).toEqual([])
   })

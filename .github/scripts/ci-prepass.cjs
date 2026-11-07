@@ -24,22 +24,18 @@ function gitLines(repoRoot, args) {
 }
 
 function syntaxErrors(ts, files, readFile) {
-  const errors = []
-  for (const file of files) {
-    const { diagnostics } = ts.transpileModule(readFile(file), {
-      fileName: file,
-      reportDiagnostics: true,
-      compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    })
-    for (const diagnostic of diagnostics ?? []) {
-      const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
-      const where = diagnostic.file && diagnostic.start !== undefined
-        ? diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
-        : undefined
-      errors.push(where ? `${file}:${where.line + 1}:${where.character + 1} ${message}` : `${file} ${message}`)
-    }
-  }
-  return errors
+  // One program, no module resolution and no lib: only the parser runs.
+  const options = { noResolve: true, noLib: true, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 }
+  const sources = new Map(files.map((file) => [file, ts.createSourceFile(file, readFile(file), ts.ScriptTarget.ES2022, false)]))
+  const host = ts.createCompilerHost(options)
+  host.fileExists = (file) => sources.has(file)
+  host.getSourceFile = (file) => sources.get(file)
+  const program = ts.createProgram({ rootNames: files, options, host })
+  return files.flatMap((file) => program.getSyntacticDiagnostics(sources.get(file)).map((diagnostic) => {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
+    const where = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
+    return `${file}:${where.line + 1}:${where.character + 1} ${message}`
+  }))
 }
 
 function changedTestFiles(changedPaths, exists) {
