@@ -348,6 +348,19 @@ describe("bundle sync merges and never rebases or stashes", () => {
     expect(read(agent, "notes.md")).toBe("agent notes\n")
   })
 
+  it("postTurnPush logs the end of its synchronous commit before the network push ends", async () => {
+    const { agent } = setup()
+    write(agent, "journal.md", "a turn\n")
+    events.length = 0
+    const post = postTurnPush(agent, CONFIG, AGENT)
+    const beforePush = events.map((entry) => entry.event).filter((name) => name.startsWith("heart.sync_"))
+    await post.push
+    const all = events.map((entry) => entry.event).filter((name) => name.startsWith("heart.sync_"))
+    expect(beforePush).toEqual(["heart.sync_push_start", "heart.sync_commit_end"])
+    expect(all.indexOf("heart.sync_commit_end")).toBeLessThan(all.indexOf("heart.sync_push_end"))
+    expect(events.find((entry) => entry.event === "heart.sync_commit_end")?.meta).toEqual({ agentRoot: agent })
+  })
+
   it("postTurnPush repairs a stranded merge before it commits", async () => {
     const { owner, agent } = setup()
     ownerCommitAndPush(owner, { "notes.md": "owner notes\n" })

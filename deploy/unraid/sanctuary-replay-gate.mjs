@@ -46,6 +46,10 @@ export const DEFAULT_BACKUP_DIR = "/mnt/user/appdata/ouro-butler/bundle-backup"
 export const SYNC_PAUSE_MS = 2 * 60 * 60 * 1000
 export const SYNC_LOCK_WAIT_MS = 120 * 1000
 export const SYNC_LOCK_POLL_MS = 1000
+// sync-lock.ts's RECLAIM_STALE_MS: a lock that does not parse counts as held for this long.
+export const SYNC_LOCK_MALFORMED_MS = 30 * 1000
+// The sync path inside the container, as src/heart/sync.ts's SYNC_SSH_COMMAND.
+export const SYNC_SSH_COMMAND = "sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh"
 export const SYNC_LATENCY_LIMIT_MS = 2000
 export const SYNC_EVENTS_WAIT_MS = 60 * 1000
 export const SYNC_EVENTS_POLL_MS = 2000
@@ -1032,6 +1036,14 @@ export function porcelainPaths(status) {
   })
 }
 
+/**
+ * The paths in `git status --porcelain --untracked-files=all` output that sync must never commit: a package-managed file or a
+ * secret-named path. The cutover's step 10 runs this same function (`status-scan`), so the two checks cannot drift.
+ */
+export function statusProblems(status) {
+  return porcelainPaths(status).filter((file) => NEVER_TRACKED.includes(file) || SECRET_PATH.test(file))
+}
+
 /** The check `psyche is git-tracked`: pending until the cutover, then git tracks the psyche and nothing the release or a secret owns. */
 export function trackingResult(sync) {
   if (!sync.cutoverDone()) return pendingSync("psyche-git-tracked", "git tracks the psyche and nothing excluded")
@@ -1040,7 +1052,7 @@ export function trackingResult(sync) {
     return { id: "psyche-git-tracked", status: "fail", checks: [check("the bundle's git state could be read", false, String(error?.message ?? error))] }
   }
   const missing = PSYCHE_FILES.filter((name) => !seen.psyche.includes(`psyche/${name}`))
-  const dirty = porcelainPaths(seen.status).filter((file) => NEVER_TRACKED.includes(file) || SECRET_PATH.test(file))
+  const dirty = statusProblems(seen.status)
   const checks = [
     check("git tracks all five psyche files", missing.length === 0, missing.length ? `not tracked: ${missing.join(", ")}` : ""),
     check("git tracks nothing the exclude list covers", seen.excludedTracked.length === 0, seen.excludedTracked.join(", ")),
@@ -1050,7 +1062,9 @@ export function trackingResult(sync) {
 }
 
 const PULL_ENDS = ["heart.sync_pull_end", "heart.sync_pull_error", "heart.sync_pull_aborted", "heart.sync_paused", "heart.sync_not_a_repo"]
-const PUSH_ENDS = ["heart.sync_push_end", "heart.sync_push_error", "heart.sync_paused", "heart.sync_not_a_repo"]
+// The synchronous post-turn commit ends at heart.sync_commit_end; the network push after it is not timed. A push_end before it
+// means the commit was skipped (sync busy), so nothing was timed.
+const COMMIT_ENDS = ["heart.sync_commit_end", "heart.sync_push_end", "heart.sync_push_error", "heart.sync_paused", "heart.sync_not_a_repo"]
 
 /** The pre-turn pull (start to end) and the post-turn commit (start to its end) in a turn's sync events, in order. */
 export function syncIntervals(events) {
@@ -1064,11 +1078,14 @@ export function syncIntervals(events) {
     return ended === ends[0] ? { ms: sorted[end].at - sorted[start].at, next: end + 1 } : { ms: null, problem: `it ended with ${ended}`, next: end + 1 }
   }
   const pull = span("heart.sync_pull_start", PULL_ENDS, 0)
-  const push = span("heart.sync_push_start", PUSH_ENDS, pull.next)
-  return { pull, push, complete: pull.ms !== null && push.ms !== null }
+  const commit = span("heart.sync_push_start", COMMIT_ENDS, pull.next)
+  return { pull, commit, complete: pull.ms !== null && commit.ms !== null }
 }
 
-/** The check `sync latency`: one read-only turn after the run; its pull and its post-turn commit each stay under two seconds. */
+/**
+ * The check `sync latency`: one read-only turn after the cases, inside the bracket (the residue check reads its commits too). Its
+ * pre-turn pull and its synchronous post-turn commit each stay under two seconds; the network push is not timed.
+ */
 export async function syncLatencyResult(host) {
   const sync = host.sync
   const since = host.now()
@@ -1083,14 +1100,15 @@ export async function syncLatencyResult(host) {
     intervals = syncIntervals(sync.events(since))
   }
   const judge = (name, span) => check(`${name} took under ${SYNC_LATENCY_LIMIT_MS} ms`, span.ms !== null && span.ms < SYNC_LATENCY_LIMIT_MS, span.ms === null ? span.problem : `${span.ms} ms`)
-  const checks = [judge("the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end)", intervals.pull), judge("the post-turn commit (heart.sync_push_start to heart.sync_push_end)", intervals.push)]
+  const checks = [judge("the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end)", intervals.pull), judge("the post-turn commit (heart.sync_push_start to heart.sync_commit_end)", intervals.commit)]
   return { id: "sync-latency", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
 }
 
 /**
  * The replay run. On a bundle that syncs, the cases run inside the sync bracket: sync is paused from before the window opens until
- * the restores are done (a `finally` removes the pause whatever happens), then one sync runs and the gate checks that the remote
- * gained none of its residue. After the bracket come the tracking check and one read-only turn that times sync.
+ * the restores are done (the pause is written inside the `try` whose `finally` removes it). Then one read-only turn times sync,
+ * one sync runs, and the gate checks that the remote gained none of the residue of the cases or of that turn. The tracking check
+ * comes last.
  */
 export async function runSuite(host, options = {}) {
   const sync = host.sync
@@ -1101,25 +1119,27 @@ export async function runSuite(host, options = {}) {
     const suite = await runCases(host, { ...options, ready: true })
     return withSyncResults(suite, [pendingSync("no-sync-residue", "the remote gains none of the gate's residue"), trackingResult(sync), pendingSync("sync-latency", "sync's pull and commit each stay under two seconds")], options)
   }
-  const bracket = await openSyncBracket(sync, options.syncLockWaitMs === undefined ? {} : { waitMs: options.syncLockWaitMs })
-  if (!bracket.ok) {
-    sync.resume()
-    const busy = { id: "no-sync-residue", status: "fail", checks: [check("sync let go of the bundle before the run", false, bracket.detail)] }
-    return { results: [busy], summary: summarize([busy]) }
-  }
+  let bracket
   let suite
   try {
-    suite = await runCases(host, { ...options, ready: true })
+    bracket = await openSyncBracket(sync, options.syncLockWaitMs === undefined ? {} : { waitMs: options.syncLockWaitMs })
+    if (bracket.ok) suite = await runCases(host, { ...options, ready: true })
   } finally {
     // The pause never outlives the run. A crash that skips this leaves a marker that expires on its own.
     sync.resume()
   }
-  const touched = ["psyche/TACIT.md", "state/replay/", ...[host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean).map((id) => `friends/${id}.json`)]
+  if (!bracket.ok) {
+    const busy = { id: "no-sync-residue", status: "fail", checks: [check("sync let go of the bundle before the run", false, bracket.detail)] }
+    return { results: [busy], summary: summarize([busy]) }
+  }
+  const windowRefused = suite.results.some((entry) => entry.id === "window-trusted")
+  const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] } : await syncLatencyResult(host)
+  // A replay friend's record changes on every turn (its token count), so its path is not residue; what a case could teach the
+  // Butler is, and the planted strings and the friend ids catch that in any file.
+  const touched = ["psyche/TACIT.md", "state/replay/"]
   const planted = [...GATE_PLANTED_STRINGS, ...[host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean)]
   const residue = await closeSyncBracket(sync, bracket.head, { touched, planted })
   const tracking = trackingResult(sync)
-  const windowRefused = suite.results.some((entry) => entry.id === "window-trusted")
-  const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] } : await syncLatencyResult(host)
   return withSyncResults(suite, [residue, tracking, latency], options)
 }
 
@@ -1529,6 +1549,27 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
     try { return readJsonNoFollow(path.join(bundle, "agent.json"))?.sync?.branch ?? "main" } catch { return "main" }
   }
   const lines = (text) => text.split("\n").filter(Boolean)
+  // sync-lock.ts: a lock that does not parse is busy for 30 s (a writer may be between create and write), then stale. A parsed
+  // lock is stale when its pid is gone, or when the pid now runs a process that started at another time. The pid is the
+  // container's, so it is checked there; a container that is not running holds nothing.
+  const lockHeld = (lock) => {
+    const stat = lstatOrNull(lock)
+    if (!stat) return false
+    let content
+    try { content = JSON.parse(readTextNoFollow(lock)) } catch { content = null }
+    if (!content || typeof content.pid !== "number" || typeof content.token !== "string") return now() - stat.mtimeMs <= SYNC_LOCK_MALFORMED_MS
+    let procStat
+    try {
+      procStat = exec("docker", ["exec", CONTAINER, "cat", `/proc/${content.pid}/stat`])
+    } catch (error) {
+      const text = `${error?.stderr ?? ""} ${error?.message ?? ""}`
+      if (error?.status === 1 || /no such container|is not running/iu.test(text)) return false
+      return true
+    }
+    const started = String(procStat).slice(String(procStat).lastIndexOf(")") + 2).split(" ")[22 - 3]
+    if (typeof content.procStart === "string" && /^\d+$/u.test(content.procStart) && started !== undefined && started !== content.procStart) return false
+    return true
+  }
   return {
     cutoverDone: () => lstatOrNull(path.join(backupDir, "cutover-done")) !== null,
     /** Sync's pause marker, written as root for the owner of state/ with no link followed. */
@@ -1539,10 +1580,11 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
       writeFileAsRoot(state, "sync-paused", `${JSON.stringify({ startedAt: startedAt.toISOString(), expiresAt: new Date(startedAt.getTime() + ms).toISOString() })}\n`, 0o644, { uid: owner.uid, gid: owner.gid }, "state")
     },
     resume() { rmSync(marker, { force: true }) },
+    /** Waits until no live process holds sync's lock. A lock whose holder is dead is stale, as `src/heart/sync-lock.ts` judges it. */
     async waitLockFree(waitMs) {
       const lock = path.join(bundle, ".git", "ouro-sync.lock")
       const deadline = now() + waitMs
-      while (lstatOrNull(lock)) {
+      while (lockHeld(lock)) {
         if (now() >= deadline) return false
         await sleep(pollMs)
       }
@@ -1557,9 +1599,15 @@ export function makeSyncHost({ bundle, backupDir = DEFAULT_BACKUP_DIR, exec = sh
         return { ok: false, error: `${error.stderr ?? ""} ${error.stdout ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }
       }
     },
-    /** The Butler's own non-merge commits between `head` and the remote branch: their paths and their added lines. */
+    /**
+     * The Butler's own non-merge commits between `head` and the remote branch: their paths and their added lines. The remote head
+     * comes from GitHub itself (`git ls-remote`, inside the container through the sync path), never from a tracking ref a push may
+     * not move.
+     */
     agentChanges(head) {
-      const remoteHead = git(["rev-parse", `refs/remotes/origin/${branch()}`]).trim()
+      const listed = exec("docker", ["exec", "-u", BUTLER_USER, "-e", `GIT_SSH_COMMAND=${SYNC_SSH_COMMAND}`, "-e", "GIT_SSH_VARIANT=ssh", CONTAINER, "git", `--git-dir=${CONTAINER_BUNDLE}/.git`, "ls-remote", "origin", `refs/heads/${branch()}`], { timeout: 60_000 })
+      const remoteHead = /^([0-9a-f]{40})\s/u.exec(listed)?.[1]
+      if (!remoteHead) throw new Error(`git ls-remote origin refs/heads/${branch()} listed no head`)
       const commits = lines(git(["log", "--no-merges", `--author=<${agentName}@ouro.local>`, "--format=%H", `${head}..${remoteHead}`]))
       if (commits.length === 0) return { remoteHead, commits: 0, paths: [], added: [] }
       const paths = [...new Set(lines(git(["show", "--format=", "--name-only", ...commits])))]
@@ -2342,6 +2390,11 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(problems.length === 0 ? `self-test ok (${CASES.length} cases)` : `self-test FAILED (${problems.length})`)
     return problems.length === 0 ? 0 : 1
   }
+  if (options.command === "status-scan") {
+    // The cutover's step 10: `git status --porcelain --untracked-files=all` on stdin; prints each path sync must never commit.
+    for (const file of statusProblems((deps.readStdin ?? (() => readFileSync(0, "utf8")))())) io.out(file)
+    return 0
+  }
   if (options.command === "provision") {
     try { deps.provision({ ...(options.bundle ? { bundle: options.bundle } : {}), ...(options.trustDir ? { trustDir: options.trustDir } : {}), ...(options.cardUrl ? { cardUrl: options.cardUrl } : {}), ...(options.clientDir ? { clientDir: options.clientDir } : {}), ...(options.retire ? { retire: options.retire } : {}), ...(options.rotate ? { rotate: true } : {}), log: io.out }); return 0 } catch (error) { io.err(`provision failed: ${error.message}`); return 1 }
   }
@@ -2365,7 +2418,7 @@ export async function main(argv, io = { out: (text) => console.log(text), err: (
     io.out(JSON.stringify({ summary: suite.summary }))
     return suite.summary.ok ? 0 : 1
   }
-  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n] [--baseline <file>]|self-test> [--bundle <dir>] [--trust-dir <dir>] [--client-dir <dir>] [--backup-dir <dir>] [--card-url <url>]")
+  io.err("Usage: sanctuary-replay-gate.mjs <provision [--rotate-replay-identities]|run [--cases a,b] [--plant <case>] [--window-minutes n] [--baseline <file>]|self-test|status-scan> [--bundle <dir>] [--trust-dir <dir>] [--client-dir <dir>] [--backup-dir <dir>] [--card-url <url>]")
   return 2
 }
 

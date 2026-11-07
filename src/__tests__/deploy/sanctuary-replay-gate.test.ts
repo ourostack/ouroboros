@@ -2456,22 +2456,42 @@ describe("bundle sync around the run (M1c)", () => {
     g(clone, ["push", "-q", "origin", "HEAD:main"])
   }
 
-  /** Sync's events for one read-only turn, as the Butler's daemon logs them. */
-  function logTurn(bundle: string, startMs: number, pullMs: number, pushMs: number, overrides: Record<string, string> = {}) {
+  /** Sync's events for one read-only turn, as the Butler's daemon logs them: the commit ends, then the network push (not timed) much later. */
+  function logTurn(bundle: string, startMs: number, pullMs: number, commitMs: number, overrides: Record<string, string> = {}) {
     const line = (event: string, at: number) => JSON.stringify({ ts: new Date(at).toISOString(), level: "info", event: overrides[event] ?? event, trace_id: "t", component: "heart", message: "", meta: { agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro" } })
-    const lines = [line("heart.sync_pull_start", startMs), line("heart.sync_pull_end", startMs + pullMs), line("heart.sync_push_start", startMs + pullMs + 500), line("heart.sync_push_end", startMs + pullMs + 500 + pushMs)]
+    const committed = startMs + pullMs + 500 + commitMs
+    const lines = [line("heart.sync_pull_start", startMs), line("heart.sync_pull_end", startMs + pullMs), line("heart.sync_push_start", startMs + pullMs + 500), line("heart.sync_commit_end", committed), line("heart.sync_push_end", committed + 9000)]
     fs.appendFileSync(path.join(bundle, "state", "daemon", "logs", "a2a.ndjson"), `${lines.join("\n")}\n`)
   }
 
+  type ExecOpts = { lsRemote?: () => string; proc?: (pid: string) => string }
+  /** The container, for the gate's sync host: `ouro sync`, `git ls-remote` through the sync path, and /proc for the lock holder. */
+  function containerExec(repo: ReturnType<typeof syncRepo>, calls: string[][], opts: ExecOpts = {}) {
+    return (file: string, args: string[]) => {
+      calls.push([file, ...args])
+      if (args.includes("ls-remote")) return opts.lsRemote ? opts.lsRemote() : `${g(repo.bundle, ["ls-remote", "origin", "refs/heads/main"])}\n`
+      const proc = args.find((arg) => arg.startsWith("/proc/"))
+      if (proc) {
+        if (opts.proc) return opts.proc(proc.split("/")[2]!)
+        throw Object.assign(new Error("exit 1"), { status: 1, stderr: `cat: ${proc}: No such file or directory` })
+      }
+      simulatedSync(repo.bundle)
+      return ""
+    }
+  }
+  const SYNC_CALL = ["docker", "exec", "-u", "10001:10001", "ouro-butler", "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "sync", "--agent", "sanctuary"]
+  const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "--git-dir=/home/ouro/AgentBundles/sanctuary.ouro/.git", "ls-remote", "origin", "refs/heads/main"]
+
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
-  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | null; exec?: (file: string, args: string[]) => string } = {}) {
+  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
     const clock = { t: Date.now() }
     const tacitFile = path.join(repo.bundle, "psyche", "TACIT.md")
     const wroteTacit = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "edit_file", arguments: JSON.stringify({ path: "psyche/TACIT.md", old_string: "a", new_string: "b" }) } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
     const run = fakeHost({ clock, sessions: { "*": wroteTacit }, observations: [() => empty({ tacit: { text: fs.readFileSync(tacitFile, "utf8"), mode: 0o644 } })] })
     const seenDuringRun: string[] = []
+    const seenAtLatency: boolean[] = []
     const execCalls: string[][] = []
-    const exec = opts.exec ?? ((file: string, args: string[]) => { execCalls.push([file, ...args]); simulatedSync(repo.bundle); return "" })
+    const exec = opts.exec ?? containerExec(repo, execCalls, opts)
     Object.assign(run.host, {
       friends: { principal: "p-0a4c19", stranger: "s-5d1e0c", escalation: "e-9b2f47" },
       outbox: async () => ({ ok: true }),
@@ -2479,12 +2499,17 @@ describe("bundle sync around the run (M1c)", () => {
       send: async (req: { text: string; context: string }) => {
         run.contexts.push(req.context)
         if (req.text === gate.LATENCY_WORDS) {
+          // Sync runs again for this turn: the pause is gone.
+          seenAtLatency.push(fs.existsSync(repo.marker))
+          opts.latencyWrites?.()
           if (opts.latency !== null) logTurn(repo.bundle, clock.t + 10, ...(opts.latency ?? [120, 80]))
           return { text: "it's ten past nine" }
         }
         seenDuringRun.push(fs.existsSync(repo.marker) ? fs.readFileSync(repo.marker, "utf8") : "")
         fs.writeFileSync(tacitFile, `${TACIT}- anything not in english gets english subtitles\n`)
         repo.put("friends/household.json", "{\"notes\":{\"tea\":\"green\"}}\n")
+        // Every turn moves the replay principal's token count; the restore puts back only what a case can teach.
+        repo.put("friends/p-0a4c19.json", `{"totalTokens":${seenDuringRun.length * 1000}}\n`)
         ownerPush(repo.remote, repo.root, "psyche/SOUL.md", `# SOUL\nthe owner's edit ${Math.random().toString(36).slice(2)}\n`)
         return { text: "noted: english subtitles for anything not in english" }
       },
@@ -2492,7 +2517,7 @@ describe("bundle sync around the run (M1c)", () => {
       readPsycheFile: () => ({ text: fs.readFileSync(tacitFile, "utf8"), mode: 0o644 }),
       keepTacitCopy: () => "/client/tacit-before-restore.md",
     })
-    return { ...run, seenDuringRun, execCalls, clock }
+    return { ...run, seenDuringRun, seenAtLatency, execCalls, clock }
   }
 
   const byResult = (suite: { results: Array<{ id: string }> }, id: string) => suite.results.find((entry) => entry.id === id) as { status: string; checks: Array<{ name: string; ok: boolean; detail?: string }> } | undefined
@@ -2515,7 +2540,10 @@ describe("bundle sync around the run (M1c)", () => {
     const marker = JSON.parse(run.seenDuringRun[0]!)
     expect(Date.parse(marker.expiresAt) - Date.parse(marker.startedAt)).toBe(2 * 60 * 60 * 1000)
     expect(fs.existsSync(repo.marker)).toBe(false)
-    expect(run.execCalls).toEqual([["docker", "exec", "-u", "10001:10001", "ouro-butler", "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "sync", "--agent", "sanctuary"]])
+    expect(run.execCalls).toEqual([SYNC_CALL, LS_REMOTE_CALL])
+    // The read-only turn ran inside the bracket, after the pause ended and before the residue check's sync.
+    expect(run.seenAtLatency).toEqual([false])
+    expect(g(repo.remote, ["show", "main:friends/p-0a4c19.json"])).toContain("totalTokens")
 
     expect(byResult(suite, "no-sync-residue")).toEqual({ id: "no-sync-residue", status: "pass", checks: [
       { name: "ouro sync ran once after the restores", ok: true },
@@ -2531,7 +2559,7 @@ describe("bundle sync around the run (M1c)", () => {
     expect(byResult(suite, "psyche-git-tracked")?.status).toBe("pass")
     expect(byResult(suite, "sync-latency")).toEqual({ id: "sync-latency", status: "pass", checks: [
       { name: "the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end) took under 2000 ms", ok: true, detail: "120 ms" },
-      { name: "the post-turn commit (heart.sync_push_start to heart.sync_push_end) took under 2000 ms", ok: true, detail: "80 ms" },
+      { name: "the post-turn commit (heart.sync_push_start to heart.sync_commit_end) took under 2000 ms", ok: true, detail: "80 ms" },
     ] })
     expect(suite.summary).toMatchObject({ ok: true, failed: [] })
     expect(suite.summary.pending).toBeUndefined()
@@ -2580,29 +2608,101 @@ describe("bundle sync around the run (M1c)", () => {
     }
   }, 60_000)
 
-  it("removes a leftover marker, waits for a running sync to let go of the lock, and fails the bracket when it never does", async () => {
+  /** A lock as sync-lock.ts writes it, and the /proc/<pid>/stat line of a holder that started at tick `start`. */
+  const lockOf = (pid: number, procStart: string | null = "4242") => JSON.stringify({ pid, token: "t".repeat(32), procStart })
+  const procLine = (pid: string, start: string) => `${pid} (node) S ${Array.from({ length: 18 }, (_, i) => String(i + 4)).join(" ")} ${start} 0 0\n`
+
+  it("removes a leftover marker, waits for a live holder to let go of the lock, and fails the bracket when it never does", async () => {
     const repo = syncRepo()
     repo.cutover()
     const lock = path.join(repo.bundle, ".git", "ouro-sync.lock")
     fs.writeFileSync(repo.marker, "{\"startedAt\":\"left over\"}")
-    fs.writeFileSync(lock, "{\"pid\":1}")
-    const waiting = bracketHost(repo)
+    fs.writeFileSync(lock, lockOf(77))
+    const calls: string[][] = []
+    const live = { proc: (pid: string) => procLine(pid, "4242") }
     let polls = 0
-    waiting.host.sleep = async (ms: number) => { waiting.clock.t += ms; polls += 1; if (polls === 3) fs.rmSync(lock) }
-    ;(waiting.host as Record<string, unknown>).sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: () => { simulatedSync(repo.bundle); return "" }, sleep: waiting.host.sleep, now: () => waiting.clock.t, pollMs: 1000 })
-    const opened = await gate.openSyncBracket((waiting.host as Record<string, any>).sync)
+    const clock = { t: Date.now() }
+    const sleep = async (ms: number) => { clock.t += ms; polls += 1; if (polls === 3) fs.rmSync(lock) }
+    const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, calls, live), sleep, now: () => clock.t, pollMs: 1000 })
+    expect(procLine("77", "4242").slice(procLine("77", "4242").lastIndexOf(")") + 2).split(" ")[19]).toBe("4242")
+    const opened = await gate.openSyncBracket(sync)
     expect(opened).toEqual({ ok: true, head: g(repo.bundle, ["rev-parse", "HEAD"]) })
     expect(polls).toBe(3)
+    expect(calls).toContainEqual(["docker", "exec", "ouro-butler", "cat", "/proc/77/stat"])
     expect(JSON.parse(fs.readFileSync(repo.marker, "utf8")).startedAt).not.toBe("left over")
 
-    fs.writeFileSync(lock, "{\"pid\":1}")
-    const busy = bracketHost(repo)
+    fs.writeFileSync(lock, lockOf(77))
+    const busy = bracketHost(repo, live)
     const suite = await gate.runSuite(busy.host, { cases: ["learns-into-tacit"], syncLockWaitMs: 5000, log: () => undefined })
     expect(suite.results).toEqual([{ id: "no-sync-residue", status: "fail", checks: [{ name: "sync let go of the bundle before the run", ok: false, detail: "sync lock busy: .git/ouro-sync.lock was still held after 5 s" }] }])
     expect(suite.summary).toMatchObject({ ok: false, failed: ["no-sync-residue"] })
     expect(busy.seenDuringRun).toEqual([])
     expect(busy.log).toEqual([])
     expect(fs.existsSync(repo.marker)).toBe(false)
+  }, 60_000)
+
+  it("counts only a live holder as busy, as sync-lock.ts judges a lock", async () => {
+    const repo = syncRepo()
+    const lock = path.join(repo.bundle, ".git", "ouro-sync.lock")
+    const clock = { t: Date.now() }
+    const freeWith = async (content: string, opts: ExecOpts, mtimeAgoMs = 0) => {
+      fs.writeFileSync(lock, content)
+      const at = new Date(Date.now() - mtimeAgoMs)
+      fs.utimesSync(lock, at, at)
+      const sync = gate.makeSyncHost({ bundle: repo.bundle, backupDir: repo.backupDir, exec: containerExec(repo, [], opts), sleep: async (ms: number) => { clock.t += ms }, now: () => clock.t, pollMs: 1000 })
+      return sync.waitLockFree(0)
+    }
+    const fail = (status: number | undefined, stderr: string) => () => { throw Object.assign(new Error(`exit ${status}`), { status, stderr }) }
+    // The holder's pid is gone.
+    expect(await freeWith(lockOf(77), {})).toBe(true)
+    // The pid now runs a process that started at another time: the holder is gone and the pid was reused.
+    expect(await freeWith(lockOf(77), { proc: (pid) => procLine(pid, "9999") })).toBe(true)
+    // The same process, or one whose start time the lock did not record, still holds it.
+    expect(await freeWith(lockOf(77), { proc: (pid) => procLine(pid, "4242") })).toBe(false)
+    expect(await freeWith(lockOf(77, null), { proc: (pid) => procLine(pid, "9999") })).toBe(false)
+    // A stopped container holds nothing; a check that cannot run counts as held.
+    expect(await freeWith(lockOf(77), { proc: fail(1, "Error response from daemon: container abc is not running") })).toBe(true)
+    expect(await freeWith(lockOf(77), { proc: fail(undefined, "Error: No such container: ouro-butler") })).toBe(true)
+    expect(await freeWith(lockOf(77), { proc: fail(126, "permission denied") })).toBe(false)
+    // A lock that does not parse is held while fresh (a writer may be mid-write) and stale after 30 s.
+    expect(await freeWith("{\"pid\":1}", {})).toBe(false)
+    expect(await freeWith("{\"pid\":1}", {}, 31_000)).toBe(true)
+  }, 60_000)
+
+  it("removes the marker when recording HEAD throws after the pause", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = bracketHost(repo)
+    const sync = (run.host as Record<string, any>).sync
+    sync.head = () => { throw new Error("not a git repository") }
+    await expect(gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })).rejects.toThrow("not a git repository")
+    expect(fs.existsSync(repo.marker)).toBe(false)
+    expect(run.seenDuringRun).toEqual([])
+  }, 60_000)
+
+  it("checks the read-only turn's commits like any case's", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = bracketHost(repo, { latencyWrites: () => repo.put("diary/today.md", `asked: ${gate.LATENCY_WORDS}\n`) })
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(byResult(suite, "no-sync-residue")!.checks[2]).toEqual({ name: "those commits add none of the gate's planted strings", ok: false, detail: "(replay)" })
+  }, 60_000)
+
+  it("reads the remote head from GitHub, and fails closed when it cannot", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    for (const [lsRemote, detail] of [
+      [() => { throw Object.assign(new Error("exit 128"), { stderr: "ouro-sync-ssh: refused" }) }, "exit 128"],
+      [() => "", "git ls-remote origin refs/heads/main listed no head"],
+      [() => `${"f".repeat(40)}\trefs/heads/main\n`, `${"f".repeat(40)}`],
+    ] as Array<[() => string, string]>) {
+      const run = bracketHost(repo, { lsRemote })
+      const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined, liveResults: [{ id: "no-sync-residue", status: "fail" }] })
+      const residue = byResult(suite, "no-sync-residue")!
+      expect(residue.status).toBe("fail")
+      expect(residue.checks[1]).toMatchObject({ name: "the Butler's commits since the run began could be read", ok: false, detail: expect.stringContaining(detail) })
+      expect(suite.summary.failed).toContain("no-sync-residue")
+    }
   }, 60_000)
 
   it("removes the marker when a case throws, and runs no sync", async () => {
@@ -2665,7 +2765,10 @@ describe("bundle sync around the run (M1c)", () => {
   describe("sync latency", () => {
     it("reads the pull and the commit from the turn's own events", () => {
       const at = (event: string, ms: number) => ({ event, at: ms })
-      expect(gate.syncIntervals([at("heart.sync_push_end", 40), at("heart.sync_pull_start", 0), at("heart.sync_pull_end", 30), at("heart.sync_push_start", 35)])).toEqual({ pull: { ms: 30, next: 2 }, push: { ms: 5, next: 4 }, complete: true })
+      // The commit is timed to heart.sync_commit_end; the network push after it is not.
+      expect(gate.syncIntervals([at("heart.sync_push_end", 4000), at("heart.sync_pull_start", 0), at("heart.sync_pull_end", 30), at("heart.sync_push_start", 35), at("heart.sync_commit_end", 40)])).toEqual({ pull: { ms: 30, next: 2 }, commit: { ms: 5, next: 4 }, complete: true })
+      // A push_end with no commit before it: sync was busy, so no commit was timed.
+      expect(gate.syncIntervals([at("heart.sync_pull_start", 0), at("heart.sync_pull_end", 30), at("heart.sync_push_start", 35), at("heart.sync_push_end", 36)])).toMatchObject({ commit: { ms: null, problem: "it ended with heart.sync_push_end" }, complete: false })
       expect(gate.syncIntervals([])).toMatchObject({ pull: { ms: null, problem: "no heart.sync_pull_start was logged" }, complete: false })
       expect(gate.syncIntervals([at("heart.sync_pull_start", 0)])).toMatchObject({ pull: { ms: null, problem: "no end was logged after heart.sync_pull_start" } })
       expect(gate.syncIntervals([at("heart.sync_pull_start", 0), at("heart.sync_paused", 1)])).toMatchObject({ pull: { ms: null, problem: "it ended with heart.sync_paused" } })
@@ -2732,6 +2835,16 @@ describe("bundle sync around the run (M1c)", () => {
   it("parses porcelain paths, renames and quotes included", () => {
     expect(gate.porcelainPaths(' M psyche/TACIT.md\nR  old.md -> new.md\n?? "with space.md"\n')).toEqual(["psyche/TACIT.md", "new.md", "with space.md"])
     expect(gate.porcelainPaths(undefined)).toEqual([])
+  })
+
+  it("scans status for paths sync must never commit, and serves the cutover's step 10 the same scan", async () => {
+    const status = "?? mcp/keys/api.token\n M friends/f1.json\n?? tool-profiles.json\n?? notes/today.md\nA  .env.local\n"
+    expect(gate.statusProblems(status)).toEqual(["mcp/keys/api.token", "tool-profiles.json", ".env.local"])
+    const out: string[] = []
+    expect(await gate.main(["status-scan"], { out: (t: string) => out.push(t), err: (t: string) => out.push(t) }, { readStdin: () => status })).toBe(0)
+    expect(out).toEqual(["mcp/keys/api.token", "tool-profiles.json", ".env.local"])
+    const cli = spawnSync(process.execPath, [SCRIPT, "status-scan"], { input: status, encoding: "utf8" })
+    expect([cli.status, cli.stdout]).toEqual([0, "mcp/keys/api.token\ntool-profiles.json\n.env.local\n"])
   })
 
   it("passes --backup-dir to the host", async () => {

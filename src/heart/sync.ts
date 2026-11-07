@@ -1558,6 +1558,8 @@ export function postTurnPush(agentRoot: string, config: SyncConfig, agentName: s
     const repairFailure = repairInterrupted(agentRoot, agentName)
     if (repairFailure) return repairFailure
     commitLocalChanges(agentRoot, agentName, "sync: post-turn update")
+    // The turn waits only up to here: the network push, when there is one, runs after it.
+    emitNervesEvent({ component: "heart", event: "heart.sync_commit_end", message: "post-turn commit done", meta: { agentRoot } })
     const remote = hasRemote(agentRoot, agentName, config)
     if (remote && readPreviousFailure(agentRoot)?.classification === "pull_rebase_conflict") {
       // The push would be rejected until the conflict is merged; the next integrate retries it.
