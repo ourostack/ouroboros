@@ -5,6 +5,9 @@
 set -u
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# The character checks below use ranges, which follow the locale under bash.
+LC_ALL=C
+export LC_ALL
 
 refuse() {
   printf 'ouro-sync-ssh: refused: %s\n' "$1" >&2

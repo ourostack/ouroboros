@@ -41,7 +41,7 @@ describe("ouro-sync-ssh", () => {
   it("is a root-owned-at-install POSIX sh script that execs ssh with the fixed key, host keys and host", () => {
     expect(WRAPPER.startsWith("#!/bin/sh\n")).toBe(true)
     expect(WRAPPER).toContain("exec /usr/bin/ssh -i /run/ouro-sync/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \\\n  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes \\\n  -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \\\n  -F /dev/null git@github.com \"$command\"\n")
-    expect(WRAPPER).toContain("\nPATH=/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\n")
+    expect(WRAPPER).toContain("\nPATH=/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\n# The character checks below use ranges, which follow the locale under bash.\nLC_ALL=C\nexport LC_ALL\n")
     expect(WRAPPER).not.toMatch(/\b(grep|sed|awk|tr|cut)\b/u)
     expect(fs.statSync("deploy/unraid/ouro-sync-ssh").mode & 0o777).toBe(0o755)
     const check = spawnSync("sh", ["-n", "deploy/unraid/ouro-sync-ssh"], { encoding: "utf8" })
@@ -117,4 +117,14 @@ describe("ouro-sync-ssh", () => {
       expect(result.argv).toBeNull()
     }
   })
+
+  it.each(["git-upload-pack 'o/ré'", "git-upload-pack 'o/ß'", "git-upload-pack 'ö/r'"])(
+    "refuses %j under bash with a UTF-8 locale, because the character ranges are pinned to C",
+    (command) => {
+      const result = run(["git@github.com", command], "bash", { ...process.env, LC_ALL: "en_US.UTF-8", LANG: "en_US.UTF-8" })
+      expect(result.status, result.stderr).toBe(2)
+      expect(result.stderr).toBe("ouro-sync-ssh: refused: only git-upload-pack or git-receive-pack for one repository is allowed\n")
+      expect(result.argv).toBeNull()
+    },
+  )
 })

@@ -306,18 +306,7 @@ function runGitAsync(
     const pid = child.pid as number
     inFlightChildren.add(pid)
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
-    const signalGroup = (name: NodeJS.Signals): void => {
-      try {
-        process.kill(-pid, name)
-      } catch {
-        // The group is already gone.
-      }
-    }
-    const killGroup = (): void => {
-      signalGroup("SIGTERM")
-      // Not cleared when git closes: whatever in the group outlived the SIGTERM still gets the SIGKILL.
-      setTimeout(() => signalGroup("SIGKILL"), __testHooks.killGraceMs ?? SYNC_KILL_GRACE_MS).unref()
-    }
+    const killGroup = (): void => killSyncGroup(pid)
     const onAbort = (): void => {
       aborted = true
       killGroup()
@@ -341,6 +330,25 @@ function runGitAsync(
     child.on("close", (code) => finish(code))
     if (signal?.aborted) onAbort()
   })
+}
+
+function signalSyncGroup(pid: number, name: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, name)
+  } catch {
+    // The group is already gone.
+  }
+}
+
+/**
+ * SIGTERM to a network git child's process group, then SIGKILL after the
+ * grace. sudo relays only the SIGTERM to the ouro-sync ssh, which the agent's
+ * uid cannot signal. The SIGKILL timer is not cleared when git closes: whatever
+ * in the group outlived the SIGTERM still gets it.
+ */
+function killSyncGroup(pid: number): void {
+  signalSyncGroup(pid, "SIGTERM")
+  setTimeout(() => signalSyncGroup(pid, "SIGKILL"), __testHooks.killGraceMs ?? SYNC_KILL_GRACE_MS).unref()
 }
 
 // ---------- termination ----------
@@ -367,13 +375,7 @@ export function abortInFlightSync(): void {
   const children = inFlightChildren.size
   const locks = heldLocks.size
   if (children === 0 && locks === 0) return
-  for (const pid of inFlightChildren) {
-    try {
-      process.kill(-pid, "SIGKILL")
-    } catch {
-      // The group is already gone.
-    }
-  }
+  for (const pid of inFlightChildren) killSyncGroup(pid)
   inFlightChildren.clear()
   for (const handle of [...heldLocks]) handle.release()
   emitNervesEvent({

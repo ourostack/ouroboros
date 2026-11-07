@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import * as net from "node:net"
 import { createHash } from "node:crypto"
-import { spawnSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 import { createSanctuaryInteractiveControl } from "../../../senses/sanctuary-interactive-control"
 
@@ -17,10 +17,11 @@ function extractRunbookFunction(runbook: string, name: string): string {
   return runbook.slice(start, end + "\n    }".length).split("\n").map((line) => line.replace(/^ {4}/u, "")).join("\n")
 }
 
-function runConditionalHelper(script: string, failKey: string, env: Record<string, string> = {}) {
+function runConditionalHelper(script: string, failKey: string, env: Record<string, string> = {}, timeoutMs?: number) {
   return spawnSync("/bin/sh", ["-c", script, "runbook-helper-test", failKey], {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    ...(timeoutMs === undefined ? {} : { timeout: timeoutMs, killSignal: "SIGKILL" as const }),
   })
 }
 
@@ -2929,13 +2930,15 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
 
   describe("bundle sync in the production audits", () => {
     const agentJsonPath = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json"
-    function runAudit(agentJson: string | null | { symlinkTo: string }, extra: string, call: string) {
+    function runAudit(agentJson: string | null | { symlinkTo: string } | { special: "fifo" | "directory" }, extra: string, call: string) {
       const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
       const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sync-audit-"))
       try {
         const agentPath = path.join(testRoot, "agent.json")
         if (typeof agentJson === "string") fs.writeFileSync(agentPath, agentJson)
-        else if (agentJson) fs.symlinkSync(agentJson.symlinkTo, agentPath)
+        else if (agentJson && "symlinkTo" in agentJson) fs.symlinkSync(agentJson.symlinkTo, agentPath)
+        else if (agentJson?.special === "fifo") execFileSync("mkfifo", [agentPath])
+        else if (agentJson?.special === "directory") fs.mkdirSync(agentPath)
         const helpers = ["bundle_sync_enabled", "audit_effective", "audit_registered_dockerman_template"]
           .map((name) => extractRunbookFunction(runbook, name)).join("\n")
           .replace("/usr/local/bin/node", JSON.stringify(process.execPath))
@@ -2953,7 +2956,7 @@ docker() {
 }
 ${helpers}
 ${call}`
-        return runConditionalHelper(script, "unused", { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}`, RUNNER: `sha256:${"b".repeat(64)}`, VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.987", ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png", EXTRA: extra })
+        return runConditionalHelper(script, "unused", { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}`, RUNNER: `sha256:${"b".repeat(64)}`, VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.987", ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png", EXTRA: extra }, 10_000)
       } finally {
         fs.rmSync(testRoot, { recursive: true, force: true })
       }
@@ -2999,6 +3002,18 @@ ${call}`
         }
       } finally {
         fs.rmSync(target, { force: true })
+      }
+    })
+
+    it.each(["fifo", "directory"] as const)("refuses a %s at agent.json fast, with a plain line, instead of blocking", (special) => {
+      for (const [extra, call] of [["bundle", effective], ["", registered]] as const) {
+        const started = Date.now()
+        const result = runAudit({ special }, extra, call)
+        expect(result.signal, "the read blocked until the test's timeout").toBeNull()
+        expect(Date.now() - started).toBeLessThan(5_000)
+        expect(result.status).not.toBe(0)
+        expect(result.stdout).not.toContain("RUN")
+        expect(result.stderr).toBe("bundle sync check: agent.json is not a regular file; refusing to read it\n")
       }
     })
 

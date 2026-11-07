@@ -47,7 +47,8 @@ Effective-spec audit helper:
   packaged auditor from the explicit validated runner image argument, and
   removes its mode-0600 inputs on success or shell exit. bundle_sync_enabled
   prints true or false from the bundle's agent.json and fails, with a fixed
-  message, when it is a symlink or cannot be read or parsed; audits of the container being installed pass `bundle` so the
+  message, when it is a symlink, is not a regular file (a FIFO would block the
+  read), or cannot be read or parsed; audits of the container being installed pass `bundle` so the
   auditor requires the sync key mount while sync is on:
     bundle_sync_enabled() {
       BUNDLE_AGENT_JSON=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json
@@ -59,7 +60,11 @@ Effective-spec audit helper:
         const fs = require("node:fs");
         let agent;
         try {
-          const fd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          const fd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+          if (!fs.fstatSync(fd).isFile()) {
+            process.stderr.write("bundle sync check: agent.json is not a regular file; refusing to read it\n");
+            process.exit(1);
+          }
           agent = JSON.parse(fs.readFileSync(fd, "utf8"));
         } catch {
           process.stderr.write("bundle sync check: agent.json is unreadable or not valid JSON\n");

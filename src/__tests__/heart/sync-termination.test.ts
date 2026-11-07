@@ -3,13 +3,13 @@
  * lock is released. One test runs a real child process that has no SIGTERM
  * handler of its own (like the agent worker); the rest run in-process.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { execFileSync, spawn } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-import { abortInFlightSync, postTurnPush } from "../../heart/sync"
+import { __testHooks, abortInFlightSync, postTurnPush } from "../../heart/sync"
 
 const OWNER = ["-c", "user.name=Owner", "-c", "user.email=owner@example.invalid", "-c", "commit.gpgsign=false"]
 const SYNC_SOURCE = path.resolve(__dirname, "../../heart/sync.ts")
@@ -227,6 +227,37 @@ describe("signals during a sync", () => {
       // Nothing left to abort.
       expect(() => abortInFlightSync()).not.toThrow()
     } finally {
+      fs.writeFileSync(gate, "")
+      if (group) killGroup(group.pgid)
+    }
+  }, 30_000)
+
+  it("shutdown sends the push's group SIGTERM first, so sudo can relay it, then SIGKILL after the grace", async () => {
+    const { agent, started, gate } = setup()
+    let group: { pid: number; pgid: number } | undefined
+    __testHooks.killGraceMs = 400
+    const kills: Array<{ pid: number; sig: string; at: number }> = []
+    const realKill = process.kill.bind(process)
+    const spy = vi.spyOn(process, "kill").mockImplementation((pid: number, sig?: string | number) => {
+      if (pid < 0) kills.push({ pid, sig: String(sig), at: Date.now() })
+      return realKill(pid, sig)
+    })
+    try {
+      const result = postTurnPush(agent, { enabled: true, remote: "origin" }, "butler")
+      await waitFor(() => fs.existsSync(started) && fs.readFileSync(started, "utf-8").includes(" "))
+      group = hanging(started)
+
+      abortInFlightSync()
+
+      expect(kills.map((k) => k.sig)).toEqual(["SIGTERM"])
+      expect((await result.push!).ok).toBe(false)
+      await waitFor(() => kills.length >= 2, 5_000)
+      expect(kills.map((k) => k.sig)).toEqual(["SIGTERM", "SIGKILL"])
+      expect(kills[1]!.pid).toBe(kills[0]!.pid)
+      expect(kills[1]!.at - kills[0]!.at).toBeGreaterThanOrEqual(350)
+    } finally {
+      spy.mockRestore()
+      __testHooks.killGraceMs = undefined
       fs.writeFileSync(gate, "")
       if (group) killGroup(group.pgid)
     }
