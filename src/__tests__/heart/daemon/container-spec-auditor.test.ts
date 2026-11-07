@@ -749,3 +749,124 @@ describe("canonical-gateway psyche mount shapes", () => {
     for (const result of auditTemplates(template)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
   })
 })
+
+describe("canonical-gateway bundle sync key mount", () => {
+  const image = "sha256:" + "a".repeat(64)
+  const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+  const gatewayConfigs = [
+    '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/ouro-authority</Config>',
+    '<Config Target="/etc/ouro/trust/sanctuary" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/trust/sanctuary</Config>',
+  ]
+  const syncConfig = (mode: string) => `<Config Target="/run/ouro-sync" Mode="${mode}" Type="Path">/mnt/user/appdata/ouro-butler/sync</Config>`
+  function gatewayTemplate(extra: string[]): string {
+    return stagedTemplate().replace(`sha256:${"a".repeat(64)}`, expectedImageReference).replace("</Container>", `${[...gatewayConfigs, ...extra].join("\n")}\n</Container>`)
+  }
+  function audit(spec: unknown, syncEnabled?: boolean) {
+    return auditSpec(spec, { mountContract: "canonical-gateway", expectedImage: image, expectedImageReference, expectedIcon, expectedEnvironment, syncEnabled })
+  }
+  function auditTemplates(templateXml: string, syncEnabled?: boolean) {
+    return [
+      auditPersistent({ mountContract: "canonical-gateway", templateXml, runtimePolicyText: policy, expectedImageReference, syncEnabled }),
+      auditStaged({ mountContract: "canonical-gateway", templateXml: templateXml.replace(expectedImageReference, image), runtimePolicyText: policy, expectedImage: image, syncEnabled }),
+    ]
+  }
+
+  it.each([false, true])("fails a container without the mount while sync is enabled, and passes it while sync is off (psyche mount: %s)", (psycheMount) => {
+    const spec = validInspect(true, { psycheMount })
+    expect(audit(spec, true)).toEqual({ ok: false, violations: ["effective mounts do not match the selected Sanctuary mount contract"] })
+    expect(audit(spec, false)).toEqual({ ok: true, violations: [] })
+    expect(audit(spec)).toEqual({ ok: true, violations: [] })
+  })
+
+  it.each([false, true])("passes a container with the read-only mount whether sync is on or off (psyche mount: %s)", (psycheMount) => {
+    const spec = validInspect(true, { psycheMount, syncMount: true })
+    expect(audit(spec, true)).toEqual({ ok: true, violations: [] })
+    expect(audit(spec, false)).toEqual({ ok: true, violations: [] })
+  })
+
+  it("rejects a read-write key mount", () => {
+    const spec = validInspect(true, { syncMount: true })
+    spec.Mounts.find((mount) => mount.Destination === "/run/ouro-sync")!.RW = true
+    for (const syncEnabled of [true, false]) expect(audit(spec, syncEnabled).violations).toContain("effective mounts do not match the selected Sanctuary mount contract")
+  })
+
+  it("does not accept the key mount under the pre-gateway contract", () => {
+    const spec = validInspect(false)
+    spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/sync", Destination: "/run/ouro-sync", RW: false, Propagation: "rprivate" })
+    expect(auditSpec(spec, { mountContract: "canonical-pre-gateway", expectedImage: image, expectedImageReference, expectedIcon, expectedEnvironment, syncEnabled: true }).ok).toBe(false)
+  })
+
+  it("fails a template without the key Config while sync is enabled, and passes it while sync is off", () => {
+    for (const result of auditTemplates(gatewayTemplate([]), true)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+    for (const result of auditTemplates(gatewayTemplate([]), false)) expect(result).toEqual({ ok: true, violations: [] })
+  })
+
+  it("passes a template with the read-only key Config, with or without the psyche Config, and rejects a read-write one", () => {
+    const psyche = '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro/psyche" Mode="ro" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche</Config>'
+    for (const extra of [[syncConfig("ro")], [psyche, syncConfig("ro")]]) {
+      for (const syncEnabled of [true, false]) {
+        for (const result of auditTemplates(gatewayTemplate(extra), syncEnabled)) expect(result).toEqual({ ok: true, violations: [] })
+      }
+    }
+    for (const result of auditTemplates(gatewayTemplate([syncConfig("rw")]), true)) expect(result.violations).toContain("template Config entries must equal the canonical path binds")
+  })
+
+  describe("through the auditor CLI", () => {
+    function withFiles(files: Record<string, string>, run: (dir: string) => void) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sync-audit-cli-"))
+      try {
+        for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text)
+        run(dir)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    function cli(args: string[]) {
+      const output: string[] = []
+      const status = runAuditorCli(args, { write: (text) => output.push(text) })
+      return { status, output: output.join("") }
+    }
+
+    it.each([[false, 0], [true, 1]] as const)("audits a running container with no key mount (--sync-enabled %s exits %i)", (syncEnabled, expected) => {
+      withFiles({ "inspect.json": JSON.stringify([validInspect(true)]), "image.json": JSON.stringify([validImageInspect()]) }, (dir) => {
+        const args = ["--inspect", path.join(dir, "inspect.json"), "--image-inspect", path.join(dir, "image.json"), "--expected-image", image, "--expected-image-reference", expectedImageReference, "--expected-icon", expectedIcon, "--mount-contract", "canonical-gateway"]
+        expect(cli([...args, "--sync-enabled", String(syncEnabled)]).status).toBe(expected)
+        expect(cli(["--sync-enabled", String(syncEnabled), ...args]).status).toBe(expected)
+      })
+    })
+
+    it("passes a running container with the key mount when sync is on", () => {
+      withFiles({ "inspect.json": JSON.stringify([validInspect(true, { syncMount: true })]), "image.json": JSON.stringify([validImageInspect()]) }, (dir) => {
+        expect(cli(["--sync-enabled", "true", "--inspect", path.join(dir, "inspect.json"), "--image-inspect", path.join(dir, "image.json"), "--expected-image", image, "--expected-image-reference", expectedImageReference, "--expected-icon", expectedIcon, "--mount-contract", "canonical-gateway"])).toEqual({ status: 0, output: '{"ok":true,"violations":[]}\n' })
+      })
+    })
+
+    it("audits staged and persistent templates with no key Config against the flag", () => {
+      withFiles({ "staged.xml": gatewayTemplate([]).replace(expectedImageReference, image), "persistent.xml": gatewayTemplate([]), "policy.json": policy }, (dir) => {
+        const staged = ["--template", path.join(dir, "staged.xml"), "--runtime-policy", path.join(dir, "policy.json"), "--expected-image", image, "--mount-contract", "canonical-gateway"]
+        const persistent = ["--persistent-template", path.join(dir, "persistent.xml"), "--runtime-policy", path.join(dir, "policy.json"), "--expected-image-reference", expectedImageReference, "--mount-contract", "canonical-gateway"]
+        for (const args of [staged, persistent]) {
+          expect(cli([...args, "--sync-enabled", "true"]).status).toBe(1)
+          expect(cli([...args, "--sync-enabled", "false"]).status).toBe(0)
+          expect(cli(args).status).toBe(0)
+        }
+      })
+    })
+
+    it.each([
+      [["--sync-enabled"]],
+      [["--sync-enabled", ""]],
+      [["--sync-enabled", "yes"]],
+      [["--sync-enabled", "true", "--sync-enabled", "true"]],
+    ])("rejects a malformed sync flag %j as usage", (flag) => {
+      const result = cli(["--template", "/x.xml", "--runtime-policy", "/p.json", "--expected-image", image, "--mount-contract", "canonical-gateway", ...flag])
+      expect(result.status).toBe(2)
+      expect(result.output).toContain("--sync-enabled true|false")
+    })
+  })
+
+  it("the shipped sanctuary.xml mounts the key read-only", () => {
+    const shipped = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/unraid/sanctuary.xml"), "utf8")
+    expect(shipped).toMatch(/<Config Name="Bundle sync key \(read-only\)" Target="\/run\/ouro-sync" Default="\/mnt\/user\/appdata\/ouro-butler\/sync" Mode="ro" [^>]*>\/mnt\/user\/appdata\/ouro-butler\/sync<\/Config>/u)
+  })
+})

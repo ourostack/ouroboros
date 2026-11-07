@@ -6,6 +6,7 @@ import { parse as parseShell, quote as quoteShell, type ControlOperator } from "
 import { emitNervesEvent } from "../nerves/runtime"
 import { validateCommerceAuthority } from "../commerce/store"
 import { getRepoRoot } from "../heart/identity"
+import { syncSecretDir } from "../heart/sync"
 
 export interface GuardContext {
   readPaths: ReadonlySet<string>
@@ -33,6 +34,7 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
+  unreadablePath: "that path is protected — i can't read it.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
   needsTrust: "i'd need a closer friend to vouch for you before i can do that.",
@@ -475,6 +477,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (psycheShellWriteRefused(command, context.agentRoot)) return deny(PSYCHE_REFUSAL)
     if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
     if (productShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
+    if (bundleGitRefused(command, context.agentRoot)) return deny(BUNDLE_GIT_REFUSAL)
+    if (syncSecretShellRefused(command)) return deny(REASONS.unreadablePath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
 
@@ -1435,6 +1439,265 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   return checkWriteTrustGuardrails(toolName, args, context)
 }
 
+// --- git aimed at this agent's own bundle ---
+// Sync owns the bundle's repository: it commits, merges and pushes under its own lock. A git command from the shell that
+// works in the bundle, or points git at it, is refused. Every directory the command could be working in counts: where the
+// shell starts, each cd, pushd, env -C and git -C, and the --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE it names.
+// A git call whose directory the guard cannot work out (a variable, a glob, cd -) is refused too.
+
+export const BUNDLE_GIT_REFUSAL = "my bundle syncs itself; I don't run git in it."
+
+const GIT_PATH_VARIABLES = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"])
+const GIT_GUARD_SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"])
+/** The commands a runner (xargs, find -exec, timeout) can start that the scan follows into. */
+const RUNNER_GIT_TARGETS: ReadonlySet<string | undefined> = new Set(["git", "env", "eval", ...GIT_GUARD_SHELLS])
+const DECLARATION_BUILTINS = new Set(["export", "declare", "typeset", "local", "readonly"])
+// Commands that run another command given as their arguments; the guard looks for git (or a shell) among those arguments.
+const COMMAND_RUNNERS = new Set(["xargs", "find", "timeout", "nice", "ionice", "stdbuf", "setsid", "flock", "watch", "parallel", "doas", "chronic", "unbuffer", "chroot"])
+/** git global options that take their value as the next word. */
+const GIT_VALUE_OPTIONS = new Set(["--namespace", "--exec-path", "--super-prefix", "--attr-source"])
+
+interface GitShellScan {
+  /** Directories the command changes to, in order (null: one the guard cannot work out). */
+  cwdTargets: Array<string | null>
+  /** GIT_DIR, GIT_WORK_TREE and GIT_COMMON_DIR values set anywhere in the command. */
+  gitPaths: string[]
+  /** The words after each `git`. */
+  calls: string[][]
+  /** A shell reading its script from stdin, which the guard cannot see. */
+  opaqueShell: boolean
+  /** git config set from the environment (GIT_CONFIG_*), which can define an alias that runs anything. */
+  configEnv: boolean
+  /** CDPATH is set, so a relative cd could land anywhere. */
+  cdpath: boolean
+}
+
+function unknownShellWord(word: string): boolean {
+  return word.includes(SHELL_PARAMETER_MARKER) || word.includes(SHELL_ARRAY_EXPANSION) || /[*?[\]{}]/.test(word)
+}
+
+function shellPathWord(word: string | undefined): string | null {
+  return word === undefined || unknownShellWord(word) ? null : expandHome(word)
+}
+
+function noteGitAssignment(token: string, scan: GitShellScan, known: Map<string, string>): boolean {
+  const assignment = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s)
+  if (!assignment) return false
+  const [, name, value] = assignment as unknown as [string, string, string]
+  if (GIT_PATH_VARIABLES.has(name)) scan.gitPaths.push(value)
+  if (/^GIT_CONFIG(?:_|$)/.test(name)) scan.configEnv = true
+  if (name === "CDPATH") scan.cdpath = true
+  if (unknownShellWord(value)) known.delete(name)
+  else known.set(name, value)
+  return true
+}
+
+function scanShellForGit(command: string, scan: GitShellScan, depth: number): void {
+  if (depth >= 32) {
+    scan.opaqueShell = true
+    return
+  }
+  const parsed = parseShellCommands(executableShellView(command))
+  const known = new Map<string, string>()
+  for (const name of STABLE_VARIABLES) if (process.env[name]) known.set(name, process.env[name]!)
+  for (const raw of parsed.commands) {
+    const tokens = raw.map((token) => resolveKnownShellParameters(token, known, parsed.parameterNames))
+    let index = 0
+    while (index < tokens.length && noteGitAssignment(tokens[index]!, scan, known)) index += 1
+    if (DECLARATION_BUILTINS.has(tokens[index] ?? "")) {
+      for (const token of tokens.slice(index + 1)) noteGitAssignment(token, scan, known)
+      continue
+    }
+    if (index < tokens.length) scanCommandForGit(tokens, index, scan, known, depth)
+  }
+}
+
+function scanCommandForGit(tokens: readonly string[], start: number, scan: GitShellScan, known: Map<string, string>, depth: number): void {
+  let index = start
+  for (let hops = 0; hops <= tokens.length; hops += 1) {
+    const resolved = resolveShellCommand(tokens, index)
+    // A wrapper's own options: env -C and sudo --chdir change the directory, env NAME=value sets git's variables.
+    for (let k = index; k < resolved.index; k += 1) {
+      const word = tokens[k]!
+      if (word === "-C" || word === "--chdir") scan.cwdTargets.push(shellPathWord(tokens[k + 1]))
+      else if (word.startsWith("--chdir=")) scan.cwdTargets.push(shellPathWord(word.slice("--chdir=".length)))
+      else if (/^-C./.test(word)) scan.cwdTargets.push(shellPathWord(word.slice(2)))
+      else noteGitAssignment(word, scan, known)
+    }
+    if (resolved.script !== undefined) return scanShellForGit(resolved.script, scan, depth + 1)
+    index = resolved.index
+    if (index >= tokens.length) return
+    // A command word the guard cannot read ($RUN git status) could be anything, git or a wrapper around it.
+    if (unknownShellWord(tokens[index]!)) {
+      if (tokens.slice(index).some((word) => /(?:^|\/)git$/.test(word))) scan.opaqueShell = true
+      return
+    }
+    const executable = exactShellExecutable(tokens[index])!
+    if (executable === "git") {
+      scan.calls.push(tokens.slice(index + 1))
+      return
+    }
+    if (executable === "cd" || executable === "pushd") {
+      const target = tokens.slice(index + 1).find((word) => !/^-[LPe@]+$/.test(word))
+      const viaCdpath = target !== undefined && scan.cdpath && !path.isAbsolute(expandHome(target))
+      scan.cwdTargets.push(target === undefined ? (executable === "cd" ? os.homedir() : null) : target === "-" || viaCdpath ? null : shellPathWord(target))
+      return
+    }
+    if (GIT_GUARD_SHELLS.has(executable)) {
+      const option = tokens.findIndex((word, k) => k > index && /^-[^-]*c/.test(word))
+      if (option >= 0) return scanShellForGit(tokens[option + 1] ?? "", scan, depth + 1)
+      if (tokens.slice(index + 1).every((word) => word.startsWith("-"))) scan.opaqueShell = true
+      return
+    }
+    if (executable === "eval") return scanShellForGit(tokens.slice(index + 1).join(" "), scan, depth + 1)
+    if (!COMMAND_RUNNERS.has(executable)) return
+    // find -execdir runs its command in each directory it finds.
+    if (executable === "find" && tokens.some((word, k) => k > index && (word === "-execdir" || word === "-okdir"))) scan.cwdTargets.push(null)
+    // xargs -I/-i/--replace puts its input into the command's words.
+    if (executable === "xargs" && tokens.some((word, k) => k > index && /^(?:-I|-i|--replace)/.test(word))) scan.cwdTargets.push(null)
+    const next = tokens.findIndex((word, k) => k > index && RUNNER_GIT_TARGETS.has(exactShellExecutable(word)))
+    if (next < 0) return
+    index = next
+  }
+}
+
+/** Where one git call works and what it names: its directories after -C, then --git-dir, --work-tree, and init or clone targets. Null when a word is unknown. */
+function gitCallPaths(args: readonly string[], cwds: ReadonlyArray<string | null>): string[] | null {
+  let dirs = [...cwds]
+  const named: string[] = []
+  let index = 0
+  const value = (word: string | undefined): string | null => shellPathWord(word)
+  while (index < args.length) {
+    const word = args[index]!
+    if (word === "-C") {
+      const dir = value(args[index + 1])
+      if (dir === null) return null
+      dirs = dirs.map((cwd) => path.isAbsolute(dir) ? dir : cwd === null ? null : path.resolve(cwd, dir))
+      index += 2
+      continue
+    }
+    if (word === "--git-dir" || word === "--work-tree") {
+      const dir = value(args[index + 1])
+      if (dir === null) return null
+      named.push(dir)
+      index += 2
+      continue
+    }
+    if (word.startsWith("--git-dir=") || word.startsWith("--work-tree=")) {
+      const dir = value(word.slice(word.indexOf("=") + 1))
+      if (dir === null) return null
+      named.push(dir)
+      index += 1
+      continue
+    }
+    if (word === "-c") {
+      const setting = args[index + 1] ?? ""
+      // An alias can run any command, git in any directory included.
+      if (/^alias\./i.test(setting)) return null
+      const worktree = setting.match(/^core\.worktree=(.*)$/is)
+      if (worktree) {
+        const dir = value(worktree[1])
+        if (dir === null) return null
+        named.push(dir)
+      }
+      index += 2
+      continue
+    }
+    if (word === "--config-env" || word.startsWith("--config-env=")) return null
+    if (GIT_VALUE_OPTIONS.has(word)) {
+      index += 2
+      continue
+    }
+    if (word.startsWith("-")) {
+      index += 1
+      continue
+    }
+    // The subcommand. init and clone also name a directory to create or fill.
+    const positional = args.slice(index + 1).filter((arg) => !arg.startsWith("-"))
+    const separate = args.slice(index + 1).flatMap((arg, k, rest) => arg === "--separate-git-dir" ? [rest[k + 1]] : arg.startsWith("--separate-git-dir=") ? [arg.slice("--separate-git-dir=".length)] : [])
+    const targets = word === "init" ? [...positional.slice(-1), ...separate] : word === "clone" && positional.length >= 2 ? [...positional.slice(-1), ...separate] : []
+    for (const target of targets) {
+      const dir = value(target)
+      if (dir === null) return null
+      named.push(dir)
+    }
+    break
+  }
+  if (dirs.some((dir) => dir === null)) return null
+  const known = dirs as string[]
+  return [...known, ...named.flatMap((dir) => path.isAbsolute(dir) ? [dir] : known.map((cwd) => path.resolve(cwd, dir)))]
+}
+
+/** Whether a shell command could run git in the agent's bundle. Exported for tests. */
+export function bundleGitRefused(command: string, agentRoot: string | undefined): boolean {
+  // Quotes and backslashes can split the word (g''it, "g"it, g\it); the shell joins it back.
+  const plain = command.replace(/['"\\]/g, "")
+  if (!agentRoot || !plain.includes("git")) return false
+  try {
+    const scan: GitShellScan = { cwdTargets: [], gitPaths: [], calls: [], opaqueShell: false, configEnv: false, cdpath: !!process.env.CDPATH }
+    scanShellForGit(command, scan, 0)
+    if (scan.opaqueShell && /(?:^|[^A-Za-z0-9_-])git(?:$|[^A-Za-z0-9_-])/.test(plain)) return true
+    if (scan.calls.length === 0) return false
+    // Every directory the command could be working in: where the shell starts, and each change, from each earlier one.
+    const cwds: Array<string | null> = [process.cwd()]
+    for (const target of scan.cwdTargets) {
+      if (target === null) cwds.push(null)
+      else cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => cwd === null ? null : path.resolve(cwd, target))))
+    }
+    const roots = [path.resolve(agentRoot), canonicalize(path.resolve(agentRoot))]
+    // git config from the environment can hide a git aimed at the bundle in an alias: refuse it when the command names the bundle.
+    if (scan.configEnv && [...roots, path.basename(agentRoot)].some((root) => plain.includes(root))) return true
+    const inBundle = (target: string): boolean => [target, canonicalize(target)].some((form) => roots.some((root) => form === root || form.startsWith(`${root}${path.sep}`)))
+    for (const call of scan.calls) {
+      const paths = gitCallPaths(call, cwds)
+      if (paths === null) return true
+      const variables = scan.gitPaths.map((value) => shellPathWord(value))
+      if (variables.some((value) => value === null)) return true
+      const bases = paths.slice(0, cwds.length)
+      const named = (variables as string[]).flatMap((value) => path.isAbsolute(value) ? [value] : bases.map((base) => path.resolve(base, value)))
+      if ([...paths, ...named].some(inBundle)) return true
+    }
+    return false
+  } catch {
+    // The command could not be parsed, or the filesystem could not say where a path lands: refuse rather than guess.
+    return true
+  }
+}
+
+// --- the sync key's directory, closed to the read-only file tools ---
+
+/** The directories read_file, glob and grep would read for these arguments, as the tools resolve them. */
+function readToolTargets(toolName: string, args: Record<string, string>): Array<{ target: string; recursive: boolean }> {
+  const local = (p: string): string => path.isAbsolute(p) ? p : path.resolve(getRepoRoot(), p)
+  if (toolName === "read_file") return [{ target: local(args.path ?? ""), recursive: false }]
+  if (toolName === "grep") return [{ target: local(args.path ?? ""), recursive: true }]
+  const cwd = args.cwd ? local(args.cwd) : process.cwd()
+  // The part of the pattern before its first glob segment is a directory the glob reads.
+  const segments = (args.pattern ?? "").split("/")
+  const firstGlob = segments.findIndex((segment) => /[*?[\]{}()!]/.test(segment))
+  const literal = (firstGlob < 0 ? segments : segments.slice(0, firstGlob)).join("/")
+  return [{ target: cwd, recursive: false }, { target: path.resolve(cwd, literal || "."), recursive: false }]
+}
+
+function syncSecretReadRefused(toolName: string, args: Record<string, string>): boolean {
+  try {
+    const lexical = path.resolve(syncSecretDir())
+    const secrets = [lexical, canonicalize(lexical)]
+    return readToolTargets(toolName, args).some(({ target, recursive }) => [target, canonicalize(target)].some((form) => secrets.some((secret) =>
+      form === secret || form.startsWith(`${secret}${path.sep}`) || (recursive && (form === path.parse(form).root || secret.startsWith(`${form}${path.sep}`))))))
+  } catch {
+    return true
+  }
+}
+
+/**
+ * A shell command that names the key's directory. The agent's uid cannot read
+ * the key; this only turns an accidental attempt into a plain refusal.
+ */
+function syncSecretShellRefused(command: string): boolean {
+  return command.includes(path.resolve(syncSecretDir()))
+}
+
 // --- main entry point ---
 
 export function guardInvocation(
@@ -1449,8 +1712,8 @@ export function guardInvocation(
     meta: { toolName },
   })
 
-  // Read-only tools are always allowed (no structural or trust guardrails)
-  if (READ_ONLY_TOOLS.has(toolName)) return allow
+  // Read-only tools skip the structural and trust guardrails; only the sync key's directory is closed to them.
+  if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args) ? deny(REASONS.unreadablePath) : allow
 
   // Layer 1: structural guardrails (always on)
   const structuralResult = checkStructuralGuardrails(toolName, args, context)

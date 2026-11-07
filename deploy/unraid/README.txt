@@ -45,7 +45,34 @@ Effective-spec audit helper:
   Before any sequence, define this helper. It captures one actual container
   inspect and its reviewed image inspect without printing either, invokes the
   packaged auditor from the explicit validated runner image argument, and
-  removes its mode-0600 inputs on success or shell exit:
+  removes its mode-0600 inputs on success or shell exit. bundle_sync_enabled
+  prints true or false from the bundle's agent.json and fails, with a fixed
+  message, when it is a symlink, is not a regular file (a FIFO would block the
+  read), or cannot be read or parsed; audits of the container being installed pass `bundle` so the
+  auditor requires the sync key mount while sync is on:
+    bundle_sync_enabled() {
+      BUNDLE_AGENT_JSON=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json
+      if test -L "$BUNDLE_AGENT_JSON"; then
+        printf '%s\n' "bundle sync check: agent.json is a symlink; refusing to read it" >&2
+        return 1
+      fi
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        let agent;
+        try {
+          const fd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+          if (!fs.fstatSync(fd).isFile()) {
+            process.stderr.write("bundle sync check: agent.json is not a regular file; refusing to read it\n");
+            process.exit(1);
+          }
+          agent = JSON.parse(fs.readFileSync(fd, "utf8"));
+        } catch {
+          process.stderr.write("bundle sync check: agent.json is unreadable or not valid JSON\n");
+          process.exit(1);
+        }
+        process.stdout.write(agent?.sync?.enabled === true ? "true" : "false");
+      ' "$BUNDLE_AGENT_JSON"
+    }
     audit_effective() {
       (
       AUDIT_CONTAINER=$1
@@ -54,6 +81,7 @@ Effective-spec audit helper:
       AUDIT_MOUNT_CONTRACT=${4-}
       AUDIT_EXPECTED_IMAGE_REFERENCE=${5-}
       AUDIT_EXPECTED_ICON=${6-}
+      AUDIT_SYNC_SOURCE=${7-}
       validate_exact_image_id "$AUDIT_EXPECTED_IMAGE" || return $?
       validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
       test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
@@ -62,6 +90,11 @@ Effective-spec audit helper:
         test -n "$AUDIT_EXPECTED_IMAGE_REFERENCE" || return 1
         test "$AUDIT_EXPECTED_ICON" = https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png || return 1
         set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" --expected-image-reference "$AUDIT_EXPECTED_IMAGE_REFERENCE" --expected-icon "$AUDIT_EXPECTED_ICON"
+        case "$AUDIT_SYNC_SOURCE" in
+          bundle) AUDIT_SYNC_ENABLED=$(bundle_sync_enabled) || return $?; set -- "$@" --sync-enabled "$AUDIT_SYNC_ENABLED" ;;
+          "") ;;
+          *) return 1 ;;
+        esac
         ;;
         legacy-alpha742) set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" ;;
         *) return 1 ;;
@@ -920,7 +953,8 @@ Effective-spec audit helper:
       validate_exact_image_id "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" || return $?
       printf '%s\n' "$REGISTERED_TEMPLATE_VERSION_IMAGE" | grep -Eq '^ghcr\.io/ourostack/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || return $?
       test -f "$REGISTERED_TEMPLATE_PATH" && test ! -L "$REGISTERED_TEMPLATE_PATH" || return 1
-      docker run --rm --pull=never --network=none --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh --mount "type=bind,src=$REGISTERED_TEMPLATE_PATH,dst=/audit/sanctuary.xml,readonly" "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /opt/ouro/deploy/unraid/container-runtime.json --expected-image-reference "$REGISTERED_TEMPLATE_VERSION_IMAGE" --mount-contract "$REGISTERED_TEMPLATE_MOUNT_CONTRACT" || return $?
+      REGISTERED_TEMPLATE_SYNC_ENABLED=$(bundle_sync_enabled) || return $?
+      docker run --rm --pull=never --network=none --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh --mount "type=bind,src=$REGISTERED_TEMPLATE_PATH,dst=/audit/sanctuary.xml,readonly" "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /opt/ouro/deploy/unraid/container-runtime.json --expected-image-reference "$REGISTERED_TEMPLATE_VERSION_IMAGE" --mount-contract "$REGISTERED_TEMPLATE_MOUNT_CONTRACT" --sync-enabled "$REGISTERED_TEMPLATE_SYNC_ENABLED" || return $?
     }
     verify_known_good_rollback_artifact() {
       EXPECTED_KNOWN_GOOD_IMAGE_ID=$1
@@ -1203,7 +1237,7 @@ Effective-spec audit helper:
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
         test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
         assert_only_running_butler ouro-butler || return $?
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" bundle || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
         chown 0:0 "$TEMPLATE_RECOVERY_INSPECTION" && chmod 0600 "$TEMPLATE_RECOVERY_INSPECTION" || return $?
         write_dockerman_recovery_evidence committing target-exact-committing "$TEMPLATE_RECOVERY_INSPECTION" "$TEMPLATE_RECOVERY_EVIDENCE" || return $?
@@ -1255,7 +1289,7 @@ Effective-spec audit helper:
         TEMPLATE_RECOVERY_LEGACY_EVIDENCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-legacy-evidence) || return $?
         test "$TEMPLATE_RECOVERY_LEGACY_EVIDENCE_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
         test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false || return 1
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" bundle || return $?
         start_only_butler_for_recovery || return $?
         wait_butler_ready ouro-butler || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
@@ -1265,7 +1299,7 @@ Effective-spec audit helper:
         enable_butler_autostart || return $?
         /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" mark-committing >/dev/null || return $?
       elif test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = absent && test "$TEMPLATE_RECOVERY_STATE" = committing && test "$TEMPLATE_RECOVERY_PRODUCTION_IMAGE_ID" = "$IMAGE_ID"; then
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" bundle || return $?
         wait_butler_ready ouro-butler || return $?
         verify_butler_autostart "1 0 0 0" || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
@@ -2109,12 +2143,13 @@ Update:
       INSTALLED_SPOOL_SIZE=$(findmnt -bn -o SIZE --target /boot/config/custom/ouro-events/spool)
       test "$INSTALLED_SPOOL_SIZE" -le 4194304
     }
+    STAGED_SYNC_ENABLED=$(bundle_sync_enabled)
     docker run --rm --pull=never --network=none \
       --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges \
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$VERSION_IMAGE" --mount-contract "$TARGET_MOUNT_CONTRACT"
+      "$IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$VERSION_IMAGE" --mount-contract "$TARGET_MOUNT_CONTRACT" --sync-enabled "$STAGED_SYNC_ENABLED"
     /usr/local/bin/node -e '
       const fs = require("node:fs");
       const [sourcePath, destinationPath, imageId] = process.argv.slice(1);
@@ -2134,7 +2169,7 @@ Update:
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_EXACT_TEMPLATE,dst=/audit/sanctuary.exact-image.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID" --mount-contract "$TARGET_MOUNT_CONTRACT"
+      "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID" --mount-contract "$TARGET_MOUNT_CONTRACT" --sync-enabled "$STAGED_SYNC_ENABLED"
     recover_dockerman_template_transaction
     recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
     classify_sanctuary_update_source
@@ -2301,7 +2336,7 @@ ouro-butler-rollback
     if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST" \
       && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
       && create_sanctuary_container "$IMAGE_ID" "$VERSION_IMAGE" "$TARGET_MOUNT_CONTRACT" \
-      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" bundle \
       && assert_only_running_butler - \
       && /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-activate >/dev/null \
       && assert_only_running_butler ouro-butler \
@@ -2646,7 +2681,7 @@ Restore:
       && rm -f "$HOST_RESTORE_INSTALLER" \
       && docker image inspect "$IMAGE_ID" >/dev/null \
       && create_sanctuary_container "$IMAGE_ID" "$RESTORE_VERSION_IMAGE" "$RESTORE_MOUNT_CONTRACT" \
-      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png bundle \
       && assert_only_running_butler - \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \

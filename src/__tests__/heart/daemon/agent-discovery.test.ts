@@ -237,7 +237,7 @@ describe("listAllBundleAgents", () => {
 
     expect(listEnabledBundleAgents()).toEqual(["real"])
     expect(listBundleSyncRows()).toEqual([
-      { agent: "real", enabled: false, remote: "origin" },
+      { agent: "real", enabled: false, remote: "origin", branch: "main" },
     ])
     expect(listAllBundleAgents()).toEqual([
       {
@@ -474,7 +474,7 @@ describe("listBundleSyncRows", () => {
     ])
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("/alpha.ouro/agent.json")) {
-        return JSON.stringify({ enabled: true, sync: { enabled: true, remote: "upstream" } })
+        return JSON.stringify({ enabled: true, sync: { enabled: true, remote: "upstream", branch: "develop" } })
       }
       if (target.endsWith("/beta.ouro/agent.json")) {
         return JSON.stringify(managedConfig({ enabled: true, sync: { enabled: false } }))
@@ -488,9 +488,9 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "alpha", enabled: true, remote: "upstream", gitInitialized: true },
-      { agent: "beta", enabled: false, remote: "origin" },
-      { agent: "gamma", enabled: false, remote: "origin" },
+      { agent: "alpha", enabled: true, remote: "upstream", branch: "develop", gitInitialized: true },
+      { agent: "beta", enabled: false, remote: "origin", branch: "main" },
+      { agent: "gamma", enabled: false, remote: "origin", branch: "main" },
     ])
   })
 
@@ -512,7 +512,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "live", enabled: true, remote: "origin", gitInitialized: true },
+      { agent: "live", enabled: true, remote: "origin", branch: "main", gitInitialized: true },
     ])
   })
 
@@ -539,8 +539,8 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "broken", enabled: false, remote: "origin" },
-      { agent: "ok", enabled: true, remote: "main", gitInitialized: true },
+      { agent: "broken", enabled: false, remote: "origin", branch: "main" },
+      { agent: "ok", enabled: true, remote: "main", branch: "main", gitInitialized: true },
     ])
   })
 
@@ -558,7 +558,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "weird", enabled: false, remote: "origin" },
+      { agent: "weird", enabled: false, remote: "origin", branch: "main" },
     ])
   })
 
@@ -576,7 +576,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "partial", enabled: false, remote: "origin" },
+      { agent: "partial", enabled: false, remote: "origin", branch: "main" },
     ])
   })
 
@@ -604,6 +604,7 @@ describe("listBundleSyncRows", () => {
         agent: "synced",
         enabled: true,
         remote: "origin",
+        branch: "main",
         gitInitialized: true,
         remoteUrl: "git@github.com:me/synced-state.git",
       },
@@ -635,6 +636,7 @@ describe("listBundleSyncRows", () => {
         agent: "stuck",
         enabled: true,
         remote: "origin",
+        branch: "main",
         gitInitialized: true,
         remoteUrl: "https://github.com/me/stuck.git",
         failure: {
@@ -685,7 +687,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "local", enabled: true, remote: "origin", gitInitialized: true },
+      { agent: "local", enabled: true, remote: "origin", branch: "main", gitInitialized: true },
     ])
     // Verify execFileSync was attempted
     expect(execFileSyncMock).toHaveBeenCalledWith(
@@ -710,7 +712,7 @@ describe("listBundleSyncRows", () => {
     const { listBundleSyncRows } = await import("../../../heart/daemon/agent-discovery")
 
     expect(listBundleSyncRows()).toEqual([
-      { agent: "empty", enabled: true, remote: "origin", gitInitialized: true },
+      { agent: "empty", enabled: true, remote: "origin", branch: "main", gitInitialized: true },
     ])
   })
 
@@ -752,6 +754,7 @@ describe("listBundleSyncRows", () => {
         agent: "needs-init",
         enabled: true,
         remote: "origin",
+        branch: "main",
         gitInitialized: false,
       },
     ])

@@ -1282,6 +1282,7 @@ describe("getSyncConfig", () => {
     const sync = getSyncConfig()
     expect(sync.enabled).toBe(false)
     expect(sync.remote).toBe("origin")
+    expect(sync.branch).toBe("main")
   })
 
   it("reads sync config from agent.json", async () => {
@@ -1291,13 +1292,14 @@ describe("getSyncConfig", () => {
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
       phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-      sync: { enabled: true, remote: "upstream" },
+      sync: { enabled: true, remote: "upstream", branch: "trunk" },
     })
 
     const { getSyncConfig } = await import("../../heart/config")
     const sync = getSyncConfig()
     expect(sync.enabled).toBe(true)
     expect(sync.remote).toBe("upstream")
+    expect(sync.branch).toBe("trunk")
   })
 
   it("defaults remote to origin when only enabled is specified", async () => {

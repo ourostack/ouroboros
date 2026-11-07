@@ -7,7 +7,7 @@
  * underlying child process is happily blocked on a TCP connect that the
  * kernel's keep-alive will not give up on for minutes.
  *
- * This test simulates that scenario: the injected `preTurnPullAsync` mock
+ * This test simulates that scenario: the injected `probeSync` mock
  * never resolves on its own — only the AbortSignal fires it. The
  * orchestrator must abort the probe within the configured hard window
  * and still return a clean result.
@@ -15,9 +15,10 @@
 import { describe, expect, it, vi } from "vitest"
 import type { BundleSyncRow } from "../../../heart/daemon/agent-discovery"
 
-const preTurnPullAsyncMock = vi.hoisted(() => vi.fn())
+const probeSyncMock = vi.hoisted(() => vi.fn())
 vi.mock("../../../heart/sync", () => ({
-  preTurnPullAsync: preTurnPullAsyncMock,
+  probeSync: probeSyncMock,
+  NOT_A_REPO_ERROR: "my bundle is not a git repository",
 }))
 
 vi.mock("../../../nerves/runtime", () => ({
@@ -29,6 +30,7 @@ function makeRow(agent: string): BundleSyncRow {
     agent,
     enabled: true,
     remote: "origin",
+    branch: "main",
     gitInitialized: true,
     remoteUrl: `https://example.com/${agent}.git`,
   }
@@ -39,10 +41,10 @@ describe("runBootSyncProbe — slow remote (hard timeout safety)", () => {
     vi.useFakeTimers()
 
     let abortReceived = false
-    preTurnPullAsyncMock.mockImplementation((_root: string, _config: unknown, opts: { signal?: AbortSignal } | undefined) => {
+    probeSyncMock.mockImplementation((_root: string, _config: unknown, signal: AbortSignal | undefined) => {
       // Simulate a hung remote: never resolves until the signal aborts.
       return new Promise((resolve) => {
-        opts?.signal?.addEventListener("abort", () => {
+        signal?.addEventListener("abort", () => {
           abortReceived = true
           resolve({ ok: false, error: "aborted" })
         })
@@ -81,9 +83,9 @@ describe("runBootSyncProbe — slow remote (hard timeout safety)", () => {
     vi.useFakeTimers()
 
     const aborted: string[] = []
-    preTurnPullAsyncMock.mockImplementation((root: string, _config: unknown, opts: { signal?: AbortSignal } | undefined) => {
+    probeSyncMock.mockImplementation((root: string, _config: unknown, signal: AbortSignal | undefined) => {
       return new Promise((resolve) => {
-        opts?.signal?.addEventListener("abort", () => {
+        signal?.addEventListener("abort", () => {
           aborted.push(root)
           resolve({ ok: false, error: "aborted" })
         })

@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { fillHouseNames, houseNameFields, type HouseNameKey } from "../../mind/house-names"
@@ -23,6 +24,96 @@ const STARTER_PSYCHE_NAMES: ReadonlySet<string> = new Set(SANCTUARY_STARTER_PSYC
 
 export const SANCTUARY_BUNDLE_ROLLBACK_FILE = ".sanctuary-package-managed-rollback.json"
 const SANCTUARY_BUNDLE_COMMITTING_FILE = `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.committing`
+
+/**
+ * What sync never commits from the Butler's bundle. The first block is the hourly host backup's own list, copied from
+ * bundle-backup/repo.git/info/exclude on 2026-11-06. Then any MCP credential file, the files each release installs, and
+ * the release's own bookkeeping, then the transient temp and lock files written inside the bundle. The cutover writes this list with `ouro sanctuary git-exclude --print`, and every boot
+ * writes it again.
+ */
+export const SANCTUARY_GIT_EXCLUDES: readonly string[] = [
+  "**/credentials.json",
+  "mcp/media-credentials.json",
+  "books/hey/.config/",
+  "**/*.key",
+  "**/*.pem",
+  "**/deploy_key*",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/id_ecdsa*",
+  "**/.env",
+  "state/",
+  "inbox/",
+  "arc/flight-recorder/",
+  "arc/obligations/",
+  "arc/packets/",
+  "books/bin/",
+  "books/vendor/",
+  "books/work/",
+  "books/fonts/",
+  "mcp/*.pre-*",
+  "books/hey/",
+  "**/__pycache__/",
+  "mcp/*credentials*",
+  ...SANCTUARY_PACKAGE_MANAGED_FILES,
+  "bundle-meta.json",
+  `${SANCTUARY_BUNDLE_ROLLBACK_FILE}*`,
+  `${PSYCHE_SEED_STAGE_PREFIX}*`,
+  // The upgrade's release marker and its staged copy, planted in psyche/ for the length of a gated ship.
+  "psyche/.release-marker*",
+  // Transient files the runtime and the replay gate write inside the bundle: atomic-write temps and lock files.
+  "*.tmp",
+  "*.tmp-*",
+  "*.tmp.*",
+  "*.lock",
+  "*.lock.reclaim",
+  "*.turn.lock-*",
+  ".locks/",
+]
+
+/** The exclude file's content: one entry per line. */
+export function sanctuaryGitExcludeText(): string {
+  return `${SANCTUARY_GIT_EXCLUDES.join("\n")}\n`
+}
+
+/** Whether the bundle's agent.json turns sync on. An unreadable agent.json reads as off. */
+export function bundleSyncEnabled(agentRoot: string): boolean {
+  try {
+    const sync = readObject(path.join(agentRoot, "agent.json")).sync as Record<string, unknown> | undefined
+    return sync?.enabled === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Write the bundle's `.git/info/exclude`. A bundle with sync on and no repository yet (a fresh install) gets
+ * `git init -b main` first; sync makes the first commit on the first turn. A bundle with sync off and no
+ * repository is left alone. A tracked .gitignore is the owner's and is never touched.
+ */
+export function writeSanctuaryGitExclude(agentRoot: string): { initialized: boolean; written: boolean } {
+  const gitDir = path.join(agentRoot, ".git")
+  let initialized = false
+  if (!fs.existsSync(gitDir)) {
+    if (!bundleSyncEnabled(agentRoot)) return { initialized: false, written: false }
+    const run = spawnSync("git", ["init", "-q", "-b", "main"], { cwd: agentRoot, env: { ...process.env, LC_ALL: "C", LANG: "C" }, encoding: "utf8" })
+    if (run.status !== 0) throw new Error(`git init failed: ${run.error ? run.error.message : run.stderr.trim()}`)
+    initialized = true
+  }
+  const excludePath = path.join(gitDir, "info", "exclude")
+  const text = sanctuaryGitExcludeText()
+  let current: string | null = null
+  try {
+    current = fs.readFileSync(excludePath, "utf8")
+  } catch (error) {
+    if (!isMissing(error)) throw error
+  }
+  if (current === text) return { initialized, written: false }
+  fs.mkdirSync(path.dirname(excludePath), { recursive: true })
+  writeAtomic(excludePath, text, 0o644)
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_git_exclude_written", message: "wrote the Sanctuary bundle's git exclude", meta: { initialized, entries: SANCTUARY_GIT_EXCLUDES.length } })
+  return { initialized, written: true }
+}
 
 const BUNDLE_META_VERSION_FIELDS = ["runtimeVersion", "bundleSchemaVersion", "lastUpdated"] as const
 

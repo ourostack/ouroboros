@@ -24,6 +24,8 @@ const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro",
   // Operator-set grants, root-owned on the host and read-only inside the Butler (the Butler honours a grant only from here).
   "/mnt/user/appdata/ouro-butler/trust/sanctuary:/etc/ouro/trust/sanctuary:ro",
+  // The bundle sync deploy key, root-owned on the host and read-only inside the Butler. The key can push to the owner's repo.
+  "/mnt/user/appdata/ouro-butler/sync:/run/ouro-sync:ro",
 ] as const
 
 const EXPECTED_MOUNTS = [
@@ -33,12 +35,26 @@ const EXPECTED_MOUNTS = [
   ["/run/ouro-authority", "/run/ouro-authority", false, "rprivate"],
   ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/psyche", "/home/ouro/AgentBundles/sanctuary.ouro/psyche", false, "rprivate"],
   ["/mnt/user/appdata/ouro-butler/trust/sanctuary", "/etc/ouro/trust/sanctuary", false, "rprivate"],
+  ["/mnt/user/appdata/ouro-butler/sync", "/run/ouro-sync", false, "rprivate"],
 ] as const
 
 const PSYCHE_TARGET = "/home/ouro/AgentBundles/sanctuary.ouro/psyche"
 /** The current resident shape: the canonical-gateway set without the separate read-only psyche mount. */
 const GATEWAY_BINDS_WITHOUT_PSYCHE = EXPECTED_BINDS.filter((bind) => !bind.includes(`:${PSYCHE_TARGET}:`))
 const GATEWAY_MOUNTS_WITHOUT_PSYCHE = EXPECTED_MOUNTS.filter((mount) => mount[1] !== PSYCHE_TARGET)
+const SYNC_TARGET = "/run/ouro-sync"
+/**
+ * The canonical-gateway shapes. With sync on, the key mount is required. With sync off (the live Butler until the
+ * cutover, and a rollback to a release without the mount) each shape is accepted with or without it.
+ */
+function gatewayBinds(syncEnabled: boolean): ReadonlyArray<readonly string[]> {
+  const shapes = [EXPECTED_BINDS, GATEWAY_BINDS_WITHOUT_PSYCHE]
+  return syncEnabled ? shapes : [...shapes, ...shapes.map((binds) => binds.filter((bind) => !bind.includes(`:${SYNC_TARGET}:`)))]
+}
+function gatewayMounts(syncEnabled: boolean): ReadonlyArray<ReadonlyArray<readonly [string, string, boolean, string]>> {
+  const shapes = [EXPECTED_MOUNTS, GATEWAY_MOUNTS_WITHOUT_PSYCHE]
+  return syncEnabled ? shapes : [...shapes, ...shapes.map((mounts) => mounts.filter((mount) => mount[1] !== SYNC_TARGET))]
+}
 const PRE_GATEWAY_BINDS = EXPECTED_BINDS.slice(0, 3)
 const PRE_GATEWAY_MOUNTS = EXPECTED_MOUNTS.slice(0, 3)
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
@@ -61,6 +77,8 @@ export interface SanctuaryContainerAuditOptions {
   expectedImageReference?: string
   expectedIcon?: string
   mountContract: "canonical-pre-gateway" | "canonical-gateway" | "legacy-alpha742"
+  /** The bundle's sync is on, so the deploy key must be mounted. */
+  syncEnabled?: boolean
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -73,6 +91,7 @@ export interface SanctuaryStagedAuditInput {
   runtimePolicyText: string
   expectedImage: string
   mountContract: SanctuaryContainerAuditOptions["mountContract"]
+  syncEnabled?: boolean
 }
 
 export interface SanctuaryPersistentTemplateAuditInput {
@@ -80,6 +99,7 @@ export interface SanctuaryPersistentTemplateAuditInput {
   runtimePolicyText: string
   expectedImageReference: string
   mountContract: SanctuaryContainerAuditOptions["mountContract"]
+  syncEnabled?: boolean
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -113,7 +133,7 @@ export function auditSanctuaryContainerSpec(
     const mountContract = options.mountContract
     if (mountContract !== "canonical-pre-gateway" && mountContract !== "canonical-gateway" && mountContract !== "legacy-alpha742") violations.push("unsupported mount contract")
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
-    const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_MOUNTS] : [EXPECTED_MOUNTS, GATEWAY_MOUNTS_WITHOUT_PSYCHE]
+    const acceptedMounts = mountContract === "legacy-alpha742" ? [LEGACY_ALPHA742_MOUNTS] : mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_MOUNTS] : gatewayMounts(options.syncEnabled === true)
     const expectedArgs = mountContract !== "legacy-alpha742" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
     const expectedEntrypoint = mountContract !== "legacy-alpha742" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
@@ -192,10 +212,10 @@ function singleTextChild(document: DockerManTemplateDocument | null, name: strin
   return child?.form === "text" && Object.keys(child.attributes).length === 0 ? child.text : undefined
 }
 
-function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string; mountContract: SanctuaryContainerAuditOptions["mountContract"] }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
+function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string; mountContract: SanctuaryContainerAuditOptions["mountContract"]; syncEnabled?: boolean }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
   if (input.mountContract !== "canonical-pre-gateway" && input.mountContract !== "canonical-gateway") violations.push("unsupported template mount contract")
-  const acceptedBinds = input.mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_BINDS] : [EXPECTED_BINDS, GATEWAY_BINDS_WITHOUT_PSYCHE]
+  const acceptedBinds = input.mountContract === "canonical-pre-gateway" ? [PRE_GATEWAY_BINDS] : gatewayBinds(input.syncEnabled === true)
   const template = parseDockerManTemplateXml(input.templateXml)
   if (!template) violations.push("canonical DockerMan XML structure is invalid")
   let runtimePolicy: unknown

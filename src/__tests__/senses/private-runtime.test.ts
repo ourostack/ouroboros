@@ -56,7 +56,8 @@ vi.mock("fs", async (importOriginal) => {
   }
 })
 
-vi.mock("../../mind/prompt", () => ({
+vi.mock("../../mind/prompt", async (importOriginal) => ({
+  loadPsycheAt: (await importOriginal<typeof import("../../mind/prompt")>()).loadPsycheAt,
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
   flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))

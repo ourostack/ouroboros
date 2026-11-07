@@ -1,995 +1,693 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { SyncConfig } from "../../heart/config"
-
-vi.mock("child_process", () => ({
-  execFileSync: vi.fn(),
-}))
-
-vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
-}))
-
-// The sync module checks `.git` presence before touching git at all. We wrap
-// fs with a partial mock so that existsSync claims `.git` paths exist by
-// default (letting the mocked git commands take over for the fake agent root
-// used in most tests) and delegates to real fs for everything else (so tmpDir
-// tests that write pending-sync.json still work). Individual tests override
-// via `existsSyncMock.mockImplementationOnce` to exercise the not-a-repo path.
-const existsSyncMock = vi.hoisted(() => vi.fn())
-vi.mock("fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs")>()
-  existsSyncMock.mockImplementation((target: string) => {
-    if (typeof target === "string" && target.endsWith("/.git")) return true
-    return actual.existsSync(target)
-  })
-  return { ...actual, existsSync: existsSyncMock }
-})
-
-import * as childProcess from "child_process"
-import { emitNervesEvent } from "../../nerves/runtime"
-
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { registerGlobalLogSink, type LogEvent } from "../../nerves"
+import {
+  __testHooks,
+  clearPendingSync,
+  commitLocalChanges,
+  fetchRemote,
+  integrateFetched,
+  pendingSyncPath,
+  postTurnPush,
+  preTurnPull,
+  pushAsync,
+  setSyncOwnerNotifier,
+  skippedSyncFilesPath,
+  STALE_INDEX_LOCK_MS,
+  SYNC_FILE_SIZE_LIMIT_BYTES,
+  syncNow,
+  type SyncOwnerNotice,
+  type SyncResult,
+} from "../../heart/sync"
+import { tryAcquireSyncLockSync, type SyncLockHandle } from "../../heart/sync-lock"
 
-const defaultConfig: SyncConfig = { enabled: true, remote: "origin" }
+// Real git throughout. The scenarios the M1c brief names live in
+// sync-integrate.test.ts; this file covers the edges: failure records, the
+// index-lock and size guards, the lock, pause markers and owner notices.
 
-describe("preTurnPull", () => {
-  beforeEach(() => {
-    vi.mocked(childProcess.execFileSync).mockReset()
-    vi.mocked(emitNervesEvent).mockReset()
-    // Default: git remote returns a configured remote, so pull proceeds.
-    // Tests that need different behavior (errors, no remote) override this.
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from("origin\n"))
+const AGENT = "agent"
+const CONFIG = { enabled: true, remote: "origin", branch: "main" }
+const ID = ["-c", "user.name=Owner", "-c", "user.email=owner@example.invalid", "-c", "commit.gpgsign=false"]
+
+let root: string
+let events: LogEvent[]
+let unregister: () => void
+let notices: SyncOwnerNotice[]
+let savedGlobal: string | undefined
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", [...ID, ...args], { cwd, stdio: "pipe" }).toString().trim()
+}
+
+function write(dir: string, rel: string, content: string): void {
+  fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+  fs.writeFileSync(path.join(dir, rel), content, "utf-8")
+}
+
+function sparse(dir: string, rel: string, bytes: number): void {
+  fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+  fs.writeFileSync(path.join(dir, rel), "")
+  fs.truncateSync(path.join(dir, rel), bytes)
+}
+
+function localBundle(): string {
+  const bundle = path.join(root, `${AGENT}.ouro`)
+  git(root, ["init", "-q", "-b", "main", bundle])
+  write(bundle, ".gitignore", "state/\n")
+  return bundle
+}
+
+function bundleWithRemote(seed = true): { bundle: string; remote: string; owner: string } {
+  const remote = path.join(root, "remote.git")
+  const owner = path.join(root, "owner")
+  const bundle = path.join(root, `${AGENT}.ouro`)
+  git(root, ["init", "-q", "--bare", "-b", "main", remote])
+  git(root, ["clone", "-q", remote, owner])
+  if (seed) {
+    write(owner, ".gitignore", "state/\n")
+    write(owner, "notes.md", "notes\n")
+    write(owner, "psyche/TACIT.md", "a\nb\nc\nd\ne\nf\n")
+    git(owner, ["add", "-A"])
+    git(owner, ["commit", "-q", "-m", "seed"])
+    git(owner, ["push", "-q", "origin", "HEAD:main"])
+  }
+  git(root, ["clone", "-q", remote, bundle])
+  return { bundle, remote, owner }
+}
+
+function ownerPush(owner: string, rel: string, content: string): void {
+  write(owner, rel, content)
+  git(owner, ["add", "-A"])
+  git(owner, ["commit", "-q", "-m", `owner ${rel}`])
+  git(owner, ["push", "-q", "origin", "HEAD:main"])
+}
+
+function pending(bundle: string): Record<string, unknown> | null {
+  return fs.existsSync(pendingSyncPath(bundle)) ? JSON.parse(fs.readFileSync(pendingSyncPath(bundle), "utf-8")) as Record<string, unknown> : null
+}
+
+function lock(bundle: string): SyncLockHandle {
+  const handle = tryAcquireSyncLockSync(bundle)
+  if ("busy" in handle) throw new Error("lock unexpectedly busy")
+  return handle
+}
+
+async function settled(result: SyncResult & { push?: Promise<SyncResult> }): Promise<SyncResult> {
+  return result.push ? await result.push : result
+}
+
+function emitted(event: string): LogEvent[] {
+  return events.filter((e) => e.event === event)
+}
+
+beforeEach(() => {
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sync-edges-")))
+  savedGlobal = process.env.GIT_CONFIG_GLOBAL
+  events = []
+  unregister = registerGlobalLogSink((entry) => { events.push(entry) })
+  notices = []
+  setSyncOwnerNotifier((_agent, notice) => { notices.push(notice) })
+})
+
+afterEach(() => {
+  unregister()
+  setSyncOwnerNotifier(null)
+  __testHooks.fetchTimeoutMs = undefined
+  __testHooks.pushTimeoutMs = undefined
+  __testHooks.preTurnLockWaitMs = undefined
+  __testHooks.extraGitConfig = undefined
+  if (savedGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL
+  else process.env.GIT_CONFIG_GLOBAL = savedGlobal
+  vi.doUnmock("../../senses/telegram")
+  fs.chmodSync(root, 0o755)
+  for (const dir of [path.join(root, `${AGENT}.ouro`, ".git")]) if (fs.existsSync(dir)) fs.chmodSync(dir, 0o755)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+describe("not a git repo", () => {
+  it("every entry point says the bundle is not a git repository", async () => {
+    const bundle = path.join(root, "plain.ouro")
+    fs.mkdirSync(bundle)
+    for (const result of [await preTurnPull(bundle, CONFIG), postTurnPush(bundle, CONFIG), await syncNow(bundle, CONFIG, AGENT, 0)]) {
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe("my bundle is not a git repository")
+    }
+    expect(emitted("heart.sync_not_a_repo")).toHaveLength(3)
   })
 
-  it("runs git pull with argv array when sync is enabled", async () => {
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(childProcess.execFileSync).toHaveBeenCalledWith(
-      "git",
-      ["pull", "origin"],
-      expect.objectContaining({ cwd: "/fake/agent/root" }),
-    )
-  })
-
-  it("returns an actionable error when the bundle is not a git repo", async () => {
-    // Override the default spy: pretend .git does NOT exist for this bundle.
-    existsSyncMock.mockImplementationOnce(() => false)
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
+  it("a broken .git fails the pull with git's message", async () => {
+    const bundle = path.join(root, "broken.ouro")
+    fs.mkdirSync(path.join(bundle, ".git"), { recursive: true })
+    const result = await preTurnPull(bundle, CONFIG)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("not a git repo")
-    expect(result.error).toContain("git init")
-    expect(result.error).toContain("/fake/agent/root")
-    // No git invocations should have happened
-    expect(childProcess.execFileSync).not.toHaveBeenCalled()
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "heart",
-        event: "heart.sync_not_a_repo",
-        message: "pre-turn pull failed: bundle is not a git repo",
-      }),
-    )
+    expect(result.error).toMatch(/^git remote failed: /)
   })
 
-  it("skips pull when no remote is configured (local-only mode)", async () => {
-    const calls: Array<string[]> = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      calls.push(args as string[])
-      const argv = args as string[]
-      if (argv[0] === "remote") return Buffer.from("") // no remotes
-      throw new Error(`unexpected git invocation: ${argv.join(" ")}`)
-    })
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(result.error).toBeUndefined()
-    expect(calls).toEqual([["remote"]]) // only the check, no pull
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        component: "heart",
-        event: "heart.sync_pull_end",
-        message: "pre-turn pull skipped: no remote configured",
-      }),
-    )
-  })
-
-  it("returns error when the git remote check itself fails", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("fatal: not a git repository")
-    })
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
+  it("a push in a directory git cannot read is recorded, not thrown", async () => {
+    const bundle = path.join(root, "broken.ouro")
+    fs.mkdirSync(path.join(bundle, ".git"), { recursive: true })
+    const handle = lock(bundle)
+    const result = await pushAsync(bundle, CONFIG, handle)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("not a git repository")
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_pull_error",
-        message: "pre-turn pull failed: git remote check failed",
-      }),
-    )
+    expect(pending(bundle)).toMatchObject({ classification: "unknown" })
+    lock(bundle).release()
+  })
+})
+
+describe("commitLocalChanges", () => {
+  it("leaves oversized files uncommitted, records them, and commits the rest", () => {
+    const bundle = localBundle()
+    write(bundle, "notes.md", "hi\n")
+    sparse(bundle, "big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+
+    const result = commitLocalChanges(bundle, AGENT, "m")
+    expect(result).toEqual({ committed: true, skipped: [{ path: "big.jsonl", bytes: SYNC_FILE_SIZE_LIMIT_BYTES + 1 }] })
+    expect(git(bundle, ["ls-files"]).split("\n")).toEqual([".gitignore", "notes.md"])
+    expect(JSON.parse(fs.readFileSync(skippedSyncFilesPath(bundle), "utf-8")).files).toHaveLength(1)
+    expect(emitted("heart.sync_oversized_files_skipped")).toHaveLength(1)
   })
 
-  it("returns error on pull failure (remote check passes, pull throws)", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      throw new Error("fatal: Could not read from remote repository")
-    })
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("fatal: Could not read from remote repository")
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_pull_error",
-        message: "pre-turn pull failed",
-      }),
-    )
+  it("commits nothing when every change is over the limit, then forgets the skip once it is gone", () => {
+    const bundle = localBundle()
+    write(bundle, "notes.md", "hi\n")
+    commitLocalChanges(bundle, AGENT, "m")
+    sparse(bundle, "big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(false)
+    expect(fs.existsSync(skippedSyncFilesPath(bundle))).toBe(true)
+    fs.rmSync(path.join(bundle, "big.jsonl"))
+    expect(commitLocalChanges(bundle, AGENT, "m")).toEqual({ committed: false, skipped: [] })
+    expect(fs.existsSync(skippedSyncFilesPath(bundle))).toBe(false)
   })
 
-  it("returns ok true on success", async () => {
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from("Already up to date.\n"))
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(result.error).toBeUndefined()
+  it("unstages both sides of a rename whose new path is over the limit", () => {
+    const bundle = localBundle()
+    sparse(bundle, "old.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    git(bundle, ["add", "old.jsonl"])
+    git(bundle, ["commit", "-q", "-m", "big from before the guard"])
+    fs.renameSync(path.join(bundle, "old.jsonl"), path.join(bundle, "new.jsonl"))
+    write(bundle, "notes.md", "n\n")
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
+    expect(git(bundle, ["ls-files"]).split("\n")).toEqual([".gitignore", "notes.md", "old.jsonl"])
   })
 
-  it("uses configured remote name in argv array", async () => {
-    const config: SyncConfig = { enabled: true, remote: "upstream" }
-
-    const { preTurnPull } = await import("../../heart/sync")
-    preTurnPull("/fake/agent/root", config)
-
-    expect(childProcess.execFileSync).toHaveBeenCalledWith(
-      "git",
-      ["pull", "upstream"],
-      expect.objectContaining({ cwd: "/fake/agent/root" }),
-    )
+  it("still commits when the skipped-files record cannot be written or removed", () => {
+    const bundle = localBundle()
+    fs.mkdirSync(path.join(skippedSyncFilesPath(bundle), "blocker"), { recursive: true })
+    write(bundle, "notes.md", "hi\n")
+    sparse(bundle, "big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
+    fs.rmSync(path.join(bundle, "big.jsonl"))
+    write(bundle, "notes.md", "again\n")
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
   })
 
-  it("emits nerves events", async () => {
-    const { preTurnPull } = await import("../../heart/sync")
-    preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        component: "heart",
-        event: "heart.sync_pull_start",
-      }),
-    )
+  it("refuses to commit unmerged paths", () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    git(bundle, ["commit", "-q", "-am", "agent"])
+    git(bundle, ["fetch", "-q"])
+    expect(() => git(bundle, ["merge", "origin/main"])).toThrow()
+    fs.rmSync(path.join(bundle, ".git", "MERGE_HEAD"))
+    expect(() => commitLocalChanges(bundle, AGENT, "m")).toThrow("unmerged paths in the index: notes.md")
   })
 
-  it("handles non-Error throw from the remote check", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw "string error" // eslint-disable-line no-throw-literal
-    })
+  it("removes an empty index.lock left by a dead git process, and keeps one with content", () => {
+    const bundle = localBundle()
+    const lockPath = path.join(bundle, ".git", "index.lock")
+    const old = new Date(Date.now() - STALE_INDEX_LOCK_MS - 60_000)
+    fs.writeFileSync(lockPath, "")
+    fs.utimesSync(lockPath, old, old)
+    write(bundle, "notes.md", "hi\n")
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
+    expect(emitted("heart.sync_stale_lock_cleared")).toHaveLength(1)
 
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("string error")
+    fs.writeFileSync(lockPath, "live commit")
+    fs.utimesSync(lockPath, old, old)
+    write(bundle, "notes.md", "again\n")
+    expect(() => commitLocalChanges(bundle, AGENT, "m")).toThrow(/index\.lock/)
+    expect(fs.existsSync(lockPath)).toBe(true)
   })
 
-  it("handles non-Error throw from the pull itself", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      throw "pull-string-error" // eslint-disable-line no-throw-literal
-    })
-
-    const { preTurnPull } = await import("../../heart/sync")
-    const result = preTurnPull("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("pull-string-error")
+  it("reports, rather than throws, when a stale index.lock cannot be removed", () => {
+    const bundle = localBundle()
+    const lockPath = path.join(bundle, ".git", "index.lock")
+    const old = new Date(Date.now() - STALE_INDEX_LOCK_MS - 60_000)
+    fs.writeFileSync(lockPath, "")
+    fs.utimesSync(lockPath, old, old)
+    write(bundle, "notes.md", "hi\n")
+    fs.chmodSync(path.join(bundle, ".git"), 0o555)
+    try {
+      expect(() => commitLocalChanges(bundle, AGENT, "m")).toThrow()
+    } finally {
+      fs.chmodSync(path.join(bundle, ".git"), 0o755)
+    }
+    expect(emitted("heart.sync_stale_lock_clear_failed")).toHaveLength(1)
   })
 })
 
 describe("postTurnPush", () => {
-  beforeEach(() => {
-    vi.mocked(childProcess.execFileSync).mockReset()
-    vi.mocked(emitNervesEvent).mockReset()
+  it("records a commit failure, counting repeats from the first one", () => {
+    const bundle = localBundle()
+    const lockPath = path.join(bundle, ".git", "index.lock")
+    fs.writeFileSync(lockPath, "")
+    write(bundle, "notes.md", "hi\n")
+    expect(postTurnPush(bundle, CONFIG, AGENT).ok).toBe(false)
+    const first = pending(bundle)!
+    expect(first).toMatchObject({ classification: "unknown", conflictFiles: [], consecutiveFailures: 1 })
+    expect(postTurnPush(bundle, CONFIG, AGENT).ok).toBe(false)
+    expect(pending(bundle)).toMatchObject({ consecutiveFailures: 2, firstFailedAt: first.firstFailedAt })
+    expect("busy" in tryAcquireSyncLockSync(bundle)).toBe(false)
   })
 
-  it("returns an actionable error when the bundle is not a git repo", async () => {
-    existsSyncMock.mockImplementationOnce(() => false)
+  it("continues the count from a record written before the count existed, and restarts after a non-object", () => {
+    const bundle = localBundle()
+    fs.writeFileSync(path.join(bundle, ".git", "index.lock"), "")
+    write(bundle, "notes.md", "hi\n")
+    write(bundle, "state/pending-sync.json", JSON.stringify({ error: "old", failedAt: "2026-06-01T00:00:00.000Z", classification: "unknown" }))
+    postTurnPush(bundle, CONFIG)
+    expect(pending(bundle)).toMatchObject({ consecutiveFailures: 2, firstFailedAt: "2026-06-01T00:00:00.000Z" })
+    write(bundle, "state/pending-sync.json", "[1]")
+    postTurnPush(bundle, CONFIG)
+    expect(pending(bundle)).toMatchObject({ consecutiveFailures: 1 })
+  })
 
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
+  it("still returns the failure when the record cannot be written", () => {
+    const bundle = localBundle()
+    fs.writeFileSync(path.join(bundle, ".git", "index.lock"), "")
+    write(bundle, "notes.md", "hi\n")
+    fs.writeFileSync(path.join(bundle, "state"), "not a directory")
+    const result = postTurnPush(bundle, CONFIG)
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("not a git repo")
-    expect(result.error).toContain("git init")
-    expect(result.error).toContain("/fake/agent/root")
-    // No git invocations should have happened
-    expect(childProcess.execFileSync).not.toHaveBeenCalled()
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "heart",
-        event: "heart.sync_not_a_repo",
-        message: "post-turn push failed: bundle is not a git repo",
-      }),
-    )
   })
 
-  /** Helper: mock execFileSync to route by git subcommand */
-  function mockGitCommands(handlers: Record<string, () => Buffer | string>) {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const subcmd = (args as string[])?.[0]
-      const handler = handlers[subcmd ?? ""]
-      if (handler) return Buffer.from(String(handler()))
-      return Buffer.from("")
-    })
-  }
-
-  it("discovers dirty files via git status --porcelain", async () => {
-    const calls: string[][] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      calls.push(argv)
-      if (argv[0] === "status") return Buffer.from(" M arc/episodes/ep-1.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(calls[0]).toEqual(["status", "--porcelain"])
+  it("skips when another sync holds the lock", () => {
+    const bundle = localBundle()
+    const handle = lock(bundle)
+    write(bundle, "notes.md", "hi\n")
+    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true, busy: true, holderPid: process.pid })
+    handle.release()
+    expect(git(bundle, ["status", "--porcelain"])).toBe("?? .gitignore\n?? notes.md")
   })
 
-  it("runs git add -A, commit, and push for dirty files", async () => {
-    const commands: string[] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      commands.push(argv[0])
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(commands).toContain("status")
-    expect(commands).toContain("add")
-    expect(commands).toContain("commit")
-    expect(commands).toContain("remote")
-    expect(commands).toContain("push")
+  it("with nothing to push, clears the failure record and releases the lock", () => {
+    const { bundle } = bundleWithRemote()
+    write(bundle, "state/pending-sync.json", JSON.stringify({ error: "old", failedAt: "2026-06-01T00:00:00.000Z", classification: "push_rejected" }))
+    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true })
+    expect(pending(bundle)).toBeNull()
+    lock(bundle).release()
   })
 
-  it("returns early with success when no dirty files", async () => {
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from(""))
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    // git status, then the remote check of the clean-tree path; nothing is committed
-    expect(vi.mocked(childProcess.execFileSync).mock.calls.map((call) => (call[1] as string[])[0])).toEqual(["status", "remote"])
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_push_end",
-        message: "post-turn push: no changes to sync",
-      }),
-    )
+  it("pushes commits an earlier failure left behind even when nothing changed", async () => {
+    const { bundle, remote } = bundleWithRemote()
+    write(bundle, "notes.md", "stranded\n")
+    git(bundle, ["commit", "-q", "-am", "stranded"])
+    expect(await settled(postTurnPush(bundle, CONFIG))).toEqual({ ok: true })
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("stranded")
   })
 
-  it("commits but skips push when no remote configured", async () => {
-    const commands: string[] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      commands.push(argv[0])
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("") // no remote
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(commands).toContain("add")
-    expect(commands).toContain("commit")
-    expect(commands).toContain("remote")
-    expect(commands).not.toContain("push")
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_push_end",
-        message: "post-turn push: committed locally, no remote configured",
-      }),
-    )
+  it("an empty repo with a remote has nothing to push", () => {
+    const bundle = path.join(root, "empty.ouro")
+    git(root, ["init", "-q", "-b", "main", bundle])
+    git(bundle, ["remote", "add", "origin", path.join(root, "nowhere.git")])
+    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true })
   })
 
-  it("retries with pull-rebase-push on push rejection", async () => {
-    let pushCount = 0
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "push") {
-        pushCount++
-        if (pushCount === 1) throw new Error("rejected")
-        return Buffer.from("")
-      }
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(pushCount).toBe(2)
+  it("first push to an empty remote waits for the owner's yes and leaves the remote empty", async () => {
+    const { bundle, remote } = bundleWithRemote(false)
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+    write(bundle, "notes.md", "first\n")
+    const result = await settled(postTurnPush(bundle, CONFIG))
+    expect(result).toMatchObject({ ok: false, firstPushHeld: true })
+    expect(git(remote, ["--git-dir", remote, "for-each-ref"])).toBe("")
   })
 
-  it("writes pending-sync with classification: push_rejected when the second push fails after a successful rebase", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-push-rejected-"))
-    let pushCount = 0
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "push") {
-        pushCount++
-        throw new Error("rejected again")
-      }
-      if (argv[0] === "pull") return Buffer.from("")
-      return Buffer.from("")
-    })
+  it("while a non-psyche conflict is unresolved, commits and does not push", async () => {
+    const { bundle, owner, remote } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    expect((await preTurnPull(bundle, CONFIG)).ok).toBe(false)
+    write(bundle, "journal.md", "later\n")
+    expect(postTurnPush(bundle, CONFIG)).toEqual({ ok: true })
+    expect(git(bundle, ["status", "--porcelain"])).toBe("")
+    expect(pending(bundle)).toMatchObject({ classification: "pull_rebase_conflict" })
+    expect(git(remote, ["--git-dir", remote, "show", "main:notes.md"])).toBe("owner")
+  })
 
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
+  it("a push to an unreachable remote is recorded as unknown", async () => {
+    const { bundle } = bundleWithRemote()
+    git(bundle, ["remote", "set-url", "origin", path.join(root, "missing.git")])
+    write(bundle, "notes.md", "x\n")
+    const result = await settled(postTurnPush(bundle, CONFIG))
     expect(result.ok).toBe(false)
-    expect(pushCount).toBe(2) // first push + second push (both failed)
-    const pendingPath = path.join(tmpDir, "state", "pending-sync.json")
-    expect(fs.existsSync(pendingPath)).toBe(true)
-    const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
-    expect(pending.classification).toBe("push_rejected")
-    expect(pending.conflictFiles).toEqual([])
-    expect(pending.error).toContain("rejected again")
-
-    fs.rmSync(tmpDir, { recursive: true, force: true })
+    expect(result.error).toMatch(/^git push failed: /)
+    expect(pending(bundle)).toMatchObject({ classification: "unknown" })
   })
 
-  it("writes pending-sync with classification: pull_rebase_conflict when rebase surfaces merge conflicts", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-rebase-conflict-"))
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status" && argv[1] === "--porcelain" && argv.length === 2) {
-        return Buffer.from(" M file.json\n")
-      }
-      if (argv[0] === "status" && argv[1] === "--porcelain=v1") {
-        // Simulate unmerged files after rebase conflict
-        return Buffer.from("UU desk/_record/notes/entry.md\nUU friends/ari.json\n")
-      }
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "push") throw new Error("push rejected")
-      if (argv[0] === "pull") throw new Error("rebase conflict")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    const pendingPath = path.join(tmpDir, "state", "pending-sync.json")
-    expect(fs.existsSync(pendingPath)).toBe(true)
-    const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
-    expect(pending.classification).toBe("pull_rebase_conflict")
-    expect(pending.conflictFiles).toEqual(["desk/_record/notes/entry.md", "friends/ari.json"])
-
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("writes pending-sync.json on second push failure", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-push-fail-"))
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "push") throw new Error("push failed")
-      if (argv[0] === "pull") throw new Error("rebase failed")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    const pendingPath = path.join(tmpDir, "state", "pending-sync.json")
-    expect(fs.existsSync(pendingPath)).toBe(true)
-    const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
-    expect(pending.error).toContain("rebase failed")
-
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("returns error when git status itself fails", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("fatal: not a git repository")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("fatal: not a git repository")
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_push_error",
-        message: "post-turn push: git status failed",
-      }),
-    )
-  })
-
-  it("returns error when git status throws non-Error", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw "git status string error" // eslint-disable-line no-throw-literal
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("git status string error")
-  })
-
-  it("emits start event", async () => {
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from(""))
-
-    const { postTurnPush } = await import("../../heart/sync")
-    postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        component: "heart",
-        event: "heart.sync_push_start",
-      }),
-    )
-  })
-
-  it("handles git add failure gracefully", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw new Error("add failed")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("add failed")
-  })
-
-  it("handles non-Error throw in outer catch", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw "string error" // eslint-disable-line no-throw-literal
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("string error")
-  })
-
-  it("handles non-Error throw in retry catch", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "push") throw new Error("push rejected")
-      if (argv[0] === "pull") throw "rebase string error" // eslint-disable-line no-throw-literal
-      return Buffer.from("")
-    })
-
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-push-nonerr-"))
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe("rebase string error")
-
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("counts changed files from porcelain output", async () => {
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file1.json\n M file2.json\n?? new.txt\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "heart.sync_push_end",
-        message: "post-turn push complete",
-        meta: expect.objectContaining({ changedCount: 3 }),
-      }),
-    )
-  })
-})
-
-describe("postTurnPush stale index.lock recovery", () => {
-  beforeEach(() => {
-    vi.mocked(childProcess.execFileSync).mockReset()
-    vi.mocked(emitNervesEvent).mockReset()
-  })
-
-  function makeBundleWithLock(ageMs: number, content = ""): { tmpDir: string; lockPath: string } {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-index-lock-"))
-    fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true })
-    const lockPath = path.join(tmpDir, ".git", "index.lock")
-    fs.writeFileSync(lockPath, content, "utf-8")
-    const stamp = new Date(Date.now() - ageMs)
-    fs.utimesSync(lockPath, stamp, stamp)
-    return { tmpDir, lockPath }
-  }
-
-  it("removes an index.lock left behind by a dead git process and commits", async () => {
-    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000)
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add" && fs.existsSync(lockPath)) throw new Error("fatal: Unable to create 'index.lock': File exists.")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(fs.existsSync(lockPath)).toBe(false)
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        level: "warn",
-        component: "heart",
-        event: "heart.sync_stale_lock_cleared",
-        meta: expect.objectContaining({ agentRoot: tmpDir }),
-      }),
-    )
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("keeps an old index.lock that has content, since a live commit may hold it", async () => {
-    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000, "DIRC")
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(fs.existsSync(lockPath)).toBe(true)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("reports, rather than throws, when a stale index.lock cannot be removed", async () => {
-    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000)
-    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
-      throw new Error("EPERM: operation not permitted")
-    })
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-    rmSpy.mockRestore()
-
-    expect(result.ok).toBe(false)
-    expect(fs.existsSync(lockPath)).toBe(true)
-    expect(emitNervesEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "heart.sync_stale_lock_clear_failed" }),
-    )
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("still returns the commit failure when pending-sync cannot be written", async () => {
-    const { tmpDir } = makeBundleWithLock(5 * 1000)
-    fs.writeFileSync(path.join(tmpDir, "state"), "not a directory", "utf-8")
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("index.lock")
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("leaves a fresh index.lock alone and records the failure as pending sync", async () => {
-    const { tmpDir, lockPath } = makeBundleWithLock(5 * 1000)
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
-      return Buffer.from("")
-    })
-
-    const { postTurnPush } = await import("../../heart/sync")
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(false)
-    expect(fs.existsSync(lockPath)).toBe(true)
-    const pending = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
-    expect(pending.classification).toBe("unknown")
-    expect(pending.error).toContain("index.lock")
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-})
-
-describe("postTurnPush size guard and persistent failure record", () => {
-  beforeEach(() => {
-    vi.mocked(childProcess.execFileSync).mockReset()
-    vi.mocked(emitNervesEvent).mockReset()
-  })
-
-  function makeBundle(): string {
-    return fs.mkdtempSync(path.join(os.tmpdir(), "sync-size-guard-"))
-  }
-
-  function sparseFile(root: string, relativePath: string, bytes: number): void {
-    const filePath = path.join(root, relativePath)
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, "")
-    fs.truncateSync(filePath, bytes)
-  }
-
-  it("unstages files over the size limit, records them and commits the rest", async () => {
-    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    sparseFile(tmpDir, "arc/huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
-    sparseFile(tmpDir, "arc/small.json", 10)
-    const calls: string[][] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      calls.push(argv)
-      if (argv[0] === "status") return Buffer.from("?? arc/\n")
-      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0arc/huge.jsonl\0A\0arc/small.json\0A\0arc/gone.json\0D\0arc/old.json\0")
-      if (argv[0] === "diff" && argv.includes("--quiet")) throw new Error("exit 1: staged changes")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(calls).toContainEqual(["--literal-pathspecs", "reset", "-q", "--", "arc/huge.jsonl"])
-    expect(calls.map((argv) => argv[0])).toContain("commit")
-    expect(calls.map((argv) => argv[0])).toContain("push")
-    const skipped = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), "utf-8"))
-    expect(skipped.limitBytes).toBe(SYNC_FILE_SIZE_LIMIT_BYTES)
-    expect(skipped.files).toEqual([{ path: "arc/huge.jsonl", bytes: SYNC_FILE_SIZE_LIMIT_BYTES + 1 }])
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      level: "warn",
-      event: "heart.sync_oversized_files_skipped",
-    }))
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("commits nothing when every changed file is over the limit", async () => {
-    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    sparseFile(tmpDir, "huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
-    const commands: string[] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      commands.push(argv[0] === "--literal-pathspecs" ? argv[1] : argv[0])
-      if (argv[0] === "status") return Buffer.from("?? huge.jsonl\n")
-      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0huge.jsonl\0")
-      return Buffer.from("")
-    })
-
-    const result = postTurnPush(tmpDir, defaultConfig)
-
-    expect(result.ok).toBe(true)
-    expect(commands).toContain("reset")
-    expect(commands).not.toContain("commit")
-    expect(commands).not.toContain("push")
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "heart.sync_push_end",
-      message: "post-turn push: only oversized files changed, nothing committed",
-    }))
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("clears the skipped-files record once no file is over the limit", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), "{}", "utf-8")
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(fs.existsSync(path.join(tmpDir, "state", "sync-skipped-files.json"))).toBe(false)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("still syncs when the skipped-files record cannot be written", async () => {
-    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    sparseFile(tmpDir, "huge.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
-    fs.writeFileSync(path.join(tmpDir, "state"), "not a directory", "utf-8")
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from("?? huge.jsonl\n")
-      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("A\0huge.jsonl\0")
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("passes a large output buffer to git status so a huge change list cannot overflow it", async () => {
-    const { postTurnPush, SYNC_GIT_MAX_BUFFER_BYTES } = await import("../../heart/sync")
-    vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from(""))
-
-    postTurnPush("/fake/agent/root", defaultConfig)
-
-    expect(childProcess.execFileSync).toHaveBeenCalledWith(
-      "git",
-      ["status", "--porcelain"],
-      expect.objectContaining({ maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES }),
-    )
-  })
-
-  it("records a git status failure and counts repeated failures from the first one", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("spawnSync git ENOBUFS")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(false)
-    const first = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
-    expect(first.error).toContain("ENOBUFS")
-    expect(first.consecutiveFailures).toBe(1)
-    expect(first.firstFailedAt).toBe(first.failedAt)
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(false)
-    const second = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
-    expect(second.consecutiveFailures).toBe(2)
-    expect(second.firstFailedAt).toBe(first.firstFailedAt)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("continues the failure count from a record written before the count existed", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({
-      error: "old", failedAt: "2026-06-21T22:00:00.000Z", classification: "unknown", conflictFiles: [],
-    }), "utf-8")
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("still failing")
-    })
-
-    postTurnPush(tmpDir, defaultConfig)
-
-    const record = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
-    expect(record.firstFailedAt).toBe("2026-06-21T22:00:00.000Z")
-    expect(record.consecutiveFailures).toBe(2)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("starts a fresh count when the previous record is not an object", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), "[]", "utf-8")
-    vi.mocked(childProcess.execFileSync).mockImplementation(() => {
-      throw new Error("failing")
-    })
-
-    postTurnPush(tmpDir, defaultConfig)
-
-    const record = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
-    expect(record.consecutiveFailures).toBe(1)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it.each([
-    ["a push", (pushCount: number) => pushCount === 0, "origin\n"],
-    ["a push after rebase", (pushCount: number) => pushCount === 1, "origin\n"],
-    ["a local-only commit", () => true, ""],
-  ])("removes the failure record after %s succeeds", async (_label, pushSucceeds, remote) => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({ error: "old" }), "utf-8")
-    let pushCount = 0
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from(remote)
-      if (argv[0] === "push") {
-        const ok = pushSucceeds(pushCount)
-        pushCount++
-        if (!ok) throw new Error("rejected")
-      }
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  function cleanTreeBundleWithRecord(): string {
-    const tmpDir = makeBundle()
-    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, "state", "pending-sync.json"), JSON.stringify({ error: "old" }), "utf-8")
-    fs.writeFileSync(path.join(tmpDir, "state", "sync-skipped-files.json"), JSON.stringify({ files: [] }), "utf-8")
-    return tmpDir
-  }
-
-  it.each([
-    ["no remote is configured", "", "0"],
-    ["nothing is ahead of the upstream", "origin\n", "0\n"],
-  ])("clears the failure and skipped-files records on a clean tree when %s", async (_label, remote, ahead) => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = cleanTreeBundleWithRecord()
-    const commands: string[] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      commands.push(argv[0])
-      if (argv[0] === "remote") return Buffer.from(remote)
-      if (argv[0] === "rev-list") return Buffer.from(ahead)
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
-    expect(fs.existsSync(path.join(tmpDir, "state", "sync-skipped-files.json"))).toBe(false)
-    expect(commands).not.toContain("push")
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("pushes commits an earlier failed push left behind when the tree is clean", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = cleanTreeBundleWithRecord()
-    const commands: string[] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      commands.push(argv[0])
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "rev-list") return Buffer.from("2560\n")
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(commands).toContain("push")
-    expect(commands).not.toContain("commit")
-    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(false)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("keeps the failure record on a clean tree when the upstream cannot be compared", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = cleanTreeBundleWithRecord()
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "rev-list") throw new Error("fatal: no upstream configured for branch 'main'")
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(true)
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "heart.sync_upstream_unknown" }))
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("keeps the failure record when the ahead count is not a number", async () => {
-    const { postTurnPush } = await import("../../heart/sync")
-    const tmpDir = cleanTreeBundleWithRecord()
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      if (argv[0] === "rev-list") return Buffer.from("garbage")
-      return Buffer.from("")
-    })
-
-    expect(postTurnPush(tmpDir, defaultConfig).ok).toBe(true)
-    expect(fs.existsSync(path.join(tmpDir, "state", "pending-sync.json"))).toBe(true)
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("unstages both sides of a rename whose new path is over the limit", async () => {
-    const { postTurnPush, SYNC_FILE_SIZE_LIMIT_BYTES } = await import("../../heart/sync")
-    const tmpDir = makeBundle()
-    sparseFile(tmpDir, "new/big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
-    const calls: string[][] = []
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      calls.push(argv)
-      if (argv[0] === "status") return Buffer.from("R  old/big.jsonl -> new/big.jsonl\n")
-      if (argv[0] === "diff" && argv.includes("--name-status")) return Buffer.from("R100\0old/big.jsonl\0new/big.jsonl\0C090\0a.json\0b.json\0")
-      return Buffer.from("")
-    })
-
-    postTurnPush(tmpDir, defaultConfig)
-
-    expect(calls).toContainEqual(["--literal-pathspecs", "reset", "-q", "--", "new/big.jsonl", "old/big.jsonl"])
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  it("commits quietly, with a large output buffer and a long timeout", async () => {
-    const { postTurnPush, SYNC_GIT_MAX_BUFFER_BYTES, SYNC_GIT_TIMEOUT_MS } = await import("../../heart/sync")
-    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
-      const argv = args as string[]
-      if (argv[0] === "status") return Buffer.from(" M file.json\n")
-      if (argv[0] === "remote") return Buffer.from("origin\n")
-      return Buffer.from("")
-    })
-
-    postTurnPush("/fake/agent/root", defaultConfig)
-
-    for (const command of [["add", "-A"], ["commit", "-q", "-m", "sync: post-turn update"], ["push", "origin"]]) {
-      expect(childProcess.execFileSync).toHaveBeenCalledWith(
-        "git",
-        command,
-        expect.objectContaining({ timeout: SYNC_GIT_TIMEOUT_MS, maxBuffer: SYNC_GIT_MAX_BUFFER_BYTES }),
-      )
+  it("a push that hangs is killed at the timeout and recorded", async () => {
+    const { bundle } = bundleWithRemote()
+    const saved = process.env.GIT_SSH_COMMAND
+    const script = path.join(root, "ssh.sh")
+    fs.writeFileSync(script, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 })
+    process.env.GIT_SSH_COMMAND = script
+    try {
+      git(bundle, ["remote", "set-url", "origin", "ssh://git@hang.invalid/r.git"])
+      __testHooks.pushTimeoutMs = 300
+      write(bundle, "notes.md", "x\n")
+      expect(await settled(postTurnPush(bundle, CONFIG))).toEqual({ ok: false, error: "git push timed out after 300 ms" })
+    } finally {
+      if (saved === undefined) delete process.env.GIT_SSH_COMMAND
+      else process.env.GIT_SSH_COMMAND = saved
     }
   })
+})
 
-  it("clearPendingSync tolerates a record it cannot remove", async () => {
-    const { clearPendingSync } = await import("../../heart/sync")
-    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
-      throw new Error("EPERM")
-    })
+describe("integrate", () => {
+  it("a fetch with an already-aborted signal runs nothing", async () => {
+    const { bundle } = bundleWithRemote()
+    const controller = new AbortController()
+    controller.abort()
+    expect(await fetchRemote(bundle, CONFIG, controller.signal)).toEqual({ ok: false, error: "git fetch aborted" })
+  })
 
-    expect(() => clearPendingSync("/fake/agent/root")).not.toThrow()
-    rmSpy.mockRestore()
+  it("repairs a rebase --apply left in progress", () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "psyche/TACIT.md", "a\nOWNER\nc\nd\ne\nf\n")
+    write(bundle, "psyche/TACIT.md", "a\nAGENT\nc\nd\ne\nf\n")
+    git(bundle, ["commit", "-q", "-am", "agent"])
+    git(bundle, ["fetch", "-q"])
+    expect(() => git(bundle, ["rebase", "--apply", "origin/main"])).toThrow()
+    expect(fs.existsSync(path.join(bundle, ".git", "rebase-apply"))).toBe(true)
+    expect(integrateFetched(bundle, CONFIG, AGENT)).toEqual({ ok: true })
+    expect(emitted("heart.sync_repaired")[0].meta).toMatchObject({ rebase: true, merge: false })
+    expect(fs.readFileSync(path.join(bundle, "psyche", "TACIT.md"), "utf-8")).toBe("a\nOWNER\nc\nd\ne\nf\n")
+  })
+
+  it("a merge commit refused by a hook is aborted and recorded", () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "owner.md", "o\n")
+    write(bundle, "agent.md", "a\n")
+    fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
+    git(bundle, ["fetch", "-q"])
+    const result = integrateFetched(bundle, CONFIG, AGENT)
+    expect(result.ok).toBe(false)
+    expect(fs.existsSync(path.join(bundle, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(pending(bundle)).toMatchObject({ classification: "unknown" })
+  })
+
+  it("an owner-wins merge refused by a hook is aborted and recorded", () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "psyche/TACIT.md", "a\nOWNER\nc\nd\ne\nf\n")
+    write(bundle, "psyche/TACIT.md", "a\nAGENT\nc\nd\ne\nf\n")
+    fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
+    git(bundle, ["fetch", "-q"])
+    const result = integrateFetched(bundle, CONFIG, AGENT)
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/^git merge failed: /)
+    expect(fs.existsSync(path.join(bundle, ".git", "MERGE_HEAD"))).toBe(false)
+    expect(emitted("heart.sync_merge_failed")).toHaveLength(1)
+  })
+
+  it("a resolution commit refused by a hook leaves no merge in progress", () => {
+    const { bundle, owner } = bundleWithRemote()
+    git(owner, ["rm", "-q", "psyche/TACIT.md"])
+    git(owner, ["commit", "-q", "-m", "owner deletes"])
+    git(owner, ["push", "-q", "origin", "HEAD:main"])
+    write(bundle, "psyche/TACIT.md", "agent edit\n")
+    fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    git(bundle, ["fetch", "-q"])
+    // The hook also blocks the local commit, so commit first with hooks off.
+    git(bundle, ["-c", "core.hooksPath=/dev/null", "commit", "-q", "-am", "agent edit"])
+    __testHooks.extraGitConfig = ["-c", `core.hooksPath=${path.join(bundle, ".git", "hooks")}`]
+    expect(integrateFetched(bundle, CONFIG, AGENT).ok).toBe(false)
+    expect(fs.existsSync(path.join(bundle, ".git", "MERGE_HEAD"))).toBe(false)
+  })
+
+  it("a resolved conflict clears its record; a pending push failure stays until the push", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    expect((await preTurnPull(bundle, CONFIG)).ok).toBe(false)
+
+    // The owner resolves by taking the agent's side and pushing it.
+    git(owner, ["fetch", "-q", path.join(bundle, ".git"), "HEAD:refs/heads/agent-side"])
+    git(owner, ["merge", "-q", "-X", "theirs", "--no-edit", "agent-side"])
+    git(owner, ["push", "-q", "origin", "HEAD:main"])
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+    expect(pending(bundle)).toBeNull()
+    expect(fs.existsSync(path.join(bundle, "state", "sync-conflict.json"))).toBe(false)
+
+    write(bundle, "local.md", "unpushed\n")
+    git(bundle, ["add", "-A"])
+    git(bundle, ["commit", "-q", "-m", "unpushed"])
+    write(bundle, "state/pending-sync.json", JSON.stringify({ error: "push failed", failedAt: "2026-06-01T00:00:00.000Z", classification: "push_rejected" }))
+    expect(await preTurnPull(bundle, CONFIG, { agentName: AGENT })).toEqual({ ok: true })
+    expect(pending(bundle)).toMatchObject({ classification: "push_rejected" })
+  })
+
+  it("an unwritable conflict record still reports the conflict", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    fs.mkdirSync(path.join(bundle, "state", "sync-conflict.json"), { recursive: true })
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    expect((await preTurnPull(bundle, CONFIG)).ok).toBe(false)
+    expect(notices).toHaveLength(1)
+    git(bundle, ["reset", "-q", "--hard", "origin/main"])
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+  })
+
+  it("a conflict record without a hash is ignored", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    write(bundle, "state/sync-conflict.json", JSON.stringify({ paths: [] }))
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    expect((await preTurnPull(bundle, CONFIG)).ok).toBe(false)
+    expect(notices.map((n) => n.noticeId)).toEqual([expect.stringMatching(/^sync-conflict:agent:[0-9a-f]{16}$/)])
+  })
+
+  it("a conflict branch the remote refuses is reported and retried next time", async () => {
+    const { bundle, owner, remote } = bundleWithRemote()
+    write(owner, "unrelated.md", "x\n")
+    git(owner, ["checkout", "-q", "-b", "elsewhere"])
+    git(owner, ["add", "-A"])
+    git(owner, ["commit", "-q", "-m", "unrelated"])
+    git(owner, ["push", "-q", "origin", "HEAD:refs/heads/sync-conflict/agent"])
+    git(owner, ["checkout", "-q", "main"])
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await preTurnPull(bundle, CONFIG)
+    expect(emitted("heart.sync_conflict_branch_push_error")).toHaveLength(1)
+    expect(git(remote, ["--git-dir", remote, "log", "-1", "--format=%s", "sync-conflict/agent"])).toBe("unrelated")
+    expect(notices.filter((n) => n.noticeId.startsWith("sync-conflict-branch:"))).toHaveLength(0)
+  })
+})
+
+describe("syncNow and the lock", () => {
+  it("syncNow reports a busy lock with the holder", async () => {
+    const bundle = localBundle()
+    const handle = lock(bundle)
+    const result = await syncNow(bundle, CONFIG, AGENT, 0)
+    handle.release()
+    expect(result).toEqual({ ok: false, busy: true, holderPid: process.pid, error: `bundle sync lock is held by pid ${process.pid}` })
+  })
+
+  it("syncNow reports a busy lock whose holder is unknown", async () => {
+    const bundle = localBundle()
+    fs.writeFileSync(path.join(bundle, ".git", "ouro-sync.lock"), "")
+    expect(await syncNow(bundle, CONFIG, AGENT, 0)).toEqual({ ok: false, busy: true, holderPid: null, error: "bundle sync lock is held" })
+  })
+
+  it("syncNow returns an integrate failure without pushing, and releases the lock", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    const result = await syncNow(bundle, CONFIG, AGENT, 0)
+    expect(result.ok).toBe(false)
+    expect(emitted("heart.sync_now_error")).toHaveLength(1)
+    lock(bundle).release()
+  })
+
+  it("preTurnPull skips when the lock stays busy", async () => {
+    const bundle = localBundle()
+    const handle = lock(bundle)
+    __testHooks.preTurnLockWaitMs = 150
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true, busy: true, holderPid: process.pid })
+    handle.release()
+  })
+})
+
+describe("pause marker", () => {
+  it("an unreadable marker is removed and sync runs", async () => {
+    const bundle = localBundle()
+    for (const content of ["not json", "null", JSON.stringify({ expiresAt: 5 })]) {
+      write(bundle, "state/sync-paused", content)
+      expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+      expect(fs.existsSync(path.join(bundle, "state", "sync-paused"))).toBe(false)
+    }
+    expect(emitted("heart.sync_pause_expired").map((e) => e.meta?.expiresAt)).toEqual([null, null, null])
+  })
+})
+
+describe("owner notices", () => {
+  it("default notice goes through the Telegram owner notice", async () => {
+    const send = vi.fn(async () => undefined)
+    vi.doMock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: send }))
+    setSyncOwnerNotifier(null)
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect(send).toHaveBeenCalledWith(AGENT, expect.objectContaining({ noticeId: expect.stringMatching(/^sync-conflict:agent:/), signal: expect.any(AbortSignal) }))
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice")).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Telegram sent it: nothing is queued for the agent to relay a second time.
+    const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+    const pendingDir = getPrivateRuntimePendingDir(AGENT, bundle)
+    expect(fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir) : []).toEqual([])
+  })
+
+  it("default notice is queued for the agent to relay when Telegram does not send it", async () => {
+    vi.doMock("../../senses/telegram", () => ({ sendTelegramOwnerNotice: async () => { throw new Error("no telegram for this agent") } }))
+    setSyncOwnerNotifier(null)
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice_telegram_skipped")).toHaveLength(1))
+    const { getPrivateRuntimePendingDir } = await import("../../mind/pending")
+    const pendingDir = getPrivateRuntimePendingDir(AGENT, bundle)
+    const queued = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf-8")) as Record<string, unknown>)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ from: AGENT, friendId: "self", channel: "inner", key: "dialog", packetId: expect.stringMatching(/^sync-conflict:agent:/) })
+    expect(String(queued[0].content)).toMatch(/\n\ni should tell my owner\.$/)
+    expect(emitted("heart.sync_owner_notice_telegram_skipped")[0].meta).toMatchObject({ error: "no telegram for this agent" })
+  })
+
+  it("a notice that cannot be sent is logged", async () => {
+    setSyncOwnerNotifier(() => { throw new Error("no telegram") })
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice_error")).toHaveLength(1))
+    expect(emitted("heart.sync_owner_notice_error")[0].meta).toMatchObject({ error: "no telegram" })
+  })
+
+  it("a non-Error failure is logged as text", async () => {
+    setSyncOwnerNotifier(() => Promise.reject("offline"))
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    await preTurnPull(bundle, CONFIG)
+    await vi.waitFor(() => expect(emitted("heart.sync_owner_notice_error")).toHaveLength(1))
+    expect(emitted("heart.sync_owner_notice_error")[0].meta).toMatchObject({ error: "offline" })
+  })
+})
+
+describe("fix round 1", () => {
+  it("a global merge.autoStash=true has no effect", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "big.jsonl", "{}\n")
+    expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+    ownerPush(owner, "big.jsonl", "{\"owner\":1}\n")
+    sparse(bundle, "big.jsonl", SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+    const global = path.join(root, "global.gitconfig")
+    fs.writeFileSync(global, `[user]\n\tname = T\n\temail = t@example.invalid\n[merge]\n\tautoStash = true\n`)
+    process.env.GIT_CONFIG_GLOBAL = global
+
+    const result = await preTurnPull(bundle, CONFIG)
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("would be overwritten")
+    expect(git(bundle, ["stash", "list"])).toBe("")
+    expect(fs.statSync(path.join(bundle, "big.jsonl")).size).toBe(SYNC_FILE_SIZE_LIMIT_BYTES + 1)
+  })
+
+  it("repository hooks do not run during sync", () => {
+    const bundle = localBundle()
+    fs.writeFileSync(path.join(bundle, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    write(bundle, "notes.md", "hi\n")
+    expect(commitLocalChanges(bundle, AGENT, "m").committed).toBe(true)
+  })
+
+  it("a pause written while preTurnPull or syncNow waits for the lock is honoured", async () => {
+    const bundle = localBundle()
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString()
+    for (const run of [() => preTurnPull(bundle, CONFIG), () => syncNow(bundle, CONFIG, AGENT, 5000)]) {
+      const handle = lock(bundle)
+      const pendingRun = run()
+      await new Promise((r) => setTimeout(r, 150))
+      write(bundle, "state/sync-paused", JSON.stringify({ startedAt: new Date().toISOString(), expiresAt }))
+      handle.release()
+      expect(await pendingRun).toEqual({ ok: true, paused: true, pausedUntil: expiresAt })
+      fs.rmSync(path.join(bundle, "state", "sync-paused"))
+    }
+    // Neither run committed the untracked .gitignore: HEAD is still unborn.
+    expect(() => git(bundle, ["rev-parse", "--verify", "-q", "HEAD"])).toThrow()
+  })
+
+  it("a pause longer than 24 hours is garbage", async () => {
+    const bundle = localBundle()
+    const now = Date.now()
+    const hours = (h: number): string => new Date(now + h * 3_600_000).toISOString()
+    for (const marker of [{ startedAt: hours(0), expiresAt: hours(25) }, { expiresAt: hours(25) }, { startedAt: "not a date", expiresAt: hours(25) }]) {
+      write(bundle, "state/sync-paused", JSON.stringify(marker))
+      expect(await preTurnPull(bundle, CONFIG)).toEqual({ ok: true })
+      expect(fs.existsSync(path.join(bundle, "state", "sync-paused"))).toBe(false)
+    }
+    write(bundle, "state/sync-paused", JSON.stringify({ startedAt: hours(-20), expiresAt: hours(3) }))
+    expect((await preTurnPull(bundle, CONFIG)).paused).toBe(true)
+  })
+
+  it("a stale pause marker that cannot be removed is logged and sync goes on", () => {
+    const bundle = localBundle()
+    write(bundle, "state/sync-paused", JSON.stringify({ expiresAt: "2026-01-01T00:00:00.000Z" }))
+    write(bundle, "notes.md", "hi\n")
+    fs.chmodSync(path.join(bundle, "state"), 0o555)
+    try {
+      const result = postTurnPush(bundle, CONFIG)
+      expect(result.ok).toBe(true)
+    } finally {
+      fs.chmodSync(path.join(bundle, "state"), 0o755)
+    }
+    expect(emitted("heart.sync_pause_clear_failed")).toHaveLength(1)
+    expect(git(bundle, ["log", "--oneline"]).split("\n")).toHaveLength(1)
+  })
+
+  it("syncNow on an unborn HEAD with a remote has nothing to push", async () => {
+    const bundle = path.join(root, "empty.ouro")
+    git(root, ["init", "-q", "-b", "main", bundle])
+    const remote = path.join(root, "empty-remote.git")
+    git(root, ["init", "-q", "--bare", "-b", "main", remote])
+    git(bundle, ["remote", "add", "origin", remote])
+    expect(await syncNow(bundle, CONFIG, AGENT, 0)).toEqual({ ok: true })
+    expect(pending(bundle)).toBeNull()
+  })
+
+  it("the conflict branch is pushed again only when HEAD has moved", async () => {
+    const { bundle, owner } = bundleWithRemote()
+    ownerPush(owner, "notes.md", "owner\n")
+    write(bundle, "notes.md", "agent\n")
+    for (let i = 0; i < 4; i++) await preTurnPull(bundle, CONFIG)
+    expect(emitted("heart.sync_conflict_branch_pushed")).toHaveLength(1)
+    write(bundle, "journal.md", "new turn\n")
+    await preTurnPull(bundle, CONFIG)
+    expect(emitted("heart.sync_conflict_branch_pushed")).toHaveLength(2)
+    expect(JSON.parse(fs.readFileSync(path.join(bundle, "state", "sync-conflict.json"), "utf-8")).branchPushedHead).toBe(git(bundle, ["rev-parse", "HEAD"]))
+  })
+})
+
+describe("clearPendingSync", () => {
+  it("tolerates a record it cannot remove", () => {
+    const bundle = localBundle()
+    fs.mkdirSync(path.join(pendingSyncPath(bundle), "x"), { recursive: true })
+    expect(() => clearPendingSync(bundle)).not.toThrow()
+    expect(fs.existsSync(pendingSyncPath(bundle))).toBe(true)
   })
 })

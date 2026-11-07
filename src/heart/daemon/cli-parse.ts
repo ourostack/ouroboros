@@ -285,6 +285,7 @@ export function usage(): string {
     "  ouro rollback [<version>]",
     "  ouro versions",
     "  ouro clone <remote> [--agent <name>]",
+    "  ouro sync [--agent <name>]",
     "  ouro doctor",
   ].join("\n")
 }
@@ -2034,6 +2035,12 @@ function parseCloneCommand(args: string[]): OuroCliCommand {
     : { kind: "clone", remote }
 }
 
+function parseSyncCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+  if (rest.length > 0) throw new Error("Usage: ouro sync [--agent <name>]")
+  return agent ? { kind: "sync", agent } : { kind: "sync" }
+}
+
 export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketOverride?: string } {
   let agent: string | undefined
   let friendId: string | undefined
@@ -2942,12 +2949,17 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "event") return parseEventCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
+  if (head === "sanctuary") {
+    if (args.length === 3 && args[1] === "git-exclude" && args[2] === "--print") return { kind: "sanctuary.git-exclude" }
+    throw new Error("Usage: ouro sanctuary git-exclude --print")
+  }
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "acp-serve") return parseAcpServeCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
   if (head === "plugin") return parsePluginCommand(args.slice(1))
   if (head === "clone") return parseCloneCommand(args.slice(1))
+  if (head === "sync") return parseSyncCommand(args.slice(1))
   if (head === "doctor") {
     const tail = args.slice(1)
     const json = tail.includes("--json")

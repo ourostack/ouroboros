@@ -6,6 +6,7 @@ import type { Duplex } from "node:stream"
 import type OpenAI from "openai"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
 import { saveSession, loadSession } from "../../mind/context"
+import { loadPsycheAt } from "../../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore } from "@ouro.bot/friends"
 import type { FriendRecord, IdentityProvider, ResolvedContext } from "@ouro.bot/friends"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
@@ -1978,13 +1979,18 @@ function looksLikeShortHumanPhoneGreeting(transcript: string): boolean {
   return /^(hi|hello|hey|yo|yes|yeah|yep)(\b|$)/.test(text)
 }
 
-async function readOptionalText(filePath: string, maxChars: number): Promise<string> {
-  try {
-    const text = (await fs.readFile(filePath, "utf8")).trim()
-    if (text.length <= maxChars) return text
-    return `${text.slice(0, maxChars).trim()}\n[truncated for low-latency voice]`
-  } catch {
-    return ""
+function capVoiceText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars).trim()}\n[truncated for low-latency voice]`
+}
+
+/** The psyche excerpts the live voice prompt carries, read through the shared psyche loader and capped for latency. */
+export function voicePsycheExcerpts(agentRoot: string): { soul: string; identity: string; tacit: string } {
+  const psyche = loadPsycheAt(agentRoot)
+  return {
+    soul: capVoiceText(psyche.soul, 1_600),
+    identity: capVoiceText(psyche.identity, 3_200),
+    tacit: capVoiceText(psyche.tacitKnowledge, 1_400),
   }
 }
 
@@ -1999,12 +2005,7 @@ async function buildRealtimeVoiceInstructions(options: {
   realtimeModel?: string
   audioToolMode?: "media-stream" | "realtime-cue" | "none"
 }): Promise<string> {
-  const psycheDir = path.join(options.agentRoot, "psyche")
-  const [soul, identity, tacit] = await Promise.all([
-    readOptionalText(path.join(psycheDir, "SOUL.md"), 1_600),
-    readOptionalText(path.join(psycheDir, "IDENTITY.md"), 3_200),
-    readOptionalText(path.join(psycheDir, "TACIT.md"), 1_400),
-  ])
+  const { soul, identity, tacit } = voicePsycheExcerpts(options.agentRoot)
   return [
     `You are ${options.agentName} in the live Voice sense.`,
     "This is the same agent identity as every other Ouro surface. Voice is not a reduced or alternate self.",

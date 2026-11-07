@@ -471,6 +471,8 @@ export function getIntegrationsConfig(): IntegrationsConfig {
 export interface SyncConfig {
   enabled: boolean
   remote: string
+  /** Remote branch every sync call names explicitly. Missing means "main". */
+  branch?: string
 }
 
 export function getSyncConfig(): SyncConfig {
@@ -479,10 +481,11 @@ export function getSyncConfig(): SyncConfig {
     return {
       enabled: agentConfig.sync?.enabled ?? false,
       remote: agentConfig.sync?.remote ?? "origin",
+      branch: agentConfig.sync?.branch ?? "main",
     }
   } catch {
     /* v8 ignore next -- defensive: loadAgentConfig failure in test/bootstrap @preserve */
-    return { enabled: false, remote: "origin" }
+    return { enabled: false, remote: "origin", branch: "main" }
   }
 }
 

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn().mockReturnValue(false),
+  // The read tools' realpath walk: nothing in this file is a link.
+  realpathSync: Object.assign(vi.fn((p: string) => p), { native: vi.fn((p: string) => p) }),
 }))
 
 // Track nerves events

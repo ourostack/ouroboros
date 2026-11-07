@@ -34,7 +34,20 @@ function parseSingleInspect(raw: string): Record<string, unknown> | null {
   }
 }
 
-export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAuditorCliDeps = {}): number {
+function splitSyncFlag(args: string[]): { args: string[]; syncEnabled: boolean } | null {
+  const index = args.indexOf("--sync-enabled")
+  if (index === -1) return { args, syncEnabled: false }
+  const value = args[index + 1]
+  if (value !== "true" && value !== "false") return null
+  const rest = [...args.slice(0, index), ...args.slice(index + 2)]
+  if (rest.includes("--sync-enabled")) return null
+  return { args: rest, syncEnabled: value === "true" }
+}
+
+export function runContainerSpecAuditorCli(rawArgs: string[], deps: ContainerSpecAuditorCliDeps = {}): number {
+  const sync = splitSyncFlag(rawArgs)
+  const args = sync?.args ?? []
+  const syncEnabled = sync?.syncEnabled === true
   const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath))
   const readText = (filePath: string) => decodeUtf8(readFile(filePath))
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
@@ -45,14 +58,14 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   const sourceContract = sourceCandidate?.["--mount-contract"]
   const sourceEffective = sourceContract === "legacy-alpha742" ? sourceCandidate : null
   const selectedEffective = effective ?? sourceEffective
-  if (!staged && !persistent && !selectedEffective) {
-    write(JSON.stringify({ ok: false, error: "usage: all modes require --mount-contract canonical-pre-gateway|canonical-gateway; staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
+  if (!sync || (!staged && !persistent && !selectedEffective)) {
+    write(JSON.stringify({ ok: false, error: "usage: all modes require --mount-contract canonical-pre-gateway|canonical-gateway and accept --sync-enabled true|false; staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
       event: "daemon.container_spec_auditor_cli_error",
       message: "container spec auditor arguments were invalid",
-      meta: { argumentCount: args.length },
+      meta: { argumentCount: rawArgs.length },
     })
     return 2
   }
@@ -97,6 +110,7 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
       expectedImageReference: selectedEffective["--expected-image-reference"],
       expectedIcon: selectedEffective["--expected-icon"],
       mountContract: selectedEffective["--mount-contract"] as SanctuaryContainerAuditOptions["mountContract"],
+      syncEnabled,
     })
     if (imageInspect.Id !== selectedEffective["--expected-image"]) {
       result.ok = false
@@ -126,8 +140,8 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     return 2
   }
   const result = persistent
-    ? auditSanctuaryPersistentTemplate({ templateXml, runtimePolicyText, expectedImageReference: persistent["--expected-image-reference"]!, mountContract })
-    : auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]!, mountContract })
+    ? auditSanctuaryPersistentTemplate({ templateXml, runtimePolicyText, expectedImageReference: persistent["--expected-image-reference"]!, mountContract, syncEnabled })
+    : auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]!, mountContract, syncEnabled })
   write(JSON.stringify(result) + "\n")
   return result.ok ? 0 : 1
 }

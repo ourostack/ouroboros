@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { registerGlobalLogSink } from "../../../nerves"
 import {
   prepareSanctuaryPackageManagedBundle,
   resolveSanctuaryPackageManagementActivation,
@@ -287,6 +288,53 @@ describe("Sanctuary package-management activation", () => {
     const inactiveEnsure = vi.fn()
     expect(prepareSanctuaryPackageManagedBundle({ kind: "inactive" }, { ensure: inactiveEnsure })).toBeUndefined()
     expect(inactiveEnsure).not.toHaveBeenCalled()
+  })
+
+  it("writes the bundle's git exclude once the bundle is ready, and does not boot without it while sync is on", () => {
+    const { decision } = resolve()
+    const ready = vi.fn(() => ({
+      ok: true as const,
+      data: {
+        runtimePackageVersion: VERSION,
+        packagedBundleVersion: VERSION,
+        liveBundleVersion: VERSION,
+        parity: "exact" as const,
+        mismatchCodes: [],
+        journalState: "absent" as const,
+        ready: true,
+        repair: { actor: "none" as const, action: "none" as const },
+      },
+    }))
+    const writeGitExclude = vi.fn(() => ({ initialized: false, written: true }))
+    prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude })
+    expect(writeGitExclude).toHaveBeenCalledWith(decision.kind === "active" ? decision.agentRoot : "")
+
+    const failing = vi.fn(() => { throw new Error("EACCES .git/info/exclude") })
+    const agentRoot = decision.kind === "active" ? decision.agentRoot : ""
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ sync: { enabled: true } }))
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude: failing })).toThrow("human-required: resume the reviewed Butler update recovery procedure")
+
+    // With sync off nothing is committed: the failure is a warning and the boot goes on.
+    const events: Array<{ level: string; event: string; meta: Record<string, unknown> }> = []
+    const unregister = registerGlobalLogSink((entry) => { events.push(entry as unknown as (typeof events)[number]) })
+    try {
+      for (const agentJson of [JSON.stringify({ sync: { enabled: false } }), "{}", "not json"]) {
+        fs.writeFileSync(path.join(agentRoot, "agent.json"), agentJson)
+        expect(prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude: failing })?.data.ready).toBe(true)
+      }
+      const nonError = vi.fn(() => { throw "busy" })
+      expect(prepareSanctuaryPackageManagedBundle(decision, { ensure: ready, writeGitExclude: nonError, syncEnabled: () => false })?.data.ready).toBe(true)
+    } finally {
+      unregister()
+    }
+    const warnings = events.filter((entry) => entry.event === "daemon.sanctuary_git_exclude_failed")
+    expect(warnings.map((entry) => [entry.level, entry.meta.reason])).toEqual([
+      ["warn", "EACCES .git/info/exclude"],
+      ["warn", "EACCES .git/info/exclude"],
+      ["warn", "EACCES .git/info/exclude"],
+      ["warn", "busy"],
+    ])
   })
 
   it("translates invalid activation, stale inspection, and dependency errors into controlled guidance", () => {

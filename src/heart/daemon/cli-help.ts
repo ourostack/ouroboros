@@ -97,6 +97,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro clone <remote> [--agent <name>]",
     example: "ouro clone https://github.com/user/myagent.ouro.git",
   },
+  sync: {
+    category: "Lifecycle",
+    description: "Sync an agent bundle with its git remote now: fetch, merge, push",
+    usage: "ouro sync [--agent <name>]",
+    example: "ouro sync --agent slugger",
+  },
   doctor: {
     category: "Lifecycle",
     description: "Run diagnostic checks on the ouro installation",
@@ -227,6 +233,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     example: "ouro work sentinel --agent my-agent --format json",
     subcommands: ["card", "gauntlet", "sentinel"],
+  },
+  sanctuary: {
+    category: "Internal",
+    description: "Print the git exclude list for the Butler's bundle, one entry per line. Starts nothing and reads nothing.",
+    usage: "ouro sanctuary git-exclude --print",
+    example: "ouro sanctuary git-exclude --print",
   },
   "nerves-review": {
     category: "Internal",
