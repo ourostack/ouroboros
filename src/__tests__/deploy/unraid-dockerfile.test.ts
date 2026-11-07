@@ -79,6 +79,7 @@ describe("the Butler image keeps the deploy key away from the agent's uid", () =
     beforeUser("COPY deploy/unraid/ouro-sync.sudoers")
     expect(SUDOERS).toBe([
       "Defaults!/usr/local/libexec/ouro-sync-ssh env_reset",
+      'Defaults!/usr/local/libexec/ouro-sync-ssh secure_path="/usr/sbin:/usr/bin:/sbin:/bin"',
       "ouro ALL=(ouro-sync) NOPASSWD: /usr/local/libexec/ouro-sync-ssh",
       "",
     ].join("\n"))

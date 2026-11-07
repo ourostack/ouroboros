@@ -2929,12 +2929,13 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
 
   describe("bundle sync in the production audits", () => {
     const agentJsonPath = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json"
-    function runAudit(agentJson: string | null, extra: string, call: string) {
+    function runAudit(agentJson: string | null | { symlinkTo: string }, extra: string, call: string) {
       const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
       const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sync-audit-"))
       try {
         const agentPath = path.join(testRoot, "agent.json")
-        if (agentJson !== null) fs.writeFileSync(agentPath, agentJson)
+        if (typeof agentJson === "string") fs.writeFileSync(agentPath, agentJson)
+        else if (agentJson) fs.symlinkSync(agentJson.symlinkTo, agentPath)
         const helpers = ["bundle_sync_enabled", "audit_effective", "audit_registered_dockerman_template"]
           .map((name) => extractRunbookFunction(runbook, name)).join("\n")
           .replace("/usr/local/bin/node", JSON.stringify(process.execPath))
@@ -2979,9 +2980,26 @@ ${call}`
         expect(result.status).not.toBe(0)
         expect(result.stdout).not.toContain("RUN")
       }
-      const malformed = runAudit("{", "bundle", effective)
+      const secret = "SECRET-ROOT-ONLY-CONTENT"
+      const malformed = runAudit(`{ ${secret}`, "bundle", effective)
       expect(malformed.status).not.toBe(0)
       expect(malformed.stdout).not.toContain("RUN")
+      expect(malformed.stderr).toBe("bundle sync check: agent.json is unreadable or not valid JSON\n")
+    })
+
+    it("refuses a symlinked agent.json with a plain line and never reads its target", () => {
+      const target = path.join(os.tmpdir(), `ouro-sync-audit-target-${process.pid}.json`)
+      fs.writeFileSync(target, '{"sync":{"enabled":false},"note":"SECRET-ROOT-ONLY-CONTENT"}')
+      try {
+        for (const [extra, call] of [["bundle", effective], ["", registered]] as const) {
+          const result = runAudit({ symlinkTo: target }, extra, call)
+          expect(result.status).not.toBe(0)
+          expect(result.stdout).not.toContain("RUN")
+          expect(result.stderr).toBe("bundle sync check: agent.json is a symlink; refusing to read it\n")
+        }
+      } finally {
+        fs.rmSync(target, { force: true })
+      }
     })
 
     it("leaves the flag off the source audit and rejects an unknown sync source", () => {

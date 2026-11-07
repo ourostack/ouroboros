@@ -1,2 +1,3 @@
 Defaults!/usr/local/libexec/ouro-sync-ssh env_reset
+Defaults!/usr/local/libexec/ouro-sync-ssh secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
 ouro ALL=(ouro-sync) NOPASSWD: /usr/local/libexec/ouro-sync-ssh

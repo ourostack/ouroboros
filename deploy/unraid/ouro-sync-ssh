@@ -1,7 +1,10 @@
 #!/bin/sh
 # Bundle sync's ssh for git. Runs as ouro-sync under sudo, so only ouro-sync can read the deploy key.
 # It accepts only git's own ssh invocation for one GitHub repository and passes nothing else to ssh.
+# It runs no tool through PATH: validation is shell builtins only, and ssh is called by absolute path.
 set -u
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 refuse() {
   printf 'ouro-sync-ssh: refused: %s\n' "$1" >&2
@@ -56,8 +59,37 @@ case "$command" in
   *"
 "*) refuse "the git command must be one line" ;;
 esac
-printf '%s\n' "$command" | grep -Eqx "git-(upload|receive)-pack '?[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?'?" \
-  || refuse "only git-upload-pack or git-receive-pack for one repository is allowed"
+bad_command="only git-upload-pack or git-receive-pack for one repository is allowed"
+case "$command" in
+  "git-upload-pack "*) quoted=${command#git-upload-pack } ;;
+  "git-receive-pack "*) quoted=${command#git-receive-pack } ;;
+  *) refuse "$bad_command" ;;
+esac
+case "$quoted" in
+  *[!A-Za-z0-9._/\'-]*) refuse "$bad_command" ;;
+esac
+# Either 'owner/repo' with both quotes, or owner/repo with none.
+case "$quoted" in
+  \'*\') repo=${quoted#\'}; repo=${repo%\'} ;;
+  *\'*) refuse "the repository's quotes must be balanced" ;;
+  *) repo=$quoted ;;
+esac
+case "$repo" in
+  */*/*) refuse "$bad_command" ;;
+  */*) ;;
+  *) refuse "$bad_command" ;;
+esac
+owner=${repo%%/*}
+name=${repo#*/}
+name=${name%.git}
+for segment in "$owner" "$name"; do
+  case "$segment" in
+    "" | *[!A-Za-z0-9._-]*) refuse "$bad_command" ;;
+    . | ..) refuse "the repository path may not contain . or .." ;;
+  esac
+done
 
 exec /usr/bin/ssh -i /run/ouro-sync/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes -F /dev/null git@github.com "$command"
+  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes \
+  -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
+  -F /dev/null git@github.com "$command"

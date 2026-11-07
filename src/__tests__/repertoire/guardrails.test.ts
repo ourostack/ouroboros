@@ -2124,8 +2124,8 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
       "git --config-env alias.s=CMD s",
       "git --config-env=alias.s=CMD s",
       `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.s GIT_CONFIG_VALUE_0='!git -C ${bundle} status' git s`,
-      "GIT_CONFIG_PARAMETERS=\"'alias.s'='!true'\" git s",
-      "export GIT_CONFIG_COUNT=1; git status",
+      `GIT_CONFIG_PARAMETERS="'alias.s'='!git -C ${bundle} push'" git s`,
+      "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.s GIT_CONFIG_VALUE_0='!cd ../agent.ouro && git push'; git s",
       `echo ${bundle} | xargs -I D git -C D status`,
       `echo ${bundle} | xargs -ID git -C D status`,
       `echo ${bundle} | xargs --replace=D git -C D status`,
@@ -2149,6 +2149,9 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
       `CDPATH=${tmp} cd /tmp/repo && git status`,
       "echo x | xargs -n1 git -C /tmp/repo log",
       "echo it is quoted: \"g\"o",
+      "GIT_CONFIG_NOSYSTEM=1 git -C /tmp/x status",
+      "GIT_CONFIG_GLOBAL=/tmp/gitconfig git -C /tmp/x log",
+      "export GIT_CONFIG_COUNT=1; git status",
     ]) expect({ command, result: await shell(command) }).toEqual({ command, result: { allowed: true } })
   })
 

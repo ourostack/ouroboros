@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
@@ -126,6 +126,7 @@ afterEach(() => {
   setSyncOwnerNotifier(null)
   __testHooks.fetchTimeoutMs = undefined
   __testHooks.pushTimeoutMs = undefined
+  __testHooks.killGraceMs = undefined
   for (const key of ENV_KEYS) {
     if (savedEnv[key] === undefined) delete process.env[key]
     else process.env[key] = savedEnv[key]
@@ -419,6 +420,56 @@ describe("bundle sync merges and never rebases or stashes", () => {
     const deadline = Date.now() + 3000
     while (pids.some(alive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
     expect(pids.filter(alive)).toEqual([])
+  })
+
+  it("a timed-out fetch gets SIGTERM first, so sudo can relay it, then SIGKILL after the grace", async () => {
+    const { agent } = setup()
+    const record = path.join(root, "ssh-signals")
+    const script = path.join(root, "stubborn-ssh.sh")
+    // Like an ssh run under sudo: it gets the SIGTERM (relayed, in production) and outlives it.
+    fs.writeFileSync(script, `#!/bin/sh\ntrap 'echo TERM >> "${record}"' TERM\nwhile :; do sleep 0.1; done\n`, { mode: 0o755 })
+    process.env.GIT_SSH_COMMAND = script
+    git(agent, ["remote", "set-url", "origin", "ssh://git@hang.invalid/repo.git"])
+    __testHooks.fetchTimeoutMs = 600
+    __testHooks.killGraceMs = 700
+    const kills: Array<{ pid: number; sig: string; at: number }> = []
+    const realKill = process.kill.bind(process)
+    const spy = vi.spyOn(process, "kill").mockImplementation((pid: number, sig?: string | number) => {
+      if (pid < 0) kills.push({ pid, sig: String(sig), at: Date.now() })
+      return realKill(pid, sig)
+    })
+    // Only this fetch's group: an earlier test's grace timer can still fire into the spy.
+    const mine = (): typeof kills => {
+      const term = kills.find((k) => k.sig === "SIGTERM")
+      return term ? kills.filter((k) => k.pid === term.pid) : []
+    }
+    const waitForKills = async (): Promise<void> => {
+      const deadline = Date.now() + 5000
+      while (mine().length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    }
+    try {
+      const result = await fetchRemote(agent, CONFIG)
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain("timed out")
+      await waitForKills()
+      const first = mine()
+      expect(first.map((k) => k.sig)).toEqual(["SIGTERM", "SIGKILL"])
+      expect(first[1]!.at - first[0]!.at).toBeGreaterThanOrEqual(650)
+      expect(fs.readFileSync(record, "utf-8")).toContain("TERM")
+
+      // An abort after the timeout has ended git signals nothing more.
+      kills.length = 0
+      const controller = new AbortController()
+      const pending = fetchRemote(agent, CONFIG, controller.signal)
+      await new Promise((r) => setTimeout(r, 900))
+      controller.abort()
+      await pending
+      await waitForKills()
+      await new Promise((r) => setTimeout(r, 300))
+      expect(mine().map((k) => k.sig)).toEqual(["SIGTERM", "SIGKILL"])
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it("no remote: commits locally, ok, no pending record", async () => {

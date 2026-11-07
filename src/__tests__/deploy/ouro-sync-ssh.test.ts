@@ -14,9 +14,12 @@ fs.writeFileSync(wrapper, WRAPPER.replace("exec /usr/bin/ssh ", `exec ${recorder
 
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
 
-function run(args: string[]) {
+// Debian's sh is dash; run under it too where it exists.
+const SHELLS = ["sh", ...(fs.existsSync("/bin/dash") ? ["/bin/dash"] : [])]
+
+function run(args: string[], shell = "sh", env: NodeJS.ProcessEnv = process.env) {
   fs.rmSync(record, { force: true })
-  const result = spawnSync("sh", [wrapper, ...args], { encoding: "utf8" })
+  const result = spawnSync(shell, [wrapper, ...args], { encoding: "utf8", env })
   const argv = fs.existsSync(record) ? fs.readFileSync(record, "utf8").trimEnd().split("\n") : null
   return { status: result.status, stderr: result.stderr, argv }
 }
@@ -27,6 +30,9 @@ const SSH_PREFIX = [
   "-o", "StrictHostKeyChecking=yes",
   "-o", "UserKnownHostsFile=/etc/ouro/github_known_hosts",
   "-o", "BatchMode=yes",
+  "-o", "ConnectTimeout=10",
+  "-o", "ServerAliveInterval=5",
+  "-o", "ServerAliveCountMax=2",
   "-F", "/dev/null",
   "git@github.com",
 ]
@@ -34,7 +40,9 @@ const SSH_PREFIX = [
 describe("ouro-sync-ssh", () => {
   it("is a root-owned-at-install POSIX sh script that execs ssh with the fixed key, host keys and host", () => {
     expect(WRAPPER.startsWith("#!/bin/sh\n")).toBe(true)
-    expect(WRAPPER).toContain("exec /usr/bin/ssh -i /run/ouro-sync/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \\\n  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes -F /dev/null git@github.com \"$command\"\n")
+    expect(WRAPPER).toContain("exec /usr/bin/ssh -i /run/ouro-sync/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \\\n  -o UserKnownHostsFile=/etc/ouro/github_known_hosts -o BatchMode=yes \\\n  -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \\\n  -F /dev/null git@github.com \"$command\"\n")
+    expect(WRAPPER).toContain("\nPATH=/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\n")
+    expect(WRAPPER).not.toMatch(/\b(grep|sed|awk|tr|cut)\b/u)
     expect(fs.statSync("deploy/unraid/ouro-sync-ssh").mode & 0o777).toBe(0o755)
     const check = spawnSync("sh", ["-n", "deploy/unraid/ouro-sync-ssh"], { encoding: "utf8" })
     expect(check.status, check.stderr).toBe(0)
@@ -47,9 +55,24 @@ describe("ouro-sync-ssh", () => {
     [["-p", "22", "-l", "git", "github.com", "git-receive-pack ourostack/sanctuary.git"]],
     [["-l", "git", "github.com", "git-upload-pack 'a-b_c.d/e.f-g_h'"]],
   ])("accepts git's ssh call %j", (args) => {
-    const result = run(args)
-    expect(result.status, result.stderr).toBe(0)
-    expect(result.argv).toEqual([...SSH_PREFIX, args.at(-1)])
+    for (const shell of SHELLS) {
+      const result = run(args, shell)
+      expect(result.status, `${shell}: ${result.stderr}`).toBe(0)
+      expect(result.argv).toEqual([...SSH_PREFIX, args.at(-1)])
+    }
+  })
+
+  it("runs nothing found through the caller's PATH", () => {
+    const bin = path.join(root, "planted")
+    const marker = path.join(root, "planted-ran")
+    fs.mkdirSync(bin, { recursive: true })
+    for (const tool of ["grep", "ssh", "printf", "sed", "cat"]) fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\necho ${tool} >> "${marker}"\n`, { mode: 0o755 })
+    for (const shell of SHELLS) {
+      const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` }
+      expect(run(["git@github.com", "git-upload-pack 'o/r.git'"], shell, env).status).toBe(0)
+      expect(run(["git@github.com", "git-upload-pack 'o/../r.git'"], shell, env).status).toBe(2)
+    }
+    expect(fs.existsSync(marker)).toBe(false)
   })
 
   it.each([
@@ -72,10 +95,26 @@ describe("ouro-sync-ssh", () => {
     [["git@github.com", "sh -c id"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
     [["git@github.com", "git-upload-pack 'o/r/x.git'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
     [["git@github.com", "git-upload-pack  'o/r.git'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack 'o/r.git"], "the repository's quotes must be balanced"],
+    [["git@github.com", "git-upload-pack o/r.git'"], "the repository's quotes must be balanced"],
+    [["git@github.com", "git-upload-pack '"], "the repository's quotes must be balanced"],
+    [["git@github.com", "git-upload-pack 'o/'r.git'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack ''"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack 'o/'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack '/r.git'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack 'o/.git'"], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack 'o/r.git' "], "only git-upload-pack or git-receive-pack for one repository is allowed"],
+    [["git@github.com", "git-upload-pack '../..'"], "the repository path may not contain . or .."],
+    [["git@github.com", "git-upload-pack './r.git'"], "the repository path may not contain . or .."],
+    [["git@github.com", "git-upload-pack 'o/..'"], "the repository path may not contain . or .."],
+    [["git@github.com", "git-upload-pack o/."], "the repository path may not contain . or .."],
+    [["git@github.com", "git-upload-pack 'o/..git'"], "the repository path may not contain . or .."],
   ])("refuses %j", (args, reason) => {
-    const result = run(args)
-    expect(result.status).toBe(2)
-    expect(result.stderr).toBe(`ouro-sync-ssh: refused: ${reason}\n`)
-    expect(result.argv).toBeNull()
+    for (const shell of SHELLS) {
+      const result = run(args, shell)
+      expect(result.status, shell).toBe(2)
+      expect(result.stderr).toBe(`ouro-sync-ssh: refused: ${reason}\n`)
+      expect(result.argv).toBeNull()
+    }
   })
 })

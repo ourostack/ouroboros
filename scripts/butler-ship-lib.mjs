@@ -9,8 +9,9 @@ export const REMOTE_GATE = "/tmp/sanctuary-replay-gate.mjs"
 export const REMOTE_NODE = "/usr/local/bin/node"
 // Written by sanctuary-sync-cutover.sh once the bundle owns its own git. From then on the Butler's image must have git.
 export const CUTOVER_MARKER = "/mnt/user/appdata/ouro-butler/bundle-backup/cutover-done"
-// The last release whose image has no git or ssh. Every later release carries bundle sync.
-export const LAST_RELEASE_WITHOUT_BUNDLE_SYNC = "0.1.0-alpha.986"
+// The first release whose image has git, ssh and the sync wrapper. Set at the M1c release bump; a test keeps it
+// above the last release known to ship without sync and no newer than package.json.
+export const BUNDLE_SYNC_FIRST_RELEASE = "0.1.0-alpha.989"
 export const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
@@ -227,7 +228,7 @@ export async function ship(opts, deps, timing = {}) {
     let releaseVersion
     try { releaseVersion = JSON.parse(body).version } catch { releaseVersion = undefined }
     if (typeof releaseVersion !== "string" || !semver.valid(releaseVersion)) throw new ShipError(`could not read a version from package.json at ${sha}, so cannot tell whether ${version} carries bundle sync`)
-    if (!semver.gt(releaseVersion, LAST_RELEASE_WITHOUT_BUNDLE_SYNC)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
+    if (!semver.gte(releaseVersion, BUNDLE_SYNC_FIRST_RELEASE)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
     deps.log(`  ok   ${version} carries bundle sync, which this host's bundle uses`)
   }
 

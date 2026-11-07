@@ -110,6 +110,13 @@ export const SYNC_FETCH_TIMEOUT_MS = 10_000
 export const SYNC_PUSH_TIMEOUT_MS = 60_000
 
 /**
+ * Between the SIGTERM and the SIGKILL of a timed-out network step. In the
+ * container ssh runs as ouro-sync, which the agent's uid cannot signal; sudo
+ * can, and relays the SIGTERM to it.
+ */
+export const SYNC_KILL_GRACE_MS = 2_000
+
+/**
  * The container's read-only mount for the sync deploy key. The key is owned by
  * ouro-sync (10002) mode 0400, so the agent's uid cannot read it.
  */
@@ -143,6 +150,7 @@ export const __testHooks: {
   fetchTimeoutMs?: number
   pushTimeoutMs?: number
   preTurnLockWaitMs?: number
+  killGraceMs?: number
   /** Appended after sync's own `-c` flags, so a test can re-enable hooks. */
   extraGitConfig?: string[]
   /** Replaces `merge --abort` in repair; no real git refuses it and then accepts `reset --merge`. */
@@ -273,8 +281,9 @@ interface AsyncGitRun {
 
 /**
  * A network git call. It runs detached, in its own process group, so a timeout
- * or an abort kills git and everything it started (ssh, a credential helper):
- * a lone `kill` of git leaves ssh holding the pipes open.
+ * or an abort ends git and everything it started (ssh, a credential helper):
+ * a lone `kill` of git leaves ssh holding the pipes open. The group gets
+ * SIGTERM, which sudo relays to the ssh it runs, then SIGKILL after a grace.
  */
 function runGitAsync(
   agentRoot: string,
@@ -297,12 +306,17 @@ function runGitAsync(
     const pid = child.pid as number
     inFlightChildren.add(pid)
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
-    const killGroup = (): void => {
+    const signalGroup = (name: NodeJS.Signals): void => {
       try {
-        process.kill(-pid, "SIGKILL")
+        process.kill(-pid, name)
       } catch {
         // The group is already gone.
       }
+    }
+    const killGroup = (): void => {
+      signalGroup("SIGTERM")
+      // Not cleared when git closes: whatever in the group outlived the SIGTERM still gets the SIGKILL.
+      setTimeout(() => signalGroup("SIGKILL"), __testHooks.killGraceMs ?? SYNC_KILL_GRACE_MS).unref()
     }
     const onAbort = (): void => {
       aborted = true

@@ -1464,8 +1464,10 @@ interface GitShellScan {
   gitPaths: string[]
   /** The words after each `git`. */
   calls: string[][]
-  /** A shell reading its script from stdin, which the guard cannot see; or git config set from the environment. */
+  /** A shell reading its script from stdin, which the guard cannot see. */
   opaqueShell: boolean
+  /** git config set from the environment (GIT_CONFIG_*), which can define an alias that runs anything. */
+  configEnv: boolean
   /** CDPATH is set, so a relative cd could land anywhere. */
   cdpath: boolean
 }
@@ -1483,8 +1485,7 @@ function noteGitAssignment(token: string, scan: GitShellScan, known: Map<string,
   if (!assignment) return false
   const [, name, value] = assignment as unknown as [string, string, string]
   if (GIT_PATH_VARIABLES.has(name)) scan.gitPaths.push(value)
-  // GIT_CONFIG_COUNT/KEY/VALUE and GIT_CONFIG_PARAMETERS can define an alias that runs anything, anywhere.
-  if (/^GIT_CONFIG(?:_|$)/.test(name)) scan.opaqueShell = true
+  if (/^GIT_CONFIG(?:_|$)/.test(name)) scan.configEnv = true
   if (name === "CDPATH") scan.cdpath = true
   if (unknownShellWord(value)) known.delete(name)
   else known.set(name, value)
@@ -1633,7 +1634,7 @@ export function bundleGitRefused(command: string, agentRoot: string | undefined)
   const plain = command.replace(/['"\\]/g, "")
   if (!agentRoot || !plain.includes("git")) return false
   try {
-    const scan: GitShellScan = { cwdTargets: [], gitPaths: [], calls: [], opaqueShell: false, cdpath: !!process.env.CDPATH }
+    const scan: GitShellScan = { cwdTargets: [], gitPaths: [], calls: [], opaqueShell: false, configEnv: false, cdpath: !!process.env.CDPATH }
     scanShellForGit(command, scan, 0)
     if (scan.opaqueShell && /(?:^|[^A-Za-z0-9_-])git(?:$|[^A-Za-z0-9_-])/.test(plain)) return true
     if (scan.calls.length === 0) return false
@@ -1644,6 +1645,8 @@ export function bundleGitRefused(command: string, agentRoot: string | undefined)
       else cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => cwd === null ? null : path.resolve(cwd, target))))
     }
     const roots = [path.resolve(agentRoot), canonicalize(path.resolve(agentRoot))]
+    // git config from the environment can hide a git aimed at the bundle in an alias: refuse it when the command names the bundle.
+    if (scan.configEnv && [...roots, path.basename(agentRoot)].some((root) => plain.includes(root))) return true
     const inBundle = (target: string): boolean => [target, canonicalize(target)].some((form) => roots.some((root) => form === root || form.startsWith(`${root}${path.sep}`)))
     for (const call of scan.calls) {
       const paths = gitCallPaths(call, cwds)

@@ -46,14 +46,27 @@ Effective-spec audit helper:
   inspect and its reviewed image inspect without printing either, invokes the
   packaged auditor from the explicit validated runner image argument, and
   removes its mode-0600 inputs on success or shell exit. bundle_sync_enabled
-  prints true or false from the bundle's agent.json and fails when it cannot
-  read it; audits of the container being installed pass `bundle` so the
+  prints true or false from the bundle's agent.json and fails, with a fixed
+  message, when it is a symlink or cannot be read or parsed; audits of the container being installed pass `bundle` so the
   auditor requires the sync key mount while sync is on:
     bundle_sync_enabled() {
+      BUNDLE_AGENT_JSON=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json
+      if test -L "$BUNDLE_AGENT_JSON"; then
+        printf '%s\n' "bundle sync check: agent.json is a symlink; refusing to read it" >&2
+        return 1
+      fi
       /usr/local/bin/node -e '
-        const agent = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-        process.stdout.write(agent.sync?.enabled === true ? "true" : "false");
-      ' /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/agent.json
+        const fs = require("node:fs");
+        let agent;
+        try {
+          const fd = fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+          agent = JSON.parse(fs.readFileSync(fd, "utf8"));
+        } catch {
+          process.stderr.write("bundle sync check: agent.json is unreadable or not valid JSON\n");
+          process.exit(1);
+        }
+        process.stdout.write(agent?.sync?.enabled === true ? "true" : "false");
+      ' "$BUNDLE_AGENT_JSON"
     }
     audit_effective() {
       (
