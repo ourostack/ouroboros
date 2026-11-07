@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import * as path from "path"
 import * as ts from "typescript"
 
-const { parseArgs, syntaxErrors, changedTestFiles } = require(path.resolve(__dirname, "../../../scripts/ci-prepass.cjs"))
+const { parseArgs, syntaxErrors, changedTestFiles } = require(path.resolve(__dirname, "../../../.github/scripts/ci-prepass.cjs"))
 
 describe("ci-prepass", () => {
   it("reads the base ref only when one is given", () => {

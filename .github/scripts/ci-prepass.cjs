@@ -54,7 +54,7 @@ function step(label, fn) {
 }
 
 function main() {
-  const repoRoot = path.resolve(__dirname, "..")
+  const repoRoot = path.resolve(__dirname, "..", "..")
   const { baseRef } = parseArgs(process.argv.slice(2))
   const ts = require("typescript")
   const read = (file) => fs.readFileSync(path.join(repoRoot, file), "utf-8")

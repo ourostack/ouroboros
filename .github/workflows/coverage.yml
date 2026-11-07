@@ -37,7 +37,7 @@ jobs:
         run: npm ci
 
       - name: Pre-pass
-        run: node scripts/ci-prepass.cjs ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
+        run: node .github/scripts/ci-prepass.cjs ${{ github.event_name == 'pull_request' && format('--base-ref origin/{0}', github.base_ref) || '' }}
 
   coverage:
     needs: prepass
