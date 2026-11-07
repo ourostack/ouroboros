@@ -37,7 +37,7 @@ describe("grep tool", () => {
     expect(params.properties).toHaveProperty("path")
     expect(params.properties).toHaveProperty("context_lines")
     expect(params.properties).toHaveProperty("include")
-    expect(params.required).toEqual(expect.arrayContaining(["pattern", "path"]))
+    expect(params.required).toEqual(["pattern"])
   })
 
   // --- Matching behavior ---

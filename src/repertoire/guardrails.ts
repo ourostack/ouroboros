@@ -1666,24 +1666,28 @@ export function bundleGitRefused(command: string, agentRoot: string | undefined)
 
 // --- the sync key's directory, closed to the read-only file tools ---
 
-/** The directories read_file, glob and grep would read for these arguments, as the tools resolve them. */
-function readToolTargets(toolName: string, args: Record<string, string>): Array<{ target: string; recursive: boolean }> {
-  const local = (p: string): string => path.isAbsolute(p) ? p : path.resolve(getRepoRoot(), p)
-  if (toolName === "read_file") return [{ target: local(args.path ?? ""), recursive: false }]
-  if (toolName === "grep") return [{ target: local(args.path ?? ""), recursive: true }]
-  const cwd = args.cwd ? local(args.cwd) : process.cwd()
+/**
+ * The directories read_file, glob and grep would read for these arguments. A relative path starts in the agent's home;
+ * the repo root and the process directory are checked too, so a tool that resolves differently still cannot reach the key.
+ */
+function readToolTargets(toolName: string, args: Record<string, string>, agentRoot: string | undefined): Array<{ target: string; recursive: boolean }> {
+  const home = agentRoot ? [agentRoot] : []
+  const local = (p: string): string[] => path.isAbsolute(p) ? [p] : [...home, getRepoRoot()].map((base) => path.resolve(base, p))
+  if (toolName === "read_file") return local(args.path ?? "").map((target) => ({ target, recursive: false }))
+  if (toolName === "grep") return local(args.path ?? "").map((target) => ({ target, recursive: true }))
+  const cwds = args.cwd ? local(args.cwd) : [...home, process.cwd()]
   // The part of the pattern before its first glob segment is a directory the glob reads.
   const segments = (args.pattern ?? "").split("/")
   const firstGlob = segments.findIndex((segment) => /[*?[\]{}()!]/.test(segment))
   const literal = (firstGlob < 0 ? segments : segments.slice(0, firstGlob)).join("/")
-  return [{ target: cwd, recursive: false }, { target: path.resolve(cwd, literal || "."), recursive: false }]
+  return cwds.flatMap((cwd) => [{ target: cwd, recursive: false }, { target: path.resolve(cwd, literal || "."), recursive: false }])
 }
 
-function syncSecretReadRefused(toolName: string, args: Record<string, string>): boolean {
+function syncSecretReadRefused(toolName: string, args: Record<string, string>, agentRoot: string | undefined): boolean {
   try {
     const lexical = path.resolve(syncSecretDir())
     const secrets = [lexical, canonicalize(lexical)]
-    return readToolTargets(toolName, args).some(({ target, recursive }) => [target, canonicalize(target)].some((form) => secrets.some((secret) =>
+    return readToolTargets(toolName, args, agentRoot).some(({ target, recursive }) => [target, canonicalize(target)].some((form) => secrets.some((secret) =>
       form === secret || form.startsWith(`${secret}${path.sep}`) || (recursive && (form === path.parse(form).root || secret.startsWith(`${form}${path.sep}`))))))
   } catch {
     return true
@@ -1713,7 +1717,7 @@ export function guardInvocation(
   })
 
   // Read-only tools skip the structural and trust guardrails; only the sync key's directory is closed to them.
-  if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args) ? deny(REASONS.unreadablePath) : allow
+  if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args, context.agentRoot) ? deny(REASONS.unreadablePath) : allow
 
   // Layer 1: structural guardrails (always on)
   const structuralResult = checkStructuralGuardrails(toolName, args, context)

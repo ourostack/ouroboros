@@ -166,10 +166,10 @@ describe("execTool", () => {
 
   // ── read_file ──
   it("read_file reads file contents", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("file content here")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content here"))
     const result = await execTool("read_file", { path: "/tmp/test.txt" })
     expect(result).toBe("file content here")
-    expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt", "utf-8")
+    expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt")
   })
 
   it("revalidates relationship capability immediately before tool execution", async () => {
@@ -496,15 +496,15 @@ describe("execTool", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", oversized, "utf-8")
   })
 
-  it("relative paths resolve against repo root (no workspace indirection)", async () => {
+  it("relative paths resolve against the agent's home (no workspace indirection)", async () => {
     vi.mocked(fs.readFileSync).mockImplementation((targetPath: any) => {
-      if (targetPath === "/mock/repo/src/mind/prompt.ts") {
-        return "hello world"
+      if (targetPath === "/mock/home/psyche/me.md") {
+        return Buffer.from("hello world")
       }
       return undefined as any
     })
 
-    const read = await execTool("read_file", { path: "src/mind/prompt.ts" })
+    const read = await execTool("read_file", { path: "psyche/me.md" }, { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/home" })
     expect(read).toBe("hello world")
   })
 
@@ -1631,7 +1631,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
 
   it("execTool allows read_file for acquaintance on remote channel (no channel blocking)", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     const { execTool } = await import("../../repertoire/tools")
     const ctx = {
       signin: vi.fn(),
@@ -1646,7 +1646,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
 
   it("execTool allows read_file for family in group chat on remote channel", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     const { execTool } = await import("../../repertoire/tools")
     const friend = makeFriend("family", [
       { provider: "imessage-handle", externalId: "group:chat789", linkedAt: "2026-01-01" },
@@ -1664,7 +1664,7 @@ describe("tool access trust-level alignment (D1b Rule 1)", () => {
 
   it("execTool allows read_file for stranger on remote channel (no channel blocking)", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     const { execTool } = await import("../../repertoire/tools")
     const ctx = {
       signin: vi.fn(),
@@ -1682,7 +1682,7 @@ describe("ToolContext shape", () => {
   it("ToolContext accepts context?: ResolvedContext", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     // ToolContext with context field
     const ctx = {
       graphToken: "token",
@@ -1938,7 +1938,7 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
 
   it("base tools work without ToolContext", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     const { execTool } = await import("../../repertoire/tools")
 
     const result = await execTool("read_file", { path: "/tmp/test.txt" })
@@ -1947,7 +1947,7 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
 
   it("base tools work with ToolContext (context is ignored)", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue("file content")
+    vi.mocked(fs.readFileSync).mockReturnValue(Buffer.from("file content"))
     const { execTool } = await import("../../repertoire/tools")
     const ctx = {
       graphToken: "token",

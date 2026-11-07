@@ -26,8 +26,8 @@ describe("Phase 2: tool description enrichment", () => {
   describe("Unit 2.1 - file tool descriptions", () => {
     it("read_file description contains behavioral guidance", () => {
       const desc = getBaseDescription("read_file")
-      expect(desc).toContain("Use offset/limit for large files")
-      expect(desc).toContain("Use this tool before editing any file")
+      expect(desc).toContain("2000 lines or 30,000 characters")
+      expect(desc).toContain("read on from")
     })
 
     it("write_file description contains behavioral guidance", () => {
@@ -45,12 +45,12 @@ describe("Phase 2: tool description enrichment", () => {
 
     it("glob description contains behavioral guidance", () => {
       const desc = getBaseDescription("glob")
-      expect(desc).toContain("Use this instead of shell commands like `find` or `ls`")
+      expect(desc).toContain("at most 500 matches")
     })
 
     it("grep description contains behavioral guidance", () => {
       const desc = getBaseDescription("grep")
-      expect(desc).toContain("Use this instead of shell commands like `grep` or `rg`")
+      expect(desc).toContain("at most 100 matches")
     })
   })
 

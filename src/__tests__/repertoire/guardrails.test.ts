@@ -2202,6 +2202,21 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     expect(guardInvocation("grep", { pattern: "fine" }, ctx)).toEqual({ allowed: true })
   })
 
+  it("reads from the agent's home: relative paths and the default path are checked against the key's directory", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const { __testHooks } = await import("../../heart/sync")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    const refused = { allowed: false, reason: "that path is protected — i can't read it." }
+    fs.mkdirSync(path.join(bundle, "keys-here"))
+    __testHooks.syncSecretDir = path.join(bundle, "keys-here")
+
+    expect(guardInvocation("read_file", { path: "keys-here/deploy_key" }, ctx)).toEqual(refused)
+    expect(guardInvocation("grep", { pattern: "BEGIN" }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "keys-here/*" }, ctx)).toEqual(refused)
+    expect(guardInvocation("glob", { pattern: "*", cwd: "keys-here" }, ctx)).toEqual(refused)
+    expect(guardInvocation("read_file", { path: "psyche/SOUL.md" }, ctx)).toEqual({ allowed: true })
+  })
+
   it("refuses a read whose landing place the filesystem cannot report", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     fs.symlinkSync("loop", path.join(tmp, "loop"))
