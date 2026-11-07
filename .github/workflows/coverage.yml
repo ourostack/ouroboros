@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Fails in a minute or two on a syntax error anywhere in src (tests included)
-  # or deploy/*.mjs, a type error, or a broken changed test file, instead of at
-  # the end of the 20+ minute coverage gate.
+  # Fails in a minute or two on a release-metadata miss, a syntax error
+  # anywhere in src (tests included) or deploy/*.mjs, a type error, or a broken
+  # changed test file, instead of at the end of the coverage gate.
   prepass:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -36,6 +36,12 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # Missing version bumps, wrapper drift and changelog misses fail here,
+      # before any coverage shard starts.
+      - name: Release preflight (PRs only)
+        if: github.event_name == 'pull_request'
+        run: npm run release:preflight -- --base-ref "origin/${{ github.base_ref }}"
+
       - name: Pre-pass
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -46,18 +52,63 @@ jobs:
             node .github/scripts/ci-prepass.cjs
           fi
 
-  coverage:
+  # The vitest coverage suite split across 6 runners (about 4 minutes of tests
+  # each; one runner took 26+). The split is by measured file duration, see
+  # .github/scripts/coverage-shards.cjs. Thresholds are checked only on the
+  # merged coverage, in the coverage job.
+  coverage-shard:
     needs: prepass
-    # Runs even when prepass fails, so the required `coverage` check reports a
-    # failure instead of being skipped (a skipped required check counts as passing).
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Coverage Shard
+        run: node .github/scripts/coverage-gate-sharded.cjs shard --index ${{ matrix.shard }} --count 6 --out .coverage-shard
+
+      - name: Upload Coverage Shard
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: .coverage-shard
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # The required `coverage` check and the gate itself: lint, changelog,
+  # mailbox-ui, then the shards' merged coverage against the real thresholds
+  # and the nerves audit over every shard's capture.
+  coverage:
+    needs:
+      - prepass
+      - coverage-shard
+    # Runs even when prepass or a shard fails, so the required `coverage` check
+    # reports a failure instead of being skipped (a skipped required check
+    # counts as passing).
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
-      - name: Stop when the pre-pass failed
-        if: needs.prepass.result != 'success'
+      - name: Stop when the pre-pass or a shard failed
+        if: needs.prepass.result != 'success' || needs.coverage-shard.result != 'success'
         run: |
-          echo "::error::prepass ${{ needs.prepass.result }}; see the prepass job for the first failure"
+          echo "::error::prepass ${{ needs.prepass.result }}, coverage-shard ${{ needs.coverage-shard.result }}; see the first failed job"
           exit 1
 
       - name: Checkout
@@ -74,15 +125,14 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # Fast-fail release metadata preflight runs BEFORE the ~2+ minute coverage gate
-      # so missing version bumps, wrapper drift, and changelog misses surface locally
-      # and in CI before the full test suite starts.
-      - name: Release preflight (PRs only)
-        if: github.event_name == 'pull_request'
-        run: npm run release:preflight -- --base-ref "origin/${{ github.base_ref }}"
+      - name: Download Coverage Shards
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          path: .coverage-shards
 
       - name: Run Coverage Gate
-        run: npm run test:coverage
+        run: node .github/scripts/coverage-gate-sharded.cjs merge --shards .coverage-shards --count 6
 
       - name: Resolve Coverage Artifact Root
         if: always()
