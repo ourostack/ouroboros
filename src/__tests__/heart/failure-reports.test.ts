@@ -191,8 +191,9 @@ describe("resolving and confirming", () => {
     expect(notices[0]!.text).toContain("version 0.1.0-alpha.875")
     expect(notices[0]!.text).toContain("You asked: turn the porch light on")
     expect(readFailureReport(agentRoot, id)).toMatchObject({ status: "closed" })
-    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner })).toEqual({ closed: [], waiting: [], failed: [] })
-    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" })).toEqual({ ok: false, reason: "already_closed" })
+    // On the test's own clock: a real "now" more than 30 days past T0 would prune the closed report first.
+    expect(await confirm(agentRoot, { runningVersion: "0.1.0-alpha.876", notifyOwner }, T0)).toEqual({ closed: [], waiting: [], failed: [] })
+    expect(await resolve(agentRoot, { id, version: "0.1.0-alpha.9", note: "n", byFriendId: "claude" }, T0)).toEqual({ ok: false, reason: "already_closed" })
   })
 
   it("keeps a report resolved when the owner cannot be told, so the next pass retries", async () => {
