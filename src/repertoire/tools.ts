@@ -77,6 +77,9 @@ export const SANCTUARY_OWNER_ADDITIONS: ReadonlySet<string> = new Set([
   "session_summary", "query_session", "set_reasoning_effort", "restart_runtime", "revive_sense",
 ])
 
+/** The bundle sync tools, granted to the Sanctuary owner alone. */
+const SANCTUARY_OWNER_SYNC_TOOLS: ReadonlySet<string> = new Set(["bundle_push", "bundle_pull_rebase"])
+
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
@@ -159,7 +162,9 @@ export function selectToolsForChannel(
         ...baseToolDefinitions.filter((definition) =>
           SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)
           || (ownerLike && SANCTUARY_OWNER_ADDITIONS.has(definition.tool.function.name))),
-        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []), ...(ownerLike ? mcp : []),
+        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []),
+        ...(owner ? bundleToolDefinitions.filter((definition) => SANCTUARY_OWNER_SYNC_TOOLS.has(definition.tool.function.name)) : []),
+        ...(ownerLike ? mcp : []),
       ]
       : []
   } else {

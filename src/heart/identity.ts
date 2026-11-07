@@ -111,6 +111,7 @@ export interface AgentConfig {
   sync?: {
     enabled?: boolean
     remote?: string
+    branch?: string
   }
   /**
    * Plugins this agent has enabled. Plugins are machine-installed at

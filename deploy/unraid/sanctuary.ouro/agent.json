@@ -61,6 +61,7 @@
     }
   },
   "sync": {
-    "enabled": false
+    "enabled": true,
+    "branch": "main"
   }
 }

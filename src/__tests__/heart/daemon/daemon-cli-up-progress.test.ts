@@ -1166,4 +1166,24 @@ describe("ouro up: UpProgress integration", () => {
     expect(calls).not.toContain("up to date.")
     expect(calls).not.toContain("starting daemon...")
   })
+
+  it("prints what the boot sync probe saw in each bundle", async () => {
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: false })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      runBootSyncProbeImpl: vi.fn(async () => ({
+        findings: [],
+        durationMs: 0,
+        statuses: [
+          { agent: "butler", text: "1 ahead, 0 behind origin/main" },
+          { agent: "slugger", text: "sync paused until 2026-11-06T12:00:00.000Z" },
+        ],
+      })),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+    expect(calls).toContain("sync status:\n  butler: 1 ahead, 0 behind origin/main\n  slugger: sync paused until 2026-11-06T12:00:00.000Z")
+  })
 })

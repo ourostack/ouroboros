@@ -333,7 +333,14 @@ describe("bundle_push first-push token gating", () => {
     tmp.cleanup()
   })
 
-  function setupBundleReadyToPush(remoteUrl = path.join(tmp.bundlesRoot, "missing-remote.git")): void {
+  // An empty bare remote: the first-push probe can ask it and finds no refs. (A remote it cannot reach is not a first push.)
+  function emptyRemote(): string {
+    const remote = path.join(tmp.bundlesRoot, "empty-remote.git")
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" })
+    return remote
+  }
+
+  function setupBundleReadyToPush(remoteUrl = emptyRemote()): void {
     initGitWithMainBranch(tmp.agentRoot)
     execFileSync("git", ["remote", "add", "origin", remoteUrl], { cwd: tmp.agentRoot, stdio: "pipe" })
     fs.writeFileSync(path.join(tmp.agentRoot, "file.txt"), "x", "utf-8")
@@ -370,18 +377,14 @@ describe("bundle_push first-push token gating", () => {
     expect(String(result.error)).toContain("different bundle")
   })
 
-  it("proceeds with first push when a valid token is present (then fails on missing remote)", async () => {
+  it("makes the first push when a valid token is present, and spends the token", async () => {
     setupBundleReadyToPush()
     // Get a real token via bundle_first_push_review
     const review = await invoke("bundle_first_push_review")
     const token = String(review.confirmationToken)
 
-    // Attempt the push with the valid token. The push itself will fail
-    // against the missing local remote, but the important thing is that
-    // we got PAST the token check (kind !== "confirmation_required").
     const result = await invoke("bundle_push", { confirmation_token: token })
-    expect(result.ok).toBe(false)
-    expect(result.kind).not.toBe("confirmation_required")
+    expect(result).toMatchObject({ ok: true, firstPush: true })
     // Token should have been consumed
     expect(__getConfirmationTokenStore().has(token)).toBe(false)
   })

@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 17,
+      "version": 18,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -38,6 +38,8 @@
         "steward_policy_manage",
         "house_sweep",
         "house_digest_send",
+        "bundle_push",
+        "bundle_pull_rebase",
         "send_message",
         "ponder",
         "rest",

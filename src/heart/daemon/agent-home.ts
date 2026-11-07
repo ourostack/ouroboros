@@ -7,18 +7,22 @@
  * module writes it (`ouro move <agent> here`) and checks a running daemon
  * against it.
  *
- * A move is a compare-and-swap on the bundle's remote. It starts only from a
- * bundle that is exactly at its upstream (nothing unpushed, agent.json clean),
- * commits only agent.json and pushes. A fast-forward push succeeds only if
- * nobody pushed in between. When the push is rejected, the move is undone; if
- * the upstream lease changed meanwhile, another machine won and the move
- * stops, otherwise it is retried once on the new upstream.
+ * A move is a compare-and-swap on the bundle's remote. It runs under the
+ * bundle sync lock, honours a sync pause, and names `<remote>` and
+ * `sync.branch` explicitly (never `@{u}`). It starts only from a bundle that
+ * is exactly at `<remote>/<branch>` (nothing unpushed, agent.json clean),
+ * commits only agent.json and pushes `HEAD:<branch>`. A fast-forward push
+ * succeeds only if nobody pushed in between. When the push is refused, the
+ * move is undone; if the remote's lease changed meanwhile, another machine won
+ * and the move stops, otherwise it is retried once on the new remote state.
  */
 
 import * as fs from "fs"
 import * as path from "path"
 import { execFile as nodeExecFile, execFileSync as nodeExecFileSync } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { SyncConfig } from "../config"
+import { fetchRemote, holdSyncLock, pushHeadToBranch, syncPausedUntil, syncTrackingRef, type BranchPushResult, type SyncResult } from "../sync"
 import { agentHomeLabel, listAllBundleAgents, parseAgentHome, type AgentHome } from "./agent-discovery"
 import type { DaemonHealthResult } from "./daemon"
 
@@ -30,7 +34,22 @@ export interface MoveAgentHomeOptions {
   machineName: string
   bundlesRoot: string
   now?: () => Date
+  /** Local git (status, merge, commit, reset). */
   execFileSync?: GitExec
+  /** How long to wait for the bundle sync lock before reporting busy. Default 10 s. */
+  lockWaitMs?: number
+  /** Network git, under the lock. Defaults to sync's detached fetch and push. */
+  network?: MoveNetwork
+}
+
+export interface MoveNetwork {
+  fetch(agentRoot: string, config: SyncConfig): Promise<SyncResult>
+  push(agentRoot: string, config: SyncConfig): Promise<BranchPushResult>
+}
+
+const SYNC_NETWORK: MoveNetwork = {
+  fetch: (agentRoot, config) => fetchRemote(agentRoot, config),
+  push: (agentRoot, config) => pushHeadToBranch(agentRoot, config),
 }
 
 export interface MoveAgentHomeResult {
@@ -41,12 +60,14 @@ export interface MoveAgentHomeResult {
 }
 
 const MOVE_ATTEMPTS = 2
+const MOVE_LOCK_WAIT_MS = 10_000
 
-function readSyncSettings(parsed: Record<string, unknown>): { enabled: boolean; remote: string } {
-  const sync = parsed.sync as { enabled?: unknown; remote?: unknown } | undefined
+function readSyncSettings(parsed: Record<string, unknown>): SyncConfig & { branch: string } {
+  const sync = parsed.sync as { enabled?: unknown; remote?: unknown; branch?: unknown } | undefined
   return {
     enabled: sync?.enabled === true,
     remote: typeof sync?.remote === "string" && sync.remote.trim() ? sync.remote : "origin",
+    branch: typeof sync?.branch === "string" && sync.branch.trim() ? sync.branch : "main",
   }
 }
 
@@ -74,11 +95,12 @@ function recordedPushError(agentRoot: string): string | null {
 }
 
 /** Record this machine as the agent's home in its synced agent.json. */
-export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeResult {
+export async function moveAgentHomeHere(options: MoveAgentHomeOptions): Promise<MoveAgentHomeResult> {
   const { agent, machineId, machineName } = options
   const agentRoot = path.join(options.bundlesRoot, `${agent}.ouro`)
   const configPath = path.join(agentRoot, "agent.json")
   const git = options.execFileSync ?? nodeExecFileSync
+  const network = options.network ?? SYNC_NETWORK
   const now = options.now ?? (() => new Date())
   const run = (args: string[]): string => git("git", args, { cwd: agentRoot, stdio: "pipe", timeout: 30_000 }).toString().trim()
 
@@ -131,34 +153,46 @@ export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeR
     return finish({ ok: true, changed: true, message: `${movedMessage(current)}; ${why}, so only this machine sees the change` })
   }
 
+  const pausedRefusal = (until: string): MoveAgentHomeResult =>
+    refuse(`${agent}'s bundle sync is paused until ${until}, so nothing changed; run \`ouro move ${agent} here\` again after that`)
+  const pausedUntil = syncPausedUntil(agentRoot)
+  if (pausedUntil !== null) return pausedRefusal(pausedUntil)
+  const lock = await holdSyncLock(agentRoot, options.lockWaitMs ?? MOVE_LOCK_WAIT_MS)
+  if ("busy" in lock) {
+    return refuse(`another bundle sync holds ${agent}'s lock${lock.holderPid === null ? "" : ` (pid ${lock.holderPid})`}, so nothing changed; try again in a moment`)
+  }
   try {
+    // A pause can begin while this move waited for the lock (the replay gate
+    // pauses, then takes the lock), so look again now that the lock is ours.
+    const pausedNow = syncPausedUntil(agentRoot)
+    if (pausedNow !== null) return pausedRefusal(pausedNow)
     if (run(["status", "--porcelain", "--", "agent.json"]).length > 0) {
       return refuse(`${agent}'s agent.json has uncommitted changes, so nothing changed; commit or discard them first (git -C ${agentRoot} diff agent.json)`)
     }
     const hasRemote = run(["remote"]).split("\n").includes(sync.remote)
+    const tracking = syncTrackingRef(sync)
 
     let seen: AgentHome | null = null
     let lastPushError = ""
     for (let attempt = 1; attempt <= MOVE_ATTEMPTS; attempt++) {
       if (hasRemote) {
-        try {
-          run(["fetch", "-q", sync.remote])
-        } catch (error) {
-          return refuse(`could not reach ${agent}'s bundle remote, so nothing changed: ${errorText(error)}`)
+        const fetched = await network.fetch(agentRoot, sync)
+        if (!fetched.ok) {
+          return refuse(`could not reach ${agent}'s bundle remote, so nothing changed: ${fetched.error}`)
         }
-        let unpushed: number
         try {
-          unpushed = Number(run(["rev-list", "--count", "@{u}..HEAD"]))
-        } catch (error) {
-          return refuse(`${agent}'s bundle branch has no upstream to publish the move to, so nothing changed: ${errorText(error)}`)
+          run(["rev-parse", "--verify", "-q", tracking])
+        } catch {
+          return refuse(`${agent}'s bundle remote has no ${sync.branch} branch to publish the move to, so nothing changed`)
         }
+        const unpushed = Number(run(["rev-list", "--count", `${tracking}..HEAD`]))
         if (unpushed > 0) {
           const recorded = recordedPushError(agentRoot)
-          const why = recorded ? `the last bundle push failed with: ${recorded}` : `run \`git -C ${agentRoot} push\` to see why they did not publish`
+          const why = recorded ? `the last bundle push failed with: ${recorded}` : `run \`ouro sync --agent ${agent}\` to see why they did not publish`
           return refuse(`${agent}'s bundle has ${unpushed} unpushed commit${unpushed === 1 ? "" : "s"}, so nothing changed; fix bundle sync first, because a move must not publish them as a side effect (${why})`)
         }
         try {
-          run(["merge", "--ff-only", "-q", "@{u}"])
+          run(["merge", "--ff-only", "-q", tracking])
         } catch (error) {
           return refuse(`could not bring ${agent}'s bundle up to date with its remote, so nothing changed: ${errorText(error)}`)
         }
@@ -178,7 +212,7 @@ export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeR
 
       writeHome(config.parsed, current)
       try {
-        run(["commit", "-q", "-m", `home: ${agent} moves to ${machineName}`, "--", "agent.json"])
+        run(["-c", `user.name=${agent}`, "-c", `user.email=${agent}@ouro.local`, "commit", "-q", "-m", `home: ${agent} moves to ${machineName}`, "--", "agent.json"])
       } catch (error) {
         fs.writeFileSync(configPath, config.text, "utf-8")
         return refuse(`could not commit the move, so nothing changed: ${errorText(error)}`)
@@ -186,12 +220,9 @@ export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeR
       if (!hasRemote) {
         return finish({ ok: true, changed: true, message: `${movedMessage(current)}; the bundle has no remote, so only this machine sees the change` })
       }
-      try {
-        run(["push", "-q", sync.remote])
-        return finish({ ok: true, changed: true, message: movedMessage(current) })
-      } catch (error) {
-        lastPushError = errorText(error)
-      }
+      const pushed = await network.push(agentRoot, sync)
+      if (pushed.ok) return finish({ ok: true, changed: true, message: movedMessage(current) })
+      lastPushError = pushed.error ?? "push failed"
       // Undo exactly our own commit; the working tree goes back to the
       // pre-move agent.json. If even that fails, say what to run by hand.
       try {
@@ -205,6 +236,8 @@ export function moveAgentHomeHere(options: MoveAgentHomeOptions): MoveAgentHomeR
     return refuse(`could not push the move, so nothing changed: ${lastPushError}`)
   } catch (error) {
     return refuse(`could not move ${agent}, so nothing changed: ${errorText(error)}`)
+  } finally {
+    lock.release()
   }
 }
 
@@ -221,17 +254,27 @@ function execGit(cwd: string, args: string[]): Promise<string> {
 }
 
 /**
- * Fetch the bundle's remote (without touching the working tree) and read the
- * lease in the upstream agent.json, so a machine notices a move away from it
- * even while the agent is idle and never pulls.
+ * Fetch `<remote>/<sync.branch>` (without touching the working tree) and read
+ * the lease in the remote's agent.json, so a machine notices a move away from
+ * it even while the agent is idle and never pulls. Fetch only, under the sync
+ * lock without waiting: a busy lock or a sync pause skips this check (unknown).
+ * It never commits or pushes.
  */
 export async function readUpstreamAgentHome(agentRoot: string, git: (cwd: string, args: string[]) => Promise<string> = execGit): Promise<AgentHome | null | undefined> {
   try {
     const sync = readSyncSettings(JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as Record<string, unknown>)
     if (!sync.enabled || !fs.existsSync(path.join(agentRoot, ".git"))) return undefined
-    await git(agentRoot, ["fetch", "-q", sync.remote])
-    const upstream = JSON.parse(await git(agentRoot, ["show", "@{u}:agent.json"])) as { home?: unknown }
-    return parseAgentHome(upstream.home)
+    if (syncPausedUntil(agentRoot) !== null) return undefined
+    const lock = await holdSyncLock(agentRoot, 0)
+    if ("busy" in lock) return undefined
+    try {
+      const fetched = await fetchRemote(agentRoot, sync)
+      if (!fetched.ok) return undefined
+      const upstream = JSON.parse(await git(agentRoot, ["show", `${syncTrackingRef(sync)}:agent.json`])) as { home?: unknown }
+      return parseAgentHome(upstream.home)
+    } finally {
+      lock.release()
+    }
   } catch {
     return undefined
   }

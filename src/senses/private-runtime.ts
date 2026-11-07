@@ -5,7 +5,7 @@ import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata, type RunAgentOutcome } from "../heart/core"
 import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identity"
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
-import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
+import { buildSystem, flattenSystemPrompt, loadPsycheAt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
 import { SELF_FRIEND_ID } from "../repertoire/tools-base"
@@ -249,11 +249,7 @@ async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileF
 }
 
 function readAspirations(agentRoot: string): string {
-  try {
-    return fs.readFileSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"), "utf8").trim()
-  } catch {
-    return ""
-  }
+  return loadPsycheAt(agentRoot).aspirations
 }
 
 export function loadPrivateRuntimeInstincts(): PrivateRuntimeInstinct[] {

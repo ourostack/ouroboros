@@ -7,14 +7,16 @@ ARG TARGETARCH
 ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
 ARG SUPERCRONIC_ARM64_SHA256=c0576a8eb092e3f79108ed0a2155a25c7766af78456e5a6070e54757ef513bfe
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ \
+  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ git openssh-client sudo \
   && rm -rf /var/lib/apt/lists/* \
   && case "$TARGETARCH" in amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_AMD64_SHA256" ;; arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_ARM64_SHA256" ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
   && curl -fsSLo /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-${TARGETARCH}" \
   && echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c - \
   && chmod 0755 /usr/local/bin/supercronic \
   && groupadd --gid 10001 ouro \
-  && useradd --uid 10001 --gid 10001 --home-dir /home/ouro --create-home --shell /usr/sbin/nologin ouro
+  && useradd --uid 10001 --gid 10001 --home-dir /home/ouro --create-home --shell /usr/sbin/nologin ouro \
+  && groupadd --system --gid 10002 ouro-sync \
+  && useradd --system --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ouro-sync
 
 WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
@@ -35,6 +37,17 @@ COPY skills ./skills
 COPY changelog.json ./changelog.json
 COPY deploy/unraid/container-runtime.json ./container-runtime.json
 COPY deploy/unraid /opt/ouro/deploy/unraid
+# Bundle sync pushes over ssh with the deploy key mounted at /run/ouro-sync. The key is 10002:10002 mode 0400, so
+# only ouro-sync can read it; the agent (ouro, 10001) reaches it only through sudo and the root-owned wrapper, which
+# accepts nothing but git's ssh call for one GitHub repository and trusts only GitHub's published host keys.
+COPY deploy/unraid/github_known_hosts /etc/ouro/github_known_hosts
+COPY deploy/unraid/ouro-sync-ssh /usr/local/libexec/ouro-sync-ssh
+COPY deploy/unraid/ouro-sync.sudoers /etc/sudoers.d/ouro-sync
+RUN chown root:root /etc/ouro /etc/ouro/github_known_hosts /usr/local/libexec/ouro-sync-ssh /etc/sudoers.d/ouro-sync \
+  && chmod 0755 /etc/ouro /usr/local/libexec/ouro-sync-ssh \
+  && chmod 0644 /etc/ouro/github_known_hosts \
+  && chmod 0440 /etc/sudoers.d/ouro-sync \
+  && visudo -cf /etc/sudoers.d/ouro-sync
 COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
 

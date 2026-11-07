@@ -43,11 +43,12 @@ describe("Ouro Butler Community Apps release", () => {
 
     expect(template.match(/<Name>[^<]+<\/Name>/gu)).toEqual(["<Name>ouro-butler</Name>"])
     expect(template.match(/<Repository>[^<]+<\/Repository>/gu)).toEqual([`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`])
-    expect(template.match(/<Config\b/gu)).toHaveLength(5)
+    expect(template.match(/<Config\b/gu)).toHaveLength(6)
     expect(template).toContain('Target="/run/ouro-authority"')
     expect(template).toContain('Default="/run/ouro-authority" Mode="ro"')
     expect(template).not.toContain("sanctuary.ouro/psyche")
     expect(template).toContain('Target="/etc/ouro/trust/sanctuary" Default="/mnt/user/appdata/ouro-butler/trust/sanctuary" Mode="ro"')
+    expect(template).toContain('Target="/run/ouro-sync" Default="/mnt/user/appdata/ouro-butler/sync" Mode="ro"')
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
     expect(template).toContain("<Overview>Ouro Butler")

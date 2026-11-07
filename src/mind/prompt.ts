@@ -2,6 +2,7 @@ import { fillHouseNames, houseNameFields, type HouseNameKey } from "./house-name
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
+import { execFileSync } from "child_process";
 import type OpenAI from "openai";
 import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
@@ -14,6 +15,7 @@ import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from 
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, describeTrustContext, getChannelCapabilities, isRemoteChannel, channelToFacing, type Channel, type ChannelCapabilities, type ResolvedContext } from "@ouro.bot/friends";
 import { emitNervesEvent } from "../nerves/runtime";
+import { agentNameFromRoot, tellOwner } from "../heart/sync";
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
@@ -82,15 +84,90 @@ const PSYCHE_SOURCE_FILES = {
 
 type PsycheSources = Record<keyof typeof PSYCHE_SOURCE_FILES, string | null>;
 
-/** Every file the psyche is built from, read once; null when a file is absent or unreadable. */
+/** A conflict marker: a line starting `<<<<<<< ` with a later line starting `>>>>>>> `. A lone `=======` is valid text. */
+function hasConflictMarkers(text: string): boolean {
+  const lines = text.split("\n");
+  const open = lines.findIndex((line) => line.startsWith("<<<<<<< "));
+  return open !== -1 && lines.slice(open + 1).some((line) => line.startsWith(">>>>>>> "));
+}
+
+// The last text of each file (by absolute path) that was read without conflict markers.
+const _lastGoodText = new Map<string, string>();
+// Marker problems already reported, by path and content hash.
+const _reportedMarkers = new Set<string>();
+// The outcome of the git fallback for a marked file, by path, valid while the file's marked content is unchanged.
+const _gitFallback = new Map<string, { hash: string; committed: string | null }>();
+
+/** The committed copy of a bundle file, or null for a non-git bundle or a path git does not have. */
+function committedText(agentRoot: string, parts: readonly string[]): string | null {
+  const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C" };
+  for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[name];
+  try {
+    return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "show", `HEAD:./${parts.join("/")}`], {
+      cwd: agentRoot,
+      env,
+      maxBuffer: 16 * 1024 * 1024,
+      encoding: "utf-8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function reportConflictMarkers(agentRoot: string, filePath: string, parts: readonly string[], text: string): void {
+  const reportKey = `${filePath}:${createHash("sha256").update(text).digest("hex")}`;
+  if (_reportedMarkers.has(reportKey)) return;
+  _reportedMarkers.add(reportKey);
+  const relative = parts.join("/");
+  emitNervesEvent({
+    level: "warn",
+    component: "mind",
+    event: "psyche.conflict_markers",
+    message: "psyche file has unresolved merge conflict markers; keeping it out of the prompt",
+    meta: { path: filePath },
+  });
+  tellOwner(agentRoot, agentNameFromRoot(agentRoot), {
+    noticeId: `psyche-conflict-markers:${reportKey}`,
+    text: `${relative} has unresolved merge conflict markers.`,
+  });
+}
+
+/** A file's text; text with conflict markers is replaced by the last good text, else the committed copy, else null. */
+function readPsycheFile(agentRoot: string, parts: readonly string[]): string | null {
+  const filePath = path.join(agentRoot, ...parts);
+  let text: string;
+  try {
+    text = String(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return null;
+  }
+  if (!hasConflictMarkers(text)) {
+    _lastGoodText.set(filePath, text);
+    _gitFallback.delete(filePath);
+    return text;
+  }
+  reportConflictMarkers(agentRoot, filePath, parts, text);
+  const lastGood = _lastGoodText.get(filePath);
+  if (lastGood !== undefined) return lastGood;
+  const hash = createHash("sha256").update(text).digest("hex");
+  let remembered = _gitFallback.get(filePath);
+  if (remembered?.hash !== hash) {
+    remembered = { hash, committed: committedText(agentRoot, parts) };
+    _gitFallback.set(filePath, remembered);
+  }
+  const committed = remembered.committed;
+  if (committed === null || hasConflictMarkers(committed)) return null;
+  _lastGoodText.set(filePath, committed);
+  return committed;
+}
+
+/** Every file the psyche is built from, read once; null when a file is absent, unreadable or unusable. */
 function readPsycheSources(agentRoot: string): PsycheSources {
   const sources = {} as PsycheSources;
   for (const [key, parts] of Object.entries(PSYCHE_SOURCE_FILES) as [keyof PsycheSources, readonly string[]][]) {
-    try {
-      sources[key] = String(fs.readFileSync(path.join(agentRoot, ...parts), "utf-8"));
-    } catch {
-      sources[key] = null;
-    }
+    sources[key] = readPsycheFile(agentRoot, parts);
   }
   return sources;
 }
@@ -138,6 +215,9 @@ function loadPsyche(): PsycheText {
 
 export function resetPsycheCache(): void {
   _psycheCache.clear();
+  _lastGoodText.clear();
+  _reportedMarkers.clear();
+  _gitFallback.clear();
 }
 
 export type { Channel }
@@ -321,19 +401,12 @@ the general flow when i see a non-empty bundleState:
      enumerates my PII payload (friends, Desk record, Arc, etc.), probes
      the remote for github public/private status, and returns a warning
      text i MUST show my friend verbatim. only after explicit confirmation
-     do i call \`bundle_push confirmation_token: ...\` with the token
-     the review returned.
-  6. if \`remote_push_failed\`: the remote advanced and my retry was
-     rejected too. use \`bundle_pull_rebase\` to pull down their changes
-     and rebase my commits on top.
-  7. if \`pull_rebase_conflict\`: the rebase left merge conflicts i need
-     to walk my friend through. read \`state/pending-sync.json\` to see
-     the conflictFiles array, then resolve each conflict in conversation
-     with them before re-running \`bundle_pull_rebase\`.
+     do i pass the token the review returned as \`confirmation_token\` to
+     \`bundle_push\` or \`bundle_pull_rebase\`.
 
-these tools refuse destructive operations by default and require an
-explicit force flag — that's the safety rail. i never pass force
-without asking my friend first.
+\`bundle_init_git\` and \`bundle_add_remote\` refuse to overwrite by
+default and require an explicit force flag — that's the safety rail. i
+never pass force without asking my friend first.
 
 ### peers — other agents on this machine
 

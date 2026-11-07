@@ -6089,7 +6089,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("vault created for Slugger")
     expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
     expect(execFileSync("git", ["status", "--porcelain"], { cwd: root, stdio: "pipe" }).toString().trim()).toBe("")
-    expect(execFileSync("git", ["log", "--oneline", "-1"], { cwd: root, stdio: "pipe" }).toString()).toContain("sync: post-turn update")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], { cwd: root, stdio: "pipe" }).toString()).toContain("sync: update")
   })
 
   it("ouro repair guides locked-vault repair with typed choices", async () => {
@@ -6492,7 +6492,7 @@ describe("provider CLI command execution", () => {
     expect(execFileSync("git", ["log", "--oneline", "-1"], {
       cwd: agentRoot(bundlesRoot, "Slugger"),
       stdio: "pipe",
-    }).toString()).toContain("sync: post-turn update")
+    }).toString()).toContain("sync: update")
   })
 
   it("vault replace repairs prior generated replacement emails instead of compounding them", async () => {
@@ -6773,7 +6773,7 @@ describe("provider CLI command execution", () => {
     expect(execFileSync("git", ["log", "--oneline", "-1"], {
       cwd: agentRoot(bundlesRoot, "Slugger"),
       stdio: "pipe",
-    }).toString()).toContain("sync: post-turn update")
+    }).toString()).toContain("sync: update")
   })
 
 	  it("vault recover covers empty imports, prompted secrets, failures, and guards", async () => {
@@ -10400,7 +10400,7 @@ describe("provider CLI command execution", () => {
     expect(execFileSync("git", ["log", "--oneline", "-1"], {
       cwd: agentRoot(bundlesRoot, "Slugger"),
       stdio: "pipe",
-    }).toString()).toContain("sync: post-turn update")
+    }).toString()).toContain("sync: update")
   })
 
   it("rejects blank required Teams fields before storing anything", async () => {

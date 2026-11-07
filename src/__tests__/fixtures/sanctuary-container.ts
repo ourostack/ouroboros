@@ -1,5 +1,8 @@
-/** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 created (the shape a rollback restores). */
-export function sanctuaryContainerInspectFixture(gateway = false, { psycheMount = false }: { psycheMount?: boolean } = {}) {
+/**
+ * `psycheMount` adds the read-only psyche mount that releases up to alpha.978 created (the shape a rollback restores).
+ * `syncMount` adds the read-only bundle sync key mount that M1c releases create.
+ */
+export function sanctuaryContainerInspectFixture(gateway = false, { psycheMount = false, syncMount = false }: { psycheMount?: boolean; syncMount?: boolean } = {}) {
   const spec = {
     Name: "/ouro-butler",
     Image: "sha256:" + "a".repeat(64),
@@ -54,6 +57,10 @@ export function sanctuaryContainerInspectFixture(gateway = false, { psycheMount 
     }
     spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Target: "/etc/ouro/trust/sanctuary", ReadOnly: true })
     spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/trust/sanctuary", Destination: "/etc/ouro/trust/sanctuary", RW: false, Propagation: "rprivate" })
+    if (syncMount) {
+      spec.HostConfig.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/sync", Target: "/run/ouro-sync", ReadOnly: true })
+      spec.Mounts.push({ Type: "bind", Source: "/mnt/user/appdata/ouro-butler/sync", Destination: "/run/ouro-sync", RW: false, Propagation: "rprivate" })
+    }
   }
   return spec
 }

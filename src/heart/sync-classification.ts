@@ -39,6 +39,8 @@ export type SyncClassification =
   | "timeout-hard"
   | "push_rejected"
   | "pull_rebase_conflict"
+  | "repair_snapshot_failed"
+  | "repair_restore_incomplete"
   | "unknown"
 
 export interface SyncContext {
