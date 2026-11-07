@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { RelayHttpError, relayAck, relayDeregister, relayPull, relayRegister, relaySend } from "../../a2a/relay-client"
+import { RELAY_REQUEST_TIMEOUT_MS, RelayHttpError, relayAck, relayDeregister, relayPull, relayRegister, relaySend } from "../../a2a/relay-client"
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: unknown }
 
@@ -89,21 +89,38 @@ describe("relay client", () => {
     nerves.mockRestore()
   })
 
-  it("treats a pull with no message list as empty", async () => {
-    expect(await relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(200, {}) })).toEqual([])
+  it("refuses a 2xx answer that is not the relay's JSON, rather than reading it as an empty inbox", async () => {
+    await expect(relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(200, {}) })).rejects.toThrow(/no message list/)
+    await expect(relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(200, null, [], "<html>sign in to the wifi</html>") })).rejects.toThrow(/without its JSON body/)
+    await expect(relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(200, []) })).rejects.toThrow(/without its JSON body/)
+    await expect(relayAck({ url: "https://r", handle: "h", inboxAuth: "ia", queueId: "q", fetchImpl: fakeFetch(200, "ok") })).rejects.toThrow(/without its JSON body/)
+  })
+
+  it("gives up on a relay that does not answer in time (30 s by default)", async () => {
+    expect(RELAY_REQUEST_TIMEOUT_MS).toBe(30_000)
+    let signal: AbortSignal | undefined
+    const hanging = (async (_url: string | URL | Request, init?: RequestInit) => {
+      signal = init?.signal ?? undefined
+      return new Promise<Response>((_resolve, reject) => { init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason)) })
+    }) as unknown as typeof fetch
+    await expect(relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: hanging, timeoutMs: 20 })).rejects.toMatchObject({ name: "TimeoutError" })
+    expect(signal?.aborted).toBe(true)
   })
 
   it("throws a typed error with the relay's status and code", async () => {
     const error = await relaySend({ url: "https://r", handle: "h", sendCredential: "bad", message, fetchImpl: fakeFetch(403, { error: "bad_send_credential" }) })
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(RelayHttpError)
-    expect(error).toMatchObject({ status: 403, code: "bad_send_credential", message: "relay 403 bad_send_credential" })
+    expect(error).toMatchObject({ status: 403, code: "bad_send_credential", message: "relay 403 bad_send_credential", fromRelay: true })
   })
 
   it("names a non-JSON error body as error", async () => {
     const error = await relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(502, null, [], "<html>bad gateway</html>") })
       .catch((e: unknown) => e)
-    expect(error).toMatchObject({ status: 502, code: "error" })
+    expect(error).toMatchObject({ status: 502, code: "error", fromRelay: false })
+    // A 404 from something in front of the relay (a proxy page, or JSON without the relay's error code) is not the relay's.
+    const proxied = await relayPull({ url: "https://r", handle: "h", inboxAuth: "ia", fetchImpl: fakeFetch(404, { message: "no route" }) }).catch((e: unknown) => e)
+    expect(proxied).toMatchObject({ status: 404, code: "error", fromRelay: false })
   })
 
   it("uses the global fetch when none is injected", async () => {

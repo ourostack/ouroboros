@@ -29,13 +29,15 @@ export function relayConfigFrom(config: Record<string, unknown>): RelayConfig {
   const pending = record(relay.pendingRegistration)
   const pendingRelayUrl = text(pending?.relayUrl)
   const pendingHandle = text(pending?.handle)
-  const previousRegistration = registrationFrom(relay.previousRegistration)
+  const previousRegistrations = (Array.isArray(relay.previousRegistrations) ? relay.previousRegistrations : [])
+    .map(registrationFrom)
+    .filter((registration): registration is RelayRegistration => registration !== undefined)
   return {
     ...(url ? { url } : {}),
     ...(inviteToken ? { inviteToken } : {}),
     ...(registration ? { registration } : {}),
     ...(pendingRelayUrl && pendingHandle ? { pendingRegistration: { relayUrl: pendingRelayUrl, handle: pendingHandle } } : {}),
-    ...(previousRegistration ? { previousRegistration } : {}),
+    ...(previousRegistrations.length > 0 ? { previousRegistrations } : {}),
   }
 }
 

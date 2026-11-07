@@ -99,8 +99,8 @@ Promise.all([
       ...escalationOptionsFor(agentName, (notice) => sendOwnerNoticeViaTelegram(agentName, notice)),
       notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice),
       // A friends-relay inbox for messages sent while this agent is offline, when the operator set a2a.relay.url
-      // (or a registration on a relay it moved away from still has to be drained and removed).
-      ...(relaySettings.url || relaySettings.previousRegistration
+      // (or registrations on relays it moved away from still have to be drained and removed).
+      ...(relaySettings.url || relaySettings.previousRegistrations?.length
         ? { relay: { config: vaultRelayConfigStore(agentName, machineId), notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice) } }
         : {}),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),

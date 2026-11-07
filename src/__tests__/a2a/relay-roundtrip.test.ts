@@ -204,4 +204,44 @@ describe("A2A relay round trip (two agents, a friends-relay, real HTTP)", () => 
     const ledger = new FileA2ASeenLedger(peerBundle.agentRoot)
     for (const sealed of [tampered, otherRecipient, otherKind]) expect(ledger.has(sealed.sealed.n)).toBe(false)
   }, 30_000)
+
+  it("marks a relayed message seen once verified, so a turn that fails after that neither runs it again nor leaves it queued", async () => {
+    const relay: FakeRelay = await startFakeRelay()
+    closers.push(() => relay.close())
+    const peerBundle = createTmpBundle({ agentName: "relay-fail-peer" })
+    bundles.push(peerBundle)
+    const sender = seededIdentity()
+    const peer = seededIdentity()
+    const peerFriends = new FileFriendStore(`${peerBundle.agentRoot}/friends`)
+    await upsertAgentPeer(peerFriends, { name: "Sender", agentId: sender.did, trustLevel: "family", a2a: { did: sender.did, agentId: sender.did, endpointUrl: "https://sender.example/a2a" } })
+    const senderOnPeer = (await peerFriends.findByExternalId("a2a-agent", sender.did))!
+    await peerFriends.put(senderOnPeer.id, { ...senderOnPeer, admissionState: "active" })
+
+    let turns = 0
+    const relayConfig = memoryRelayConfig({ url: relay.url, inviteToken: "invite-1" })
+    const peerServer = await startA2AServer({
+      agentName: peerBundle.agentName, agentRoot: peerBundle.agentRoot, port: 0, identity: peer,
+      turnRunner: async () => { turns += 1; throw new Error("provider down") },
+      relay: { config: relayConfig, intervalMs: 60 * 60_000 },
+    })
+    closers.push(() => peerServer.close())
+    await peerServer.relay!.ready
+    const registration = relayConfig.current.registration!
+
+    const sealed = sealEnvelope({ sodium, envelope: { subject: { missionKey: `dm:${sender.did}:${peer.did}`, title: "Direct message" }, fromAgentId: sender.did, intent: "offer", note: "hello", issuedAt: new Date().toISOString() }, friendsKind: "coordination", fromIdentity: sender, recipientDid: peer.did, recipientX25519Pub: peer.x25519Pub })
+    const message = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: peer.did })
+    await relaySend({ url: relay.url, handle: registration.handle, sendCredential: registration.sendCredential, message })
+
+    expect(await peerServer.relay!.tick()).toBe("backoff")
+    expect(turns).toBe(1)
+    // The real seen ledger on disk holds the nonce, and the relay no longer holds the message.
+    expect(new FileA2ASeenLedger(peerBundle.agentRoot).has(sealed.sealed.n)).toBe(true)
+    expect(relay.inbox.get(registration.handle)).toEqual([])
+
+    // The relay hands the same copy back: refused as a replay and acked, and the turn does not run again.
+    await relaySend({ url: relay.url, handle: registration.handle, sendCredential: registration.sendCredential, message })
+    await peerServer.relay!.tick()
+    expect(turns).toBe(1)
+    expect(relay.inbox.get(registration.handle)).toEqual([])
+  }, 30_000)
 })

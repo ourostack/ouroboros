@@ -804,7 +804,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     const seen = inboundShareDeps.seen as FileA2ASeenLedger
     relayInbox = startRelayInbox({
       ...options.relay,
-      // A retirement finished at the old relay but not yet saved to the vault survives a restart here.
+      // Each old relay's failure clock, and a retirement waiting only for its vault write, survive a restart here.
       retirements: fileRelayRetirements(agentRoot),
       did: inboundShareDeps.identity.did,
       agentName: options.agentName,

@@ -4,17 +4,23 @@ import { emitNervesEvent } from "../nerves/runtime"
  * The four friends-relay calls the harness makes (ourostack/friends-relay `src/server/http.ts`): register a handle,
  * send an opaque sealed message to a handle, pull a handle's inbox and ack one queued message. The relay is untrusted
  * and content-blind: it only ever carries the sealed A2A message, byte for byte. Every non-2xx answer throws a
- * `RelayHttpError` carrying the relay's status and error code.
+ * `RelayHttpError` carrying the relay's status and error code. A 2xx answer that is not a JSON object (the relay
+ * always answers one), and a request with no answer within `RELAY_REQUEST_TIMEOUT_MS`, throw too.
  */
 export class RelayHttpError extends Error {
   readonly status: number
   readonly code: string
-  constructor(status: number, code: string) {
+  /** The answer was the relay's own JSON error (`{ error: "<code>" }`), not a proxy's or a load balancer's page. */
+  readonly fromRelay: boolean
+  constructor(status: number, code: string, fromRelay = false) {
     super(`relay ${status} ${code}`)
     this.status = status
     this.code = code
+    this.fromRelay = fromRelay
   }
 }
+
+export const RELAY_REQUEST_TIMEOUT_MS = 30_000
 
 export interface RelayGrant {
   handle: string
@@ -30,6 +36,8 @@ export interface RelayQueuedMessage {
 interface RelayCall {
   url: string
   fetchImpl?: typeof fetch
+  /** How long to wait for the whole answer; defaults to `RELAY_REQUEST_TIMEOUT_MS`. */
+  timeoutMs?: number
 }
 
 async function relayRequest(input: RelayCall & { method: string; path: string; bearer?: string; body?: unknown }): Promise<Record<string, unknown>> {
@@ -40,14 +48,17 @@ async function relayRequest(input: RelayCall & { method: string; path: string; b
     method: input.method,
     headers,
     ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+    signal: AbortSignal.timeout(input.timeoutMs ?? RELAY_REQUEST_TIMEOUT_MS),
   })
   const parsed: unknown = await response.json().catch(() => undefined)
-  const payload = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
+  const payload = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined
   if (!response.ok) {
-    const code = typeof payload.error === "string" ? payload.error : "error"
+    const fromRelay = typeof payload?.error === "string"
+    const code = fromRelay ? payload!.error as string : "error"
     emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_http_error", message: "the A2A relay refused a request", meta: { path: input.path.split("/")[1], status: response.status, code } })
-    throw new RelayHttpError(response.status, code)
+    throw new RelayHttpError(response.status, code, fromRelay)
   }
+  if (!payload) throw new Error(`the relay answered ${response.status} without its JSON body`)
   return payload
 }
 
@@ -74,13 +85,15 @@ export async function relaySend(input: RelayCall & { handle: string; sendCredent
 }
 
 /**
- * The queued messages in `handle`'s inbox (still sealed). An entry without a queue id cannot be acked, so it is logged
+ * The queued messages in `handle`'s inbox (still sealed). An answer with no message list throws: it is not the relay's,
+ * so it says nothing about the inbox. An entry without a queue id cannot be acked, so it is logged
  * (without its content) and skipped, and the rest of the queue is still handled. The relay has no way to drop an entry
  * without its id, so a skipped entry stays queued until the relay's own expiry removes it.
  */
 export async function relayPull(input: RelayCall & { handle: string; inboxAuth: string }): Promise<RelayQueuedMessage[]> {
   const result = await relayRequest({ ...input, method: "GET", path: `/inbox/${encodeURIComponent(input.handle)}`, bearer: input.inboxAuth })
-  const entries: unknown[] = Array.isArray(result.messages) ? result.messages : []
+  if (!Array.isArray(result.messages)) throw new Error("the relay's inbox answer has no message list")
+  const entries: unknown[] = result.messages
   const valid: RelayQueuedMessage[] = []
   entries.forEach((entry, position) => {
     const queueId = (entry as { queueId?: unknown } | null)?.queueId

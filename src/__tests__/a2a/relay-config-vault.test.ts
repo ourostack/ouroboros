@@ -63,9 +63,9 @@ describe("relay settings in the vault", () => {
     expect(relayConfigFrom({ a2a: { relay: [] } })).toEqual({})
     expect(relayConfigFrom({ a2a: { relay: {
       url: "", inviteToken: 7, registration: { ...registration, inboxAuth: "" },
-      pendingRegistration: { relayUrl: "https://relay.example" }, previousRegistration: null,
+      pendingRegistration: { relayUrl: "https://relay.example" }, previousRegistrations: [null, { relayUrl: "https://r" }],
     } } })).toEqual({})
-    expect(relayConfigFrom({ a2a: { relay: { inviteToken: "inv", pendingRegistration: { relayUrl: "https://r", handle: "h" }, previousRegistration: registration } } }))
-      .toEqual({ inviteToken: "inv", pendingRegistration: { relayUrl: "https://r", handle: "h" }, previousRegistration: registration })
+    expect(relayConfigFrom({ a2a: { relay: { inviteToken: "inv", pendingRegistration: { relayUrl: "https://r", handle: "h" }, previousRegistrations: [registration, "junk"] } } }))
+      .toEqual({ inviteToken: "inv", pendingRegistration: { relayUrl: "https://r", handle: "h" }, previousRegistrations: [registration] })
   })
 })

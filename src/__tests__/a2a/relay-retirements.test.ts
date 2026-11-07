@@ -14,14 +14,15 @@ const a = { relayUrl: "https://a.example", handle: "a-h", inboxAuth: "a-ia", sen
 const b = { relayUrl: "https://b.example", handle: "b-h", inboxAuth: "b-ia", sendCredential: "b-sc" }
 
 describe("fileRelayRetirements", () => {
-  it("remembers a pending retirement across instances, per registration, without credentials on disk", () => {
+  it("remembers each registration's record across instances, 0600 and without credentials on disk", () => {
     tmp = createTmpBundle({ agentName: "retirements" })
     const first = fileRelayRetirements(tmp.agentRoot)
-    expect(first.isPending(a)).toBe(false)
-    first.markPending(a)
+    expect(first.read(a)).toEqual({})
+    first.write(a, { firstFailedAt: 1234 })
+    first.write(a, { firstFailedAt: 1234, retired: true })
     const second = fileRelayRetirements(tmp.agentRoot)
-    expect(second.isPending(a)).toBe(true)
-    expect(second.isPending(b)).toBe(false)
+    expect(second.read(a)).toEqual({ firstFailedAt: 1234, retired: true })
+    expect(second.read(b)).toEqual({})
     const dir = path.join(tmp.agentRoot, "state", "a2a", "relay-retired")
     const files = fs.readdirSync(dir)
     expect(files).toHaveLength(1)
@@ -32,6 +33,29 @@ describe("fileRelayRetirements", () => {
     expect(fs.statSync(path.join(dir, files[0])).mode & 0o777).toBe(0o600)
     second.clear(a)
     second.clear(b)
-    expect(first.isPending(a)).toBe(false)
+    expect(second.read(a)).toEqual({})
+    expect(fs.readdirSync(dir)).toHaveLength(0)
+  })
+
+  it("reads a damaged record as empty and ignores fields it does not know", () => {
+    tmp = createTmpBundle({ agentName: "retirements" })
+    const store = fileRelayRetirements(tmp.agentRoot)
+    store.write(a, {})
+    const dir = path.join(tmp.agentRoot, "state", "a2a", "relay-retired")
+    const [name] = fs.readdirSync(dir)
+    fs.writeFileSync(path.join(dir, name), JSON.stringify({ firstFailedAt: "yesterday", retired: "yes", extra: 1 }))
+    expect(fileRelayRetirements(tmp.agentRoot).read(a)).toEqual({})
+    fs.writeFileSync(path.join(dir, name), "{not json")
+    expect(fileRelayRetirements(tmp.agentRoot).read(a)).toEqual({})
+  })
+
+  it("keeps a record in memory when the disk write fails", () => {
+    tmp = createTmpBundle({ agentName: "retirements" })
+    const dir = path.join(tmp.agentRoot, "state", "a2a")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "relay-retired"), "a file where the folder should be")
+    const store = fileRelayRetirements(tmp.agentRoot)
+    expect(() => store.write(a, { firstFailedAt: 5 })).toThrow()
+    expect(store.read(a)).toEqual({ firstFailedAt: 5 })
   })
 })

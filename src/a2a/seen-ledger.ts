@@ -26,9 +26,8 @@ export interface DurableSeenLedger extends SeenLedgerLike {
 }
 
 /**
- * How long a seen entry must be kept: friends accepts an envelope until 7 days after its `issuedAt`, and an `issuedAt`
- * at most 2 minutes ahead of the clock, so an entry marked longer ago than both can never match an acceptable
- * envelope again (`DEFAULT_MAX_AGE_MS` plus `DEFAULT_MAX_FUTURE_SKEW_MS` in friends `envelope-binding`).
+ * How long friends accepts an envelope after its `issuedAt`: 7 days (`DEFAULT_MAX_AGE_MS` in friends
+ * `envelope-binding`, which its public exports do not include). A sealed message older than this is refused anyway.
  */
 export const MAX_ENVELOPE_AGE_MS = 7 * 24 * 60 * 60 * 1000
 export const MAX_FUTURE_SKEW_MS = 2 * 60 * 1000
