@@ -822,27 +822,72 @@ kill -9 $PPID
       expect(markers.filter((name) => fs.existsSync(marker(name)))).toEqual([])
     })
 
-    it("moves aside a hooks or info link and a commondir before any git (C1)", () => {
+    it("moves aside a commondir before any git (C1)", () => {
       expect(run("--apply").status).toBe(0)
-      const gitDir = path.join(bundle(), ".git")
       const elsewhere = path.join(T, "elsewhere")
-      write(path.join(elsewhere, "hooks/pre-push"), `#!/bin/sh\ntouch ${path.join(T, "planted-linked-hook")}\n`, 0o755)
-      fs.renameSync(path.join(gitDir, "hooks"), path.join(T, "real-hooks"))
-      fs.symlinkSync(path.join(elsewhere, "hooks"), path.join(gitDir, "hooks"))
-      fs.renameSync(path.join(gitDir, "info"), path.join(T, "real-info"))
-      fs.symlinkSync(elsewhere, path.join(gitDir, "info"))
-      write(path.join(gitDir, "commondir"), `${elsewhere}\n`)
+      fs.mkdirSync(elsewhere, { recursive: true })
+      write(path.join(bundle(), ".git/commondir"), `${elsewhere}\n`)
       const result = run("--rollback")
       expect(result.status, result.out).toBe(0)
-      const entries = fs.readdirSync(repoGit())
-      for (const name of ["hooks", "info", "commondir"]) {
-        expect(entries.filter((entry) => entry.startsWith(`${name}.disabled-`)), name).toHaveLength(1)
-        expect(fs.lstatSync(path.join(repoGit(), name === "commondir" ? "config" : name)).isSymbolicLink()).toBe(false)
-      }
+      expect(fs.readdirSync(repoGit()).filter((entry) => entry.startsWith("commondir.disabled-"))).toHaveLength(1)
       expect(fs.existsSync(path.join(repoGit(), "commondir"))).toBe(false)
       expect(fs.readFileSync(path.join(repoGit(), "info/exclude"), "utf8")).toBe(OLD_EXCLUDE)
-      expect(fs.existsSync(path.join(elsewhere, "hooks/pre-push"))).toBe(true)
+      expect(result.out).toContain("rollback: restore the backup cron: ok")
+      expect(fs.readFileSync(cronTable(), "utf8")).toContain("backup.sh")
+      expect(fs.readdirSync(elsewhere)).toEqual([])
+    })
+
+    /** Plants links in the Butler-owned .git, rolls back with host git logged, and checks nothing ran on repo.git (N1). */
+    function rollBackOverLinks(plant: (gitDir: string) => void): ReturnType<typeof run> {
+      expect(run("--apply").status).toBe(0)
+      plant(path.join(bundle(), ".git"))
+      stub("git", `printf '%s\\n' "$*" >>"${T}/host-git.log"\nexec "${REAL_GIT}" "$@"`)
+      const result = run("--rollback")
+      expect(result.status).toBe(1)
+      expect(result.out).toContain("a real repo.git holds no links), then run --rollback again")
+      expect(result.out).toContain("rollback: give repo.git back to root and put back its config, hooks and attributes: FAILED")
+      for (const step of ["restore repo.git's config, branch and exclude", "drop an apply commit GitHub never got", "restore the backup cron", "check the hourly backup can push"]) {
+        expect(result.out).toContain(`rollback: ${step}: FAILED`)
+      }
+      expect(result.out.match(/skipped: repo\.git's config and hooks were not put back, so no git runs on it/gu)).toHaveLength(4)
+      expect(fs.existsSync(path.join(T, "host-git.log"))).toBe(false)
+      expect(fs.existsSync(incomplete())).toBe(true)
+      // The hourly root backup stays off.
+      expect(fs.existsSync(cronFile())).toBe(false)
+      expect(fs.readFileSync(cronTable(), "utf8")).not.toContain("backup.sh")
+      return result
+    }
+
+    it("refuses a repo.git with a link in objects/ (or a hooks or info link): no git, nothing written outside, no cron (N1)", () => {
+      const outside = path.join(T, "outside-dir")
+      const elsewhere = path.join(T, "elsewhere")
+      fs.mkdirSync(outside, { recursive: true })
+      write(path.join(elsewhere, "hooks/pre-push"), `#!/bin/sh\ntouch ${path.join(T, "planted-linked-hook")}\n`, 0o755)
+      const result = rollBackOverLinks((gitDir) => {
+        fs.symlinkSync(outside, path.join(gitDir, "objects/xx"))
+        fs.renameSync(path.join(gitDir, "hooks"), path.join(T, "real-hooks"))
+        fs.symlinkSync(path.join(elsewhere, "hooks"), path.join(gitDir, "hooks"))
+        fs.renameSync(path.join(gitDir, "info"), path.join(T, "real-info"))
+        fs.symlinkSync(elsewhere, path.join(gitDir, "info"))
+      })
+      expect(result.out).toContain(`${repoGit()} holds a symbolic link, ${repoGit()}/`)
+      expect(result.out).toMatch(/holds a symbolic link, \S+\/(objects\/xx|hooks|info): move it aside/u)
+      expect(fs.readdirSync(outside)).toEqual([])
+      expect(fs.readdirSync(elsewhere).sort()).toEqual(["hooks"])
+      expect(fs.readdirSync(path.join(elsewhere, "hooks"))).toEqual(["pre-push"])
       expect(fs.existsSync(path.join(T, "planted-linked-hook"))).toBe(false)
+    })
+
+    it("refuses a repo.git whose logs/HEAD links to a host file, and leaves that file as it was (N1)", () => {
+      const hostFile = path.join(T, "host-file")
+      write(hostFile, "the host's own content\n", 0o644)
+      const result = rollBackOverLinks((gitDir) => {
+        fs.rmSync(path.join(gitDir, "logs/HEAD"), { force: true })
+        fs.mkdirSync(path.join(gitDir, "logs"), { recursive: true })
+        fs.symlinkSync(hostFile, path.join(gitDir, "logs/HEAD"))
+      })
+      expect(result.out).toContain(`${repoGit()} holds a symbolic link, ${repoGit()}/logs/HEAD: move it aside`)
+      expect(fs.readFileSync(hostFile, "utf8")).toBe("the host's own content\n")
     })
 
     it("runs no git at all when the snapshot to restore from is gone, and the rollback is incomplete (C1)", () => {
@@ -854,10 +899,11 @@ kill -9 $PPID
       const blind = run("--rollback")
       expect(blind.status).toBe(1)
       expect(blind.out).toContain(`the git snapshot ${snapshot} is missing, so no git runs on ${repoGit()}`)
-      for (const step of ["restore repo.git's config, branch and exclude", "drop an apply commit GitHub never got", "check the hourly backup can push"]) {
+      for (const step of ["restore repo.git's config, branch and exclude", "drop an apply commit GitHub never got", "restore the backup cron", "check the hourly backup can push"]) {
         expect(blind.out).toContain(`rollback: ${step}: FAILED`)
       }
-      expect(blind.out.match(/skipped: repo\.git's config and hooks were not put back, so no git runs on it/gu)).toHaveLength(3)
+      expect(blind.out.match(/skipped: repo\.git's config and hooks were not put back, so no git runs on it/gu)).toHaveLength(4)
+      expect(fs.readFileSync(cronTable(), "utf8")).not.toContain("backup.sh")
       expect(fs.readFileSync(incomplete(), "utf8")).toContain(`git snapshot: ${snapshot}\n`)
       expect(fs.existsSync(path.join(T, "planted-late-hook"))).toBe(false)
     })

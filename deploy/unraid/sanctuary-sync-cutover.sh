@@ -19,9 +19,10 @@
 # From step 13 the Butler owns .git, so its config, hooks and info/attributes may name any command (a clean filter, an
 # [include], an ext:: URL). Root runs no git on it after that: --verify-live runs git only inside the container as the
 # Butler, an apply refuses while .git is in the bundle, and --rollback first moves .git back, hands it to root and puts
-# back config, hooks/ and info/attributes from the root-owned snapshot the apply took before step 1, and only then runs
-# git. The hourly backup.sh, which runs git as root with hooks on, therefore only ever runs on that restored, root-owned
-# repo.git: never on a .git the Butler has owned.
+# back config, hooks/ and info/attributes from the root-owned snapshot the apply took before step 1. It refuses a repo.git
+# that holds any symbolic link, which could carry root's writes onto the host. Only on a restored repo.git that holds no
+# links does root run git, and only then does the rollback bring back the hourly backup.sh cron, which runs git as root
+# with hooks on. Otherwise the rollback ends in ROLLBACK-INCOMPLETE with the cron still off.
 set -Eeuo pipefail
 umask 022
 
@@ -433,7 +434,8 @@ rollback_from() {
   rollback_step "drop an apply commit GitHub never got" git_step drop_unpushed_commit
   rollback_step "restore repo.git's owner and mode" restore_repo_owner
   rollback_step "remove the sync key the apply installed" remove_installed_key
-  rollback_step "restore the backup cron" restore_cron
+  # The hourly backup runs git as root, so it comes back only on a repo.git secure_backup_git put back.
+  rollback_step "restore the backup cron" git_step restore_cron
   rollback_step "remove the cutover marker" rm -f -- "$MARKER"
   rollback_step "check the hourly backup can push" git_step check_backup_can_push
   if [ "$reached" -ge 1 ]; then
@@ -505,7 +507,7 @@ disable_path() {
 # aside, never deleted), and info/attributes is the snapshot's or absent. GIT_READY says whether git may run on it.
 GIT_READY=0
 secure_backup_git() {
-  local snapshot hooks attributes owner mode tmp entry name rc=0
+  local snapshot hooks attributes owner mode tmp entry name links rc=0
   GIT_READY=0
   snapshot=$ROLLBACK_SNAPSHOT hooks=$ROLLBACK_SNAPSHOT_HOOKS attributes=$ROLLBACK_SNAPSHOT_ATTRIBUTES
   [ -n "$snapshot" ] && [ -n "$hooks" ] && [ -n "$attributes" ] || { say "no git snapshot is recorded, so no git runs on $BACKUP_GIT"; return 1; }
@@ -514,6 +516,13 @@ secure_backup_git() {
   owner=$(before_value "repo.git owner") || return 1
   mode=$(before_value "repo.git mode") || return 1
   chown -R -h "$owner" "$BACKUP_GIT" && chmod "$mode" "$BACKUP_GIT" || return 1
+  # A real repo.git holds no symbolic links. One the Butler planted (objects/ab -> /etc, logs/HEAD -> a host file) would
+  # have root's git write through it, and a link in objects/ means the object store is no longer one root can trust (N1).
+  links=$(find "$BACKUP_GIT" -type l -print) || { say "could not look for symbolic links in $BACKUP_GIT, so no git runs on it"; return 1; }
+  if [ -n "$links" ]; then
+    say "$BACKUP_GIT holds a symbolic link, ${links%%$'\n'*}: move it aside (a real repo.git holds no links), then run --rollback again"
+    return 1
+  fi
   tmp=$(umask 077; mktemp -d "$BACKUP/.cutover-git-restore.XXXXXX") || return 1
   # In a subshell, so the work directory is removed whichever step fails.
   (
