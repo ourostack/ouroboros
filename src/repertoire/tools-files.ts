@@ -63,6 +63,11 @@ function buildContextDiff(lines: string[], changeStart: number, changeEnd: numbe
   return result.join("\n")
 }
 
+/** A file's bytes, whatever readFileSync handed back (a stubbed reader may return a string). */
+function asBuffer(raw: Buffer | string): Buffer {
+  return Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+}
+
 export const fileToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -84,7 +89,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     handler: (a, ctx) => {
       const resolvedPath = resolveLocalToolPath(a.path, ctx)
-      const raw = fs.readFileSync(resolvedPath)
+      const raw = asBuffer(fs.readFileSync(resolvedPath))
       if (looksBinary(raw)) return `[binary file, ${raw.length} bytes; not shown]`
       const full = raw.toString("utf-8")
       // A final newline ends the last line; it is not another, empty line.
@@ -326,7 +331,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       function searchFile(filePath: string): string[] {
         let buffer: Buffer
         try {
-          buffer = fs.readFileSync(filePath)
+          buffer = asBuffer(fs.readFileSync(filePath))
         } catch {
           return []
         }
