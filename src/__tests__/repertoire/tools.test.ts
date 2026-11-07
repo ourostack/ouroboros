@@ -513,7 +513,7 @@ describe("execTool", () => {
     mockShellOutput("shell output")
     const result = await execTool("shell", { command: "echo hello" })
     expect(result).toBe("shell output")
-    expect(exec).toHaveBeenCalledWith("echo hello", { encoding: "utf-8", timeout: 30000 }, expect.any(Function))
+    expect(exec).toHaveBeenCalledWith("echo hello", expect.objectContaining({ encoding: "utf-8", timeout: 30000, maxBuffer: 16 * 1024 * 1024 }), expect.any(Function))
   })
 
   it("safe_workspace is no longer a registered tool", async () => {
@@ -527,7 +527,7 @@ describe("execTool", () => {
     expect(result).toBe("direct output")
     expect(exec).toHaveBeenCalledWith(
       "cd /mock/repo && git status",
-      { encoding: "utf-8", timeout: 30000 },
+      expect.objectContaining({ encoding: "utf-8", timeout: 30000 }),
       expect.any(Function),
     )
   })

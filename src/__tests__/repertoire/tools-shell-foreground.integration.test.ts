@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 vi.mock("../../heart/identity", () => ({
   getAgentName: () => "shell-fixture",
-  getAgentRoot: () => "/unused-shell-fixture",
+  getAgentRoot: () => process.cwd(),
   loadAgentConfig: () => ({ shell: { defaultTimeout: 30000 } }),
 }))
 

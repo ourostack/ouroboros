@@ -57,13 +57,8 @@ describe("Phase 2: tool description enrichment", () => {
   describe("Unit 2.2 - shell tool description", () => {
     it("shell description contains tool preference guidance", () => {
       const desc = getBaseDescription("shell")
-      expect(desc).toContain("Use dedicated tools instead of shell when available")
-      expect(desc).toContain("read_file instead of cat, edit_file instead of sed, glob instead of find, grep instead of grep/rg")
-    })
-
-    it("shell description contains reversibility warning", () => {
-      const desc = getBaseDescription("shell")
-      expect(desc).toContain("consider reversibility before running")
+      expect(desc).toContain("in your home")
+      expect(desc).toContain("last 2000 lines or 30,000 characters")
     })
   })
 
