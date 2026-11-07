@@ -130,7 +130,7 @@ case "$*" in
   run*"sanctuary git-exclude --print") cat "${T}/exclude.txt"; echo ;;
   run*"--user 10001:10001"*) echo "\${STUB_TIMINGS:-12 34}" ;;
   "run --rm -i --pull=never --network none --entrypoint node ${IMAGE} /opt/ouro/deploy/unraid/sanctuary-replay-gate.mjs status-scan") exec "${process.execPath}" "${GATE}" status-scan ;;
-  run*audit-container-spec.sh*) exit "\${STUB_AUDIT_STATUS:-0}" ;;
+  run*audit-container-spec.sh*) [ -z "\${STUB_AUDIT_HOOK:-}" ] || sh -c "$STUB_AUDIT_HOOK"; exit "\${STUB_AUDIT_STATUS:-0}" ;;
   "exec -u 10001 ouro-butler test -r /run/ouro-sync/deploy_key") exit "\${STUB_KEY_READABLE:-1}" ;;
   "exec -u 10001 ouro-butler cat /run/ouro-sync/deploy_key") exit "\${STUB_KEY_READABLE:-1}" ;;
   "exec ouro-butler id -u ouro-sync") echo "\${STUB_SYNC_UID:-10002}" ;;
@@ -157,7 +157,8 @@ case "$1" in
   -C) shift; grep -qxF "$*" "${T}/iptables" ;;
 esac`)
   stub("pgrep", `exit "\${STUB_PGREP:-1}"`)
-  if (!hasFlock) stub("flock", "exit 0")
+  // Without flock on the host, only the cutover lock (`flock -n 8`) can be made busy, through the env.
+  if (!hasFlock) stub("flock", `[ "$*" = "-n 8" ] && exit "\${STUB_CUTOVER_LOCK_BUSY:-0}"; exit 0`)
   // setsid -f: a new session in a child that outlives this process, as util-linux's does.
   if (!hasSetsid) {
     stub("setsid", `import os, sys
@@ -267,7 +268,7 @@ describe("sanctuary-sync-cutover.sh", () => {
     expect(pattern).toBe(gate.SECRET_PATH.source.replaceAll("\\/", "/"))
     expect(SOURCE).toContain('\nBACKUP_SSH="ssh -i $BACKUP_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KNOWN_HOSTS -o BatchMode=yes"\n')
     const sshUses = SOURCE.split("\n").filter((line) => /GIT_SSH_COMMAND=/u.test(line) && !/^\s*#/u.test(line))
-    expect(sshUses.length).toBe(4)
+    expect(sshUses.length).toBe(6)
     for (const line of sshUses) expect(line).toMatch(/GIT_SSH_COMMAND=\$BACKUP_SSH |GIT_SSH_COMMAND=sudo -n -u ouro-sync \$SYNC_SSH_WRAPPER/u)
   })
 
@@ -548,7 +549,11 @@ describe("sanctuary-sync-cutover.sh", () => {
       const result = run("--apply")
       expect(result.status).toBe(1)
       expect(result.out).toContain("cutover failed at step 4")
-      expect(beforeState()).toEqual(before)
+      // Everything is put back, and the rollback says plainly that the hourly backup cannot push either.
+      expect(result.out).toContain("rollback: check the hourly backup can push: FAILED")
+      expect(result.out).toContain("the hourly backup can't push: ")
+      expect(fs.readFileSync(incomplete(), "utf8")).toContain("failed: check the hourly backup can push\n")
+      expect({ ...beforeState(), incomplete: false, applying: false }).toEqual(before)
       const calls = fs.readFileSync(path.join(T, "ssh.log"), "utf8").trim().split("\n")
       expect(calls.length).toBeGreaterThan(0)
       for (const call of calls) {
@@ -577,11 +582,68 @@ describe("sanctuary-sync-cutover.sh", () => {
       expect(result.status).toBe(1)
       expect(result.out).toContain("cutover failed at step 9")
       expect(result.out).toContain("psyche/LORE.md would no longer be tracked; nothing was pushed")
-      expect(result.out).toContain(`reset master to ${headBefore}`)
+      expect(result.out).toContain(`reset the branch to ${headBefore}, dropping a commit GitHub never got`)
       expect(rg(["rev-parse", "main"])).toBe(remoteBefore)
       expect(bg(["rev-parse", "HEAD"])).toBe(headBefore)
       expect(beforeState()).toEqual(before)
       expect(bg(["ls-files", "psyche/LORE.md"])).toBe("psyche/LORE.md")
+    })
+  })
+
+  describe("the branch on rollback", () => {
+    const head = () => bg(["rev-parse", "HEAD"])
+    // An owner commit straight onto GitHub's main.
+    const ownerPush = `t=$(git --git-dir="${"$"}{T_ROOT}/github/sanctuary.ouro.git" rev-parse "main^{tree}") && c=$(git -c user.name=owner -c user.email=owner@example.invalid --git-dir="${"$"}{T_ROOT}/github/sanctuary.ouro.git" commit-tree "$t" -p main -m owner) && git --git-dir="${"$"}{T_ROOT}/github/sanctuary.ouro.git" update-ref refs/heads/main "$c"`
+
+    it("keeps a commit that reached GitHub although its push failed on the host", () => {
+      const start = head()
+      // GitHub takes step 9's push, then the connection dies before the host hears back.
+      write(path.join(remote, "hooks/reference-transaction"), `#!/bin/sh
+[ "$1" = committed ] || exit 0
+grep -q "^${start} " || exit 0
+kill -9 $PPID
+`, 0o755)
+      const result = run("--apply")
+      expect(result.status).toBe(1)
+      expect(result.out).toContain("cutover failed at step 9")
+      const github = rg(["rev-parse", "main"])
+      expect(github).not.toBe(start)
+      expect(result.out).toContain(`kept the branch: GitHub already has ${github}`)
+      expect(result.out).toContain("rolled back:")
+      expect(head()).toBe(github)
+      expect(fs.existsSync(incomplete())).toBe(false)
+    })
+
+    it("keeps the branch when GitHub moved on, and flags that the hourly backup cannot push", () => {
+      const result = run("--apply", { STUB_AUDIT_STATUS: "1", STUB_AUDIT_HOOK: ownerPush })
+      expect(result.status).toBe(1)
+      expect(result.out).toContain("cutover failed at step 15")
+      const github = rg(["rev-parse", "main"])
+      expect(rg(["log", "-1", "--format=%an", "main"])).toBe("owner")
+      expect(result.out).toContain(`kept the branch: GitHub already has ${github}`)
+      expect(head()).toBe(rg(["rev-parse", "main~1"]))
+      expect(result.out).toContain("the hourly backup can't push; GitHub has commits the host doesn't")
+      expect(result.out).toContain("ROLLBACK INCOMPLETE: these steps failed: check the hourly backup can push. The Butler is running.")
+    })
+
+    it("leaves the branch and records why when GitHub cannot be read", () => {
+      stub("git", `case "$*" in *" ls-remote origin refs/heads/main") echo "stub: no route" >&2; exit 128 ;; esac\nexec "${REAL_GIT}" "$@"`)
+      const result = run("--apply", { STUB_AUDIT_STATUS: "1" })
+      expect(result.status).toBe(1)
+      const pushed = rg(["rev-parse", "main"])
+      expect(head()).toBe(pushed)
+      expect(result.out).toContain(`could not read GitHub's main (ls-remote failed), so the branch was left at ${pushed}`)
+      expect(fs.readFileSync(incomplete(), "utf8")).toContain("failed: drop an apply commit GitHub never got\n")
+    })
+
+    it("still drops an unpushed commit when GitHub's main is the step-4 head", () => {
+      write(path.join(T, "exclude.txt"), `${sanctuaryGitExcludeText()}psyche/LORE.md\n`)
+      const start = head()
+      const result = run("--apply")
+      expect(result.out).toContain(`reset the branch to ${start}, dropping a commit GitHub never got`)
+      expect(head()).toBe(start)
+      expect(rg(["rev-parse", "main"])).toBe(start)
+      expect(result.out).toContain("rollback: check the hourly backup can push: ok")
     })
   })
 
@@ -643,6 +705,35 @@ describe("sanctuary-sync-cutover.sh", () => {
   })
 
   describe("rollback", () => {
+    it("refuses at once while an apply holds the cutover lock, and changes nothing", async () => {
+      expect(run("--apply").status).toBe(0)
+      write(path.join(backup(), "cutover-applying"), "before: x\nlog: /the/apply.log\n")
+      const holder = hasFlock ? spawn("flock", [path.join(backup(), "cutover.lock"), "-c", "sleep 30"], { stdio: "ignore" }) : undefined
+      try {
+        if (holder) await waitFor(() => spawnSync("flock", ["-n", path.join(backup(), "cutover.lock"), "true"]).status !== 0)
+        const before = snapshot(T, noise)
+        const started = Date.now()
+        const result = run("--rollback", { STUB_CUTOVER_LOCK_BUSY: "1" })
+        expect(result.status).toBe(1)
+        expect(result.out).toContain("an apply is running (log: /the/apply.log); it rolls itself back on failure. Run --rollback after it ends")
+        expect(Date.now() - started).toBeLessThan(15_000)
+        expect(snapshot(T, noise)).toEqual(before)
+      } finally {
+        holder?.kill()
+      }
+    })
+
+    it("refuses --apply and --rollback read from stdin, before any change", () => {
+      const before = snapshot(T, noise)
+      for (const mode of ["--apply", "--rollback"]) {
+        const result = spawnSync("bash", ["-s", "--", mode], { input: SOURCE, encoding: "utf8", env })
+        expect(result.status).toBe(1)
+        expect(result.stderr).toBe("cutover: run this script from a file, not stdin\n")
+      }
+      expect(snapshot(T, noise)).toEqual(before)
+      expect(dockerLog()).toEqual([])
+    })
+
     it("says there is nothing to roll back, and touches nothing, before any cutover", () => {
       const before = snapshot(T, (rel) => rel === "docker.log")
       const result = run("--rollback")

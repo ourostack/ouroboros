@@ -415,10 +415,12 @@ rollback_from() {
   rollback_step "move .git back to repo.git" move_git_back
   rollback_step "clear a stale index.lock" clear_stale_index_lock
   rollback_step "restore repo.git's config, branch and exclude" restore_backup_repo
+  rollback_step "drop an apply commit GitHub never got" drop_unpushed_commit
   rollback_step "restore repo.git's owner and mode" restore_repo_owner
   rollback_step "remove the sync key the apply installed" remove_installed_key
   rollback_step "restore the backup cron" restore_cron
   rollback_step "remove the cutover marker" rm -f -- "$MARKER"
+  rollback_step "check the hourly backup can push" check_backup_can_push
   if [ "$reached" -ge 1 ]; then
     rollback_step "start the Butler" docker start "$CONTAINER"
     rollback_step "check the Butler is running" butler_is_running
@@ -473,22 +475,12 @@ clear_stale_index_lock() {
 
 # Puts back the backup repository's config, branch, HEAD and exclude from the before-state.
 restore_backup_repo() {
-  local branch key value encoded head current
+  local branch key value encoded
   [ -d "$BACKUP_GIT" ] || return 1
   branch=$(before_value branch) || return 1
   if [ "$branch" != "$BUNDLE_BRANCH" ] && backup_git rev-parse --verify -q "refs/heads/$BUNDLE_BRANCH" >/dev/null \
     && [ "$(backup_git symbolic-ref --short HEAD)" = "$BUNDLE_BRANCH" ]; then
     backup_git branch -M "$BUNDLE_BRANCH" "$branch" || return 1
-  fi
-  # A commit the apply made and never pushed (step 9 stopped before its push) is dropped from the branch, so the hourly
-  # backup never pushes it. The work tree is not touched.
-  head=$(file_value "$APPLYING" head 2>/dev/null || true)
-  if [ -n "$head" ]; then
-    current=$(backup_git rev-parse HEAD) || return 1
-    if [ "$current" != "$head" ] && [ "$current" != "$(backup_git rev-parse -q --verify "refs/remotes/origin/$BUNDLE_BRANCH" || true)" ]; then
-      backup_git reset -q --mixed "$head" || return 1
-      say "reset $branch to $head, dropping a commit that was never pushed"
-    fi
   fi
   value=$(before_value origin.url) || return 1
   restore_config backup_git remote.origin.url "$value" || return 1
@@ -508,6 +500,42 @@ restore_backup_repo() {
     printf '%s' "$encoded" | base64 -d >"$BACKUP_GIT/info/exclude.restore" || return 1
     mv -f -- "$BACKUP_GIT/info/exclude.restore" "$BACKUP_GIT/info/exclude"
   fi
+}
+
+# A commit the apply made after step 4 that GitHub never got (step 9 stopped before its push) is dropped from the branch,
+# so the hourly backup never pushes it. Only GitHub's own main decides: the branch moves back to the step-4 head only when
+# GitHub's main is that head. A push can reach GitHub and still fail on the host, and the owner can push meanwhile, so
+# local refs are never trusted for this. The work tree is not touched.
+drop_unpushed_commit() {
+  local head current listed github
+  head=$(file_value "$APPLYING" head 2>/dev/null) || return 0
+  [ -d "$BACKUP_GIT" ] || return 1
+  current=$(backup_git rev-parse HEAD) || return 1
+  [ "$current" != "$head" ] || return 0
+  listed=$(GIT_SSH_COMMAND=$BACKUP_SSH backup_git ls-remote origin "refs/heads/$BUNDLE_BRANCH") || {
+    say "could not read GitHub's $BUNDLE_BRANCH (ls-remote failed), so the branch was left at $current; check GitHub, then run --rollback again"
+    return 1
+  }
+  github=${listed%%[[:space:]]*}
+  if [ "$github" = "$head" ]; then
+    backup_git reset -q --mixed "$head" || return 1
+    say "reset the branch to $head, dropping a commit GitHub never got"
+  else
+    say "kept the branch: GitHub already has ${github:-(no $BUNDLE_BRANCH)}"
+  fi
+}
+
+# The hourly backup's push hides its failures, so the rollback proves now that the next one can land.
+check_backup_can_push() {
+  local out
+  [ -d "$BACKUP_GIT" ] || return 1
+  if out=$(GIT_SSH_COMMAND=$BACKUP_SSH backup_git push --dry-run origin "HEAD:$BUNDLE_BRANCH" 2>&1); then return 0; fi
+  if printf '%s' "$out" | grep -qiE 'rejected|non-fast-forward|fetch first'; then
+    say "the hourly backup can't push; GitHub has commits the host doesn't. Merge GitHub's $BUNDLE_BRANCH into repo.git's branch, then run --rollback again"
+  else
+    say "the hourly backup can't push: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
+  fi
+  return 1
 }
 
 # repo.git's owner (recursively) and mode, as the before-state recorded them (M8).
@@ -549,6 +577,11 @@ recorded_before() {
 
 rollback() {
   if nothing_to_roll_back; then say "nothing to roll back: no cutover marker and no .git in the bundle"; return 0; fi
+  # A running apply holds this lock and rolls itself back on failure; a second writer would race it.
+  exec 8>>"$CUTOVER_LOCK"
+  if ! flock -n 8; then
+    die "an apply is running (log: $(file_value "$APPLYING" log 2>/dev/null || printf 'unknown')); it rolls itself back on failure. Run --rollback after it ends"
+  fi
   BEFORE=$(recorded_before) || die "no recorded before-state: none of $APPLYING, $INCOMPLETE or $MARKER names one"
   exec 9>>"$LOCK_FILE"
   flock -w 900 9 || die "the backup lock stayed busy for 15 minutes"
@@ -634,7 +667,7 @@ apply() {
   flock -n 8 || die "another cutover run holds $CUTOVER_LOCK; nothing was changed"
 
   STEP=1; say "1. stopping $CONTAINER"
-  printf 'before: %s\nstarted: %s\n' "$BEFORE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$APPLYING.tmp"
+  printf 'before: %s\nlog: %s\nstarted: %s\n' "$BEFORE" "${DETACHED_LOG:-(none)}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$APPLYING.tmp"
   mv -f -- "$APPLYING.tmp" "$APPLYING"
   docker stop "$CONTAINER" >/dev/null
 
@@ -858,6 +891,8 @@ esac
 if [ -z "$TEST_ROOT" ] && [ "$(id -u)" -ne 0 ]; then die "run this as root on the host"; fi
 
 if [ -z "$DETACHED_LOG" ] && { [ "$MODE" = apply ] || [ "$MODE" = rollback ]; }; then
+  # The detached run starts this file again, so it must be one (not `bash -s` reading stdin).
+  { [ -f "$0" ] && [ -r "$0" ]; } || die "run this script from a file, not stdin"
   if [ "$MODE" = rollback ] && nothing_to_roll_back; then say "nothing to roll back: no cutover marker and no .git in the bundle"; exit 0; fi
   run_detached "$MODE_ARG"
 fi
