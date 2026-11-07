@@ -62,16 +62,45 @@ export class A2ARpcError extends Error {
   }
 }
 
-export async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0"): Promise<A2AJsonRpcResponse> {
+/**
+ * POST one JSON-RPC request. `strict` (the sealed delivery path) accepts a 2xx reply only when it is a JSON-RPC response
+ * to this request (`jsonrpc: "2.0"`, the same id, a result or an error); anything else (`{}`, a parked-domain page,
+ * another service on the same host) throws `A2AHttpStatusError`, because the peer was not reached.
+ */
+export async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0", options: { strict?: boolean } = {}): Promise<A2AJsonRpcResponse> {
   const response = await fetchImpl(endpointUrl, {
     method: "POST",
     headers: { "content-type": "application/json", "A2A-Version": protocolVersion },
     body: JSON.stringify(request),
   })
   if (!response.ok) {
-    throw new Error(`A2A JSON-RPC request failed (${response.status} ${response.statusText})`)
+    // A JSON-RPC body on a non-2xx status is still the peer's answer (the server sends 400 and 413 that way).
+    const answer = parseJsonRpcEnvelope(await response.text().catch(() => ""))
+    if (answer) return answer
+    throw new A2AHttpStatusError(response.status, response.statusText)
   }
-  return await response.json() as A2AJsonRpcResponse
+  if (!options.strict) return await response.json() as A2AJsonRpcResponse
+  const answer = parseJsonRpcEnvelope(await response.text())
+  if (!answer || answer.id !== request.id) throw new A2AHttpStatusError(response.status, `${response.statusText}, not a JSON-RPC answer`)
+  return answer
+}
+
+/** A non-2xx HTTP reply that is not a JSON-RPC answer: something other than the agent (a tunnel, a proxy) replied. */
+export class A2AHttpStatusError extends Error {
+  readonly status: number
+  constructor(status: number, statusText: string) {
+    super(`A2A JSON-RPC request failed (${status} ${statusText})`)
+    this.status = status
+  }
+}
+
+function parseJsonRpcEnvelope(text: string): A2AJsonRpcResponse | null {
+  try {
+    const parsed = JSON.parse(text) as Partial<A2AJsonRpcResponse> | null
+    return parsed && parsed.jsonrpc === "2.0" && ("error" in parsed || "result" in parsed) ? parsed as A2AJsonRpcResponse : null
+  } catch {
+    return null
+  }
 }
 
 function methodNotFound(response: A2AJsonRpcResponse): boolean {
@@ -182,9 +211,9 @@ export async function postA2AMessageEnvelope(input: {
     message: "posting sealed A2A message envelope (direct rung)",
     meta: { endpointUrl: input.endpointUrl },
   })
-  let rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl, "0.3")
+  let rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl, "0.3", { strict: true })
   if (methodNotFound(rpc)) {
-    rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "SendMessage" }, fetchImpl)
+    rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "SendMessage" }, fetchImpl, "1.0", { strict: true })
   }
   if ("error" in rpc) {
     throw new A2ARpcError(rpc.error)

@@ -38,6 +38,24 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     expect(ledger.size).toBe(1)
   })
 
+  it("has() answers like isSeen without raising the replay security event", async () => {
+    tmp = createTmpBundle({ agentName: "seen-has" })
+    const runtime = await import("../../nerves/runtime")
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot)
+    ledger.markSeen("nonce-has")
+    const events: string[] = []
+    const { vi } = await import("vitest")
+    const spy = vi.spyOn(runtime, "emitNervesEvent").mockImplementation((event) => { events.push(event.event) })
+    try {
+      expect(ledger.has("nonce-has")).toBe(true)
+      expect(ledger.has("nonce-other")).toBe(false)
+      expect(ledger.has("")).toBe(false)
+      expect(events).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it("persists the seen-set durably under state/a2a/seen (the durable home)", () => {
     tmp = createTmpBundle({ agentName: "seen-home" })
     const ledger = new FileA2ASeenLedger(tmp.agentRoot)

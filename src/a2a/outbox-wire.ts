@@ -5,6 +5,7 @@ import { verifyResolution } from "./resolution-proof"
 import { FileOutboxStore, OUTBOX_LIST_MAX_LIMIT } from "./outbox-store"
 import { resolveFailureReport } from "../heart/failure-reports"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { RelayContact } from "./relay-contacts"
 
 /**
  * The outbox methods ride the same sealed, signed chat envelope as `a2a message`: the request is a `message` whose
@@ -16,8 +17,9 @@ import { emitNervesEvent } from "../nerves/runtime"
  *   outbox/list     { since?: string, limit?: number }  -> { entries, nextCursor, more }       any active friend, own outbox
  *   outbox/ack      { ids: string[] }                    -> { acked, unknown }                  any active friend, own outbox
  *   report/resolve  { id, version, note, resolvedAt, proof }             -> { id, status: "resolved" }          escalation holders, own reports
+ *   relay/contact   {}                                   -> { contact: { url, handle, sendCredential } | null }   active friend or family
  */
-export const OUTBOX_METHODS = ["outbox/list", "outbox/ack", "report/resolve"] as const
+export const OUTBOX_METHODS = ["outbox/list", "outbox/ack", "report/resolve", "relay/contact"] as const
 export type OutboxMethod = typeof OUTBOX_METHODS[number]
 
 export const OUTBOX_ERROR_REFUSED = -32003
@@ -62,12 +64,24 @@ export async function handleOutboxCommand(input: {
   params: Record<string, unknown>
   /** The DID the A2A layer verified for the caller; report/resolve requires it to equal the grant's pinned DID. */
   verifiedDid?: string
+  /** This agent's own relay inbox contact (relay/contact hands it out), or null when it has no relay. */
+  relayContact?: RelayContact | null
   now?: number
 }): Promise<OutboxOutcome> {
   const { agentRoot, friend, method, params } = input
   if (!friend || friend.admissionState !== "active") {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_outbox_refused", message: "refused an outbox call from a peer that is not an active friend", meta: { method, friendId: friend?.id ?? null } })
     return refuse("only an active friend can use its outbox")
+  }
+  if (method === "relay/contact") {
+    // The send credential lets its holder queue messages here, so only peers trusted as friend or family get it.
+    if (friend.trustLevel !== "friend" && friend.trustLevel !== "family") {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.a2a_relay_contact_refused", message: "refused relay/contact to a peer below friend trust", meta: { friendId: friend.id, trustLevel: friend.trustLevel ?? null } })
+      return refuse("relay/contact needs friend or family trust")
+    }
+    const contact = input.relayContact ?? null
+    emitNervesEvent({ component: "senses", event: "senses.a2a_relay_contact_shared", message: "answered relay/contact", meta: { friendId: friend.id, hasRelay: contact !== null } })
+    return { ok: true, result: { contact: contact ? { url: contact.url, handle: contact.handle, sendCredential: contact.sendCredential } : null } }
   }
   const outbox = new FileOutboxStore(agentRoot)
   if (method === "outbox/list") {

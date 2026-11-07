@@ -57,9 +57,20 @@ export function receiveRefusal(reason: string): ReceiveRefusal {
   return Object.hasOwn(REFUSALS, reason) ? REFUSALS[reason as RefusalReason] : UNKNOWN
 }
 
+/** Every `data` object `receiveRefusalError` made in this process, so a caller can tell a real receive refusal from an
+ * error that only looks like one (a delegated-command refusal also carries `retry`). */
+const ISSUED = new WeakSet<object>()
+
 /** The JSON-RPC error text and data for a refused inbound message: `A2A <what> rejected: <reason>. <message>. Next: <next>`. */
 export function receiveRefusalError(what: string, reason: string): { message: string; data: { reason: string; retry: boolean; next: string } } {
   const refusal = receiveRefusal(reason)
   emitNervesEvent({ component: "channels", event: "channel.a2a_receive_refused", message: "refused an inbound A2A message", meta: { what, reason, retry: refusal.retry } })
-  return { message: `A2A ${what} rejected: ${reason}. ${refusal.message}. Next: ${refusal.next}`, data: { reason, retry: refusal.retry, next: refusal.next } }
+  const data = { reason, retry: refusal.retry, next: refusal.next }
+  ISSUED.add(data)
+  return { message: `A2A ${what} rejected: ${reason}. ${refusal.message}. Next: ${refusal.next}`, data }
+}
+
+/** True only for the `data` of a refusal made here that says the same message can succeed later (such as `in_flight`). */
+export function isRetryableReceiveRefusal(data: unknown): boolean {
+  return typeof data === "object" && data !== null && ISSUED.has(data) && (data as { retry?: unknown }).retry === true
 }

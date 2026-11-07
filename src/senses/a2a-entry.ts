@@ -34,6 +34,7 @@ Promise.all([
   import("../heart/machine-identity"),
   import("@ouro.bot/friends/a2a-client"),
   import("../a2a/escalation-wiring"),
+  import("../a2a/relay-config-vault"),
 ])
   .then(async ([
     { startA2AServer },
@@ -42,6 +43,7 @@ Promise.all([
     { loadOrCreateMachineIdentity },
     { ready },
     { escalationOptionsFor, sendOwnerNoticeViaTelegram },
+    { relayConfigFrom, vaultRelayConfigStore },
   ]) => {
     const os = await import("node:os")
     // Wait for the daemon to deliver the machine-local runtime config (carrying the
@@ -76,6 +78,7 @@ Promise.all([
 
     publishOwnA2ADid(getAgentRoot(agentName), identity.did)
 
+    const relaySettings = relayConfigFrom(machineConfig)
     const rawPort = argValue("--port")
     const port = rawPort ? Number.parseInt(rawPort, 10) : undefined
     await startA2AServer({
@@ -95,6 +98,11 @@ Promise.all([
       } : {}),
       ...escalationOptionsFor(agentName, (notice) => sendOwnerNoticeViaTelegram(agentName, notice)),
       notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice),
+      // A friends-relay inbox for messages sent while this agent is offline, when the operator set a2a.relay.url
+      // (or registrations on relays it moved away from still have to be drained and removed).
+      ...(relaySettings.url || relaySettings.previousRegistrations?.length
+        ? { relay: { config: vaultRelayConfigStore(agentName, machineId), notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice) } }
+        : {}),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),
