@@ -14,7 +14,7 @@ import {
   type RelayRegistration,
 } from "../../a2a/relay-inbox"
 import { receiveRefusalError } from "../../a2a/refusals"
-import { ENVELOPE_MAX_AGE_MS } from "../../a2a/seen-ledger"
+import { MAX_ENVELOPE_AGE_MS } from "../../a2a/seen-ledger"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse } from "../../a2a/types"
 
 /** An in-memory `a2a.relay`, with the vault merge's semantics: a patch merges, and an `undefined` value removes a key. */
@@ -385,10 +385,10 @@ describe("retirePreviousRegistrations when the old relay is gone", () => {
     const run = (at: number) => retirePreviousRegistrations({ config, seen: () => false, handle: ok2, fetchImpl, retirements, notifyOwner: owner.notifyOwner, now: () => at, relayTimeoutMs: 20 })
     expect(await run(t0)).toBe("kept")
     expect(retirements.read(previous)).toEqual({ firstFailedAt: t0 })
-    expect(await run(t0 + ENVELOPE_MAX_AGE_MS)).toBe("kept")
+    expect(await run(t0 + MAX_ENVELOPE_AGE_MS)).toBe("kept")
     expect(config.value.previousRegistrations).toEqual([previous])
     expect(owner.sent).toHaveLength(0)
-    expect(await run(t0 + ENVELOPE_MAX_AGE_MS + 1)).toBe("retired")
+    expect(await run(t0 + MAX_ENVELOPE_AGE_MS + 1)).toBe("retired")
     expect(config.value).toEqual({})
     expect(owner.sent).toHaveLength(1)
     expect(owner.sent[0].noticeId).toMatch(/^a2a-relay-gone-[0-9a-f]{16}$/)
@@ -426,7 +426,7 @@ describe("retirePreviousRegistrations when the old relay is gone", () => {
     expect(await run(t0 + DAY)).toBe("kept")
     expect(retirements.read(previous)).toEqual({})
     down = true
-    expect(await run(t0 + ENVELOPE_MAX_AGE_MS + DAY)).toBe("kept")
+    expect(await run(t0 + MAX_ENVELOPE_AGE_MS + DAY)).toBe("kept")
     expect(config.value.previousRegistrations).toEqual([previous])
     expect(relay.registrations.has("old")).toBe(true)
     expect(owner.sent).toHaveLength(0)
@@ -480,7 +480,7 @@ describe("retirePreviousRegistrations when the old relay is gone", () => {
     const retirements = memoryRelayRetirements()
     retirements.write(previous, { firstFailedAt: 0 })
     const config = memoryConfig({ previousRegistrations: [previous] })
-    await retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => ENVELOPE_MAX_AGE_MS + 1, notifyOwner: async () => { throw new Error("telegram down") } })
+    await retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => MAX_ENVELOPE_AGE_MS + 1, notifyOwner: async () => { throw new Error("telegram down") } })
     expect(config.value).toEqual({})
     expect(nerves.mock.calls.map(([event]) => event.event)).toContain("channel.a2a_relay_owner_notice_failed")
     nerves.mockRestore()
@@ -493,7 +493,7 @@ describe("retirePreviousRegistrations when the old relay is gone", () => {
     const config = memoryConfig({ previousRegistrations: [previous] })
     let reads = 0
     config.onRead = () => { reads += 1; if (reads === 2) delete config.value.previousRegistrations }
-    expect(await retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => ENVELOPE_MAX_AGE_MS + 1 })).toBe("retired")
+    expect(await retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => MAX_ENVELOPE_AGE_MS + 1 })).toBe("retired")
     expect(config.value).toEqual({})
   })
 
@@ -523,7 +523,7 @@ describe("retirePreviousRegistrations when the old relay is gone", () => {
     const retirements = memoryRelayRetirements()
     retirements.write(previous, { firstFailedAt: 0 })
     const owner = notices()
-    const run = () => retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => ENVELOPE_MAX_AGE_MS + 1, notifyOwner: owner.notifyOwner })
+    const run = () => retirePreviousRegistrations({ config, seen: () => false, handle: ok2, retirements, fetchImpl: failingFetch(refusedConnection), now: () => MAX_ENVELOPE_AGE_MS + 1, notifyOwner: owner.notifyOwner })
     await run()
     await run()
     expect(config.value.previousRegistrations).toEqual([previous])

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { RelayHttpError, relayAck, relayDeregister, relayPull, relayRegister, type RelayQueuedMessage } from "./relay-client"
 import { isRetryableReceiveRefusal } from "./refusals"
-import { ENVELOPE_MAX_AGE_MS } from "./seen-ledger"
+import { MAX_ENVELOPE_AGE_MS } from "./seen-ledger"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage } from "./types"
 
 /**
@@ -233,7 +233,7 @@ function attempt(what: string, fn: () => void): boolean {
   }
 }
 
-const ENVELOPE_MAX_AGE_DAYS = ENVELOPE_MAX_AGE_MS / (24 * 60 * 60 * 1000)
+const ENVELOPE_MAX_AGE_DAYS = MAX_ENVELOPE_AGE_MS / (24 * 60 * 60 * 1000)
 
 interface RetireInput {
   handle: (rpc: A2AJsonRpcRequest) => Promise<A2AJsonRpcResponse>
@@ -259,7 +259,7 @@ async function tellOwnerLost(previous: RelayRegistration, why: string, input: Re
  *
  * Gone means either the relay's own JSON 401 or 404 (it no longer knows this registration), or attempts failing in any
  * other way (refused connection, DNS, 5xx, TLS, timeout, an answer that is not the relay's) with no successful pull or
- * deregistration for longer than `ENVELOPE_MAX_AGE_MS`: anything queued there that long could no longer be accepted
+ * deregistration for longer than `MAX_ENVELOPE_AGE_MS`: anything queued there that long could no longer be accepted
  * anyway. A successful pull or deregistration restarts that clock. The owner is told messages were lost only when
  * this run saw the old inbox holding messages it could not drain, or the relay stayed unreachable past the window.
  */
@@ -301,7 +301,7 @@ async function retireAtRelay(previous: RelayRegistration, input: RetireInput, re
     }
     const firstFailedAt = record.firstFailedAt ?? now
     if (record.firstFailedAt === undefined) save({ firstFailedAt })
-    if (now - firstFailedAt > ENVELOPE_MAX_AGE_MS) {
+    if (now - firstFailedAt > MAX_ENVELOPE_AGE_MS) {
       save({ retired: true })
       emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_relay_previous_gone", message: `the previous relay has failed every attempt for more than ${ENVELOPE_MAX_AGE_DAYS} days; its registration is retired, and anything still queued there is lost`, meta: { relayUrl: previous.relayUrl, reason: errorText(error), lost: true, firstFailedAt: new Date(firstFailedAt).toISOString() } })
       await tellOwnerLost(previous, `my old relay (${new URL(previous.relayUrl).host}) couldn't be reached for more than ${ENVELOPE_MAX_AGE_DAYS} days`, input)
