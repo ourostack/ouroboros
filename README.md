@@ -6,6 +6,15 @@
 
 # Ouroboros Agent Harness
 
+**Our agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail and voice) and use real tools.**
+
+[ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [Shepherd](https://ouroboros.bot/#shepherd) · [Butler](https://ouroboros.bot/butler/) · [More from Ouro](https://github.com/ourostack)
+
+```sh
+npx ouro.bot@latest   # set it up
+ouro up               # start the daemon
+```
+
 If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
