@@ -2,7 +2,6 @@ import {
   unwrapDataPart,
   openSealedEnvelope,
   receiveShare,
-  type DidResolution,
   type EnvelopeBindingOptions,
   type PinStore,
   type SeenLedgerLike,
@@ -17,7 +16,9 @@ import {
   type TrustLevel,
 } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { HarnessDidResolution } from "./did-resolution"
 import type { A2AIdentity } from "./identity"
+import { bindingWindowsWithinRetention } from "./seen-ledger"
 import type { A2AMessage } from "./types"
 
 /**
@@ -31,7 +32,7 @@ export interface InboundShareDeps {
   store: FriendStore
   missionStore: MissionStore
   pinStore: PinStore
-  didResolution: DidResolution
+  didResolution: HarnessDidResolution
   seen: SeenLedgerLike
   identity: A2AIdentity
   /** Clock and age windows for the signed binding check (tests inject a clock). Unbound envelopes are always refused. */
@@ -84,11 +85,17 @@ function hasDataPart(message: A2AMessage): boolean {
  *      verify the signature; the real auth gate is the `DidVerifier` inside
  *      `receiveShare`, so a forged-high-trust claim here is harmless — the forge is
  *      rejected by the verifier regardless of the trust we read.)
- *   3. `findFriendByDid(store, verifiedDid)` — read trust off that record; an
+ *   3. `settleSender(verifiedDid)` — apply a signed rotation to that DID, or finish
+ *      one whose record did not follow, BEFORE trust is read, so the first message
+ *      after a rotation is judged against the moved record. A rejected rotation, or
+ *      a record that still cannot follow ⇒ `resolve_failed`, nothing consumed. (A
+ *      successor statement carries its own two signatures, so applying it before
+ *      this message's signature is checked gives a forger nothing.)
+ *   4. `findFriendByDid(store, verifiedDid)` — read trust off that record; an
  *      unknown DID ⇒ `stranger` (never a default-up).
- *   4. `receiveShare({ ..., trustOfSource })` — re-unseal (deterministic) + resolve
+ *   5. `receiveShare({ ..., trustOfSource })` — re-unseal (deterministic) + resolve
  *      & pin + run `DidVerifier` (forge fails HERE) + replay-dedup + import.
- *   5. Map the result. `completed` ⇒ run the turn at `verifiedDid`/`trust`.
+ *   6. Map the result. `completed` ⇒ run the turn at `verifiedDid`/`trust`.
  */
 export async function receiveInboundShare(
   message: A2AMessage,
@@ -134,6 +141,15 @@ export async function receiveInboundShare(
   }
 
   const verifiedDid = opened.fromAgentId
+  if (!(await deps.didResolution.settleSender({ did: verifiedDid, pinStore: deps.pinStore }))) {
+    emitNervesEvent({
+      component: "channels",
+      event: "channel.a2a_inbound_rejected",
+      message: "rejected inbound A2A share (the sender's key rotation could not be applied)",
+      meta: { reason: "resolve_failed", verifiedDid },
+    })
+    return { outcome: "rejected", reason: "resolve_failed" }
+  }
   // Read trust from the friend store BY the verified DID — never defaulted, never
   // from the envelope. Unknown (or empty) DID ⇒ stranger. `findFriendByDid` itself
   // refuses a falsy did (never matches a did-less record), so this is safe to call
@@ -154,7 +170,7 @@ export async function receiveInboundShare(
     trustOfSource: trust,
     // Every sender on friends alpha.15 or later binds its envelopes to recipient, kind, id and time; an unbound
     // envelope can be replayed or re-sealed to another recipient, so it is refused.
-    options: { ...deps.bindingOptions, rejectUnboundEnvelopes: true },
+    options: { ...bindingWindowsWithinRetention(deps.bindingOptions), rejectUnboundEnvelopes: true },
   })
 
   if (result.state === "completed") {

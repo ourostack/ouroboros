@@ -528,6 +528,37 @@ describe("mission_result wire (harness-owned, NOT a FriendsKind)", () => {
       expect((await receiveInboundMissionResult(message, deps)).outcome).toBe("imported")
     })
 
+    it("keys replay on the whole sealed blob: another sender's valid result that reuses the seal nonce cannot burn the real one", async () => {
+      const { a, b, deps, message } = await delegatedTo("result-nonce-reuse", "mk-nonce-reuse")
+      const realNonce = (message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n
+      // A stranger seals its own validly signed result with the real result's seal nonce (a sender picks its nonce).
+      const attacker = mintIdentity()
+      const original = sodium.randombytes_buf.bind(sodium)
+      const patchable = sodium as unknown as { randombytes_buf: (n: number) => Uint8Array }
+      patchable.randombytes_buf = (n: number) => (n === 24 ? sodium.from_base64(realNonce, sodium.base64_variants.ORIGINAL) : original(n))
+      let forged: A2AMessage
+      try {
+        const issuedAt = new Date().toISOString()
+        forged = sealedResultFrom(attacker, a, {
+          subject: { missionKey: "mk-nonce-reuse", title: "M" }, fromAgentId: attacker.did, requestId: "req-1",
+          result: { requestId: "req-1", summary: "mine", provenance: { assertedBy: { agentId: attacker.did, displayName: "X" }, assertedAt: issuedAt } },
+          issuedAt,
+        })
+      } finally {
+        patchable.randombytes_buf = original
+      }
+      expect((forged.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n).toBe(realNonce)
+      expect(await receiveInboundMissionResult(forged, deps)).toMatchObject({ outcome: "rejected", reason: "untrusted_source" })
+      expect(await receiveInboundMissionResult(message, deps)).toEqual({ outcome: "imported", verifiedDid: b.did })
+      expect(deps.seen.isSeen(realNonce)).toBe(false)
+    })
+
+    it("still treats a bare seal nonce an older version marked as already received", async () => {
+      const { deps, message } = await delegatedTo("result-legacy-nonce", "mk-legacy-nonce")
+      deps.seen.markSeen((message.parts[0] as unknown as { data: { sealed: { n: string } } }).data.sealed.n)
+      expect(await receiveInboundMissionResult(message, deps)).toMatchObject({ outcome: "rejected", reason: "replayed" })
+    })
+
     it("refuses a result from a retired DID", async () => {
       const { deps, message, b } = await delegatedTo("result-retired", "mk-retired")
       deps.pinStore.set(b.did, { did: b.did, ed25519Pub: b.ed25519Pub })

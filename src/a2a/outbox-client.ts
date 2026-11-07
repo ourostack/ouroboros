@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
-import { cardDid, endpointForCard, fetchA2AAgentCard, postJsonRpc } from "./client"
+import { cardDid, endpointForCard, fetchA2AAgentCard, postJsonRpc, replyRefusedError } from "./client"
 import { encodeOutboxCommand, type OutboxMethod } from "./outbox-wire"
 import { openChatMessage, sealChatMessage } from "./sealed-chat"
 import type { A2AJsonRpcRequest, A2AMessage } from "./types"
@@ -46,8 +46,7 @@ export async function callOutboxMethod(input: {
   const reply = rpc.result as A2AMessage | undefined
   if (!reply || !Array.isArray(reply.parts)) throw new Error("A2A outbox call returned no reply message")
   const opened = await openChatMessage({ sodium, self: input.identity, message: reply, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub, ...(input.seen ? { seen: input.seen } : {}) })
-  // The peer has already handled the call when its reply is refused, so say so (an older peer sends unbound replies).
-  if (!opened.ok) throw new Error(`A2A outbox reply rejected: ${opened.reason}; the call may already have run on the peer`)
+  if (!opened.ok) throw replyRefusedError("outbox", opened.reason)
   let result: unknown
   try {
     result = JSON.parse(opened.text)

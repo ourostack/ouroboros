@@ -129,6 +129,14 @@ export class FileA2APinStore implements DurablePinStore {
     })
   }
 
+  /** The DID whose retired pin names `did` as its successor, if any (a rotation chain followed backwards). */
+  predecessorOf(did: string): string | undefined {
+    for (const [fromAgentId, pinned] of this.cache) {
+      if (pinned.retiredBy === did) return fromAgentId
+    }
+    return undefined
+  }
+
   /** Persist a pin (its DID, which may differ from fromAgentId, its key, and the rotation fields) and cache it. */
   private write(fromAgentId: string, pinned: PinnedDid): void {
     const stored: StoredPin = {

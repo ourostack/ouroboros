@@ -1,10 +1,13 @@
+import type { ReceiveShareResult } from "@ouro.bot/friends/a2a-client"
+import type { ImportMissionResultStatus } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
  * What a sender can do about each refusal of an inbound sealed message (friends `receiveShare` reasons and the
  * harness result wire). The error text keeps its `A2A <what> rejected: <reason>` prefix, which older senders and the
- * replay gate match, and adds what happened and what to do next. `retry` is true when the same message can succeed
- * later unchanged.
+ * replay gate match, and adds what happened and what to do next. `retry` is true when the same message (the same
+ * sealed envelope) can succeed later unchanged. A delegated-command refusal uses `retry` differently; see
+ * `DelegationRefusalGuidance`.
  */
 export interface ReceiveRefusal {
   message: string
@@ -15,7 +18,13 @@ export interface ReceiveRefusal {
 const UPGRADE = "Upgrade the sending agent's harness (ouro) and send again."
 const RESEND = "Send it again as a new message."
 
-const REFUSALS: Record<string, ReceiveRefusal> = {
+/** Every reason a receive path can refuse with: friends' `receiveShare` (which includes `checkEnvelopeBinding`) and the
+ * harness result wire. A reason a later friends adds fails the type check on `REFUSALS` until it has wording. */
+export type RefusalReason =
+  | Extract<ReceiveShareResult, { state: "rejected" }>["reason"]
+  | Exclude<ImportMissionResultStatus, "imported">
+
+const REFUSALS = {
   malformed_message: { message: "the message is not a sealed A2A data part", next: UPGRADE, retry: false },
   malformed_plaintext: { message: "the sealed message did not open to a valid envelope", next: UPGRADE, retry: false },
   unseal_failed: { message: "the message could not be opened with this agent's key", next: "Fetch this agent's card again (its key may have changed) and resend.", retry: false },
@@ -39,13 +48,13 @@ const REFUSALS: Record<string, ReceiveRefusal> = {
   no_mission: { message: "this agent has no mission with that key", next: "Check the mission key; the delegator may have dropped the mission.", retry: false },
   no_delegation: { message: "this agent delegated no task with that request id", next: "Check the request id the delegation gave you.", retry: false },
   assignee_mismatch: { message: "the task was delegated to a different agent", next: "Only the assignee can send this result.", retry: false },
-}
+} satisfies Record<RefusalReason, ReceiveRefusal>
 
 const UNKNOWN: ReceiveRefusal = { message: "the message was refused", next: "Check the agent's logs.", retry: false }
 
 /** The wording for one refusal reason (an unknown reason gets a generic line). */
 export function receiveRefusal(reason: string): ReceiveRefusal {
-  return REFUSALS[reason] ?? UNKNOWN
+  return Object.hasOwn(REFUSALS, reason) ? REFUSALS[reason as RefusalReason] : UNKNOWN
 }
 
 /** The JSON-RPC error text and data for a refused inbound message: `A2A <what> rejected: <reason>. <message>. Next: <next>`. */

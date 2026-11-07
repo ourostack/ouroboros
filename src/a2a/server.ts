@@ -63,6 +63,8 @@ export interface StartA2AServerOptions {
   identity?: A2AIdentity
   /** Enables delegated principal commands. Absent: every delegated marker is refused. */
   delegation?: A2ADelegationOptions
+  /** Tells the owner about a problem only they can fix (a rotated peer whose friend record could not follow). Absent: nerves records it. */
+  notifyOwner?: (notice: { noticeId: string; text: string }) => Promise<void>
   /** Enables telling the owner when a resolved failure report's fix is live. Absent: reports can be resolved but never confirmed. */
   escalation?: ConfirmDeps & { confirmIntervalMs?: number }
 }
@@ -225,9 +227,6 @@ function messageHasDataPart(message: A2AMessage): boolean {
   return message.parts.some((part) => part && part.kind === "data")
 }
 
-/** Map a friends `receiveShare` rejection reason → a JSON-RPC error code.
- * Malformed-shape reasons map to invalid-params (-32602); auth/trust/replay
- * rejections map to a dedicated A2A "rejected" code (-32003). */
 /**
  * A delegated command's id: a hash of the sender's DID, its signed message id and its signed issue time. A redelivery of
  * the same message names the same command, while a sender reusing a message id on a new message (possible once the
@@ -245,6 +244,9 @@ function refusalResponse(id: A2AJsonRpcRequest["id"], what: string, reason: stri
   return errorResponse(id, rejectionErrorCode(reason), refusal.message, refusal.data)
 }
 
+/** Map a friends `receiveShare` rejection reason → a JSON-RPC error code.
+ * Malformed-shape reasons map to invalid-params (-32602); auth/trust/replay
+ * rejections map to a dedicated A2A "rejected" code (-32003). */
 function rejectionErrorCode(reason: string): number {
   if (reason === "malformed_message" || reason === "malformed_plaintext") return -32602
   return -32003
@@ -440,7 +442,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       missionStore: delegationStoresFor(agentRoot).missionStore,
       pinStore: new FileA2APinStore(agentRoot),
       seen: new FileA2ASeenLedger(agentRoot),
-      didResolution: makeDidResolution({ sodium: await ready(), store: friendStore }),
+      didResolution: makeDidResolution({ sodium: await ready(), store: friendStore, agentName: options.agentName, notifyOwner: options.notifyOwner }),
       identity: options.identity,
     }
   }

@@ -44,6 +44,14 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
 }
 
 /** A JSON-RPC error answer from the peer. `data` carries the peer's structured detail (for a refused delegated command: reason, nothingRan, retry, next). */
+/**
+ * The error for a reply this side refused to open. The request was already delivered, so the peer may have acted on it
+ * (an older peer replies unbound, which is refused): say so, so the caller does not resend a command and run it twice.
+ */
+export function replyRefusedError(what: string, reason: string): Error {
+  return new Error(`A2A ${what} reply rejected: ${reason}; the call may already have run on the peer`)
+}
+
 export class A2ARpcError extends Error {
   readonly code: number
   readonly data: unknown
@@ -286,7 +294,7 @@ export async function sendSealedA2AChat(input: {
   const replyMessage = task?.status?.message as A2AMessage | undefined
   if (!replyMessage) throw new Error("A2A chat returned no reply message")
   const opened = await openChatMessage({ sodium, self: input.identity, message: replyMessage, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub, ...(input.seen ? { seen: input.seen } : {}) })
-  if (!opened.ok) throw new Error(`A2A chat reply rejected: ${opened.reason}`)
+  if (!opened.ok) throw replyRefusedError("chat", opened.reason)
   emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_end", message: "received sealed A2A chat reply", meta: { endpointUrl, peerDid, taskId: task.id } })
   return { text: opened.text, conversationId, taskId: task.id, peerDid, peerName: card.name }
 }

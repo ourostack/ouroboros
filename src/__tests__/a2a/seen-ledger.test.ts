@@ -1,8 +1,17 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import * as nerves from "../../nerves/runtime"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
-import { FileA2ASeenLedger, openPrivateSeenLedger, SEEN_RETENTION_MS } from "../../a2a/seen-ledger"
+import {
+  bindingWindowsWithinRetention,
+  FileA2ASeenLedger,
+  MAX_ENVELOPE_AGE_MS,
+  MAX_FUTURE_SKEW_MS,
+  openPrivateSeenLedger,
+  SEEN_PRUNE_INTERVAL_MS,
+  SEEN_RETENTION_MS,
+} from "../../a2a/seen-ledger"
 
 let tmp: TmpBundleHandle | null = null
 
@@ -135,13 +144,57 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     write("edge.json", { nonce: "edge", markedAt: new Date(now - SEEN_RETENTION_MS).toISOString() })
     write("undated.json", { nonce: "undated" })
     write("garbled-date.json", { nonce: "garbled", markedAt: "not a date" })
-    const ledger = new FileA2ASeenLedger(tmp.agentRoot, { now })
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot, { now: () => now })
     expect(ledger.isSeen("old")).toBe(false)
     expect(fs.existsSync(path.join(seenDir, "old.json"))).toBe(false)
     for (const kept of ["edge", "undated", "garbled"]) expect(ledger.isSeen(kept)).toBe(true)
     expect(ledger.size).toBe(3)
     // Nothing stale: nothing is pruned, and the default clock is used.
     expect(new FileA2ASeenLedger(tmp.agentRoot).size).toBe(3)
+  })
+
+  it("prunes expired entries while the agent runs, on a new mark and at most once an hour", () => {
+    tmp = createTmpBundle({ agentName: "seen-running-prune" })
+    const seenDir = path.join(tmp.agentRoot, "state", "a2a", "seen")
+    let clock = Date.parse("2026-11-01T00:00:00.000Z")
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot, { now: () => clock })
+    ledger.markSeen("early")
+    clock += SEEN_RETENTION_MS + 1
+    // A new mark past the hourly interval drops the expired entry from memory and disk.
+    ledger.markSeen("late")
+    expect(ledger.isSeen("early")).toBe(false)
+    expect(ledger.isSeen("late")).toBe(true)
+    expect(fs.readdirSync(seenDir)).toHaveLength(1)
+    expect(ledger.size).toBe(1)
+  })
+
+  it("prunes at most once an hour while running", () => {
+    tmp = createTmpBundle({ agentName: "seen-hourly-prune" })
+    const minute = 60 * 1000
+    let clock = Date.parse("2026-11-01T00:00:00.000Z")
+    const ledger = new FileA2ASeenLedger(tmp.agentRoot, { now: () => clock })
+    ledger.markSeen("a")
+    clock += SEEN_RETENTION_MS - 30 * minute
+    ledger.markSeen("b") // prunes (more than an hour since start); "a" is not expired yet
+    clock += 31 * minute
+    ledger.markSeen("c") // "a" has expired, but the last prune was 31 minutes ago
+    expect(ledger.isSeen("a")).toBe(true)
+    clock += 30 * minute
+    ledger.markSeen("d") // an hour since the last prune
+    expect(ledger.isSeen("a")).toBe(false)
+    expect(ledger.size).toBe(3)
+    expect(SEEN_PRUNE_INTERVAL_MS).toBe(60 * minute)
+  })
+
+  it("clamps configured age windows to what the ledger keeps, and leaves windows inside it alone", () => {
+    expect(bindingWindowsWithinRetention(undefined)).toEqual({})
+    const inside = { now: 5, maxAgeMs: 60_000, delegatedMaxAgeMs: 60_000, maxFutureSkewMs: 1_000 }
+    expect(bindingWindowsWithinRetention(inside)).toEqual(inside)
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    expect(bindingWindowsWithinRetention({ now: 5, maxAgeMs: MAX_ENVELOPE_AGE_MS * 2, delegatedMaxAgeMs: MAX_ENVELOPE_AGE_MS + 1, maxFutureSkewMs: MAX_FUTURE_SKEW_MS + 1 }))
+      .toEqual({ now: 5, maxAgeMs: MAX_ENVELOPE_AGE_MS, delegatedMaxAgeMs: MAX_ENVELOPE_AGE_MS, maxFutureSkewMs: MAX_FUTURE_SKEW_MS })
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ level: "warn", event: "channel.a2a_binding_window_clamped", meta: { fields: ["maxAgeMs", "delegatedMaxAgeMs", "maxFutureSkewMs"] } }))
+    events.mockRestore()
   })
 
   it("keeps the retention at friends' 7-day freshness window plus its 2-minute future skew", () => {

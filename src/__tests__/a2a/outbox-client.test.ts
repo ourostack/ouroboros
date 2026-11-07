@@ -32,7 +32,7 @@ describe("callOutboxMethod refusals", () => {
     const agent = mint()
     const client = mint()
     const reply = (from: DidKeyIdentity, text: string) => ({ jsonrpc: "2.0", id: "1", result: { kind: "message", role: "ROLE_AGENT", parts: sealChatMessage({ sodium, from, recipientDid: client.did, recipientEd25519Pub: client.ed25519Pub, text }).parts } })
-    await expect(call(client, { card: card(agent.did), rpc: reply(mint(), "{}") })).rejects.toThrow(/reply rejected: resolve_failed/)
+    await expect(call(client, { card: card(agent.did), rpc: reply(mint(), "{}") })).rejects.toThrow("A2A outbox reply rejected: resolve_failed; the call may already have run on the peer")
     await expect(call(client, { card: card(agent.did), rpc: reply(agent, "not json") })).rejects.toThrow(/was not JSON/)
     await expect(call(client, { card: card(agent.did), rpc: reply(agent, "[1]") })).rejects.toThrow(/not a JSON object/)
     await expect(call(client, { card: card(agent.did), rpc: reply(agent, "null") })).rejects.toThrow(/not a JSON object/)

@@ -4,7 +4,6 @@ import {
   checkEnvelopeBinding,
   type EnvelopeBindingOptions,
   type SealedEnvelope,
-  type DidResolution,
   type PinStore,
   type SeenLedgerLike,
   type Sodium,
@@ -18,7 +17,9 @@ import {
   type TrustLevel,
 } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { HarnessDidResolution } from "./did-resolution"
 import type { A2AIdentity } from "./identity"
+import { bindingWindowsWithinRetention } from "./seen-ledger"
 import type { A2AMessage } from "./types"
 
 /**
@@ -48,7 +49,7 @@ import type { A2AMessage } from "./types"
  *   3. hand `importMissionResult` a REAL `DidVerifier` bound to the pinned key, so
  *      `verifier.verify(fromAgentId, proof)` runs the Ed25519 signature check against
  *      the pinned key — NOT the no-op `tofuVerifier` the importer defaults to.
- * Replay is deduped on the seal nonce (durable `SeenLedger`), matching the share path.
+ * Replay is deduped on a hash of the whole sealed blob (durable `SeenLedger`), matching the share path.
  */
 const OURO_RESULT_KIND = "mission_result"
 
@@ -117,10 +118,17 @@ export interface InboundResultDeps {
   missionStore: MissionStore
   pinStore: PinStore
   seen: SeenLedgerLike
-  didResolution: DidResolution
+  didResolution: HarnessDidResolution
   identity: A2AIdentity
   /** Clock and age windows for the signed binding check (tests inject a clock). Unbound envelopes are always refused. */
   bindingOptions?: Omit<EnvelopeBindingOptions, "rejectUnboundEnvelopes">
+}
+
+/** The ledger key for one sealed blob: a hash over its ephemeral key, nonce and ciphertext. Same form as friends'
+ * `receiveShare` key, so a blob accepted on either path is a replay on the other. */
+export function sealedBlobKey(sodium: Sodium, blob: SealedEnvelope["sealed"]): string {
+  const digest = sodium.crypto_generichash(24, `${blob.ePk}|${blob.n}|${blob.ct}`, null)
+  return `blob:${sodium.to_base64(digest, sodium.base64_variants.URLSAFE_NO_PADDING)}`
 }
 
 /** Results being processed, per seen ledger: a parallel duplicate is refused as `in_flight` (retryable) without
@@ -152,18 +160,25 @@ export type InboundResultOutcome =
  *
  * Ordering (mirrors the share bridge's trust trap + authentication gate):
  *   1. recognize + unwrap the harness `mission_result` carrier (else `not-a-result`).
- *   2. replay dedup on the seal nonce (durable `SeenLedger`) — before any state change.
+ *   2. replay dedup on a hash of the whole sealed blob (and, as a legacy read, the
+ *      bare seal nonce older versions wrote), then the in-flight claim on that hash.
  *   3. `openSealedEnvelope` → AEAD-decrypt only (unseal/recipient failures → reject).
- *   4. binding check — reject unless `opened.signerDid === opened.fromAgentId` (and
+ *   4. sender binding — reject unless `opened.signerDid === opened.fromAgentId` (and
  *      non-empty): the advisory `signerDid` (outer, unsigned) must match the claimed
  *      sender. A divergence is a forged/spoofed bundle (`sender_binding_mismatch`).
- *   5. `resolveAndPin` the sender DID (TOFU pin / signed-rotation) → the pinned key
- *      (unresolvable/failed-binding/failed-rotation → `resolve_failed`).
- *   6. build a `DidVerifier` bound to THIS envelope + the pinned key, mark the nonce
- *      seen, then call `importMissionResult({ envelope, fromAgentId: <signed DID>,
- *      trustOfSource }, { verifier })`. The verifier runs the REAL signature check
- *      against the pinned key — a result signed with a key that is not the pinned key
- *      for the claimed DID is rejected (`untrusted_source`). Every authorization gate
+ *   5. a retired sender pin → `retired_pin`.
+ *   6. the signed envelope binding (`checkEnvelopeBinding`: this recipient, this kind,
+ *      a fresh issue time, an unseen `mid:` message id), then claim the blob hash and
+ *      the `mid:` key in flight (released on every exit).
+ *   7. `settleSender` — apply a signed rotation to the sender DID, or finish one whose
+ *      record did not follow, BEFORE trust is read (refused → `resolve_failed`).
+ *   8. read trust by the sender DID, then `resolveAndPin` it (TOFU pin) → the pinned
+ *      key (unresolvable → `resolve_failed`).
+ *   9. build a `DidVerifier` bound to THIS envelope + the pinned key and call
+ *      `importMissionResult({ envelope, fromAgentId: <signed DID>, trustOfSource },
+ *      { verifier })`. The verifier runs the REAL signature check against the pinned
+ *      key and marks the claimed keys seen only when it passes; a result signed with
+ *      any other key is rejected (`untrusted_source`). Every authorization gate
  *      (no_mission / no_delegation / assignee_mismatch, fail-closed on a legacy
  *      assignee-less delegation) is still enforced by the importer.
  */
@@ -171,11 +186,15 @@ export async function receiveInboundMissionResult(message: A2AMessage, deps: Inb
   const payload = unwrapMissionResultDataPart(message)
   if (!payload) return { outcome: "not-a-result" }
 
-  // Replay dedup BEFORE any state change, keyed on the seal nonce (matches receiveShare).
-  const nonce = payload.sealed.sealed.n
-  if (deps.seen.isSeen(nonce)) return rejectResult("replayed", "rejected inbound mission_result (replayed seal nonce)")
+  // Replay dedup BEFORE any state change, keyed on a hash of the whole sealed blob as friends' receiveShare does. The
+  // sender picks the seal nonce, so a key on the nonce alone would let one sender's result burn another's. A bare-nonce
+  // entry written by an older version still counts as seen; this version never writes one.
+  const blobKey = sealedBlobKey(deps.sodium, payload.sealed.sealed)
+  if (deps.seen.isSeen(payload.sealed.sealed.n) || deps.seen.isSeen(blobKey)) {
+    return rejectResult("replayed", "rejected inbound mission_result (already received)")
+  }
   const inFlight = inFlightFor(deps.seen)
-  if (inFlight.has(nonce)) return rejectResult("in_flight", "rejected inbound mission_result (the same result is being processed)")
+  if (inFlight.has(blobKey)) return rejectResult("in_flight", "rejected inbound mission_result (the same result is being processed)")
 
   const recipientIdentity = { x25519Priv: deps.identity.x25519Priv, x25519Pub: deps.identity.x25519Pub }
   const opened = openSealedEnvelope({
@@ -216,10 +235,10 @@ export async function receiveInboundMissionResult(message: A2AMessage, deps: Inb
     return rejectResult("retired_pin", "rejected inbound mission_result (the sender's DID was rotated away)", { verifiedDid: senderDid })
   }
   // The signed binding: this recipient, this kind, a fresh issue time and an unseen message id.
-  const binding = checkEnvelopeBinding(opened, { ...deps.bindingOptions, rejectUnboundEnvelopes: true, recipientDid: deps.identity.did, seen: deps.seen })
+  const binding = checkEnvelopeBinding(opened, { ...bindingWindowsWithinRetention(deps.bindingOptions), rejectUnboundEnvelopes: true, recipientDid: deps.identity.did, seen: deps.seen })
   if (!binding.ok) return rejectResult(binding.reason, "rejected inbound mission_result (signed binding)", { verifiedDid: senderDid })
   /* v8 ignore next -- an unbound envelope is refused above, so a passing binding always carries its seen key @preserve */
-  const claimed = binding.seenKey ? [nonce, binding.seenKey] : [nonce]
+  const claimed = binding.seenKey ? [blobKey, binding.seenKey] : [blobKey]
   /* v8 ignore next -- the same binding id under a different seal nonce needs a hand-built seal (sealEnvelope mints a fresh id) @preserve */
   if (claimed.some((key) => inFlight.has(key))) return rejectResult("in_flight", "rejected inbound mission_result (the same result is being processed)")
   for (const key of claimed) inFlight.add(key)
@@ -236,6 +255,11 @@ async function processClaimedResult(
   claimed: string[],
   deps: InboundResultDeps,
 ): Promise<InboundResultOutcome> {
+  // Settle a rotation to this DID first, so the first result after it is judged against the moved record.
+  if (!(await deps.didResolution.settleSender({ did: senderDid, pinStore: deps.pinStore }))) {
+    return rejectResult("resolve_failed", "rejected inbound mission_result (the sender's key rotation could not be applied)", { verifiedDid: senderDid })
+  }
+
   // Read trust from the friend store BY the verified DID — never defaulted, never from
   // the envelope. Unknown (or empty) DID ⇒ stranger.
   const record = await findFriendByDid(deps.store, senderDid)
@@ -269,7 +293,8 @@ async function processClaimedResult(
     envelope: opened.envelope,
   })
   // The result is consumed the moment its signature verifies (and not before), so a failure before that leaves it
-  // redeliverable and a forged result can never burn a real one.
+  // redeliverable. The keys are the whole-blob hash and the sender-scoped `mid:` id, so another sender's validly
+  // signed result cannot burn this one by reusing its seal nonce.
   const verifier = {
     verify(fromAgentId: string, proof: unknown): boolean {
       const ok = didVerifier.verify(fromAgentId, proof as Parameters<DidVerifier["verify"]>[1])

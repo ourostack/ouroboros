@@ -94,6 +94,7 @@ Promise.all([
         },
       } : {}),
       ...escalationOptionsFor(agentName, (notice) => sendOwnerNoticeViaTelegram(agentName, notice)),
+      notifyOwner: (notice: { noticeId: string; text: string }) => sendOwnerNoticeViaTelegram(agentName, notice),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),

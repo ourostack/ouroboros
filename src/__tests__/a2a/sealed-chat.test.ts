@@ -180,7 +180,7 @@ describe("sendSealedA2AChat refusals", () => {
     const impostor = mintIdentity()
     const forged = sealChatMessage({ sodium, from: impostor, recipientDid: client.did, recipientEd25519Pub: client.ed25519Pub, text: "trust me" })
     await expect(sendSealedA2AChat({ cardUrl: "https://agent.example/card", text: "hi", identity: client, sodium, fetchImpl: fakeFetch({ card: card(agent.did), rpc: { jsonrpc: "2.0", id: "1", result: { id: "t", status: { message: { role: "ROLE_AGENT", parts: forged.parts } } } } }) }))
-      .rejects.toThrow(/reply rejected: resolve_failed/)
+      .rejects.toThrow("A2A chat reply rejected: resolve_failed; the call may already have run on the peer")
   })
 })
 
