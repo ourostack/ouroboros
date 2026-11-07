@@ -26,7 +26,13 @@ Then restart the agent's A2A sense (or the daemon). At start the sense registers
   - **Several moves.** A move never waits for older relays. Each relay moved away from joins the list and is retired on its own.
   - **Old relay failing.** If the old relay cannot be reached or does not answer properly (refused connection, DNS, TLS, a 5xx, no answer within 30 seconds, or an answer that is not the relay's), the agent keeps the registration and tries again at each start. A successful pull resets the clock. Once attempts have failed for more than 7 days in a row (the age past which friends refuses a message anyway), the agent retires it, logs `channel.a2a_relay_previous_gone` and tells the owner that messages still waiting there are lost.
   - **Old relay forgot the agent.** If the old relay itself answers 401 or 404, it no longer knows this registration, so the agent retires it at once. The owner is told only if that run had seen messages waiting there.
-  - **Clearing by hand.** To stop waiting for an old relay before then, remove its entry from `a2a.relay.previousRegistrations` in the machine vault config and restart. Anything still queued there is not delivered.
+  - **Clearing by hand.** To stop waiting for every old relay at once, clear the list and restart:
+
+    ```
+    ouro vault config set --agent <agent> --scope machine --key a2a.relay.previousRegistrations --value ""
+    ```
+
+    This clears all old relays together; there is no command to remove just one. Anything still queued on them is not delivered.
 - **Registration lost**: if the relay stops accepting the agent's inbox credential, the sense logs `channel.a2a_relay_unauthorized` and stops polling. Set a new `a2a.relay.inviteToken` and restart.
 
 Check what is set with `ouro vault config status --agent <agent> --scope machine`.
