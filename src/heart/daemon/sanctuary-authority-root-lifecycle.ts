@@ -19,6 +19,8 @@ const OFFSET = `${BUNDLE}/state/senses/telegram/offset.json`
 const SOCKET = "/run/ouro-authority"
 // Operator-set grants, root-owned on the host and mounted read-only into the Butler at /etc/ouro/trust/sanctuary.
 const TRUST = "/mnt/user/appdata/ouro-butler/trust/sanctuary"
+// The bundle sync deploy key's host folder, mounted read-only where the sync wrapper reads it (from alpha.991).
+const SYNC = "/mnt/user/appdata/ouro-butler/sync"
 const STAGING = "/var/lib/ouro-authority/staging"
 const CGROUP = "/sys/fs/cgroup/ouro-authority"
 const BOOT = "/boot/config/custom/ouro-authority/start.sh"
@@ -735,7 +737,7 @@ export class SanctuaryAuthorityRootLifecycle {
     const steps: Record<(typeof SANCTUARY_UPGRADE_STEPS)[number], () => void | Promise<void>> = {
       stop: () => this.#halt(),
       switch: async () => { await this.#halt(); this.#switchPackage(journal) },
-      resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId, { psycheMount: false }),
+      resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId, { psycheMount: false, syncMount: true }),
       migrate: () => target().#bundle(["--operation", "migrate", "--rollback-image-id", journal.from.imageId, "--target-image-id", journal.to.imageId]),
       start: () => target().#startUpgraded(),
     }
@@ -790,7 +792,7 @@ export class SanctuaryAuthorityRootLifecycle {
     predecessor.#publishBoot()
     if (this.#containers().find((container) => container.Name === "/ouro-butler")?.Image !== journal.from.imageId) {
       // A predecessor up to alpha.978 expects its psyche read-only over the bundle; alpha.979 and later own a writable one.
-      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId, { psycheMount: predecessorExpectsPsycheMount(journal.from.imageReference) })
+      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId, { psycheMount: predecessorExpectsPsycheMount(journal.from.imageReference), syncMount: predecessorHasBundleSync(journal.from.imageReference) })
     }
     await predecessor.#startUpgraded(PREDECESSOR_READY_TIMEOUT_MS)
     this.#remove(UPGRADE)
@@ -893,15 +895,20 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
   }
 
-  /** `psycheMount` adds the read-only psyche mount that releases up to alpha.978 expect; only a rollback to such a release passes true. */
-  #recreateResident(reference: string, imageId: string, { psycheMount }: { psycheMount: boolean }): void {
+  /**
+   * `psycheMount` adds the read-only psyche mount that releases up to alpha.978 expect; only a rollback to such a release
+   * passes true. `syncMount` adds the read-only bundle sync key mount that releases from alpha.991 carry; an older
+   * release's audit refuses it.
+   */
+  #recreateResident(reference: string, imageId: string, { psycheMount, syncMount }: { psycheMount: boolean; syncMount: boolean }): void {
     if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
     this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
       "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
       "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
       "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`,
       ...(psycheMount ? ["-v", `${BUNDLE}/psyche:/home/ouro/AgentBundles/sanctuary.ouro/psyche:ro`] : []),
-      "-v", `${TRUST}:/etc/ouro/trust/sanctuary:ro`, reference])
+      "-v", `${TRUST}:/etc/ouro/trust/sanctuary:ro`,
+      ...(syncMount ? ["-v", `${SYNC}:/run/ouro-sync:ro`] : []), reference])
     const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
     if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")
   }
@@ -1087,6 +1094,14 @@ export class SanctuaryAuthorityRootLifecycle {
 export function predecessorExpectsPsycheMount(imageReference: string): boolean {
   const release = /^0\.1\.0-alpha\.(\d+)$/u.exec(imageReference.slice(imageReference.lastIndexOf(":") + 1))
   return release !== null && Number(release[1]) <= 978
+}
+
+/** Whether a release's image carries bundle sync (alpha.991 or later, or a release with no prerelease tag), so its resident gets the sync key mount. */
+export function predecessorHasBundleSync(imageReference: string): boolean {
+  const tag = imageReference.slice(imageReference.lastIndexOf(":") + 1)
+  if (/^\d+\.\d+\.\d+$/u.test(tag)) return true
+  const release = /^0\.1\.0-alpha\.(\d+)$/u.exec(tag)
+  return release !== null && Number(release[1]) >= 991
 }
 
 /**
