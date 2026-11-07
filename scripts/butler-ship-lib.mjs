@@ -14,7 +14,7 @@ export const CUTOVER_UNFINISHED = ["/mnt/user/appdata/ouro-butler/bundle-backup/
 export const CUTOVER_PROBE = `for f in ${CUTOVER_UNFINISHED.join(" ")}; do [ -e "$f" ] && echo "@@CUTOVER-UNFINISHED:$f"; done; [ -e ${CUTOVER_MARKER} ] && echo @@CUTOVER:1 || echo @@CUTOVER:0`
 // The first release whose image has git, ssh and the sync wrapper. Set at the M1c release bump; a test keeps it
 // above the last release known to ship without sync and no newer than package.json.
-export const BUNDLE_SYNC_FIRST_RELEASE = "0.1.0-alpha.989"
+export const BUNDLE_SYNC_FIRST_RELEASE = "0.1.0-alpha.991"
 export const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 

@@ -566,12 +566,12 @@ describe("butler-ship after the bundle sync cutover", () => {
   it("keys on a first sync release above the last release known to ship without it, and no newer than package.json", async () => {
     const { BUNDLE_SYNC_FIRST_RELEASE } = await lib()
     const semver = (await import("semver")).default
-    const LAST_KNOWN_WITHOUT_SYNC = "0.1.0-alpha.988"
+    const LAST_KNOWN_WITHOUT_SYNC = "0.1.0-alpha.990"
     expect(semver.gt(BUNDLE_SYNC_FIRST_RELEASE, LAST_KNOWN_WITHOUT_SYNC)).toBe(true)
     const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version as string
-    // A branch cut before main reached alpha.988 still carries an older package.json; the release bump sets both.
+    // A branch cut before main reached alpha.990 still carries an older package.json; the release bump sets both.
     if (semver.gt(packageVersion, LAST_KNOWN_WITHOUT_SYNC)) expect(semver.lte(BUNDLE_SYNC_FIRST_RELEASE, packageVersion)).toBe(true)
-    else expect(BUNDLE_SYNC_FIRST_RELEASE).toBe("0.1.0-alpha.989")
+    else expect(BUNDLE_SYNC_FIRST_RELEASE).toBe("0.1.0-alpha.991")
   })
 
   // Expected to fail until the release that bumps package.json to BUNDLE_SYNC_FIRST_RELEASE writes its changelog entry.
@@ -583,7 +583,7 @@ describe("butler-ship after the bundle sync cutover", () => {
     expect(JSON.stringify(entry?.changes ?? [])).toMatch(/sync/i)
   })
 
-  it.each(["0.1.0-alpha.989", "0.1.0-alpha.1200", "0.1.0", "0.2.0-beta.1"])("ships release %s, the first sync release or later, after the cutover", async (version) => {
+  it.each(["0.1.0-alpha.991", "0.1.0-alpha.1200", "0.1.0", "0.2.0-beta.1"])("ships release %s, the first sync release or later, after the cutover", async (version) => {
     const h = await harness({ ssh: cutoverDone, gh: versioned(version) })
     const r = await h.run()
     expect(r.exitCode).toBe(0)
@@ -597,8 +597,10 @@ describe("butler-ship after the bundle sync cutover", () => {
   })
 
   it.each([
+    [false, "0.1.0-alpha.990"],
+    [true, "0.1.0-alpha.990"],
+    [false, "0.1.0-alpha.989"],
     [false, "0.1.0-alpha.988"],
-    [true, "0.1.0-alpha.988"],
     [false, "0.1.0-alpha.987"],
     [false, "0.1.0-alpha.986"],
     [false, "0.1.0-alpha.870"],
