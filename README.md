@@ -4,13 +4,30 @@
 </p>
 <!-- ourostack:brand:end -->
 
-# Ouroboros Agent Harness
+# Ouroboros
 
-If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
+**Agents with durable memory that live where you already talk (terminal, Teams, iMessage, mail and voice) and use real tools.** Ouroboros is the harness they run on.
 
-Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
+[ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [More from Ouro](https://github.com/ourostack)
 
-## What The Runtime Looks Like
+```sh
+npx ouro.bot@latest up   # install the ouro command and start the daemon
+```
+
+**Status:** alpha. Needs Node 22 or later. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
+
+
+## What you get
+
+- **You talk to it where you already are:** the terminal, Teams, iMessage, mail or a voice call.
+- **It remembers.** Notes, people and promises live in the agent's own bundle and vault, so tomorrow it knows what you agreed today.
+- **It does the work.** Real tools: files, shell, GitHub, Microsoft Graph, and coding agents it can hand work to. [Shepherd](https://ouroboros.bot/#shepherd) keeps those coding agents moving, and [Butler](https://ouroboros.bot/butler/) looks after a home server.
+
+`ouro.bot` is the bootstrap wrapper: `npx ouro.bot@latest` installs `@ouro.bot/cli`, which gives you the `ouro` command.
+
+## What the runtime looks like
+
+If you're an agent running on this harness, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 - `npx ouro.bot@latest` is the supported bootstrap path.
 - `ouro` is the installed day-to-day command.
@@ -147,7 +164,7 @@ ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <mo
 
 The outward lane selects the provider/model for user-facing senses. The `inner` lane selects the provider/model for private agent-facing turns; private-runtime policy decides whether those turns may run. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
 
-For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see `docs/auth-and-providers.md`.
+For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see [`docs/auth-and-providers.md`](docs/auth-and-providers.md).
 
 ## Quickstart
 
@@ -159,6 +176,7 @@ For a clean smoke test, run from outside the repo:
 cd ~
 npx ouro.bot@latest -v
 npx ouro.bot@latest up
+source ~/.zshrc   # or open a new terminal, so the new ouro command is on PATH
 ouro -v
 ouro status
 ```
@@ -298,19 +316,19 @@ If the dev-tool host appears frozen, run `ouro mcp doctor --agent <name> --json`
 
 **Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Private agent-facing turns see these sessions in their checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
 
-See `skills/configure-dev-tools.md` for the full tool inventory and troubleshooting guide.
+See [`skills/configure-dev-tools.md`](skills/configure-dev-tools.md) for the full tool inventory and troubleshooting guide.
 
 ## Where To Read Next
 
-- `AGENTS.md`
+- [`AGENTS.md`](AGENTS.md)
   Repo workflow, planning/doing gates, configuration policy, and logging policy.
-- `CONTRIBUTING.md`
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
   Day-to-day contribution rules for agents working in the harness.
-- `ARCHITECTURE.md`
+- [`ARCHITECTURE.md`](ARCHITECTURE.md)
   Current daemon, bundle, sense, and update model.
-- `docs/testing-guide.md`
+- [`docs/testing-guide.md`](docs/testing-guide.md)
   Operator smoke flow for bootstrap, daemon, hatch, chat, and messaging.
-- `docs/auth-and-providers.md`
+- [`docs/auth-and-providers.md`](docs/auth-and-providers.md)
   Locked credential, provider selection, refresh, repair, and hatch bootstrap contract.
 
 ## A Note To Future Maintainers
