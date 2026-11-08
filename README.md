@@ -6,16 +6,17 @@
 
 # Ouroboros
 
-**Our agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail and voice) and use real tools.**
+**Agents with durable memory that live where you already talk (terminal, Teams, iMessage, mail and voice) and use real tools.** Ouroboros is the harness they run on.
 
 [ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [More from Ouro](https://github.com/ourostack)
-
-**Status:** alpha. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
 
 ```sh
 npx ouro.bot@latest   # set it up
 ouro up               # start the daemon (npx ouro.bot@latest up does both)
 ```
+
+**Status:** alpha. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
+
 
 ## What you get
 
