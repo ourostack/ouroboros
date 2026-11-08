@@ -7,11 +7,59 @@ on:
       - main
   workflow_dispatch:
 
+# A new push to a PR cancels that PR's older run. Every other run (main, which
+# publishes, and manual runs) gets its own group, so it is never cancelled or
+# replaced while pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Fails in a minute or two on a syntax error anywhere in src (tests included)
+  # or deploy/*.mjs, a type error, or a broken changed test file, instead of at
+  # the end of the 20+ minute coverage gate.
+  prepass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Pre-pass
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            node .github/scripts/ci-prepass.cjs --base-ref "origin/$BASE_REF"
+          else
+            node .github/scripts/ci-prepass.cjs
+          fi
+
   coverage:
+    needs: prepass
+    # Runs even when prepass fails, so the required `coverage` check reports a
+    # failure instead of being skipped (a skipped required check counts as passing).
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      - name: Stop when the pre-pass failed
+        if: needs.prepass.result != 'success'
+        run: |
+          echo "::error::prepass ${{ needs.prepass.result }}; see the prepass job for the first failure"
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
