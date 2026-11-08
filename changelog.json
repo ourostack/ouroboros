@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.996",
+      "changes": [
+        "A grep or glob of your whole home leaves out state/ (the runtime's own mail, sessions and logs) and says so at the end; pass path or cwd \"state\" to search it.",
+        "When grep stops at 100 matches it says how many there were in all (\"100 of 41,000 matches shown\"), so a capped search never reads as an absent fact.",
+        "The release gate now asks the Butler about his own home: he must list it and read his TACIT, and write nothing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.995",
       "changes": [
         "The release gate removes the files its own run created before sync resumes, so test residue never reaches the agent's repo.",
