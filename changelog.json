@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.997",
+      "changes": [
+        "The release gate's home-kit check accepts any honest look around the home, shell included, and checks the TACIT line count against the file."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.996",
       "changes": [
         "A grep or glob of your whole home leaves out state/ (the runtime's own mail, sessions and logs) and says so at the end; pass path or cwd \"state\" to search it.",
