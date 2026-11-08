@@ -176,6 +176,7 @@ For a clean smoke test, run from outside the repo:
 cd ~
 npx ouro.bot@latest -v
 npx ouro.bot@latest up
+source ~/.zshrc   # or open a new terminal, so the new ouro command is on PATH
 ouro -v
 ouro status
 ```
