@@ -11,11 +11,10 @@
 [ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [More from Ouro](https://github.com/ourostack)
 
 ```sh
-npx ouro.bot@latest   # set it up
-ouro up               # start the daemon (npx ouro.bot@latest up does both)
+npx ouro.bot@latest up   # install the ouro command and start the daemon
 ```
 
-**Status:** alpha. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
+**Status:** alpha. Needs Node 22 or later. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
 
 
 ## What you get
@@ -165,7 +164,7 @@ ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <mo
 
 The outward lane selects the provider/model for user-facing senses. The `inner` lane selects the provider/model for private agent-facing turns; private-runtime policy decides whether those turns may run. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
 
-For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see `docs/auth-and-providers.md`.
+For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see [`docs/auth-and-providers.md`](docs/auth-and-providers.md).
 
 ## Quickstart
 
@@ -316,19 +315,19 @@ If the dev-tool host appears frozen, run `ouro mcp doctor --agent <name> --json`
 
 **Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Private agent-facing turns see these sessions in their checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
 
-See `skills/configure-dev-tools.md` for the full tool inventory and troubleshooting guide.
+See [`skills/configure-dev-tools.md`](skills/configure-dev-tools.md) for the full tool inventory and troubleshooting guide.
 
 ## Where To Read Next
 
-- `AGENTS.md`
+- [`AGENTS.md`](AGENTS.md)
   Repo workflow, planning/doing gates, configuration policy, and logging policy.
-- `CONTRIBUTING.md`
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
   Day-to-day contribution rules for agents working in the harness.
-- `ARCHITECTURE.md`
+- [`ARCHITECTURE.md`](ARCHITECTURE.md)
   Current daemon, bundle, sense, and update model.
-- `docs/testing-guide.md`
+- [`docs/testing-guide.md`](docs/testing-guide.md)
   Operator smoke flow for bootstrap, daemon, hatch, chat, and messaging.
-- `docs/auth-and-providers.md`
+- [`docs/auth-and-providers.md`](docs/auth-and-providers.md)
   Locked credential, provider selection, refresh, repair, and hatch bootstrap contract.
 
 ## A Note To Future Maintainers
