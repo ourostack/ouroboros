@@ -653,6 +653,26 @@ export const CASES = [
     },
   },
   {
+    // 0.1.0-alpha.994: every agent wakes with a home kit. He looks around his own home with ls and reads his own TACIT with
+    // read_file, by home-relative paths, and answers from what he saw. Read-only, so the run leaves nothing behind.
+    id: "home-kit",
+    words: "quick one about your own home, nothing online: what's at the top level of it, and how many lines long is your psyche/TACIT.md?",
+    sender: "principal",
+    delegated: false,
+    readback: ({ trace, reply, said }) => {
+      const text = String(said || reply || "")
+      const reads = trace.filter((entry) => entry.name === "read_file" && WROTE_TACIT.test(filePathOf(entry.args)))
+      const writes = trace.filter((entry) => /^(write_file|edit_file)$/.test(entry.name))
+      return [
+        check("he listed his home (ls)", callsNamed(trace, /^ls$/).length > 0, `${trace.length} tool calls`),
+        check("he read psyche/TACIT.md (read_file)", reads.length > 0),
+        check("the reply names what is at the top of his home (psyche)", /\bpsyche\b/i.test(text)),
+        check("the reply gives a line count", /\b\d+\s*lines?\b/i.test(text)),
+        check("nothing in his home was written", writes.length === 0, writes.map((entry) => filePathOf(entry.args)).join(", ")),
+      ]
+    },
+  },
+  {
     // 2026-10-11: the owner handed his chat to his wife and asked the Butler to say hi and interview her. It sent a title with no
     // greeting, and later its own note about the brevity rules. A handoff gets a greeting and a question. The words name no
     // one, so a name in the greeting is one he made up.
@@ -1419,6 +1439,12 @@ export function selfTestFixtures() {
     "brevity-honored": {
       pass: { trace: [], reply: "A movie is one film. A series has seasons of episodes.", before: emptyObservation(), after: emptyObservation() },
       fail: { trace: [], reply: `## Difference\n**Movies**: ${"long ".repeat(130)}\nWant me to go on?`, before: emptyObservation(), after: emptyObservation() },
+    },
+    "home-kit": {
+      pass: { trace: [call("1", "ls", {}, "arc/\nfriends/\npsyche/\nstate/"), call("2", "read_file", { path: "psyche/TACIT.md" }, "rule one\nrule two")], reply: "arc, friends, psyche and state are up top. TACIT is 2 lines.", before: emptyObservation(), after: emptyObservation() },
+      // Answering from memory, with no look around the home.
+      fail: { trace: [], reply: "probably psyche and some config; TACIT is a few dozen lines.", before: emptyObservation(), after: emptyObservation() },
+      failWrote: { trace: [call("1", "ls", {}, "psyche/"), call("2", "read_file", { path: "psyche/TACIT.md" }, "x"), call("3", "write_file", { path: "notes/home.md", content: "x" }, "ok")], reply: "psyche is up top; TACIT is 1 line.", before: emptyObservation(), after: emptyObservation() },
     },
     "handoff-greeting": {
       pass: { trace: [], reply: "hi! silly and cosy, or loud and dumb-fun tonight?", before: emptyObservation(), after: emptyObservation() },

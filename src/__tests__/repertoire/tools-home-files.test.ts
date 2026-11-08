@@ -177,6 +177,33 @@ describe("file tools work from the agent's home", () => {
     })
   })
 
+  describe("state/ is the runtime's own data, so a search from home leaves it out and says so", () => {
+    it("grep from home skips state/ and names it; grep inside state/ searches it", async () => {
+      put("notes/a.md", "needle in a note")
+      put("state/mailroom/messages/m1.json", "needle in a mail")
+      const fromHome = await run("grep", { pattern: "needle" })
+      expect(fromHome).toContain("notes/a.md:1: needle in a note")
+      expect(fromHome).not.toContain("m1.json")
+      expect(fromHome).toContain('[skipped state/, the runtime\'s own data; pass path "state" to search it]')
+      expect(await run("grep", { pattern: "needle", path: "state" })).toContain("state/mailroom/messages/m1.json:1: needle in a mail")
+    })
+    it("grep from home names the skip even when nothing outside state/ matches", async () => {
+      put("state/sessions/s.json", "only here")
+      expect(await run("grep", { pattern: "only here" })).toBe('[skipped state/, the runtime\'s own data; pass path "state" to search it]')
+    })
+    it("grep from a home with no state/ adds nothing", async () => {
+      put("notes/a.md", "plain")
+      expect(await run("grep", { pattern: "plain" })).toBe("notes/a.md:1: plain")
+    })
+    it("glob from home skips state/ and names it; glob with cwd state searches it", async () => {
+      put("notes/a.json", "{}")
+      put("state/mailroom/m1.json", "{}")
+      const fromHome = (await run("glob", { pattern: "**/*.json" })).split("\n")
+      expect(fromHome).toEqual(["notes/a.json", '[skipped state/, the runtime\'s own data; pass cwd "state" to search it]'])
+      expect(await run("glob", { pattern: "**/*.json", cwd: "state" })).toBe("mailroom/m1.json")
+    })
+  })
+
   describe("grep", () => {
     it("defaults path to home, skips .git, node_modules and binary files", async () => {
       put("a.md", "needle here")
@@ -202,13 +229,13 @@ describe("file tools work from the agent's home", () => {
       put("b.md", "hit")
       const out = (await run("grep", { pattern: "hit" })).split("\n")
       expect(out).toHaveLength(101)
-      expect(out[100]).toBe("[stopped at 100 matches; narrow the pattern or path]")
+      expect(out[100]).toBe("[100 of 151 matches shown; narrow the pattern or path]")
     })
     it("caps files_only at 100 files", async () => {
       for (let i = 0; i < 101; i++) put(`f${i}.md`, "hit")
       const out = (await run("grep", { pattern: "hit", files_only: true })).split("\n")
       expect(out).toHaveLength(101)
-      expect(out[100]).toContain("stopped at 100")
+      expect(out[100]).toBe("[100 of 101 files shown; narrow the pattern or path]")
     })
     it("cuts long lines at 500 characters", async () => {
       put("a.md", "hit" + "z".repeat(1000))
