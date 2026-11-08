@@ -14,20 +14,20 @@
 
 ```sh
 npx ouro.bot@latest   # set it up
-ouro up               # start the daemon
+ouro up               # start the daemon (npx ouro.bot@latest up does both)
 ```
 
 ## What you get
 
-- **An agent you talk to where you already are:** the terminal, Teams, iMessage, mail or a voice call.
+- **You talk to it where you already are:** the terminal, Teams, iMessage, mail or a voice call.
 - **It remembers.** Notes, people and promises live in the agent's own bundle and vault, so tomorrow it knows what you agreed today.
 - **It does the work.** Real tools: files, shell, GitHub, Microsoft Graph, and coding agents it can hand work to. [Shepherd](https://ouroboros.bot/#shepherd) keeps those coding agents moving, and [Butler](https://ouroboros.bot/butler/) looks after a home server.
 
-Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
+`ouro.bot` is the bootstrap wrapper: `npx ouro.bot@latest` installs `@ouro.bot/cli`, which gives you the `ouro` command.
 
-## What The Runtime Looks Like
+## What the runtime looks like
 
-If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
+If you're an agent running on this harness, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 - `npx ouro.bot@latest` is the supported bootstrap path.
 - `ouro` is the installed day-to-day command.
