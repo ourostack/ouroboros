@@ -4,22 +4,30 @@
 </p>
 <!-- ourostack:brand:end -->
 
-# Ouroboros Agent Harness
+# Ouroboros
 
 **Our agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail and voice) and use real tools.**
 
-[ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [Shepherd](https://ouroboros.bot/#shepherd) · [Butler](https://ouroboros.bot/butler/) · [More from Ouro](https://github.com/ourostack)
+[ouroboros.bot](https://ouroboros.bot/) · [`@ouro.bot/cli` on npm](https://www.npmjs.com/package/@ouro.bot/cli) · [More from Ouro](https://github.com/ourostack)
+
+**Status:** alpha. macOS first; Linux and Windows (WSL2) through [cross-machine setup](docs/cross-machine-setup.md).
 
 ```sh
 npx ouro.bot@latest   # set it up
 ouro up               # start the daemon
 ```
 
-If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
+## What you get
+
+- **An agent you talk to where you already are:** the terminal, Teams, iMessage, mail or a voice call.
+- **It remembers.** Notes, people and promises live in the agent's own bundle and vault, so tomorrow it knows what you agreed today.
+- **It does the work.** Real tools: files, shell, GitHub, Microsoft Graph, and coding agents it can hand work to. [Shepherd](https://ouroboros.bot/#shepherd) keeps those coding agents moving, and [Butler](https://ouroboros.bot/butler/) looks after a home server.
 
 Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
 
 ## What The Runtime Looks Like
+
+If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 - `npx ouro.bot@latest` is the supported bootstrap path.
 - `ouro` is the installed day-to-day command.
