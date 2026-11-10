@@ -32,6 +32,7 @@ import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { createVaultAccount } from "../../repertoire/vault-setup"
+import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parsePrivateRuntimeSession, formatThoughtTurns, getPrivateRuntimeSessionPath, followThoughts } from "./thoughts"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
@@ -2021,11 +2022,38 @@ function habitProbeJsonResponse(response: DaemonResponse): string {
 
 // ── Hatch input resolution ──
 
+interface HatchAnswers {
+  agentName?: string
+  humanName?: string
+  provider?: string
+  credentials?: HatchCredentialsInput
+}
+
+/** An answers file for an unattended hatch: JSON with agentName, humanName, provider and credentials. */
+function readHatchAnswers(filePath: string): HatchAnswers {
+  const raw = readSecretValueFile("--answers", filePath)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error(`--answers ${filePath} is not JSON. Expected {"agentName", "humanName", "provider", "credentials"}.`)
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`--answers ${filePath} must be a JSON object.`)
+  const answers = parsed as Record<string, unknown>
+  const text = (key: string): string | undefined => typeof answers[key] === "string" ? answers[key] as string : undefined
+  const credentials = answers.credentials && typeof answers.credentials === "object" && !Array.isArray(answers.credentials)
+    ? answers.credentials as HatchCredentialsInput
+    : undefined
+  return { agentName: text("agentName"), humanName: text("humanName"), provider: text("provider"), credentials }
+}
+
 async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch.start" }>, deps: OuroCliDeps): Promise<import("../hatch/hatch-flow").HatchFlowInput> {
-  const prompt = deps.promptInput
-  const agentName = command.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
-  const humanName = command.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)
-  const providerRaw = command.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex|github-copilot): ") : "")
+  const answers = command.answersFile ? readHatchAnswers(command.answersFile) : {}
+  // An unattended hatch never prompts: whatever the answers and flags leave out is a usage error.
+  const prompt = command.answersFile ? undefined : deps.promptInput
+  const agentName = command.agentName ?? answers.agentName ?? (prompt ? await prompt("Hatchling name: ") : "")
+  const humanName = command.humanName ?? answers.humanName ?? (prompt ? await prompt("Your name: ") : os.userInfo().username)
+  const providerRaw = command.provider ?? answers.provider ?? (prompt ? await prompt("Provider (azure|anthropic|minimax|openai-codex|github-copilot): ") : "")
 
   if (!agentName || !humanName || !isAgentProvider(providerRaw)) {
     throw new Error(`Usage\n${usage()}`)
@@ -2038,7 +2066,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
     credentials = await resolveHatchCredentials({
       agentName,
       provider: providerRaw,
-      credentials: command.credentials,
+      credentials: command.credentials ?? answers.credentials,
       promptInput: prompt,
       runAuthFlow: deps.runAuthFlow,
       onProgress: (message) => progress.updateDetail(message),
@@ -2050,12 +2078,22 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
   }
   progress.end()
 
+  const vaultUnlockSecret = command.secretFile
+    ? await promptConfirmedVaultUnlockSecret({
+      promptSecret: ensureVaultSecretPrompt(undefined, "create", command.secretFile),
+      question: "",
+      confirmQuestion: "",
+      emptyError: `--secret-file ${command.secretFile} is empty.`,
+    })
+    : undefined
+
   return {
     agentName,
     humanName,
     provider: providerRaw,
     credentials,
     migrationPath: command.migrationPath,
+    ...(vaultUnlockSecret ? { vaultUnlockSecret } : {}),
   }
 }
 
@@ -10206,7 +10244,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "hatch.start") {
     // Route through serpent guide when no explicit hatch args were provided
-    const hasExplicitHatchArgs = !!(command.agentName || command.humanName || command.provider || command.credentials)
+    const hasExplicitHatchArgs = !!(command.agentName || command.humanName || command.provider || command.credentials || command.answersFile)
     if (deps.runSerpentGuide && !hasExplicitHatchArgs) {
       if (ttyBoardEnabled(deps)) {
         deps.writeStdout(renderCommandBoard(deps, {
@@ -10256,7 +10294,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const daemonResult = await ensureDaemonRunning(deps)
 
-    if (deps.startChat) {
+    if (deps.startChat && !command.noChat) {
       const health = await checkProviderHealthBeforeChat(hatchInput.agentName, deps)
       if (!health.ok) return health.output
       await deps.startChat(hatchInput.agentName)

@@ -77,8 +77,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   hatch: {
     category: "Lifecycle",
     description: "Create a new agent",
-    usage: "ouro hatch [--agent <name>] [--human <name>] [--provider <provider>]",
-    example: "ouro hatch --agent Sprout --human <your-name> --provider anthropic",
+    usage: "ouro hatch [--agent <name>] [--human <name>] [--provider <provider>] [--answers <json-file>] [--secret-file <path>] [--no-chat]",
+    example: "ouro hatch --answers ./hatch.json --secret-file /dev/fd/3 --no-chat 3< ./unlock-secret",
   },
   rollback: {
     category: "Lifecycle",

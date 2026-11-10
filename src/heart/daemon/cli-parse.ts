@@ -691,6 +691,9 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   let humanName: string | undefined
   let providerRaw: string | undefined
   let migrationPath: string | undefined
+  let answersFile: string | undefined
+  let secretFile: string | undefined
+  let noChat = false
   const credentials: HatchCredentialsInput = {}
 
   for (let i = 0; i < args.length; i += 1) {
@@ -750,6 +753,19 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    // Unattended hatch: answers (including provider credentials) and the vault unlock secret come from files, never argv.
+    if (token === "--answers" || token === "--secret-file") {
+      const value = args[i + 1]
+      if (!value || value.startsWith("--")) throw new Error(`${token} requires a path (use /dev/stdin or /dev/fd/<n> to pipe it).`)
+      if (token === "--answers") answersFile = value
+      else secretFile = value
+      i += 1
+      continue
+    }
+    if (token === "--no-chat") {
+      noChat = true
+      continue
+    }
   }
 
   if (providerRaw && !isAgentProvider(providerRaw)) {
@@ -764,6 +780,9 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
     provider,
     credentials: Object.keys(credentials).length > 0 ? credentials : undefined,
     migrationPath,
+    ...(answersFile ? { answersFile } : {}),
+    ...(secretFile ? { secretFile } : {}),
+    ...(noChat ? { noChat: true } : {}),
   }
 }
 

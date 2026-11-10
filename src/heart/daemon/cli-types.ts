@@ -112,7 +112,7 @@ export type OuroCliCommand =
   | { kind: "mcp.doctor"; agent: string; socketOverride?: string; json?: boolean; hostStallObserved?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
-  | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
+  | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string; answersFile?: string; secretFile?: string; noChat?: boolean }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
   | { kind: "agent.move"; agent: string }

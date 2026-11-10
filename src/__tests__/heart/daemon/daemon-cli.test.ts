@@ -3340,6 +3340,68 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("queued message fallback")
   })
 
+  it("hatches unattended from an answers file and a secret file, without prompts or chat", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unattended-hatch-"))
+    const answers = path.join(dir, "hatch.json")
+    const secret = path.join(dir, "secret")
+    fs.writeFileSync(answers, JSON.stringify({ agentName: "Butler", humanName: "Ari", provider: "minimax", credentials: { apiKey: "minimax-key" } }))
+    fs.writeFileSync(secret, "Chosen-unlock-material1!\n")
+    const runHatchFlow = vi.fn(async () => ({ bundleRoot: "/tmp/AgentBundles/Butler.ouro", selectedIdentity: "python.md" }))
+    const promptInput = vi.fn(async () => "should not be asked")
+    const startChat = vi.fn(async () => undefined)
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 101 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      promptInput,
+      startChat,
+    } as unknown as OuroCliDeps
+
+    try {
+      const result = await runOuroCli(["hatch", "--answers", answers, "--secret-file", secret, "--no-chat"], deps)
+      expect(runHatchFlow).toHaveBeenCalledWith({
+        agentName: "Butler",
+        humanName: "Ari",
+        provider: "minimax",
+        credentials: { apiKey: "minimax-key" },
+        vaultUnlockSecret: "Chosen-unlock-material1!",
+      })
+      expect(promptInput).not.toHaveBeenCalled()
+      expect(startChat).not.toHaveBeenCalled()
+      expect(result).toContain("Butler")
+
+      fs.writeFileSync(answers, JSON.stringify({ agentName: "Butler", humanName: "Ari" }))
+      await expect(runOuroCli(["hatch", "--answers", answers, "--no-chat"], deps)).rejects.toThrow("Usage")
+      expect(promptInput).not.toHaveBeenCalled()
+
+      fs.writeFileSync(answers, JSON.stringify({ agentName: "Butler", humanName: "Ari", provider: "minimax", credentials: { apiKey: "k" } }))
+      fs.writeFileSync(secret, "weak\n")
+      await expect(runOuroCli(["hatch", "--answers", answers, "--secret-file", secret], deps)).rejects.toThrow("vault unlock secret is too weak")
+      fs.writeFileSync(answers, "not json")
+      await expect(runOuroCli(["hatch", "--answers", answers], deps)).rejects.toThrow(`--answers ${answers} is not JSON`)
+      fs.writeFileSync(answers, "[1]")
+      await expect(runOuroCli(["hatch", "--answers", answers], deps)).rejects.toThrow("must be a JSON object")
+      fs.writeFileSync(answers, JSON.stringify({ agentName: 7, humanName: "Ari", provider: "minimax", credentials: ["x"] }))
+      await expect(runOuroCli(["hatch", "--answers", answers], deps)).rejects.toThrow("Usage")
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parses the unattended hatch flags and rejects them without a path", () => {
+    expect(parseOuroCommand(["hatch", "--answers", "/dev/stdin", "--secret-file", "/dev/fd/3", "--no-chat"])).toEqual({
+      kind: "hatch.start", answersFile: "/dev/stdin", secretFile: "/dev/fd/3", noChat: true,
+    })
+    expect(() => parseOuroCommand(["hatch", "--answers"])).toThrow("--answers requires a path")
+    expect(() => parseOuroCommand(["hatch", "--secret-file", "--no-chat"])).toThrow("--secret-file requires a path")
+  })
+
   it("prompts for missing minimax credentials in local hatch flow", async () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Mini.ouro",
