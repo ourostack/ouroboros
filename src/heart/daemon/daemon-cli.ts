@@ -34,12 +34,7 @@ export {
   summarizeDaemonStartupFailure,
 } from "./cli-exec"
 
-/** Loads the provider SDKs only when a model is actually pinged. */
-export async function pingGithubCopilotModel(
-  ...args: Parameters<typeof import("../provider-ping").pingGithubCopilotModel>
-): ReturnType<typeof import("../provider-ping").pingGithubCopilotModel> {
-  return (await import("../provider-ping")).pingGithubCopilotModel(...args)
-}
+export { pingGithubCopilotModel } from "./cli-exec"
 
 // ── Defaults ──
 export {

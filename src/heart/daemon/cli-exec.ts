@@ -246,7 +246,8 @@ import {
 // Provider pings load the model SDKs, so they load when a command pings.
 type ProviderPingModule = typeof import("../provider-ping")
 const pingProvider: ProviderPingModule["pingProvider"] = async (...args) => (await import("../provider-ping")).pingProvider(...args)
-const pingGithubCopilotModel: ProviderPingModule["pingGithubCopilotModel"] = async (...args) => (await import("../provider-ping")).pingGithubCopilotModel(...args)
+/** Loads the provider SDKs only when a model is actually pinged. */
+export const pingGithubCopilotModel: ProviderPingModule["pingGithubCopilotModel"] = async (...args) => (await import("../provider-ping")).pingGithubCopilotModel(...args)
 
 // ── ensureDaemonRunning ──
 
