@@ -214,7 +214,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Platform | Status | Notes |
 |----------|--------|-------|
 | macOS | Full support | Primary development platform |
-| Linux | Full support | Uses crontab for scheduling |
+| Linux | Full support | Uses crontab for scheduling. `~/.ouro-cli` must be on a POSIX filesystem such as ext4: FAT and exFAT have no Unix sockets, symlinks or file permissions, so `ouro up` and the daemon refuse to start there. |
 | Windows (WSL2) | Supported | Daemon runs in WSL, dev tools bridge to Windows |
 | Windows (native) | Not yet supported | Use WSL2 for now |
 

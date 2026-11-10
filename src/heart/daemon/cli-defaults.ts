@@ -37,6 +37,7 @@ import { formatUpdateStatusLine, readUpdateState } from "../versioning/update-st
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
+import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
@@ -853,6 +854,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     isTTY: process.stdout.isTTY === true,
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
+    checkHomeFilesystem: () => unsupportedHomeFilesystem(getOuroCliHome()),
     fallbackPendingMessage: defaultFallbackPendingMessage,
     tailLogs: (options) => defaultTailLogs(options),
     healthFilePath: getDefaultHealthPath(),

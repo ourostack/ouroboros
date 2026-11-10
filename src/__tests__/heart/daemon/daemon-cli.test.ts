@@ -864,6 +864,41 @@ describe("ouro CLI execution", () => {
     expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
   }, 10_000)
 
+  it("refuses `up` before starting a daemon when the ouro home is on FAT or exFAT", async () => {
+    const message = "/userdata/media/.ouro-cli is on exFAT, which has no Unix sockets, symlinks or file permissions."
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      checkHomeFilesystem: vi.fn(() => message),
+    }
+
+    expect(await runOuroCli(["up"], deps)).toBe(message)
+    expect(deps.writeStdout).toHaveBeenCalledWith(message)
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+    expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
+  })
+
+  it("starts as before when the ouro home filesystem is usable", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      checkHomeFilesystem: vi.fn(() => null),
+    }
+    expect(await runOuroCli(["up"], deps)).toContain("daemon started")
+    expect(deps.checkHomeFilesystem).toHaveBeenCalledTimes(1)
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+  }, 10_000)
+
   it("fails `up` when the daemon socket dies before final handoff", async () => {
     const writeStdout = vi.fn()
     const deps: OuroCliDeps = {
