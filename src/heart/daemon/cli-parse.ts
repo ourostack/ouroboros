@@ -302,8 +302,8 @@ export function usage(): string {
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
     "  ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
     "  ouro vault recover [--agent <name>] --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
-    "  ouro vault unlock [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
-    "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
+    "  ouro vault unlock [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file|sealed-file]",
+    "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file|sealed-file]",
     "  ouro vault config set [--agent <name>] --key <path> [--value <value> | --value-file <path>] [--scope agent|machine]",
     "  ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     "  ouro vault item set [--agent <name>] --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]",
@@ -890,7 +890,7 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
 }
 
 function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
-  return value === "auto" || value === "macos-keychain" || value === "windows-dpapi" || value === "linux-secret-service" || value === "plaintext-file"
+  return value === "auto" || value === "macos-keychain" || value === "windows-dpapi" || value === "linux-secret-service" || value === "plaintext-file" || value === "sealed-file"
 }
 
 function parseVaultCommand(args: string[]): OuroCliCommand {
@@ -921,7 +921,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
     if (token === "--store") {
       const value = rest[i + 1]
       if (!isVaultUnlockStoreKind(value)) {
-        throw new Error("vault --store must be auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file")
+        throw new Error("vault --store must be auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file|sealed-file")
       }
       store = value
       i += 1

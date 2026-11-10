@@ -1098,3 +1098,80 @@ describe("vault unlock rejection record", () => {
     expect(readVaultUnlockRejection(dir)).not.toBeNull()
   })
 })
+
+describe("sealed-file vault unlock store", () => {
+  const comet = (overrides: Record<string, string | null> = {}) => (source: string) => (
+    source in overrides ? overrides[source]! : ({ "device-tree-serial": "7f3a19c2e0d4b6a1", "dbus-machine-id": "0123456789abcdef0123456789abcdef" } as Record<string, string>)[source] ?? null
+  )
+
+  it("seals the secret to this machine's hardware serial and reads it back", () => {
+    emitTestEvent("vault unlock sealed roundtrip")
+    const homeDir = tempHome()
+    const deps: VaultUnlockDeps = { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: comet() }
+
+    const store = storeVaultUnlockSecret(config, "  sealed-unlock-material  ", deps)
+
+    expect(store).toMatchObject({ kind: "sealed-file", secure: false })
+    expect(store.location).toContain(path.join(".ouro-cli", "vault-unlock-sealed"))
+    expect(fs.statSync(store.location).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(path.dirname(store.location)).mode & 0o777).toBe(0o700)
+    const raw = fs.readFileSync(store.location, "utf8")
+    expect(raw).not.toContain("sealed-unlock-material")
+    expect(JSON.parse(raw)).toMatchObject({ schemaVersion: 1, source: "device-tree-serial" })
+    expect(readVaultUnlockSecret(config, deps)).toMatchObject({ secret: "sealed-unlock-material", store })
+    expect(clearVaultUnlockSecret(config, deps).kind).toBe("sealed-file")
+    expect(fs.existsSync(store.location)).toBe(false)
+  })
+
+  it("is useless when copied to another machine, and says so", () => {
+    emitTestEvent("vault unlock sealed copy")
+    const homeDir = tempHome()
+    storeVaultUnlockSecret(config, "sealed-unlock-material", { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: comet() })
+    const elsewhere: VaultUnlockDeps = { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: comet({ "device-tree-serial": "0000000000000000" }) }
+    expect(() => readVaultUnlockSecret(config, elsewhere)).toThrow(/sealed on another machine \(or this machine's device-tree-serial changed\)/)
+    const noIdentity: VaultUnlockDeps = { ...elsewhere, readMachineIdentity: () => null }
+    expect(() => readVaultUnlockSecret(config, noIdentity)).toThrow(/sealed on another machine/)
+  })
+
+  it("prefers hardware identity over machine-id files, and uses IOPlatformUUID on macOS", () => {
+    emitTestEvent("vault unlock sealed sources")
+    const homeDir = tempHome()
+    const linux = storeVaultUnlockSecret(config, "a", { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: comet({ "device-tree-serial": null }) })
+    expect(JSON.parse(fs.readFileSync(linux.location, "utf8")).source).toBe("dbus-machine-id")
+    const mac = storeVaultUnlockSecret(config, "b", { store: "sealed-file", homeDir, platform: "darwin", readMachineIdentity: (source) => (source === "io-platform-uuid" ? "6F1C-UUID" : null) })
+    expect(JSON.parse(fs.readFileSync(mac.location, "utf8")).source).toBe("io-platform-uuid")
+    expect(readVaultUnlockSecret(config, { store: "sealed-file", homeDir, platform: "darwin", readMachineIdentity: (source) => (source === "io-platform-uuid" ? "6F1C-UUID" : null) })).toMatchObject({ secret: "b" })
+  })
+
+  it("refuses without a machine identity, off Linux and macOS, with loose permissions, or with a damaged file", () => {
+    emitTestEvent("vault unlock sealed refusals")
+    const homeDir = tempHome()
+    expect(() => storeVaultUnlockSecret(config, "x", { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: () => "  " }))
+      .toThrow(/needs a machine identity \(device-tree-serial, dmi-product-uuid, machine-id, dbus-machine-id\) and none is readable here; use plaintext-file/)
+    expect(() => resolveVaultUnlockStore(config, { store: "sealed-file", homeDir, platform: "win32" })).toThrow(/available on Linux and macOS; this machine is win32\. Use windows-dpapi\./)
+    const deps: VaultUnlockDeps = { store: "sealed-file", homeDir, platform: "linux", readMachineIdentity: comet() }
+    const store = storeVaultUnlockSecret(config, "x", deps)
+    fs.chmodSync(store.location, 0o644)
+    expect(() => readVaultUnlockSecret(config, deps)).toThrow(/permissions are too broad; run chmod 600/)
+    fs.writeFileSync(store.location, "not json", { mode: 0o600 })
+    fs.chmodSync(store.location, 0o600)
+    expect(() => readVaultUnlockSecret(config, deps)).toThrow(/is not readable JSON/)
+    fs.writeFileSync(store.location, JSON.stringify({ schemaVersion: 2, source: "device-tree-serial", iv: "", tag: "", ciphertext: "" }))
+    expect(() => readVaultUnlockSecret(config, deps)).toThrow(/sealed on another machine/)
+    fs.writeFileSync(store.location, JSON.stringify({ schemaVersion: 1 }))
+    expect(() => readVaultUnlockSecret(config, deps)).toThrow(/sealed on another machine \(or this machine's identity changed\)/)
+    fs.writeFileSync(store.location, JSON.stringify({ schemaVersion: 1, source: "toString", iv: "", tag: "", ciphertext: "" }))
+    expect(() => readVaultUnlockSecret(config, deps)).toThrow(/sealed on another machine \(or this machine's toString changed\)/)
+  })
+
+  it("has nothing to read before a secret is sealed", () => {
+    emitTestEvent("vault unlock sealed empty")
+    const deps: VaultUnlockDeps = { store: "sealed-file", homeDir: tempHome(), platform: "linux", readMachineIdentity: comet() }
+    expect(getVaultUnlockStatus(config, deps)).toMatchObject({ configured: true, stored: false, store: { kind: "sealed-file" } })
+  })
+
+  it("is accepted from the machine-level environment setting", () => {
+    emitTestEvent("vault unlock sealed env")
+    expect(resolveVaultUnlockStore(config, { homeDir: tempHome(), platform: "linux", env: { OURO_VAULT_UNLOCK_STORE: "sealed-file" } }).kind).toBe("sealed-file")
+  })
+})
