@@ -27,7 +27,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   "openai-compatible": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Z.ai API key", baseUrl: "Z.ai canonical base URL" } },
   "openai-compatible-gemini": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Gemini API key", baseUrl: "Gemini canonical base URL" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench" | "shepherd"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench" | "shepherd" | "app-sessions"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -62,6 +62,8 @@ export interface AgentSensesConfig {
   telegram: AgentSenseConfig
   workbench: AgentSenseConfig
   shepherd: AgentSenseConfig
+  /** This machine's GitHub Copilot app sessions: list, read and write them, and hear back from the ones the agent writes to. */
+  "app-sessions": AgentSenseConfig
 }
 
 export interface McpServerConfig {
@@ -215,6 +217,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   telegram: { enabled: false },
   workbench: { enabled: false },
   shepherd: { enabled: false },
+  "app-sessions": { enabled: false },
 }
 
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
@@ -228,6 +231,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     telegram: { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: { ...DEFAULT_AGENT_SENSES.workbench },
     shepherd: { ...DEFAULT_AGENT_SENSES.shepherd },
+    "app-sessions": { ...DEFAULT_AGENT_SENSES["app-sessions"] },
   }
 
   if (value === undefined) {
@@ -245,7 +249,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd", "app-sessions"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -332,6 +336,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       telegram: { ...DEFAULT_AGENT_SENSES.telegram },
       workbench: { ...DEFAULT_AGENT_SENSES.workbench },
       shepherd: { ...DEFAULT_AGENT_SENSES.shepherd },
+      "app-sessions": { ...DEFAULT_AGENT_SENSES["app-sessions"] },
     },
     phrases: {
       thinking: [...DEFAULT_AGENT_PHRASES.thinking],

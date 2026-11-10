@@ -32,6 +32,7 @@ import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 import { shepherdSenseStatus } from "../heart/shepherd-config";
+import { appSessionsSenseStatus } from "../senses/app-sessions/store";
 import { listTripIds, readTripRecord } from "../trips/store";
 import type { TripRecord } from "../trips/core";
 import {
@@ -639,6 +640,7 @@ function localSenseStatusLines(): string[] {
     telegram: configuredSenses.telegram ?? { enabled: false },
     workbench: configuredSenses.workbench ?? { enabled: false },
     shepherd: configuredSenses.shepherd ?? { enabled: false },
+    "app-sessions": configuredSenses["app-sessions"] ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
@@ -668,6 +670,7 @@ function localSenseStatusLines(): string[] {
       && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
     shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
+    "app-sessions": true,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -699,6 +702,10 @@ function localSenseStatusLines(): string[] {
     {
       label: "shepherd",
       status: shepherdSenseStatus(senses.shepherd.enabled, machinePayload),
+    },
+    {
+      label: "app-sessions",
+      status: appSessionsSenseStatus(senses["app-sessions"].enabled, getAgentRoot(), Date.now()),
     },
     {
       label: "Workbench",

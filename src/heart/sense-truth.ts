@@ -28,6 +28,7 @@ const SENSES: Array<{ sense: SenseName; label: string; daemonManaged: boolean }>
   { sense: "telegram", label: "Telegram", daemonManaged: true },
   { sense: "workbench", label: "Workbench", daemonManaged: false },
   { sense: "shepherd", label: "shepherd", daemonManaged: true },
+  { sense: "app-sessions", label: "app-sessions", daemonManaged: true },
 ]
 
 function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
@@ -43,6 +44,7 @@ function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
     telegram: configured.telegram ?? { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: configured.workbench ?? { ...DEFAULT_AGENT_SENSES.workbench },
     shepherd: configured.shepherd ?? { ...DEFAULT_AGENT_SENSES.shepherd },
+    "app-sessions": configured["app-sessions"] ?? { ...DEFAULT_AGENT_SENSES["app-sessions"] },
   }
 }
 

@@ -28,7 +28,7 @@ export interface ConfigureDaemonRuntimeLoggerOptions {
   machine?: boolean
 }
 
-type RuntimeProcessName = "daemon" | "ouro" | "ouro-bot" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "shepherd" | "teams"
+type RuntimeProcessName = "daemon" | "ouro" | "ouro-bot" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "shepherd" | "teams" | "app-sessions"
 type LoggingPathTarget = { kind: "agent"; agentName: string } | { kind: "machine" }
 
 const LEGACY_SHARED_RUNTIME_LOGGING: RuntimeLoggingConfig = {
@@ -52,7 +52,7 @@ function defaultLoggingForProcess(processName: RuntimeProcessName): RuntimeLoggi
     }
   }
 
-  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "shepherd") {
+  if (processName === "bluebubbles" || processName === "mail" || processName === "voice" || processName === "shepherd" || processName === "app-sessions") {
     return {
       level: "warn",
       sinks: ["terminal", "ndjson"],

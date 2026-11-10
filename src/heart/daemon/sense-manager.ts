@@ -18,6 +18,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
+import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
@@ -128,6 +129,7 @@ function defaultSenses(): AgentSensesConfig {
     telegram: { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: { ...DEFAULT_AGENT_SENSES.workbench },
     shepherd: { ...DEFAULT_AGENT_SENSES.shepherd },
+    "app-sessions": { ...DEFAULT_AGENT_SENSES["app-sessions"] },
   }
 }
 
@@ -170,7 +172,7 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
     && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
   const workbenchHasStaleBundleEntry = workbenchSensePresent || workbenchMcpPresent
 
-  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd", "app-sessions"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -265,6 +267,7 @@ function senseFactsFromRuntimeConfig(
     telegram: { configured: false, detail: "not enabled in agent.json" },
     workbench: { configured: false, detail: "not enabled in agent.json" },
     shepherd: { configured: false, detail: "not enabled in agent.json" },
+    "app-sessions": { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -448,6 +451,10 @@ function senseFactsFromRuntimeConfig(
       : shepherdConfigFacts(machinePayload)
   }
 
+  if (senses["app-sessions"].enabled) {
+    base["app-sessions"] = { configured: true, detail: "this machine's GitHub Copilot app" }
+  }
+
   if (workbenchHasStaleBundleEntry || senses.workbench.enabled) {
     base.workbench = {
       configured: false,
@@ -493,7 +500,7 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice" && sense !== "a2a" && sense !== "telegram" && sense !== "shepherd") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice" && sense !== "a2a" && sense !== "telegram" && sense !== "shepherd" && sense !== "app-sessions") return null
   return { agent, sense }
 }
 
@@ -509,6 +516,7 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli" | "workbench">): stri
   if (sense === "a2a") return "senses/a2a-entry.js"
   if (sense === "telegram") return "senses/telegram-entry.js"
   if (sense === "shepherd") return "senses/shepherd-entry.js"
+  if (sense === "app-sessions") return "senses/app-sessions-entry.js"
   return "senses/mail-entry.js"
 }
 
@@ -739,7 +747,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
     this.initiallyUnmanagedShepherdOwners = new Set([...this.contexts.entries()].filter(([, context]) => !context.senses.shepherd.enabled).map(([agent]) => agent))
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd"] as Exclude<SenseName, "cli" | "workbench">[])
+      return (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd", "app-sessions"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
@@ -905,7 +913,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   private async refreshEnabledSenseConfigs(): Promise<void> {
     const refreshes = [...this.contexts.entries()].map(async ([agent, context]) => {
-      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd"] as Exclude<SenseName, "cli" | "workbench">[])
+      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "shepherd", "app-sessions"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
       /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
       if (enabledManagedSenses.length === 0) return
@@ -1147,6 +1155,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           optional: context.facts.shepherd.optional,
           ...(runtime.get(agent)?.shepherd ?? {}),
         },
+        "app-sessions": {
+          configured: context.facts["app-sessions"].configured,
+          ...(runtime.get(agent)?.["app-sessions"] ?? {}),
+        },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
       return inventory.map((entry) => ({
@@ -1161,7 +1173,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
               ? blueBubblesRuntimeFacts.detail
                 ?? context.facts[entry.sense].detail
               : context.facts[entry.sense].detail
-            : context.facts[entry.sense].detail
+            : entry.sense === "app-sessions"
+              ? snapshotSummary(readSnapshot(path.join(this.bundlesRoot, `${agent}.ouro`)), Date.now())
+              : context.facts[entry.sense].detail
           : entry.sense === "workbench"
             ? WORKBENCH_RUNTIME_INJECTION_DETAIL
             : "not enabled in agent.json",

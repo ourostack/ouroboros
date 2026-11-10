@@ -43,6 +43,7 @@ import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 import { readFlightRecorderResume } from "../arc/flight-recorder"
 import { readContextLossSentinelView } from "./context-loss-sentinel"
 import { shepherdSenseStatus } from "./shepherd-config"
+import { appSessionsSenseStatus } from "../senses/app-sessions/store"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -233,6 +234,7 @@ export function readSenseStatusLines(): string[] {
     telegram: configuredSenses.telegram ?? { enabled: false },
     workbench: configuredSenses.workbench ?? { enabled: false },
     shepherd: configuredSenses.shepherd ?? { enabled: false },
+    "app-sessions": configuredSenses["app-sessions"] ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const agentName = getAgentName()
@@ -294,6 +296,7 @@ export function readSenseStatusLines(): string[] {
         && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
     shepherd: shepherdSenseStatus(true, machinePayload) === "ready",
+    "app-sessions": true,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -325,6 +328,10 @@ export function readSenseStatusLines(): string[] {
     {
       label: "shepherd",
       status: shepherdSenseStatus(senses.shepherd.enabled, machinePayload),
+    },
+    {
+      label: "app-sessions",
+      status: appSessionsSenseStatus(senses["app-sessions"].enabled, getAgentRoot(), Date.now()),
     },
     {
       label: "Workbench",
