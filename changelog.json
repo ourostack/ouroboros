@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1031",
+      "changes": [
+        "A bundle cloned onto another machine no longer fails every chat turn with \"external identity claims directory has unsafe ownership, mode, or type\": @ouro.bot/friends 0.1.0-alpha.18 tightens the claims directory and journals git leaves at 755/644 to 700/600 itself."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1029",
       "changes": [
         "Account pool: the fleet burn file is named by this Mac's LocalHostName (else the host name), so two Macs with a generic host name such as \"Mac\" never write the same file."
