@@ -163,6 +163,18 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
         : queueToSession(target, detail)
     }
 
+    const deliverTeamsOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
+      const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
+      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive" }, { agentRoot })
+      return sent?.delivered ? { status: "delivered", detail: "sent to Teams now" } : queueToSession(target, detail)
+    }
+    const deliverOrQueue = (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> =>
+      target.channel === "telegram"
+        ? deliverTelegramOrQueue(target, detail)
+        : target.channel === "teams"
+          ? deliverTeamsOrQueue(target, detail)
+          : queueToSession(target, detail)
+
     // Resolve friend name → UUID if needed (agents may pass name instead of UUID)
     let resolvedFriendId = friendId
     if (!fs.existsSync(path.join(sessionsDir, friendId))) {
@@ -209,9 +221,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
         )
         if (bridgeTarget) {
           const detail = `for next interaction via ${bridgeTarget.channel}`
-          return bridgeTarget.channel === "telegram"
-            ? deliverTelegramOrQueue(bridgeTarget, detail)
-            : queueToSession(bridgeTarget, detail)
+          return deliverOrQueue(bridgeTarget, detail)
         }
       }
     }
@@ -223,9 +233,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     if (queueItem?.channel && queueItem.key && queueItem.channel !== "inner") {
       const target = { friendId, channel: queueItem.channel, key: queueItem.key }
       const detail = `for originating ${queueItem.channel} session`
-      return queueItem.channel === "telegram"
-        ? deliverTelegramOrQueue(target, detail)
-        : queueToSession(target, detail)
+      return deliverOrQueue(target, detail)
     }
 
     // Priority 2: Try proactive delivery first, then queue to freshest session
@@ -236,9 +244,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     const freshest = allFriendSessions[0]
     if (freshest) {
       const detail = `for next interaction via ${freshest.channel}`
-      return freshest.channel === "telegram"
-        ? deliverTelegramOrQueue(freshest, detail)
-        : queueToSession(freshest, detail)
+      return deliverOrQueue(freshest, detail)
     }
 
     // Priority 3: Deferred — no active session found
