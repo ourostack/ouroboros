@@ -164,7 +164,85 @@ function generateRsaKeypair(): { publicKeyB64: string; privateKeyDer: Buffer } {
 
 const KDF_PBKDF2 = 0
 const KDF_ITERATIONS = 600000
-const REGISTER_ACCOUNT_PATH = "/identity/accounts/register"
+const SEND_VERIFICATION_EMAIL_PATH = "/identity/accounts/register/send-verification-email"
+const REGISTER_FINISH_PATH = "/identity/accounts/register/finish"
+const LEGACY_REGISTER_ACCOUNT_PATH = "/identity/accounts/register"
+
+const JSON_HEADERS = { "Content-Type": "application/json", Accept: "application/json" }
+
+type RegistrationStep =
+  | { ok: true; url: string }
+  | { ok: false; error: string; url: string }
+
+async function postJson(url: string, body: unknown): Promise<Response> {
+  return fetch(url, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) })
+}
+
+async function readErrorDetail(res: Response): Promise<string> {
+  try {
+    const body = await res.json()
+    return body.message ?? `HTTP ${res.status} ${res.statusText}`
+  } catch {
+    return `HTTP ${res.status} ${res.statusText}`
+  }
+}
+
+function describeRegistrationFailure(detail: string, url: string, email: string): string {
+  if (/registration not allowed/i.test(detail)) {
+    return `the vault server doesn't allow signups for ${email}; ask its admin to invite it (Vaultwarden admin → Invite User), then re-run. (${detail} from ${url})`
+  }
+  return `${detail} from ${url}. Check --server; Ouro expects a Bitwarden/Vaultwarden identity API.`
+}
+
+/** Vaultwarden returns the token as a JSON string when asked for JSON, or as plain text otherwise. */
+async function readVerificationToken(res: Response): Promise<string> {
+  const text = (await res.text()).trim()
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return typeof parsed === "string" ? parsed : ""
+  } catch {
+    return text
+  }
+}
+
+/**
+ * Current Bitwarden/Vaultwarden registration: request a verification token, then finish
+ * registration with it. Servers that predate this flow (404 on send-verification-email)
+ * get the legacy single-step `/identity/accounts/register`.
+ */
+async function registerAccount(
+  serverUrl: string,
+  agentName: string,
+  email: string,
+  payload: Record<string, unknown>,
+): Promise<RegistrationStep> {
+  const verifyUrl = `${serverUrl}${SEND_VERIFICATION_EMAIL_PATH}`
+  const verifyRes = await postJson(verifyUrl, { email, name: agentName, receiveMarketingEmails: false })
+
+  if (verifyRes.status === 404) {
+    const legacyUrl = `${serverUrl}${LEGACY_REGISTER_ACCOUNT_PATH}`
+    const legacyRes = await postJson(legacyUrl, payload)
+    if (!legacyRes.ok) return { ok: false, url: legacyUrl, error: describeRegistrationFailure(await readErrorDetail(legacyRes), legacyUrl, email) }
+    return { ok: true, url: legacyUrl }
+  }
+  if (!verifyRes.ok) {
+    return { ok: false, url: verifyUrl, error: describeRegistrationFailure(await readErrorDetail(verifyRes), verifyUrl, email) }
+  }
+
+  const token = verifyRes.status === 204 ? "" : await readVerificationToken(verifyRes)
+  if (!token) {
+    return {
+      ok: false,
+      url: verifyUrl,
+      error: `the vault server at ${serverUrl} requires email verification for new accounts and sent a link to ${email}; Ouro can't finish that unattended. Ask its admin to create or invite the account with verification off, or finish signup from that email, then re-run.`,
+    }
+  }
+
+  const finishUrl = `${serverUrl}${REGISTER_FINISH_PATH}`
+  const finishRes = await postJson(finishUrl, { ...payload, emailVerificationToken: token })
+  if (!finishRes.ok) return { ok: false, url: finishUrl, error: describeRegistrationFailure(await readErrorDetail(finishRes), finishUrl, email) }
+  return { ok: true, url: finishUrl }
+}
 
 /**
  * Create a Bitwarden account on the configured Vaultwarden server.
@@ -197,35 +275,24 @@ export async function createVaultAccount(
     const { publicKeyB64, privateKeyDer } = generateRsaKeypair()
     const encryptedPrivateKey = encryptWithStretchedKey(privateKeyDer, symKey)
 
-    // Step 4: POST registration
-    const registrationUrl = `${serverUrl}${REGISTER_ACCOUNT_PATH}`
-    const res = await fetch(registrationUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: agentName,
-        email,
-        masterPasswordHash,
-        masterPasswordHint: null,
-        key: protectedSymKey,
-        kdf: KDF_PBKDF2,
-        kdfIterations: KDF_ITERATIONS,
-        keys: {
-          publicKey: publicKeyB64,
-          encryptedPrivateKey,
-        },
-      }),
+    // Step 4: Register
+    const step = await registerAccount(serverUrl, agentName, email, {
+      name: agentName,
+      email,
+      masterPasswordHash,
+      masterPasswordHint: null,
+      key: protectedSymKey,
+      kdf: KDF_PBKDF2,
+      kdfIterations: KDF_ITERATIONS,
+      keys: {
+        publicKey: publicKeyB64,
+        encryptedPrivateKey,
+      },
     })
 
-    if (!res.ok) {
-      let errorDetail: string
-      try {
-        const body = await res.json()
-        errorDetail = body.message ?? `HTTP ${res.status} ${res.statusText}`
-      } catch {
-        errorDetail = `HTTP ${res.status} ${res.statusText}`
-      }
-      const endpointAwareError = `${errorDetail} from ${registrationUrl}. Check --server; Ouro expects a Bitwarden/Vaultwarden identity API.`
+    if (!step.ok) {
+      const endpointAwareError = step.error
+      const registrationUrl = step.url
 
       emitNervesEvent({
         level: "error",
@@ -248,7 +315,7 @@ export async function createVaultAccount(
     return { success: true, email, serverUrl }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    const registrationUrl = `${serverUrl}${REGISTER_ACCOUNT_PATH}`
+    const registrationUrl = `${serverUrl}${SEND_VERIFICATION_EMAIL_PATH}`
     const endpointAwareError = `cannot reach vault registration endpoint ${registrationUrl}: ${reason}. Check network, DNS/TLS, and --server.`
     emitNervesEvent({
       level: "error",

@@ -24,7 +24,11 @@ export interface VaultUnlockDeps {
   spawnSync?: typeof defaultSpawnSync
   homeDir?: string
   store?: VaultUnlockStoreKind
+  env?: NodeJS.ProcessEnv
 }
+
+/** Machine-level unlock store choice used when no explicit `--store` is given. */
+export const VAULT_UNLOCK_STORE_ENV = "OURO_VAULT_UNLOCK_STORE"
 
 export interface VaultUnlockStoreSelection {
   kind: Exclude<VaultUnlockStoreKind, "auto">
@@ -131,6 +135,7 @@ function missingSecureStoreMessage(config: VaultUnlockConfig): string {
     "On macOS, Ouro uses Keychain automatically.",
     "On Windows, Ouro uses a CurrentUser DPAPI-encrypted local file automatically.",
     "On Linux/WSL, install and configure Secret Service/libsecret, or choose the explicit plaintext fallback on a trusted machine.",
+    `On a headless appliance, set ${VAULT_UNLOCK_STORE_ENV}=plaintext-file for the ouro service and every ouro command (hatch, vault, up) so they all use the plaintext fallback.`,
     "",
     config.agentName
       ? `Run \`ouro vault unlock --agent ${config.agentName} --store plaintext-file\` to store the vault unlock secret in a chmod 0600 local file.`
@@ -213,12 +218,21 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
   ].join("\n")
 }
 
-function validateStoreKind(store: VaultUnlockStoreKind | undefined): VaultUnlockStoreKind {
-  const requested = store ?? "auto"
+function validateStoreKind(requested: VaultUnlockStoreKind): VaultUnlockStoreKind {
   if (!SUPPORTED_STORES.includes(requested)) {
     throw new Error(`unknown vault unlock store '${requested}'. Use auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file.`)
   }
   return requested
+}
+
+function requestedStoreKind(deps: VaultUnlockDeps): VaultUnlockStoreKind {
+  if (deps.store !== undefined) return validateStoreKind(deps.store)
+  const fromEnv = (deps.env ?? process.env)[VAULT_UNLOCK_STORE_ENV]?.trim()
+  if (!fromEnv) return "auto"
+  if (!SUPPORTED_STORES.includes(fromEnv as VaultUnlockStoreKind)) {
+    throw new Error(`${VAULT_UNLOCK_STORE_ENV}='${fromEnv}' is not a vault unlock store. Use auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file.`)
+  }
+  return fromEnv as VaultUnlockStoreKind
 }
 
 export function resolveVaultUnlockStore(
@@ -226,7 +240,7 @@ export function resolveVaultUnlockStore(
   deps: VaultUnlockDeps = {},
 ): VaultUnlockStoreSelection {
   const canonicalConfig = canonicalizeVaultUnlockConfig(config)
-  const requested = validateStoreKind(deps.store)
+  const requested = requestedStoreKind(deps)
   const currentPlatform = platform(deps)
 
   if (requested === "macos-keychain") {
@@ -592,7 +606,7 @@ function readFromAutoPlaintextFallback(
   config: VaultUnlockConfig,
   deps: VaultUnlockDeps,
 ): (VaultUnlockReadResult & { source: VaultUnlockConfig }) | null {
-  if (deps.store !== undefined && deps.store !== "auto") return null
+  if (requestedStoreKind(deps) !== "auto") return null
   const store = resolveVaultUnlockStore(config, { ...deps, store: "plaintext-file" })
   const loaded = readFromStore(config, store, deps)
   if (!loaded) return null

@@ -85,6 +85,7 @@ vi.mock("../../../repertoire/vault-unlock", () => ({
   isCredentialVaultNotConfiguredError: (message: string) =>
     message.includes("credential vault is not configured in "),
   storeVaultUnlockSecret: (...args: unknown[]) => vaultMocks.storeVaultUnlockSecret(...args),
+  resolveVaultUnlockStore: () => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" }),
   vaultCreateRecoverFix: (agentName: string) =>
     `Run 'ouro vault create --agent ${agentName}' to set up this agent's vault.`,
   getVaultUnlockStatus: vi.fn(),
