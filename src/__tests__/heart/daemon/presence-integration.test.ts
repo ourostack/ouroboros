@@ -323,8 +323,9 @@ describe("ouro presence status --json", () => {
       enabled: true,
       machine: { machineId: MINI, name: "aris-mac-mini", role: "always-on", location: "home" },
       peers: [{ machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop", seenAt: "2026-11-10T03:59:00.000Z", version: V, location: "office" }],
-      owns: ["teams"],
-      owners: { teams: "aris-mac-mini", telegram: "Aris-MacBook-Pro", mail: "Aris-MacBook-Pro", bluebubbles: "Aris-MacBook-Pro", voice: "Aris-MacBook-Pro", a2a: "Aris-MacBook-Pro", habits: "Aris-MacBook-Pro" },
+      owns: ["teams", "telegram", "mail", "bluebubbles", "voice", "a2a"],
+      owners: { teams: "aris-mac-mini", telegram: "aris-mac-mini", mail: "aris-mac-mini", bluebubbles: "aris-mac-mini", voice: "aris-mac-mini", a2a: "aris-mac-mini", habits: "Aris-MacBook-Pro" },
+      disabled: [],
       legacy: [],
     })
     const legacy = readPresence({ presence: { ...ROSTER, owners: { teams: "machine_gone" } } }, true, [])
@@ -335,7 +336,11 @@ describe("ouro presence status --json", () => {
     expect(json.owners.teams).toBe("machine_gone")
     expect(presenceStatusJson({ presence: legacy, machineId: LAPTOP, settings: { enabled: true } }).machine!.location).toBeNull()
     expect(presenceStatusJson({ presence: legacy, machineId: "machine_x", settings: { enabled: true } }).machine).toEqual({ machineId: "machine_x", name: null, role: null, location: null })
-    expect(presenceStatusJson({ presence: null, machineId: MINI, settings: { enabled: false } })).toEqual({ enabled: false, machine: null, peers: [], owns: [], owners: {}, legacy: [] })
+    expect(presenceStatusJson({ presence: null, machineId: MINI, settings: { enabled: false } })).toEqual({ enabled: false, machine: null, peers: [], owns: [], owners: {}, disabled: [], legacy: [] })
+    const switchedOff = readPresence({ presence: ROSTER, senses: { teams: { enabled: true }, mail: { enabled: false } } }, true, [{ machineId: LAPTOP, version: V, seenAt: "x" }, { machineId: MINI, version: V, seenAt: "x" }])
+    expect(presenceStatusJson({ presence: switchedOff, machineId: MINI, settings: { enabled: true } })).toMatchObject({
+      owns: ["teams"], owners: { teams: "aris-mac-mini", habits: "Aris-MacBook-Pro" }, disabled: ["telegram", "mail", "bluebubbles", "voice", "a2a"],
+    })
   })
 })
 

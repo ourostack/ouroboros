@@ -12,6 +12,9 @@ import { describeOs } from "../heart/daemon/presence-daemon"
 import {
   SHARED_SENSES,
   effectiveOwner,
+  enabledSharedSenses,
+  isRosterMember,
+  senseEnabled,
   readLocalPresenceSettings,
   readPresenceForAgent,
   rosterMachine,
@@ -44,6 +47,11 @@ function sessionCounts(record: PeerRecord | undefined): string {
   return parts.length > 0 ? `; copilot app sessions: ${parts.join(", ")}` : ""
 }
 
+/** Senses every presence runs for its own machine. */
+const MACHINE_SENSES = ["cli", "shepherd", "app-sessions"]
+/** What a person calls a sense whose name is the integration's. */
+const SENSE_NAMES: Record<string, string> = { bluebubbles: "bluebubbles (iMessage)" }
+
 export function renderWhereAmI(presence: Presence | null, self: MachineInfo, nowMs: number = Date.now()): string {
   if (!presence) return ""
   const machineName = (id: string): string => rosterMachine(presence, id)?.name ?? id
@@ -63,13 +71,28 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
       lines.push(`- ${peer.name} (${facts}): ${seen}`)
     }
   }
-  const own = SHARED_SENSES.filter((sense) => effectiveOwner(presence, sense) === self.machineId)
-  const elsewhere = SHARED_SENSES.filter((sense) => effectiveOwner(presence, sense) !== self.machineId)
-  lines.push(`shared senses i own here: ${own.length > 0 ? own.join(", ") : "none"}.`)
+  // Only senses agent.json turns on: a disabled sense runs on no machine, whatever the roster's owners say.
+  const enabled = enabledSharedSenses(presence)
+  const own = enabled.filter((sense) => effectiveOwner(presence, sense) === self.machineId)
+  const elsewhere = enabled.filter((sense) => effectiveOwner(presence, sense) !== self.machineId)
+  const here = own.map((sense) => {
+    // The same wait mayRunSense applies: a peer whose record still runs it has not let go yet.
+    const holder = presence.peers.find((peer) => peer.machineId !== self.machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense))
+    return holder ? `${sense} (not yet: waiting for ${machineName(holder.machineId)} to let go)` : sense
+  })
+  lines.push(`shared senses that run here: ${here.length > 0 ? here.join(", ") : "none"}.`)
   if (elsewhere.length > 0) {
-    lines.push(`owned by a peer: ${elsewhere.map((sense) => `${sense} (${machineName(effectiveOwner(presence, sense))})`).join(", ")}.`)
+    lines.push(`shared senses that run on a peer: ${elsewhere.map((sense) => {
+      const owner = effectiveOwner(presence, sense)
+      const record = presence.peers.find((peer) => peer.machineId === owner)
+      const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it` : "its last record does not show it running"
+      return `${sense} (${machineName(owner)}; ${shown})`
+    }).join(", ")}.`)
   }
-  lines.push("machine-scoped senses (cli, shepherd, app-sessions) run on every presence and see only their own machine.")
+  const off = SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense)).map((sense) => SENSE_NAMES[sense] ?? sense)
+  if (off.length > 0) lines.push(`turned off in agent.json, so running on no machine: ${off.join(", ")}.`)
+  const local = MACHINE_SENSES.filter((sense) => senseEnabled(presence, sense))
+  lines.push(`machine-scoped senses that run on every presence and see only their own machine: ${local.length > 0 ? local.join(", ") : "none"}.`)
   if (presence.legacy.length > 0) {
     lines.push(`until ${presence.legacy.map((id) => machineName(id)).join(", ")} publish${presence.legacy.length === 1 ? "es" : ""} a current presence record, every shared sense stays with home.`)
   }

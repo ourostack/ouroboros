@@ -12,6 +12,10 @@ import {
   isRosterMember,
   isSharedSense,
   ownedSharedSenses,
+  enabledSharedSenses,
+  enabledSensesOf,
+  senseEnabled,
+  alwaysOnMachine,
   ownsSense,
   parsePeerRecord,
   parsePresenceBlock,
@@ -196,7 +200,25 @@ describe("ownership", () => {
     expect(ownsSense(current, MINI, "teams")).toBe(true)
     expect(ownsSense(current, LAPTOP, "teams")).toBe(false)
     expect(ownsSense(current, LAPTOP, "habits")).toBe(true)
-    expect(ownedSharedSenses(current, MINI)).toEqual(["teams"])
+    // Unclaimed shared senses live on the always-on machine, never on a laptop that travels and sleeps.
+    expect(ownedSharedSenses(current, MINI)).toEqual(["teams", "telegram", "mail", "bluebubbles", "voice", "a2a"])
+    expect(ownedSharedSenses(current, LAPTOP)).toEqual(["habits"])
+  })
+
+  it("leaves senses agent.json turns off out of what any machine owns", () => {
+    const senses = { cli: { enabled: true }, teams: { enabled: true }, mail: { enabled: false }, voice: { enabled: false }, a2a: "junk" }
+    const switchedOff = readPresence(agentJson({ senses }), true, [record(MINI), record(LAPTOP)])!
+    expect(switchedOff.enabledSenses).toEqual(["cli", "teams", "habits"])
+    expect(enabledSharedSenses(switchedOff)).toEqual(["teams", "habits"])
+    expect(senseEnabled(switchedOff, "mail")).toBe(false)
+    expect(ownedSharedSenses(switchedOff, MINI)).toEqual(["teams"])
+    expect(ownedSharedSenses(switchedOff, LAPTOP)).toEqual(["habits"])
+    const noHabits = readPresence(agentJson({ senses: { ...senses, habits: { enabled: false } } }), true, [record(MINI), record(LAPTOP)])!
+    expect(noHabits.enabledSenses).toEqual(["cli", "teams"])
+    expect(enabledSensesOf({ habits: { enabled: true } })).toEqual(["habits"])
+    expect(enabledSensesOf(undefined)).toBeUndefined()
+    expect(current.enabledSenses).toBeUndefined()
+    expect(senseEnabled(current, "mail")).toBe(true)
   })
 
   it("runs machine-scoped senses on every roster machine and nothing off the roster", () => {
@@ -212,11 +234,16 @@ describe("ownership", () => {
     expect(ownsSense(mixed, LAPTOP, "teams")).toBe(true)
   })
 
-  it("falls back to the declared owner without a home, then home, then the first machine", () => {
+  it("falls back to the declared owner, then the always-on machine, then home, then the first machine", () => {
     const noHome = readPresence(agentJson({ home: undefined }), true, [record(MINI)])!
     expect(effectiveOwner(noHome, "teams")).toBe(MINI)
-    expect(effectiveOwner(current, "mail")).toBe(LAPTOP)
-    const neither = readPresence(agentJson({ home: undefined }), true, [record(MINI), record(LAPTOP)])!
+    expect(effectiveOwner(current, "mail")).toBe(MINI)
+    expect(alwaysOnMachine(current)).toBe(MINI)
+    const laptops = block({ machines: [{ machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop" }, { machineId: MINI, name: "aris-mac-mini", role: "peer" }] })
+    expect(alwaysOnMachine({ block: parsePresenceBlock(laptops)! })).toBeUndefined()
+    const withHome = readPresence(agentJson({ home: { machineId: MINI, machineName: "aris-mac-mini" }, presence: laptops }), true, [record(MINI), record(LAPTOP)])!
+    expect(effectiveOwner(withHome, "mail")).toBe(MINI)
+    const neither = readPresence(agentJson({ home: undefined, presence: laptops }), true, [record(MINI), record(LAPTOP)])!
     expect(effectiveOwner(neither, "mail")).toBe(LAPTOP)
   })
 

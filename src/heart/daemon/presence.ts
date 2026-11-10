@@ -88,6 +88,8 @@ export interface Presence {
   /** Machines that may still run a daemon that knows only `home`: roster machines without a current record, and a home off the roster. */
   legacy: string[]
   peers: PeerRecord[]
+  /** The senses agent.json turns on (habits unless turned off); absent when agent.json has no senses block, meaning all. */
+  enabledSenses?: string[]
 }
 
 export interface LocalPresenceSettings {
@@ -292,7 +294,31 @@ export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords
   const legacy = block.machines.filter((machine) => !current(machine.machineId)).map((machine) => machine.machineId)
   // A home off the roster runs every shared sense under the home lease.
   if (home && !block.machines.some((machine) => machine.machineId === home.machineId)) legacy.push(home.machineId)
-  return { block, home, legacy, peers: peerRecords }
+  const enabledSenses = enabledSensesOf(agentJson.senses)
+  return { block, home, legacy, peers: peerRecords, ...(enabledSenses ? { enabledSenses } : {}) }
+}
+
+/** The senses a `senses` block turns on. Habits run on schedulers, not a senses entry, so they count unless turned off. */
+export function enabledSensesOf(senses: unknown): string[] | undefined {
+  if (!isRecord(senses)) return undefined
+  const enabled = Object.entries(senses).filter(([, entry]) => isRecord(entry) && entry.enabled === true).map(([sense]) => sense)
+  if (!(isRecord(senses.habits) && senses.habits.enabled === false) && !enabled.includes("habits")) enabled.push("habits")
+  return enabled
+}
+
+/** Whether agent.json turns the sense on. A disabled sense runs nowhere, so no machine owns it in any sense a person cares about. */
+export function senseEnabled(presence: Presence, sense: string): boolean {
+  return !presence.enabledSenses || presence.enabledSenses.includes(sense)
+}
+
+/** The shared senses agent.json turns on. */
+export function enabledSharedSenses(presence: Presence): SharedSense[] {
+  return SHARED_SENSES.filter((sense) => senseEnabled(presence, sense))
+}
+
+/** The roster's always-on machine, which keeps any shared sense nobody claimed: a laptop travels and sleeps. */
+export function alwaysOnMachine(presence: Presence | { block: PresenceBlock }): string | undefined {
+  return presence.block.machines.find((machine) => machine.role === "always-on")?.machineId
 }
 
 /**
@@ -336,7 +362,7 @@ export function rosterMachine(presence: Presence, machineId: string): PresenceMa
  */
 export function effectiveOwner(presence: Presence, sense: SharedSense): string {
   if (presence.legacy.length > 0 && presence.home) return presence.home.machineId
-  return presence.block.owners[sense] ?? presence.home?.machineId ?? presence.block.machines[0].machineId
+  return presence.block.owners[sense] ?? alwaysOnMachine(presence) ?? presence.home?.machineId ?? presence.block.machines[0].machineId
 }
 
 /** Whether this machine runs this sense under the roster. Machine-scoped senses run on every roster machine. */
@@ -347,7 +373,7 @@ export function ownsSense(presence: Presence, machineId: string, sense: string):
 }
 
 export function ownedSharedSenses(presence: Presence, machineId: string): SharedSense[] {
-  return SHARED_SENSES.filter((sense) => ownsSense(presence, machineId, sense))
+  return enabledSharedSenses(presence).filter((sense) => ownsSense(presence, machineId, sense))
 }
 
 /** A machine name a person would type: case-insensitive, `.local` ignored; ids match too. */

@@ -40,10 +40,43 @@ describe("renderWhereAmI", () => {
       "i am on aris-mac-mini (always-on), macOS 26, at home. i am one named agent present on 2 machines; each presence runs on its own machine and we share this bundle through git.",
       "my peers:",
       "- Aris-MacBook-Pro (laptop, macOS 26, office): last seen 3 min ago on 0.1.0-alpha.1003; copilot app sessions: 4 working, 2 idle",
-      "shared senses i own here: teams, habits.",
-      "owned by a peer: telegram (Aris-MacBook-Pro), mail (Aris-MacBook-Pro), bluebubbles (Aris-MacBook-Pro), voice (Aris-MacBook-Pro), a2a (Aris-MacBook-Pro).",
-      "machine-scoped senses (cli, shepherd, app-sessions) run on every presence and see only their own machine.",
+      "shared senses that run here: teams, habits.",
+      "shared senses that run on a peer: telegram (Aris-MacBook-Pro; its last record does not show it running), mail (Aris-MacBook-Pro; its last record does not show it running), bluebubbles (Aris-MacBook-Pro; its last record does not show it running), voice (Aris-MacBook-Pro; its last record does not show it running), a2a (Aris-MacBook-Pro; its last record does not show it running).",
+      "machine-scoped senses that run on every presence and see only their own machine: cli, shepherd, app-sessions.",
     ].join("\n"))
+  })
+
+  it("names only the senses agent.json turns on, and says the rest run nowhere", () => {
+    const senses = { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, telegram: { enabled: false }, shepherd: { enabled: false }, "app-sessions": { enabled: true } }
+    const records: PeerRecord[] = [
+      { machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:57:00.000Z", owns: [] },
+      { machineId: MINI, version: V, seenAt: "2026-11-10T03:58:00.000Z", owns: ["teams", "habits"] },
+    ]
+    const lines = (machine: MachineInfo) => renderWhereAmI(readPresence({ ...agentJson, senses }, true, records), machine, NOW).split("\n").slice(-4)
+    expect(lines(mini)).toEqual([
+      "- Aris-MacBook-Pro (laptop): last seen 3 min ago on 0.1.0-alpha.1003",
+      "shared senses that run here: teams, habits.",
+      "turned off in agent.json, so running on no machine: telegram, mail, bluebubbles (iMessage), voice, a2a.",
+      "machine-scoped senses that run on every presence and see only their own machine: cli, app-sessions.",
+    ])
+    const laptop: MachineInfo = { machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop", os: "macOS 26", location: "office" }
+    expect(lines(laptop)).toEqual([
+      "shared senses that run here: none.",
+      "shared senses that run on a peer: teams (aris-mac-mini; its record from 2 min ago says it runs it), habits (aris-mac-mini; its record from 2 min ago says it runs it).",
+      "turned off in agent.json, so running on no machine: telegram, mail, bluebubbles (iMessage), voice, a2a.",
+      "machine-scoped senses that run on every presence and see only their own machine: cli, app-sessions.",
+    ])
+    const allOff = { cli: { enabled: false }, "app-sessions": { enabled: false }, teams: { enabled: false }, habits: { enabled: false } }
+    expect(renderWhereAmI(readPresence({ ...agentJson, senses: allOff }, true, records), mini, NOW)).toContain("machine-scoped senses that run on every presence and see only their own machine: none.")
+  })
+
+  it("says when it is still waiting for a peer to let go of a sense it now owns", () => {
+    const records: PeerRecord[] = [
+      { machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:57:00.000Z", owns: ["teams"] },
+      { machineId: "machine_stranger", version: V, seenAt: "2026-11-10T03:57:00.000Z", owns: ["habits"] },
+      { machineId: MINI, version: V, seenAt: "2026-11-10T03:58:00.000Z" },
+    ]
+    expect(renderWhereAmI(readPresence(agentJson, true, records), mini, NOW)).toContain("shared senses that run here: teams (not yet: waiting for Aris-MacBook-Pro to let go), habits.")
   })
 
   it("names a legacy home that is off the roster by its machine id", () => {
@@ -58,7 +91,7 @@ describe("renderWhereAmI", () => {
   it("says when a peer has not been seen and shared senses stay with home meanwhile", () => {
     const text = renderWhereAmI(readPresence(agentJson, true, [{ machineId: MINI, version: V, seenAt: "bad" }]), mini, NOW)
     expect(text).toContain("- Aris-MacBook-Pro (laptop): not seen yet (no presence record)")
-    expect(text).toContain("shared senses i own here: none.")
+    expect(text).toContain("shared senses that run here: none.")
     expect(text).toContain("until Aris-MacBook-Pro publishes a current presence record, every shared sense stays with home.")
   })
 
@@ -80,7 +113,7 @@ describe("renderWhereAmI", () => {
     const text = renderWhereAmI(readPresence(alone, true, [{ machineId: MINI, version: V, seenAt: "2026-11-10T04:00:00.000Z" }]), mini, NOW)
     expect(text).toContain("present on 1 machine;")
     expect(text).toContain("my peers: none; this is my only presence.")
-    expect(text).not.toContain("owned by a peer")
+    expect(text).not.toContain("run on a peer")
   })
 })
 

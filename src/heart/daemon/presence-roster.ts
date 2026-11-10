@@ -9,11 +9,12 @@
 
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { parseAgentHome } from "./agent-discovery"
 import { updateSyncedAgentJson, type MoveAgentHomeResult, type MoveNetwork } from "./agent-home"
 import {
   SHARED_SENSES,
   effectiveOwner,
+  enabledSharedSenses,
+  senseEnabled,
   findRosterMachine,
   isSharedSense,
   parsePresenceBlock,
@@ -68,12 +69,9 @@ export async function joinPresenceRoster(options: JoinRosterOptions): Promise<Mo
       const machines = current
         ? block.machines.map((machine) => (machine.machineId === machineId ? { machineId, name: machineName, role } : machine))
         : [...block.machines, { machineId, name: machineName, role }]
-      const owners = { ...block.owners }
-      if (!existing) {
-        const ownerId = parseAgentHome(parsed.home)?.machineId ?? machineId
-        for (const sense of SHARED_SENSES) owners[sense] = ownerId
-      }
-      const next: PresenceBlock = { ...block, machines, owners }
+      // No sense is stamped on whoever joins first: an unclaimed shared sense stays with home until an always-on
+      // machine joins, then lives there. `ouro presence handoff` names an owner explicitly.
+      const next: PresenceBlock = { ...block, machines, owners: { ...block.owners } }
       return {
         kind: "write",
         next: { ...parsed, presence: next },
@@ -156,14 +154,16 @@ export function presenceStatusJson(options: { presence: Presence | null; machine
   peers: Array<{ machineId: string; name: string; role: string; seenAt: string | null; version: string | null; location: string | null }>
   owns: string[]
   owners: Record<string, string | null>
+  /** Shared senses agent.json turns off: they run on no machine. */
+  disabled: string[]
   legacy: string[]
 } {
   const { presence, machineId, settings } = options
   emitNervesEvent({ component: "daemon", event: "daemon.presence_status_json", message: "rendered presence status as json", meta: { active: presence !== null } })
-  if (!presence) return { enabled: settings.enabled, machine: null, peers: [], owns: [], owners: {}, legacy: [] }
+  if (!presence) return { enabled: settings.enabled, machine: null, peers: [], owns: [], owners: {}, disabled: [], legacy: [] }
   const me = presence.block.machines.find((machine) => machine.machineId === machineId)
   const owners: Record<string, string | null> = {}
-  for (const sense of SHARED_SENSES) {
+  for (const sense of enabledSharedSenses(presence)) {
     const owner = effectiveOwner(presence, sense)
     owners[sense] = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner
   }
@@ -176,8 +176,9 @@ export function presenceStatusJson(options: { presence: Presence | null; machine
       const record = presence.peers.find((peer) => peer.machineId === machine.machineId)
       return { machineId: machine.machineId, name: machine.name, role: machine.role, seenAt: record?.seenAt ?? null, version: record?.version ?? null, location: record?.location ?? null }
     }),
-    owns: SHARED_SENSES.filter((sense) => effectiveOwner(presence, sense) === machineId),
+    owns: enabledSharedSenses(presence).filter((sense) => effectiveOwner(presence, sense) === machineId),
     owners,
+    disabled: SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense)),
     legacy: presence.legacy.map((id) => presence.block.machines.find((machine) => machine.machineId === id)?.name ?? id),
   }
 }
@@ -214,12 +215,14 @@ export function renderPresenceStatus(options: {
     lines.push(`- ${machine.name}${me}: ${machine.role}; ${seen}${legacy}`)
   }
   lines.push("owners:")
-  for (const sense of SHARED_SENSES) {
+  for (const sense of enabledSharedSenses(presence)) {
     const owner = effectiveOwner(presence, sense)
     const name = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner
     const declared = presence.block.owners[sense]
     const held = declared && declared !== owner ? ` (roster names ${presence.block.machines.find((machine) => machine.machineId === declared)?.name ?? declared}; held by home until every machine runs presence)` : ""
     lines.push(`- ${sense}: ${name}${held}`)
   }
+  const off = SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense))
+  if (off.length > 0) lines.push(`turned off in agent.json, so running on no machine: ${off.join(", ")}`)
   return lines.join("\n")
 }
