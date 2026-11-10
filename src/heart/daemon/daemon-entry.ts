@@ -432,7 +432,7 @@ const healthMonitor = new HealthMonitor({
     }
     // Presence: follow the roster's owners for shared senses, habits and awaits.
     await presenceTicker.tick()
-    await senseManager.reconcilePresence()
+    await senseManager.reconcilePresence?.()
     return [...sentinels, homes.health]
   },
   bundleSyncChecker: () => [checkBundleSyncHealth(
