@@ -1,5 +1,6 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
+import { IMAGE_PART_ESTIMATED_TOKENS, isImageContentPart } from "./token-estimate"
 
 export const PROMPT_BUDGET_POLICY_VERSION = "prompt-budget/v1" as const
 export const PROMPT_BUDGET_FALLBACK_CONTEXT_WINDOW_TOKENS = 24_000
@@ -80,6 +81,10 @@ interface PromptBudgetItem {
   required?: "current-user" | "verified-predecessor"
 }
 
+const PROMPT_BUDGET_CHARS_PER_TOKEN = 4
+const IMAGE_PART_ESTIMATED_CHARACTERS = IMAGE_PART_ESTIMATED_TOKENS * PROMPT_BUDGET_CHARS_PER_TOKEN
+export const PROMPT_BUDGET_OMITTED_IMAGE_NOTE = "[image omitted to fit the prompt budget]"
+
 function contentCharacters(content: unknown): number {
   if (typeof content === "string") return content.length
   if (!content) return 0
@@ -87,6 +92,7 @@ function contentCharacters(content: unknown): number {
     return content.reduce((total, part) => {
       if (typeof part === "string") return total + part.length
       if (!part || typeof part !== "object") return total
+      if (isImageContentPart(part)) return total + IMAGE_PART_ESTIMATED_CHARACTERS
       const record = part as Record<string, unknown>
       if (typeof record.text === "string") return total + record.text.length
       if (typeof record.content === "string") return total + record.content.length
@@ -135,7 +141,7 @@ export function estimatePromptBudgetTokensForMessage(message: OpenAI.ChatComplet
   if (typeof record.tool_call_id === "string") characters += record.tool_call_id.length
   characters += contentCharacters(record.content)
   characters += toolCallCharacters(record.tool_calls)
-  return Math.ceil(characters / 4)
+  return Math.ceil(characters / PROMPT_BUDGET_CHARS_PER_TOKEN)
 }
 
 export function estimatePromptBudgetTokens(messages: OpenAI.ChatCompletionMessageParam[]): number {
@@ -397,6 +403,21 @@ function buildPromptBudgetItems(
   })
 }
 
+/** Swaps each whole image part for a short note; an image is never sliced. Null when the item has no images. */
+function withoutImageParts(item: PromptBudgetItem): PromptBudgetItem | null {
+  let replaced = false
+  const messages = item.messages.map((message) => {
+    if (!Array.isArray(message.content)) return message
+    const content = (message.content as unknown[]).map((part) => {
+      if (!part || typeof part !== "object" || !isImageContentPart(part)) return part
+      replaced = true
+      return { type: "text", text: PROMPT_BUDGET_OMITTED_IMAGE_NOTE }
+    })
+    return { ...cloneMessage(message), content } as OpenAI.ChatCompletionMessageParam
+  })
+  return replaced ? { ...item, messages } : null
+}
+
 function flattenItems(items: PromptBudgetItem[]): OpenAI.ChatCompletionMessageParam[] {
   return items.flatMap((item) => item.messages.map((message) => item.required ? message : cloneMessage(message)))
 }
@@ -549,6 +570,15 @@ export function applyPromptBudget(input: PromptBudgetInput): PromptBudgetResult 
       items = items.filter((_, index) => index !== itemIndex)
       itemIndex -= 1
     }
+  }
+
+  for (let itemIndex = 0; itemIndex < items.length && totalItemTokens(items) > budget.inputTokenLimit; itemIndex += 1) {
+    const item = items[itemIndex]
+    if (item.required) continue
+    const withoutImages = withoutImageParts(item)
+    if (!withoutImages) continue
+    truncations.push(truncationFor(item, "replaced images with a note to fit prompt budget", itemTokens(item), itemTokens(withoutImages)))
+    items = items.map((candidate, index) => index === itemIndex ? withoutImages : candidate)
   }
 
   const messages = flattenItems(items)

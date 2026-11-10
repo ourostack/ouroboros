@@ -399,4 +399,96 @@ describe("prompt budget arbiter", () => {
       contextWindowTokens: 100,
     })).toThrow("must be immediately before")
   })
+  describe("image parts", () => {
+    function dataUrl(base64Chars: number): string {
+      return `data:image/jpeg;base64,${"A".repeat(base64Chars)}`
+    }
+
+    function imagePart(url: string): Record<string, unknown> {
+      return { type: "image_url", image_url: { url } }
+    }
+
+    function dataUrlsIn(messages: ChatCompletionMessageParam[]): string[] {
+      return JSON.stringify(messages).match(/data:image\/jpeg;base64,[A-Za-z0-9+/=]*/g) ?? []
+    }
+
+    it("counts an image as a fixed cost whatever its base64 size, in every provider shape", async () => {
+      const { estimatePromptBudgetTokensForMessage } = await import("../../mind/prompt-budget")
+      const { IMAGE_PART_ESTIMATED_TOKENS } = await import("../../mind/token-estimate")
+      const withImage = (part: Record<string, unknown>) =>
+        estimatePromptBudgetTokensForMessage({ role: "user", content: [part] } as any)
+
+      const small = withImage(imagePart(dataUrl(100)))
+      const screenshot = withImage(imagePart(dataUrl(258_000)))
+      expect(screenshot).toBe(small)
+      expect(screenshot).toBe(Math.ceil(("user".length + IMAGE_PART_ESTIMATED_TOKENS * 4) / 4))
+      expect(withImage({ type: "input_image", image_url: dataUrl(258_000) })).toBe(small)
+      expect(withImage({ type: "image", source: { type: "base64", data: "A".repeat(258_000) } })).toBe(small)
+    })
+
+    it("keeps a turn with a 258K-character screenshot and little text within budget, image intact", async () => {
+      const { applyPromptBudget } = await import("../../mind/prompt-budget")
+      const screenshot = dataUrl(258_000)
+      const messages: ChatCompletionMessageParam[] = [
+        msg("system", "core"),
+        msg("user", "what is on the screen?"),
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "screenshot", arguments: "{}" } }],
+        } as ChatCompletionMessageParam,
+        { role: "tool", tool_call_id: "call_1", content: "[1 image(s) from this tool follow in the next message.]" } as ChatCompletionMessageParam,
+        { role: "user", content: [{ type: "text", text: "Images returned by tool calls." }, imagePart(screenshot)] } as ChatCompletionMessageParam,
+      ]
+
+      const result = applyPromptBudget({
+        messages,
+        provider: "github-copilot",
+        model: "claude-opus-5.5",
+        contextWindowTokens: 80_000,
+      })
+
+      expect(result.budget.inputTokenLimit).toBe(56_000)
+      expect(result.status).toBe("within_budget")
+      expect(result.stats.estimatedBeforeTokens).toBeLessThan(2_000)
+      expect(result.stats.droppedMessages).toBe(0)
+      expect(dataUrlsIn(result.messages)).toEqual([screenshot])
+    })
+
+    it("swaps whole optional images for a note when they cannot fit, never slicing a data URL", async () => {
+      const { applyPromptBudget, PROMPT_BUDGET_OMITTED_IMAGE_NOTE } = await import("../../mind/prompt-budget")
+      const pasted = dataUrl(50_000)
+      const fromTool = dataUrl(258_000)
+      const current = {
+        role: "user",
+        content: [{ type: "text", text: "look at this" }, imagePart(pasted)],
+      } as ChatCompletionMessageParam
+      const messages: ChatCompletionMessageParam[] = [
+        msg("system", "core"),
+        current,
+        {
+          role: "user",
+          content: [null, "raw", { type: "text", text: "Images returned by tool calls." }, imagePart(fromTool), imagePart(fromTool)],
+        } as unknown as ChatCompletionMessageParam,
+      ]
+
+      const result = applyPromptBudget({
+        messages,
+        requiredPromptEvidence: { currentUserMessage: current },
+        provider: "github-copilot",
+        model: "claude-opus-5.5",
+        contextWindowTokens: 3_000,
+      })
+
+      expect(result.status).toBe("trimmed")
+      expect(result.messages).toContain(current)
+      expect(dataUrlsIn(result.messages)).toEqual([pasted])
+      expect(JSON.stringify(result.messages).split(PROMPT_BUDGET_OMITTED_IMAGE_NOTE)).toHaveLength(3)
+      expect(JSON.stringify(result.messages)).toContain("Images returned by tool calls.")
+      expect(result.stats.truncations).toEqual([
+        expect.objectContaining({ reason: "replaced images with a note to fit prompt budget", beforeTokens: expect.any(Number) }),
+      ])
+      expect(result.stats.truncations[0].afterTokens).toBeLessThan(result.stats.truncations[0].beforeTokens)
+    })
+  })
 })
