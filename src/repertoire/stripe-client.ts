@@ -9,6 +9,7 @@
  */
 
 import type { Stripe as StripeInstance } from "stripe"
+import { importOptional } from "../heart/optional-packages"
 import { getCredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -65,7 +66,7 @@ export async function createStripeClient(): Promise<StripeClient> {
   const store = getCredentialStore()
   const apiKey = await store.getRawSecret("stripe.com", "restrictedKey")
   // Stripe's SDK is about 10 MB and 185 modules; only agents that issue cards load it.
-  const { default: StripeConstructor } = await import("stripe")
+  const { default: StripeConstructor } = await importOptional("stripe", "Virtual cards", () => import("stripe"))
   const StripeFactory = StripeConstructor as unknown as new (key: string) => StripeInstance
   const stripe = new StripeFactory(apiKey)
 

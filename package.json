@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1013",
+  "version": "0.1.0-alpha.1014",
   "engines": {
     "node": ">=22"
   },
@@ -59,15 +59,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@azure/identity": "^4.13.0",
-    "@azure/storage-blob": "^12.31.0",
     "@bitwarden/cli": "2026.9.1",
-    "@microsoft/teams.api": "2.0.11",
-    "@microsoft/teams.apps": "2.0.11",
-    "@microsoft/teams.cards": "2.0.11",
-    "@microsoft/teams.common": "2.0.11",
-    "@microsoft/teams.dev": "2.0.11",
-    "@microsoft/teams.graph": "2.0.11",
     "@ouro.bot/friends": "0.1.0-alpha.17",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
@@ -75,13 +67,23 @@
     "better-sqlite3": "13.0.2",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
-    "mailparser": "^3.9.15",
     "openai": "^6.27.0",
     "react": "^17.0.2",
     "semver": "^7.7.4",
-    "smtp-server": "^3.18.4",
-    "stripe": "^22.0.0",
     "ws": "^8.20.0"
+  },
+  "optionalDependencies": {
+    "@azure/identity": "^4.13.0",
+    "@azure/storage-blob": "^12.31.0",
+    "@microsoft/teams.api": "2.0.11",
+    "@microsoft/teams.apps": "2.0.11",
+    "@microsoft/teams.cards": "2.0.11",
+    "@microsoft/teams.common": "2.0.11",
+    "@microsoft/teams.dev": "2.0.11",
+    "@microsoft/teams.graph": "2.0.11",
+    "stripe": "^22.0.0",
+    "smtp-server": "^3.18.4",
+    "mailparser": "^3.9.15"
   },
   "repository": {
     "type": "git",

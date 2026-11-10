@@ -36,15 +36,17 @@ import("../heart/runtime-credentials")
     const { startTeamsApp } = await import("./teams")
     startTeamsApp()
   })
-  .catch((error) => {
+  .catch(async (error) => {
+    const { describeStartupError } = await import("../heart/optional-packages")
+    const detail = describeStartupError(error, "the Teams sense")
     emitNervesEvent({
       level: "error",
       component: "senses",
       event: "senses.entry_error",
       message: "Teams entrypoint failed",
-      meta: { entry: "teams", agentName, error: error instanceof Error ? error.message : String(error) },
+      meta: { entry: "teams", agentName, error: detail },
     })
     // eslint-disable-next-line no-console -- fatal startup guard for sense process
-    console.error(error instanceof Error ? error.message : String(error))
+    console.error(detail)
     process.exit(1)
   })

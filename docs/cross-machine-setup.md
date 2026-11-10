@@ -24,6 +24,15 @@ npx ouro.bot@latest
 
 On first run, this installs the `@ouro.bot/cli` package, creates the `ouro` command, and adds it to your PATH. Follow the shell hint it prints (`source ~/.zshrc`, `source ~/.bash_profile`, etc.) or open a new terminal.
 
+**On a small host** (a router or single-board computer with about 1 GB of memory and little disk), leave out the optional product packages first:
+
+```bash
+npm config set omit optional
+npx ouro.bot@latest
+```
+
+The optional packages are the Teams, Azure, Stripe and mail SDKs: about 97 MB and 138 packages of the roughly 220 MB install. The core harness, its providers, the vault and the other senses work without them, and so do later self-updates, which read the same npm setting. A feature that needs one says so (for example `the Teams sense needs @microsoft/teams.apps, an optional package this install left out`); run `npm config delete omit` and reinstall to bring them back.
+
 ## Step 2: Continue An Existing Agent Bundle
 
 On first run with no existing agents in a human terminal, bare `ouro` opens the home deck and offers the first two moves: hatch a new agent or clone an existing bundle. Pick **clone** and enter the git remote URL for the bundle:
