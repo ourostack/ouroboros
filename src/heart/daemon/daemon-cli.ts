@@ -34,7 +34,7 @@ export {
   summarizeDaemonStartupFailure,
 } from "./cli-exec"
 
-export { pingGithubCopilotModel } from "../provider-ping"
+export { pingGithubCopilotModel } from "./cli-exec"
 
 // ── Defaults ──
 export {

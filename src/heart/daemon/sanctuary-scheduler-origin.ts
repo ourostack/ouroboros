@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 
 import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
+import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import { readSanctuaryAcceptanceMarker, type SanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 
 const CRONTAB_PATH = "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"

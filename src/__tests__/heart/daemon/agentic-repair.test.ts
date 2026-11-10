@@ -451,10 +451,10 @@ describe("runAgenticRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
-  it("creates diagnosis runtimes from explicit discovered config and model hints", () => {
+  it("creates diagnosis runtimes from explicit discovered config and model hints", async () => {
     mockCreateProviderRuntimeForConfig.mockClear()
 
-    createAgenticDiagnosisProviderRuntime({
+    await createAgenticDiagnosisProviderRuntime({
       provider: "minimax",
       credentials: { apiKey: "mm-key" },
       providerConfig: { model: "MiniMax-M2.5" },
@@ -468,10 +468,10 @@ describe("runAgenticRepair", () => {
     })
   })
 
-  it("lets the shared provider runtime factory choose the default model when discovery has no model hint", () => {
+  it("lets the shared provider runtime factory choose the default model when discovery has no model hint", async () => {
     mockCreateProviderRuntimeForConfig.mockClear()
 
-    createAgenticDiagnosisProviderRuntime({
+    await createAgenticDiagnosisProviderRuntime({
       provider: "minimax",
       credentials: { apiKey: "mm-key" },
       providerConfig: {},

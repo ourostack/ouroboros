@@ -1,6 +1,9 @@
 import * as fs from "fs"
 import * as path from "path"
-import * as semver from "semver"
+// semver's index loads the whole package; these load one function each.
+import gte from "semver/functions/gte"
+import valid from "semver/functions/valid"
+const semver = { gte, valid }
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BundleMeta } from "../../mind/bundle-manifest"
 

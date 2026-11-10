@@ -1,4 +1,6 @@
-import * as semver from "semver"
+// semver's index loads the whole package; these load one function each.
+import gt from "semver/functions/gt"
+const semver = { gt }
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface UpdateCheckerDeps {

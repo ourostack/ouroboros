@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import * as semver from "semver"
+// semver's index loads the whole package; these load one function each.
+import gte from "semver/functions/gte"
+import valid from "semver/functions/valid"
+const semver = { gte, valid }
 import type { FriendStore } from "@ouro.bot/friends"
 import { ready } from "@ouro.bot/friends/a2a-client"
 import { escalationHolders, holdsEscalation, pinnedHolderDid } from "../a2a/escalation-grants"

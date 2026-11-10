@@ -56,7 +56,7 @@ vi.mock("../../../heart/daemon/sanctuary-scheduler-origin", () => ({
   verifySanctuarySchedulerFireCommand: sanctuaryAcceptanceMocks.verifyFire,
 }))
 
-vi.mock("../../../senses/telegram", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
+vi.mock("../../../senses/telegram-identity-key", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
 
 const supercronicMocks = vi.hoisted(() => ({
   policy: null as null | { scheduler: "supercronic"; updates: "disabled" },

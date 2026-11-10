@@ -26,7 +26,6 @@ import {
   pickRandomIdentity,
 } from "../hatch/specialist-orchestrator"
 import { buildSpecialistSystemPrompt } from "../hatch/specialist-prompt"
-import { getSpecialistTools, createSpecialistExecTool, parseAdoptionResult } from "../hatch/specialist-tools"
 import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -787,7 +786,8 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       model: providerConfig.model ?? "",
     })
 
-    // Build specialist tools
+    // Build specialist tools (loaded here: they import the agent tool registry)
+    const { getSpecialistTools, createSpecialistExecTool, parseAdoptionResult } = await import("../hatch/specialist-tools")
     const specialistTools = getSpecialistTools()
     let lastAdoptionError: string | null = null
     const specialistExecTool = createSpecialistExecTool({

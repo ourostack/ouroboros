@@ -4,10 +4,8 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
-  fchmodSync,
   fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -35,6 +33,8 @@ import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import { canonicalizeTelegramSessionKey } from "../heart/config"
+import { canonicalTelegramIdentityKey, openSecureTelegramDirectory, readOrCreateTelegramIdentityKey } from "./telegram-identity-key"
+export { readOrCreateTelegramIdentityKey } from "./telegram-identity-key"
 import {
   createTelegramBotApi,
   createTelegramLongPoll,
@@ -201,7 +201,6 @@ type TelegramTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurn
 type TelegramLongPollFactory = (options: TelegramLongPollOptions) => TelegramLongPoll
 const APPROVAL_EXPIRY_RECONCILE_INTERVAL_MS = 1_000
 const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
-const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
 const TELEGRAM_ACCEPTANCE_AUDIT_EVENTS = new Set([
@@ -550,40 +549,8 @@ export function telegramBotIdFromToken(token: string): string {
   return match[1]!
 }
 
-function canonicalTelegramIdentityKey(value: string): string {
-  const key = value.trim()
-  if (!TELEGRAM_IDENTITY_KEY.test(key) || Buffer.from(key, "base64url").length !== 32) {
-    throw new Error("Telegram opaque identity key is invalid")
-  }
-  return key
-}
-
 function errorCode(error: unknown): string | undefined {
   return error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined
-}
-
-function openSecureTelegramDirectory(directory: string, afterOpen?: (handle: number) => void): number {
-  try {
-    const existing = lstatSync(directory)
-    if (existing.isSymbolicLink()) throw new Error("Telegram state directory must not be a symbolic link")
-    if (!existing.isDirectory()) throw new Error("Telegram state directory is not a directory")
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") throw error
-    mkdirSync(directory, { recursive: true, mode: 0o700 })
-  }
-  const handle = openSync(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW)
-  try {
-    fchmodSync(handle, 0o700)
-    afterOpen?.(handle)
-    const metadata = fstatSync(handle)
-    if (!metadata.isDirectory() || (metadata.mode & 0o777) !== 0o700) {
-      throw new Error("Telegram state directory permissions are invalid")
-    }
-    return handle
-  } catch (error) {
-    closeSync(handle)
-    throw error
-  }
 }
 
 /** The admitted owner's display name comes from the household's own house config. */
@@ -592,60 +559,6 @@ export function ownerDisplayName(agentName: string): string {
   return ownerName === DEFAULT_SANCTUARY_HOUSE.ownerName ? "Owner" : ownerName
 }
 
-export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: {
-  beforeCreate?: (keyPath: string) => void
-  afterOpenDirectory?: (handle: number) => void
-  afterCreateTemporary?: (temporaryPath: string, keyPath: string) => void
-  beforePublish?: (temporaryPath: string, keyPath: string) => void
-} = {}): string {
-  const directory = path.join(agentRoot, "state", "senses", "telegram")
-  const keyPath = path.join(directory, "identity.key")
-  const directoryHandle = openSecureTelegramDirectory(directory, hooks.afterOpenDirectory)
-  const readKey = (): string => {
-    const handle = openSync(keyPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-    try {
-      const metadata = fstatSync(handle)
-      if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600) throw new Error("Telegram opaque identity key permissions are invalid")
-      return canonicalTelegramIdentityKey(readFileSync(handle, "utf8"))
-    } finally {
-      closeSync(handle)
-    }
-  }
-  try {
-    try {
-      return readKey()
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error
-    }
-    const key = randomBytes(32).toString("base64url")
-    hooks.beforeCreate?.(keyPath)
-    const temporaryPath = path.join(directory, `.identity.key.${randomBytes(12).toString("base64url")}.tmp`)
-    let temporaryHandle: number | undefined
-    try {
-      temporaryHandle = openSync(temporaryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600)
-      hooks.afterCreateTemporary?.(temporaryPath, keyPath)
-      writeFileSync(temporaryHandle, `${key}\n`)
-      fsyncSync(temporaryHandle)
-      closeSync(temporaryHandle)
-      temporaryHandle = undefined
-      hooks.beforePublish?.(temporaryPath, keyPath)
-      try {
-        linkSync(temporaryPath, keyPath)
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error
-        return readKey()
-      }
-      fsyncSync(directoryHandle)
-      return key
-    } finally {
-      if (temporaryHandle !== undefined) closeSync(temporaryHandle)
-      if (existsSync(temporaryPath)) unlinkSync(temporaryPath)
-      fsyncSync(directoryHandle)
-    }
-  } finally {
-    closeSync(directoryHandle)
-  }
-}
 
 export function opaqueTelegramSubject(identityKey: string, botToken: string, authorizedUserId: string, authorizedChatId: string): string {
   const payload = [

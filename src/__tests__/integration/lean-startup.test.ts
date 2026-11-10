@@ -19,10 +19,17 @@ const PRODUCT_SDKS = [
   "@microsoft/teams.apps",
   "@microsoft/teams.api",
   "@microsoft/teams.graph",
+  // Model SDKs and the agent tool registry's libraries load with the first
+  // turn or ping, in the process that runs it.
+  "openai",
+  "@anthropic-ai/sdk",
+  "ajv",
+  "fast-glob",
+  "ws",
 ]
 const CAPS = {
-  version: { modules: 900, maxRssMb: 125 },
-  daemon: { modules: 900, maxRssMb: 130 },
+  version: { modules: 280, maxRssMb: 125 },
+  daemon: { modules: 290, maxRssMb: 130 },
 }
 
 const REPO_ROOT = process.cwd()

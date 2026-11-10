@@ -545,3 +545,60 @@ describe("frontend session service", () => {
 function refFor(value: ReturnType<typeof request>) {
   return { agent: value.agent, friendId: value.friendId, sessionId: value.sessionKey }
 }
+
+describe("frontend session service lazy loading", () => {
+  it("builds the approval runtime only on first use, and answers like a fresh one before that", async () => {
+    const { lazyFrontendAuthority } = await import("../../heart/frontend-session-service")
+    const coordinator = vi.fn()
+    const real = {
+      approvalCoordinatorFactory: vi.fn(() => coordinator),
+      resumeApproval: vi.fn(async () => settledResult("resumed")),
+      resolvePermission: vi.fn(() => true),
+      cancelTurn: vi.fn(),
+      pendingPermissions: vi.fn(() => [{ requestId: "r1" }]),
+      close: vi.fn(),
+    }
+    const create = vi.fn(() => real as never)
+    const authority = lazyFrontendAuthority(create)
+    const ref = { agent: "boss", friendId: "friend-1", sessionKey: "session-1" }
+    expect(authority.pendingPermissions(ref as never)).toEqual([])
+    expect(authority.resolvePermission("r1", "allow")).toBe(false)
+    authority.cancelTurn("turn-1")
+    authority.close()
+    expect(create).not.toHaveBeenCalled()
+
+    expect(authority.approvalCoordinatorFactory({ request: request() as never, publish: () => {} })).toBe(coordinator)
+    await expect(authority.resumeApproval({} as never)).resolves.toMatchObject({ response: "resumed" })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(authority.pendingPermissions(ref as never)).toEqual([{ requestId: "r1" }])
+    expect(authority.resolvePermission("r1", "allow")).toBe(true)
+    authority.cancelTurn("turn-1")
+    authority.close()
+    expect(real.cancelTurn).toHaveBeenCalledWith("turn-1")
+    expect(real.close).toHaveBeenCalledTimes(1)
+  })
+
+  it("loads the turn engine and Shepherd targets only when a turn needs them", async () => {
+    vi.resetModules()
+    const runSenseTurn = vi.fn(async () => settledResult("from engine"))
+    const authorizedShepherdTargets = vi.fn(async () => ["target"])
+    vi.doMock("../../senses/shared-turn", () => ({ runSenseTurn }))
+    vi.doMock("../../senses/shepherd/surface", () => ({ authorizedShepherdTargets }))
+    try {
+      const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+      const service = new FrontendSessionService() as unknown as {
+        runner(turn: unknown): Promise<RunSenseTurnResult>
+        shepherdTargets(agent: string, friendId: string, composerTty?: string): Promise<unknown>
+      }
+      expect(runSenseTurn).not.toHaveBeenCalled()
+      await expect(service.runner({ turn: 1 })).resolves.toMatchObject({ response: "from engine" })
+      expect(runSenseTurn).toHaveBeenCalledWith({ turn: 1 })
+      await expect(service.shepherdTargets("boss", "friend-1", "/dev/ttys001")).resolves.toEqual(["target"])
+      expect(authorizedShepherdTargets).toHaveBeenCalledWith("boss", "friend-1", "/dev/ttys001")
+    } finally {
+      vi.doUnmock("../../senses/shared-turn")
+      vi.doUnmock("../../senses/shepherd/surface")
+      vi.resetModules()
+    }
+  })
+})

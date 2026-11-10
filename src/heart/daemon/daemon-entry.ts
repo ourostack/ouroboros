@@ -62,11 +62,10 @@ import {
 } from "./daemon-bootstrap-startup"
 import { prepareSanctuaryPackageManagedBundle, requireSanctuaryPackageManagementDecision, resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
-import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
-import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
+import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import { checkBundleSyncHealth } from "../sync-health"
 import { abortInFlightSync, syncNow } from "../sync"
 import { PresenceTicker } from "./presence-daemon"
@@ -538,6 +537,8 @@ const daemon = new OuroDaemon({
     const before = schedulerScenario ? readSanctuaryHealthCursor(agentRoot) : null
     let providerInvocationCount = 0
     let privateTurnCount = 0
+    // Loaded here, not at startup: it imports Sanctuary's tool registry.
+    const { runSanctuaryHealthHabit } = await import("../../senses/sanctuary-health-runner")
     const result = await runSanctuaryHealthHabit(agent, {
       submitEvidence: async (input) => {
         const response = await daemon.handleCommand({ kind: "external.event.submit", ...input })

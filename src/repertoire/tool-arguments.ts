@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { isAbsolute } from "node:path"
 
-import Ajv, { type ErrorObject, type ValidateFunction } from "ajv"
+import type { ErrorObject, ValidateFunction } from "ajv"
 
 import { emitNervesEvent } from "../nerves/runtime"
 import type { JsonObject, JsonValue } from "../heart/approval-store"
@@ -142,6 +142,8 @@ export function validateAdvertisedToolArguments(
   let validator = validators.get(schema)
   try {
     // Each snapshot owns its compiler registry; only the weak cache is shared.
+    // ajv (about 70 modules) loads with the first schema compiled, not with every process that imports this file.
+    const Ajv = (require("ajv") as typeof import("ajv")).default
     validator ??= new Ajv({
       strict: true,
       allErrors: true,

@@ -13,7 +13,10 @@ import type { EventEmitter } from "events"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import * as semver from "semver"
+// semver's index loads the whole package; these load one function each.
+import gt from "semver/functions/gt"
+import valid from "semver/functions/valid"
+const semver = { gt, valid }
 import { defaultStableVaultEmail, getAgentBundlesRoot, hasStaleWorkbenchBundleEntry, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore, FriendResolver, isLocalMachineOwnerIdentity, machineOwnerUsername, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
@@ -210,7 +213,7 @@ import { PUBLIC_DAEMON_STARTUP_FAILURE_REASON } from "./daemon-bootstrap-startup
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
-import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
+import type { PingResult, ProviderPingOptions } from "../provider-ping"
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
@@ -239,6 +242,12 @@ import {
   formatBlueBubblesWebhookConnectLine,
   reconcileBlueBubblesWebhookAfterConnect,
 } from "./bluebubbles-cli-integration"
+
+// Provider pings load the model SDKs, so they load when a command pings.
+type ProviderPingModule = typeof import("../provider-ping")
+const pingProvider: ProviderPingModule["pingProvider"] = async (...args) => (await import("../provider-ping")).pingProvider(...args)
+/** Loads the provider SDKs only when a model is actually pinged. */
+export const pingGithubCopilotModel: ProviderPingModule["pingGithubCopilotModel"] = async (...args) => (await import("../provider-ping")).pingGithubCopilotModel(...args)
 
 // ── ensureDaemonRunning ──
 

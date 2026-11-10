@@ -1,5 +1,8 @@
 import * as path from "node:path"
 
+/** A Shepherd session id: a stable UUID. */
+export const SHEPHERD_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /** The Shepherd host kinds a machine can be connected to. */
 export type ShepherdHostName = "cmux" | "herdr" | "copilot-app"
 type ReadOptions = { agent: string; json?: boolean }
