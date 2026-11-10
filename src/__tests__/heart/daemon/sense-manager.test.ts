@@ -370,7 +370,7 @@ describe("daemon sense manager", () => {
     }))
   })
 
-  it("reports disabled Workbench leftovers and stale MCP entries as cleanup state", async () => {
+  it("reports a stale Workbench MCP entry as cleanup state even when senses.workbench is disabled", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-workbench-stale-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -410,6 +410,42 @@ describe("daemon sense manager", () => {
       enabled: true,
       status: "needs_config",
       detail: "stale agent.json Workbench entry; run 'ouro connect workbench' to clean it and use runtime injection",
+    }))
+  })
+
+  it("reports an explicitly disabled Workbench entry as runtime-injected, not stale", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-workbench-disabled-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "workbench",
+      enabled: false,
+      status: "disabled",
+      detail: "runtime-injected by Workbench app; no agent.json entry required",
     }))
   })
 

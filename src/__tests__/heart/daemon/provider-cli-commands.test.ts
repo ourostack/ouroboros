@@ -1720,7 +1720,7 @@ describe("provider CLI command execution", () => {
     updateAgentConfig(bundlesRoot, "Slugger", (config) => {
       config.senses = {
         ...(config.senses ?? {}),
-        workbench: { enabled: false },
+        workbench: { enabled: true },
       }
     })
     const prompts: string[] = []
@@ -1738,6 +1738,35 @@ describe("provider CLI command execution", () => {
     expect(prompt).toContain("OuroWorkbenchMCP found:")
     expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
     expect(prompt).toContain("stale bundle entry detected: remove senses.workbench")
+  })
+
+  it("shows installed Workbench as ready when agent.json only has a disabled Workbench sense", async () => {
+    emitTestEvent("provider cli connect menu workbench installed disabled sense")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-installed-disabled-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-installed-disabled-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: false },
+      }
+    })
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "ready")
+    expect(prompt).not.toContain("stale bundle entry detected")
   })
 
   it("shows installed Workbench runtime injection as ready without a bundle sense", async () => {

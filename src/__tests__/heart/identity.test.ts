@@ -235,7 +235,6 @@ describe("buildDefaultAgentTemplate", () => {
         voice: { enabled: false },
         a2a: { enabled: false },
         telegram: { enabled: false },
-        workbench: { enabled: false },
         shepherd: { enabled: false },
         "app-sessions": { enabled: false },
       },
@@ -1414,5 +1413,34 @@ describe("buildDefaultAgentTemplate v2", () => {
     const { buildDefaultAgentTemplate } = await import("../../heart/identity")
     const template = buildDefaultAgentTemplate("testbot")
     expect(template.version).toBe(2)
+  })
+
+  it("leaves Workbench out of new bundles because the Workbench app injects it at runtime", async () => {
+    const { buildDefaultAgentTemplate } = await import("../../heart/identity")
+    const template = buildDefaultAgentTemplate("testbot")
+    expect(Object.prototype.hasOwnProperty.call(template.senses, "workbench")).toBe(false)
+  })
+})
+
+describe("persistedSenses", () => {
+  it("drops the disabled Workbench default and keeps an enabled legacy entry", async () => {
+    const { DEFAULT_AGENT_SENSES, persistedSenses } = await import("../../heart/identity")
+    expect(Object.prototype.hasOwnProperty.call(persistedSenses({ ...DEFAULT_AGENT_SENSES }), "workbench")).toBe(false)
+    expect(persistedSenses({ ...DEFAULT_AGENT_SENSES, workbench: { enabled: true } }).workbench).toEqual({ enabled: true })
+  })
+})
+
+describe("hasStaleWorkbenchBundleEntry", () => {
+  it("treats only an enabling senses entry or an ouro_workbench MCP entry as stale", async () => {
+    const { hasStaleWorkbenchBundleEntry } = await import("../../heart/identity")
+    expect(hasStaleWorkbenchBundleEntry(undefined, undefined)).toBe(false)
+    expect(hasStaleWorkbenchBundleEntry([], [])).toBe(false)
+    expect(hasStaleWorkbenchBundleEntry({ cli: { enabled: true } }, {})).toBe(false)
+    expect(hasStaleWorkbenchBundleEntry({ workbench: { enabled: false } }, { other: { command: "x" } })).toBe(false)
+    expect(hasStaleWorkbenchBundleEntry({ workbench: { enabled: true } }, undefined)).toBe(true)
+    expect(hasStaleWorkbenchBundleEntry({ workbench: {} }, undefined)).toBe(true)
+    expect(hasStaleWorkbenchBundleEntry({ workbench: null }, undefined)).toBe(true)
+    expect(hasStaleWorkbenchBundleEntry({ workbench: { enabled: false } }, { ouro_workbench: { command: "x" } })).toBe(true)
+    expect(hasStaleWorkbenchBundleEntry(undefined, { ouro_workbench: { command: "x" } })).toBe(true)
   })
 })

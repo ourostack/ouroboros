@@ -3,7 +3,7 @@ import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
+import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, type AgentSensesConfig, type SenseName } from "../identity"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -164,23 +164,11 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
   }
 
   const rawSenses = parsed.senses
+  const workbenchHasStaleBundleEntry = hasStaleWorkbenchBundleEntry(rawSenses, parsed.mcpServers)
   if (!rawSenses || typeof rawSenses !== "object" || Array.isArray(rawSenses)) {
-    const rawMcpServers = parsed.mcpServers
-    const workbenchHasStaleBundleEntry = !!rawMcpServers
-      && typeof rawMcpServers === "object"
-      && !Array.isArray(rawMcpServers)
-      && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
     if (workbenchHasStaleBundleEntry) defaults.workbench = { enabled: true }
     return { senses: defaults, workbenchHasStaleBundleEntry }
   }
-
-  const workbenchSensePresent = Object.prototype.hasOwnProperty.call(rawSenses, "workbench")
-  const rawMcpServers = parsed.mcpServers
-  const workbenchMcpPresent = !!rawMcpServers
-    && typeof rawMcpServers === "object"
-    && !Array.isArray(rawMcpServers)
-    && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")
-  const workbenchHasStaleBundleEntry = workbenchSensePresent || workbenchMcpPresent
 
   for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench", "shepherd", "app-sessions"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
