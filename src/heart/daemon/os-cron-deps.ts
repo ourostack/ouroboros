@@ -81,6 +81,10 @@ export function resolveOuroBinaryPath(): string {
     }
   }
 
+  // The ouro.bot installer's wrapper. launchd's PATH never includes it, so a bare "ouro" in a habit plist cannot spawn.
+  const installerOuro = path.join(os.homedir(), ".ouro-cli", "bin", "ouro")
+  if (fs.existsSync(installerOuro)) return installerOuro
+
   // Try which ouro
   try {
     const result = execSync("which ouro", { encoding: "utf-8" }).trim()

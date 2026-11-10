@@ -67,7 +67,9 @@ import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctua
 import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { checkBundleSyncHealth } from "../sync-health"
-import { abortInFlightSync } from "../sync"
+import { abortInFlightSync, syncNow } from "../sync"
+import { PresenceTicker } from "./presence-daemon"
+import { leavePresence, readLocalPresenceSettings } from "./presence"
 import { clearOwnStaleSyncLock } from "../sync-lock"
 
 function parseSocketPath(argv: string[]): string {
@@ -298,6 +300,64 @@ const taskScheduler = new TaskDrivenScheduler({
 
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
+/* v8 ignore start -- presence wiring: lambdas delegate to the schedulers and sync; PresenceTicker is unit-tested @preserve */
+// Schedulers started per agent, so a presence handoff can stop exactly one agent's habits and awaits.
+const agentSchedulers = new Map<string, { habit: HabitScheduler[]; await: AwaitScheduler[] }>()
+let startAgentSchedulers: ((agent: string) => void) | null = null
+const presenceTicker = new PresenceTicker({
+  agents: managedAgents,
+  bundlesRoot: getAgentBundlesRoot(),
+  machineId: daemonMachineId,
+  version: getPackageVersion(),
+  sync: async (agent, agentRoot) => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown; branch?: unknown } }
+      if (parsed.sync?.enabled !== true) return
+      await syncNow(agentRoot, {
+        enabled: true,
+        remote: typeof parsed.sync.remote === "string" && parsed.sync.remote.trim() ? parsed.sync.remote : "origin",
+        ...(typeof parsed.sync.branch === "string" && parsed.sync.branch.trim() ? { branch: parsed.sync.branch } : {}),
+      }, agent, 0)
+    } catch {
+      // A busy lock or an unreachable remote only delays the roster; next minute retries.
+    }
+  },
+  startSchedulers: (agent) => { startAgentSchedulers?.(agent) },
+  stopSchedulers: (agent) => {
+    const started = agentSchedulers.get(agent)
+    if (!started) return
+    agentSchedulers.delete(agent)
+    for (const scheduler of [...started.habit, ...started.await]) {
+      try { scheduler.stopWatching(); scheduler.stop() } catch { /* best-effort */ }
+    }
+    for (const scheduler of started.habit) habitSchedulers.splice(habitSchedulers.indexOf(scheduler), 1)
+    for (const scheduler of started.await) awaitSchedulers.splice(awaitSchedulers.indexOf(scheduler), 1)
+  },
+  schedulersRunning: (agent) => agentSchedulers.has(agent),
+  // This machine's Copilot app sessions, from the app-sessions sense's last snapshot, so peers see them too.
+  extraRecord: (agent) => {
+    try {
+      const snap = JSON.parse(fs.readFileSync(path.join(getAgentBundlesRoot(), `${agent}.ouro`, "state", "senses", "app-sessions", "snapshot.json"), "utf-8")) as { at?: string; counts?: Record<string, number>; sessions?: Array<{ id: string; name?: string; state?: string }> }
+      if (!snap.at || !snap.counts || Date.now() - Date.parse(snap.at) > 10 * 60_000) return {}
+      return { appSessions: { at: snap.at, counts: snap.counts, sessions: (snap.sessions ?? []).map(({ id, name, state }) => ({ id, name, state })) } }
+    } catch {
+      return {}
+    }
+  },
+  notify: async (agent, text) => {
+    await sendDaemonCommand(socketPath, { kind: "message.send", from: "presence", to: agent, content: text })
+    await sendDaemonCommand(socketPath, {
+      kind: "private.wake",
+      agent,
+      reason: "presence arrival",
+      triggerSource: "presence-arrival",
+      budgetClass: "interactive",
+      idempotencyKey: `presence-arrival:${agent}:${new Date().toISOString().slice(0, 10)}`,
+      originRefs: [{ kind: "presence", id: "arrival" }],
+    } as Parameters<typeof sendDaemonCommand>[1])
+  },
+})
+/* v8 ignore stop */
 const containerRuntimePolicy = readContainerRuntimePolicy()
 const supercronicSupervisor = containerRuntimePolicy?.scheduler === "supercronic"
   ? new SupercronicSupervisor({
@@ -380,6 +440,9 @@ const healthMonitor = new HealthMonitor({
     for (const agent of homes.displaced) {
       void processManager.displaceAgent(agent, `${agent} is homed on another machine`).catch(() => undefined)
     }
+    // Presence: follow the roster's owners for shared senses, habits and awaits.
+    await presenceTicker.tick()
+    await senseManager.reconcilePresence?.()
     return [...sentinels, homes.health]
   },
   bundleSyncChecker: () => [checkBundleSyncHealth(
@@ -737,7 +800,28 @@ void startDaemonAfterContainerCredentialBootstrap({
   loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
   prepareManagedBundle: () => { prepareSanctuaryPackageManagedBundle(sanctuaryPackageManagement) },
   prepareDaemon: prepareProviderRuntime,
-  startDaemon: () => daemon.start(),
+  startDaemon: async () => {
+    // Presence off here: publish that this machine left every roster before any sense starts under the home lease.
+    if (!readLocalPresenceSettings().enabled) {
+      for (const agent of managedAgents) {
+        const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+        await leavePresence(agentRoot, daemonMachineId, async (root) => {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(path.join(root, "agent.json"), "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown; branch?: unknown } }
+            if (parsed.sync?.enabled !== true) return true
+            return (await syncNow(root, {
+              enabled: true,
+              remote: typeof parsed.sync.remote === "string" && parsed.sync.remote.trim() ? parsed.sync.remote : "origin",
+              ...(typeof parsed.sync.branch === "string" && parsed.sync.branch.trim() ? { branch: parsed.sync.branch } : {}),
+            }, agent, 30_000)).ok
+          } catch {
+            return false
+          }
+        }).catch(() => false)
+      }
+    }
+    await daemon.start()
+  },
   markStartupFailure: () => { _tombstoneWritten = true },
   exit: (code) => process.exit(code),
 }).then(async (started) => {
@@ -764,8 +848,29 @@ void startDaemonAfterContainerCredentialBootstrap({
     : resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
 
+  startAgentSchedulers = (agent: string): void => {
+    const habitsBefore = habitSchedulers.length
+    const awaitsBefore = awaitSchedulers.length
+    startAgentSchedulersNow(agent)
+    agentSchedulers.set(agent, { habit: habitSchedulers.slice(habitsBefore), await: awaitSchedulers.slice(awaitsBefore) })
+  }
   for (const agent of managedAgents) {
     scheduleStartupSentinelAfterProviderPreload(agent, providerPreload)
+    // Under a presence roster, only the machine that owns `habits` runs this agent's habits and awaits.
+    if (!presenceTicker.shouldStartSchedulers(agent)) {
+      // Clear cron jobs a crash may have left behind, so they don't fire here while another machine owns habits.
+      for (const manager of [
+        supercronicSupervisor ? supercronicSupervisor.namespace(`habit:${agent}`) : new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) }),
+        supercronicSupervisor ? supercronicSupervisor.namespace(`await:${agent}`) : new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) }),
+      ]) {
+        try { manager.removeAll() } catch { /* best-effort */ }
+      }
+      continue
+    }
+    startAgentSchedulers(agent)
+  }
+
+  function startAgentSchedulersNow(agent: string): void {
     const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
     const habitsDir = path.join(bundleRoot, "habits")
     const degradedComponent = `habits:${agent}`

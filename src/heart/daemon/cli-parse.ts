@@ -2930,8 +2930,40 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     }
     return { kind: "daemon.dev", repoPath, clone, clonePath }
   }
-  if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
+  if (head === "rollback") {
+    const rest = args.slice(1)
+    const force = rest.includes("--force")
+    const version = rest.find((arg) => arg !== "--force")
+    return { kind: "rollback", ...(version ? { version } : {}), ...(force ? { force: true } : {}) }
+  }
   if (head === "versions") return { kind: "versions" }
+  if (head === "presence") {
+    const usage = "Usage: ouro presence join --agent <name> [--role <role>] [--name <machine name>] | ouro presence handoff <sense> <machine> --agent <name> | ouro presence status --agent <name> [--json] | ouro presence location <home|office|…>"
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    const [sub, ...tail] = rest
+    if (sub === "location") {
+      if (tail.length !== 1 || !tail[0]) throw new Error(usage)
+      return { kind: "presence.location", location: tail[0] }
+    }
+    if (!agent) throw new Error(usage)
+    if (sub === "status" && tail.length === 0) return { kind: "presence.status", agent }
+    if (sub === "status" && tail.length === 1 && tail[0] === "--json") return { kind: "presence.status", agent, json: true }
+    if (sub === "handoff" && tail.length === 2) return { kind: "presence.handoff", agent, sense: tail[0], machine: tail[1] }
+    if (sub === "join") {
+      const command: { kind: "presence.join"; agent: string; role?: string; name?: string } = { kind: "presence.join", agent }
+      for (let i = 0; i < tail.length; i++) {
+        const value = tail[i + 1]
+        if ((tail[i] === "--role" || tail[i] === "--name") && value) {
+          command[tail[i] === "--role" ? "role" : "name"] = value
+          i++
+          continue
+        }
+        throw new Error(usage)
+      }
+      return command
+    }
+    throw new Error(usage)
+  }
   if (head === "move") {
     if (args.length !== 3 || !second || args[2] !== "here") throw new Error("Usage: ouro move <agent> here")
     return { kind: "agent.move", agent: second }

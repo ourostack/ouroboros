@@ -63,7 +63,7 @@ import {
 } from "../provider-visibility"
 import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
-import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { loadOrCreateMachineIdentity, readMachineIdentity } from "../machine-identity"
 import {
   collectCrossUserBlueBubblesHostAction,
   createDefaultBlueBubblesHostDeps,
@@ -214,6 +214,8 @@ import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPin
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
+import { handoffPresenceSense, joinPresenceRoster, presenceStatusJson, renderPresenceStatus } from "./presence-roster"
+import { PRESENCE_FIRST_VERSION, compareVersions, leavePresence, readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings } from "./presence"
 import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding, type BootSyncProbeStatus } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -1979,7 +1981,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -2931,6 +2933,65 @@ function currentMachineId(deps: OuroCliDeps): string {
     homeDir: providerCliHomeDir(deps),
     now: () => providerCliNow(deps),
   }).machineId
+}
+
+type PresenceCliCommand = Extract<OuroCliCommand, { kind: "presence.join" | "presence.handoff" | "presence.status" | "presence.location" }>
+
+async function executePresence(command: PresenceCliCommand, deps: OuroCliDeps): Promise<string> {
+  const homeDir = providerCliHomeDir(deps)
+  if (command.kind === "presence.location") {
+    writeLocalPresenceSettings({ ...readLocalPresenceSettings(homeDir, {}), location: command.location }, homeDir)
+    const message = `this machine's location is now ${command.location}`
+    deps.writeStdout(message)
+    return message
+  }
+  const identity = loadOrCreateMachineIdentity({ homeDir, now: () => providerCliNow(deps) })
+  /* v8 ignore next -- production default: uses real bundles root @preserve */
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const agentRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
+  if (command.kind === "presence.status") {
+    const settings = readLocalPresenceSettings(homeDir)
+    let agentJson: unknown = null
+    try {
+      agentJson = JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8"))
+    } catch {
+      return returnCliFailure(deps, `cannot read ${command.agent}'s agent.json in ${agentRoot}`)
+    }
+    const presence = readPresence(agentJson, settings.enabled, readPeerRecords(agentRoot))
+    if (command.json) {
+      const json = JSON.stringify(presenceStatusJson({ presence, machineId: identity.machineId, settings }))
+      deps.writeStdout(json)
+      return json
+    }
+    const message = renderPresenceStatus({
+      agent: command.agent,
+      presence,
+      flagEnabled: settings.enabled,
+      machineId: identity.machineId,
+      now: new Date(providerCliNow(deps)),
+    })
+    deps.writeStdout(message)
+    return message
+  }
+  if (command.kind === "presence.handoff") {
+    const result = await handoffPresenceSense({ agent: command.agent, bundlesRoot, sense: command.sense, target: command.machine })
+    if (!result.ok) return returnCliFailure(deps, result.message)
+    deps.writeStdout(result.message)
+    return result.message
+  }
+  const result = await joinPresenceRoster({
+    agent: command.agent,
+    bundlesRoot,
+    machineId: identity.machineId,
+    machineName: command.name ?? machineDisplayName(os.hostname(), identity.machineId),
+    role: command.role ?? "peer",
+    minVersion: getPackageVersion(),
+  })
+  if (!result.ok) return returnCliFailure(deps, result.message)
+  writeLocalPresenceSettings({ ...readLocalPresenceSettings(homeDir, {}), enabled: true }, homeDir)
+  const message = `${result.message}\npresence is on for this machine (~/.ouro-cli/presence.json); restart the daemon with \`ouro up\` so it follows the roster.`
+  deps.writeStdout(message)
+  return message
 }
 
 async function executeAgentMove(command: Extract<OuroCliCommand, { kind: "agent.move" }>, deps: OuroCliDeps): Promise<string> {
@@ -8721,6 +8782,30 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       targetVersion = previousVersion
     }
 
+    // A daemon below presence knows only `home`: leave every roster first and publish it, so peers
+    // fall back to home before this machine runs shared senses under the home lease.
+    let leftPresence: string[] = []
+    if (compareVersions(targetVersion, PRESENCE_FIRST_VERSION) < 0) {
+      const identity = readMachineIdentity(providerCliHomeDir(deps))
+      /* v8 ignore next -- production default: uses real bundles root @preserve */
+      const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+      const unpublished: string[] = []
+      for (const agent of identity ? listAllBundleAgents({ bundlesRoot, machineId: identity.machineId }).map((row) => row.name) : []) {
+        const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+        if (!fs.existsSync(path.join(agentRoot, "presence", `${identity!.machineId}.json`))) continue
+        const published = await leavePresence(agentRoot, identity!.machineId, async () => {
+          const sync = readAgentSyncConfigForCliMutation(agent, deps)
+          if (!sync.enabled) return true
+          return (await syncNow(agentRoot, sync, agent, deps.syncLockWaitMs ?? CLI_SYNC_LOCK_WAIT_MS)).ok
+        })
+        leftPresence.push(agent)
+        if (!published) unpublished.push(agent)
+      }
+      if (unpublished.length > 0 && !command.force) {
+        return returnCliFailure(deps, `could not publish that this machine left ${unpublished.join(", ")}'s presence roster, so nothing was rolled back: a daemon on ${targetVersion} would run their shared senses while a peer still does; fix bundle sync (\`ouro sync --agent <agent>\`) or rerun with --force`)
+      }
+    }
+
     writeVersionIntentWithRecoveryLauncher(deps, {
       schemaVersion: 1,
       mode: "pinned",
@@ -8737,7 +8822,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Daemon may not be running — that's fine
     }
 
-    const message = `rolled back to ${targetVersion} (was ${currentVersion})`
+    const message = `rolled back to ${targetVersion} (was ${currentVersion})${leftPresence.length > 0 ? `; this machine left the presence roster of ${leftPresence.join(", ")}, so their shared senses stay with home` : ""}`
     deps.writeStdout(message)
     return message
   }
@@ -9326,6 +9411,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── Hosted Desk admin (HTTPS to the gateway after an Ouro sign-in; no daemon needed) ──
   if (command.kind === "desk.admin") {
     return executeDeskAdminCommand(command, deps)
+  }
+
+  // ── presence: one agent on several machines (local, no daemon needed) ──
+  if (command.kind === "presence.join" || command.kind === "presence.handoff" || command.kind === "presence.status" || command.kind === "presence.location") {
+    return executePresence(command, deps)
   }
 
   // ── move: make this machine the agent's home (local, no daemon needed) ──

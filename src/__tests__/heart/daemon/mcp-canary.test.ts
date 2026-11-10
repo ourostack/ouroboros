@@ -285,6 +285,19 @@ describe("mcp canary", () => {
     expect(result.summary).toContain("required sense unhealthy: bluebubbles:error")
   })
 
+  it("passes senses that are absent from this machine by design", async () => {
+    const child = createFakeChild([
+      "daemon=running\thealth=ok\tdaemonVersion=1\tmcpVersion=1",
+      "sense=teams:not_attached\tdetail=runs on aris-mac-mini (presence roster)",
+      "sense=cli:interactive\tdetail=local interactive terminal",
+    ].join("\n"))
+
+    const result = await runMcpStatusCanary({ agent: "slugger", spawnImpl: spawnFake(child) })
+
+    expect(result.ok).toBe(true)
+    expect(result.summary).toContain("teams:not_attached")
+  })
+
   it("can ignore general sense health while preserving explicit required-sense checks", async () => {
     const child = createFakeChild([
       "daemon=running\thealth=warn\tdaemonVersion=1\tmcpVersion=1",

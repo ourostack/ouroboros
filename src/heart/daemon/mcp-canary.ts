@@ -271,7 +271,8 @@ function validateMcpStatus(
 
   if (!options.ignoreSenseHealth) {
     for (const [sense, row] of Object.entries(parsed.senses)) {
-      if (row.status === "disabled") continue
+      // Absent by design on this machine (no hardware here, or the presence roster runs it on a peer).
+      if (row.status === "disabled" || row.status === "not_attached") continue
       if (row.status === "running" || row.status === "interactive") continue
       failures.push(`sense=${sense}:${row.status}`)
     }

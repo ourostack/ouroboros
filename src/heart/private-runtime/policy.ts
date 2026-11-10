@@ -199,6 +199,23 @@ async function evaluatePolicy(
       reason: "verified daemon await check",
     }
   }
+  const habitTrigger = request.triggerSource.startsWith("habit-") ? request.triggerSource.slice("habit-".length) : ""
+  if (
+    habitTrigger.length > 0
+    && hasNonEmptyOriginRef(originRefs, "habit")
+    && hasOriginRef(originRefs, "habit-trigger", habitTrigger)
+    && hasNonEmptyOriginRef(originRefs, "habit-occurrence")
+    && (
+      hasOriginRef(originRefs, "daemon-entry", "habit-scheduler")
+      || hasOriginRef(originRefs, "daemon-command", "habit.poke")
+      || hasOriginRef(originRefs, "daemon-command", "habit.probe")
+    )
+  ) {
+    return {
+      result: "allow",
+      reason: "verified daemon habit",
+    }
+  }
   return {
     result: "deny",
     reason: "private runtime policy denies by default",

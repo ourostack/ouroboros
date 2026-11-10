@@ -2,9 +2,22 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1022",
+      "version": "0.1.0-alpha.1025",
       "changes": [
         "A Copilot account pool's refusals are shared by all of the agent's processes (state/account-refusals.json), so a spent account is skipped everywhere after one 402 or 429 instead of once per process."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1024",
+      "changes": [
+        "Presence: one named agent runs on several machines at once from a git-synced bundle. agent.json gets an opt-in presence roster (machines, owners, minVersion); shared senses such as Teams and habits run only on their owner, and read as not attached on its peers; `ouro presence join|handoff|status|location`; each copy's prompt says which machine it is on, its peers and what it owns.",
+        "Habit and await plists on Macs installed by the ouro.bot installer now call ~/.ouro-cli/bin/ouro; launchd's PATH never had a bare `ouro`, so those habits never ran."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1023",
+      "changes": [
+        "Habits run again. The private runtime policy allows a habit wake that carries verified daemon provenance (habit, matching habit-trigger and habit-occurrence refs, and the habit scheduler, habit.poke or habit.probe as source), where before every habit fire was denied as default policy deny. A denied private-turn decision no longer reserves its idempotency key, so a habit whose first attempt was denied, and then retried after a provider credential revision change, runs on its next fire instead of failing forever with idempotency-key fingerprint mismatch."
       ]
     },
     {
