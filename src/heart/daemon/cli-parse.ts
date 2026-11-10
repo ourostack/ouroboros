@@ -2930,7 +2930,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     }
     return { kind: "daemon.dev", repoPath, clone, clonePath }
   }
-  if (head === "rollback") return { kind: "rollback", ...(second ? { version: second } : {}) }
+  if (head === "rollback") {
+    const rest = args.slice(1)
+    const force = rest.includes("--force")
+    const version = rest.find((arg) => arg !== "--force")
+    return { kind: "rollback", ...(version ? { version } : {}), ...(force ? { force: true } : {}) }
+  }
   if (head === "versions") return { kind: "versions" }
   if (head === "presence") {
     const usage = "Usage: ouro presence join --agent <name> [--role <role>] [--name <machine name>] | ouro presence handoff <sense> <machine> --agent <name> | ouro presence status --agent <name> [--json] | ouro presence location <home|office|…>"

@@ -215,7 +215,7 @@ import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
 import { handoffPresenceSense, joinPresenceRoster, presenceStatusJson, renderPresenceStatus } from "./presence-roster"
-import { PRESENCE_FIRST_VERSION, compareVersions, readLocalPresenceSettings, readPeerRecords, readPresence, removeAllPeerRecords, writeLocalPresenceSettings } from "./presence"
+import { PRESENCE_FIRST_VERSION, compareVersions, leavePresence, readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings } from "./presence"
 import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding, type BootSyncProbeStatus } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -8782,6 +8782,30 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       targetVersion = previousVersion
     }
 
+    // A daemon below presence knows only `home`: leave every roster first and publish it, so peers
+    // fall back to home before this machine runs shared senses under the home lease.
+    let leftPresence: string[] = []
+    if (compareVersions(targetVersion, PRESENCE_FIRST_VERSION) < 0) {
+      const identity = readMachineIdentity(providerCliHomeDir(deps))
+      /* v8 ignore next -- production default: uses real bundles root @preserve */
+      const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+      const unpublished: string[] = []
+      for (const agent of identity ? listAllBundleAgents({ bundlesRoot, machineId: identity.machineId }).map((row) => row.name) : []) {
+        const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+        if (!fs.existsSync(path.join(agentRoot, "presence", `${identity!.machineId}.json`))) continue
+        const published = await leavePresence(agentRoot, identity!.machineId, async () => {
+          const sync = readAgentSyncConfigForCliMutation(agent, deps)
+          if (!sync.enabled) return true
+          return (await syncNow(agentRoot, sync, agent, deps.syncLockWaitMs ?? CLI_SYNC_LOCK_WAIT_MS)).ok
+        })
+        leftPresence.push(agent)
+        if (!published) unpublished.push(agent)
+      }
+      if (unpublished.length > 0 && !command.force) {
+        return returnCliFailure(deps, `could not publish that this machine left ${unpublished.join(", ")}'s presence roster, so nothing was rolled back: a daemon on ${targetVersion} would run their shared senses while a peer still does; fix bundle sync (\`ouro sync --agent <agent>\`) or rerun with --force`)
+      }
+    }
+
     writeVersionIntentWithRecoveryLauncher(deps, {
       schemaVersion: 1,
       mode: "pinned",
@@ -8798,13 +8822,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Daemon may not be running — that's fine
     }
 
-    // A daemon below presence knows only `home`: leave every roster, so peers keep shared senses with home.
-    let leftPresence: string[] = []
-    if (compareVersions(targetVersion, PRESENCE_FIRST_VERSION) < 0) {
-      const identity = readMachineIdentity(providerCliHomeDir(deps))
-      /* v8 ignore next -- production default: uses real bundles root @preserve */
-      if (identity) leftPresence = removeAllPeerRecords(deps.bundlesRoot ?? getAgentBundlesRoot(), identity.machineId)
-    }
     const message = `rolled back to ${targetVersion} (was ${currentVersion})${leftPresence.length > 0 ? `; this machine left the presence roster of ${leftPresence.join(", ")}, so their shared senses stay with home` : ""}`
     deps.writeStdout(message)
     return message

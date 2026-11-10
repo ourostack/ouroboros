@@ -273,16 +273,16 @@ describe("handoff safety", () => {
     expect(effectiveOwner(presence, "teams")).toBe("machine_home")
   })
 
-  it("leaves every roster on a rollback below presence", async () => {
-    const { removeAllPeerRecords } = await import("../../../heart/daemon/presence")
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "presence-rollback-"))
+  it("publishes leaving presence only when there was a record to remove", async () => {
+    const { leavePresence } = await import("../../../heart/daemon/presence")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "presence-leave-"))
     try {
-      fs.mkdirSync(path.join(root, "a.ouro"))
-      fs.mkdirSync(path.join(root, "b.ouro"))
-      fs.writeFileSync(path.join(root, "notes.txt"), "")
-      writePeerRecord(path.join(root, "a.ouro"), record(MINI))
-      expect(removeAllPeerRecords(root, MINI)).toEqual(["a"])
-      expect(removeAllPeerRecords(path.join(root, "missing"), MINI)).toEqual([])
+      const publish = vi.fn(async () => false)
+      expect(await leavePresence(root, MINI, publish)).toBe(true)
+      expect(publish).not.toHaveBeenCalled()
+      writePeerRecord(root, record(MINI))
+      expect(await leavePresence(root, MINI, publish)).toBe(false)
+      expect(publish).toHaveBeenCalledWith(root)
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

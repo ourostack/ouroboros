@@ -69,7 +69,7 @@ import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { checkBundleSyncHealth } from "../sync-health"
 import { abortInFlightSync, syncNow } from "../sync"
 import { PresenceTicker } from "./presence-daemon"
-import { readLocalPresenceSettings, removePeerRecord } from "./presence"
+import { leavePresence, readLocalPresenceSettings } from "./presence"
 import { clearOwnStaleSyncLock } from "../sync-lock"
 
 function parseSocketPath(argv: string[]): string {
@@ -790,7 +790,28 @@ void startDaemonAfterContainerCredentialBootstrap({
   loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
   prepareManagedBundle: () => { prepareSanctuaryPackageManagedBundle(sanctuaryPackageManagement) },
   prepareDaemon: prepareProviderRuntime,
-  startDaemon: () => daemon.start(),
+  startDaemon: async () => {
+    // Presence off here: publish that this machine left every roster before any sense starts under the home lease.
+    if (!readLocalPresenceSettings().enabled) {
+      for (const agent of managedAgents) {
+        const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+        await leavePresence(agentRoot, daemonMachineId, async (root) => {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(path.join(root, "agent.json"), "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown; branch?: unknown } }
+            if (parsed.sync?.enabled !== true) return true
+            return (await syncNow(root, {
+              enabled: true,
+              remote: typeof parsed.sync.remote === "string" && parsed.sync.remote.trim() ? parsed.sync.remote : "origin",
+              ...(typeof parsed.sync.branch === "string" && parsed.sync.branch.trim() ? { branch: parsed.sync.branch } : {}),
+            }, agent, 30_000)).ok
+          } catch {
+            return false
+          }
+        }).catch(() => false)
+      }
+    }
+    await daemon.start()
+  },
   markStartupFailure: () => { _tombstoneWritten = true },
   exit: (code) => process.exit(code),
 }).then(async (started) => {
@@ -825,10 +846,6 @@ void startDaemonAfterContainerCredentialBootstrap({
   }
   for (const agent of managedAgents) {
     scheduleStartupSentinelAfterProviderPreload(agent, providerPreload)
-    // Presence off here: stop counting as presence-aware in the bundle, so peers fall back to home.
-    if (!readLocalPresenceSettings().enabled) {
-      try { removePeerRecord(path.join(bundlesRoot, `${agent}.ouro`), daemonMachineId) } catch { /* next start retries */ }
-    }
     // Under a presence roster, only the machine that owns `habits` runs this agent's habits and awaits.
     if (!presenceTicker.shouldStartSchedulers(agent)) {
       // Clear cron jobs a crash may have left behind, so they don't fire here while another machine owns habits.

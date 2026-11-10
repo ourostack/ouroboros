@@ -213,15 +213,15 @@ export function removePeerRecord(agentRoot: string, machineId: string): boolean 
   return true
 }
 
-/** Remove this machine's record from every bundle (a rollback to a daemon that knows only `home`). */
-export function removeAllPeerRecords(bundlesRoot: string, machineId: string): string[] {
-  let names: string[]
-  try {
-    names = fs.readdirSync(bundlesRoot).filter((name) => name.endsWith(".ouro"))
-  } catch {
-    return []
-  }
-  return names.filter((name) => removePeerRecord(path.join(bundlesRoot, name), machineId)).map((name) => name.slice(0, -5))
+/**
+ * Leave presence in a bundle: remove this machine's record and publish the
+ * removal, so peers fall back to `home` before this machine runs shared senses
+ * under the home lease. True when the bundle no longer holds this machine's
+ * record on its remote (or never did, or does not sync).
+ */
+export async function leavePresence(agentRoot: string, machineId: string, publish: (agentRoot: string) => Promise<boolean>): Promise<boolean> {
+  if (!removePeerRecord(agentRoot, machineId)) return true
+  return publish(agentRoot)
 }
 
 /** Write this machine's own record. Each machine writes only its own file, so two presences never edit one file. */
