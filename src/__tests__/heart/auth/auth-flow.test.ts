@@ -69,6 +69,7 @@ vi.mock("../../../heart/providers/anthropic-token", () => ({
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   collectRuntimeAuthCredentials,
+  readAccountPoolSettings,
   readAgentConfigForAgent,
   resolveHatchCredentials,
   storeProviderCredentials,
@@ -1382,5 +1383,106 @@ describe("readAgentConfigForAgent v2 validation edge cases", () => {
     const { config } = readAgentConfigForAgent(agentName, bundlesRoot)
     expect(config.humanFacing.provider).toBe("anthropic")
     expect(config.agentFacing.provider).toBe("anthropic")
+  })
+})
+
+describe("github-copilot account pool auth", () => {
+  const appRows = [
+    { login: "ari", host: "github.com", settings_json: "{}" },
+    { login: "ari", host: "microsoft.ghe.com", settings_json: "{}" },
+    { login: "ari", host: "msft.ghe.com", settings_json: "{}" },
+  ]
+  const spawnFor = (fleetToken: string) => vi.fn((cmd: string, args: string[]) => {
+    if (cmd === "/usr/bin/sqlite3") return { status: 0, stdout: JSON.stringify(appRows) }
+    if (args[3] === "github.com") return { status: fleetToken ? 0 : 1, stdout: fleetToken }
+    return { status: 0, stdout: `tok-${args[3]}\n` }
+  })
+  const copilotFetch = vi.fn(async (url: string) => {
+    const host = new URL(url).hostname.replace(/^api\./, "")
+    return new Response(JSON.stringify({ login: "ari", endpoints: { api: `https://copilot-api.${host}` }, quota_snapshots: { premium_interactions: { percent_remaining: 50 } } }))
+  })
+
+  it("discovers the pool from the Copilot app when agent.json asks for one", async () => {
+    emitTestEvent("github-copilot account pool discovery")
+    const bundlesRoot = makeTempDir("auth-flow-pool")
+    writeAgentConfig(bundlesRoot, "PoolBot", "github-copilot", { accountPool: { eligible: "work", fleet: { gistId: "gist1", user: "ari", machine: "laptop" } } })
+    const spawnSync = spawnFor("fleet-token\n")
+    const progress: string[] = []
+    vi.stubGlobal("fetch", copilotFetch)
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "PoolBot", provider: "github-copilot", onProgress: (message) => progress.push(message) },
+        { bundlesRoot, homeDir: "/Users/x", spawnSync: spawnSync as any },
+      )
+      expect(creds).toMatchObject({ githubToken: "tok-microsoft.ghe.com", baseUrl: "https://copilot-api.microsoft.ghe.com", fleetGistToken: "fleet-token", fleetGistId: "gist1", fleetMachine: "laptop" })
+      expect(JSON.parse(creds.accountPool!).map((a: { host: string }) => a.host)).toEqual(["microsoft.ghe.com", "msft.ghe.com"])
+      expect(spawnSync).toHaveBeenCalledWith("gh", ["auth", "token", "--hostname", "github.com", "--user", "ari"], { encoding: "utf8" })
+      expect(progress).toContain("skipped ari@github.com: not eligible for this agent")
+      expect(progress).toContain("account pool: ari@microsoft.ghe.com, ari@msft.ghe.com")
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("leaves burn publishing off without a fleet token, and works without a fleet or machine", async () => {
+    emitTestEvent("github-copilot account pool without fleet token")
+    const bundlesRoot = makeTempDir("auth-flow-pool-nofleet")
+    writeAgentConfig(bundlesRoot, "PoolBot", "github-copilot", { accountPool: { fleet: { gistId: "gist1" } } })
+    writeAgentConfig(bundlesRoot, "PlainPool", "github-copilot", { accountPool: {} })
+    const progress: string[] = []
+    vi.stubGlobal("fetch", copilotFetch)
+    try {
+      const noToken = await collectRuntimeAuthCredentials(
+        { agentName: "PoolBot", provider: "github-copilot", onProgress: (message) => progress.push(message) },
+        { bundlesRoot, spawnSync: spawnFor("") as any },
+      )
+      expect(noToken.fleetGistToken).toBeUndefined()
+      expect(progress).toContain("no github.com token for the fleet gist; burn publishing stays off")
+      const withToken = await collectRuntimeAuthCredentials(
+        { agentName: "PoolBot", provider: "github-copilot" },
+        { bundlesRoot, spawnSync: spawnFor("t") as any },
+      )
+      expect(withToken).toMatchObject({ fleetGistId: "gist1" })
+      expect(withToken.fleetMachine).toBeUndefined()
+      const plain = await collectRuntimeAuthCredentials(
+        { agentName: "PlainPool", provider: "github-copilot" },
+        { bundlesRoot, spawnSync: spawnFor("t") as any },
+      )
+      expect(plain.fleetGistId).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("fails clearly when no eligible account is signed in", async () => {
+    emitTestEvent("github-copilot account pool empty")
+    const bundlesRoot = makeTempDir("auth-flow-pool-empty")
+    writeAgentConfig(bundlesRoot, "PoolBot", "github-copilot", { accountPool: { eligible: ["*@nowhere.example"] } })
+    await expect(collectRuntimeAuthCredentials(
+      { agentName: "PoolBot", provider: "github-copilot" },
+      { bundlesRoot, spawnSync: spawnFor("") as any },
+    )).rejects.toThrow(/No eligible Copilot account is signed in on this machine for PoolBot/)
+  })
+
+  it("reads pool settings only from a readable bundle with an accountPool object", () => {
+    emitTestEvent("github-copilot account pool settings")
+    const bundlesRoot = makeTempDir("auth-flow-pool-settings")
+    writeAgentConfig(bundlesRoot, "PoolBot", "github-copilot", { accountPool: { eligible: "personal" } })
+    writeAgentConfig(bundlesRoot, "Flag", "github-copilot", { accountPool: true })
+    expect(readAccountPoolSettings("PoolBot", bundlesRoot)).toEqual({ eligible: "personal" })
+    expect(readAccountPoolSettings("Flag", bundlesRoot)).toBeNull()
+    expect(readAccountPoolSettings("Missing", bundlesRoot)).toBeNull()
+  })
+
+  it("stores the pool and fleet fields in the vault record", async () => {
+    emitTestEvent("github-copilot account pool store")
+    providerCredentialWrites.length = 0
+    await storeProviderCredentials("PoolBot", "github-copilot", {
+      githubToken: "t", baseUrl: "https://b", accountPool: "[]", fleetGistToken: "ft", fleetGistId: "g", fleetMachine: "laptop",
+    })
+    expect(providerCredentialWrites.at(-1)).toMatchObject({
+      credentials: { githubToken: "t", accountPool: "[]", fleetGistToken: "ft" },
+      config: { baseUrl: "https://b", fleetGistId: "g", fleetMachine: "laptop" },
+    })
   })
 })

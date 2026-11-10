@@ -6,6 +6,7 @@ import { migrateAgentConfigV1ToV2 } from "./migrate-config"
 import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 import { validateAgentDisplayName } from "../senses/shepherd/agent-presentation"
 import { normalizeShepherdCheckInMinutes } from "../senses/shepherd/checkin-config"
+import type { AccountPoolSettings } from "./providers/account-pool"
 
 export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
@@ -123,6 +124,11 @@ export interface AgentConfig {
    * work-organization workspaces (the desk plugin is the first such use case).
    */
   plugins?: PluginConfig[]
+  /**
+   * Bill model calls across a discovered pool of Copilot accounts (github-copilot only). `ouro auth`
+   * discovers the accounts; the runtime moves between them by quota tranche and on a 402 or 429.
+   */
+  accountPool?: AccountPoolSettings
 }
 
 export interface PluginConfig {

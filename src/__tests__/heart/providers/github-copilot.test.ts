@@ -417,3 +417,55 @@ describe("createGithubCopilotProviderRuntime", () => {
     ).rejects.toThrow("auth failed")
   })
 })
+
+describe("github-copilot account pool", () => {
+  const pool = JSON.stringify([
+    { login: "ari", host: "msft.ghe.com", baseUrl: "https://copilot-api.msft.ghe.com", githubToken: "t-msft" },
+    { login: "ari", host: "microsoft.ghe.com", baseUrl: "https://copilot-api.microsoft.ghe.com", githubToken: "t-mscom" },
+  ])
+  const config = { githubToken: "t-msft", baseUrl: "https://copilot-api.msft.ghe.com", accountPool: pool }
+  const quota = () => Object.assign(new Error("429 quota exceeded"), { status: 429 })
+
+  it("has no pool for a single-account credential", async () => {
+    const { createGithubCopilotPooledCaller } = await import("../../../heart/providers/github-copilot")
+    expect(createGithubCopilotPooledCaller({ githubToken: "t", baseUrl: "https://x" })).toBeNull()
+  })
+
+  it("builds the turn's client from the pool's account", async () => {
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    createGithubCopilotProviderRuntime("claude-opus-5.5", { ...config, fleetGistId: "g", fleetGistToken: "gt", fleetMachine: "laptop" })
+    expect(mockOpenAICtor).toHaveBeenCalledTimes(1)
+    expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "t-msft", baseURL: "https://copilot-api.msft.ghe.com" }))
+  })
+
+  it("on a 429 switches account and retries the chat turn once", async () => {
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const runtime = createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    mockStreamChatCompletion.mockRejectedValueOnce(quota()).mockResolvedValueOnce({ content: "ok" })
+    await expect(runtime.streamTurn({ messages: [], activeTools: [], callbacks: {} as any })).resolves.toEqual({ content: "ok" })
+    expect(mockStreamChatCompletion).toHaveBeenCalledTimes(2)
+    expect(mockStreamChatCompletion.mock.calls[0][0]).not.toBe(mockStreamChatCompletion.mock.calls[1][0])
+    expect(mockOpenAICtor).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: "t-mscom", baseURL: "https://copilot-api.microsoft.ghe.com" }))
+  })
+
+  it("keeps the next turn on the account it switched to", async () => {
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const first = createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    mockStreamChatCompletion.mockRejectedValueOnce(quota()).mockResolvedValueOnce({ content: "ok" })
+    await first.streamTurn({ messages: [], activeTools: [], callbacks: {} as any })
+    mockOpenAICtor.mockClear()
+    createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "t-mscom" }))
+  })
+
+  it("switches on a 429 for the Responses API and for pings", async () => {
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const responses = createGithubCopilotProviderRuntime("gpt-5.4", config)
+    mockStreamResponsesApi.mockRejectedValueOnce(quota()).mockResolvedValueOnce({ outputItems: [] })
+    await expect(responses.streamTurn({ messages: [], activeTools: [], callbacks: {} as any })).resolves.toEqual({ outputItems: [] })
+    expect(mockStreamResponsesApi).toHaveBeenCalledTimes(2)
+    await expect(responses.ping!()).resolves.toBeUndefined()
+    const chat = createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    await expect(chat.ping!()).resolves.toBeUndefined()
+  })
+})

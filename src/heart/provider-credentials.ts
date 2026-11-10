@@ -107,8 +107,8 @@ const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; conf
     config: [],
   },
   "github-copilot": {
-    credentials: ["githubToken"],
-    config: ["baseUrl"],
+    credentials: ["githubToken", "accountPool", "fleetGistToken"],
+    config: ["baseUrl", "fleetGistId", "fleetMachine"],
   },
   "openai-compatible": {
     credentials: ["apiKey"],

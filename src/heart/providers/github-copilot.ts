@@ -6,11 +6,32 @@ import type { ResponseItem, TurnResult } from "../streaming";
 import { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, truncateResponsesFunctionCallOutput } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
+import * as path from "path";
+import { getAgentName, getAgentRoot } from "../identity";
+import { createPooledCaller, fetchDirectReadings, getAccountPool, parseAccountPool, type PooledCaller } from "./account-pool";
+import { loadFleetQuota, mergeReadings, publishAgentBurn } from "../quota/fleet-readings";
 
 export function classifyGithubCopilotError(error: Error): ProviderErrorClassification {
   return classifyHttpError(error)
 }
 
+
+/** The agent's account pool for this turn, when `ouro auth` discovered one; null for a single account. */
+export function createGithubCopilotPooledCaller(config: GithubCopilotProviderConfig): PooledCaller<OpenAI> | null {
+  const accounts = parseAccountPool(config.accountPool);
+  if (accounts.length === 0) return null;
+  const gist = config.fleetGistId && config.fleetGistToken ? { gistId: config.fleetGistId, token: config.fleetGistToken } : null;
+  const pool = getAccountPool(accounts, {
+    agent: getAgentName(),
+    machine: config.fleetMachine,
+    switchLog: path.join(getAgentRoot(), "state", "account-switches.jsonl"),
+    /* v8 ignore start -- network readers and publisher: each is tested in its own module @preserve */
+    loadReadings: async () => mergeReadings(await loadFleetQuota(gist), await fetchDirectReadings(accounts)),
+    publishBurn: gist ? (burn) => publishAgentBurn(gist, burn) : undefined,
+    /* v8 ignore stop */
+  });
+  return createPooledCaller(pool, (account) => new OpenAI({ apiKey: account.githubToken, baseURL: account.baseUrl, maxRetries: 0 }));
+}
 
 export function createGithubCopilotProviderRuntime(model: string, config: GithubCopilotProviderConfig = getGithubCopilotConfig()): ProviderRuntime {
   emitNervesEvent({
@@ -36,11 +57,15 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
   /* v8 ignore next -- branch: capability detection tested via unit test @preserve */
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
-  const client = new OpenAI({
+  // With an account pool the account is chosen here, between turns; a 402 or 429 moves it mid-request.
+  const pooled = createGithubCopilotPooledCaller(config);
+  const client = pooled ? pooled.client() : new OpenAI({
     apiKey: config.githubToken,
     baseURL: config.baseUrl,
     maxRetries: 0,
   });
+  const callModel = <T>(fallback: OpenAI, request: (client: OpenAI) => Promise<T>): Promise<T> =>
+    pooled ? pooled.call((pooledClient) => request(pooledClient)) : request(fallback);
 
   if (isCompletionsModel) {
     // Chat completions path (Claude models via Copilot)
@@ -70,13 +95,13 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
         // The engine already retries a turn that ends without a tool call.
         if (request.toolChoiceRequired) params.tool_choice = "auto";
         try {
-          return await streamChatCompletion(
-            this.client as OpenAI,
+          return await callModel(this.client as OpenAI, (turnClient) => streamChatCompletion(
+            turnClient,
             params,
             request.callbacks,
             request.signal,
             request.eagerSettleStreaming,
-          );
+          ));
         } catch (error) {
           throw error instanceof Error ? error : new Error(String(error));
         }
@@ -84,10 +109,10 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
       /* v8 ignore stop */
       /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
       async ping(signal?: AbortSignal): Promise<void> {
-        await (this.client as OpenAI).chat.completions.create(
+        await callModel(this.client as OpenAI, (turnClient) => turnClient.chat.completions.create(
           { model: this.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
           { signal },
-        )
+        ))
       },
       /* v8 ignore stop */
       /* v8 ignore next 3 -- delegation: classification logic tested via classifyGithubCopilotError @preserve */
@@ -131,13 +156,13 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
       if (request.traceId) params.metadata = { trace_id: request.traceId };
       if (request.toolChoiceRequired) params.tool_choice = "required";
       try {
-        const result = await streamResponsesApi(
-          this.client as OpenAI,
+        const result = await callModel(this.client as OpenAI, (turnClient) => streamResponsesApi(
+          turnClient,
           params,
           request.callbacks,
           request.signal,
           request.eagerSettleStreaming,
-        );
+        ));
         for (const item of result.outputItems) nativeInput!.push(item);
         return result;
       } catch (error) {
@@ -147,10 +172,10 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
     /* v8 ignore stop */
     /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
     async ping(signal?: AbortSignal): Promise<void> {
-      await (this.client as OpenAI).responses.create(
+      await callModel(this.client as OpenAI, (turnClient) => turnClient.responses.create(
         { model: this.model, input: "ping", max_output_tokens: 16 } as any,
         { signal },
-      )
+      ))
     },
     /* v8 ignore stop */
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyGithubCopilotError @preserve */
