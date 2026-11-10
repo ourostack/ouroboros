@@ -139,7 +139,7 @@ describe("presence failover: what this machine says about it", () => {
   it("lets the returning owner say it runs the sense, not that it waits on the stand-in", () => {
     const back = presence([rec(LAPTOP, { owns: ["teams"], failover: ["teams"] }), rec(MINI)])
     const where = renderWhereAmI(back, { machineId: MINI, name: "aris-mac-mini", role: "always-on", os: "macOS 26", location: "home" }, NOW.getTime())
-    expect(where).toContain("shared senses that run here: teams,")
+    expect(where).toContain("that run here, on aris-mac-mini: teams,")
     expect(where).not.toContain("waiting for")
   })
 

@@ -81,12 +81,12 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
     const holder = presence.peers.find((peer) => peer.machineId !== self.machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense) && !peer.failover?.includes(sense))
     return holder ? `${sense} (not yet: waiting for ${machineName(holder.machineId)} to let go)` : sense
   })
-  lines.push(`shared senses that run here: ${here.length > 0 ? here.join(", ") : "none"}.`)
+  lines.push(`shared senses (each runs on exactly one machine) that run here, on ${self.name}: ${here.length > 0 ? here.join(", ") : "none"}.`)
   for (const lease of standIn) {
     lines.push(`i am running ${lease.sense} here in place of ${machineName(lease.from)} since ${ago(lease.since, nowMs)}, because ${lease.reason || "it stopped answering"}; ${machineName(lease.from)} takes it back as soon as it runs again.`)
   }
   if (elsewhere.length > 0) {
-    lines.push(`shared senses that run on a peer: ${elsewhere.map((sense) => {
+    lines.push(`shared senses that run on a peer, not here: ${elsewhere.map((sense) => {
       const owner = effectiveOwner(presence, sense)
       const record = presence.peers.find((peer) => peer.machineId === owner)
       const shown = record?.owns?.includes(sense) ? `its record from ${ago(record.seenAt, nowMs)} says it runs it` : "its last record does not show it running"
@@ -96,7 +96,8 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
   const off = SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense)).map((sense) => SENSE_NAMES[sense] ?? sense)
   if (off.length > 0) lines.push(`turned off in agent.json, so running on no machine: ${off.join(", ")}.`)
   const local = MACHINE_SENSES.filter((sense) => senseEnabled(presence, sense))
-  lines.push(`machine-scoped senses that run on every presence and see only their own machine: ${local.length > 0 ? local.join(", ") : "none"}.`)
+  const localOff = MACHINE_SENSES.filter((sense) => !senseEnabled(presence, sense))
+  lines.push(`machine-scoped senses that run on every presence and see only their own machine: ${local.length > 0 ? local.join(", ") : "none"}${localOff.length > 0 ? `; turned off in agent.json: ${localOff.join(", ")}` : ""}.`)
   if (presence.legacy.length > 0) {
     lines.push(`until ${presence.legacy.map((id) => machineName(id)).join(", ")} publish${presence.legacy.length === 1 ? "es" : ""} a current presence record, every shared sense stays with home.`)
   }
