@@ -333,6 +333,18 @@ const presenceTicker = new PresenceTicker({
     for (const scheduler of started.await) awaitSchedulers.splice(awaitSchedulers.indexOf(scheduler), 1)
   },
   schedulersRunning: (agent) => agentSchedulers.has(agent),
+  notify: async (agent, text) => {
+    await sendDaemonCommand(socketPath, { kind: "message.send", from: "presence", to: agent, content: text })
+    await sendDaemonCommand(socketPath, {
+      kind: "private.wake",
+      agent,
+      reason: "presence arrival",
+      triggerSource: "presence-arrival",
+      budgetClass: "interactive",
+      idempotencyKey: `presence-arrival:${agent}:${new Date().toISOString().slice(0, 10)}`,
+      originRefs: [{ kind: "presence", id: "arrival" }],
+    } as Parameters<typeof sendDaemonCommand>[1])
+  },
 })
 /* v8 ignore stop */
 const containerRuntimePolicy = readContainerRuntimePolicy()

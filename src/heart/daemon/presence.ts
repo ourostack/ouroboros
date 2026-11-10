@@ -93,6 +93,10 @@ export interface LocalPresenceSettings {
   location?: string
   /** The daemon's launchd `Nice` on this machine (e.g. 10 where foreground work comes first). */
   nice?: number
+  /** A command (argv) that prints this machine's location, as text or JSON `{ "location": … }`; run each minute. */
+  locationCommand?: string[]
+  /** Per location, a command (argv) to run the first time each day this machine arrives there; its output goes to the agent to tell its owner. */
+  onArrive?: Record<string, string[]>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -222,6 +226,17 @@ export function readLocalPresenceSettings(homeDir: string = os.homedir(), env: N
       const location = text(parsed.location)
       if (location) settings.location = location
       if (typeof parsed.nice === "number" && Number.isInteger(parsed.nice) && parsed.nice >= -20 && parsed.nice <= 20) settings.nice = parsed.nice
+      const argv = (value: unknown): string[] | null => (Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string") ? value as string[] : null)
+      const locationCommand = argv(parsed.locationCommand)
+      if (locationCommand) settings.locationCommand = locationCommand
+      if (isRecord(parsed.onArrive)) {
+        const onArrive: Record<string, string[]> = {}
+        for (const [place, command] of Object.entries(parsed.onArrive)) {
+          const parsedCommand = argv(command)
+          if (parsedCommand) onArrive[place] = parsedCommand
+        }
+        if (Object.keys(onArrive).length > 0) settings.onArrive = onArrive
+      }
     }
   } catch {
     // No file: presence is off on this machine.

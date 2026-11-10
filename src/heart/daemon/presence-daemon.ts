@@ -9,8 +9,10 @@
  *   and stop them when another machine does.
  */
 
+import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { execFile } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
   emitOwnershipChange,
@@ -19,6 +21,7 @@ import {
   ownsSense,
   readLocalPresenceSettings,
   readPresenceForAgent,
+  writeLocalPresenceSettings,
   rosterMachine,
   writePeerRecord,
   type PeerRecord,
@@ -54,6 +57,46 @@ export interface PresenceTickDeps {
   schedulersRunning: (agent: string) => boolean
   /** Extra record fields (e.g. the app-sessions snapshot). */
   extraRecord?: (agent: string) => Partial<PeerRecord>
+  /** Run a command; resolves with its stdout. Defaults to execFile. */
+  run?: (argv: string[], timeoutMs: number) => Promise<string>
+  /** Hand the agent something to tell its owner (queued message plus a wake). */
+  notify?: (agent: string, text: string) => Promise<void>
+}
+
+/* v8 ignore start -- production default: a real child process; tests inject run @preserve */
+function runCommand(argv: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(argv[0]!, argv.slice(1), { timeout: timeoutMs, maxBuffer: 4 << 20 }, (error, stdout) => {
+      if (error) reject(error)
+      else resolve(String(stdout))
+    })
+  })
+}
+/* v8 ignore stop */
+
+/** A location from a command's output: JSON `{ "location": … }`, or its first line. */
+export function parseLocationOutput(stdout: string): string | null {
+  const textOut = stdout.trim()
+  if (!textOut) return null
+  try {
+    const parsed = JSON.parse(textOut) as { location?: unknown }
+    return typeof parsed.location === "string" && parsed.location.trim() ? parsed.location.trim() : null
+  } catch {
+    const line = textOut.split("\n")[0]!.trim()
+    return /^[\w .-]{1,40}$/.test(line) ? line : null
+  }
+}
+
+/** What an arrival command printed, for the agent to pass on: JSON `.teams` or `.text`, else the raw text. */
+export function arrivalText(stdout: string): string {
+  try {
+    const parsed = JSON.parse(stdout) as { teams?: unknown; text?: unknown }
+    if (typeof parsed.teams === "string" && parsed.teams.trim()) return parsed.teams.trim()
+    if (typeof parsed.text === "string" && parsed.text.trim()) return parsed.text.trim()
+  } catch {
+    // Plain text.
+  }
+  return stdout.trim()
 }
 
 export class PresenceTicker {
@@ -73,6 +116,7 @@ export class PresenceTicker {
   }
 
   async tick(): Promise<void> {
+    const arrived = await this.refreshLocation()
     for (const agent of this.deps.agents) {
       if (!this.read(agent)) continue
       try {
@@ -80,6 +124,7 @@ export class PresenceTicker {
         const presence = this.read(agent)
         if (!presence) continue
         this.reconcileSchedulers(agent, presence)
+        if (arrived) await this.announceArrival(agent, presence, arrived)
         await this.publish(agent, presence)
       } catch (error) {
         emitNervesEvent({
@@ -91,6 +136,56 @@ export class PresenceTicker {
         })
       }
     }
+  }
+
+  /** Run the location command; returns the new location when it changed and an arrival command exists for it. */
+  private async refreshLocation(): Promise<string | null> {
+    const settings = readLocalPresenceSettings(this.deps.homeDir, {})
+    if (!settings.locationCommand) return null
+    let location: string | null
+    try {
+      location = parseLocationOutput(await (this.deps.run ?? runCommand)(settings.locationCommand, 15_000))
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.presence_location_error", message: "location command failed; keeping the last location", meta: { error: error instanceof Error ? error.message : String(error) } })
+      return null
+    }
+    if (!location || location === settings.location) return null
+    writeLocalPresenceSettings({ ...settings, location }, this.deps.homeDir)
+    // Any record published from now on carries the new location.
+    this.lastPublishedMs.clear()
+    emitNervesEvent({ component: "daemon", event: "daemon.presence_location_changed", message: `this machine is now at ${location}`, meta: { from: settings.location ?? null, to: location } })
+    return settings.onArrive?.[location] ? location : null
+  }
+
+  /** The first arrival at a location each day: run its command once (receipted) and hand the result to the agent. */
+  private async announceArrival(agent: string, presence: Presence, location: string): Promise<void> {
+    const settings = readLocalPresenceSettings(this.deps.homeDir, {})
+    const command = settings.onArrive?.[location]
+    if (!command || !rosterMachine(presence, this.deps.machineId)) return
+    const now = (this.deps.now ?? (() => new Date()))()
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+    const key = `${this.deps.machineId}:${location}:${day}`
+    const receiptPath = path.join(this.deps.bundlesRoot, `${agent}.ouro`, "state", "presence-arrivals.json")
+    let receipts: Record<string, string> = {}
+    try {
+      receipts = JSON.parse(fs.readFileSync(receiptPath, "utf-8")) as Record<string, string>
+    } catch {
+      // No arrivals yet.
+    }
+    if (receipts[key]) return
+    // The receipt comes first, so a crash or restart never announces twice.
+    receipts[key] = now.toISOString()
+    fs.mkdirSync(path.dirname(receiptPath), { recursive: true })
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipts, null, 2)}\n`, "utf-8")
+    const machine = rosterMachine(presence, this.deps.machineId)!
+    let report: string
+    try {
+      report = arrivalText(await (this.deps.run ?? runCommand)(command, 120_000))
+    } catch (error) {
+      report = `the arrival check failed: ${error instanceof Error ? error.message : String(error)}`
+    }
+    emitNervesEvent({ component: "daemon", event: "daemon.presence_arrival", message: `arrived at ${location}`, meta: { agent, machine: machine.name, location } })
+    await this.deps.notify?.(agent, `${machine.name} just arrived at ${location} for the first time today. Tell Ari on Teams now, once, with this arrival check as written:\n\n${report}`)
   }
 
   private read(agent: string): Presence | null {

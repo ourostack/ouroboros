@@ -225,3 +225,18 @@ describe("ownership", () => {
     expect(() => emitOwnershipChange("ouroboros", "teams", false, null)).not.toThrow()
   })
 })
+
+describe("local presence commands and priority", () => {
+  it("reads nice, the location command and arrival commands, ignoring malformed ones", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "presence-cmds-"))
+    try {
+      fs.mkdirSync(path.join(home, ".ouro-cli"))
+      fs.writeFileSync(presenceSettingsPath(home), JSON.stringify({ enabled: true, nice: 10, locationCommand: ["mac", "where"], onArrive: { office: ["mac", "arrival"], bad: [1], empty: [] } }))
+      expect(readLocalPresenceSettings(home, {})).toEqual({ enabled: true, nice: 10, locationCommand: ["mac", "where"], onArrive: { office: ["mac", "arrival"] } })
+      fs.writeFileSync(presenceSettingsPath(home), JSON.stringify({ enabled: true, nice: 99, locationCommand: "mac where", onArrive: { bad: "x" } }))
+      expect(readLocalPresenceSettings(home, {})).toEqual({ enabled: true })
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+})

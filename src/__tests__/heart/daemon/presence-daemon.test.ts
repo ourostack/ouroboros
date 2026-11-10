@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 
 import { PEER_RECORD_INTERVAL_MS, PresenceTicker, describeOs } from "../../../heart/daemon/presence-daemon"
-import { readPeerRecords, readPresence, writeLocalPresenceSettings, type PeerRecord, type Presence } from "../../../heart/daemon/presence"
+import { readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings, type PeerRecord, type Presence } from "../../../heart/daemon/presence"
 
 const LAPTOP = "machine_laptop"
 const MINI = "machine_mini"
@@ -154,5 +154,124 @@ describe("PresenceTicker", () => {
   it("works without a sync or a clock", async () => {
     await new PresenceTicker({ ...deps, sync: undefined, now: undefined }).tick()
     expect(readPeerRecords(path.join(bundlesRoot, "slugger.ouro"))).toHaveLength(1)
+  })
+})
+
+describe("arrival", () => {
+  let tmp: string
+  let bundlesRoot: string
+  let homeDir: string
+  let where: string
+  let clock: number
+  let notify: ReturnType<typeof vi.fn>
+  let run: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "presence-arrival-"))
+    bundlesRoot = path.join(tmp, "AgentBundles")
+    homeDir = path.join(tmp, "home")
+    fs.mkdirSync(path.join(bundlesRoot, "ouroboros.ouro"), { recursive: true })
+    where = JSON.stringify({ location: "home", why: "home router", at: "x" })
+    clock = new Date(2026, 10, 10, 8, 0).getTime()
+    notify = vi.fn(async () => undefined)
+    run = vi.fn(async (argv: string[]) => (argv[1] === "where" ? where : JSON.stringify({ ok: true, teams: "All green from the office." })))
+    writeLocalPresenceSettings({ enabled: true, location: "home", locationCommand: ["mac", "where", "--json"], onArrive: { office: ["mac", "arrival", "--json"] } }, homeDir)
+  })
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }) })
+
+  const ticker = () => new PresenceTicker({
+    agents: ["ouroboros"],
+    bundlesRoot,
+    machineId: LAPTOP,
+    version: V,
+    homeDir,
+    now: () => new Date(clock),
+    readPresence: () => presenceWith({}),
+    startSchedulers: () => undefined,
+    stopSchedulers: () => undefined,
+    schedulersRunning: () => true,
+    run,
+    notify,
+  })
+
+  it("announces the first arrival at the office exactly once, even across restarts", async () => {
+    const first = ticker()
+    await first.tick()
+    expect(notify).not.toHaveBeenCalled()
+    where = JSON.stringify({ location: "office" })
+    await first.tick()
+    await first.tick()
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledWith("ouroboros", "Aris-MacBook-Pro just arrived at office for the first time today. Tell Ari on Teams now, once, with this arrival check as written:\n\nAll green from the office.")
+    expect(readLocalPresenceSettings(homeDir, {}).location).toBe("office")
+    expect(readPeerRecords(path.join(bundlesRoot, "ouroboros.ouro"))[0]!.location).toBe("office")
+    // Back home and in again the same day, after a daemon restart: no second post.
+    where = "home"
+    await ticker().tick()
+    where = JSON.stringify({ location: "office" })
+    await ticker().tick()
+    expect(notify).toHaveBeenCalledTimes(1)
+    // The next day it announces again.
+    clock += 24 * 3600_000
+    where = "home"
+    await ticker().tick()
+    where = JSON.stringify({ location: "office" })
+    await ticker().tick()
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it("passes on a failed arrival check, and keeps the last location when the location command fails or says nothing", async () => {
+    run = vi.fn(async (argv: string[]) => {
+      if (argv[1] === "where") return where
+      throw new Error("bus down")
+    })
+    where = "office"
+    await ticker().tick()
+    expect(notify.mock.calls[0]![1]).toContain("the arrival check failed: bus down")
+    run = vi.fn(async () => { throw new Error("no gateway") })
+    await ticker().tick()
+    run = vi.fn(async () => { throw "odd" })
+    await ticker().tick()
+    run = vi.fn(async () => "")
+    await ticker().tick()
+    expect(readLocalPresenceSettings(homeDir, {}).location).toBe("office")
+  })
+
+  it("records a new location without announcing when no arrival command is set for it", async () => {
+    where = "elsewhere"
+    await ticker().tick()
+    expect(readLocalPresenceSettings(homeDir, {}).location).toBe("elsewhere")
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it("does nothing without a location command, or for a machine off the roster", async () => {
+    writeLocalPresenceSettings({ enabled: true, location: "home" }, homeDir)
+    await ticker().tick()
+    expect(run).not.toHaveBeenCalled()
+    writeLocalPresenceSettings({ enabled: true, location: "home", locationCommand: ["mac", "where"], onArrive: { office: ["mac", "arrival"] } }, homeDir)
+    where = "office"
+    await new PresenceTicker({ ...ticker()["deps"], machineId: "machine_stranger" } as ConstructorParameters<typeof PresenceTicker>[0]).tick()
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it("works without a notifier", async () => {
+    where = "office"
+    await new PresenceTicker({ ...ticker()["deps"], notify: undefined } as ConstructorParameters<typeof PresenceTicker>[0]).tick()
+    expect(fs.existsSync(path.join(bundlesRoot, "ouroboros.ouro", "state", "presence-arrivals.json"))).toBe(true)
+  })
+})
+
+describe("command output", () => {
+  it("reads a location from JSON or a first line, and refuses anything else", async () => {
+    const { parseLocationOutput, arrivalText } = await import("../../../heart/daemon/presence-daemon")
+    expect(parseLocationOutput('{"location":"office","why":"x"}')).toBe("office")
+    expect(parseLocationOutput('{"location":""}')).toBeNull()
+    expect(parseLocationOutput("home\nmore")).toBe("home")
+    expect(parseLocationOutput("  ")).toBeNull()
+    expect(parseLocationOutput("<html>")).toBeNull()
+    expect(arrivalText('{"teams":" hi "}')).toBe("hi")
+    expect(arrivalText('{"text":"yo"}')).toBe("yo")
+    expect(arrivalText('{"ok":true}')).toBe('{"ok":true}')
+    expect(arrivalText("plain\n")).toBe("plain")
   })
 })
