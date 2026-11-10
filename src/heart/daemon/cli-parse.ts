@@ -136,6 +136,34 @@ function parseVoiceCommand(args: string[]): OuroCliCommand {
   return { kind: "voice.join", request }
 }
 
+const SERVICE_USAGE = "Usage: ouro service install --init <sysv|systemd> [--path <file>] [--print] | ouro service uninstall"
+
+function parseServiceCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (sub === "uninstall" && rest.length === 0) return { kind: "service.uninstall" }
+  if (sub !== "install") throw new Error(SERVICE_USAGE)
+  let init: "sysv" | "systemd" | undefined
+  let servicePath: string | undefined
+  let print = false
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index]
+    const value = rest[index + 1]
+    if (token === "--init" && (value === "sysv" || value === "systemd") && init === undefined) {
+      init = value
+      index += 1
+    } else if (token === "--path" && value && !value.startsWith("--") && servicePath === undefined) {
+      servicePath = value
+      index += 1
+    } else if (token === "--print" && !print) {
+      print = true
+    } else {
+      throw new Error(SERVICE_USAGE)
+    }
+  }
+  if (!init) throw new Error(SERVICE_USAGE)
+  return { kind: "service.install", init, print, ...(servicePath ? { path: servicePath } : {}) }
+}
+
 function parseLogsCommand(args: string[]): OuroCliCommand {
   if (args.length === 0) return { kind: "daemon.logs" }
   if (args[0] !== "prune") throw new Error("Usage: ouro logs prune [--agent <name>]")
@@ -2949,6 +2977,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "event") return parseEventCommand(args.slice(1))
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
+  if (head === "service") return parseServiceCommand(args.slice(1))
   if (head === "sanctuary") {
     if (args.length === 3 && args[1] === "git-exclude" && args[2] === "--print") return { kind: "sanctuary.git-exclude" }
     throw new Error("Usage: ouro sanctuary git-exclude --print")

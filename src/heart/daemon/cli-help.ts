@@ -61,6 +61,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro logs",
     subcommands: ["prune"],
   },
+  service: {
+    category: "Lifecycle",
+    description: "Run the daemon as a supervised service on Linux without launchd (SysV init script or systemd unit); `ouro up` then starts it through the service",
+    usage: "ouro service install --init <sysv|systemd> [--path <file>] [--print] | ouro service uninstall",
+    example: "ouro service install --init sysv",
+    subcommands: ["install", "uninstall"],
+  },
   dev: {
     category: "Lifecycle",
     description: "Start daemon in development mode from a local repo",

@@ -173,6 +173,17 @@ If `ouro up` has to replace an older or drifted daemon, it now says that plainly
 ouro chat <name>
 ```
 
+### Keeping the daemon running on Linux
+
+On macOS, launchd keeps the daemon running and restarts it after a crash. On Linux, install a supervised service once, so the same holds:
+
+```bash
+ouro service install --init systemd   # a systemd unit: system-wide as root, a user unit otherwise
+ouro service install --init sysv      # an init script with a respawn loop, for BusyBox or other non-systemd init
+```
+
+Both run the daemon in the foreground and restart it only when it fails, so `ouro stop` still stops it. After installing, `ouro up` starts the daemon through the service. Add `--print` to see the file without installing it, or `--path <file>` to write it elsewhere (the SysV default is `/etc/init.d/S99ouro`, which BusyBox and Buildroot run at boot). `ouro service uninstall` removes it.
+
 ## Step 5: Set up dev tool integration (optional)
 
 If you want your agent available in Claude Code (or Codex), ask the agent directly:
