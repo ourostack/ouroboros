@@ -9,7 +9,7 @@ import { resolveDeskRecordPaths } from "../../mind/record-paths"
 import { resolveVaultConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createVaultAccount } from "../../repertoire/vault-setup"
-import { promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
+import { promptConfirmedVaultUnlockSecret, resolveVaultUnlockStore, storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
 
 const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
@@ -178,6 +178,14 @@ async function execCompleteAdoption(
   }
 
   const vault = resolveVaultConfig(name)
+  // Resolve the local unlock store before creating the vault account, so a machine without one
+  // fails here instead of leaving an orphaned account that a re-run can't register again.
+  try {
+    resolveVaultUnlockStore({ agentName: name, email: vault.email, serverUrl: vault.serverUrl })
+  } catch (error) {
+    return `error: no local store for the vault unlock secret, so no vault was created. ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+  }
+
   let vaultUnlockSecret: string
   try {
     vaultUnlockSecret = await promptConfirmedVaultUnlockSecret({

@@ -37,6 +37,7 @@ const mockProviderCredentials = vi.hoisted(() => ({
 
 const mockVaultDeps = vi.hoisted(() => ({
   createVaultAccount: vi.fn(async () => ({ success: true })),
+  resolveVaultUnlockStore: vi.fn(() => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })),
   storeVaultUnlockSecret: vi.fn(() => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })),
   getVaultUnlockStatus: vi.fn(() => ({
     configured: true,
@@ -78,6 +79,7 @@ vi.mock("../../../repertoire/vault-unlock", async () => {
     credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
       `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
     storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
+    resolveVaultUnlockStore: (...args: unknown[]) => mockVaultDeps.resolveVaultUnlockStore(...args),
     getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
     isCredentialVaultNotConfiguredError: (message: string) =>
       message.includes("credential vault is not configured in "),
@@ -677,6 +679,7 @@ afterEach(() => {
   mockProviderCredentials.readProviderCredentialPool.mockClear()
   mockVaultDeps.createVaultAccount.mockReset()
   mockVaultDeps.createVaultAccount.mockResolvedValue({ success: true })
+  mockVaultDeps.resolveVaultUnlockStore.mockClear()
   mockVaultDeps.storeVaultUnlockSecret.mockReset()
   mockVaultDeps.storeVaultUnlockSecret.mockReturnValue({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })
   mockVaultDeps.getVaultUnlockStatus.mockReset()
@@ -6039,6 +6042,35 @@ describe("provider CLI command execution", () => {
     expect(rejectedOutput).toContain("... creating vault account")
     expect(rejectedOutput).toContain("✗ creating vault account")
     expect(rejectedOutput).toContain("failed")
+  })
+
+  it("vault create fails before creating an account when this machine has no unlock store", async () => {
+    emitTestEvent("provider cli vault create no unlock store")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-nostore-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-nostore-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.resolveVaultUnlockStore.mockImplementationOnce(() => {
+      throw new Error("No supported secure local secret store was found on this machine for Slugger.")
+    })
+    const promptSecret = vi.fn(async () => "Chosen-create-secret1!")
+
+    await expect(runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--server",
+      "https://vault.example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, { promptSecret }))).rejects.toThrow("No supported secure local secret store")
+
+    expect(mockVaultDeps.resolveVaultUnlockStore).toHaveBeenCalledWith(
+      { agentName: "Slugger", email: "operator@example.com", serverUrl: "https://vault.example.com" },
+      { homeDir, store: undefined },
+    )
+    expect(promptSecret).not.toHaveBeenCalled()
+    expect(mockVaultDeps.createVaultAccount).not.toHaveBeenCalled()
   })
 
   it("vault create defaults to the stable agent email when no locator exists", async () => {

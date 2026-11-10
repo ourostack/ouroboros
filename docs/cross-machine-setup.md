@@ -138,7 +138,7 @@ If provider credentials are missing or stale, run:
 ouro auth --agent <agent>
 ```
 
-This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.). On WSL/Linux, vault unlock uses Linux Secret Service (`secret-tool`) by default. If that's not available, it falls back to explicit plaintext with user confirmation.
+This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.). On WSL/Linux, vault unlock uses Linux Secret Service (`secret-tool`) by default. If that's not available, it falls back to explicit plaintext with user confirmation. On a headless appliance without `secret-tool` (for example a BusyBox router), set `OURO_VAULT_UNLOCK_STORE=plaintext-file` for the ouro service and for every ouro command, including `ouro hatch`, so they all keep the unlock secret in a chmod 0600 file under `~/.ouro-cli`.
 
 If this agent predates the vault-backed auth model, follow the **Old Auth-Style Agents** checklist in [docs/auth-and-providers.md](auth-and-providers.md) before relying on `ouro up`.
 
