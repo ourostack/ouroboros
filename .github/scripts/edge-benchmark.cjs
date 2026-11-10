@@ -235,10 +235,16 @@ function renderReport(current, baseline, baselineLabel) {
     "| --- | ---: | ---: | ---: |",
     ...rows.map((row) => `| ${row.label} | ${formatValue(row.current, row.unit)} | ${formatValue(row.baseline, row.unit)} | ${deltaText(row.delta)} |`),
   ]
-  const heavy = current.cli?.topPackages
-  if (heavy?.length) {
-    lines.push("", `<details><summary>What \`ouro --version\` loads (modules per package)</summary>`, "")
-    lines.push(heavy.map((entry) => `${entry.name} ${entry.modules}`).join(" · "), "", "</details>")
+  const loads = [
+    ["`ouro --version`", current.cli?.topPackages],
+    ["the agentless daemon", current.daemon?.topPackages],
+    ...(current.stack?.roles ?? []).map((role) => [`the one-agent stack's ${role.role} (idle)`, role.topPackages]),
+    ...(current.turn?.moduleRoles ?? []).map((role) => [`${role.role} after the turn`, role.topPackages]),
+  ].filter(([, packages]) => packages?.length)
+  if (loads.length) {
+    lines.push("", "<details><summary>What each process loads (modules per package)</summary>", "")
+    for (const [label, packages] of loads) lines.push(`- ${label}: ${packages.map((entry) => `${entry.name} ${entry.modules}`).join(" · ")}`)
+    lines.push("", "</details>")
   }
   if (current.errors?.length) {
     lines.push("", "**Scenario errors:**", ...current.errors.map((error) => `- ${error}`))
@@ -673,7 +679,15 @@ async function measureStack(root, workDir, options) {
       idlePssKb: idle.pssKb,
       idleAnonKb: idle.anonKb,
       modules: inTree.reduce((sum, record) => sum + record.modules, 0) || null,
-      roles: inTree.map((record) => ({ role: record.role, modules: record.modules, rssKb: Math.round(record.rss / 1024) })),
+      roles: inTree.map((record) => ({ role: record.role, modules: record.modules, rssKb: Math.round(record.rss / 1024), topPackages: topPackages(record.byPackage) })),
+    }
+
+    // What each process has loaded once the turn is over, for the report's "heaviest packages".
+    const turnModuleRoles = () => {
+      const pids = new Set(treePids(psTable(), daemonPid))
+      return latestSnapshots(fs.readFileSync(out, "utf8").split("\n"))
+        .filter((record) => pids.has(record.pid) && !FAKES.has(record.role))
+        .map((record) => ({ role: record.role, modules: record.modules, topPackages: topPackages(record.byPackage) }))
     }
 
     // Turn: one operator message, measured until the stack is quiet again.
@@ -705,6 +719,7 @@ async function measureStack(root, workDir, options) {
       processes: peak.last?.processes ?? null,
       roles: peak.last?.roles ?? [],
       peakRoles: peak.peakRoles ?? [],
+      moduleRoles: turnModuleRoles(),
     }
     return { stack, turn }
   } finally {

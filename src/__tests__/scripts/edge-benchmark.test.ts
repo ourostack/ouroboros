@@ -81,7 +81,9 @@ describe("edge-benchmark", () => {
       host: { platform: "linux", arch: "arm64", node: "22.23.4", cpus: 4, cpuModel: "A53", totalMemBytes: 1024 ** 3, memoryCapMiB: 1024 },
       package: { version: "0.1.0-alpha.998", source: "packed" },
       cli: { modules: 400, wallMs: 1000, topPackages: [{ name: "(own)", modules: 380 }] },
-      daemon: { idleRssKb: 110_000 },
+      daemon: { idleRssKb: 110_000, topPackages: [{ name: "(own)", modules: 181 }, { name: "semver", modules: 11 }] },
+      stack: { roles: [{ role: "daemon-entry.js", modules: 355, topPackages: [{ name: "openai", modules: 115 }] }, { role: "agent-entry.js", modules: 21 }] },
+      turn: { moduleRoles: [{ role: "agent-entry.js", modules: 600, topPackages: [{ name: "@anthropic-ai/sdk", modules: 52 }] }] },
       errors: ["stack: boom"],
     }
     const rows = bench.compare(current, baseline)
@@ -96,7 +98,11 @@ describe("edge-benchmark", () => {
     expect(markdown).toMatch(/modules loaded \| 400 \| 1483 \| \*\*-73\.0%\*\* 🟢/)
     expect(markdown).toContain("+10.0% 🔺")
     expect(markdown).toContain("±0%")
-    expect(markdown).toContain("(own) 380")
+    expect(markdown).toContain("- `ouro --version`: (own) 380")
+    expect(markdown).toContain("- the agentless daemon: (own) 181 · semver 11")
+    expect(markdown).toContain("- the one-agent stack's daemon-entry.js (idle): openai 115")
+    expect(markdown).not.toContain("agent-entry.js (idle)")
+    expect(markdown).toContain("- agent-entry.js after the turn: @anthropic-ai/sdk 52")
     expect(markdown).toContain("- stack: boom")
     expect(bench.renderReport({ host: {} }, null)).toContain("No baseline yet.")
   })
