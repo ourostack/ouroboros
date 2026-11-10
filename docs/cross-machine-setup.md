@@ -5,7 +5,7 @@ This guide covers how to get an existing Ouroboros agent running on a second (or
 ## Prerequisites
 
 You need:
-- **git** on the target machine. A Linux host with no git and no package manager to install it (a BusyBox appliance, for example) can run `ouro git install`, which installs a portable git under `~/.ouro-cli/tools/git` (GitHub Desktop's dugite-native build for arm64, x64 or arm, checked against a pinned sha256; HTTPS needs the host's `libcurl.so.4`). Ouro uses it only when the host has no git of its own, and `ouro clone` installs it on its own when git is missing. `ouro git status` shows which git is in use.
+- **git** on the target machine. A Linux host with no git and no package manager to install it (a BusyBox appliance, for example) can run `ouro git install`, which installs a portable git under `~/.ouro-cli/tools/git` (GitHub Desktop's dugite-native build for arm64, x64 or arm, checked against a pinned sha256; HTTPS needs the host's `libcurl.so.4`). Ouro uses it only when the host has no git of its own, and `ouro clone` installs it on its own when git is missing. `ouro git status` shows which git is in use. Without `gh` on such a host, give git its own credentials: an HTTPS remote with git's `credential.helper store` (a token in `~/.git-credentials`, mode 0600), or an SSH remote with an ECDSA or RSA key (Dropbear's client has no ed25519).
 - **Node.js** (LTS recommended — install via [nvm](https://github.com/nvm-sh/nvm) or your package manager)
 - **Access to the bundle's git remote** (the repo where the agent's bundle is backed up)
 
