@@ -357,6 +357,53 @@ describe("private-runtime policy and ledger", () => {
     })
   })
 
+  const habitRefs = (trigger: string, source: { kind: string; id: string }, extra: Array<{ kind: string; id: string }> = []) => [
+    { kind: "habit", id: "heartbeat" },
+    { kind: "habit-trigger", id: trigger },
+    { kind: "habit-occurrence", id: "2026-11-10T04:00:00.000Z" },
+    source,
+    ...extra,
+  ]
+
+  it.each([
+    ["habit-cron", habitRefs("cron", { kind: "daemon-entry", id: "habit-scheduler" })],
+    ["habit-overdue", habitRefs("overdue", { kind: "daemon-entry", id: "habit-scheduler" })],
+    ["habit-manual", habitRefs("manual", { kind: "daemon-command", id: "habit.poke" })],
+    ["habit-poke", habitRefs("poke", { kind: "daemon-command", id: "habit.probe" }, [{ kind: "capability", id: "no-send" }])],
+  ])("allows verified %s private wakes with the default policy", async (triggerSource, originRefs) => {
+    const privateRuntime = await loadPrivateRuntime()
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: `habit heartbeat fired by ${triggerSource}`,
+      triggerSource,
+      budgetClass: "scheduled",
+      idempotencyKey: `habit:slugger:heartbeat:${triggerSource}:2026-11-10T04:00:00.000Z`,
+      originRefs,
+    }), { ...policyDeps(), evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({ result: "allow", executable: true, reason: "verified daemon habit", triggerSource })
+  })
+
+  it.each([
+    ["no daemon source", "habit-cron", habitRefs("cron", { kind: "sense", id: "cli" })],
+    ["a trigger source that does not match its trigger", "habit-manual", habitRefs("cron", { kind: "daemon-entry", id: "habit-scheduler" })],
+    ["an unknown trigger", "habit-whenever", habitRefs("whenever", { kind: "daemon-entry", id: "habit-scheduler" })],
+    ["no occurrence", "habit-cron", habitRefs("cron", { kind: "daemon-entry", id: "habit-scheduler" }).filter((ref) => ref.kind !== "habit-occurrence")],
+    ["an empty habit name", "habit-cron", habitRefs("cron", { kind: "daemon-entry", id: "habit-scheduler" }).map((ref) => (ref.kind === "habit" ? { ...ref, id: " " } : ref))],
+    ["no trigger ref", "habit-cron", habitRefs("cron", { kind: "daemon-entry", id: "habit-scheduler" }).filter((ref) => ref.kind !== "habit-trigger")],
+  ])("keeps habit private wakes with %s denied by default", async (_label, triggerSource, originRefs) => {
+    const privateRuntime = await loadPrivateRuntime()
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "spoofed habit wake",
+      triggerSource,
+      idempotencyKey: `habit:slugger:spoofed:${_label}`,
+      originRefs,
+    }), { ...policyDeps(), evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({ result: "deny", executable: false, deniedReason: "default policy deny" })
+  })
+
   it("keeps spoofed await private wakes denied by default", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()

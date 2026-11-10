@@ -405,6 +405,8 @@ It runs:
 - self-maintenance checks;
 - bounded private exploration.
 
+The daemon's default policy (`src/heart/private-runtime/policy.ts`) denies a private turn unless the wake proves where it came from. It allows: a habit the daemon fired (its own scheduler, or `ouro poke` and probes through the daemon, naming the habit, its trigger and occurrence, after the daemon checked the habit is active); an await check (scheduler, poke or expiry); a verified external event; an operator `ouro msg`; a Shepherd escalation; and a Copilot app session reply. Anything else is recorded and queued with zero provider calls.
+
 Its transcript can be throwaway because the things that matter leave the lane:
 
 - live continuity and audit -> Arc;

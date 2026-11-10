@@ -4,6 +4,7 @@ import { readAgentConfigForAgent } from "../auth/auth-flow"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ProviderLane } from "../provider-lanes"
 import { readCachedProviderCredentialRecord } from "../provider-credentials"
+import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import { recordPrivateTurnDecision } from "./ledger"
 import type {
   PrivateTurnDecision,
@@ -199,18 +200,7 @@ async function evaluatePolicy(
       reason: "verified daemon await check",
     }
   }
-  const habitTrigger = request.triggerSource.startsWith("habit-") ? request.triggerSource.slice("habit-".length) : ""
-  if (
-    habitTrigger.length > 0
-    && hasNonEmptyOriginRef(originRefs, "habit")
-    && hasOriginRef(originRefs, "habit-trigger", habitTrigger)
-    && hasNonEmptyOriginRef(originRefs, "habit-occurrence")
-    && (
-      hasOriginRef(originRefs, "daemon-entry", "habit-scheduler")
-      || hasOriginRef(originRefs, "daemon-command", "habit.poke")
-      || hasOriginRef(originRefs, "daemon-command", "habit.probe")
-    )
-  ) {
+  if (isVerifiedHabitWake(request.triggerSource, originRefs)) {
     return {
       result: "allow",
       reason: "verified daemon habit",
@@ -221,6 +211,28 @@ async function evaluatePolicy(
     reason: "private runtime policy denies by default",
     deniedReason: "default policy deny",
   }
+}
+
+/** Where a habit wake may come from: the daemon's own scheduler, or `ouro poke`/probe through the daemon. */
+const HABIT_WAKE_SOURCES: ReadonlyArray<readonly [string, string]> = [
+  ["daemon-entry", "habit-scheduler"],
+  ["daemon-command", "habit.poke"],
+  ["daemon-command", "habit.probe"],
+]
+
+/**
+ * A habit wake the daemon built (buildHabitPrivateWakeCommand): it names the habit, its trigger
+ * and occurrence, comes from one of the daemon's habit sources, and its trigger source matches
+ * its trigger. The daemon has already checked the habit file is active before asking.
+ */
+function isVerifiedHabitWake(triggerSource: string, originRefs: PrivateTurnOriginRef[]): boolean {
+  const trigger = originRefs.find((ref) => ref.kind === "habit-trigger")?.id
+  return typeof trigger === "string"
+    && isHabitRunTrigger(trigger)
+    && triggerSource === `habit-${trigger}`
+    && hasNonEmptyOriginRef(originRefs, "habit")
+    && hasNonEmptyOriginRef(originRefs, "habit-occurrence")
+    && HABIT_WAKE_SOURCES.some(([kind, id]) => hasOriginRef(originRefs, kind, id))
 }
 
 function emptyReceiptId(): string {

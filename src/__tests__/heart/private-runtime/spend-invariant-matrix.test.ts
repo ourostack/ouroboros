@@ -21,6 +21,7 @@ vi.mock("../../../heart/provider-ping", () => ({
 }))
 
 import { OuroDaemon, type DaemonCommand } from "../../../heart/daemon/daemon"
+import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-private-wake"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 import type { PrivateTurnDecision, PrivateTurnPolicyDeps } from "../../../heart/private-runtime"
@@ -433,6 +434,30 @@ describe("private-runtime spend-invariant matrix", () => {
         requestFingerprint: ledger[0].requestFingerprint,
       }),
     })
+  })
+
+  it.each([
+    ["the daemon's habit scheduler", "cron", { kind: "daemon-entry", id: "habit-scheduler" }],
+    ["an overdue catch-up", "overdue", { kind: "daemon-entry", id: "habit-scheduler" }],
+  ] as const)("lets a habit fired by %s wake the agent under the default private-runtime policy", async (_label, trigger, sourceRef) => {
+    const harness = makeHarness("deny")
+    delete harness.privateRuntimePolicyDeps.evaluatePolicy
+    writeHabitFile(harness.bundlesRoot, "heartbeat")
+
+    await harness.daemon.handleCommand(buildHabitPrivateWakeCommand({
+      agent: AGENT,
+      habitName: "heartbeat",
+      trigger,
+      sourceRef,
+      occurrenceId: "2026-11-10T04:00:00.000Z",
+      now: () => new Date(NOW),
+    }))
+
+    const ledger = readLedgerRows(harness.ledgerPath)
+    expect(ledger).toHaveLength(1)
+    expect(ledger[0]).toMatchObject({ result: "allow", executable: true, reason: "verified daemon habit", triggerSource: `habit-${trigger}` })
+    expect(harness.counters.modelTurns).toBe(1)
+    expect(harness.workerMessages[0]).toMatchObject({ type: "habit" })
   })
 
   it("keeps passive daemon commands and message storms queue-only", async () => {

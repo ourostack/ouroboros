@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1057",
+      "changes": [
+        "Habit wakes: require a known trigger, prove it end to end"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1056",
       "changes": [
         "Edge runtime defaults: CLI compile cache, doctor MemAvailable"
