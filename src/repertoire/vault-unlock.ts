@@ -12,6 +12,7 @@ export type VaultUnlockStoreKind =
   | "windows-dpapi"
   | "linux-secret-service"
   | "plaintext-file"
+  | "sealed-file"
 
 export interface VaultUnlockConfig {
   agentName?: string
@@ -25,7 +26,12 @@ export interface VaultUnlockDeps {
   homeDir?: string
   store?: VaultUnlockStoreKind
   env?: NodeJS.ProcessEnv
+  /** Reads one machine identity source for the sealed-file store; injected in tests. */
+  readMachineIdentity?: (source: MachineIdentitySource) => string | null
 }
+
+/** Hardware or OS identifiers a sealed-file key can come from, most stable first. */
+export type MachineIdentitySource = "device-tree-serial" | "dmi-product-uuid" | "machine-id" | "dbus-machine-id" | "io-platform-uuid"
 
 /** Machine-level unlock store choice used when no explicit `--store` is given. */
 export const VAULT_UNLOCK_STORE_ENV = "OURO_VAULT_UNLOCK_STORE"
@@ -61,7 +67,9 @@ const VAULT_UNLOCK_SERVICE = "ouro.vault"
 const CREDENTIAL_VAULT_NOT_CONFIGURED_PREFIX = "credential vault is not configured in "
 const PLAINTEXT_UNLOCK_DIR = path.join(".ouro-cli", "vault-unlock")
 const WINDOWS_DPAPI_UNLOCK_DIR = path.join(".ouro-cli", "vault-unlock-dpapi")
-const SUPPORTED_STORES: VaultUnlockStoreKind[] = ["auto", "macos-keychain", "windows-dpapi", "linux-secret-service", "plaintext-file"]
+const SEALED_UNLOCK_DIR = path.join(".ouro-cli", "vault-unlock-sealed")
+const SUPPORTED_STORES: VaultUnlockStoreKind[] = ["auto", "macos-keychain", "windows-dpapi", "linux-secret-service", "plaintext-file", "sealed-file"]
+const STORE_NAMES = SUPPORTED_STORES.join("|")
 
 function platform(deps: VaultUnlockDeps): NodeJS.Platform {
   return deps.platform ?? process.platform
@@ -108,6 +116,53 @@ function exactVaultConfig(config: VaultUnlockConfig): VaultUnlockConfig {
 function plaintextUnlockPath(config: VaultUnlockConfig, deps: VaultUnlockDeps): string {
   const digest = crypto.createHash("sha256").update(vaultKey(config)).digest("hex").slice(0, 24)
   return path.join(homeDir(deps), PLAINTEXT_UNLOCK_DIR, `${digest}.secret`)
+}
+
+function sealedUnlockPath(config: VaultUnlockConfig, deps: VaultUnlockDeps): string {
+  const digest = crypto.createHash("sha256").update(vaultKey(config)).digest("hex").slice(0, 24)
+  return path.join(homeDir(deps), SEALED_UNLOCK_DIR, `${digest}.sealed`)
+}
+
+const MACHINE_IDENTITY_SOURCES: Record<"linux" | "darwin", MachineIdentitySource[]> = {
+  // A device-tree serial or DMI UUID is burned into the hardware; machine-id files can be regenerated at boot on a
+  // read-only root filesystem, so they come last.
+  linux: ["device-tree-serial", "dmi-product-uuid", "machine-id", "dbus-machine-id"],
+  darwin: ["io-platform-uuid"],
+}
+
+const MACHINE_IDENTITY_FILES: Partial<Record<MachineIdentitySource, string>> = {
+  "device-tree-serial": "/proc/device-tree/serial-number",
+  "dmi-product-uuid": "/sys/class/dmi/id/product_uuid",
+  "machine-id": "/etc/machine-id",
+  "dbus-machine-id": "/var/lib/dbus/machine-id",
+}
+
+/* v8 ignore start -- real hardware reads; tests inject readMachineIdentity @preserve */
+function readMachineIdentityFromHost(source: MachineIdentitySource, deps: VaultUnlockDeps): string | null {
+  if (source === "io-platform-uuid") {
+    const result = spawnSync(deps)("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8" })
+    const match = typeof result.stdout === "string" ? /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(result.stdout) : null
+    return match ? match[1]! : null
+  }
+  try {
+    return fs.readFileSync(MACHINE_IDENTITY_FILES[source]!, "utf8").replace(/\0/g, "").trim() || null
+  } catch {
+    return null
+  }
+}
+/* v8 ignore stop */
+
+function machineIdentity(source: MachineIdentitySource, deps: VaultUnlockDeps): string | null {
+  /* v8 ignore next -- tests inject readMachineIdentity; the host reader is hardware wiring @preserve */
+  const value = (deps.readMachineIdentity ?? ((candidate) => readMachineIdentityFromHost(candidate, deps)))(source)
+  return value && value.trim() ? value.trim() : null
+}
+
+/** The key a sealed-file secret is encrypted under: this machine's identity, this user and this vault. */
+function sealedKey(config: VaultUnlockConfig, identity: string): Buffer {
+  /* v8 ignore next -- process.getuid exists on every platform sealed-file runs on (Linux, macOS) @preserve */
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0
+  return Buffer.from(crypto.hkdfSync("sha256", identity, "ouro.vault.sealed-file.v1", `${vaultKey(config)}\0${uid}`, 32))
 }
 
 function windowsDpapiUnlockPath(config: VaultUnlockConfig, deps: VaultUnlockDeps): string {
@@ -220,7 +275,7 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
 
 function validateStoreKind(requested: VaultUnlockStoreKind): VaultUnlockStoreKind {
   if (!SUPPORTED_STORES.includes(requested)) {
-    throw new Error(`unknown vault unlock store '${requested}'. Use auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file.`)
+    throw new Error(`unknown vault unlock store '${requested}'. Use ${STORE_NAMES}.`)
   }
   return requested
 }
@@ -230,7 +285,7 @@ function requestedStoreKind(deps: VaultUnlockDeps): VaultUnlockStoreKind {
   const fromEnv = (deps.env ?? process.env)[VAULT_UNLOCK_STORE_ENV]?.trim()
   if (!fromEnv) return "auto"
   if (!SUPPORTED_STORES.includes(fromEnv as VaultUnlockStoreKind)) {
-    throw new Error(`${VAULT_UNLOCK_STORE_ENV}='${fromEnv}' is not a vault unlock store. Use auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file.`)
+    throw new Error(`${VAULT_UNLOCK_STORE_ENV}='${fromEnv}' is not a vault unlock store. Use ${STORE_NAMES}.`)
   }
   return fromEnv as VaultUnlockStoreKind
 }
@@ -269,6 +324,13 @@ export function resolveVaultUnlockStore(
 
   if (requested === "plaintext-file") {
     return { kind: "plaintext-file", secure: false, location: plaintextUnlockPath(canonicalConfig, deps) }
+  }
+
+  if (requested === "sealed-file") {
+    if (currentPlatform !== "linux" && currentPlatform !== "darwin") {
+      throw new Error(`sealed-file unlock store is available on Linux and macOS; this machine is ${currentPlatform}. Use windows-dpapi.`)
+    }
+    return { kind: "sealed-file", secure: false, location: sealedUnlockPath(canonicalConfig, deps) }
   }
 
   if (currentPlatform === "darwin") {
@@ -511,6 +573,71 @@ function writeToPlaintextFile(config: VaultUnlockConfig, secret: string, deps: V
   }
 }
 
+interface SealedUnlockFile {
+  schemaVersion: 1
+  source: MachineIdentitySource
+  iv: string
+  tag: string
+  ciphertext: string
+}
+
+function readFromSealedFileExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): string | null {
+  const filePath = sealedUnlockPath(config, deps)
+  if (!fs.existsSync(filePath)) return null
+  const mode = fs.statSync(filePath).mode & 0o777
+  if ((mode & 0o077) !== 0) {
+    throw new Error(`refusing to read sealed vault unlock file at ${filePath} because permissions are too broad; run chmod 600 ${filePath}`)
+  }
+  let sealed: SealedUnlockFile
+  try {
+    sealed = JSON.parse(fs.readFileSync(filePath, "utf8")) as SealedUnlockFile
+  } catch {
+    throw new Error(`sealed vault unlock file at ${filePath} is not readable JSON; run \`ouro vault unlock --store sealed-file\` again`)
+  }
+  const knownSource = sealed.source === "io-platform-uuid" || Object.hasOwn(MACHINE_IDENTITY_FILES, sealed.source)
+  const identity = sealed.schemaVersion === 1 && knownSource ? machineIdentity(sealed.source, deps) : null
+  try {
+    if (!identity) throw new Error("machine identity unavailable")
+    const decipher = crypto.createDecipheriv("aes-256-gcm", sealedKey(config, identity), Buffer.from(sealed.iv, "base64"))
+    decipher.setAuthTag(Buffer.from(sealed.tag, "base64"))
+    return Buffer.concat([decipher.update(Buffer.from(sealed.ciphertext, "base64")), decipher.final()]).toString("utf8")
+  } catch {
+    throw new Error(`sealed vault unlock file at ${filePath} was sealed on another machine (or this machine's ${sealed.source ?? "identity"} changed); run \`ouro vault unlock --store sealed-file\` on this machine`)
+  }
+}
+
+function readFromSealedFile(config: VaultUnlockConfig, deps: VaultUnlockDeps): StoredVaultUnlockSecret | null {
+  for (const candidate of vaultConfigCandidates(config)) {
+    const secret = readFromSealedFileExact(candidate, deps)
+    if (secret) return { secret, source: exactVaultConfig(candidate) }
+  }
+  return null
+}
+
+function writeToSealedFile(config: VaultUnlockConfig, secret: string, deps: VaultUnlockDeps): void {
+  const sources = MACHINE_IDENTITY_SOURCES[platform(deps) === "darwin" ? "darwin" : "linux"]
+  const source = sources.find((candidate) => machineIdentity(candidate, deps) !== null)
+  if (!source) {
+    throw new Error(`sealed-file unlock store needs a machine identity (${sources.join(", ")}) and none is readable here; use plaintext-file`)
+  }
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv("aes-256-gcm", sealedKey(config, machineIdentity(source, deps)!), iv)
+  const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()])
+  const sealed: SealedUnlockFile = { schemaVersion: 1, source, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }
+  const filePath = sealedUnlockPath(config, deps)
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(filePath, `${JSON.stringify(sealed)}\n`, { encoding: "utf8", mode: 0o600 })
+  fs.chmodSync(path.dirname(filePath), 0o700)
+  fs.chmodSync(filePath, 0o600)
+}
+
+function deleteFromSealedFileExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): boolean {
+  const filePath = sealedUnlockPath(config, deps)
+  const existed = fs.existsSync(filePath)
+  fs.rmSync(filePath, { force: true })
+  return existed
+}
+
 function readFromStore(
   config: VaultUnlockConfig,
   store: VaultUnlockStoreSelection,
@@ -519,6 +646,7 @@ function readFromStore(
   if (store.kind === "macos-keychain") return readFromMacosKeychain(config, deps)
   if (store.kind === "windows-dpapi") return readFromWindowsDpapi(config, deps)
   if (store.kind === "linux-secret-service") return readFromLinuxSecretService(config, deps)
+  if (store.kind === "sealed-file") return readFromSealedFile(config, deps)
   return readFromPlaintextFile(config, deps)
 }
 
@@ -538,6 +666,10 @@ function writeToStore(
   }
   if (store.kind === "windows-dpapi") {
     writeToWindowsDpapi(config, secret, deps)
+    return
+  }
+  if (store.kind === "sealed-file") {
+    writeToSealedFile(config, secret, deps)
     return
   }
   writeToPlaintextFile(config, secret, deps)
@@ -599,6 +731,7 @@ function deleteFromStoreExact(
   if (store.kind === "macos-keychain") return deleteFromMacosKeychainExact(config, deps)
   if (store.kind === "linux-secret-service") return deleteFromLinuxSecretServiceExact(config, deps)
   if (store.kind === "windows-dpapi") return deleteFromWindowsDpapiExact(config, deps)
+  if (store.kind === "sealed-file") return deleteFromSealedFileExact(config, deps)
   return deleteFromPlaintextFileExact(config, deps)
 }
 

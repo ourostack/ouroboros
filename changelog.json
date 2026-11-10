@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1062",
+      "changes": [
+        "Vault unlock: a sealed-file store for headless hosts without a keychain"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1061",
       "changes": [
         "Unattended updates off macOS are opt-in per machine: lean, gentle, memory floor"
