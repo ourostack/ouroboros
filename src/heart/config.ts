@@ -53,6 +53,12 @@ export interface OpenAICodexProviderConfig {
 export interface GithubCopilotProviderConfig {
   githubToken: string
   baseUrl: string
+  /** The discovered account pool (JSON, tokens included), stored in the vault by `ouro auth`. */
+  accountPool?: string
+  /** A github.com token for the fleet gist, where the agent reads readings and publishes its burn. */
+  fleetGistToken?: string
+  fleetGistId?: string
+  fleetMachine?: string
 }
 
 export interface OpenAICompatibleProviderConfig {

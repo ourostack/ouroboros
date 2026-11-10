@@ -27,6 +27,10 @@ export interface HatchCredentialsInput {
   deployment?: string
   githubToken?: string
   baseUrl?: string
+  accountPool?: string
+  fleetGistToken?: string
+  fleetGistId?: string
+  fleetMachine?: string
 }
 
 export interface HatchFlowInput {

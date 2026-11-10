@@ -88,4 +88,9 @@ export const FULL_AGENT_JSON = {
       version: "0.1.0",
     },
   ],
+  // A discovered Copilot account pool, billed by quota tranche.
+  accountPool: {
+    eligible: "work",
+    fleet: { gistId: "fleet-gist", user: "arimendelow", machine: "laptop" },
+  },
 } as const satisfies DeepRequired<AgentConfig>

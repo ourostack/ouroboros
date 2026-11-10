@@ -10,6 +10,7 @@ import { resolveModelForProviderSelection } from "../provider-models"
 import { validateAgentDisplayName } from "../../senses/shepherd/agent-presentation"
 import type { Facing } from "@ouro.bot/friends"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
+import { accountKey, discoverAccountPool, serializeAccountPool, type AccountPoolSettings } from "../providers/account-pool"
 import {
   providerCredentialItemName,
   refreshProviderCredentialPool,
@@ -316,6 +317,62 @@ function validateAnthropicToken(token: string): string {
   return trimmed
 }
 
+/** The agent's `accountPool` settings, or null when it has none (or its bundle can't be read here). */
+export function readAccountPoolSettings(agentName: string, bundlesRoot?: string): AccountPoolSettings | null {
+  try {
+    const settings = readAgentConfigForAgent(agentName, bundlesRoot).config.accountPool
+    return settings && typeof settings === "object" ? settings : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Discover the agent's Copilot account pool: every eligible account signed in to the Copilot app, each
+ * checked on its own host. The first account is also the single-account credential, so older runtimes
+ * keep working.
+ */
+export async function collectGithubCopilotPoolCredentials(
+  input: RuntimeAuthInput,
+  settings: AccountPoolSettings,
+  deps: RuntimeAuthDeps,
+): Promise<HatchCredentialsInput> {
+  /* v8 ignore next -- tests always inject spawnSync; the default is for production @preserve */
+  const spawnSync = deps.spawnSync ?? defaultSpawnSync
+  writeAuthProgress(input, "discovering the Copilot accounts signed in on this machine...")
+  const discovery = await discoverAccountPool(settings, { spawnSync, homeDir: deps.homeDir })
+  for (const skipped of discovery.skipped) writeAuthProgress(input, `skipped ${skipped.key}: ${skipped.reason}`)
+  const [first] = discovery.accounts
+  if (!first) {
+    throw new Error(`No eligible Copilot account is signed in on this machine for ${input.agentName}. Sign one in to the Copilot app and the GitHub CLI (\`gh auth login --hostname <host>\`), then retry.`)
+  }
+  const credentials: HatchCredentialsInput = {
+    githubToken: first.githubToken,
+    baseUrl: first.baseUrl,
+    accountPool: serializeAccountPool(discovery.accounts),
+  }
+  const fleet = settings.fleet
+  if (fleet?.gistId) {
+    const result = spawnSync("gh", ["auth", "token", "--hostname", "github.com", ...(fleet.user ? ["--user", fleet.user] : [])], { encoding: "utf8" })
+    const token = result.status === 0 && result.stdout ? String(result.stdout).trim() : ""
+    if (token) {
+      credentials.fleetGistToken = token
+      credentials.fleetGistId = fleet.gistId
+      if (fleet.machine) credentials.fleetMachine = fleet.machine
+    } else {
+      writeAuthProgress(input, "no github.com token for the fleet gist; burn publishing stays off")
+    }
+  }
+  writeAuthProgress(input, `account pool: ${discovery.accounts.map(accountKey).join(", ")}`)
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.auth_account_pool",
+    message: "discovered the github-copilot account pool for runtime auth",
+    meta: { agentName: input.agentName, accounts: discovery.accounts.map(accountKey), fleet: Boolean(credentials.fleetGistToken) },
+  })
+  return credentials
+}
+
 export async function collectRuntimeAuthCredentials(
   input: RuntimeAuthInput,
   deps: RuntimeAuthDeps,
@@ -337,6 +394,8 @@ export async function collectRuntimeAuthCredentials(
   }
 
   if (input.provider === "github-copilot") {
+    const poolSettings = readAccountPoolSettings(input.agentName, deps.bundlesRoot)
+    if (poolSettings) return collectGithubCopilotPoolCredentials(input, poolSettings, deps)
     let token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || ""
     let ghInstalled = true
     if (!token) {

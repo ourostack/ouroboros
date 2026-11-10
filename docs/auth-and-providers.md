@@ -92,6 +92,28 @@ The two generic Chat Completions identities are deliberately separate vault item
 
 Both items store `apiKey` as credential material and `baseUrl` as provider configuration. The base URL is exact after trailing-slash normalization; arbitrary compatible hosts are rejected. API keys are collected through hidden input only. Neither provider is a silent fallback for the other or for another lane.
 
+### GitHub Copilot account pool
+
+An agent can bill `github-copilot` across several of the human's Copilot accounts instead of one. It opts in with `accountPool` in `agent.json`:
+
+```json
+"accountPool": {
+  "eligible": "work",
+  "fleet": { "gistId": "<fleet gist id>", "user": "<github.com login>", "machine": "laptop" }
+}
+```
+
+- `eligible` is `"work"` (Microsoft accounts: GitHub Enterprise `*.ghe.com` hosts and the EMU `_microsoft` login), `"personal"` (everything else), or a list of `login@host` globs. It defaults to `"work"`.
+- `fleet` is optional. With it the agent reads the fleet's quota readings from that gist and publishes its own as `<machine>.<agent>.quota.txt` (`{machine, agent, at, readings: [{key, leftPct, burnPerH, dryAt, overageOk, at, remaining, entitlement, reset}]}`, the shape the Copilot app balancer reads), every five minutes while it runs, once its readings have loaded. `burnPerH` is the agent's requests in the last hour summed across all its processes, which share their request times through `state/account-burn/<pid>.json` on every request. `machine` has no dots. It defaults to this host's name. Leave it out for an agent present on several machines: `ouro auth` stores it in the agent's vault, which every presence shares.
+
+With `accountPool` set, `ouro auth --agent <agent> --provider github-copilot` discovers the pool instead of reading one token. The accounts are the ones signed in to the Copilot app (its own database, in its order: default first, then sign-in order); without the app, the GitHub CLI's signed-in accounts. Nothing is hard-coded. Each eligible account is checked on its own host: `gh auth token --hostname <host> --user <login>`, then `https://api.<host>/copilot_internal/user` (`api.github.com` for github.com) for its `endpoints.api`. A token whose `login` differs is refused. The pool (tokens included) is stored in `providers/github-copilot` as `accountPool`, with the fleet token as `fleetGistToken`; `githubToken` and `baseUrl` hold the first account, so the record also works as a single-account credential. Auth prints each skipped account and why.
+
+At runtime the pool moves between accounts by quota tranche, the same rule the Copilot app balancer uses: fill each account to 30% used before moving to the next, then 60%, then 90%, then the last 10%; only after that, enterprise overage. Readings come from `~/.config/mac-fleet/quota-balance.json`, the fleet gist, and each account's own `/copilot_internal/user`, refreshed in the background every five minutes. The account is chosen when a turn's runtime is built, so a tranche move never happens mid-turn. A 402 or 429 is different: the account is marked refused (until `Retry-After`; for a 402 or a quota or billing error, until the quota reset; otherwise five minutes, so a plain rate limit stays short), the pool moves to the next account at once, and that request is retried once. If no other account can serve, the original error stands. This is account selection inside one provider, not provider fallback. Every move is one JSON line in `state/account-switches.jsonl` (`at`, `agent`, `from`, `to`, `reason`: `start`, `tranche`, `402` or `429`, and the readings at the time) and a `engine.account_switched` nerves event.
+
+Pool state (the current account and refusals) is kept per agent. A runtime built without an owning agent, such as a daemon-side provider ping, still moves to the next account on a 402 or 429 but keeps no state, writes no switch log and publishes nothing.
+
+Run `ouro auth --agent <agent> --provider github-copilot` again (agent-runnable) after an account is added to or removed from the Copilot app.
+
 Credential verification is explicit:
 
 ```bash
