@@ -830,7 +830,9 @@ describe("daemon entrypoint", () => {
     )
     const habitSchedulerOptions = habitSchedulerOptionsMock.mock.calls[0][0] as {
       osCronManager: { ownsLabel: (label: string) => boolean }
+      execForVerify: (command: string) => string
     }
+    expect(habitSchedulerOptions.execForVerify("echo launchd-verified").trim()).toBe("launchd-verified")
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(true)
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(false)
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.other.heartbeat")).toBe(false)
