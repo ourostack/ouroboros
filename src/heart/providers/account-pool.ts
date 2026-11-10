@@ -282,6 +282,11 @@ export interface AccountPoolOptions {
    * here, so the published burn is the agent's total, not one process's.
    */
   burnDir?: string
+  /**
+   * `<agent root>/state/account-refusals.json`: `login@host` → epoch ms until which the account refuses requests.
+   * Shared by the agent's processes, so one 402 or 429 benches an account for all of them, not once per process.
+   */
+  refusalsFile?: string
   now?: () => number
   appendLine?: (file: string, line: string) => void
   /** Fresh readings (local balancer state, fleet gist, and each account's own answer). */
@@ -319,6 +324,43 @@ export class AccountPool {
     if (accounts.length === 0) throw new Error("an account pool needs at least one account")
     this.accounts = accounts
     this.options = options
+    this.loadSharedRefusals()
+  }
+
+  /** Take in refusals another of the agent's processes recorded; the later end wins. */
+  private loadSharedRefusals(): void {
+    const file = this.options.refusalsFile
+    if (!file) return
+    try {
+      const shared = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>
+      for (const [key, until] of Object.entries(shared)) {
+        if (typeof until === "number" && until > this.now() && !(this.refused[key] >= until)) this.refused[key] = until
+      }
+    } catch {
+      // No file yet, or another process is mid-write: nothing to take in.
+    }
+  }
+
+  private saveSharedRefusals(): void {
+    const file = this.options.refusalsFile
+    if (!file) return
+    this.loadSharedRefusals()
+    const live = Object.fromEntries(Object.entries(this.refused).filter(([, until]) => until > this.now()))
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const temp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(temp, JSON.stringify(live))
+      fs.renameSync(temp, file)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "engine",
+        event: "engine.account_refusals_save_failed",
+        message: "could not share account refusals with the agent's other processes",
+        // fs only throws Errors.
+        meta: { agent: this.options.agent, error: (error as Error).message },
+      })
+    }
   }
 
   private now(): number {
@@ -376,6 +418,7 @@ export class AccountPool {
   /** Called between turns: stay on the current account until it reaches the tranche cap. */
   beforeTurn(): PoolAccount {
     void this.refreshIfStale()
+    this.loadSharedRefusals()
     const previous = this.currentKey
     const caps = this.options.caps ?? DEFAULT_TRANCHE_CAPS
     const next = chooseAccount(this.accounts, this.readings, { current: previous, refused: this.refused, now: this.now(), caps })
@@ -397,6 +440,7 @@ export class AccountPool {
     const reset = this.readings.find((reading) => reading.key === key)?.reset
     const until = refusalUntil(status, error, reset, this.now())
     this.refused[key] = until
+    this.saveSharedRefusals()
     const next = chooseAccount(this.accounts, this.readings, { current: null, refused: this.refused, now: this.now(), caps: this.options.caps })
     if (!next || accountKey(next) === key) {
       emitNervesEvent({

@@ -439,6 +439,44 @@ describe("AccountPool", () => {
     expect(p.agentBurnPerH(NOW)).toEqual({ "ari@msft.ghe.com": 1 })
   })
 
+  it("shares refusals with the agent's other processes, so each process doesn't pay the same 429", () => {
+    const refusalsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-refusals-")), "state", "account-refusals.json")
+    const first = pool([EMU, MSCOM], { refusalsFile })
+    first.pool.beforeTurn()
+    expect(first.pool.onRefusal("ari_microsoft@github.com", 429, new Error("429 quota exceeded"))).toBe(MSCOM)
+    expect(JSON.parse(fs.readFileSync(refusalsFile, "utf8"))).toEqual({ "ari_microsoft@github.com": Date.parse("2026-12-01T00:00:00.000Z") })
+    // A new process starts on the next account, without trying the refused one.
+    const second = pool([EMU, MSCOM], { refusalsFile })
+    expect(second.pool.beforeTurn()).toBe(MSCOM)
+    expect(second.records().map((r) => [r.to, r.reason])).toEqual([["ari@microsoft.ghe.com", "start"]])
+  })
+
+  it("takes in refusals recorded after it started, keeps the later end, and ignores stale or malformed entries", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-refusals-"))
+    const refusalsFile = path.join(dir, "account-refusals.json")
+    const { pool: p } = pool([EMU, MSCOM, MSFT], { refusalsFile })
+    expect(p.beforeTurn()).toBe(EMU)
+    p.refused["ari@microsoft.ghe.com"] = NOW + 10_000
+    fs.writeFileSync(refusalsFile, JSON.stringify({
+      "ari_microsoft@github.com": NOW + 60_000,
+      "ari@microsoft.ghe.com": NOW + 5_000,
+      "old@github.com": NOW - 1,
+      "bad@github.com": "soon",
+    }))
+    expect(p.beforeTurn()).toBe(MSFT)
+    expect(p.refused).toEqual({ "ari_microsoft@github.com": NOW + 60_000, "ari@microsoft.ghe.com": NOW + 10_000 })
+    fs.writeFileSync(refusalsFile, "{half")
+    expect(p.beforeTurn()).toBe(MSFT)
+  })
+
+  it("still switches when refusals can't be shared", () => {
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-refusals-")), "file")
+    fs.writeFileSync(blocker, "x")
+    const { pool: p } = pool([EMU, MSCOM], { refusalsFile: path.join(blocker, "account-refusals.json") })
+    p.beforeTurn()
+    expect(p.onRefusal("ari_microsoft@github.com", 429, new Error("429 quota exceeded"))).toBe(MSCOM)
+  })
+
   it("names the machine from the host name when none is configured", () => {
     const publishBurn = vi.fn(async () => true)
     const p = new AccountPool([MSFT], { agent: "a", switchLog: "/x", appendLine: () => {}, publishBurn })
