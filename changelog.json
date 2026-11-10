@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1013",
+      "changes": [
+        "github-copilot can bill a discovered pool of Copilot accounts: with accountPool in agent.json, ouro auth discovers every eligible account signed in to the Copilot app (each checked on its own host), and the runtime fills them by quota tranche (30/60/90/100% used), moves to the next account at once on a 402 or 429 and retries that request once, logs every move to state/account-switches.jsonl, and publishes its burn to the fleet gist."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1010",
       "changes": [
         "New app-sessions sense: with senses[\"app-sessions\"].enabled in agent.json, an agent can list, read, message, resume, open and archive this machine's GitHub Copilot app sessions, ask the Mac's app keeper for a courtesy restart, and hear back from the sessions it writes to."
