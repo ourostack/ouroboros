@@ -33,7 +33,7 @@ import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } 
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
-import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
+import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, resolveVaultUnlockStore, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parsePrivateRuntimeSession, formatThoughtTurns, getPrivateRuntimeSessionPath, followThoughts } from "./thoughts"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
@@ -2359,6 +2359,7 @@ async function createRepairVaultForAgent(input: {
   configPath: string
   config: AgentConfig
 }): Promise<{ ok: true; store: ReturnType<typeof storeVaultUnlockSecret> } | { ok: false; message: string }> {
+  resolveVaultUnlockStore({ agentName: input.agentName, email: input.email, serverUrl: input.serverUrl }, { homeDir: input.deps.homeDir, store: input.store })
   const result = await runCommandProgressPhase(
     input.progress,
     "creating vault account",
@@ -2481,6 +2482,8 @@ async function executeVaultCreate(
   const email = command.email ?? config.vault?.email ?? configuredVault.email
   const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create", command.secretFile)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
+  // Fail before creating the account when this machine has nowhere to keep the unlock secret.
+  resolveVaultUnlockStore({ agentName: command.agent, email, serverUrl }, { homeDir: deps.homeDir, store: command.store })
   const unlockSecret = await promptConfirmedVaultUnlockSecret({
     promptSecret,
     question: `Choose Ouro vault unlock secret for ${email}: `,

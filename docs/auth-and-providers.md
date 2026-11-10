@@ -486,6 +486,10 @@ Linux Secret Service is the freedesktop desktop-secret API usually backed by GNO
 
 If the machine has no usable local secret store, the harness may offer an explicit plaintext unlock fallback in ignored local state. That fallback must be opt-in, clearly labeled, and never selected silently.
 
+A headless appliance can choose that fallback once for the whole machine: set `OURO_VAULT_UNLOCK_STORE=plaintext-file` in the environment of the ouro service and of every ouro command run there. Any store name `--store` accepts works (`auto`, `macos-keychain`, `windows-dpapi`, `linux-secret-service`, `plaintext-file`). An explicit `--store` still wins, and reads and writes both follow the choice. This is a deliberate exception to the no-environment-variable policy: the store is a property of the machine, not the bundle, and hatch has no `--store` flag.
+
+Hatch, `ouro vault create`, `ouro vault replace` and `ouro vault recover` resolve the local unlock store before they create a vault account. On a machine with no usable store they stop with the store guidance and create nothing, so no orphaned vault account blocks the next attempt with "user already exists".
+
 ## Existing Agents
 
 There is no hidden recovery path for a lost vault unlock secret.
