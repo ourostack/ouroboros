@@ -30,7 +30,12 @@ export interface RuntimeCredentialBootstrapMessage {
   machineRuntimeConfig?: RuntimeCredentialConfig
   machineId?: string
   providerCredentialRecords?: ProviderCredentialRecord[]
+  /** Items the daemon read from the vault and found missing, so the child needn't ask again. */
+  absent?: RuntimeCredentialItemKind[]
 }
+
+export type RuntimeCredentialItemKind = "runtimeConfig" | "machineRuntimeConfig"
+const RUNTIME_CREDENTIAL_ITEM_KINDS: readonly RuntimeCredentialItemKind[] = ["runtimeConfig", "machineRuntimeConfig"]
 
 interface RuntimeCredentialVaultPayload {
   schemaVersion: 1
@@ -263,6 +268,25 @@ export function readMachineRuntimeCredentialConfig(agentName: string = getAgentN
   return cachedMachineRuntimeConfigs.get(agentName) ?? missingMachineRuntimeConfig(agentName)
 }
 
+/**
+ * True once the vault itself has answered for this item in this process: the
+ * item was loaded, or the vault (or the daemon's bootstrap, on the vault's
+ * word) said it doesn't exist. False when it was never read or the vault was
+ * unreachable, which are the only cases worth another vault round trip.
+ */
+export function runtimeCredentialConfigSettled(agentName: string, kind: RuntimeCredentialItemKind): boolean {
+  const cached = (kind === "runtimeConfig" ? cachedRuntimeConfigs : cachedMachineRuntimeConfigs).get(agentName)
+  return !!cached && (cached.ok || cached.reason === "missing")
+}
+
+/** The items the vault confirmed missing for this agent, for a child process's bootstrap. */
+export function confirmedAbsentRuntimeCredentialItems(agentName: string): RuntimeCredentialItemKind[] {
+  return RUNTIME_CREDENTIAL_ITEM_KINDS.filter((kind) => {
+    const cached = (kind === "runtimeConfig" ? cachedRuntimeConfigs : cachedMachineRuntimeConfigs).get(agentName)
+    return !!cached && !cached.ok && cached.reason === "missing"
+  })
+}
+
 export function cacheRuntimeCredentialConfig(
   agentName: string,
   config: RuntimeCredentialConfig,
@@ -302,6 +326,7 @@ export function isRuntimeCredentialBootstrapMessage(value: unknown): value is Ru
     "machineRuntimeConfig",
     "machineId",
     "providerCredentialRecords",
+    "absent",
   ].includes(key))) return false
   if (record.type !== "ouro.runtimeCredentialBootstrap") return false
   if (typeof record.agentName !== "string" || record.agentName.trim().length === 0) return false
@@ -326,10 +351,17 @@ export function isRuntimeCredentialBootstrapMessage(value: unknown): value is Ru
     const providers = record.providerCredentialRecords.map((providerRecord) => providerRecord.provider)
     if (new Set(providers).size !== providers.length) return false
   }
+  if (record.absent !== undefined) {
+    if (!Array.isArray(record.absent) || record.absent.length === 0) return false
+    if (!record.absent.every((kind) => RUNTIME_CREDENTIAL_ITEM_KINDS.includes(kind as RuntimeCredentialItemKind))) return false
+    if (new Set(record.absent).size !== record.absent.length) return false
+    if (record.absent.some((kind) => record[kind as RuntimeCredentialItemKind] !== undefined)) return false
+  }
   if (
     record.runtimeConfig === undefined
     && record.machineRuntimeConfig === undefined
     && (!Array.isArray(record.providerCredentialRecords) || record.providerCredentialRecords.length === 0)
+    && record.absent === undefined
   ) return false
   return true
 }
@@ -347,6 +379,11 @@ export function applyRuntimeCredentialBootstrapMessage(message: unknown): boolea
   if (message.providerCredentialRecords && message.providerCredentialRecords.length > 0) {
     cacheProviderCredentialRecords(agentName, message.providerCredentialRecords, now)
   }
+  const absent = message.absent ?? []
+  if (absent.includes("runtimeConfig")) cacheResult(agentName, missingRuntimeConfig(agentName))
+  if (absent.includes("machineRuntimeConfig")) {
+    cacheMachineResult(agentName, missingRuntimeConfig(agentName, machineRuntimeConfigItemName(message.machineId ?? "<this-machine>")))
+  }
   emitNervesEvent({
     component: "config/identity",
     event: "config.runtime_credentials_bootstrapped",
@@ -356,6 +393,7 @@ export function applyRuntimeCredentialBootstrapMessage(message: unknown): boolea
       runtimeConfig: !!message.runtimeConfig,
       machineRuntimeConfig: !!message.machineRuntimeConfig,
       providerCredentialRecords: message.providerCredentialRecords?.length ?? 0,
+      absent,
     },
   })
   return true

@@ -88,6 +88,7 @@ import {
   applyRuntimeCredentialBootstrapMessage,
   cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
+  confirmedAbsentRuntimeCredentialItems,
   machineRuntimeConfigItemName,
   mergeRuntimeCredentialConfig,
   mergeMachineRuntimeCredentialConfig,
@@ -97,6 +98,7 @@ import {
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   resetRuntimeCredentialConfigCache,
+  runtimeCredentialConfigSettled,
   upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
   waitForRuntimeCredentialBootstrap,
@@ -200,6 +202,66 @@ describe("runtime credentials vault config", () => {
       itemPath: "vault:slugger:runtime/machines/machine_test/config",
       config: { bluebubbles: { serverUrl: "http://localhost:1234", password: "bb-secret" } },
     })
+    expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
+  })
+
+  it("settles an item once the vault has answered, and reports the vault's confirmed absences", async () => {
+    emitTestEvent("runtime credentials settled and confirmed absent")
+
+    expect(runtimeCredentialConfigSettled("slugger", "runtimeConfig")).toBe(false)
+    expect(runtimeCredentialConfigSettled("slugger", "machineRuntimeConfig")).toBe(false)
+    expect(confirmedAbsentRuntimeCredentialItems("slugger")).toEqual([])
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, { username: "runtime/config", password: runtimePayload({ a: 1 }), createdAt: "x" })
+    await refreshRuntimeCredentialConfig("slugger")
+    await refreshMachineRuntimeCredentialConfig("slugger", "machine_test")
+    expect(runtimeCredentialConfigSettled("slugger", "runtimeConfig")).toBe(true)
+    expect(runtimeCredentialConfigSettled("slugger", "machineRuntimeConfig")).toBe(true)
+    expect(confirmedAbsentRuntimeCredentialItems("slugger")).toEqual(["machineRuntimeConfig"])
+
+    resetRuntimeCredentialConfigCache()
+    mockCredentialStore.setRawFailure(new Error("vault unreachable"))
+    await refreshRuntimeCredentialConfig("slugger")
+    expect(runtimeCredentialConfigSettled("slugger", "runtimeConfig")).toBe(false)
+    expect(confirmedAbsentRuntimeCredentialItems("slugger")).toEqual([])
+  })
+
+  it("applies a bootstrap's confirmed absences so the child doesn't ask the vault again", () => {
+    emitTestEvent("runtime credentials bootstrap absences")
+
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      machineId: "machine_test",
+      absent: ["runtimeConfig", "machineRuntimeConfig"],
+    })).toBe(true)
+    expect(runtimeCredentialConfigSettled("slugger", "runtimeConfig")).toBe(true)
+    expect(runtimeCredentialConfigSettled("slugger", "machineRuntimeConfig")).toBe(true)
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+    })
+    expect(confirmedAbsentRuntimeCredentialItems("slugger")).toEqual(["runtimeConfig", "machineRuntimeConfig"])
+
+    resetRuntimeCredentialConfigCache()
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { a: 1 },
+      absent: ["machineRuntimeConfig"],
+    })).toBe(true)
+    expect(readMachineRuntimeCredentialConfig("slugger")).toMatchObject({ itemPath: "vault:slugger:runtime/machines/<this-machine>/config" })
+
+    for (const absent of [[], ["typo"], ["runtimeConfig", "runtimeConfig"], "runtimeConfig"]) {
+      expect(applyRuntimeCredentialBootstrapMessage({ type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", absent })).toBe(false)
+    }
+    expect(applyRuntimeCredentialBootstrapMessage({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      runtimeConfig: { a: 1 },
+      absent: ["runtimeConfig"],
+    })).toBe(false)
     expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
   })
 

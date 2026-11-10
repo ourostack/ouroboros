@@ -48,7 +48,7 @@ import {
   readProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
-import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
+import { confirmedAbsentRuntimeCredentialItems, readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import {
@@ -133,14 +133,16 @@ function privateRuntimeCredentialBootstrapFor(agent: string): RuntimeCredentialB
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
     : []
+  const absent = confirmedAbsentRuntimeCredentialItems(agent)
   const bootstrap: RuntimeCredentialBootstrap = {
     agentName: agent,
     runtimeConfig: runtime.ok ? runtime.config : undefined,
     machineRuntimeConfig: machine.ok ? machine.config : undefined,
     machineId,
     providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+    absent: absent.length > 0 ? absent : undefined,
   }
-  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords && !bootstrap.absent) return null
   return bootstrap
 }
 
@@ -655,6 +657,9 @@ async function prepareProviderRuntime(): Promise<void> {
   const readiness = await Promise.all(readinessAgents.map(async (agent) => {
     try {
       await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+      // Read from the same vault listing: whether this machine has config or not, the
+      // daemon then knows, and its bootstrap spares each worker and sense a vault CLI run.
+      await refreshMachineRuntimeCredentialConfig(agent, daemonMachineId, { preserveCachedOnFailure: true })
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
       if (result.ok) return null
       emitNervesEvent({

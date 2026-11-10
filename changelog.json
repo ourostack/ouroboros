@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.999",
+      "changes": [
+        "Agent workers and senses start without asking the vault again. The daemon now reads this machine's runtime config in its startup vault pass and tells each worker and sense which items the vault said don't exist, so a child only asks the vault for what the daemon couldn't settle. A worker's start goes from three vault CLI runs to none, which on a small Linux machine saves about 15 seconds and 125 MB at its first message."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.998",
       "changes": [
         "Ouro starts leaner: the CLI and the daemon no longer load the Stripe, Azure storage and identity, or mailparser SDKs at startup. Each loads on the first card, hosted-mail or mail-parse call that needs it, which takes `ouro --version` from 1,483 to about 863 modules and roughly 35 MB less memory per process. An integration contract test keeps product SDKs out of startup and caps its module count and memory."

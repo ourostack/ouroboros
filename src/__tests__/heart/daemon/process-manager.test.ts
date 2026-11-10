@@ -253,6 +253,36 @@ describe("daemon process manager", () => {
     })
   })
 
+  it("tells a managed process which credential items the vault confirmed missing", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents: [{
+        name: "slugger",
+        agentArg: "slugger",
+        entry: "heart/agent-entry.js",
+        channel: "private-runtime",
+        autoStart: true,
+        getRuntimeCredentialBootstrap: () => ({ agentName: "slugger", machineId: "machine_test", absent: ["machineRuntimeConfig"] }),
+      }],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(child.send).toHaveBeenCalledWith({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "slugger",
+      machineId: "machine_test",
+      absent: ["machineRuntimeConfig"],
+    })
+  })
+
   it("continues startup when runtime credential bootstrap IPC send throws", async () => {
     const child = new MockChild()
     child.send.mockImplementation(() => {

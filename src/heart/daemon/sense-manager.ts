@@ -5,12 +5,14 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
 import {
+  confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
   type RuntimeCredentialConfig,
+  type RuntimeCredentialItemKind,
 } from "../runtime-credentials"
 import { readProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
@@ -516,6 +518,7 @@ function runtimeCredentialBootstrapFor(agent: string): {
   machineRuntimeConfig?: RuntimeCredentialConfig
   machineId?: string
   providerCredentialRecords?: ProviderCredentialRecord[]
+  absent?: RuntimeCredentialItemKind[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
   // Every sense can run chat-turn tools against this machine's attachments.
@@ -525,14 +528,16 @@ function runtimeCredentialBootstrapFor(agent: string): {
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
     : []
+  const absent = confirmedAbsentRuntimeCredentialItems(agent)
   const bootstrap = {
     agentName: agent,
     runtimeConfig: runtime.ok ? runtime.config : undefined,
     machineRuntimeConfig: machine.ok ? machine.config : undefined,
     machineId,
     providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+    absent: absent.length > 0 ? absent : undefined,
   }
-  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords && !bootstrap.absent) return null
   return bootstrap
 }
 

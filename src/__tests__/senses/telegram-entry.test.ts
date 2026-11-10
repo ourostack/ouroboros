@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 const boot = vi.hoisted(() => ({
-  wait: vi.fn(), read: vi.fn(), refresh: vi.fn(), machine: vi.fn(), start: vi.fn(), log: vi.fn(), configure: vi.fn(),
+  wait: vi.fn(), read: vi.fn(), refresh: vi.fn(), machine: vi.fn(), settled: vi.fn(), start: vi.fn(), log: vi.fn(), configure: vi.fn(),
 }))
 vi.mock("../../heart/runtime-credentials", () => ({
   waitForRuntimeCredentialBootstrap: boot.wait, readRuntimeCredentialConfig: boot.read,
   refreshRuntimeCredentialConfig: boot.refresh, refreshMachineRuntimeCredentialConfig: boot.machine,
+  runtimeCredentialConfigSettled: boot.settled,
 }))
 vi.mock("../../heart/machine-identity", () => ({ loadOrCreateMachineIdentity: () => ({ machineId: "fixture" }) }))
 vi.mock("../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: boot.configure }))
@@ -20,6 +21,7 @@ beforeEach(() => {
   boot.read.mockReturnValue({ ok: true })
   boot.refresh.mockResolvedValue(undefined)
   boot.machine.mockResolvedValue(undefined)
+  boot.settled.mockReturnValue(false)
 })
 afterEach(() => { process.argv = argv; vi.restoreAllMocks() })
 
@@ -43,9 +45,21 @@ it.each([[true, true], [false, true], [false, false]])("passes managed dependenc
   await vi.waitFor(() => expect(app.run).toHaveBeenCalledOnce())
   expect(boot.start).toHaveBeenCalledWith("sanctuary", true)
   expect(boot.refresh).toHaveBeenCalledTimes(!bootstrapped && !cached ? 1 : 0)
+  expect(boot.machine).toHaveBeenCalledWith("sanctuary", "fixture", { preserveCachedOnFailure: true })
   listeners.get("SIGTERM")!()
   listeners.get("SIGINT")!()
   await vi.waitFor(() => expect(app.stop).toHaveBeenCalledOnce())
+})
+
+it("skips the machine-config vault read when the daemon's bootstrap already settled it", async () => {
+  boot.settled.mockImplementation((_agent: string, kind: string) => kind === "machineRuntimeConfig")
+  const app = { run: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) }
+  boot.start.mockResolvedValue(app)
+  vi.spyOn(process, "once").mockImplementation((() => process) as typeof process.once)
+  await import("../../senses/telegram-entry")
+  await vi.waitFor(() => expect(app.run).toHaveBeenCalledOnce())
+  expect(boot.settled).toHaveBeenCalledWith("sanctuary", "machineRuntimeConfig")
+  expect(boot.machine).not.toHaveBeenCalled()
 })
 
 it.each([new Error("failed startup"), "primitive failure"])("reports real startup failures without swallowing them", async (error) => {
