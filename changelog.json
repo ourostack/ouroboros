@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1001",
+      "changes": [
+        "A starting daemon refuses to start, before it updates or signals anything, while another daemon still answers on its socket, so a second daemon can no longer kill a live one. On Linux, ouro up and the daemon refuse a FAT or exFAT ouro home with a clear message."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1000",
       "changes": [
         "ouro service install --init sysv|systemd keeps the daemon running on Linux hosts without launchd, restarting it only after a failure; ouro up starts the daemon through the installed service, and spawns it directly for another socket or when the service will not start."
