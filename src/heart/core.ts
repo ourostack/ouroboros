@@ -7,7 +7,8 @@ import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord }
 import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
-import type { HabitSessionToolContext, ToolContext, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
+import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
+import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
 import type { ApprovalContinuationClaim, ApprovalRecord, JsonObject } from "./approval-store";
@@ -2804,6 +2805,7 @@ export async function runAgent(
 
         await streamCallbackBuffer?.flush()
         pushGenerated(msg);
+        const batchToolImages: ToolCallImages[] = [];
         // Every pre-dispatch gate accepted the complete batch.
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
@@ -3043,15 +3045,19 @@ export async function runAgent(
           let toolResult: string;
           let success: boolean;
           let invoked = false;
+          const toolImages: ToolResultImage[] = [];
+          const withToolImageSink = (context: ToolContext | undefined): ToolContext | undefined => context
+            ? { ...context, attachToolImages: (images: ToolResultImage[]) => { toolImages.push(...images) } }
+            : context;
           try {
             const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
             if (options?.execTool && !relationship) {
               invoked = true
-              toolResult = await options.execTool(tc.name, args, trustedToolContext)
+              toolResult = await options.execTool(tc.name, args, withToolImageSink(trustedToolContext))
               success = true
             } else {
-              const execution = await executeTool(tc.name, args, executionToolContext, options?.execTool)
+              const execution = await executeTool(tc.name, args, withToolImageSink(executionToolContext), options?.execTool)
               invoked = execution.kind !== "rejected_before_handler"
               success = execution.kind === "handler_succeeded"
               toolResult = "error" in execution ? `error: ${execution.error}` : execution.text
@@ -3059,6 +3065,11 @@ export async function runAgent(
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
+          }
+          if (success && toolImages.length > 0) {
+            const visible = canModelSeeToolImages(providerRuntime.model)
+            toolResult = `${toolResult}${toolResult ? "\n\n" : ""}${toolImagesNote(toolImages.length, providerRuntime.model, visible)}`
+            if (visible) batchToolImages.push({ toolName: tc.name, callId: tc.id, images: toolImages })
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
@@ -3097,6 +3108,11 @@ export async function runAgent(
           recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, modelResult, success, toolSelection), success);
           callbacks.onToolResult?.(messages);
+        }
+        if (batchToolImages.length > 0 && !signal?.aborted) {
+          pushGenerated(buildToolImagesMessage(batchToolImages));
+          // Responses-API providers keep native input; rebuild it so the images reach the next call.
+          providerRuntime.resetTurnState(messages);
         }
       }
     } catch (e) {

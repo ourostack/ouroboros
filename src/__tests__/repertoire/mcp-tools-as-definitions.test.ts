@@ -9,7 +9,7 @@ vi.mock("../../nerves/runtime", () => ({
   }),
 }))
 
-import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
+import { mcpToolsAsDefinitions, splitMcpContent } from "../../repertoire/mcp-tools"
 afterEach(shutdownMcpFixtures)
 
 describe("mcpToolsAsDefinitions", () => {
@@ -120,6 +120,55 @@ describe("mcpToolsAsDefinitions", () => {
 
     // Non-text items with empty text still get concatenated, but the full result goes through
     expect(typeof output).toBe("string")
+  })
+
+  it("hands MCP image content to the engine's image sink and returns the text", async () => {
+    const mgr = makeMockMcpManager(
+      [{ server: "housesitter", tools: [{ name: "sitter_screenshot", description: "SS", inputSchema: { type: "object" } }] }],
+      { content: [
+        { type: "text", text: "front door camera" },
+        { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+        { type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" },
+      ] },
+    )
+    const attachToolImages = vi.fn()
+
+    const [tool] = mcpToolsAsDefinitions(mgr)
+    const output = await tool.handler({}, { ...MCP_CONTEXT, attachToolImages })
+
+    expect(output).toBe("front door camera")
+    expect(attachToolImages).toHaveBeenCalledWith([
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { data: "/9j/4AAQ", mimeType: "image/jpeg" },
+    ])
+  })
+
+  it("says images were returned when the caller has no image sink", async () => {
+    const imageOnly = makeMockMcpManager(
+      [{ server: "housesitter", tools: [{ name: "sitter_look", description: "Look", inputSchema: { type: "object" } }] }],
+      { content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    )
+    const withText = makeMockMcpManager(
+      [{ server: "housesitter", tools: [{ name: "sitter_look", description: "Look", inputSchema: { type: "object" } }] }],
+      { content: [{ type: "text", text: "kitchen" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    )
+
+    expect(await mcpToolsAsDefinitions(imageOnly)[0].handler({}, MCP_CONTEXT))
+      .toBe("[1 image(s) returned, but this caller can't receive images]")
+    expect(await mcpToolsAsDefinitions(withText)[0].handler({}, MCP_CONTEXT))
+      .toBe("kitchen\n\n[1 image(s) returned, but this caller can't receive images]")
+  })
+
+  it("splitMcpContent keeps only well-formed image parts", () => {
+    expect(splitMcpContent([
+      { type: "text", text: "a" },
+      { type: "text" },
+      { type: "image", data: "x", mimeType: "image/png" },
+      { type: "image", data: "x" },
+      { type: "image", mimeType: "image/png" },
+      { type: "image", data: "x", mimeType: "text/plain" },
+      { type: "audio", data: "x", mimeType: "audio/wav" },
+    ])).toEqual({ text: "a", images: [{ data: "x", mimeType: "image/png" }] })
   })
 
   it("handler preserves an indeterminate effect when callTool fails", async () => {

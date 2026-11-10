@@ -86,6 +86,29 @@ function toAnthropicTextContent(content: unknown): string {
     .join("\n");
 }
 
+const DATA_URL_PATTERN = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i;
+
+/** User content with base64 `image_url` parts becomes Anthropic text and image blocks; otherwise null. */
+function toAnthropicUserBlocks(content: unknown): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(content)) return null;
+  const blocks: Array<Record<string, unknown>> = [];
+  let hasImage = false;
+  for (const part of content as Array<{ type?: unknown; text?: unknown; image_url?: { url?: unknown } }>) {
+    if (part?.type === "text" && typeof part.text === "string") {
+      blocks.push({ type: "text", text: part.text });
+      continue;
+    }
+    const match = part?.type === "image_url" && typeof part.image_url?.url === "string"
+      ? DATA_URL_PATTERN.exec(part.image_url.url)
+      : null;
+    if (match) {
+      blocks.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
+      hasImage = true;
+    }
+  }
+  return hasImage ? blocks : null;
+}
+
 function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
   if (!argumentsJson.trim()) return {};
   try {
@@ -110,9 +133,10 @@ export function toAnthropicMessages(
     }
 
     if (msg.role === "user") {
+      const userContent = (msg as OpenAI.ChatCompletionUserMessageParam).content;
       converted.push({
         role: "user",
-        content: toAnthropicTextContent((msg as OpenAI.ChatCompletionUserMessageParam).content),
+        content: toAnthropicUserBlocks(userContent) ?? toAnthropicTextContent(userContent),
       });
       continue;
     }

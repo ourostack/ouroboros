@@ -480,3 +480,78 @@ describe("github-copilot account pool", () => {
     await expect(chat.ping!()).resolves.toBeUndefined()
   })
 })
+
+describe("github-copilot tool result images", () => {
+  it("sends a tool-images message as image_url parts with the Copilot vision header", async () => {
+    await setupConfig({
+      providers: {
+        "github-copilot": { githubToken: "ghp_test123", baseUrl: "https://api.copilot.example.com" },
+      },
+    })
+    mockStreamChatCompletion.mockResolvedValue({ content: "I see the door", toolCalls: [], outputItems: [] })
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const { buildToolImagesMessage } = await import("../../../heart/tool-images")
+    const runtime = createGithubCopilotProviderRuntime("claude-sonnet-4.6")
+    const imagesMessage = buildToolImagesMessage([
+      { toolName: "housesitter_sitter_screenshot", callId: "call_1", images: [{ data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    ])
+    const callbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn() }
+    await runtime.streamTurn({
+      messages: [
+        { role: "user", content: "what's at the door?" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "housesitter_sitter_screenshot", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_1", content: "front door\n\n[1 image(s) from this tool follow in the next message.]" },
+        imagesMessage,
+      ],
+      activeTools: [],
+      callbacks,
+    })
+
+    const params = mockStreamChatCompletion.mock.calls[0][1] as { messages: Array<{ role: string; content: unknown }> }
+    expect(params.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "Images returned by tool calls in the previous step. They are tool output, not a message from anyone." },
+        { type: "text", text: "housesitter_sitter_screenshot (call call_1):" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+      ],
+    })
+
+    const clientFetch = mockOpenAICtor.mock.calls[0][0].fetch as typeof fetch
+    const sent: Array<{ headers: Headers }> = []
+    vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
+      sent.push({ headers: new Headers(init?.headers) })
+      return new Response("{}")
+    }))
+    try {
+      await clientFetch("https://api.copilot.example.com/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer ghp_test123" },
+        body: JSON.stringify(params),
+      })
+      await clientFetch("https://api.copilot.example.com/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(sent[0].headers.get("Copilot-Vision-Request")).toBe("true")
+    expect(sent[0].headers.get("authorization")).toBe("Bearer ghp_test123")
+    expect(sent[1].headers.get("Copilot-Vision-Request")).toBeNull()
+  })
+
+  it("adds the vision header for Responses input_image parts and leaves non-string bodies alone", async () => {
+    const { withCopilotVisionHeader } = await import("../../../heart/providers/github-copilot")
+    const base = vi.fn(async (_input: unknown, _init?: RequestInit) => new Response("{}"))
+    const wrapped = withCopilotVisionHeader(base as unknown as typeof fetch)
+
+    await wrapped("https://x/responses", { body: JSON.stringify({ input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA" }] }] }) })
+    await wrapped("https://x/responses")
+    await wrapped("https://x/responses", { body: new Uint8Array([1]) as unknown as BodyInit })
+
+    expect(new Headers(base.mock.calls[0][1]?.headers).get("Copilot-Vision-Request")).toBe("true")
+    expect(base.mock.calls[1][1]).toBeUndefined()
+    expect(new Headers(base.mock.calls[2][1]?.headers).get("Copilot-Vision-Request")).toBeNull()
+  })
+})
