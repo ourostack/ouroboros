@@ -234,6 +234,52 @@ describe("runSelfUpdate", () => {
     expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
   })
 
+  it("restarts a running daemon only once MemAvailable clears the floor plus the restart's headroom", async () => {
+    const MB = 1024 * 1024
+    const floor = 250 * MB
+    // Before installing, 300 MB clears the floor; before restarting, the pass waits for floor + 128 MB.
+    const readings = [300, 300, 340, 380].map((mb) => ({ availableBytes: mb * MB, floorBytes: floor }))
+    const waits = machine({ daemonRunning: true })
+    waits.deps.memory = () => readings.shift() ?? { availableBytes: 380 * MB, floorBytes: floor }
+    waits.deps.sleep = vi.fn(async () => undefined)
+    expect((await runSelfUpdate(waits.deps)).outcome).toBe("updated")
+    expect(waits.deps.sleep).toHaveBeenCalledTimes(2)
+    expect(waits.deps.sleep).toHaveBeenCalledWith(10_000)
+    expect(waits.deps.restartDaemon).toHaveBeenCalledWith("0.1.0-alpha.896")
+
+    const stays = machine({ daemonRunning: true })
+    stays.deps.memory = () => ({ availableBytes: 300 * MB, floorBytes: floor })
+    stays.deps.sleep = vi.fn(async () => undefined)
+    const deferred = await runSelfUpdate(stays.deps)
+    expect(deferred.outcome).toBe("deferred")
+    expect(deferred.summary).toBe("0.1.0-alpha.896 is installed, but MemAvailable stayed at 300 MB, under the 250 MB floor plus 128 MB for the restart; staying on 0.1.0-alpha.805 and trying again next pass")
+    expect(stays.deps.sleep).toHaveBeenCalledTimes(18)
+    expect(stays.deps.activate).not.toHaveBeenCalled()
+    expect(stays.deps.restartDaemon).not.toHaveBeenCalled()
+    expect(stays.current).toBe("0.1.0-alpha.805")
+    expect(stays.state).toMatchObject({ outcome: "deferred", failedVersions: [], consecutiveFailures: 0, latestVersion: "0.1.0-alpha.896" })
+
+    // A stopped daemon needs no restart, so low memory doesn't hold back the switch.
+    const stopped = machine({ daemonRunning: false })
+    stopped.deps.memory = () => ({ availableBytes: 300 * MB, floorBytes: floor })
+    expect((await runSelfUpdate(stopped.deps)).outcome).toBe("updated")
+  })
+
+  it("waits on a real timer when no sleep is given", async () => {
+    vi.useFakeTimers()
+    try {
+      const MB = 1024 * 1024
+      const readings = [300, 300, 400]
+      const m = machine({ daemonRunning: true })
+      m.deps.memory = () => ({ availableBytes: (readings.shift() ?? 400) * MB, floorBytes: 250 * MB })
+      const pass = runSelfUpdate(m.deps)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect((await pass).outcome).toBe("updated")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("stringifies a non-Error install failure", async () => {
     const m = machine()
     vi.mocked(m.deps.install).mockRejectedValueOnce("npm exploded")
