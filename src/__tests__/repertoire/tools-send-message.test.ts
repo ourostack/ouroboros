@@ -26,6 +26,7 @@ const mockReadPrivateRuntimeConfig = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
 const mockSendTelegramAwaitFollowUp = vi.fn()
+const mockSendTeamsOffTurn = vi.fn()
 const mockPlaceConfiguredTwilioPhoneCall = vi.fn()
 
 vi.mock("../../senses/private-runtime", () => ({
@@ -49,6 +50,10 @@ vi.mock("../../senses/bluebubbles", () => ({
 vi.mock("../../senses/teams", () => ({
   sendProactiveTeamsMessageToSession: (...args: any[]) =>
     mockSendProactiveTeamsMessageToSession(...args),
+}))
+
+vi.mock("../../senses/teams-off-turn", () => ({
+  sendTeamsOffTurn: (...args: any[]) => mockSendTeamsOffTurn(...args),
 }))
 
 vi.mock("../../senses/telegram", () => ({
@@ -99,6 +104,7 @@ beforeEach(() => {
   mockReadPrivateRuntimeConfig.mockReturnValue({ autoStart: true, source: "privateRuntime" })
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
+  mockSendTeamsOffTurn.mockReset()
   mockSendTelegramAwaitFollowUp.mockReset()
   mockSendTelegramAwaitFollowUp.mockResolvedValue({
     status: "delivered_now",
@@ -796,10 +802,32 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("sends now from outside a Teams turn where the Teams sense runs", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendTeamsOffTurn.mockResolvedValue({ delivered: true })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "post this to Ari on Teams",
+    }, makeTrustedTeamsTurnContext({ botApi: undefined }))
+
+    expect(result).toContain("sent to the active teams chat now")
+    expect(mockSendTeamsOffTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ friendId: "friend-uuid-4", key: "target-thread", text: "post this to Ari on Teams", origin: "send_message" }),
+      { agentRoot: "/mock/agent-root" },
+    )
+    expect(mockSendProactiveTeamsMessageToSession).not.toHaveBeenCalled()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
   it("falls back to truthful queued status when teams live delivery is unavailable", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
     const recordSurfaceAttempt = vi.fn()
+    mockSendTeamsOffTurn.mockResolvedValue(null)
 
     const result = await tool.handler({
       friendId: "friend-uuid-4",

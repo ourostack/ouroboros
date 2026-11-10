@@ -1074,23 +1074,37 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             } as const
           },
           teams: async (request) => {
-            if (!ctx?.botApi) {
+            let result: Awaited<ReturnType<typeof import("../senses/teams")["sendProactiveTeamsMessageToSession"]>> | null
+            if (ctx?.botApi) {
+              const { sendProactiveTeamsMessageToSession } = await import("../senses/teams")
+              result = await sendProactiveTeamsMessageToSession({
+                friendId: request.friendId,
+                sessionKey: request.key,
+                text: request.content,
+                intent: request.intent,
+                authorizingSession: request.authorizingSession,
+                origin: "send_message",
+              } as any, {
+                botApi: ctx.botApi,
+              })
+            } else {
+              // Not a Teams turn (ouro msg, a habit, a private-runtime turn): send now where the Teams sense runs.
+              const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
+              result = await sendTeamsOffTurn({
+                friendId: request.friendId,
+                key: request.key,
+                text: request.content,
+                intent: request.intent,
+                authorizingSession: request.authorizingSession,
+                origin: "send_message",
+              } as any, { agentRoot: getAgentRoot() })
+            }
+            if (!result) {
               return {
                 status: "unavailable",
                 detail: "live delivery unavailable right now; queued for the next active turn",
               } as const
             }
-            const { sendProactiveTeamsMessageToSession } = await import("../senses/teams")
-            const result = await sendProactiveTeamsMessageToSession({
-              friendId: request.friendId,
-              sessionKey: request.key,
-              text: request.content,
-              intent: request.intent,
-              authorizingSession: request.authorizingSession,
-              origin: "send_message",
-            } as any, {
-              botApi: ctx.botApi,
-            })
             if (result.delivered) {
               return {
                 status: "delivered_now",
