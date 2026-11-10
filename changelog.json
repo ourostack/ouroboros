@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1006",
+      "changes": [
+        "On Linux outside a container, habits and awaits fire from the daemon's own timers instead of writing launchd plists and spawning launchctl, and are no longer reported as degraded. macOS keeps launchd and containers keep supercronic."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1005",
       "changes": [
         "ouro auth for github-copilot on a host without gh runs GitHub's device login itself: enter the shown code at github.com/login/device on any device."
