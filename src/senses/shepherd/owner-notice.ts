@@ -12,6 +12,7 @@ import type { ProactiveBlueBubblesSessionSendParams, ProactiveBlueBubblesSession
 import type { HostSession } from "./host"
 import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
 import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
+import { importOptional } from "../../heart/optional-packages"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -256,7 +257,7 @@ export function chooseTeamsBot(tenantId: string | undefined, primary: TeamsConfi
 
 /* v8 ignore start -- the live Teams SDK client; its token and REST calls need a real bot registration @preserve */
 async function liveBotApi(config: TeamsConfig): Promise<TeamsBotApi> {
-  const { App } = await import("@microsoft/teams.apps")
+  const { App } = await importOptional("@microsoft/teams.apps", "Teams owner notices", () => import("@microsoft/teams.apps"))
   const app = new App({
     clientId: config.clientId,
     ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}),

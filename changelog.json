@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1014",
+      "changes": [
+        "The Teams, Azure, Stripe and mail SDKs are optional packages. A small host can leave them out with npm config set omit optional (about 97 MB and 138 packages of the 220 MB install); the core harness, providers, vault and other senses run without them, and a feature that needs a missing one says which package and how to restore it. The edge benchmark now measures that install."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1013",
       "changes": [
         "github-copilot can bill a discovered pool of Copilot accounts: with accountPool in agent.json, ouro auth discovers every eligible account signed in to the Copilot app (each checked on its own host), and the runtime fills them by quota tranche (30/60/90/100% used), moves to the next account at once on a 402 or 429 and retries that request once, logs every move to state/account-switches.jsonl, and publishes the agent's burn (summed across its processes) to the fleet gist."

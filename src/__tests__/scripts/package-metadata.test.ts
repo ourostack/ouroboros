@@ -99,7 +99,8 @@ describe("package metadata", () => {
   })
 
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {
-    expect(packageJson.dependencies.mailparser).toBe("^3.9.15")
+    // Optional so a small host can leave it out; ordinary installs still get it.
+    expect(packageJson.optionalDependencies.mailparser).toBe("^3.9.15")
     expect(packageJson.overrides["deepmerge-ts"]).toBe("^8.0.1")
   })
 

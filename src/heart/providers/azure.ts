@@ -6,6 +6,7 @@ import type { ResponseItem, TurnResult } from "../streaming";
 import { streamResponsesApi, toResponsesInput, toResponsesTools, truncateResponsesFunctionCallOutput } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
+import { importOptional, OptionalPackageMissingError } from "../optional-packages";
 
 const COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default";
 
@@ -23,7 +24,7 @@ export function createAzureTokenProvider(managedIdentityClientId?: string): () =
   return async (): Promise<string> => {
     try {
       if (!credential) {
-        const { DefaultAzureCredential } = await import("@azure/identity");
+        const { DefaultAzureCredential } = await importOptional("@azure/identity", "Azure managed-identity sign-in", () => import("@azure/identity"));
         const credentialOptions = managedIdentityClientId
           ? { managedIdentityClientId }
           : undefined;
@@ -32,6 +33,7 @@ export function createAzureTokenProvider(managedIdentityClientId?: string): () =
       const tokenResponse = await credential.getToken(COGNITIVE_SERVICES_SCOPE);
       return tokenResponse.token;
     } catch (err: unknown) {
+      if (err instanceof OptionalPackageMissingError) throw err;
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
         `Azure OpenAI authentication failed: ${detail}\n` +
