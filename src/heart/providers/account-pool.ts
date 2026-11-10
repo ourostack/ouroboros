@@ -44,6 +44,8 @@ export interface DiscoveryDeps {
   now?: () => Date
 }
 
+const HOUR_MS = 60 * 60 * 1000
+
 export const accountKey = (account: { login: string; host: string }): string => `${account.login}@${account.host}`
 
 /**
@@ -267,7 +269,11 @@ export function chooseAccount(pool: readonly PoolAccount[], readings: readonly Q
   return pool.find((account) => accountKey(account) === key) ?? null
 }
 
-/** Until when an account refuses requests: Retry-After when given, the quota reset for a spent quota, else 5 minutes. */
+/**
+ * Until when an account refuses requests: Retry-After when given; the quota reset for a spent quota; an hour for a
+ * rejected credential (401), so a revoked token costs one request an hour, not one a turn, and a re-stored credential
+ * comes back on its own; else 5 minutes.
+ */
 export function refusalUntil(status: number, error: unknown, reset: string | null | undefined, now: number): number {
   const headers = (error as { headers?: unknown } | null)?.headers
   const retryAfter = headers && typeof (headers as Headers).get === "function"
@@ -275,6 +281,7 @@ export function refusalUntil(status: number, error: unknown, reset: string | nul
     : (headers as Record<string, string> | undefined)?.["retry-after"]
   const seconds = Number(retryAfter)
   if (retryAfter && Number.isFinite(seconds) && seconds > 0) return now + seconds * 1000
+  if (status === 401) return now + HOUR_MS
   const message = error instanceof Error ? error.message : String(error)
   // Only a spent quota waits for the reset; a plain "rate limit exceeded" is a short throttle.
   if (status === 402 || /quota|billing/i.test(message)) {
@@ -286,7 +293,10 @@ export function refusalUntil(status: number, error: unknown, reset: string | nul
   return now + 5 * 60 * 1000
 }
 
-export type SwitchReason = "start" | "tranche" | "402" | "429"
+export type SwitchReason = "start" | "tranche" | "401" | "402" | "429"
+
+/** Statuses on which the pool benches the account and retries the request once on the next one. */
+export type RefusalStatus = 401 | 402 | 429
 
 export interface AccountSwitch {
   at: string
@@ -340,7 +350,6 @@ function defaultAppendLine(file: string, line: string): void {
   fs.appendFileSync(file, line, "utf8")
 }
 
-const HOUR_MS = 60 * 60 * 1000
 
 export class AccountPool {
   readonly accounts: readonly PoolAccount[]
@@ -469,10 +478,10 @@ export class AccountPool {
   }
 
   /**
-   * The account `key` refused a request with a 402 or 429: mark it refused until it can serve again and
+   * The account `key` refused a request with a 401, 402 or 429: mark it refused until it can serve again and
    * move to the next account. Returns the account to retry on, or null when no other account can serve.
    */
-  onRefusal(key: string, status: 402 | 429, error: unknown): PoolAccount | null {
+  onRefusal(key: string, status: RefusalStatus, error: unknown): PoolAccount | null {
     const reset = this.readings.find((reading) => reading.key === key)?.reset
     const until = refusalUntil(status, error, reset, this.now())
     this.refused[key] = until
@@ -677,7 +686,7 @@ export async function fetchDirectReadings(accounts: readonly PoolAccount[], deps
 export interface PooledCaller<C> {
   account(): PoolAccount
   client(): C
-  /** Run one model request. On a 402 or 429 it moves to the next account and retries once. */
+  /** Run one model request. On a 401, 402 or 429 it moves to the next account and retries once. */
   call<T>(request: (client: C, account: PoolAccount) => Promise<T>): Promise<T>
 }
 
@@ -699,7 +708,7 @@ export function createPooledCaller<C>(pool: AccountPool, makeClient: (account: P
         return await request(clientFor(account), account)
       } catch (error) {
         const status = (error as { status?: unknown } | null)?.status
-        if (status !== 402 && status !== 429) throw error
+        if (status !== 401 && status !== 402 && status !== 429) throw error
         const next = pool.onRefusal(accountKey(account), status, error)
         if (!next) throw error
         account = next

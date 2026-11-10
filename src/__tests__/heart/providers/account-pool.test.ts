@@ -296,6 +296,8 @@ describe("refusalUntil", () => {
     expect(refusalUntil(429, new Error("429 Rate limit exceeded"), "2026-12-01T00:00:00.000Z", NOW)).toBe(NOW + 5 * 60_000)
     expect(refusalUntil(429, null, null, NOW)).toBe(NOW + 5 * 60_000)
     expect(refusalUntil(429, { headers: { "retry-after": "soon" } }, null, NOW)).toBe(NOW + 5 * 60_000)
+    // A rejected credential waits an hour, so a revoked token costs one request an hour, not one a turn.
+    expect(refusalUntil(401, new Error("401 Bad credentials"), "2026-12-01T00:00:00.000Z", NOW)).toBe(NOW + 60 * 60_000)
   })
 })
 
@@ -618,6 +620,23 @@ describe("createPooledCaller", () => {
     expect(caller.account()).toBe(MSCOM)
     expect(records().map((r) => r.reason)).toEqual(["start", "429"])
     expect(p.burnPerH()).toEqual({ "ari@msft.ghe.com": 1, "ari@microsoft.ghe.com": 1 })
+  })
+
+  it("on a 401 benches the account for an hour, logs it, and retries once on the next account; later turns skip it", async () => {
+    const { pool: p, records, advance } = pool([MSFT, MSCOM])
+    const request = vi.fn(async (token: string) => {
+      if (token === "t-msft") throw status(401, "Bad credentials")
+      return "ok"
+    })
+    await expect(createPooledCaller(p, (account) => account.githubToken).call(request)).resolves.toBe("ok")
+    expect(request.mock.calls.map((call) => call[0])).toEqual(["t-msft", "t-mscom"])
+    expect(records().map((r) => [r.from, r.to, r.reason, r.refusedUntil])).toEqual([
+      [null, "ari@msft.ghe.com", "start", undefined],
+      ["ari@msft.ghe.com", "ari@microsoft.ghe.com", "401", new Date(NOW + 60 * 60_000).toISOString()],
+    ])
+    advance(30 * 60_000)
+    await createPooledCaller(p, (account) => account.githubToken).call(request)
+    expect(request.mock.calls.map((call) => call[0])).toEqual(["t-msft", "t-mscom", "t-mscom"])
   })
 
   it("retries only once, even if the next account also refuses", async () => {
