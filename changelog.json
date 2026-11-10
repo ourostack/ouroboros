@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1076",
+      "changes": [
+        "The daemon pings providers from a short-lived child, so the provider SDK doesn't stay resident"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1075",
       "changes": [
         "A Teams message from an ouro msg, habit or private-runtime turn (send_message or surface) goes out now on the machine that runs the Teams sense, instead of waiting for the friend's next Teams message; the same text is not sent twice within 15 minutes"
