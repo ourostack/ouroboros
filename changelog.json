@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1046",
+      "changes": [
+        "Account pool: the fleet gist write cadence (at most every 30 minutes) is shared by all of an agent's processes through state/account-burn-published.json, not kept per process."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1033",
       "changes": [
         "Keep one result per tool call on replay; a duplicate (placeholder plus real result) made every later turn 400"
