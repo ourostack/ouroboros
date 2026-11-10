@@ -207,6 +207,7 @@ import {
   readTaskFile,
   deriveResumeCheckpoint,
   loadPrivateRuntimeInstincts,
+  ORDINARY_EXTERNAL_EVENT_GUIDANCE,
   runPrivateRuntimeTurn,
   type RunPrivateRuntimeTurnOptions,
 } from "../../senses/private-runtime"
@@ -5563,6 +5564,56 @@ describe("private runtime", () => {
       await expect(runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: fixture.event }))
         .rejects.toThrow(/external event relationship authority denied/u)
       expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    })
+
+    it("runs an ordinary agent's external event under its own authority when it has no tool-profiles.json", async () => {
+      expect(fs.existsSync(path.join(agentRoot, "tool-profiles.json"))).toBe(false)
+      mockGetToolsForChannel.mockReturnValue([
+        { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
+        { type: "function", function: { name: "surface", description: "surface", parameters: {} } },
+        { type: "function", function: { name: "rest", description: "rest", parameters: {} } },
+        { type: "function", function: { name: "settle", description: "settle", parameters: {} } },
+        { type: "function", function: { name: "speak", description: "speak", parameters: {} } },
+      ])
+      const defaultTurn = mockHandleInboundTurn.getMockImplementation()!
+      mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+        const result = await defaultTurn(input)
+        input.runAgentOptions.toolContext.externalEventAuthority.recordCommittedDisposition(input.runAgentOptions.toolContext.currentExternalEvent)
+        return { ...result, turnOutcome: "rested" }
+      })
+      const event: NonNullable<RunPrivateRuntimeTurnOptions["externalEvent"]> = { schemaVersion: 1, recordPath: "/events/test-agent/housesitter/peer.json", agent: "test-agent", source: "housesitter", eventId: "peer", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+
+      await runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: event })
+
+      const input = mockHandleInboundTurn.mock.calls[0][0]
+      expect(input.runAgentOptions.tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition", "surface"])
+      expect(mockGetToolsForChannel.mock.calls.at(-1)!.at(-1)).toMatchObject({ relationshipAuthorization: undefined })
+      const toolContext = input.runAgentOptions.toolContext
+      expect(toolContext).toMatchObject({ autonomousTurnKind: "external-event", currentExternalEvent: event, relationshipAuthorization: undefined, context: undefined, externalEventEffects: undefined })
+      expect(String(input.messages[0].content)).toContain(ORDINARY_EXTERNAL_EVENT_GUIDANCE)
+      const authorize = toolContext.externalEventAuthority.authorizeDisposition
+      expect(authorize({ decision: "silent", nextWake: "on_change" })).toEqual({ allowed: true, reason: "agent-owned external event" })
+      expect(authorize({ decision: "act", nextWake: "on_recovery" })).toEqual({ allowed: true, reason: "agent-owned external event" })
+      expect(authorize({ decision: "ask", nextWake: "on_change" })).toMatchObject({ allowed: false, reason: expect.stringContaining("no owner-decision channel") })
+      expect(authorize({ decision: "report", nextWake: "on_change" })).toMatchObject({ allowed: false, reason: expect.stringContaining("no owner-decision channel") })
+      expect(authorize({ decision: "act", nextWake: "at" })).toMatchObject({ allowed: false, reason: expect.stringContaining("timed re-wake") })
+    })
+
+    it("keeps the relationship path when tool-profiles.json exists but cannot be inspected", async () => {
+      const profilePath = path.join(agentRoot, "tool-profiles.json")
+      const lstat = fs.lstatSync
+      const inspect = vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+        if (args[0] === profilePath) throw Object.assign(new Error("fixture I/O error"), { code: "EIO" })
+        return lstat(...args)
+      }) as typeof fs.lstatSync)
+      try {
+        await expect(runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/io.json", agent: "test-agent", source: "guard", eventId: "io", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" } }))
+          .rejects.toThrow()
+        expect(inspect).toHaveBeenCalledWith(profilePath)
+        expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+      } finally {
+        inspect.mockRestore()
+      }
     })
 
     it("rejects owner presentation drift after initial relationship resolution", async () => {
