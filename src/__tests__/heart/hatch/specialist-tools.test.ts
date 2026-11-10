@@ -17,6 +17,7 @@ const mockCreateVaultAccount = vi.hoisted(() => vi.fn(async (
 ) => ({ success: true, email, serverUrl })))
 
 const mockStoreVaultUnlockSecret = vi.hoisted(() => vi.fn())
+const mockResolveVaultUnlockStore = vi.hoisted(() => vi.fn())
 
 const mockStoreProviderCredentials = vi.hoisted(() =>
   vi.fn(async (agentName: string, provider: string) => ({
@@ -37,6 +38,7 @@ vi.mock("../../../repertoire/vault-unlock", async () => {
   return {
     promptConfirmedVaultUnlockSecret: actual.promptConfirmedVaultUnlockSecret,
     storeVaultUnlockSecret: mockStoreVaultUnlockSecret,
+    resolveVaultUnlockStore: mockResolveVaultUnlockStore,
   }
 })
 
@@ -57,6 +59,7 @@ function resetCredentialMocks(): void {
     email: string,
   ) => ({ success: true, email, serverUrl }))
   mockStoreVaultUnlockSecret.mockReset()
+  mockResolveVaultUnlockStore.mockReset()
   mockStoreProviderCredentials.mockReset()
   mockStoreProviderCredentials.mockImplementation(async (agentName: string, provider: string) => ({
     credentialPath: `vault:${agentName}:providers/${provider}`,
@@ -623,6 +626,40 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(fs.existsSync(finalBundle)).toBe(false)
     expect(fs.existsSync(path.join(tmpDir, "agent.json"))).toBe(true)
     expect(fs.existsSync(path.join(tmpDir, "psyche", "SOUL.md"))).toBe(true)
+  })
+
+  it("refuses adoption before creating a vault account when this machine has no unlock store", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-adopt-no-store")
+    cleanup.push(bundlesRoot)
+    mockResolveVaultUnlockStore.mockImplementationOnce(() => {
+      throw new Error("No supported secure local secret store was found on this machine for TestAgent.")
+    })
+    const promptSecret = vi.fn(async () => "Human-chosen-hatch-secret1!")
+
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      animationWriter: () => {},
+      promptSecret,
+    })
+
+    const result = await execTool("complete_adoption", { name: "TestAgent", handoff_message: "Hello" })
+
+    expect(result).toContain("error: no local store for the vault unlock secret, so no vault was created.")
+    expect(result).toContain("No supported secure local secret store")
+    expect(mockResolveVaultUnlockStore).toHaveBeenCalledWith({
+      agentName: "TestAgent",
+      email: "testagent@ouro.bot",
+      serverUrl: "https://vault.ouro.bot",
+    })
+    expect(promptSecret).not.toHaveBeenCalled()
+    expect(mockCreateVaultAccount).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(bundlesRoot, "TestAgent.ouro"))).toBe(false)
+    expect(fs.existsSync(tmpDir)).toBe(true)
   })
 
   it("rolls back moved bundle when hatchling vault creation fails", async () => {

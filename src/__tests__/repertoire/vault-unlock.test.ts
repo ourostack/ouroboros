@@ -361,6 +361,28 @@ describe("vault unlock local stores", () => {
     })).toThrow("No supported secure local secret store was found")
   })
 
+  it("honors a machine-level OURO_VAULT_UNLOCK_STORE choice when no --store is given", () => {
+    emitTestEvent("vault unlock machine-level store choice")
+    const homeDir = tempHome()
+    const spawn = vi.fn(() => missingCommand()) as VaultUnlockDeps["spawnSync"]
+    const env = { OURO_VAULT_UNLOCK_STORE: " plaintext-file " }
+
+    const stored = storeVaultUnlockSecret(config, "local-unlock-material", { homeDir, platform: "linux", spawnSync: spawn, env })
+    expect(stored.kind).toBe("plaintext-file")
+    expect(readVaultUnlockSecret(config, { homeDir, platform: "linux", spawnSync: spawn, env })).toMatchObject({
+      secret: "local-unlock-material",
+      store: stored,
+    })
+    expect(spawn).not.toHaveBeenCalled()
+
+    expect(resolveVaultUnlockStore(config, { homeDir, platform: "darwin", store: "auto", env }).kind).toBe("macos-keychain")
+    expect(resolveVaultUnlockStore(config, { homeDir, platform: "darwin", env: { OURO_VAULT_UNLOCK_STORE: "  " } }).kind).toBe("macos-keychain")
+    expect(() => resolveVaultUnlockStore(config, { homeDir, platform: "linux", env: { OURO_VAULT_UNLOCK_STORE: "keyring" } }))
+      .toThrow("OURO_VAULT_UNLOCK_STORE='keyring' is not a vault unlock store")
+    expect(() => resolveVaultUnlockStore(config, { homeDir, platform: "linux", spawnSync: spawn, env: {} }))
+      .toThrow("set OURO_VAULT_UNLOCK_STORE=plaintext-file for the ouro service and every ouro command")
+  })
+
   it("keeps auto strict when an existing plaintext fallback has broad permissions", () => {
     emitTestEvent("vault unlock auto plaintext fallback permissions")
     const homeDir = tempHome()

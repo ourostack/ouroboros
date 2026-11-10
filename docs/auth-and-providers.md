@@ -431,6 +431,13 @@ ouro hatch --answers ./hatch.json --secret-file /dev/fd/3 --no-chat 3< ./unlock-
 
 `hatch.json` holds `{"agentName", "humanName", "provider", "credentials": {...}}` (the same credential fields as the hatch flags). The secret file is read once and must meet the `ouro vault create` strength rules. The hatch creates the hatchling's vault and saves its local unlock before storing credentials, then starts the daemon. With `--answers`, nothing is prompted: anything missing is a usage error. `--no-chat` skips the first chat. `ouro vault unlock|create|replace|recover --secret-file <path>` work the same way.
 
+### Vault account registration
+
+Hatch and `ouro vault create` register the vault account with the current Bitwarden/Vaultwarden flow: `POST /identity/accounts/register/send-verification-email` with `{ email, name, receiveMarketingEmails: false }` returns a verification token, and `POST /identity/accounts/register/finish` creates the account with that `emailVerificationToken`. Vaultwarden 2026.x removed the old single-step `POST /identity/accounts/register`; Ouro uses it only when a server returns 404 for the verification step.
+
+- If the server has signups closed, it answers "Registration not allowed or user already exists" unless the address was invited. The fix is human-required: the server admin invites the agent's email (Vaultwarden admin panel → Invite User), then the human re-runs hatch or `ouro vault create`.
+- If the server has mail and signup verification on, it emails a link instead of returning a token. Ouro can't finish that unattended and says so; the admin creates or invites the account with verification off, or the human finishes signup from the email.
+
 ## Continue An Existing Agent Bundle
 
 When a bundle is copied, pulled, or cloned onto a machine, the durable Ouro-owned story is bundle plus vault:
@@ -478,6 +485,10 @@ Windows DPAPI means a CurrentUser-protected encrypted local unlock file. Windows
 Linux Secret Service is the freedesktop desktop-secret API usually backed by GNOME Keyring, KWallet, or another `libsecret` provider. It is often unavailable on headless servers, minimal Linux installs, and WSL.
 
 If the machine has no usable local secret store, the harness may offer an explicit plaintext unlock fallback in ignored local state. That fallback must be opt-in, clearly labeled, and never selected silently.
+
+A headless appliance can choose that fallback once for the whole machine: set `OURO_VAULT_UNLOCK_STORE=plaintext-file` in the environment of the ouro service and of every ouro command run there. Any store name `--store` accepts works (`auto`, `macos-keychain`, `windows-dpapi`, `linux-secret-service`, `plaintext-file`). An explicit `--store` still wins, and reads and writes both follow the choice. This is a deliberate exception to the no-environment-variable policy: the store is a property of the machine, not the bundle, and hatch has no `--store` flag.
+
+Hatch, `ouro vault create`, `ouro vault replace` and `ouro vault recover` resolve the local unlock store before they create a vault account. On a machine with no usable store they stop with the store guidance and create nothing, so no orphaned vault account blocks the next attempt with "user already exists".
 
 ## Existing Agents
 
