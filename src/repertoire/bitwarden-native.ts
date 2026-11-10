@@ -194,7 +194,8 @@ interface NativeSession {
   accessToken: string
   expiresAt: number
   userKey: Buffer
-  userId: string
+  /** The account's id from the access token; writes need it, reads do not. */
+  userId: string | null
 }
 
 /** A login item to write: the same fields `ouro`'s bw path writes. */
@@ -285,6 +286,7 @@ export class NativeVaultReader {
       meta: { email: this.email, update: existingId !== undefined },
     })
     const answer = await this.withSession(async (session) => {
+      if (!session.userId) throw new NativeVaultUnsupportedError("writes with an access token that names no user")
       const itemKeyString = existing ? stringField(existing, "key") : undefined
       const key = itemKeyString ? decryptKey(itemKeyString, session.userKey, "item key") : session.userKey
       const login = field(existing, "login")
@@ -381,7 +383,6 @@ export class NativeVaultReader {
     const expiresIn = Number(field(token, "expires_in"))
     const userKey = decryptKey(protectedKey, keys.stretched, "user key")
     const userId = tokenUserId(accessToken)
-    if (!userId) throw new NativeVaultUnsupportedError("an access token without a user id")
     this.session = { accessToken, expiresAt: this.deps.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600) * 1000, userKey, userId }
     return this.session
   }

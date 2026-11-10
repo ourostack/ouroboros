@@ -1,20 +1,26 @@
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
- * Product SDKs listed in package.json optionalDependencies. npm installs them by default; a small
- * host can leave them out with `npm install --omit=optional` (about 97 MB and 138 packages), and
- * only the feature that needs one stops working.
+ * Packages listed in package.json optionalDependencies: the product SDKs, the terminal chat UI
+ * (ink and react; without them `ouro` chats line by line) and the bundled Bitwarden CLI (vault
+ * reads and writes are native; bw is only for vaults the native client does not support, and is
+ * then found on PATH or installed). npm installs them by default; a small host can leave them out
+ * with `npm install --omit=optional` (about 46 MB instead of 221 MB), and only the feature that
+ * needs one stops working.
  */
 export const OPTIONAL_PACKAGES = [
   "@azure/identity",
   "@azure/storage-blob",
+  "@bitwarden/cli",
   "@microsoft/teams.api",
   "@microsoft/teams.apps",
   "@microsoft/teams.cards",
   "@microsoft/teams.common",
   "@microsoft/teams.dev",
   "@microsoft/teams.graph",
+  "ink",
   "mailparser",
+  "react",
   "smtp-server",
   "stripe",
 ] as const
