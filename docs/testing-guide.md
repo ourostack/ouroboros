@@ -309,6 +309,7 @@ CI now mirrors that split on pull requests:
 - coverage gate
 - hermetic integration lane
 - local package e2e lane
+- edge benchmark (report-only): the packed package installed on Linux arm64, Linux x64 and macOS arm64, Linux under a 1 GiB memory cap. It measures install size, `ouro --version` time and memory and modules loaded, an agentless daemon, a one-agent stack (fake vault, fake model) and one message through it (time to the first model request, vault CLI runs, peak memory), and compares each number with main's latest run in the job summary. Run it on a built checkout with `node .github/scripts/edge-benchmark.cjs run --root . --out /tmp/edge.json`, then `node .github/scripts/edge-benchmark.cjs report --current /tmp/edge.json`.
 
 `main` also keeps:
 
