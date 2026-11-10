@@ -5,8 +5,10 @@
  * Protocol (Bitwarden security whitepaper): prelogin for the KDF, PBKDF2-SHA256 master key,
  * a password-grant login with the master password hash, the user key unwrapped with the
  * HKDF-stretched master key, then /api/sync and AES-256-CBC + HMAC-SHA256 decryption of each item.
- * Reads only: writes stay on `bw`. Anything this reader does not handle (Argon2id, two-step login,
- * other cipher types) raises NativeVaultUnsupportedError so the caller can fall back to `bw`.
+ * It also creates, updates and trashes login items (POST/PUT /api/ciphers), re-encrypting only the
+ * name, notes and login and replaying every other encrypted field from the last sync unchanged.
+ * Anything this client does not handle (Argon2id, two-step login, other cipher types) raises
+ * NativeVaultUnsupportedError so the caller can fall back to `bw`.
  */
 
 import * as crypto from "node:crypto"
@@ -34,7 +36,7 @@ export class NativeVaultUnsupportedError extends Error {
 }
 
 export interface VaultHttpRequest {
-  method: "GET" | "POST"
+  method: "GET" | "POST" | "PUT"
   headers: Record<string, string>
   body?: string
 }
@@ -125,6 +127,15 @@ export function decryptCipherString(value: string, key: Buffer): Buffer {
   return Buffer.concat([decipher.update(ct!), decipher.final()])
 }
 
+/** Encrypt into a type-2 cipher string with a 64-byte key (32 enc + 32 mac). */
+export function encryptCipherString(data: Buffer | string, key: Buffer): string {
+  const iv = crypto.randomBytes(16)
+  const cipher = crypto.createCipheriv("aes-256-cbc", key.subarray(0, 32), iv)
+  const ct = Buffer.concat([cipher.update(typeof data === "string" ? Buffer.from(data, "utf8") : data), cipher.final()])
+  const mac = crypto.createHmac("sha256", key.subarray(32, 64)).update(iv).update(ct).digest()
+  return `2.${iv.toString("base64")}|${ct.toString("base64")}|${mac.toString("base64")}`
+}
+
 function decryptText(value: unknown, key: Buffer): string | undefined {
   return typeof value === "string" && value.length > 0 ? decryptCipherString(value, key).toString("utf8") : undefined
 }
@@ -136,10 +147,11 @@ function decryptKey(value: string, key: Buffer, what: string): Buffer {
 }
 
 /** Decrypt the personal, non-deleted items of a sync response; items in organizations are left out. */
-export function decryptSyncItems(sync: unknown, userKey: Buffer): { items: NativeVaultItem[]; skipped: number; unreadable: number } {
+export function decryptSyncItems(sync: unknown, userKey: Buffer): { items: NativeVaultItem[]; skipped: number; unreadable: number; raw: Map<string, Json> } {
   const ciphers = field(sync, "ciphers")
   if (!Array.isArray(ciphers)) throw new Error("vault sync returned no item list")
   const items: NativeVaultItem[] = []
+  const raw = new Map<string, Json>()
   let skipped = 0
   let unreadable = 0
   for (const cipher of ciphers) {
@@ -152,6 +164,7 @@ export function decryptSyncItems(sync: unknown, userKey: Buffer): { items: Nativ
       const key = itemKeyString ? decryptKey(itemKeyString, userKey, "item key") : userKey
       const login = field(cipher, "login")
       const uris = field(login, "uris")
+      raw.set(String(field(cipher, "id")), cipher as Json)
       items.push({
         id: String(field(cipher, "id")),
         name: decryptText(field(cipher, "name"), key) ?? "",
@@ -174,20 +187,44 @@ export function decryptSyncItems(sync: unknown, userKey: Buffer): { items: Nativ
       unreadable += 1
     }
   }
-  return { items, skipped, unreadable }
+  return { items, skipped, unreadable, raw }
 }
 
 interface NativeSession {
   accessToken: string
   expiresAt: number
   userKey: Buffer
+  userId: string
 }
+
+/** A login item to write: the same fields `ouro`'s bw path writes. */
+export interface NativeLoginWrite {
+  name: string
+  username: string
+  password: string
+  notes: string | null
+  uri: string
+}
+
+/** The user id (`sub`) in a JWT access token, or null when the token is not a JWT. */
+function tokenUserId(accessToken: string): string | null {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8")) as unknown
+    const sub = field(payload, "sub")
+    return typeof sub === "string" && sub.length > 0 ? sub : null
+  } catch {
+    return null
+  }
+}
+
+/** The fields of an item that a write keeps as they are: still encrypted, so never decrypted here. */
+const PRESERVED_CIPHER_FIELDS = ["folderId", "favorite", "reprompt", "fields", "passwordHistory"] as const
 
 export class NativeVaultReader {
   private readonly serverUrl: string
   private keys: { hash: string; stretched: Buffer } | null = null
   private session: NativeSession | null = null
-  private cache: { items: NativeVaultItem[]; at: number } | null = null
+  private cache: { items: NativeVaultItem[]; raw: Map<string, Json>; at: number } | null = null
   private loginFailure: { error: Error; at: number } | null = null
 
   constructor(
@@ -221,8 +258,8 @@ export class NativeVaultReader {
       sync = await this.requestSync(session)
       if (sync === null) throw new Error("vault sync rejected a fresh access token (HTTP 401)")
     }
-    const { items, skipped, unreadable } = decryptSyncItems(sync, session.userKey)
-    this.cache = { items, at: this.deps.now() }
+    const { items, skipped, unreadable, raw } = decryptSyncItems(sync, session.userKey)
+    this.cache = { items, raw, at: this.deps.now() }
     emitNervesEvent({
       component: "repertoire",
       event: "repertoire.native_vault_sync_end",
@@ -230,6 +267,78 @@ export class NativeVaultReader {
       meta: { email: this.email, items: items.length, skipped, unreadable },
     })
     return items
+  }
+
+  /**
+   * Create a login item, or update the item `existingId` names. An update needs that item in the
+   * latest sync (read items() first): it keeps the item's own key, folder, favorite, custom fields,
+   * password history and other login data exactly as stored, and the server refuses it if the item
+   * changed since that sync. Returns the item id. Does not retry, so a lost answer never writes twice.
+   */
+  async saveLogin(write: NativeLoginWrite, existingId?: string): Promise<string> {
+    const existing = existingId === undefined ? undefined : this.cache?.raw.get(existingId)
+    if (existingId !== undefined && !existing) throw new Error(`vault item ${existingId} is not in the latest sync; read the vault before updating it`)
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.native_vault_write_start",
+      message: existingId ? "updating a vault item natively" : "creating a vault item natively",
+      meta: { email: this.email, update: existingId !== undefined },
+    })
+    const answer = await this.withSession(async (session) => {
+      const itemKeyString = existing ? stringField(existing, "key") : undefined
+      const key = itemKeyString ? decryptKey(itemKeyString, session.userKey, "item key") : session.userKey
+      const login = field(existing, "login")
+      const body: Json = {
+        ...(existing ? Object.fromEntries(PRESERVED_CIPHER_FIELDS.map((name) => [name, field(existing, name) ?? null])) : { folderId: null, favorite: false, reprompt: 0, fields: null, passwordHistory: null }),
+        type: 1,
+        organizationId: null,
+        key: itemKeyString ?? null,
+        name: encryptCipherString(write.name, key),
+        notes: write.notes === null ? null : encryptCipherString(write.notes, key),
+        login: {
+          ...(login && typeof login === "object" ? (login as Json) : {}),
+          username: encryptCipherString(write.username, key),
+          password: encryptCipherString(write.password, key),
+          uris: [{ uri: encryptCipherString(write.uri, key), match: null }],
+        },
+        encryptedFor: session.userId,
+        lastKnownRevisionDate: existing ? stringField(existing, "revisionDate") ?? null : null,
+      }
+      return this.request(existingId ? `/api/ciphers/${encodeURIComponent(existingId)}` : "/api/ciphers", {
+        method: existingId ? "PUT" : "POST",
+        headers: { authorization: `Bearer ${session.accessToken}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    })
+    this.cache = null
+    if (!ok(answer)) throw new Error(`vault ${existingId ? "update" : "create"} for ${this.email} failed: HTTP ${answer.status}${serverMessage(answer)}`)
+    const id = stringField(readJson(answer), "id")
+    if (!id) throw new Error(`vault ${existingId ? "update" : "create"} for ${this.email} returned no item id`)
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.native_vault_write_end",
+      message: "wrote a vault item natively",
+      meta: { email: this.email, update: existingId !== undefined },
+    })
+    return id
+  }
+
+  /** Move an item to the trash, as `bw delete item` does. */
+  async deleteItem(id: string): Promise<void> {
+    const answer = await this.withSession((session) => this.request(`/api/ciphers/${encodeURIComponent(id)}/delete`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${session.accessToken}` },
+    }))
+    this.cache = null
+    if (!ok(answer)) throw new Error(`vault delete for ${this.email} failed: HTTP ${answer.status}${serverMessage(answer)}`)
+  }
+
+  /** Run one request with a session, logging in once more if the server rejects the access token. */
+  private async withSession(send: (session: NativeSession) => Promise<VaultHttpResponse>): Promise<VaultHttpResponse> {
+    const answer = await send(await this.ensureSession())
+    if (answer.status !== 401) return answer
+    this.session = null
+    return send(await this.ensureSession())
   }
 
   private async ensureSession(): Promise<NativeSession> {
@@ -271,7 +380,9 @@ export class NativeVaultReader {
     if (!accessToken || !protectedKey) throw new Error("vault login returned no access token or user key")
     const expiresIn = Number(field(token, "expires_in"))
     const userKey = decryptKey(protectedKey, keys.stretched, "user key")
-    this.session = { accessToken, expiresAt: this.deps.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600) * 1000, userKey }
+    const userId = tokenUserId(accessToken)
+    if (!userId) throw new NativeVaultUnsupportedError("an access token without a user id")
+    this.session = { accessToken, expiresAt: this.deps.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600) * 1000, userKey, userId }
     return this.session
   }
 
@@ -325,6 +436,13 @@ function readJson(response: VaultHttpResponse): Json {
 }
 
 const ok = (response: VaultHttpResponse): boolean => response.status >= 200 && response.status < 300
+
+/** The server's own explanation of a refused request, when it gave one. */
+function serverMessage(response: VaultHttpResponse): string {
+  const body = readJson(response)
+  const message = stringField(field(body, "errorModel"), "message") ?? stringField(body, "message")
+  return message ? ` ${message}` : ""
+}
 
 const sharedReaders = new Map<string, NativeVaultReader>()
 
