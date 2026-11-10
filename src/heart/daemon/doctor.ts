@@ -35,6 +35,7 @@ import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig }
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { parseCadenceToCron } from "./cadence"
+import { defaultServicePath } from "./linux-service"
 import { DEFAULT_MAX_LOG_SIZE_BYTES } from "../../nerves"
 import { readRsvpConfig, validateRsvpReadiness, type RsvpNativeConfig, type RsvpReadinessCheck } from "../../rsvp/config"
 import { checkRsvpCutover, type RsvpCutoverChecks } from "../../rsvp/cutover"
@@ -1625,6 +1626,51 @@ export function checkFriends(deps: DoctorDeps): DoctorCategory {
   return { name: "Friends", checks }
 }
 
+/** MemAvailable below this is worth a warning when no service floor is configured; the 1 GB device profile's floor. */
+export const DEFAULT_MEMORY_FLOOR_MB = 250
+
+/**
+ * Linux only: MemAvailable from /proc/meminfo against a floor, so a small device shows how close it is to the point
+ * where the supervisor holds back starts. The floor is the installed sysv service's --min-mem-available-mb when set,
+ * otherwise DEFAULT_MEMORY_FLOOR_MB.
+ */
+export function checkMemory(deps: DoctorDeps): DoctorCategory {
+  const label = "available memory"
+  if (deps.platform !== "linux") return { name: "Memory", checks: [{ label, status: "pass", detail: `MemAvailable is measured on Linux only (this host is ${deps.platform})` }] }
+  let meminfo: string
+  try {
+    meminfo = deps.readFileSync("/proc/meminfo")
+  } catch (error) {
+    return { name: "Memory", checks: [{ label, status: "warn", detail: `cannot read /proc/meminfo: ${error instanceof Error ? error.message : String(error)}` }] }
+  }
+  const kilobytes = (key: string): number | null => {
+    const match = new RegExp(`^${key}:\\s+(\\d+) kB$`, "m").exec(meminfo)
+    return match ? Number(match[1]) : null
+  }
+  const available = kilobytes("MemAvailable")
+  const total = kilobytes("MemTotal")
+  if (available === null) return { name: "Memory", checks: [{ label, status: "warn", detail: "/proc/meminfo has no MemAvailable line" }] }
+  let floorMb = DEFAULT_MEMORY_FLOOR_MB
+  let floorSource = "default"
+  try {
+    const serviceFloorKb = Number(/^MIN_MEM_AVAILABLE_KB=(\d+)$/m.exec(deps.readFileSync(defaultServicePath("sysv", deps.homedir, true)))?.[1] ?? 0)
+    if (serviceFloorKb > 0) {
+      floorMb = Math.round(serviceFloorKb / 1024)
+      floorSource = "service floor"
+    }
+  } catch {
+    // no sysv service installed: keep the default floor
+  }
+  const availableMb = Math.round(available / 1024)
+  const of = total === null ? "" : ` of ${Math.round(total / 1024)} MB`
+  return {
+    name: "Memory",
+    checks: [availableMb < floorMb
+      ? { label, status: "warn", detail: `${availableMb} MB available${of}, below the ${floorMb} MB ${floorSource}; the supervisor waits for memory before starting the daemon` }
+      : { label, status: "pass", detail: `${availableMb} MB available${of} (${floorSource} ${floorMb} MB)` }],
+  }
+}
+
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
@@ -1911,6 +1957,7 @@ const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "Mailroom", fn: checkMailroom },
   { name: "Friends", fn: checkFriends },
   { name: "Disk", fn: checkDisk },
+  { name: "Memory", fn: checkMemory },
 ]
 
 export interface RunDoctorOptions {
