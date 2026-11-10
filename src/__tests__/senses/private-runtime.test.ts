@@ -182,6 +182,9 @@ vi.mock("../../repertoire/relationship-authorization", async (importOriginal) =>
   }
 })
 
+const mockDeliverOrdinaryOwnerDecision = vi.hoisted(() => vi.fn(async () => ({ status: "sent", effectKey: "ordinary-owner:fixture" })))
+vi.mock("../../senses/ordinary-owner-decision", () => ({ deliverOrdinaryOwnerDecision: mockDeliverOrdinaryOwnerDecision }))
+
 vi.mock("../../senses/telegram", () => ({
   sendTelegramExternalEventDecision: (...args: any[]) => mockSendTelegramExternalEventDecision(...args),
 }))
@@ -5589,14 +5592,28 @@ describe("private runtime", () => {
       expect(input.runAgentOptions.tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition", "surface"])
       expect(mockGetToolsForChannel.mock.calls.at(-1)!.at(-1)).toMatchObject({ relationshipAuthorization: undefined })
       const toolContext = input.runAgentOptions.toolContext
-      expect(toolContext).toMatchObject({ autonomousTurnKind: "external-event", currentExternalEvent: event, relationshipAuthorization: undefined, context: undefined, externalEventEffects: undefined })
+      expect(toolContext).toMatchObject({ autonomousTurnKind: "external-event", currentExternalEvent: event, relationshipAuthorization: undefined })
+      // Its own self context, as its habits have, so an Await it files is bound to this event and to itself.
+      expect(toolContext.context.friend).toMatchObject({ id: "self", trustLevel: "family" })
       expect(String(input.messages[0].content)).toContain(ORDINARY_EXTERNAL_EVENT_GUIDANCE)
       const authorize = toolContext.externalEventAuthority.authorizeDisposition
-      expect(authorize({ decision: "silent", nextWake: "on_change" })).toEqual({ allowed: true, reason: "agent-owned external event" })
-      expect(authorize({ decision: "act", nextWake: "on_recovery" })).toEqual({ allowed: true, reason: "agent-owned external event" })
-      expect(authorize({ decision: "ask", nextWake: "on_change" })).toMatchObject({ allowed: false, reason: expect.stringContaining("no owner-decision channel") })
-      expect(authorize({ decision: "report", nextWake: "on_change" })).toMatchObject({ allowed: false, reason: expect.stringContaining("no owner-decision channel") })
-      expect(authorize({ decision: "act", nextWake: "at" })).toMatchObject({ allowed: false, reason: expect.stringContaining("timed re-wake") })
+      for (const decision of ["silent", "act", "ask", "report"]) {
+        for (const nextWake of ["on_change", "on_escalation", "on_recovery", "at"]) {
+          expect(authorize({ decision, nextWake })).toEqual({ allowed: true, reason: "agent-owned external event" })
+        }
+      }
+      const listAll = vi.spyOn(FileFriendStore.prototype, "listAll").mockResolvedValueOnce([])
+      try {
+        const decision = { source: "housesitter", eventId: "peer", generation: 1, text: "The mini went dark; I restarted it.", relatedEvents: [] }
+        await expect(toolContext.externalEventEffects.deliverOwnerDecision(decision)).resolves.toEqual({ status: "sent", effectKey: "ordinary-owner:fixture" })
+        const [deps, delivered] = mockDeliverOrdinaryOwnerDecision.mock.calls.at(-1)! as any[]
+        expect(delivered).toEqual(decision)
+        expect(deps).toMatchObject({ agentName: "test-agent", agentRoot })
+        await expect(deps.listFriends()).resolves.toEqual([])
+        expect(listAll).toHaveBeenCalled()
+      } finally {
+        listAll.mockRestore()
+      }
     })
 
     it("keeps the relationship path when tool-profiles.json exists but cannot be inspected", async () => {

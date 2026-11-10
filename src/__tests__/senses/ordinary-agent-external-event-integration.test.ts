@@ -149,6 +149,8 @@ async function fixture() {
   const eventPath = externalEventRecordPath(getExternalEventRoot(), { agent: "plainagent", source: "housesitter", eventId: "peer-1" })
   return {
     dispatch,
+    agentRoot,
+    daemon,
     submit: () => daemon.handleCommand({
       kind: "external.event.submit", agent: "plainagent", source: "housesitter", eventType: "peer.message", eventId: "peer-1",
       observationRevision: "rev-1", summary: "Housesitter finished the nightly check", evidence: ["all services up"],
@@ -157,15 +159,24 @@ async function fixture() {
   }
 }
 
+async function addLocalOwner(agentRoot: string): Promise<string> {
+  const { FileFriendStore, machineOwnerUsername } = await import("@ouro.bot/friends")
+  const username = machineOwnerUsername()
+  expect(username).toBeTruthy()
+  const now = new Date().toISOString()
+  await new FileFriendStore(path.join(agentRoot, "friends")).put("owner-ari", {
+    id: "owner-ari", name: "Ari", trustLevel: "family", admissionState: "active",
+    externalIds: [{ provider: "local", externalId: username!, linkedAt: now }],
+    tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1,
+  } as never)
+  return "owner-ari"
+}
+
 describe("an ordinary agent takes external events", () => {
-  it("runs the turn with its own tools and records its disposition; owner messages are refused with a way forward", async () => {
+  it("runs the turn with its own tools and records its disposition", async () => {
     const f = await fixture()
     const requests = modelScript([
-      (request) => ({ name: "external_event_disposition", args: { ...leaseArguments(request), classification: "needs_attention", decision: "report", stewardPolicyKind: "none", reason: "Tell Ari.", nextWake: "on_change", owner_message: "Housesitter finished its check." } }),
-      (request) => {
-        expect(lastToolText(request)).toContain("no owner-decision channel")
-        return { name: "external_event_disposition", args: { ...leaseArguments(request), classification: "expected", decision: "silent", stewardPolicyKind: "none", reason: "Routine nightly check; nothing to do.", nextWake: "on_change" } }
-      },
+      (request) => ({ name: "external_event_disposition", args: { ...leaseArguments(request), classification: "expected", decision: "silent", stewardPolicyKind: "none", reason: "Routine nightly check; nothing to do.", nextWake: "on_change" } }),
       () => ({ name: "rest", args: {} }),
     ])
 
@@ -177,6 +188,7 @@ describe("an ordinary agent takes external events", () => {
     expect(advertised).toContain("external_event_disposition")
     expect(advertised).toContain("surface")
     expect(advertised).toContain("a2a_send_message")
+    expect(advertised).toContain("await_condition")
     expect(advertised).not.toContain("speak")
     const firstUser = requests[0]!.messages.filter((message) => message.role === "user").map((message) => String(message.content)).join("\n")
     expect(firstUser).toContain("[external events for this agent]")
@@ -184,5 +196,57 @@ describe("an ordinary agent takes external events", () => {
       executionState: "handled", shouldWake: false, attemptCount: 1,
       disposition: { classification: "expected", decision: "silent", nextWake: { kind: "on_change" }, stewardPolicy: { kind: "none" } },
     })
+  }, 30_000)
+
+  it("reports to its owner through its own routing: the machine owner's family friend gets the message", async () => {
+    const f = await fixture()
+    const ownerId = await addLocalOwner(f.agentRoot)
+    modelScript([
+      (request) => ({ name: "external_event_disposition", args: { ...leaseArguments(request), classification: "needs_attention", decision: "report", stewardPolicyKind: "none", reason: "Ari should know the check found a stopped service.", nextWake: "on_change", owner_message: "Housesitter found Plex stopped and restarted it." } }),
+      () => ({ name: "rest", args: {} }),
+    ])
+
+    const response = await f.submit()
+
+    expect(response, response.error).toMatchObject({ ok: true })
+    const record = f.event()
+    expect(record).toMatchObject({ executionState: "handled", disposition: { decision: "report", ownerMessage: { status: "sent" } } })
+    // With no live session for the owner, it waits as a deferred return they see on their next contact.
+    const { getDeferredReturnDir } = await import("../../mind/pending")
+    const deferredDir = getDeferredReturnDir("plainagent", ownerId)
+    const queued = fs.readdirSync(deferredDir).map((name) => JSON.parse(fs.readFileSync(path.join(deferredDir, name), "utf8")))
+    expect(queued).toEqual([expect.objectContaining({ friendId: ownerId, content: "Housesitter found Plex stopped and restarted it." })])
+  }, 30_000)
+
+  it("sets a timed re-wake with its own Await, wakes under its own authority, and resolves it", async () => {
+    const f = await fixture()
+    const wakeAt = new Date(Date.now() + 60 * 60_000).toISOString()
+    modelScript([
+      () => ({ name: "await_condition", args: { name: "recheck-peer", condition: "Housesitter's nightly check is green again", cadence: "1h", wake_at: wakeAt } }),
+      (request) => ({ name: "external_event_disposition", args: { ...leaseArguments(request), classification: "needs_attention", decision: "act", stewardPolicyKind: "none", reason: "Check again in an hour.", nextWake: "at", wakeAt, awaitId: "recheck-peer" } }),
+      () => ({ name: "rest", args: {} }),
+    ])
+
+    const response = await f.submit()
+
+    expect(response, response.error).toMatchObject({ ok: true })
+    expect(f.event()).toMatchObject({ executionState: "handled", disposition: { nextWake: { kind: "at", at: wakeAt }, awaitId: "recheck-peer" } })
+    const awaitFile = fs.readFileSync(path.join(f.agentRoot, "awaiting", "recheck-peer.md"), "utf8")
+    expect(awaitFile).toContain("filed_from: external-event")
+    expect(awaitFile).toContain("filed_for_friend_id: self")
+
+    const wakeRequests = modelScript([
+      () => ({ name: "resolve_await", args: { name: "recheck-peer", verdict: "yes", observation: "The nightly check is green." } }),
+      () => ({ name: "rest", args: {} }),
+    ])
+    // Exactly as the await scheduler fires it.
+    const { buildAwaitPrivateWakeCommand } = await import("../../heart/daemon/await-private-wake")
+    const woke = await f.daemon.handleCommand(buildAwaitPrivateWakeCommand({ agent: "plainagent", awaitName: "recheck-peer", triggerSource: "await-scheduler" }))
+    expect(woke, woke.error).toMatchObject({ ok: true })
+
+    expect(wakeRequests.length).toBeGreaterThan(0)
+    expect(wakeRequests[0]!.tools!.map((tool) => tool.function.name)).toContain("resolve_await")
+    expect(fs.existsSync(path.join(f.agentRoot, "awaiting", "recheck-peer.md"))).toBe(false)
+    expect(f.event()).toMatchObject({ executionState: "queued", shouldWake: true })
   }, 30_000)
 })

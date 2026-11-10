@@ -16,7 +16,7 @@ import type { ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
 
 type SurfaceDeliveryChannel = "auto" | "voice"
 
-interface SurfaceDeliveryHint {
+export interface SurfaceDeliveryHint {
   channel?: SurfaceDeliveryChannel
   phoneNumber?: string
   initialAudio?: VoiceCallAudioRequest
@@ -118,6 +118,148 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
 }
 
 // Surface tool handler: routes content to friend's freshest session
+/**
+ * Delivers content to a friend the way surface does: the held-work origin or a
+ * bridge first, then the friend's freshest session (Telegram sends now, other
+ * senses deliver on the next interaction), and otherwise a deferred return they
+ * see next time. Also used for an ordinary agent's external-event owner message.
+ */
+export async function routeSurfaceToFriend(agentName: string, friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> {
+  /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
+  try {
+    const agentRoot = getAgentRoot()
+    const sessionsDir = path.join(agentRoot, "state", "sessions")
+    const friendsDir = path.join(agentRoot, "friends")
+    const queueToSession = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
+      const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+      const pendingDir = getPendingDir(agentName, target.friendId, target.channel, target.key)
+      queuePendingMessage(pendingDir, {
+        from: agentName,
+        friendId: target.friendId,
+        channel: target.channel,
+        key: target.key,
+        content,
+        timestamp: Date.now(),
+      })
+      return { status: "queued", detail }
+    }
+    const deliverTelegramOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
+      const telegramKey = canonicalizeTelegramSessionKey(target.key)
+      const hash = createHash("sha256").update(`${target.friendId}\0${telegramKey}\0${content}`).digest("hex")
+      const requestId = queueItem?.obligationId ?? `surface:${hash}`
+      const deliveryId = queueItem?.obligationId ? `surface:${queueItem.obligationId}:${hash}` : `surface:${hash}`
+      const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
+      const delivered = await sendTelegramAwaitFollowUp(agentName, {
+        friendId: target.friendId,
+        channel: "telegram",
+        key: telegramKey,
+        content,
+        requestId,
+        deliveryId,
+        intent: "generic_outreach",
+      })
+      return delivered.status === "delivered_now"
+        ? { status: "delivered", detail: "sent to Telegram now" }
+        : queueToSession(target, detail)
+    }
+
+    // Resolve friend name → UUID if needed (agents may pass name instead of UUID)
+    let resolvedFriendId = friendId
+    if (!fs.existsSync(path.join(sessionsDir, friendId))) {
+      try {
+        const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
+        for (const file of friendFiles) {
+          const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
+          const record = JSON.parse(raw) as { id?: string; name?: string }
+          if (record.name?.toLowerCase() === friendId.toLowerCase() && record.id) {
+            resolvedFriendId = record.id
+            break
+          }
+        }
+      } catch { /* friends dir unreadable — continue with original friendId */ }
+    }
+    friendId = resolvedFriendId
+
+    if (hint?.channel === "voice") {
+      const voiceResult = await placeTrustedFriendVoiceOutboundCall({
+        agentName,
+        agentRoot,
+        friendId,
+        reason: content,
+        phoneNumber: hint.phoneNumber,
+        ...(hint.initialAudio ? { initialAudio: hint.initialAudio } : {}),
+      })
+      return voiceResult.status === "placed"
+        ? { status: "delivered", detail: voiceResult.detail }
+        : { status: "failed", detail: voiceResult.detail }
+    }
+
+    // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
+    if (queueItem?.bridgeId) {
+      const { createBridgeManager } = await import("../heart/bridges/manager")
+      const bridge = createBridgeManager().getBridge(queueItem.bridgeId)
+      if (bridge && bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled") {
+        const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
+        const bridgeTarget = allSessions.find((activity) =>
+          activity.friendId === friendId
+          && activity.channel !== "inner"
+          && bridge.attachedSessions.some((s) =>
+            s.friendId === activity.friendId && s.channel === activity.channel && s.key === activity.key
+          ),
+        )
+        if (bridgeTarget) {
+          const detail = `for next interaction via ${bridgeTarget.channel}`
+          return bridgeTarget.channel === "telegram"
+            ? deliverTelegramOrQueue(bridgeTarget, detail)
+            : queueToSession(bridgeTarget, detail)
+        }
+      }
+    }
+
+    // Priority 1.5: exact held-work origin.
+    // A delegated return has a concrete reply address. Preserve that
+    // address before considering fresher sessions for the same friend,
+    // especially MCP sessions where check_response drains this path.
+    if (queueItem?.channel && queueItem.key && queueItem.channel !== "inner") {
+      const target = { friendId, channel: queueItem.channel, key: queueItem.key }
+      const detail = `for originating ${queueItem.channel} session`
+      return queueItem.channel === "telegram"
+        ? deliverTelegramOrQueue(target, detail)
+        : queueToSession(target, detail)
+    }
+
+    // Priority 2: Try proactive delivery first, then queue to freshest session
+    const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
+      .filter((s) => s.friendId === friendId && s.channel !== "inner")
+
+    // Priority 2: Queue to freshest non-private-runtime session
+    const freshest = allFriendSessions[0]
+    if (freshest) {
+      const detail = `for next interaction via ${freshest.channel}`
+      return freshest.channel === "telegram"
+        ? deliverTelegramOrQueue(freshest, detail)
+        : queueToSession(freshest, detail)
+    }
+
+    // Priority 3: Deferred — no active session found
+    const { getDeferredReturnDir } = await import("../mind/pending")
+    const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
+    const deferredDir = getDeferredReturnDir(agentName, friendId)
+    queueDeferred(deferredDir, {
+      from: agentName,
+      friendId,
+      channel: "deferred",
+      key: "return",
+      content,
+      timestamp: Date.now(),
+    })
+    return { status: "deferred", detail: "they'll see it next time" }
+  } catch {
+    return { status: "failed" }
+  }
+  /* v8 ignore stop */
+}
+
 /* v8 ignore start -- surface handler wiring: core logic tested via surface-tool.test.ts; this wires identity/routing deps @preserve */
 export const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
@@ -146,141 +288,8 @@ export const surfaceToolDefinition: ToolDefinition = {
     const queue = ctx?.delegatedOrigins ?? []
     const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 
-    const routeToFriend = async (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> => {
-      /* v8 ignore start -- routing: integration path tested via private-runtime routing tests @preserve */
-      try {
-        const agentRoot = getAgentRoot()
-        const sessionsDir = path.join(agentRoot, "state", "sessions")
-        const friendsDir = path.join(agentRoot, "friends")
-        const queueToSession = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
-          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
-          const pendingDir = getPendingDir(agentName, target.friendId, target.channel, target.key)
-          queuePendingMessage(pendingDir, {
-            from: agentName,
-            friendId: target.friendId,
-            channel: target.channel,
-            key: target.key,
-            content,
-            timestamp: Date.now(),
-          })
-          return { status: "queued", detail }
-        }
-        const deliverTelegramOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
-          const telegramKey = canonicalizeTelegramSessionKey(target.key)
-          const hash = createHash("sha256").update(`${target.friendId}\0${telegramKey}\0${content}`).digest("hex")
-          const requestId = queueItem?.obligationId ?? `surface:${hash}`
-          const deliveryId = queueItem?.obligationId ? `surface:${queueItem.obligationId}:${hash}` : `surface:${hash}`
-          const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
-          const delivered = await sendTelegramAwaitFollowUp(agentName, {
-            friendId: target.friendId,
-            channel: "telegram",
-            key: telegramKey,
-            content,
-            requestId,
-            deliveryId,
-            intent: "generic_outreach",
-          })
-          return delivered.status === "delivered_now"
-            ? { status: "delivered", detail: "sent to Telegram now" }
-            : queueToSession(target, detail)
-        }
-
-        // Resolve friend name → UUID if needed (agents may pass name instead of UUID)
-        let resolvedFriendId = friendId
-        if (!fs.existsSync(path.join(sessionsDir, friendId))) {
-          try {
-            const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
-            for (const file of friendFiles) {
-              const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
-              const record = JSON.parse(raw) as { id?: string; name?: string }
-              if (record.name?.toLowerCase() === friendId.toLowerCase() && record.id) {
-                resolvedFriendId = record.id
-                break
-              }
-            }
-          } catch { /* friends dir unreadable — continue with original friendId */ }
-        }
-        friendId = resolvedFriendId
-
-        if (hint?.channel === "voice") {
-          const voiceResult = await placeTrustedFriendVoiceOutboundCall({
-            agentName,
-            agentRoot,
-            friendId,
-            reason: content,
-            phoneNumber: hint.phoneNumber,
-            ...(hint.initialAudio ? { initialAudio: hint.initialAudio } : {}),
-          })
-          return voiceResult.status === "placed"
-            ? { status: "delivered", detail: voiceResult.detail }
-            : { status: "failed", detail: voiceResult.detail }
-        }
-
-        // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
-        if (queueItem?.bridgeId) {
-          const { createBridgeManager } = await import("../heart/bridges/manager")
-          const bridge = createBridgeManager().getBridge(queueItem.bridgeId)
-          if (bridge && bridge.lifecycle !== "completed" && bridge.lifecycle !== "cancelled") {
-            const allSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
-            const bridgeTarget = allSessions.find((activity) =>
-              activity.friendId === friendId
-              && activity.channel !== "inner"
-              && bridge.attachedSessions.some((s) =>
-                s.friendId === activity.friendId && s.channel === activity.channel && s.key === activity.key
-              ),
-            )
-            if (bridgeTarget) {
-              const detail = `for next interaction via ${bridgeTarget.channel}`
-              return bridgeTarget.channel === "telegram"
-                ? deliverTelegramOrQueue(bridgeTarget, detail)
-                : queueToSession(bridgeTarget, detail)
-            }
-          }
-        }
-
-        // Priority 1.5: exact held-work origin.
-        // A delegated return has a concrete reply address. Preserve that
-        // address before considering fresher sessions for the same friend,
-        // especially MCP sessions where check_response drains this path.
-        if (queueItem?.channel && queueItem.key && queueItem.channel !== "inner") {
-          const target = { friendId, channel: queueItem.channel, key: queueItem.key }
-          const detail = `for originating ${queueItem.channel} session`
-          return queueItem.channel === "telegram"
-            ? deliverTelegramOrQueue(target, detail)
-            : queueToSession(target, detail)
-        }
-
-        // Priority 2: Try proactive delivery first, then queue to freshest session
-        const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
-          .filter((s) => s.friendId === friendId && s.channel !== "inner")
-
-        // Priority 2: Queue to freshest non-private-runtime session
-        const freshest = allFriendSessions[0]
-        if (freshest) {
-          const detail = `for next interaction via ${freshest.channel}`
-          return freshest.channel === "telegram"
-            ? deliverTelegramOrQueue(freshest, detail)
-            : queueToSession(freshest, detail)
-        }
-
-        // Priority 3: Deferred — no active session found
-        const { getDeferredReturnDir } = await import("../mind/pending")
-        const { queuePendingMessage: queueDeferred } = await import("../mind/pending")
-        const deferredDir = getDeferredReturnDir(agentName, friendId)
-        queueDeferred(deferredDir, {
-          from: agentName,
-          friendId,
-          channel: "deferred",
-          key: "return",
-          content,
-          timestamp: Date.now(),
-        })
-        return { status: "deferred", detail: "they'll see it next time" }
-      } catch {
-        return { status: "failed" }
-      }
-      /* v8 ignore stop */
-    }
+    const routeToFriend = (friendId: string, content: string, queueItem?: AttentionItem, hint?: SurfaceDeliveryHint): Promise<SurfaceRouteResult> =>
+      routeSurfaceToFriend(agentName, friendId, content, queueItem, hint)
 
     return handleSurface({
       content: args.content ?? "",
