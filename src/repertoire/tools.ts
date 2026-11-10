@@ -449,7 +449,9 @@ export async function preflightToolCall(name: string, args: Record<string, strin
 
     const risk = riskProfileForTool(def, name, args)
     const orientationPolicy = ctx?.orientationFrame?.actionPolicy
-    if (orientationPolicy?.mode === "correction_hold" && orientationPolicyBlocks(risk, orientationPolicy.blockedMutationKinds)) {
+    // A family speaker's hold is advice; a relationship-scoped turn (Sanctuary) always enforces it.
+    if (orientationPolicy?.mode === "correction_hold" && (!orientationPolicy.advisory || ctx?.relationshipAuthorization)
+      && orientationPolicyBlocks(risk, orientationPolicy.blockedMutationKinds)) {
       emitNervesEvent({
         level: "warn", event: "tool.orientation_hold_block", component: "tools",
         message: "orientation hold blocked high-risk tool execution",

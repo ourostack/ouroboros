@@ -251,6 +251,27 @@ describe("execTool", () => {
     expect(exec).not.toHaveBeenCalled()
   })
 
+  it("an advisory hold (family speaker) lets the requested mutation run", async () => {
+    const ctx = orientationHoldCtx()
+    ctx.orientationFrame.actionPolicy.advisory = true
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: "what Ari asked for" }, ctx)
+    expect(result).not.toContain("orientation hold")
+    expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "what Ari asked for", "utf-8")
+  })
+
+  it("a relationship-scoped turn still enforces an advisory hold", async () => {
+    const ctx = orientationHoldCtx()
+    ctx.orientationFrame.actionPolicy.advisory = true
+    const authorizeTool = vi.fn(() => ({ allowed: true as const, receiptId: "r" }))
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: "x" }, {
+      ...ctx, agentName: "testagent", agentRoot: "/mock/repo/testagent",
+      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["write_file"], authorizeTool },
+      selectCurrentTools: undefined,
+    })
+    expect(result).toContain("orientation hold")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
   it("orientation hold respects blockedMutationKinds instead of blocking every high-risk tool", async () => {
     const tools = await import("../../repertoire/tools")
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })

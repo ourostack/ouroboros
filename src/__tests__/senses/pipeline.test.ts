@@ -860,6 +860,21 @@ describe("handleInboundTurn", () => {
       expect(parsed.events).toEqual(raw.events)
     })
 
+    it.each([["family", true], ["friend", false]] as const)("marks the correction hold advisory only for a %s speaker", async (trustLevel, advisory) => {
+      const caps = makeCapabilities({ channel: "teams" })
+      const runAgent = vi.fn<InboundTurnInput["runAgent"]>(async () => ({ outcome: "settled" }))
+      const input = makeInput({
+        channel: "teams", capabilities: caps, runAgent,
+        friendResolver: { resolve: vi.fn().mockResolvedValue({ friend: makeFriend({ trustLevel }), channel: caps }) },
+        messages: [{ role: "user", content: "no i want that fix done" }],
+        continuityIngressTexts: ["no i want that fix done"],
+      })
+      await handleInboundTurn(input)
+      const policy = runAgent.mock.calls[0]![4]!.orientationFrame!.actionPolicy
+      expect(policy.mode).toBe("correction_hold")
+      expect(policy.mode === "correction_hold" && policy.advisory === true).toBe(advisory)
+    })
+
     it("calls runAgent with session messages, callbacks, channel, signal, options", async () => {
       const signal = new AbortController().signal
       const runAgentOpts: RunAgentOptions = { traceId: "test-trace" }

@@ -1138,6 +1138,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
           messages: sessionMessages,
           currentUserMessages,
           structuredOutputs: session.structuredOutputs ?? [],
+          familySpeaker: resolvedContext.friend.trustLevel === "family",
         })
       : undefined)
 
