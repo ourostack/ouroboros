@@ -14,6 +14,7 @@ import {
   describeGitAvailability,
   installPortableGit,
   readPortableGitMarker,
+  removeTree,
   renderGitAvailability,
   type PortableGitInstallDeps,
   type ProcessRun,
@@ -253,5 +254,27 @@ describe("git availability", () => {
       "system git: none\nin use: none; install git with the host's package manager",
     )
     expect(typeof describeGitAvailability().portableSupported).toBe("boolean")
+  })
+})
+
+describe("removeTree", () => {
+  it("removes a nested tree without following links out of it, and ignores a missing path", () => {
+    const base = tempDir()
+    const outside = path.join(base, "outside")
+    fs.mkdirSync(outside)
+    fs.writeFileSync(path.join(outside, "keep.txt"), "keep")
+    const tree = path.join(base, "tree")
+    fs.mkdirSync(path.join(tree, "libexec", "git-core"), { recursive: true })
+    fs.writeFileSync(path.join(tree, "libexec", "git-core", "git"), "bin")
+    fs.writeFileSync(path.join(tree, "top.txt"), "x")
+    fs.symlinkSync(outside, path.join(tree, "link-to-outside"))
+    removeTree(tree)
+    expect(fs.existsSync(tree)).toBe(false)
+    expect(fs.readFileSync(path.join(outside, "keep.txt"), "utf-8")).toBe("keep")
+    removeTree(path.join(base, "never-existed"))
+    const file = path.join(base, "file.txt")
+    fs.writeFileSync(file, "x")
+    removeTree(file)
+    expect(fs.existsSync(file)).toBe(false)
   })
 })

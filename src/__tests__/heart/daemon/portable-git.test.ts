@@ -54,9 +54,10 @@ describe("portable git assets", () => {
     expect(portableGitToolsDir("/h")).toBe("/h/.ouro-cli/tools")
     expect(portableGitRoot("/h")).toBe("/h/.ouro-cli/tools/git")
     expect(portableGitBinary("/h")).toBe("/h/.ouro-cli/tools/git/bin/git")
-    expect(portableGitRoot()).toBe(path.join(os.homedir(), ".ouro-cli", "tools", "git"))
-    expect(portableGitToolsDir()).toBe(path.join(os.homedir(), ".ouro-cli", "tools"))
-    expect(portableGitBinary()).toBe(path.join(os.homedir(), ".ouro-cli", "tools", "git", "bin", "git"))
+    // With no argument, the home directory is the user's own.
+    expect(portableGitRoot()).toBe(portableGitRoot(os.homedir()))
+    expect(portableGitToolsDir()).toBe(portableGitToolsDir(os.homedir()))
+    expect(portableGitBinary()).toBe(portableGitBinary(os.homedir()))
   })
 })
 

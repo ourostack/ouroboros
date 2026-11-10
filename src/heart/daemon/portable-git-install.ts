@@ -115,11 +115,31 @@ function verifyTree(deps: PortableGitInstallDeps, tree: string): string {
   return git.stdout.trim()
 }
 
+/**
+ * Remove a tree we created by enumerating it: unlink each file and link (links
+ * are never followed), then rmdir bottom-up. Agent-callable code doesn't use
+ * recursive rm (test-isolation.contract Directive A). A missing path is fine.
+ */
+export function removeTree(target: string): void {
+  let stat: fs.Stats
+  try {
+    stat = fs.lstatSync(target)
+  } catch {
+    return
+  }
+  if (!stat.isDirectory()) {
+    fs.rmSync(target, { force: true })
+    return
+  }
+  for (const entry of fs.readdirSync(target)) removeTree(path.join(target, entry))
+  fs.rmdirSync(target)
+}
+
 function pruneOthers(toolsDir: string, keep: string): void {
   for (const entry of fs.readdirSync(toolsDir)) {
     const isOurs = /^git-v/.test(entry) || /^\.git-.*\.(partial|tar\.gz)$/.test(entry)
     if (!isOurs || entry === keep) continue
-    fs.rmSync(path.join(toolsDir, entry), { recursive: true, force: true })
+    removeTree(path.join(toolsDir, entry))
   }
 }
 
@@ -155,13 +175,13 @@ export async function installPortableGit(deps: PortableGitInstallDeps, options: 
   try {
     const digest = await download(deps, url, archive)
     if (digest !== asset.sha256) throw new Error(`portable git archive failed its checksum: expected ${asset.sha256}, got ${digest}`)
-    fs.rmSync(staging, { recursive: true, force: true })
+    removeTree(staging)
     fs.mkdirSync(staging, { recursive: true })
     deps.extract(archive, staging)
     const gitVersion = verifyTree(deps, staging)
     const marker: PortableGitMarker = { release: PORTABLE_GIT_RELEASE, asset: asset.name, sha256: asset.sha256, gitVersion, installedAt: deps.now().toISOString() }
     fs.writeFileSync(path.join(staging, MARKER_FILE), `${JSON.stringify(marker, null, 2)}\n`)
-    fs.rmSync(target, { recursive: true, force: true })
+    removeTree(target)
     fs.renameSync(staging, target)
     const tempLink = path.join(toolsDir, `.git-link-${process.pid}`)
     fs.rmSync(tempLink, { force: true })
@@ -172,7 +192,7 @@ export async function installPortableGit(deps: PortableGitInstallDeps, options: 
     return { status: "installed", root, marker }
   } catch (error) {
     fs.rmSync(archive, { force: true })
-    fs.rmSync(staging, { recursive: true, force: true })
+    removeTree(staging)
     emitNervesEvent({
       level: "error",
       component: "daemon",
