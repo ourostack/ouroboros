@@ -1674,7 +1674,7 @@ function retainedSourceEventIds(
 
 /**
  * The system prompt is rebuilt every turn (it carries live world state), so each turn used to add
- * a full copy to native history: one long-running inner session held 3,773 of them (329 MB of
+ * a full copy to native history: one long-running private-runtime session held 3,773 of them (329 MB of
  * 357 MB) and parsing it ran Node out of memory. A system prompt the projection no longer uses is
  * not conversation, so it is dropped once superseded. System records without text (redaction
  * markers), events anything refers to, and the newest event (so sequence numbers never repeat)
