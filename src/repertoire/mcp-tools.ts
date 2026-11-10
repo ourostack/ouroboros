@@ -4,8 +4,8 @@
  */
 
 import type { McpServerView, McpToolBinding, McpTurnView } from "./mcp-manager"
-import type { McpToolInfo } from "./mcp-client"
-import type { ToolDefinition } from "./tools-base"
+import type { McpContentPart, McpToolInfo } from "./mcp-client"
+import type { ToolDefinition, ToolResultImage } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { digestJson } from "./tool-arguments"
 import { guardMcpArgs } from "./mcp-write-guard"
@@ -22,6 +22,18 @@ export class McpToolExecutionError extends Error {
     super(message)
     this.name = "McpToolExecutionError"
   }
+}
+
+/** Text parts become the tool's text result; image parts (base64 `data` + `mimeType`) go to the model as images. */
+export function splitMcpContent(content: McpContentPart[]): { text: string; images: ToolResultImage[] } {
+  const text = content
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text)
+    .join("")
+  const images = content
+    .filter((part) => part.type === "image" && part.data && part.mimeType?.startsWith("image/"))
+    .map((part) => ({ data: part.data!, mimeType: part.mimeType! }))
+  return { text, images }
 }
 
 export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId">, tool: McpToolInfo) {
@@ -96,13 +108,15 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
 
         try {
           const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
-          const text = result.content
-            .filter((c: { type: string; text?: string }) => c.type === "text" && c.text)
-            .map((c: { text: string }) => c.text)
-            .join("")
+          const { text, images } = splitMcpContent(result.content)
 
           if (result.isError === true) {
             throw new McpToolExecutionError("handler_failed", `[mcp error] ${entry.server}/${tool.name}: ${text}`)
+          }
+          let output = text
+          if (images.length > 0) {
+            if (ctx.attachToolImages) ctx.attachToolImages(images)
+            else output = `${text}${text ? "\n\n" : ""}[${images.length} image(s) returned, but this caller can't receive images]`
           }
           emitNervesEvent({
             event: "mcp.tool_end",
@@ -111,7 +125,7 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
             meta: { server: entry.server, tool: tool.name },
           })
 
-          return text
+          return output
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
           emitNervesEvent({
