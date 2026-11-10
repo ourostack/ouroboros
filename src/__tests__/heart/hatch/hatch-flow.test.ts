@@ -14,6 +14,10 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
   storeProviderCredentials: mockStoreProviderCredentials,
 }))
 
+const vaultMocks = vi.hoisted(() => ({ createVaultAccount: vi.fn(), storeVaultUnlockSecret: vi.fn() }))
+vi.mock("../../../repertoire/vault-setup", () => ({ createVaultAccount: vaultMocks.createVaultAccount }))
+vi.mock("../../../repertoire/vault-unlock", () => ({ storeVaultUnlockSecret: vaultMocks.storeVaultUnlockSecret }))
+
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
@@ -32,6 +36,43 @@ describe("hatch flow", () => {
       if (!entry) continue
       fs.rmSync(entry, { recursive: true, force: true })
     }
+  })
+
+  it("creates the vault before storing credentials when an unlock secret is given", async () => {
+    const bundlesRoot = makeTempDir("hatch-vault-bundles")
+    const specialistSource = makeTempDir("hatch-vault-specialist")
+    const specialistTarget = makeTempDir("hatch-vault-specialist-target")
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+    const order: string[] = []
+    const createVault = vi.fn(async () => { order.push("vault") })
+    mockStoreProviderCredentials.mockImplementationOnce(async () => { order.push("credentials"); return { credentialPath: "vault:Hatchling:providers/minimax" } })
+
+    await runHatchFlow(
+      { agentName: "Hatchling", humanName: "Ari", provider: "minimax", credentials: { apiKey: "k" }, vaultUnlockSecret: "Chosen-unlock-material1!" },
+      { bundlesRoot, specialistIdentitySourceDir: specialistSource, specialistIdentityTargetDir: specialistTarget, createVault },
+    )
+
+    expect(createVault).toHaveBeenCalledWith("Hatchling", "Chosen-unlock-material1!")
+    expect(order).toEqual(["vault", "credentials"])
+  })
+
+  it("creates the vault on the real vault server by default, and stops when it cannot", async () => {
+    const bundlesRoot = makeTempDir("hatch-vault-default-bundles")
+    const specialistSource = makeTempDir("hatch-vault-default-specialist")
+    const specialistTarget = makeTempDir("hatch-vault-default-specialist-target")
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+    const deps = { bundlesRoot, specialistIdentitySourceDir: specialistSource, specialistIdentityTargetDir: specialistTarget }
+    const input = { agentName: "Vaulted", humanName: "Ari", provider: "minimax" as const, credentials: { apiKey: "k" }, vaultUnlockSecret: "Chosen-unlock-material1!" }
+
+    vaultMocks.createVaultAccount.mockResolvedValueOnce({ success: true })
+    await runHatchFlow(input, deps)
+    expect(vaultMocks.createVaultAccount).toHaveBeenCalledWith("Vaulted", expect.any(String), expect.stringContaining("@"), "Chosen-unlock-material1!")
+    expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(expect.objectContaining({ agentName: "Vaulted" }), "Chosen-unlock-material1!")
+
+    vaultMocks.createVaultAccount.mockResolvedValueOnce({ success: false, error: "account exists" })
+    await expect(runHatchFlow({ ...input, agentName: "Vaulted2" }, deps)).rejects.toThrow("failed to create the vault for Vaulted2: account exists")
   })
 
   it("creates a canonical hatchling bundle with family imprint and heartbeat habit", async () => {

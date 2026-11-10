@@ -902,6 +902,14 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["vault", "replace"])).toEqual({
       kind: "vault.replace",
     })
+    for (const sub of ["create", "replace", "unlock"] as const) {
+      expect(parseOuroCommand(["vault", sub, "--secret-file", "/dev/stdin"])).toEqual({ kind: `vault.${sub}`, secretFile: "/dev/stdin" })
+    }
+    expect(parseOuroCommand(["vault", "recover", "--from", "/tmp/x.json", "--secret-file", "/dev/fd/3"])).toEqual({ kind: "vault.recover", sources: ["/tmp/x.json"], secretFile: "/dev/fd/3" })
+    for (const args of [["vault", "unlock", "--secret-file"], ["vault", "unlock", "--secret-file", "--store"], ["vault", "unlock", "--secret-file", "/a", "--secret-file", "/b"]]) {
+      expect(() => parseOuroCommand(args), args.join(" ")).toThrow("--secret-file requires one path")
+    }
+    expect(() => parseOuroCommand(["vault", "status", "--secret-file", "/a"])).toThrow("Usage: ouro vault")
     expect(() => parseOuroCommand(["vault", "replace", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"]))
       .toThrow("--from is only valid")
     expect(parseOuroCommand([
@@ -6377,6 +6385,30 @@ describe("provider CLI command execution", () => {
       "operator@example.com",
       "Chosen-unlock-material1!",
     )
+  })
+
+  it("vault create and unlock read the unlock secret from --secret-file without a prompt", async () => {
+    emitTestEvent("provider cli vault secret file")
+    const bundlesRoot = makeTempDir("provider-cli-vault-secret-file-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-secret-file-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const secretFile = path.join(homeDir, "unlock-secret")
+    fs.writeFileSync(secretFile, "Chosen-unlock-material1!\n", { mode: 0o600 })
+    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({ kind: "plaintext-file", secure: false, location: secretFile })
+
+    const created = await runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com", "--secret-file", secretFile], makeCliDeps(homeDir, bundlesRoot))
+    expect(created).toContain("vault created for Slugger")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith("Ouro credential vault", "https://vault.ouro.bot", "operator@example.com", "Chosen-unlock-material1!")
+
+    await runOuroCli(["vault", "unlock", "--agent", "Slugger", "--secret-file", secretFile], makeCliDeps(homeDir, bundlesRoot))
+    expect(mockVaultDeps.probeCredentialVaultAccess).toHaveBeenLastCalledWith("Slugger", "Chosen-unlock-material1!", { homeDir, onProgress: expect.any(Function) })
+
+    fs.writeFileSync(secretFile, "weak\n")
+    await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--secret-file", secretFile], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow("vault unlock secret is too weak")
+    fs.writeFileSync(secretFile, "\n")
+    await expect(runOuroCli(["vault", "unlock", "--agent", "Slugger", "--secret-file", secretFile], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow(`--secret-file ${secretFile} is empty.`)
   })
 
   it("vault replace creates an empty vault at the stable agent email by default", async () => {

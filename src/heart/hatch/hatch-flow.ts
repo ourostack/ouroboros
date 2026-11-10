@@ -35,6 +35,8 @@ export interface HatchFlowInput {
   provider: AgentProvider
   credentials: HatchCredentialsInput
   migrationPath?: string
+  /** When set (an unattended hatch), create the agent's vault with this unlock secret before storing credentials. */
+  vaultUnlockSecret?: string
 }
 
 export interface HatchFlowDeps {
@@ -43,6 +45,17 @@ export interface HatchFlowDeps {
   specialistIdentityTargetDir?: string
   now?: () => Date
   random?: () => number
+  /** Creates the hatchling's vault and saves its local unlock material. Defaults to the real vault server. */
+  createVault?: (agentName: string, unlockSecret: string) => Promise<void>
+}
+
+async function createHatchlingVault(agentName: string, unlockSecret: string): Promise<void> {
+  const vault = resolveVaultConfig(agentName)
+  const { createVaultAccount } = await import("../../repertoire/vault-setup")
+  const { storeVaultUnlockSecret } = await import("../../repertoire/vault-unlock")
+  const created = await createVaultAccount(agentName, vault.serverUrl, vault.email, unlockSecret)
+  if (!created.success) throw new Error(`failed to create the vault for ${agentName}: ${created.error}`)
+  storeVaultUnlockSecret({ agentName, email: vault.email, serverUrl: vault.serverUrl }, unlockSecret)
 }
 
 export interface HatchFlowResult {
@@ -210,6 +223,7 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeHatchlingAgentConfig(bundleRoot, input)
   fs.writeFileSync(path.join(bundleRoot, "bundle-meta.json"), `${JSON.stringify(createBundleMeta(), null, 2)}\n`, "utf-8")
+  if (input.vaultUnlockSecret) await (deps.createVault ?? createHatchlingVault)(input.agentName, input.vaultUnlockSecret)
   const credentialPath = await storeHatchlingProviderCredentials(input.agentName, input.provider, input.credentials)
   writeRecordScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)

@@ -399,7 +399,15 @@ The hatchling vault unlock secret is not generated, printed, included in tool ar
 
 Interactive hatch must not create, mutate, or persist a SerpentGuide vault. Persistent SerpentGuide provider credentials are not a supported state: there is no durable human-custody path for a SerpentGuide vault unlock secret, and a packaged bootstrap specialist should not become a hidden credential owner.
 
-Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only. If the flow needs to create a hatchling vault, it still requires a non-echoing human-provided vault unlock secret prompt with confirmation; it must not generate and print one.
+Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only. If the flow needs to create a hatchling vault, the human provides the unlock secret: either at a non-echoing prompt with confirmation, or, for an unattended setup with no terminal, in a file the human wrote. Ouro never generates or prints one.
+
+An unattended hatch reads everything from files, so no secret appears in argv or shell history:
+
+```bash
+ouro hatch --answers ./hatch.json --secret-file /dev/fd/3 --no-chat 3< ./unlock-secret
+```
+
+`hatch.json` holds `{"agentName", "humanName", "provider", "credentials": {...}}` (the same credential fields as the hatch flags). The secret file is read once and must meet the `ouro vault create` strength rules. The hatch creates the hatchling's vault and saves its local unlock before storing credentials, then starts the daemon. With `--answers`, nothing is prompted: anything missing is a usage error. `--no-chat` skips the first chat. `ouro vault unlock|create|replace|recover --secret-file <path>` work the same way.
 
 ## Continue An Existing Agent Bundle
 

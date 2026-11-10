@@ -691,6 +691,9 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
   let humanName: string | undefined
   let providerRaw: string | undefined
   let migrationPath: string | undefined
+  let answersFile: string | undefined
+  let secretFile: string | undefined
+  let noChat = false
   const credentials: HatchCredentialsInput = {}
 
   for (let i = 0; i < args.length; i += 1) {
@@ -750,6 +753,19 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    // Unattended hatch: answers (including provider credentials) and the vault unlock secret come from files, never argv.
+    if (token === "--answers" || token === "--secret-file") {
+      const value = args[i + 1]
+      if (!value || value.startsWith("--")) throw new Error(`${token} requires a path (use /dev/stdin or /dev/fd/<n> to pipe it).`)
+      if (token === "--answers") answersFile = value
+      else secretFile = value
+      i += 1
+      continue
+    }
+    if (token === "--no-chat") {
+      noChat = true
+      continue
+    }
   }
 
   if (providerRaw && !isAgentProvider(providerRaw)) {
@@ -764,6 +780,9 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
     provider,
     credentials: Object.keys(credentials).length > 0 ? credentials : undefined,
     migrationPath,
+    ...(answersFile ? { answersFile } : {}),
+    ...(secretFile ? { secretFile } : {}),
+    ...(noChat ? { noChat: true } : {}),
   }
 }
 
@@ -852,6 +871,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   let serverUrl: string | undefined
   let store: VaultUnlockStoreKind | undefined
   let generateUnlockSecret = false
+  let secretFile: string | undefined
   const sources: string[] = []
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -889,6 +909,14 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       generateUnlockSecret = true
       continue
     }
+    // The unlock secret is read from a file (or /dev/stdin, /dev/fd/N), never from argv.
+    if (token === "--secret-file" && sub !== "status") {
+      const value = rest[i + 1]
+      if (!value || value.startsWith("--") || secretFile !== undefined) throw new Error("--secret-file requires one path (use /dev/stdin to pipe the secret).")
+      secretFile = value
+      i += 1
+      continue
+    }
     throw new Error("Usage: ouro vault create|replace|recover|unlock|status [--agent <name>]")
   }
 
@@ -903,6 +931,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "replace") {
@@ -913,6 +942,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "recover") {
@@ -927,10 +957,11 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "unlock") {
-    return { kind: "vault.unlock", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
+    return { kind: "vault.unlock", ...(agent ? { agent } : {}), ...(store ? { store } : {}), ...(secretFile ? { secretFile } : {}) }
   }
   return { kind: "vault.status", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
 }
