@@ -320,6 +320,7 @@ export class HabitScheduler {
   }
 
   private verifyCronAndCreateFallbacks(state: SchedulerState): SchedulerState | null {
+    if (this.osCronManager.firesInProcess) return this.scheduleInProcess(state)
     if ((!this.execForVerify && !this.verifyJobs) || state.jobs.length === 0) return state
 
     let currentState = state
@@ -385,6 +386,17 @@ export class HabitScheduler {
       },
     })
     return null
+  }
+
+  /** Nothing is registered with the OS, so every job runs on an in-process timer; that is not degraded. */
+  private scheduleInProcess(state: SchedulerState): SchedulerState {
+    for (const job of state.jobs) {
+      const cadence = state.habits.find((habit) => habit.name === job.taskId)!.cadence!
+      const ms = cadenceFallbackDelayMs(cadence, this.deps.now())
+      if (ms !== null) this.createTimerFallback(job.taskId, cadence, ms)
+      else this.degradedHabitNames.set(job.taskId, "cadence cannot be scheduled with an in-process timer")
+    }
+    return state
   }
 
   private verifyCronEntries(): Set<string> {

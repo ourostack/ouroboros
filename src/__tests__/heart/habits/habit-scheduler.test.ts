@@ -1302,6 +1302,62 @@ describe("HabitScheduler", () => {
       scheduler.stop()
     })
 
+    it("fires every job from in-process timers without verification or degradation when the manager fires in process", () => {
+      vi.useFakeTimers()
+      const nowMs = new Date(2026, 6, 9, 9, 59, 0, 0).getTime()
+      deps = makeDeps({
+        readdir: vi.fn(() => ["rsvp-wedding.md"]),
+        readFile: vi.fn(() => "content"),
+        now: vi.fn(() => nowMs),
+      })
+      mockParseHabitFile.mockReturnValue(makeTypedRsvpHabit())
+      const execForVerify = vi.fn(() => "")
+      const inProcess = { ...makeMockCronManager(), firesInProcess: true }
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: inProcess,
+        onHabitFire,
+        deps,
+        execForVerify,
+        platform: "linux",
+      })
+
+      scheduler.start()
+      vi.advanceTimersByTime(60 * 1000)
+
+      expect(onHabitFire).toHaveBeenCalledWith("rsvp-wedding", "overdue", {
+        occurrenceId: "timer:rsvp-wedding:cadence:0 10 * * *:slot:2026-07-09T17:00:00.000Z",
+      })
+      expect(execForVerify).not.toHaveBeenCalled()
+      expect(scheduler.getDegradedHabits()).toEqual([])
+      scheduler.stop()
+    })
+
+    it("reports a habit as degraded when its cadence has no in-process timer", () => {
+      deps = makeDeps({
+        readdir: vi.fn(() => ["rsvp-wedding.md"]),
+        readFile: vi.fn(() => "content"),
+      })
+      mockParseHabitFile.mockReturnValue(makeTypedRsvpHabit())
+      mockCadenceFallbackDelayMs.mockReturnValue(null)
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: { ...makeMockCronManager(), firesInProcess: true },
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+      expect(scheduler.getDegradedHabits()).toEqual([
+        { name: "rsvp-wedding", reason: "cadence cannot be scheduled with an in-process timer" },
+      ])
+      scheduler.stop()
+    })
+
     it("falls back to initial timer delay and legacy occurrence ids when cadence timing is degraded", () => {
       vi.useFakeTimers()
       const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()

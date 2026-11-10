@@ -755,7 +755,7 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
       checks.push({
         label: `${agentDir} launchd plists`,
         status: "pass",
-        detail: `launchd not applicable on ${platform}; scheduled habits use the platform cron manager`,
+        detail: `launchd not applicable on ${platform}; scheduled habits fire from the daemon's timers, or supercronic in a container`,
       })
       continue
     }
