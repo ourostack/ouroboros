@@ -5,7 +5,7 @@
  * process bindings. Tests inject mocks for all of these.
  */
 
-import { spawn, execSync } from "child_process"
+import { execFileSync, spawn, execSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -38,6 +38,7 @@ import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
+import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -80,8 +81,51 @@ function spawnDetachedDaemonProcess(
 export async function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
   const launchdStarted = await startDaemonProcessViaLaunchd(socketPath)
   if (launchdStarted) return launchdStarted
+  // An installed `ouro service` supervises the daemon; start it there so a crash is restarted.
+  /* v8 ignore next -- exercised against real init systems; startLinuxService is unit-tested @preserve */
+  if (process.platform === "linux" && startLinuxService(linuxServiceDeps(), getOuroCliHome(), socketPath)) return { pid: null }
   return spawnDetachedDaemonProcess(socketPath)
 }
+
+/* v8 ignore start -- real filesystem and process adapters for linux-service.ts, which is unit-tested @preserve */
+function linuxServiceDeps(): LinuxServiceDeps {
+  return {
+    writeFile: (filePath, content, mode) => fs.writeFileSync(filePath, content, { encoding: "utf-8", mode }),
+    readFile: (filePath) => fs.readFileSync(filePath, "utf-8"),
+    removeFile: (filePath) => fs.rmSync(filePath, { force: true }),
+    existsFile: (filePath) => fs.existsSync(filePath),
+    mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
+    run: (file, args) => { execFileSync(file, args, { stdio: "ignore" }) },
+    isRoot: process.getuid?.() === 0,
+  }
+}
+
+function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linuxService"]> {
+  // Resolve the home lazily: building the CLI deps must not consult the home directory.
+  const options = (homeDir: string) => ({
+    nodePath: process.execPath,
+    entryPath: resolveDaemonBootEntryPath(homeDir),
+    socketPath,
+    homeDir,
+    ouroCliHome: getOuroCliHome(homeDir),
+    envPath: process.env.PATH,
+  })
+  return {
+    install: (request) => {
+      const homeDir = os.homedir()
+      const deps = linuxServiceDeps()
+      if (request.print) {
+        const servicePath = request.path ?? defaultServicePath(request.init, homeDir, deps.isRoot)
+        const content = request.init === "sysv" ? generateSysvInitScript(options(homeDir)) : generateSystemdUnit(options(homeDir), !deps.isRoot)
+        return { path: servicePath, content, written: false }
+      }
+      const installed = installLinuxService(deps, options(homeDir), request)
+      return { path: installed.record.path, content: installed.content, written: true }
+    },
+    uninstall: () => uninstallLinuxService(linuxServiceDeps(), getOuroCliHome(os.homedir())),
+  }
+}
+/* v8 ignore stop */
 
 export async function defaultStartDaemonForFrontend(
   socketPath: string,
@@ -897,6 +941,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     /* v8 ignore stop */
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     pruneDaemonLogs: defaultPruneDaemonLogs,
+    linuxService: defaultLinuxService(socketPath),
     ensureSkillManagement: defaultEnsureSkillManagement,
     prepareDaemonRuntimeReplacement: defaultPrepareDaemonRuntimeReplacement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
