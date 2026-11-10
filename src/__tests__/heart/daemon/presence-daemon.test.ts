@@ -318,11 +318,14 @@ describe("PresenceTicker handoff safety", () => {
     expect(running.has("slugger")).toBe(true)
   })
 
-  it("restarts held schedulers when presence stops applying", async () => {
+  it("restarts held schedulers when the roster goes away, but not when the flag is turned off at runtime", async () => {
     current = presenceWith({ habits: LAPTOP })
     const ticker = make()
     expect(ticker.shouldStartSchedulers("slugger")).toBe(false)
     current = null
+    await ticker.tick()
+    expect(running.has("slugger")).toBe(false)
+    writeLocalPresenceSettings({ enabled: true }, path.join(tmp, "home"))
     await ticker.tick()
     expect(running.has("slugger")).toBe(true)
     await ticker.tick()

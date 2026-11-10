@@ -122,8 +122,9 @@ export class PresenceTicker {
     const arrived = await this.refreshLocation()
     for (const agent of this.deps.agents) {
       if (!this.read(agent)) {
-        // Presence stopped applying: back to the home lease, so run what was held.
-        if (this.held.delete(agent)) this.deps.startSchedulers(agent)
+        // The roster is gone: back to the home lease, so run what was held. A flag turned off here keeps
+        // holding until the daemon restarts, which publishes that this machine left first.
+        if (readLocalPresenceSettings(this.deps.homeDir).enabled && this.held.delete(agent)) this.deps.startSchedulers(agent)
         continue
       }
       try {

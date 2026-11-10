@@ -20,7 +20,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
-import { emitOwnershipChange, effectiveOwner, isSharedSense, mayRunSense, readPresenceForAgent } from "./presence"
+import { emitOwnershipChange, effectiveOwner, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
@@ -83,6 +83,8 @@ export interface DaemonSenseManagerOptions {
    * Defaults to reading the bundle's roster and this machine's flag.
    */
   presenceOwner?: (agent: string, sense: string) => { owns: boolean; owner: string | null } | null
+  /** Whether presence is still on for this machine; defaults to `~/.ouro-cli/presence.json`. */
+  presenceFlagOn?: () => boolean
 }
 
 interface SenseConfigFacts {
@@ -736,6 +738,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly quiescedShepherdOwners = new Set<string>()
   private readonly initiallyUnmanagedShepherdOwners: Set<string>
   private readonly presenceOwner: (agent: string, sense: string) => { owns: boolean; owner: string | null } | null
+  private readonly presenceFlagOn: () => boolean
   /** Shared senses skipped because another machine owns them; started here when ownership arrives. */
   private readonly notOwnerSkipped = new Set<string>()
 
@@ -749,6 +752,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       if (!presence) return null
       return { owns: mayRunSense(presence, currentMachineId(), sense), owner: effectiveOwner(presence, sense) }
     })
+    this.presenceFlagOn = options.presenceFlagOn ?? (() => readLocalPresenceSettings().enabled)
     /* v8 ignore stop */
     this.contexts = new Map(
       options.agents.map((agent) => {
@@ -968,8 +972,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         const ownership = this.presenceOwner(agent, sense)
         const name = `${agent}:${sense}`
         if (!ownership) {
-          // Presence stopped applying here (roster removed, flag off): back to the home lease, so run what was held.
-          if (this.notOwnerSkipped.delete(name)) await this.processManager.startAgent?.(name)
+          // The roster is gone: back to the home lease, so run what was held. A flag turned off here keeps
+          // holding until the daemon restarts, which publishes that this machine left before any sense starts.
+          if (this.presenceFlagOn() && this.notOwnerSkipped.delete(name)) await this.processManager.startAgent?.(name)
           continue
         }
         const snapshot = snapshots.find((row) => row.name === name)

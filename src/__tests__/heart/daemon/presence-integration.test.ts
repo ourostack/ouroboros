@@ -162,9 +162,11 @@ describe("sense ownership in the daemon", () => {
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     let ownsTeams = false
     let presenceApplies = true
+    let flagOn = true
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
+      presenceFlagOn: () => flagOn,
       presenceOwner: (_agent, sense) => (presenceApplies && sense === "teams" ? { owns: ownsTeams, owner: ownsTeams ? MINI : LAPTOP } : null),
     })
     const skipped = await options!.configCheck("slugger:teams")
@@ -180,8 +182,13 @@ describe("sense ownership in the daemon", () => {
     ownsTeams = false
     await manager.reconcilePresence()
     expect(stopAgent).toHaveBeenCalledWith("slugger:teams")
-    // The roster goes away: back to the home lease, so the held sense starts again.
+    // The flag is turned off here at runtime: keep holding until the daemon restarts and publishes the leave.
     presenceApplies = false
+    flagOn = false
+    await manager.reconcilePresence()
+    expect(startAgent).toHaveBeenCalledTimes(1)
+    // The roster goes away while presence stays on: back to the home lease, so the held sense starts again.
+    flagOn = true
     await manager.reconcilePresence()
     expect(startAgent).toHaveBeenCalledTimes(2)
     await manager.reconcilePresence()
