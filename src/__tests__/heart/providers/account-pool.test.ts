@@ -365,6 +365,31 @@ describe("AccountPool", () => {
     expect(p.burnPerH()).toEqual({ "ari@microsoft.ghe.com": 1 })
   })
 
+  it("writes the gist at most every 30 minutes, only when the content changed, and at least every 5 hours", () => {
+    const publishBurn = vi.fn(async () => true)
+    const { pool: p, advance } = pool([MSFT], { publishBurn })
+    p.beforeTurn()
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+    advance(29 * 60 * 1000)
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+    advance(60 * 1000)
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(2)
+    expect(publishBurn.mock.calls[1][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 3 } })
+    // Nothing changes after the requests age out: one write with the empty burn, then quiet until five hours pass.
+    advance(2 * 60 * 60 * 1000)
+    p.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(3)
+    advance(60 * 60 * 1000)
+    p.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(3)
+    advance(4 * 60 * 60 * 1000)
+    p.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(4)
+  })
+
   it("doesn't publish until readings have loaded, so a new process never blanks the agent's readings", async () => {
     const publishBurn = vi.fn(async () => true)
     let release: (readings: QuotaReading[]) => void = () => {}
