@@ -32,12 +32,8 @@ import { parseAgentHome, type AgentHome } from "./agent-discovery"
 
 export const PRESENCE_SCHEMA = 1
 
-/**
- * A record older than this says nothing about what its machine runs now (it
- * publishes every 15 minutes and on every ownership change): the machine may
- * have been rolled back or turned presence off, so it counts as legacy.
- */
-export const PRESENCE_STALE_MS = 35 * 60_000
+/** The first harness version that knows presence; a rollback below it leaves the roster (see removeAllPeerRecords). */
+export const PRESENCE_FIRST_VERSION = "0.1.0-alpha.1009"
 
 /** Senses that exist once per agent: exactly one machine runs each. */
 export const SHARED_SENSES = ["teams", "telegram", "mail", "bluebubbles", "voice", "a2a", "habits"] as const
@@ -89,11 +85,9 @@ export interface PeerRecord {
 export interface Presence {
   block: PresenceBlock
   home: AgentHome | null
-  /** Machines that may still run a daemon that knows only `home`: roster machines without a fresh, current record, and a home off the roster. */
+  /** Machines that may still run a daemon that knows only `home`: roster machines without a current record, and a home off the roster. */
   legacy: string[]
   peers: PeerRecord[]
-  /** When this view was taken, for record freshness. */
-  nowMs: number
 }
 
 export interface LocalPresenceSettings {
@@ -219,6 +213,17 @@ export function removePeerRecord(agentRoot: string, machineId: string): boolean 
   return true
 }
 
+/** Remove this machine's record from every bundle (a rollback to a daemon that knows only `home`). */
+export function removeAllPeerRecords(bundlesRoot: string, machineId: string): string[] {
+  let names: string[]
+  try {
+    names = fs.readdirSync(bundlesRoot).filter((name) => name.endsWith(".ouro"))
+  } catch {
+    return []
+  }
+  return names.filter((name) => removePeerRecord(path.join(bundlesRoot, name), machineId)).map((name) => name.slice(0, -5))
+}
+
 /** Write this machine's own record. Each machine writes only its own file, so two presences never edit one file. */
 export function writePeerRecord(agentRoot: string, record: PeerRecord): string {
   const dir = peerRecordsDir(agentRoot)
@@ -274,37 +279,34 @@ export function writeLocalPresenceSettings(settings: LocalPresenceSettings, home
  * The presence this machine should follow, or null for today's one-home lease
  * (flag off, or no usable block).
  */
-export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords: PeerRecord[], nowMs: number = Date.now()): Presence | null {
+export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords: PeerRecord[]): Presence | null {
   if (!localFlag || !isRecord(agentJson)) return null
   const block = parsePresenceBlock(agentJson.presence)
   if (!block) return null
   const home = parseAgentHome(agentJson.home)
   const current = (machineId: string): boolean => {
     const record = peerRecords.find((peer) => peer.machineId === machineId)
-    if (!record || !isFresh(record, nowMs)) return false
+    if (!record) return false
     return block.minVersion === undefined || compareVersions(record.version, block.minVersion) >= 0
   }
   const legacy = block.machines.filter((machine) => !current(machine.machineId)).map((machine) => machine.machineId)
   // A home off the roster runs every shared sense under the home lease.
   if (home && !block.machines.some((machine) => machine.machineId === home.machineId)) legacy.push(home.machineId)
-  return { block, home, legacy, peers: peerRecords, nowMs }
-}
-
-export function isFresh(record: PeerRecord, nowMs: number): boolean {
-  const seen = Date.parse(record.seenAt)
-  return Number.isFinite(seen) && nowMs - seen <= PRESENCE_STALE_MS
+  return { block, home, legacy, peers: peerRecords }
 }
 
 /**
  * Whether this machine may run a sense now: it owns it, and, for a shared
- * sense, no other machine's fresh record still says it runs it. A new owner
+ * sense, no other roster machine's record still says it runs it. A new owner
  * waits for the old owner to publish that it let go, so a handoff never runs
- * a sense on two machines; a silent old owner stops counting once stale.
+ * a sense on two machines. Ownership is static: a silent old owner keeps its
+ * claim until it publishes again or leaves the roster (no timeout, because a
+ * sleeping laptop and a machine whose sync broke look the same as a dead one).
  */
 export function mayRunSense(presence: Presence, machineId: string, sense: string): boolean {
   if (!ownsSense(presence, machineId, sense)) return false
   if (!isSharedSense(sense)) return true
-  return !presence.peers.some((peer) => peer.machineId !== machineId && peer.owns?.includes(sense) && isFresh(peer, presence.nowMs))
+  return !presence.peers.some((peer) => peer.machineId !== machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense))
 }
 
 /** Read the bundle's agent.json, the local flag and the peer records together. */

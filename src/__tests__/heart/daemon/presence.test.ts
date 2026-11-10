@@ -246,31 +246,46 @@ describe("local presence commands and priority", () => {
 })
 
 describe("handoff safety", () => {
-  const fresh = (machineId: string, owns: string[], seenAt = "2026-11-10T03:00:00.000Z"): PeerRecord => ({ machineId, version: V, seenAt, owns })
+  const claim = (machineId: string, owns: string[], seenAt = "2026-11-10T03:00:00.000Z"): PeerRecord => ({ machineId, version: V, seenAt, owns })
 
-  it("waits for the old owner's fresh record to let go before running a shared sense", async () => {
+  it("waits for the old owner's record to let go before running a shared sense, however old it is", async () => {
     const { mayRunSense } = await import("../../../heart/daemon/presence")
-    const claimed = readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, ["teams", "habits"])])!
+    const claimed = readPresence(agentJson(), true, [claim(MINI, []), claim(LAPTOP, ["teams", "habits"])])!
     expect(ownsSense(claimed, MINI, "teams")).toBe(true)
     expect(mayRunSense(claimed, MINI, "teams")).toBe(false)
     expect(mayRunSense(claimed, MINI, "shepherd")).toBe(true)
     expect(mayRunSense(claimed, LAPTOP, "teams")).toBe(false)
-    const released = readPresence(agentJson(), true, [fresh(MINI, ["teams"]), fresh(LAPTOP, ["habits"])])!
+    const released = readPresence(agentJson(), true, [claim(MINI, ["teams"]), claim(LAPTOP, ["habits"])])!
     expect(mayRunSense(released, MINI, "teams")).toBe(true)
-    // A silent old owner stops counting once its record is stale (and then counts as legacy, so home owns).
-    const silent = readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, ["teams"], "2026-11-10T01:00:00.000Z")], Date.parse("2026-11-10T03:05:00.000Z"))!
-    expect(silent.legacy).toEqual([LAPTOP])
-    expect(mayRunSense(silent, LAPTOP, "teams")).toBe(true)
+    // A sleeping or silent old owner keeps its claim: static ownership, no timeout.
+    const asleep = readPresence(agentJson(), true, [claim(MINI, []), claim(LAPTOP, ["teams"], "2026-11-01T00:00:00.000Z")])!
+    expect(asleep.legacy).toEqual([])
+    expect(mayRunSense(asleep, MINI, "teams")).toBe(false)
+    // A machine that left the roster no longer holds a claim.
+    const gone = readPresence(agentJson(), true, [claim(MINI, []), claim(LAPTOP, []), claim("machine_gone", ["teams"])])!
+    expect(mayRunSense(gone, MINI, "teams")).toBe(true)
   })
 
-  it("counts stale or unreadable records, and a home off the roster, as legacy", async () => {
-    const { isFresh } = await import("../../../heart/daemon/presence")
-    expect(isFresh({ machineId: MINI, version: V, seenAt: "nope" }, Date.now())).toBe(false)
-    const now = Date.parse("2026-11-10T03:05:00.000Z")
-    expect(readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, [], "2026-11-10T02:00:00.000Z")], now)!.legacy).toEqual([LAPTOP])
+  it("counts a home off the roster as legacy", () => {
     const offRoster = agentJson({ home: { machineId: "machine_home", machineName: "home-mac" } })
-    expect(readPresence(offRoster, true, [fresh(MINI, []), fresh(LAPTOP, [])], now)!.legacy).toEqual(["machine_home"])
-    expect(effectiveOwner(readPresence(offRoster, true, [fresh(MINI, []), fresh(LAPTOP, [])], now)!, "teams")).toBe("machine_home")
+    const presence = readPresence(offRoster, true, [claim(MINI, []), claim(LAPTOP, [])])!
+    expect(presence.legacy).toEqual(["machine_home"])
+    expect(effectiveOwner(presence, "teams")).toBe("machine_home")
+  })
+
+  it("leaves every roster on a rollback below presence", async () => {
+    const { removeAllPeerRecords } = await import("../../../heart/daemon/presence")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "presence-rollback-"))
+    try {
+      fs.mkdirSync(path.join(root, "a.ouro"))
+      fs.mkdirSync(path.join(root, "b.ouro"))
+      fs.writeFileSync(path.join(root, "notes.txt"), "")
+      writePeerRecord(path.join(root, "a.ouro"), record(MINI))
+      expect(removeAllPeerRecords(root, MINI)).toEqual(["a"])
+      expect(removeAllPeerRecords(path.join(root, "missing"), MINI)).toEqual([])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("removes this machine's record when presence is off here", async () => {

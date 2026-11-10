@@ -105,7 +105,7 @@ describe("presence roster commands", () => {
       writePeerRecord(root, record(MINI, "0.1.0-alpha.988"))
       const result = await handoff("teams", "aris-mac-mini")
       expect(result.ok).toBe(false)
-      expect(result.message).toBe("aris-mac-mini may still run a daemon that only knows `home` (no fresh presence record at 0.1.0-alpha.1003 or later), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first")
+      expect(result.message).toBe("aris-mac-mini may still run a daemon that only knows `home` (no current presence record at 0.1.0-alpha.1003 or later), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first")
       expect((read().presence as { owners: Record<string, string> }).owners.teams).toBe(LAPTOP)
     })
 
@@ -114,7 +114,7 @@ describe("presence roster commands", () => {
       delete block.minVersion
       write({ home: HOME, presence: block })
       writePeerRecord(root, record(LAPTOP))
-      expect((await handoff("teams", "aris-mac-mini")).message).toContain("aris-mac-mini may still run a daemon that only knows `home` (no fresh presence record), so")
+      expect((await handoff("teams", "aris-mac-mini")).message).toContain("aris-mac-mini may still run a daemon that only knows `home` (no current presence record), so")
     })
 
     it("refuses machine-scoped senses, agents without a roster, and machines off the roster", async () => {

@@ -131,7 +131,7 @@ export async function handoffPresenceSense(options: HandoffSenseOptions): Promis
         const names = presence.legacy.map((id) => presence.block.machines.find((entry) => entry.machineId === id)?.name ?? id)
         return {
           kind: "refuse",
-          message: `${names.join(", ")} may still run a daemon that only knows \`home\` (no fresh presence record${presence.block.minVersion ? ` at ${presence.block.minVersion} or later` : ""}), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first`,
+          message: `${names.join(", ")} may still run a daemon that only knows \`home\` (no current presence record${presence.block.minVersion ? ` at ${presence.block.minVersion} or later` : ""}), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first`,
         }
       }
       if (presence.block.owners[sense] === machine.machineId) {

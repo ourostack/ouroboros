@@ -71,7 +71,7 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
   }
   lines.push("machine-scoped senses (cli, shepherd, app-sessions) run on every presence and see only their own machine.")
   if (presence.legacy.length > 0) {
-    lines.push(`until ${presence.legacy.map((id) => machineName(id)).join(", ")} publish${presence.legacy.length === 1 ? "es" : ""} a fresh presence record, every shared sense stays with home.`)
+    lines.push(`until ${presence.legacy.map((id) => machineName(id)).join(", ")} publish${presence.legacy.length === 1 ? "es" : ""} a current presence record, every shared sense stays with home.`)
   }
   return lines.join("\n")
 }

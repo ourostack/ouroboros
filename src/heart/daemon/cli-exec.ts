@@ -63,7 +63,7 @@ import {
 } from "../provider-visibility"
 import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
-import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { loadOrCreateMachineIdentity, readMachineIdentity } from "../machine-identity"
 import {
   collectCrossUserBlueBubblesHostAction,
   createDefaultBlueBubblesHostDeps,
@@ -215,7 +215,7 @@ import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
 import { handoffPresenceSense, joinPresenceRoster, presenceStatusJson, renderPresenceStatus } from "./presence-roster"
-import { readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings } from "./presence"
+import { PRESENCE_FIRST_VERSION, compareVersions, readLocalPresenceSettings, readPeerRecords, readPresence, removeAllPeerRecords, writeLocalPresenceSettings } from "./presence"
 import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding, type BootSyncProbeStatus } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -8798,7 +8798,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Daemon may not be running — that's fine
     }
 
-    const message = `rolled back to ${targetVersion} (was ${currentVersion})`
+    // A daemon below presence knows only `home`: leave every roster, so peers keep shared senses with home.
+    let leftPresence: string[] = []
+    if (compareVersions(targetVersion, PRESENCE_FIRST_VERSION) < 0) {
+      const identity = readMachineIdentity(providerCliHomeDir(deps))
+      /* v8 ignore next -- production default: uses real bundles root @preserve */
+      if (identity) leftPresence = removeAllPeerRecords(deps.bundlesRoot ?? getAgentBundlesRoot(), identity.machineId)
+    }
+    const message = `rolled back to ${targetVersion} (was ${currentVersion})${leftPresence.length > 0 ? `; this machine left the presence roster of ${leftPresence.join(", ")}, so their shared senses stay with home` : ""}`
     deps.writeStdout(message)
     return message
   }

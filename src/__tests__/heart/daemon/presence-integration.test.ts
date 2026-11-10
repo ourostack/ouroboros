@@ -303,3 +303,38 @@ describe("ouro presence status --json", () => {
     expect(presenceStatusJson({ presence: null, machineId: MINI, settings: { enabled: false } })).toEqual({ enabled: false, machine: null, peers: [], owns: [], owners: {}, legacy: [] })
   })
 })
+
+describe("ouro rollback below presence", () => {
+  it("leaves this machine's presence rosters, and says so", async () => {
+    const homeDir = path.join(tmp, "home")
+    fs.mkdirSync(path.join(homeDir, ".ouro-cli"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".ouro-cli", "machine.json"), JSON.stringify({ schemaVersion: 1, machineId: MINI, createdAt: "x", updatedAt: "x", hostnameAliases: [] }))
+    const root = bundle("o", { presence: ROSTER })
+    writePeerRecord(root, { machineId: MINI, version: V, seenAt: "2026-11-10T03:00:00.000Z" })
+    const base = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => { throw new Error("no daemon") }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      setExitCode: vi.fn(),
+      bundlesRoot,
+      homeDir,
+      getCurrentCliVersion: () => V,
+      getPreviousCliVersion: () => "0.1.0-alpha.988",
+      activateCliVersion: vi.fn(),
+      listCliVersions: () => [V, "0.1.0-alpha.988"],
+    } as unknown as OuroCliDeps
+    const message = await runOuroCli(["rollback"], base)
+    expect(message).toContain("rolled back to 0.1.0-alpha.988")
+    expect(message).toContain("this machine left the presence roster of o, so their shared senses stay with home")
+    expect(fs.existsSync(path.join(root, "presence", `${MINI}.json`))).toBe(false)
+    const again = await runOuroCli(["rollback", "0.1.0-alpha.988"], base)
+    expect(again).not.toContain("left the presence roster")
+    fs.rmSync(path.join(homeDir, ".ouro-cli", "machine.json"))
+    writePeerRecord(root, { machineId: MINI, version: V, seenAt: "2026-11-10T03:00:00.000Z" })
+    expect(await runOuroCli(["rollback"], base)).not.toContain("left the presence roster")
+  })
+})
