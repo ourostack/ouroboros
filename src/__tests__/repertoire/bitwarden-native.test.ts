@@ -465,12 +465,17 @@ describe("NativeVaultReader writes", () => {
     await expect(vault.deleteItem("missing")).rejects.toThrow("vault delete for Agent@Example.test failed: HTTP 404")
   })
 
-  it("needs a user id in the access token", async () => {
+  it("reads with any access token, but writes only with one that names the user", async () => {
     const keys = await vaultKeys()
-    const opaque = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: "opaque", Key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
-    await expect(reader(opaque).items()).rejects.toThrow(new NativeVaultUnsupportedError("an access token without a user id"))
+    const opaque = fakeServer(keys, {
+      token: () => new Response(JSON.stringify({ access_token: "opaque", Key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }),
+      write: () => new Response(JSON.stringify({ id: "x" }), { status: 200 }),
+    })
+    const opaqueVault = reader(opaque)
+    await expect(opaqueVault.items()).resolves.toHaveLength(3)
+    await expect(opaqueVault.saveLogin(write)).rejects.toThrow(new NativeVaultUnsupportedError("writes with an access token that names no user"))
     const noSub = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: jwt("t", null), Key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
-    await expect(reader(noSub).items()).rejects.toThrow("an access token without a user id")
+    await expect(reader(noSub).saveLogin(write)).rejects.toThrow("names no user")
   })
 
   it("encrypts what decryptCipherString reads back", () => {

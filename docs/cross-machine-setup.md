@@ -31,7 +31,7 @@ npm config set omit optional
 npx ouro.bot@latest
 ```
 
-The optional packages are the Teams, Azure, Stripe and mail SDKs: about 97 MB and 138 packages of the roughly 220 MB install. The core harness, its providers, the vault and the other senses work without them, and so do later self-updates, which read the same npm setting. A feature that needs one says so (for example `the Teams sense needs @microsoft/teams.apps, an optional package this install left out`); run `npm config delete omit` and reinstall to bring them back.
+The optional packages are the Teams, Azure, Stripe and mail SDKs, the terminal chat UI (`ink` and `react`) and the bundled Bitwarden CLI. Leaving them out takes the install from about 221 MB and 426 packages to about 46 MB and 42. The core harness, its providers, the vault (Ouro reads and writes it natively) and the other senses work without them, and so do later self-updates, which read the same npm setting. Without the chat UI, `ouro` chats line by line. A vault that needs `bw` (Argon2id or two-step login) uses one on PATH or installs it. A feature that needs a missing package says so (for example `the Teams sense needs @microsoft/teams.apps, an optional package this install left out`); run `npm config delete omit` and reinstall to bring them back.
 
 ## Step 2: Continue An Existing Agent Bundle
 
