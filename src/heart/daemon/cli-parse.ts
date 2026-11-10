@@ -185,7 +185,7 @@ function parseServiceCommand(args: string[]): OuroCliCommand {
   return { kind: "service.install", init, print, ...(servicePath ? { path: servicePath } : {}), ...(Object.keys(supervision).length > 0 ? { supervision } : {}) }
 }
 
-const SELF_UPDATE_USAGE = "Usage: ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] | ouro self-update disable | ouro self-update status"
+const SELF_UPDATE_USAGE = "Usage: ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] [--keep-versions <n>] | ouro self-update disable | ouro self-update status"
 
 function parseSelfUpdateHostCommand(args: string[]): OuroCliCommand {
   const [action, ...rest] = args
@@ -193,7 +193,7 @@ function parseSelfUpdateHostCommand(args: string[]): OuroCliCommand {
     if (rest.length > 0) throw new Error(SELF_UPDATE_USAGE)
     return action === "disable" ? { kind: "self-update.disable" } : { kind: "self-update.status" }
   }
-  const options: { full?: boolean; minMemAvailableMb?: number; reserveMb?: number } = {}
+  const options: { full?: boolean; minMemAvailableMb?: number; reserveMb?: number; keepVersions?: number } = {}
   const megabytes = (value: string | undefined): number | undefined =>
     value !== undefined && /^\d+$/.test(value) && Number(value) <= 1_048_576 ? Number(value) : undefined
   for (let index = 0; index < rest.length; index += 1) {
@@ -206,6 +206,9 @@ function parseSelfUpdateHostCommand(args: string[]): OuroCliCommand {
       index += 1
     } else if (token === "--reserve-mb" && value !== undefined && options.reserveMb === undefined) {
       options.reserveMb = value
+      index += 1
+    } else if (token === "--keep-versions" && value !== undefined && value >= 2 && value <= 100 && options.keepVersions === undefined) {
+      options.keepVersions = value
       index += 1
     } else {
       throw new Error(SELF_UPDATE_USAGE)

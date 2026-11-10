@@ -170,7 +170,7 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
     },
     activate: (version) => {
       activateVersion(version, { homeDir })
-      pruneOldVersions(undefined, { homeDir })
+      pruneOldVersions(readHostSelfUpdateConfig(cliHome)?.keepVersions, { homeDir })
     },
     isDaemonRunning: () => checkDaemonSocketAlive(socketPath),
     runningDaemonVersion: async () => (await checkDaemonSocketAlive(socketPath)) ? runningDaemonVersion(socketPath) : null,
@@ -202,6 +202,10 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
       } catch {
         return null
       }
+    },
+    reclaimDisk: () => {
+      const pruned = pruneOldVersions(0, { homeDir })
+      emitNervesEvent({ component: "daemon", event: "daemon.self_update_reclaimed_disk", message: "removed versions other than current and previous to make room for an update", meta: { deleted: pruned.deleted } })
     },
     memory: () => {
       if (process.platform !== "linux") return null

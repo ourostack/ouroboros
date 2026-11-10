@@ -17,10 +17,14 @@ export interface HostSelfUpdateConfig {
   minMemAvailableMb: number
   /** Disk to leave free beyond the new version and its 64 MiB headroom. */
   reserveMb: number
+  /** Installed versions to keep after an update (current and previous always stay). Absent means the default, 5. */
+  keepVersions?: number
 }
 
 export const DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB = 250
 export const DEFAULT_SELF_UPDATE_RESERVE_MB = 0
+export const DEFAULT_SELF_UPDATE_KEEP_VERSIONS = 5
+export const MIN_SELF_UPDATE_KEEP_VERSIONS = 2
 
 export function hostSelfUpdatePath(cliHome: string): string {
   return path.join(cliHome, "self-update.json")
@@ -39,10 +43,14 @@ export function readHostSelfUpdateConfig(cliHome: string): HostSelfUpdateConfig 
     return null
   }
   if (parsed?.schemaVersion !== 1 || typeof parsed.enabled !== "boolean" || typeof parsed.lean !== "boolean"
-    || !nonNegativeInteger(parsed.minMemAvailableMb) || !nonNegativeInteger(parsed.reserveMb)) {
+    || !nonNegativeInteger(parsed.minMemAvailableMb) || !nonNegativeInteger(parsed.reserveMb)
+    || (parsed.keepVersions !== undefined && (!nonNegativeInteger(parsed.keepVersions) || parsed.keepVersions < MIN_SELF_UPDATE_KEEP_VERSIONS))) {
     return null
   }
-  return { schemaVersion: 1, enabled: parsed.enabled, lean: parsed.lean, minMemAvailableMb: parsed.minMemAvailableMb, reserveMb: parsed.reserveMb }
+  return {
+    schemaVersion: 1, enabled: parsed.enabled, lean: parsed.lean, minMemAvailableMb: parsed.minMemAvailableMb, reserveMb: parsed.reserveMb,
+    ...(parsed.keepVersions !== undefined ? { keepVersions: parsed.keepVersions } : {}),
+  }
 }
 
 export function writeHostSelfUpdateConfig(cliHome: string, config: HostSelfUpdateConfig): void {
@@ -66,6 +74,7 @@ export function renderHostSelfUpdateConfig(config: HostSelfUpdateConfig | null):
     `  install: ${config.lean ? "lean (no optional dependencies)" : "full"}, at the lowest CPU and I/O priority`,
     `  waits while MemAvailable is below ${config.minMemAvailableMb} MB`,
     `  keeps ${config.reserveMb} MB free beyond the new version and its 64 MiB headroom`,
+    `  keeps the newest ${config.keepVersions ?? DEFAULT_SELF_UPDATE_KEEP_VERSIONS} versions (current and previous always); when an install would not fit, first removes all but current and previous`,
   ].join("\n")
 }
 

@@ -121,7 +121,7 @@ export type OuroCliCommand =
   | { kind: "presence.status"; agent: string; json?: boolean }
   | { kind: "presence.location"; location: string }
   | { kind: "self-update"; unattended?: boolean }
-  | { kind: "self-update.enable"; full?: boolean; minMemAvailableMb?: number; reserveMb?: number }
+  | { kind: "self-update.enable"; full?: boolean; minMemAvailableMb?: number; reserveMb?: number; keepVersions?: number }
   | { kind: "self-update.disable" }
   | { kind: "self-update.status" }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }

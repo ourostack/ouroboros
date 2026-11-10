@@ -7288,8 +7288,14 @@ async function executeHostSelfUpdate(
         lean: command.full !== true,
         minMemAvailableMb: command.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB,
         reserveMb: command.reserveMb ?? DEFAULT_SELF_UPDATE_RESERVE_MB,
+        ...(command.keepVersions !== undefined ? { keepVersions: command.keepVersions } : {}),
       }
-      : { schemaVersion: 1 as const, enabled: false, lean: current?.lean ?? true, minMemAvailableMb: current?.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB, reserveMb: current?.reserveMb ?? DEFAULT_SELF_UPDATE_RESERVE_MB }
+      : {
+        schemaVersion: 1 as const, enabled: false, lean: current?.lean ?? true,
+        minMemAvailableMb: current?.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB,
+        reserveMb: current?.reserveMb ?? DEFAULT_SELF_UPDATE_RESERVE_MB,
+        ...(current?.keepVersions !== undefined ? { keepVersions: current.keepVersions } : {}),
+      }
     host.write(next)
   }
   const lines = [renderHostSelfUpdateConfig(command.kind === "self-update.status" ? current : host.read())]

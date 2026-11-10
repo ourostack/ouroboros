@@ -36,7 +36,7 @@ describe("host self-update config", () => {
     const home = tempHome()
     expect(readHostSelfUpdateConfig(home)).toBeNull()
     for (const content of ["not json", "null", JSON.stringify({ ...ON, schemaVersion: 2 }), JSON.stringify({ ...ON, enabled: "yes" }), JSON.stringify({ ...ON, lean: 1 }),
-      JSON.stringify({ ...ON, minMemAvailableMb: -1 }), JSON.stringify({ ...ON, reserveMb: 1.5 })]) {
+      JSON.stringify({ ...ON, minMemAvailableMb: -1 }), JSON.stringify({ ...ON, reserveMb: 1.5 }), JSON.stringify({ ...ON, keepVersions: 1 }), JSON.stringify({ ...ON, keepVersions: "2" })]) {
       fs.writeFileSync(hostSelfUpdatePath(home), content)
       expect(readHostSelfUpdateConfig(home), content).toBeNull()
     }
@@ -48,6 +48,8 @@ describe("host self-update config", () => {
     expect(readHostSelfUpdateConfig(home)).toEqual(ON)
     expect(fs.statSync(hostSelfUpdatePath(home)).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(home)).toEqual(["self-update.json"])
+    writeHostSelfUpdateConfig(home, { ...ON, keepVersions: 2 })
+    expect(readHostSelfUpdateConfig(home)?.keepVersions).toBe(2)
     writeHostSelfUpdateConfig(home, { ...ON, enabled: false })
     expect(readHostSelfUpdateConfig(home)?.enabled).toBe(false)
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.host_self_update_configured", message: "unattended updates turned off for this machine" }))
@@ -61,7 +63,9 @@ describe("host self-update config", () => {
       "  install: lean (no optional dependencies), at the lowest CPU and I/O priority",
       "  waits while MemAvailable is below 250 MB",
       "  keeps 0 MB free beyond the new version and its 64 MiB headroom",
+      "  keeps the newest 5 versions (current and previous always); when an install would not fit, first removes all but current and previous",
     ].join("\n"))
+    expect(renderHostSelfUpdateConfig({ ...ON, keepVersions: 2 })).toContain("keeps the newest 2 versions")
     expect(renderHostSelfUpdateConfig({ ...ON, lean: false })).toContain("install: full,")
   })
 
@@ -82,7 +86,7 @@ describe("host self-update config", () => {
   })
 })
 
-const USAGE = "Usage: ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] | ouro self-update disable | ouro self-update status"
+const USAGE = "Usage: ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] [--keep-versions <n>] | ouro self-update disable | ouro self-update status"
 
 describe("ouro self-update enable | disable | status", () => {
   it("parses", () => {
@@ -90,6 +94,7 @@ describe("ouro self-update enable | disable | status", () => {
     expect(parseOuroCommand(["self-update", "enable", "--full", "--min-mem-available-mb", "300", "--reserve-mb", "128"])).toEqual({
       kind: "self-update.enable", full: true, minMemAvailableMb: 300, reserveMb: 128,
     })
+    expect(parseOuroCommand(["self-update", "enable", "--keep-versions", "2"])).toEqual({ kind: "self-update.enable", keepVersions: 2 })
     expect(parseOuroCommand(["self-update", "disable"])).toEqual({ kind: "self-update.disable" })
     expect(parseOuroCommand(["self-update", "status"])).toEqual({ kind: "self-update.status" })
     expect(parseOuroCommand(["self-update", "--unattended"])).toEqual({ kind: "self-update", unattended: true })
@@ -104,6 +109,9 @@ describe("ouro self-update enable | disable | status", () => {
       ["self-update", "enable", "--reserve-mb", "1", "--reserve-mb", "2"],
       ["self-update", "enable", "--min-mem-available-mb", "250MB"],
       ["self-update", "enable", "--min-mem-available-mb", "250", "--min-mem-available-mb", "300"],
+      ["self-update", "enable", "--keep-versions", "1"],
+      ["self-update", "enable", "--keep-versions", "101"],
+      ["self-update", "enable", "--keep-versions", "2", "--keep-versions", "3"],
     ]) {
       expect(() => parseOuroCommand(args), args.join(" ")).toThrow(USAGE)
     }
@@ -131,10 +139,16 @@ describe("ouro self-update enable | disable | status", () => {
     expect(d.write).toHaveBeenCalledWith({ schemaVersion: 1, enabled: true, lean: false, minMemAvailableMb: 300, reserveMb: 128 })
   })
 
+  it("enable keeps a given number of versions", async () => {
+    const d = deps(null)
+    await runOuroCli(["self-update", "enable", "--keep-versions", "2"], d.deps)
+    expect(d.write).toHaveBeenCalledWith({ ...ON, keepVersions: 2 })
+  })
+
   it("disable keeps the other settings, or the defaults when there were none", async () => {
-    const d = deps({ ...ON, lean: false, minMemAvailableMb: 400, reserveMb: 64 })
+    const d = deps({ ...ON, lean: false, minMemAvailableMb: 400, reserveMb: 64, keepVersions: 2 })
     expect(await runOuroCli(["self-update", "disable"], d.deps)).toContain(": off")
-    expect(d.write).toHaveBeenCalledWith({ schemaVersion: 1, enabled: false, lean: false, minMemAvailableMb: 400, reserveMb: 64 })
+    expect(d.write).toHaveBeenCalledWith({ schemaVersion: 1, enabled: false, lean: false, minMemAvailableMb: 400, reserveMb: 64, keepVersions: 2 })
     const fresh = deps(null)
     await runOuroCli(["self-update", "disable"], fresh.deps)
     expect(fresh.write).toHaveBeenCalledWith({ ...ON, enabled: false })
