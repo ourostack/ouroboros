@@ -116,6 +116,10 @@ export type OuroCliCommand =
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
   | { kind: "agent.move"; agent: string }
+  | { kind: "presence.join"; agent: string; role?: string; name?: string }
+  | { kind: "presence.handoff"; agent: string; sense: string; machine: string }
+  | { kind: "presence.status"; agent: string; json?: boolean }
+  | { kind: "presence.location"; location: string }
   | { kind: "self-update"; unattended?: boolean }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }

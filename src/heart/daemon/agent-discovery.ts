@@ -5,6 +5,7 @@ import { getAgentBundlesRoot } from "../identity"
 import { readMachineIdentity } from "../machine-identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readBundleSyncHealth, type BundleSyncFailure, type BundleSyncSkippedFile } from "../sync-health"
+import { parsePresenceBlock, readLocalPresenceSettings, type PresenceBlock } from "./presence"
 
 type Readdir = (target: string, options: { withFileTypes: true }) => fs.Dirent[]
 type ReadText = (target: string, encoding: "utf-8") => string
@@ -29,6 +30,11 @@ export interface AgentDiscoveryOptions {
    * Read from disk together with `machineId` when that is undefined.
    */
   hostnameAliases?: readonly string[]
+  /**
+   * Whether this machine follows `presence` rosters (`~/.ouro-cli/presence.json`).
+   * Undefined reads the local setting.
+   */
+  presenceEnabled?: boolean
 }
 
 /**
@@ -80,11 +86,14 @@ export interface BundleAgentRow {
    * was since replaced, which would otherwise leave the agent dark silently.
    */
   homeNameMatchesThisMachine?: true
+  /** True when the agent runs here because its presence roster names this machine. */
+  presence?: true
 }
 
 interface DiscoveredBundleAgentRow extends BundleAgentRow {
   manageable: boolean
   home: AgentHome | null
+  presenceBlock: PresenceBlock | null
 }
 
 export type PrivateRuntimeConfigSource = "default" | "privateRuntime" | "unreadable"
@@ -175,11 +184,15 @@ export function agentHomeLabel(home: { machineId: string; machineName: string })
 export function readAgentHomeElsewhere(
   agentRoot: string,
   machineId: string | null = readMachineIdentity()?.machineId ?? null,
+  presenceEnabled?: boolean,
 ): AgentHome | null {
   if (machineId === null) return null
   let home: AgentHome | null
   try {
-    home = parseAgentHome((JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { home?: unknown }).home)
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { home?: unknown; presence?: unknown }
+    const roster = parsePresenceBlock(parsed.presence)
+    if (roster?.machines.some((machine) => machine.machineId === machineId) && (presenceEnabled ?? readLocalPresenceSettings().enabled)) return null
+    home = parseAgentHome(parsed.home)
   } catch {
     return null
   }
@@ -195,6 +208,7 @@ function stripDiscoveryMetadata(row: DiscoveredBundleAgentRow): BundleAgentRow {
   if (row.homeState !== undefined) publicRow.homeState = row.homeState
   if (row.home) publicRow.homeMachine = agentHomeLabel(row.home)
   if (row.homeNameMatchesThisMachine) publicRow.homeNameMatchesThisMachine = true
+  if (row.presence) publicRow.presence = true
   return publicRow
 }
 
@@ -237,6 +251,7 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
     let kind: string | undefined
     let manageable = false
     let home: AgentHome | null = null
+    let presenceBlock: PresenceBlock | null = null
     try {
       const raw = readFileSync(configPath, "utf-8")
       const parsed = JSON.parse(raw) as unknown
@@ -249,10 +264,11 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
       }
       manageable = isManageableAgentConfig(parsed)
       home = parseAgentHome(parsed.home)
+      presenceBlock = parsePresenceBlock(parsed.presence)
     } catch {
       continue
     }
-    const row: DiscoveredBundleAgentRow = { name: agentName, enabled, manageable, home }
+    const row: DiscoveredBundleAgentRow = { name: agentName, enabled, manageable, home, presenceBlock }
     if (kind !== undefined) row.kind = kind
     if (enabled && !isLibraryKind(kind) && !manageable) {
       row.managementBlockedReason = "inactive scaffold: no vault locator, sync, or enabled external sense"
@@ -264,10 +280,18 @@ function discoverBundleAgents(options: AgentDiscoveryOptions = {}): DiscoveredBu
   const identity = options.machineId === undefined ? readMachineIdentity() : null
   const machineId = options.machineId === undefined ? identity?.machineId ?? null : options.machineId
   const thisMachineNames = new Set((options.hostnameAliases ?? identity?.hostnameAliases ?? []).map(normalizeMachineName))
-  const holdsAHome = machineId !== null && discovered.some((row) => row.home?.machineId === machineId)
+  const anyRoster = discovered.some((row) => row.presenceBlock !== null)
+  const presenceEnabled = anyRoster && (options.presenceEnabled ?? readLocalPresenceSettings().enabled)
+  const presentHere = (row: DiscoveredBundleAgentRow): boolean =>
+    presenceEnabled && machineId !== null && !!row.presenceBlock?.machines.some((machine) => machine.machineId === machineId)
+  const holdsAHome = machineId !== null && discovered.some((row) => row.home?.machineId === machineId || presentHere(row))
   for (const row of discovered) {
     if (!row.enabled || isLibraryKind(row.kind) || !row.manageable) continue
-    if (row.home) {
+    if (presentHere(row)) {
+      // Presence: every roster machine runs the agent; `home` stays for daemons that know only it.
+      row.homeState = "here"
+      row.presence = true
+    } else if (row.home) {
       row.homeState = row.home.machineId === machineId ? "here" : "elsewhere"
       if (row.homeState === "elsewhere" && thisMachineNames.has(normalizeMachineName(row.home.machineName))) {
         row.homeNameMatchesThisMachine = true

@@ -135,6 +135,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro move <agent> here",
     example: "ouro move my-agent here",
   },
+  presence: {
+    category: "Agents",
+    description: "Run one agent on several machines at once: join this machine to its roster, hand a shared sense (Teams, habits, …) to another machine, or see who owns what",
+    usage: "ouro presence join --agent <name> [--role <role>] [--name <machine name>] | ouro presence handoff <sense> <machine> --agent <name> | ouro presence status --agent <name> [--json] | ouro presence location <home|office|…>",
+    example: "ouro presence handoff teams aris-mac-mini --agent my-agent",
+    subcommands: ["join", "handoff", "status", "location"],
+  },
   whoami: {
     category: "Agents",
     description: "Show current agent identity info",

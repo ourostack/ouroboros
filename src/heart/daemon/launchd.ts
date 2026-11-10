@@ -25,6 +25,8 @@ export interface DaemonPlistOptions {
   socketPath: string
   logDir?: string
   envPath?: string
+  /** Scheduling priority (launchd `Nice`), e.g. 10 on a machine whose foreground work comes first. */
+  nice?: number
 }
 
 function plistFilePath(homeDir: string): string {
@@ -82,6 +84,10 @@ export function generateDaemonPlist(options: DaemonPlistOptions): string {
     `  <key>KeepAlive</key>`,
     `  <true/>`,
   ]
+
+  if (options.nice !== undefined && Number.isInteger(options.nice) && options.nice !== 0) {
+    lines.push(`  <key>Nice</key>`, `  <integer>${options.nice}</integer>`)
+  }
 
   if (options.envPath) {
     lines.push(
