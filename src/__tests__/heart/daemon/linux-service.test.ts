@@ -105,33 +105,33 @@ describe("linux service", () => {
   it("installs a SysV script, records it, and starts and removes it through the script", () => {
     const deps = fakeDeps(true)
     const result = installLinuxService(deps, OPTIONS, { init: "sysv" })
-    expect(result.record).toEqual({ schemaVersion: 1, init: "sysv", path: "/etc/init.d/S99ouro" })
+    expect(result.record).toEqual({ schemaVersion: 1, init: "sysv", path: "/etc/init.d/S99ouro", socketPath: OPTIONS.socketPath })
     expect(deps.files.get("/etc/init.d/S99ouro")).toEqual({ content: generateSysvInitScript(OPTIONS), mode: 0o755 })
     expect(readServiceRecord(deps, OPTIONS.ouroCliHome)).toEqual(result.record)
     expect(deps.runs).toEqual([])
     expect(nerves.emit).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.service_installed" }))
 
-    expect(startLinuxService(deps, OPTIONS.ouroCliHome)).toBe(true)
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(true)
     expect(deps.runs).toEqual([["/etc/init.d/S99ouro", ["start"]]])
 
     expect(uninstallLinuxService(deps, OPTIONS.ouroCliHome)).toEqual(result.record)
     expect(deps.runs.at(-1)).toEqual(["/etc/init.d/S99ouro", ["stop"]])
     expect(deps.existsFile("/etc/init.d/S99ouro")).toBe(false)
     expect(deps.existsFile(serviceRecordPath(OPTIONS.ouroCliHome))).toBe(false)
-    expect(startLinuxService(deps, OPTIONS.ouroCliHome)).toBe(false)
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(false)
     expect(uninstallLinuxService(deps, OPTIONS.ouroCliHome)).toBeNull()
   })
 
   it("installs a systemd user unit for a non-root user and drives it with systemctl --user", () => {
     const deps = fakeDeps(false)
     const result = installLinuxService(deps, OPTIONS, { init: "systemd" })
-    expect(result.record).toEqual({ schemaVersion: 1, init: "systemd", path: "/userdata/ouro/.config/systemd/user/ouro.service", user: true })
+    expect(result.record).toEqual({ schemaVersion: 1, init: "systemd", path: "/userdata/ouro/.config/systemd/user/ouro.service", user: true, socketPath: OPTIONS.socketPath })
     expect(deps.files.get(result.record.path)?.mode).toBe(0o644)
     expect(deps.runs).toEqual([
       ["systemctl", ["--user", "daemon-reload"]],
       ["systemctl", ["--user", "enable", "ouro.service"]],
     ])
-    expect(startLinuxService(deps, OPTIONS.ouroCliHome)).toBe(true)
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(true)
     expect(deps.runs.at(-1)).toEqual(["systemctl", ["--user", "start", "ouro.service"]])
     uninstallLinuxService(deps, OPTIONS.ouroCliHome)
     expect(deps.runs.slice(-2)).toEqual([
@@ -142,8 +142,8 @@ describe("linux service", () => {
 
   it("installs a system unit as root at a chosen path", () => {
     const deps = fakeDeps(true)
-    const result = installLinuxService(deps, OPTIONS, { init: "systemd", path: "/lib/systemd/system/ouro-agent.service" })
-    expect(result.record).toEqual({ schemaVersion: 1, init: "systemd", path: "/lib/systemd/system/ouro-agent.service" })
+    const result = installLinuxService(deps, OPTIONS, { init: "systemd", path: "/lib/systemd/system/ouro-agent.service", socketPath: OPTIONS.socketPath })
+    expect(result.record).toEqual({ schemaVersion: 1, init: "systemd", path: "/lib/systemd/system/ouro-agent.service", socketPath: OPTIONS.socketPath })
     expect(deps.runs).toEqual([
       ["systemctl", ["daemon-reload"]],
       ["systemctl", ["enable", "ouro-agent.service"]],
@@ -173,11 +173,24 @@ describe("linux service", () => {
     expect(runs.at(-1)).toEqual(["daemon-reload"])
   })
 
+  it("leaves the start to the caller for another socket or a refused start", () => {
+    const deps = fakeDeps(true)
+    installLinuxService(deps, OPTIONS, { init: "sysv" })
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, "/tmp/other.sock")).toBe(false)
+    expect(deps.runs).toEqual([])
+    deps.run = () => { throw new Error("init.d refused") }
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(false)
+    expect(nerves.emit).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.service_start_failed", meta: expect.objectContaining({ error: "init.d refused" }) }))
+    deps.run = () => { throw "exit 1" }
+    expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(false)
+    expect(nerves.emit).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ error: "exit 1" }) }))
+  })
+
   it("ignores a missing, unreadable or foreign service record", () => {
     const deps = fakeDeps(true)
     const recordPath = serviceRecordPath(OPTIONS.ouroCliHome)
     expect(readServiceRecord(deps, OPTIONS.ouroCliHome)).toBeNull()
-    for (const content of ["not json", JSON.stringify({ schemaVersion: 2, init: "sysv", path: "/x" }), JSON.stringify({ schemaVersion: 1, init: "runit", path: "/x" }), JSON.stringify({ schemaVersion: 1, init: "sysv" })]) {
+    for (const content of ["not json", JSON.stringify({ schemaVersion: 2, init: "sysv", path: "/x" }), JSON.stringify({ schemaVersion: 1, init: "runit", path: "/x" }), JSON.stringify({ schemaVersion: 1, init: "sysv" }), JSON.stringify({ schemaVersion: 1, init: "sysv", path: "/x" })]) {
       deps.writeFile(recordPath, content, 0o644)
       expect(readServiceRecord(deps, OPTIONS.ouroCliHome)).toBeNull()
     }

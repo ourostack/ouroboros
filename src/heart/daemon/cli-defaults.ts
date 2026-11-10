@@ -83,7 +83,7 @@ export async function defaultStartDaemonProcess(socketPath: string): Promise<{ p
   if (launchdStarted) return launchdStarted
   // An installed `ouro service` supervises the daemon; start it there so a crash is restarted.
   /* v8 ignore next -- exercised against real init systems; startLinuxService is unit-tested @preserve */
-  if (process.platform === "linux" && startLinuxService(linuxServiceDeps(), getOuroCliHome())) return { pid: null }
+  if (process.platform === "linux" && startLinuxService(linuxServiceDeps(), getOuroCliHome(), socketPath)) return { pid: null }
   return spawnDetachedDaemonProcess(socketPath)
 }
 

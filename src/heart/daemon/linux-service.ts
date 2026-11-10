@@ -27,6 +27,8 @@ export interface LinuxServiceRecord {
   path: string
   /** systemd only: whether the unit is a user unit (`systemctl --user`). */
   user?: boolean
+  /** The socket the supervised daemon listens on. */
+  socketPath: string
 }
 
 export interface LinuxServiceOptions {
@@ -175,8 +177,8 @@ export function readServiceRecord(deps: Pick<LinuxServiceDeps, "readFile" | "exi
   if (!deps.existsFile(recordPath)) return null
   try {
     const parsed = JSON.parse(deps.readFile(recordPath)) as Partial<LinuxServiceRecord>
-    if (parsed.schemaVersion !== 1 || (parsed.init !== "sysv" && parsed.init !== "systemd") || typeof parsed.path !== "string") return null
-    return { schemaVersion: 1, init: parsed.init, path: parsed.path, ...(parsed.user ? { user: true } : {}) }
+    if (parsed.schemaVersion !== 1 || (parsed.init !== "sysv" && parsed.init !== "systemd") || typeof parsed.path !== "string" || typeof parsed.socketPath !== "string") return null
+    return { schemaVersion: 1, init: parsed.init, path: parsed.path, ...(parsed.user ? { user: true } : {}), socketPath: parsed.socketPath }
   } catch {
     return null
   }
@@ -197,7 +199,7 @@ export function installLinuxService(
   const content = request.init === "sysv" ? generateSysvInitScript(options) : generateSystemdUnit(options, user)
   deps.mkdirp(path.dirname(servicePath))
   deps.writeFile(servicePath, content, request.init === "sysv" ? 0o755 : 0o644)
-  const record: LinuxServiceRecord = { schemaVersion: 1, init: request.init, path: servicePath, ...(user ? { user: true } : {}) }
+  const record: LinuxServiceRecord = { schemaVersion: 1, init: request.init, path: servicePath, ...(user ? { user: true } : {}), socketPath: options.socketPath }
   if (request.init === "systemd") {
     deps.run("systemctl", systemctl(record, ["daemon-reload"]))
     deps.run("systemctl", systemctl(record, ["enable", path.basename(servicePath)]))
@@ -242,11 +244,27 @@ export function uninstallLinuxService(deps: LinuxServiceDeps, ouroCliHome: strin
 }
 
 /** Starts the daemon through the installed service; false when none is installed. */
-export function startLinuxService(deps: Pick<LinuxServiceDeps, "readFile" | "existsFile" | "run">, ouroCliHome: string): boolean {
+/**
+ * Start the daemon through the installed service. Returns false, so the caller
+ * spawns the daemon itself, when no service is installed, when the service is
+ * bound to a different socket, or when the init system refuses the start.
+ */
+export function startLinuxService(deps: Pick<LinuxServiceDeps, "readFile" | "existsFile" | "run">, ouroCliHome: string, socketPath: string): boolean {
   const record = readServiceRecord(deps, ouroCliHome)
-  if (!record) return false
-  if (record.init === "systemd") deps.run("systemctl", systemctl(record, ["start", path.basename(record.path)]))
-  else deps.run(record.path, ["start"])
+  if (!record || record.socketPath !== socketPath) return false
+  try {
+    if (record.init === "systemd") deps.run("systemctl", systemctl(record, ["start", path.basename(record.path)]))
+    else deps.run(record.path, ["start"])
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.service_start_failed",
+      message: "the supervised service did not start; spawning the daemon directly",
+      meta: { init: record.init, path: record.path, error: error instanceof Error ? error.message : String(error) },
+    })
+    return false
+  }
   emitNervesEvent({
     component: "daemon",
     event: "daemon.service_started",
