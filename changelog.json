@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1020",
+      "changes": [
+        "Images that MCP tools return (for example a plugin's screenshot tool) now reach the model: vision models get them in a message right after the step's tool results, and other models get a note that images were left out. GitHub Copilot requests that carry images send the Copilot-Vision-Request header, and the Anthropic provider sends base64 images as image blocks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1018",
       "changes": [
         "Hatch and ouro vault create register vault accounts with Vaultwarden's current two-step flow (send-verification-email, then register/finish), falling back to the old /identity/accounts/register only on servers that lack it. When a server has signups closed, the error says to have its admin invite the agent's email.",

@@ -2600,6 +2600,67 @@ describe("runAgent", () => {
     expect(toolStarts).toEqual(["read_file", "read_file"])
   })
 
+  it.each([
+    { model: "MiniMax-VL-01", visible: true, text: "front door" },
+    { model: "test-model", visible: false, text: "" },
+  ])("hands tool result images to $model after the step's tool results (visible=$visible)", async ({ model, visible, text }) => {
+    vi.resetModules()
+    await setupMinimax("test-key", model)
+    const core = await import("../../heart/core")
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"door.png"}' } },
+            { index: 1, id: "call_2", function: { name: "read_file", arguments: '{"path":"notes.txt"}' } },
+          ]),
+        ])
+      }
+      return makeStream([makeChunk("a parcel at the door")])
+    })
+    const execTool = vi.fn(async (_name: string, args: Record<string, string>, ctx?: { attachToolImages?: (images: Array<{ data: string; mimeType: string }>) => void }) => {
+      if (args.path === "door.png") {
+        ctx?.attachToolImages?.([{ data: "iVBORw0KGgo=", mimeType: "image/png" }])
+        return text
+      }
+      return "notes"
+    })
+    const messages: any[] = [{ role: "system", content: "test" }, { role: "user", content: "what's at the door?" }]
+
+    await (core.runAgent as any)(messages, {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }, undefined, undefined, {
+      tools: [{ type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } } }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    const toolMessages = messages.filter((m) => m.role === "tool")
+    expect(toolMessages.map((m) => m.tool_call_id)).toEqual(["call_1", "call_2"])
+    expect(toolMessages[1].content).toBe("notes")
+    const afterTools = messages[messages.indexOf(toolMessages[1]) + 1]
+    if (visible) {
+      expect(toolMessages[0].content).toBe("front door\n\n[1 image(s) from this tool follow in the next message.]")
+      expect(afterTools.role).toBe("user")
+      expect(afterTools.content).toContainEqual({ type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } })
+      expect(afterTools.content).toContainEqual({ type: "text", text: "read_file (call call_1):" })
+      const secondRequest = mockCreate.mock.calls[1][0]
+      expect(secondRequest.messages.at(-1)).toEqual(afterTools)
+    } else {
+      expect(toolMessages[0].content).toBe("[1 image(s) returned, but test-model can't view images, so they were left out.]")
+      expect(afterTools.role).toBe("assistant")
+      expect(messages.some((m) => m.role === "user" && Array.isArray(m.content))).toBe(false)
+    }
+  })
+
   it("fires onToolEnd with success=false when tool throws", async () => {
     vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
       if (String(filePath).includes("missing.txt")) {
