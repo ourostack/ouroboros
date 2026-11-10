@@ -89,6 +89,9 @@ const RECOVERY_CHUNK_SIZE = 4000
 // At 1000ms (1 req/sec), we stay at the Teams throttle floor while keeping the
 // stream alive well within the 15s Copilot timeout. Tune up if 429s observed.
 export const DEFAULT_FLUSH_INTERVAL_MS = 1_000
+// Teams shows a typing indicator for only a few seconds. While a tool runs nothing else refreshes it, so a long
+// shell or session call looked like silence; this repeats the current status until the tool ends.
+export const TYPING_KEEPALIVE_MS = 3_000
 
 // Split text into chunks that fit within maxLen, breaking at paragraph
 // boundaries (\n\n), then line boundaries (\n), then word boundaries.
@@ -160,6 +163,8 @@ export function buildWelcomeCard(): { type: string; version: string; body: Array
 // Options for createTeamsCallbacks controlling streaming behavior.
 export interface TeamsCallbackOptions {
   flushIntervalMs?: number
+  /** How often the typing indicator is refreshed while a tool runs. */
+  typingKeepaliveMs?: number
   conversationId?: string
   /** When true, suppress the "(completed with tool calls only)" fallback in flush(). */
   suppressEmptyStreamMessage?: boolean
@@ -206,6 +211,20 @@ export function createTeamsCallbacks(
   let lastPhrase = ""
   let flushTimer: NodeJS.Timeout | null = null
   const flushInterval = options?.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS
+  let keepaliveTimer: NodeJS.Timeout | null = null
+  let toolsRunning = 0
+  let toolStatus = ""
+  const keepaliveInterval = options?.typingKeepaliveMs ?? TYPING_KEEPALIVE_MS
+
+  function startTypingKeepalive(): void {
+    if (keepaliveTimer) return
+    keepaliveTimer = setInterval(() => safeUpdate(toolStatus || "working..."), keepaliveInterval)
+  }
+
+  function stopTypingKeepalive(): void {
+    toolsRunning = 0
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null }
+  }
 
   // The SDK merges every chunk's entities into the final message, and Teams rejects a final
   // message with more than one root message entity (400 BadSyntax), so only the first chunk
@@ -258,6 +277,7 @@ export function createTeamsCallbacks(
     stopped = true
     stopPhraseRotation()
     stopFlushTimer()
+    stopTypingKeepalive()
     controller.abort()
   }
 
@@ -265,6 +285,7 @@ export function createTeamsCallbacks(
   controller.signal.addEventListener("abort", () => {
     stopPhraseRotation()
     stopFlushTimer()
+    stopTypingKeepalive()
   })
 
   // Handle the result of a stream call: if it returns a Promise (the Teams SDK
@@ -519,7 +540,7 @@ export function createTeamsCallbacks(
     },
     ...(() => {
       const toolCbs = createToolActivityCallbacks({
-        onDescription: (text) => safeUpdate(text),
+        onDescription: (text) => { toolStatus = text; safeUpdate(text) },
         /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
         onResult: (text) => safeUpdate(text),
         /* v8 ignore next -- onFailure tested via onToolEnd failure test @preserve */
@@ -540,6 +561,8 @@ export function createTeamsCallbacks(
           flushTextBuffer()
           toolCbs.onToolStart(name, args)
           hadToolRun = true
+          toolsRunning++
+          startTypingKeepalive()
         },
         onToolEnd: (name: string, summary: string, success: boolean) => {
           // speak is flow-control: skip phrase-rotation stop and tool-activity end
@@ -549,6 +572,8 @@ export function createTeamsCallbacks(
           if (name === "speak") return
           stopPhraseRotation()
           toolCbs.onToolEnd(name, summary, success)
+          toolsRunning = Math.max(0, toolsRunning - 1)
+          if (toolsRunning === 0) stopTypingKeepalive()
         },
       }
     })(),
@@ -574,6 +599,7 @@ export function createTeamsCallbacks(
     flush: async () => {
       stopFlushTimer()
       stopPhraseRotation()
+      stopTypingKeepalive()
       if (textBuffer) {
         // Bypass MIN_INITIAL_CHARS threshold — flush delivers all remaining content
         firstContentEmitted = true
@@ -783,6 +809,8 @@ export interface TeamsMessageContext {
   graphToken?: string
   adoToken?: string
   githubToken?: string
+  /** Logical connections (graph, ado, github) whose sign-in is known not to start, with the reason. */
+  oauthUnavailable?: Readonly<Record<string, string>>
   signin: (connectionName: string) => Promise<string | undefined>
   // AAD identity fields (extracted from bot activity)
   aadObjectId?: string
@@ -795,6 +823,48 @@ export interface TeamsMessageContext {
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
   teamsSendImage?: ToolContext["teamsSendImage"]
+}
+
+const OAUTH_SERVICE_LABELS: Record<string, string> = { graph: "Microsoft Graph", ado: "Azure DevOps", github: "GitHub" }
+const OAUTH_UNAVAILABLE_TTL_MS = 60 * 60 * 1000
+// Sign-ins that could not start, by OAuth connection name. Kept for an hour so every turn in between can say why
+// instead of promising a prompt, and so the person hears about it once, not on every turn.
+const oauthSigninUnavailable = new Map<string, { reason: string; until: number }>()
+
+/** Why sign-in for this connection can't start, when a recent attempt showed it; undefined when it may work. */
+export function oauthSigninUnavailableReason(connectionName: string, now = Date.now()): string | undefined {
+  const entry = oauthSigninUnavailable.get(connectionName)
+  if (!entry) return undefined
+  if (entry.until <= now) {
+    oauthSigninUnavailable.delete(connectionName)
+    return undefined
+  }
+  return entry.reason
+}
+
+/** Records a sign-in that failed to start and returns the reason in words the person can act on. */
+export function recordOAuthSigninFailure(connectionName: string, error: unknown, now = Date.now()): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const reason = /status code 400\b/.test(message)
+    ? `Bot Service rejected the sign-in request (HTTP 400). The usual cause is that this bot registration has no OAuth connection named "${connectionName}"; it has to be added on the Azure Bot before sign-in can work.`
+    : `the sign-in request failed (${message.slice(0, 160)}).`
+  oauthSigninUnavailable.set(connectionName, { reason, until: now + OAUTH_UNAVAILABLE_TTL_MS })
+  emitNervesEvent({
+    level: "warn", component: "channels", event: "channel.oauth_signin_unavailable",
+    message: "OAuth sign-in cannot start for this connection", meta: { connectionName, reason },
+  })
+  return reason
+}
+
+/** The one-line notice the person gets when a sign-in they needed could not start. */
+export function oauthSigninUnavailableNotice(service: string, reason: string): string {
+  const label = OAUTH_SERVICE_LABELS[service] ?? service
+  return `I couldn't start the ${label} sign-in, so I can't use ${label} here: ${reason}`
+}
+
+/** For tests: forget every recorded sign-in failure. */
+export function resetOAuthSigninFailures(): void {
+  oauthSigninUnavailable.clear()
 }
 
 function reportTeamsRequest(
@@ -929,6 +999,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     graphToken: teamsContext.graphToken,
     adoToken: teamsContext.adoToken,
     githubToken: teamsContext.githubToken,
+    ...(teamsContext.oauthUnavailable ? { oauthUnavailable: teamsContext.oauthUnavailable } : {}),
     signin: teamsContext.signin,
     summarize: createSummarize("human"),
     tenantId: teamsContext.tenantId,
@@ -1467,6 +1538,10 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         githubToken = githubRes?.token
       } catch { /* no token yet — tool handler will trigger signin */ }
       emitNervesEvent({ level: "info", event: "channel.token_status", component: "channels", message: "oauth token availability", meta: { graph: !!graphToken, ado: !!adoToken, github: !!githubToken, tenantId } })
+      const unavailableEntries = ([["graph", tenantOAuth.graphConnectionName], ["ado", tenantOAuth.adoConnectionName], ["github", tenantOAuth.githubConnectionName]] as const)
+        .map(([service, cn]) => [service, oauthSigninUnavailableReason(cn)] as const)
+        .filter((entry): entry is readonly [typeof entry[0], string] => entry[1] !== undefined)
+      const oauthUnavailable = unavailableEntries.length > 0 ? Object.fromEntries(unavailableEntries) : undefined
 
       const teamsContext: TeamsMessageContext = {
         inboundActivityId: activity.id,
@@ -1475,7 +1550,10 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         graphToken,
         adoToken,
         githubToken,
+        ...(oauthUnavailable ? { oauthUnavailable } : {}),
         signin: async (cn: string) => {
+          // Already known not to start: don't send the person another card that can't appear.
+          if (oauthSigninUnavailableReason(cn)) return undefined
           try {
             const result = await signin({ connectionName: cn })
             emitNervesEvent({ level: "info", event: "channel.signin_result", component: "channels", message: `signin(${cn}): ${result ? "token received" : "no token"}`, meta: { connectionName: cn, hasToken: !!result } })
@@ -1483,6 +1561,9 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e)
             emitNervesEvent({ level: "error", event: "channel.signin_error", component: "channels", message: `signin(${cn}) failed`, meta: { connectionName: cn, reason: msg.slice(0, 100) } })
+            const reason = recordOAuthSigninFailure(cn, e)
+            const service = Object.entries(tenantOAuth).find(([, name]) => name === cn)?.[0]?.replace(/ConnectionName$/, "") ?? cn
+            try { await sendText(oauthSigninUnavailableNotice(service, reason)) } catch { /* the failure is already logged */ }
             return undefined
           }
         },

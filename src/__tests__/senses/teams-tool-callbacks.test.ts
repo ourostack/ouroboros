@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -451,5 +451,72 @@ describe("Teams: rejected settle args do NOT leak into visible chat (regression:
         expect(text).not.toContain(leak)
       }
     }
+  })
+})
+
+describe("Teams createTeamsCallbacks - typing keepalive while a tool runs", () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it("refreshes the typing status until every running tool ends, then stops", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    const teams = await import("../../senses/teams")
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), undefined, { typingKeepaliveMs: 1_000 })
+    callbacks.onToolStart("shell", { command: "sleep 60" })
+    callbacks.onToolStart("settle", { answer: "x" })
+    const status = stream.update.mock.calls[0]![0]
+    stream.update.mockClear()
+    vi.advanceTimersByTime(3_000)
+    expect(stream.update).toHaveBeenCalledTimes(3)
+    expect(stream.update).toHaveBeenLastCalledWith(status)
+    callbacks.onToolEnd("settle", "", true)
+    vi.advanceTimersByTime(1_000)
+    expect(stream.update).toHaveBeenCalledTimes(4)
+    callbacks.onToolEnd("shell", "", true)
+    stream.update.mockClear()
+    vi.advanceTimersByTime(5_000)
+    expect(stream.update).not.toHaveBeenCalled()
+  })
+
+  it("says it is working when the tool shows no status, and stops at flush and on abort", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    const teams = await import("../../senses/teams")
+    const stream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    const callbacks = teams.createTeamsCallbacks(stream as any, new AbortController(), undefined, { typingKeepaliveMs: 1_000, suppressEmptyStreamMessage: true })
+    callbacks.onToolStart("settle", { answer: "x" })
+    vi.advanceTimersByTime(1_000)
+    expect(stream.update).toHaveBeenLastCalledWith("working...")
+    await callbacks.flush()
+    stream.update.mockClear()
+    vi.advanceTimersByTime(3_000)
+    expect(stream.update).not.toHaveBeenCalled()
+
+    const controller = new AbortController()
+    const aborted = teams.createTeamsCallbacks(stream as any, controller, undefined, { typingKeepaliveMs: 1_000 })
+    aborted.onToolStart("shell", { command: "sleep 60" })
+    controller.abort()
+    stream.update.mockClear()
+    vi.advanceTimersByTime(3_000)
+    expect(stream.update).not.toHaveBeenCalled()
+  })
+})
+
+describe("Teams OAuth sign-in that cannot start", () => {
+  it("keeps the reason for an hour, words a 400 as a missing connection and other failures as they are", async () => {
+    vi.resetModules()
+    const teams = await import("../../senses/teams")
+    teams.resetOAuthSigninFailures()
+    const now = 1_000_000
+    expect(teams.oauthSigninUnavailableReason("graph", now)).toBeUndefined()
+    expect(teams.recordOAuthSigninFailure("graph", new Error("Request failed with status code 400"), now)).toContain('no OAuth connection named "graph"')
+    expect(teams.oauthSigninUnavailableReason("graph", now + 59 * 60_000)).toContain("HTTP 400")
+    expect(teams.oauthSigninUnavailableReason("graph", now + 60 * 60_000)).toBeUndefined()
+    expect(teams.oauthSigninUnavailableReason("graph", now)).toBeUndefined()
+    expect(teams.recordOAuthSigninFailure("ado-x", "socket hang up", now)).toBe("the sign-in request failed (socket hang up).")
+    expect(teams.oauthSigninUnavailableNotice("ado", "why.")).toBe("I couldn't start the Azure DevOps sign-in, so I can't use Azure DevOps here: why.")
+    expect(teams.oauthSigninUnavailableNotice("custom", "why.")).toBe("I couldn't start the custom sign-in, so I can't use custom here: why.")
+    teams.resetOAuthSigninFailures()
   })
 })

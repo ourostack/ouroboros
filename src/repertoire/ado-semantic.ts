@@ -2,6 +2,7 @@
 // Phase 3: ado_backlog_list (query), mutation tools (3D).
 
 import { emitNervesEvent } from "../nerves/runtime"
+import { authRequired } from "./auth-required"
 import type { ToolDefinition, ToolContext } from "./tools-base"
 import { adoRequest } from "./ado-client"
 import { resolveAdoContext } from "./ado-context"
@@ -111,7 +112,7 @@ function buildReparentPatch(newParentId: string): JsonPatchOp[] {
 
 async function checkAuth(ctx: ToolContext | undefined): Promise<string | null> {
   if (!ctx?.adoToken) {
-    return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted."
+    return authRequired(ctx, "ado", "I need access to Azure DevOps.")
   }
   return null
 }
@@ -300,7 +301,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted."
+        return authRequired(ctx, "ado", "I need access to Azure DevOps.")
       }
       emitNervesEvent({
         component: "repertoire",

@@ -2806,6 +2806,97 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.restoreAllMocks()
   })
 
+  it("a sign-in that cannot start is explained once, not retried, and named to the tools on later turns", async () => {
+    vi.resetModules()
+    const emitNervesEventLocal = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent: emitNervesEventLocal }))
+
+    let capturedHandler: ((args: any) => Promise<void>) | null = null
+    vi.doMock("@microsoft/teams.apps", () => ({
+      App: class MockApp {
+        constructor(_opts: any) {}
+        on = vi.fn().mockImplementation((_event: string, handler: any) => {
+          capturedHandler = withSdkSend(handler)
+        })
+        event = vi.fn()
+        start = vi.fn()
+      },
+    }))
+    vi.doMock("@microsoft/teams.dev", () => ({
+      DevtoolsPlugin: class MockDevtoolsPlugin {},
+    }))
+
+    const mockRunAgent = vi.fn().mockResolvedValue({ usage: undefined })
+    vi.doMock("../../heart/core", () => ({
+      createSummarize: vi.fn(() => vi.fn()),
+      runAgent: mockRunAgent,
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
+      summarizeArgs: vi.fn().mockReturnValue(""),
+      repairOrphanedToolCalls: vi.fn(),
+    }))
+    vi.doMock("../../mind/prompt", () => ({
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
+      contextSection: vi.fn().mockReturnValue(""),
+    }))
+    vi.doMock("../../mind/context", () => ({
+      loadSession: vi.fn().mockReturnValue(null),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
+    }))
+
+    const teams = await import("../../senses/teams")
+    teams.startTeamsApp()
+
+    const failingSignin = vi.fn().mockRejectedValue(new Error("Request failed with status code 400"))
+    teams.resetOAuthSigninFailures()
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    await capturedHandler!({
+      stream: mockStream,
+      activity: {
+        text: "test",
+        conversation: { id: "conv-test" },
+        from: { id: "user-123" },
+        channelId: "msteams",
+      },
+      api: {
+        users: { token: { get: vi.fn().mockRejectedValue(new Error("no token")) } },
+      },
+      signin: failingSignin,
+    })
+
+    const opts = mockRunAgent.mock.calls[0][4]
+    expect(opts.toolContext.oauthUnavailable).toBeUndefined()
+    expect(await opts.toolContext.signin("graph")).toBeUndefined()
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("I couldn't start the Microsoft Graph sign-in, so I can't use Microsoft Graph here: Bot Service rejected the sign-in request (HTTP 400)"),
+    }))
+    expect(emitNervesEventLocal).toHaveBeenCalledWith(expect.objectContaining({ event: "channel.oauth_signin_unavailable" }))
+    // Known not to start: no second card, no second notice.
+    sdkSends.mockClear()
+    expect(await opts.toolContext.signin("graph")).toBeUndefined()
+    expect(failingSignin).toHaveBeenCalledOnce()
+    expect(sdkSends).not.toHaveBeenCalled()
+
+    await capturedHandler!({
+      stream: mockStream,
+      activity: { text: "again", conversation: { id: "conv-test" }, from: { id: "user-123" }, channelId: "msteams" },
+      api: { users: { token: { get: vi.fn().mockRejectedValue(new Error("no token")) } } },
+      signin: failingSignin,
+    })
+    expect(mockRunAgent).toHaveBeenCalledTimes(2)
+    const later = mockRunAgent.mock.calls[1]![4]
+    expect(later.toolContext.oauthUnavailable).toEqual({ graph: expect.stringContaining('no OAuth connection named "graph"') })
+    // A connection this tenant does not name is reported under its own name.
+    await later.toolContext.signin("custom-conn")
+    expect(sdkSends).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("I couldn't start the custom-conn sign-in") }))
+    teams.resetOAuthSigninFailures()
+    vi.restoreAllMocks()
+  })
+
   it("signin wrapper emits signin_result when signin returns falsy", async () => {
     vi.resetModules()
     const emitNervesEventLocal = vi.fn()
@@ -3988,7 +4079,8 @@ describe("Teams adapter - phrase rotation", () => {
     callbacks.onModelStart()
     callbacks.onToolStart("shell", { command: "ls" })
     mockStream.update.mockClear()
-    vi.advanceTimersByTime(3000)
+    // Past a 1.5 s rotation tick, short of the 3 s typing keepalive that repeats the tool's own status.
+    vi.advanceTimersByTime(2500)
     // No rotation after tool start (it uses static tool name display)
     expect(mockStream.update).not.toHaveBeenCalled()
   })
