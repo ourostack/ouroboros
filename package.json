@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
-    "@ouro.bot/friends": "0.1.0-alpha.17",
+    "@ouro.bot/friends": "0.1.0-alpha.18",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
     "ajv": "^8.20.0",
