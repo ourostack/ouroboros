@@ -137,6 +137,8 @@ export type OuroCliCommand =
   | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
   | { kind: "sanctuary.git-exclude" }
   | { kind: "service.install"; init: "sysv" | "systemd"; path?: string; print: boolean; supervision?: ServiceSupervision }
+  | { kind: "git.install"; force: boolean }
+  | { kind: "git.status" }
   | { kind: "service.uninstall" }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "acp-serve"; agent: string; friendId?: string; socketOverride?: string; workbenchMcp?: string | true; observeOnly?: boolean }
@@ -224,6 +226,10 @@ export interface OuroCliDeps {
     install: (request: { init: "sysv" | "systemd"; path?: string; print: boolean; supervision?: ServiceSupervision }) => { path: string; content: string; written: boolean }
     uninstall: () => { path: string } | null
   }
+  /** Installs the portable git (`ouro git install`, and `ouro clone` on a host without git); unset where none exists for the platform. */
+  installPortableGit?: (options: { force?: boolean }) => Promise<import("./portable-git-install").PortableGitInstallResult>
+  /** Which git this host has (`ouro git status`, `ouro doctor`). */
+  describeGit?: () => Promise<import("./portable-git-install").GitAvailability>
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: (agentName: string) => Promise<SessionEntry[]>

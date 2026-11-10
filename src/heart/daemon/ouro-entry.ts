@@ -5,9 +5,11 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { redactCliArgs } from "./cli-arg-redaction"
 import { runOuroCli } from "./daemon-cli"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
+import { activatePortableGit } from "./portable-git"
 
 if (process.argv[2] === "shepherd" && process.argv[3] !== "chat") configureDaemonRuntimeLogger("ouro", { machine: true })
 else configureDaemonRuntimeLogger("ouro")
+activatePortableGit()
 
 emitNervesEvent({
   component: "daemon",

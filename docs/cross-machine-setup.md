@@ -5,7 +5,7 @@ This guide covers how to get an existing Ouroboros agent running on a second (or
 ## Prerequisites
 
 You need:
-- **git** installed on the target machine
+- **git** on the target machine. A Linux host with no git and no package manager to install it (a BusyBox appliance, for example) can run `ouro git install`, which installs a portable git under `~/.ouro-cli/tools/git` (GitHub Desktop's dugite-native build for arm64, x64 or arm, checked against a pinned sha256; HTTPS needs the host's `libcurl.so.4`). Ouro uses it only when the host has no git of its own, and `ouro clone` installs it on its own when git is missing. `ouro git status` shows which git is in use. Without `gh` on such a host, give git its own credentials: an HTTPS remote with git's `credential.helper store` (a token in `~/.git-credentials`, mode 0600), or an SSH remote with an ECDSA or RSA key (Dropbear's client has no ed25519).
 - **Node.js** (LTS recommended — install via [nvm](https://github.com/nvm-sh/nvm) or your package manager)
 - **Access to the bundle's git remote** (the repo where the agent's bundle is backed up)
 
@@ -294,7 +294,7 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 ## Troubleshooting
 
-**"git is not installed"** — Install git for your platform. The error message includes instructions.
+**"git is not installed"** — Install git for your platform. The error message includes instructions. On Linux arm64, x64 or arm, `ouro clone` first tries the portable git (`ouro git install`); if that fails, it says why. `ouro doctor` reports which git is in use under "Git".
 
 **Clone fails with auth error** — Make sure you can access the remote. Run `gh auth login` or set up git credentials for the account that owns the bundle repo. If the bundle lives on an account that requires switching (for example, a managed work account distinct from your personal one), do that first with `gh auth switch` (or `gh auth login` with the work account if not yet added).
 

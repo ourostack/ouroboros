@@ -38,6 +38,7 @@ import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
+import { activatePortableGit } from "./portable-git"
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
@@ -83,6 +84,8 @@ function parseSocketPath(argv: string[]): string {
 
 const socketPath = parseSocketPath(process.argv)
 configureDaemonRuntimeLogger("daemon")
+// Before anything spawns git: bundle sync and agent workers inherit this PATH.
+activatePortableGit()
 
 /* v8 ignore start -- refuses to start on a FAT or exFAT home; the check is unit-tested in home-filesystem.test.ts @preserve */
 const homeFilesystemProblem = unsupportedHomeFilesystem(getOuroCliHome())

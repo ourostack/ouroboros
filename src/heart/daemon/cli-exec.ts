@@ -232,6 +232,7 @@ import {
   vaultItemTemplateSecretFields,
 } from "./vault-items"
 import { buildMcpBridgeRepairGuidance, buildMcpDoctorNextSteps, formatMcpStatusCanaryResult, formatMcpStatusDoctorResult, runMcpStatusCanary, SETUP_CANARY_TIMEOUT_MS } from "./mcp-canary"
+import { activatePortableGit } from "./portable-git"
 import {
   blueBubblesListenerReadyAfterApply,
   formatBlueBubblesHostActionText,
@@ -1978,10 +1979,30 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
   }
 }
 
+// ── portable git ──
+
+async function installPortableGitForCli(deps: OuroCliDeps, force: boolean): Promise<{ ok: boolean; text: string }> {
+  if (!deps.installPortableGit) {
+    return { ok: false, text: `no portable git for ${process.platform}-${process.arch}; install git with the host's package manager` }
+  }
+  try {
+    const result = await deps.installPortableGit({ force })
+    activatePortableGit()
+    return {
+      ok: true,
+      text: result.status === "installed"
+        ? `installed ${result.marker.gitVersion} at ${result.root}\nOuro uses it whenever this host has no git of its own.`
+        : `portable git is already installed: ${result.marker.gitVersion} at ${result.root}`,
+    }
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -7925,6 +7946,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
+  if (command.kind === "git.status") {
+    const { renderGitAvailability } = await import("./portable-git-install")
+    const message = deps.describeGit ? renderGitAvailability(await deps.describeGit()) : "ouro git status is unavailable here (dep not wired)"
+    deps.writeStdout(message)
+    return message
+  }
+
+  if (command.kind === "git.install") {
+    const message = await installPortableGitForCli(deps, command.force)
+    deps.writeStdout(message.text)
+    if (!message.ok) deps.setExitCode?.(1)
+    return message.text
+  }
+
   // Pure: no daemon, no network, no bundle. The cutover runs it in a container with --network none.
   if (command.kind === "sanctuary.git-exclude") {
     const text = sanctuaryGitExcludeText()
@@ -10531,9 +10566,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     try {
       execFileSync("git", ["--version"], { stdio: "pipe" })
     } catch (err) {
-      const message = "git is not installed -- install it from https://git-scm.com\nOn macOS: brew install git\nOn Ubuntu/Debian: sudo apt install git\nOn Windows: download from https://git-scm.com/download/win"
-      deps.writeStdout(message)
-      return message
+      const guide = "git is not installed -- install it from https://git-scm.com\nOn macOS: brew install git\nOn Ubuntu/Debian: sudo apt install git\nOn Windows: download from https://git-scm.com/download/win"
+      if (!deps.installPortableGit) {
+        deps.writeStdout(guide)
+        return guide
+      }
+      deps.writeStdout("git is not installed; installing a portable git (ouro git install)...")
+      const installed = await installPortableGitForCli(deps, false)
+      if (!installed.ok) {
+        const message = `${installed.text}\n${guide}`
+        deps.writeStdout(message)
+        return message
+      }
+      deps.writeStdout(installed.text)
     }
 
     // 2. Infer agent name

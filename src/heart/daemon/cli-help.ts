@@ -68,6 +68,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro service install --init sysv --min-mem-available-mb 250 --max-old-space-size 160 --oom-score-adj 900",
     subcommands: ["install", "uninstall"],
   },
+  git: {
+    category: "Lifecycle",
+    description: "Install a portable git on a Linux host that has none (bundle sync and `ouro clone` need git), or show which git is in use",
+    usage: "ouro git install [--force] | ouro git status",
+    example: "ouro git install",
+    subcommands: ["install", "status"],
+  },
   dev: {
     category: "Lifecycle",
     description: "Start daemon in development mode from a local repo",

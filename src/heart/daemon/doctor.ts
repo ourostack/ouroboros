@@ -6,6 +6,8 @@
  * "fail" check and the remaining categories still run.
  */
 
+import * as path from "path"
+import { portableGitAsset, portableGitBinary, portableGitRoot } from "./portable-git"
 import type {
   DoctorCategory,
   DoctorCheck,
@@ -1942,12 +1944,49 @@ export function checkLifecycle(deps: DoctorDeps): DoctorCategory {
   return { name: "Lifecycle", checks }
 }
 
+/**
+ * Bundle sync and `ouro clone` need git. A host without one (a BusyBox
+ * appliance) can use the portable git from `ouro git install`.
+ */
+export function checkGit(deps: DoctorDeps): DoctorCategory {
+  const portableBinary = portableGitBinary(deps.homedir)
+  const portableBin = path.dirname(portableBinary)
+  const systemGit = (deps.envPath ?? "").split(path.delimiter)
+    .filter((dir) => dir && dir !== portableBin)
+    .map((dir) => path.join(dir, "git"))
+    .find((candidate) => deps.existsSync(candidate))
+  if (systemGit) return { name: "Git", checks: [{ label: "git", status: "pass", detail: `system git: ${systemGit}` }] }
+  if (deps.existsSync(portableBinary)) {
+    return { name: "Git", checks: [{ label: "git", status: "pass", detail: `portable git: ${portableGitRoot(deps.homedir)} (this host has no git of its own)` }] }
+  }
+  const syncAgents = discoverAgents(deps).filter((bundle) => {
+    try {
+      const sync = asRecord(asRecord(JSON.parse(deps.readFileSync(`${deps.bundlesRoot}/${bundle}/agent.json`)))?.sync)
+      return sync?.enabled === true
+    } catch {
+      return false
+    }
+  }).map((bundle) => bundle.replace(/\.ouro$/, ""))
+  const fix = portableGitAsset(deps.platform, process.arch) ? "ouro git install" : "install git with the host's package manager"
+  return {
+    name: "Git",
+    checks: [{
+      label: "git",
+      status: syncAgents.length > 0 ? "fail" : "warn",
+      detail: syncAgents.length > 0
+        ? `no git on this host, and bundle sync needs it for ${syncAgents.join(", ")}; fix: ${fix}`
+        : `no git on this host; bundle sync and \`ouro clone\` need it; fix: ${fix}`,
+    }],
+  }
+}
+
 type CategoryChecker = (deps: DoctorDeps) => DoctorCategory | Promise<DoctorCategory>
 
 const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "CLI", fn: checkCliPath },
   { name: "Daemon", fn: checkDaemon },
   { name: "Lifecycle", fn: checkLifecycle },
+  { name: "Git", fn: checkGit },
   { name: "Agents", fn: checkAgents },
   { name: "Senses", fn: checkSenses },
   { name: "Habits", fn: checkHabits },
