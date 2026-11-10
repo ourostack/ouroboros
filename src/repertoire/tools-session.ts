@@ -1088,7 +1088,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 botApi: ctx.botApi,
               })
             } else {
-              // Not a Teams turn (ouro msg, a habit, an inner turn): send now where the Teams sense runs.
+              // Not a Teams turn (ouro msg, a habit, a private-runtime turn): send now where the Teams sense runs.
               const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
               result = await sendTeamsOffTurn({
                 friendId: request.friendId,

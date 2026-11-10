@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1075",
       "changes": [
-        "A Teams message from an ouro msg, habit or inner turn (send_message or surface) goes out now on the machine that runs the Teams sense, instead of waiting for the friend's next Teams message; the same text is not sent twice within 15 minutes"
+        "A Teams message from an ouro msg, habit or private-runtime turn (send_message or surface) goes out now on the machine that runs the Teams sense, instead of waiting for the friend's next Teams message; the same text is not sent twice within 15 minutes"
       ]
     },
     {

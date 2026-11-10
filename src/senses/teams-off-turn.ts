@@ -12,7 +12,7 @@ import type { ProactiveTeamsSessionSendParams, ProactiveTeamsSessionSendResult, 
 import type { OutboundOrigin } from "../heart/session-events"
 
 /**
- * A Teams bot client for a turn that did not arrive on Teams (an `ouro msg`, a habit, an inner turn), so a send
+ * A Teams bot client for a turn that did not arrive on Teams (an `ouro msg`, a habit, a private-runtime turn), so a send
  * to a Teams friend goes out now instead of waiting for that friend's next Teams message. It is built only where
  * the Teams sense runs: the sense is enabled and, under a presence roster, this machine may run it, so the agent
  * never speaks on Teams from two machines. Like Shepherd's owner notices, the client listens on no port: it only
