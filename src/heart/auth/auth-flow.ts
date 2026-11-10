@@ -2,6 +2,7 @@ import { spawnSync as defaultSpawnSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { githubDeviceLogin } from "./github-device-login"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
@@ -38,6 +39,8 @@ export interface RuntimeAuthDeps {
   homeDir?: string
   spawnSync?: typeof defaultSpawnSync
   now?: () => Date
+  /** GitHub device login for hosts without `gh`; shows the code and returns the token. */
+  githubDeviceLogin?: (showCode: (message: string) => void) => Promise<string>
 }
 
 export interface RuntimeAuthResult {
@@ -335,10 +338,20 @@ export async function collectRuntimeAuthCredentials(
 
   if (input.provider === "github-copilot") {
     let token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || ""
+    let ghInstalled = true
     if (!token) {
       writeAuthProgress(input, "checking GitHub CLI credentials...")
       const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8" })
+      ghInstalled = (result.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT"
       token = (result.status === 0 && result.stdout ? result.stdout.trim() : "")
+    }
+    if (!token && !ghInstalled) {
+      // No gh on this host (an appliance, a container): GitHub's device flow needs only a code entered elsewhere.
+      writeAuthProgress(input, "starting GitHub device login...")
+      const deviceLogin = deps.githubDeviceLogin ?? githubDeviceLogin
+      // Callers without a progress view (the cold hatch prompt) still need to see the code.
+      const showCode = input.onProgress ?? ((message: string) => { process.stderr.write(`${message}\n`) })
+      token = await deviceLogin(showCode)
     }
     if (!token) {
       writeAuthProgress(input, "starting GitHub login...")

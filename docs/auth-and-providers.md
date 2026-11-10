@@ -82,6 +82,8 @@ ouro auth --agent <agent> --provider <provider>
 
 `ouro auth` stores credentials in that agent's vault. It does not switch a provider lane. In a human terminal it keeps a visible checklist for the auth attempt, vault write, refresh, and verification steps so browser login or vault IO never looks like a dead cursor.
 
+`github-copilot` takes its GitHub token from `GH_TOKEN` or `GITHUB_TOKEN`, then from `gh auth token`, and otherwise logs in with `gh auth login`. On a host without `gh` (an appliance, a container), it runs GitHub's device flow itself: it shows a code to enter at `https://github.com/login/device` on any device, waits for approval, and stores the token in the vault. The flow uses the GitHub CLI's public OAuth app and default scopes, so the token is the same kind `gh auth login` would have produced.
+
 The two generic Chat Completions identities are deliberately separate vault items and provider identities:
 
 - `minimax` uses `providers/minimax` and MiniMax models (`MiniMax-M3` by default).
