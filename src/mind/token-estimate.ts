@@ -7,6 +7,20 @@ import { emitNervesEvent } from "../nerves/runtime"
 const CHARS_PER_TOKEN = 4
 const PER_MESSAGE_OVERHEAD_TOKENS = 10
 
+/**
+ * What one image part costs a vision model, whatever its base64 size. Anthropic bills about
+ * width*height/750 tokens and scales images to a 1568px long edge, which tops out near 1,600.
+ */
+export const IMAGE_PART_ESTIMATED_TOKENS = 1_600
+
+const IMAGE_PART_TYPES: ReadonlySet<string> = new Set(["image_url", "input_image", "image"])
+
+/** True for the image content-part shapes providers see: chat `image_url`, Responses `input_image`, Anthropic `image`. */
+export function isImageContentPart(part: object): boolean {
+  const type = (part as Record<string, unknown>).type
+  return typeof type === "string" && IMAGE_PART_TYPES.has(type)
+}
+
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value)
@@ -28,6 +42,10 @@ function countCharsInContent(content: unknown): number {
         continue
       }
       if (typeof part === "object") {
+        if (isImageContentPart(part)) {
+          total += IMAGE_PART_ESTIMATED_TOKENS * CHARS_PER_TOKEN
+          continue
+        }
         // Common OpenAI content-part shapes: {type:"text", text:"..."}
         // Be defensive and only count obvious text-like fields.
         const p = part as Record<string, unknown>

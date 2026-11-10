@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import type OpenAI from "openai"
-import { estimateTokensForMessage, estimateTokensForMessages } from "../../mind/token-estimate"
+import { IMAGE_PART_ESTIMATED_TOKENS, estimateTokensForMessage, estimateTokensForMessages } from "../../mind/token-estimate"
 
 describe("token estimator", () => {
   it("estimates tokens for simple string content", () => {
@@ -153,5 +153,18 @@ describe("token estimator", () => {
 
     expect(estimateTokensForMessage(textObject)).toBeGreaterThan(0)
     expect(estimateTokensForMessage(contentObject)).toBeGreaterThan(0)
+  })
+  it("counts each image part as a fixed cost, after text too, whatever its base64 size", () => {
+    const withImage = (base64Chars: number): any => ({
+      role: "user",
+      content: [
+        { type: "text", text: "abcd" },
+        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${"A".repeat(base64Chars)}` } },
+      ],
+    })
+    const textOnly: any = { role: "user", content: [{ type: "text", text: "abcd" }] }
+
+    expect(estimateTokensForMessage(withImage(258_000))).toBe(estimateTokensForMessage(withImage(10)))
+    expect(estimateTokensForMessage(withImage(258_000)) - estimateTokensForMessage(textOnly)).toBe(IMAGE_PART_ESTIMATED_TOKENS)
   })
 })
