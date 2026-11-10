@@ -40,7 +40,22 @@ const ITEMS: NativeVaultItem[] = [
 ]
 
 function fakeReader(items: () => Promise<NativeVaultItem[]>) {
-  return { items: vi.fn(items), invalidate: vi.fn() }
+  return { items: vi.fn(items), invalidate: vi.fn(), saveLogin: vi.fn(async () => "saved"), deleteItem: vi.fn(async () => undefined) }
+}
+
+/** A native client over an in-memory vault, so a write is visible to the read that verifies it. */
+function memoryReader(initial: NativeVaultItem[]) {
+  const vault = [...initial]
+  const reader = fakeReader(async () => vault.map((item) => ({ ...item, login: item.login && { ...item.login } })))
+  reader.saveLogin.mockImplementation(async (write: { name: string; username: string; password: string; notes: string | null; uri: string }, id?: string) => {
+    const item: NativeVaultItem = { id: id ?? `n${vault.length + 1}`, name: write.name, login: { username: write.username, password: write.password, uris: [{ uri: write.uri }] }, notes: write.notes }
+    const index = vault.findIndex((entry) => entry.id === id)
+    if (index >= 0) vault[index] = item
+    else vault.push(item)
+    return item.id
+  })
+  reader.deleteItem.mockImplementation(async (id: string) => { vault.splice(vault.findIndex((entry) => entry.id === id), 1) })
+  return { reader, vault }
 }
 
 function store(reader: ReturnType<typeof fakeReader> | null, onInvalidUnlockSecret?: () => void) {
@@ -107,15 +122,50 @@ describe("BitwardenCredentialStore native reads", () => {
     expect(reader.items).toHaveBeenCalledTimes(1)
   })
 
-  it("forgets the native items after this store writes or deletes through bw", async () => {
+  it("writes, updates and trashes natively, verifying each write by reading it back, without running bw", async () => {
+    const { reader, vault } = memoryReader(ITEMS)
+    const credentials = store(reader)
+
+    await credentials.store("providers/github-copilot", { username: "github-copilot", password: "{\"pool\":2}", notes: "pool" })
+    expect(reader.saveLogin).toHaveBeenLastCalledWith(
+      { name: "providers/github-copilot", username: "github-copilot", password: "{\"pool\":2}", notes: "pool", uri: "https://providers/github-copilot" },
+      "1",
+    )
+    await credentials.store("new/item", { password: "p" })
+    expect(reader.saveLogin).toHaveBeenLastCalledWith({ name: "new/item", username: "", password: "p", notes: null, uri: "https://new/item" }, undefined)
+    await expect(credentials.getRawSecret("new/item", "password")).resolves.toBe("p")
+
+    await expect(credentials.delete("new/item")).resolves.toBe(true)
+    expect(reader.deleteItem).toHaveBeenCalledWith("n3")
+    await expect(credentials.delete("new/item")).resolves.toBe(false)
+    expect(vault.map((item) => item.name)).toEqual(["providers/github-copilot", "runtime/config"])
+    expect(bwCalls).toEqual([])
+  })
+
+  it("refuses a native write that did not read back as written", async () => {
     const reader = fakeReader(async () => ITEMS)
+    await expect(store(reader).store("runtime/config", { password: "different" })).rejects.toThrow("credential save verification failed for runtime/config")
+    await expect(store(reader).store("brand/new", { password: "p" })).rejects.toThrow("saved item could not be read back after write")
+  })
+
+  it("writes and deletes through bw when the native client does not support this vault", async () => {
+    const reader = fakeReader(async () => { throw new NativeVaultUnsupportedError("two-step login") })
     const vault = store(reader)
     bwItems = [{ id: "bw-1", name: "runtime/config", login: { username: "", password: "new" }, notes: null }]
 
     await vault.store("runtime/config", { password: "new" })
-    expect(reader.invalidate).toHaveBeenCalledTimes(1)
+    expect(bwCalls.some((args) => args[0] === "edit")).toBe(true)
     await expect(vault.delete("runtime/config")).resolves.toBe(true)
-    expect(reader.invalidate).toHaveBeenCalledTimes(2)
+    expect(bwCalls.some((args) => args[0] === "delete")).toBe(true)
+    expect(reader.saveLogin).not.toHaveBeenCalled()
+    expect(reader.items).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes on a failed native write without falling back to bw", async () => {
+    const { reader } = memoryReader(ITEMS)
+    reader.saveLogin.mockRejectedValueOnce(new Error("vault update for agent@ouro.bot failed: HTTP 400 The client copy of this cipher is out of date."))
+    await expect(store(reader).store("runtime/config", { password: "x" })).rejects.toThrow("out of date")
+    expect(bwCalls).toEqual([])
   })
 
   it("reads natively by default outside tests, and through bw when OURO_VAULT_NATIVE_READS=0", () => {

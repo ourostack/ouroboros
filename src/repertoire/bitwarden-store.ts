@@ -640,7 +640,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   private bwBinaryPath = "bw"
   private structuredItemCache: StructuredItemCache | null = null
   /** Reads the vault over HTTPS without bw; null once it reports the vault unsupported, or when off. */
-  private nativeReader: Pick<NativeVaultReader, "items" | "invalidate"> | null
+  private nativeReader: Pick<NativeVaultReader, "items" | "invalidate" | "saveLogin" | "deleteItem"> | null
 
   constructor(
     serverUrl: string,
@@ -652,8 +652,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       onLoginSuccess?: () => void | Promise<void>
       /** Each step as it starts, for a human watching a vault command. */
       onProgress?: (detail: string) => void
-      /** Reads without bw; defaults to the HTTPS reader unless OURO_VAULT_NATIVE_READS=0. Null reads through bw. */
-      nativeReader?: Pick<NativeVaultReader, "items" | "invalidate"> | null
+      /** Reads and writes without bw; defaults to the HTTPS client unless OURO_VAULT_NATIVE_READS=0. Null uses bw. */
+      nativeReader?: Pick<NativeVaultReader, "items" | "invalidate" | "saveLogin" | "deleteItem"> | null
     } = {},
   ) {
     this.serverUrl = serverUrl
@@ -1171,7 +1171,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    await this.withSessionRetry(async (session) => {
+    if (!(await this.storeNatively(domain, data))) await this.withSessionRetry(async (session) => {
       if (shouldUseStructuredItemLookup(domain)) {
         this.structuredItemCache = null
       }
@@ -1252,7 +1252,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
+    const native = await this.deleteNatively(domain)
+    const item = native === null ? await this.withSessionRetry((session) => this.findItemByDomain(domain, session)) : native
 
     if (!item) {
       emitNervesEvent({
@@ -1264,7 +1265,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
+    if (native === null) await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
     this.structuredItemCache = null
     this.nativeReader?.invalidate()
 
@@ -1287,12 +1288,46 @@ export class BitwardenCredentialStore implements CredentialStore {
     return this.withSessionRetry((session) => this.findItemByDomain(domain, session))
   }
 
+  /**
+   * Write one credential through the native client, reading it back to verify. False when this
+   * vault goes through bw instead (no native client, or one that does not support this vault).
+   */
+  private async storeNatively(domain: string, data: { username?: string; password: string; notes?: string }): Promise<boolean> {
+    return this.withNativeClient(async (client) => {
+      client.invalidate()
+      const existing = (await client.items()).find((item) => item.name === domain)
+      await client.saveLogin(
+        { name: domain, username: data.username ?? "", password: data.password, notes: data.notes ?? null, uri: `https://${domain}` },
+        existing?.id,
+      )
+      const saved = (await client.items()).find((item) => item.name === domain) ?? null
+      this.assertStoredCredentialMatches(domain, data, saved)
+      return true
+    }, false)
+  }
+
+  /** Trash one credential through the native client: the item it trashed, false when there was none, null for bw. */
+  private async deleteNatively(domain: string): Promise<BwLoginItem | false | null> {
+    return this.withNativeClient(async (client) => {
+      client.invalidate()
+      const existing = (await client.items()).find((item) => item.name === domain)
+      if (!existing) return false
+      await client.deleteItem(existing.id)
+      return existing
+    }, null)
+  }
+
   /** Every item through the native reader, or null when reads go through bw. */
   private async nativeItems(): Promise<BwLoginItem[] | null> {
+    return this.withNativeClient((client) => client.items(), null)
+  }
+
+  /** Run with the native client, or return `viaBw` when this vault goes through bw. */
+  private async withNativeClient<T, F>(operation: (client: NonNullable<BitwardenCredentialStore["nativeReader"]>) => Promise<T>, viaBw: F): Promise<T | F> {
     const reader = this.nativeReader
-    if (!reader) return null
+    if (!reader) return viaBw
     try {
-      return await reader.items()
+      return await operation(reader)
     } catch (error) {
       /* v8 ignore next -- defensive: the reader always throws Error instances @preserve */
       const err = error instanceof Error ? error : new Error(String(error))
@@ -1302,10 +1337,10 @@ export class BitwardenCredentialStore implements CredentialStore {
           level: "warn",
           event: "repertoire.native_vault_fallback",
           component: "repertoire",
-          message: "reading this vault through bw instead",
+          message: "using bw for this vault instead",
           meta: { email: this.email, serverUrl: this.serverUrl, reason: err.message },
         })
-        return null
+        return viaBw
       }
       if (isBwInvalidUnlockSecretMessage(err.message)) await this.notifyInvalidUnlockSecret(err)
       throw err
