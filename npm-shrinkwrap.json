@@ -1,12 +1,12 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1031",
+  "version": "0.1.0-alpha.1034",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@ouro.bot/cli",
-      "version": "0.1.0-alpha.1031",
+      "version": "0.1.0-alpha.1034",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
         "@ouro.bot/friends": "0.1.0-alpha.18",
