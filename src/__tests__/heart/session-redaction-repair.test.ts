@@ -573,8 +573,9 @@ describe("A003 fixed session repair", () => {
       existing: first, previousMessages: previous, currentMessages: current, trimmedMessages: current,
       recordedAt: A003_REPAIR_AT, projectionBasis: basis,
     }).envelope
-    expect(refreshed.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4])
-    expect(refreshed.events.slice(0, first.events.length)).toEqual(first.events)
+    // The superseded "system v1" record is dropped; the retained user record is unchanged.
+    expect(refreshed.events.map((event) => event.sequence)).toEqual([2, 3, 4])
+    expect(refreshed.events[0]).toEqual(first.events[1])
     expect(refreshed.projection.eventIds).toEqual(["evt-000003", "evt-000002", "evt-000004"])
     expect(refreshed.events.find((event) => event.id === refreshed.projection.eventIds[0])!.role).toBe("system")
   })
