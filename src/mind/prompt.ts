@@ -8,6 +8,7 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
 import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
+import { skillWhenLines } from "../repertoire/skill-summaries";
 import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "../heart/identity";
 import { recoverRuntimeCwd } from "../heart/runtime-cwd";
 import { loadConfig } from "../heart/config";
@@ -903,7 +904,16 @@ function trustContextSection(context?: ResolvedContext): string {
 function skillsSection(): string {
   const names = listSkills() || [];
   if (!names.length) return "";
-  return `## my skills (use load_skill to activate)\n${names.join(", ")}`;
+  const when = skillWhenLines(names);
+  if (!when.size) return `## my skills (use load_skill to activate)\n${names.join(", ")}`;
+  // A question one of these covers is answered with the skill, not from what this prompt already holds.
+  const described = names.filter((name) => when.has(name)).map((name) => `- ${name}: ${when.get(name)}`);
+  const rest = names.filter((name) => !when.has(name));
+  return [
+    "## my skills (use load_skill to activate; when a question matches one, i load it and follow it before answering)",
+    ...described,
+    ...(rest.length ? [`also: ${rest.join(", ")}`] : []),
+  ].join("\n");
 }
 
 function toolContractsSection(channel: Channel, options?: BuildSystemOptions): string {

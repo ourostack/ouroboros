@@ -36,6 +36,11 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
+const mockSkillWhenLines = vi.hoisted(() => vi.fn(() => new Map<string, string>()))
+vi.mock("../../repertoire/skill-summaries", () => ({
+  skillWhenLines: mockSkillWhenLines,
+}))
+
 const mockGetBoard = vi.fn()
 
 vi.mock("../../trips/store", () => tripStoreMocks)
@@ -1418,6 +1423,33 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my skills (use load_skill to activate)")
     expect(result).toContain("code-review, self-edit, self-query")
+  })
+
+  it("shows each skill's when-line, and lists the rest after them", async () => {
+    setupReadFileSync()
+    vi.mocked(listSkills).mockReturnValue(["code-review", "fleet", "self-edit"])
+    mockSkillWhenLines.mockReturnValueOnce(new Map([["fleet", "i use this when ari asks what is going on across his machines."]]))
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("## my skills (use load_skill to activate; when a question matches one, i load it and follow it before answering)\n- fleet: i use this when ari asks what is going on across his machines.\nalso: code-review, self-edit")
+  })
+
+  it("lists no 'also' line when every skill has a when-line", async () => {
+    setupReadFileSync()
+    vi.mocked(listSkills).mockReturnValue(["fleet"])
+    mockSkillWhenLines.mockReturnValueOnce(new Map([["fleet", "use when asked."]]))
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem())
+    expect(result).toContain("- fleet: use when asked.")
+    expect(result).not.toContain("also: ")
   })
 
   it("omits skills section when no skills available", async () => {
