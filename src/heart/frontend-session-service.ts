@@ -2,14 +2,14 @@ import type { Channel } from "@ouro.bot/friends"
 
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import type { ApprovalSuspensionResult } from "./core"
-import { runSenseTurn, type FrontendTurnEvent, type RunSenseTurnOptions, type RunSenseTurnResult } from "../senses/shared-turn"
+import type { FrontendTurnEvent, RunSenseTurnOptions, RunSenseTurnResult } from "../senses/shared-turn"
 import {
   FrontendJournalStore,
   type FrontendJournalEventType,
   type FrontendJournalRef,
 } from "./frontend-journal"
 import { emitNervesEvent } from "../nerves/runtime"
-import { authorizedShepherdTargets, type ShepherdSession } from "../senses/shepherd/surface"
+import type { ShepherdSession, authorizedShepherdTargets } from "../senses/shepherd/surface"
 import type { FrontendJournalEvent } from "./frontend-journal"
 import { FrontendSessionConflictError, FrontendTurnConflictError } from "./frontend-turn-errors"
 export { FrontendSessionConflictError, FrontendTurnConflictError } from "./frontend-turn-errors"
@@ -75,6 +75,32 @@ export interface FrontendAuthorityRuntime {
   close(): void
 }
 
+/**
+ * An authority runtime created on first use. Its pending approvals live only
+ * in memory, so before anything has used it there is nothing pending, nothing
+ * to resolve and nothing to cancel, exactly as a fresh runtime would answer.
+ * The daemon passes one so that serving no frontend turn never loads the
+ * approval runtime and the turn engine it imports.
+ */
+export function lazyFrontendAuthority(create: () => FrontendAuthorityRuntime): FrontendAuthorityRuntime {
+  let runtime: FrontendAuthorityRuntime | null = null
+  const get = (): FrontendAuthorityRuntime => {
+    if (!runtime) {
+      runtime = create()
+      emitNervesEvent({ component: "heart", event: "heart.frontend_authority_loaded", message: "frontend approval runtime loaded on first use" })
+    }
+    return runtime
+  }
+  return {
+    approvalCoordinatorFactory: (input) => get().approvalCoordinatorFactory(input),
+    resumeApproval: (input) => get().resumeApproval(input),
+    resolvePermission: (requestId, optionId) => runtime?.resolvePermission(requestId, optionId) ?? false,
+    cancelTurn: (turnId) => { runtime?.cancelTurn(turnId) },
+    pendingPermissions: (ref) => runtime?.pendingPermissions(ref) ?? [],
+    close: () => { runtime?.close() },
+  }
+}
+
 export interface FrontendServiceEvent {
   agent: string
   friendId: string
@@ -117,10 +143,13 @@ export class FrontendSessionService {
     authority?: FrontendAuthorityRuntime | null
     shepherdTargets?: typeof authorizedShepherdTargets
   } = {}) {
-    this.runner = options.runner ?? runSenseTurn
+    // The turn engine and Shepherd load on first use: a daemon that serves no
+    // frontend turn never loads the model SDKs and tool registry they import.
+    this.runner = options.runner ?? (async (turn) => (await import("../senses/shared-turn")).runSenseTurn(turn))
     this.journal = options.journal ?? null
     this.authority = options.authority ?? null
-    this.shepherdTargets = options.shepherdTargets ?? authorizedShepherdTargets
+    this.shepherdTargets = options.shepherdTargets ?? (async (agent, friendId, composerTty) =>
+      (await import("../senses/shepherd/surface")).authorizedShepherdTargets(agent, friendId, composerTty))
   }
 
   listShepherdTargets(agent: string, friendId: string, composerTty?: string): Promise<ShepherdSession[]> {

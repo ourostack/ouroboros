@@ -18,7 +18,7 @@ import {
 } from "./interactive-repair"
 import type { DiscoverWorkingProviderResult } from "./provider-discovery"
 import { getRepoRoot, type AgentProvider } from "../identity"
-import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
+import type { ProviderRuntimeConfig } from "../provider-ping"
 import type OpenAI from "openai"
 import { isKnownReadinessIssue, type RepairAction, type RepairActionKind } from "./readiness-repair"
 import type { BootSyncProbeFinding } from "./boot-sync-probe"
@@ -46,7 +46,7 @@ export interface AgenticRepairDeps {
   runInteractiveRepair: (degraded: DegradedAgent[], deps: InteractiveRepairDeps) => Promise<InteractiveRepairResult>
   promptInput: (prompt: string) => Promise<string>
   writeStdout: (msg: string) => void
-  createProviderRuntime: (provider: DiscoverWorkingProviderResult) => AgenticProviderRuntime
+  createProviderRuntime: (provider: DiscoverWorkingProviderResult) => AgenticProviderRuntime | Promise<AgenticProviderRuntime>
   readDaemonLogsTail: () => string
   /** Auth flow runner passed through to interactive repair fallback */
   runAuthFlow?: (agent: string, provider?: AgentProvider) => Promise<void>
@@ -168,9 +168,11 @@ function discoveredProviderModel(provider: DiscoverWorkingProviderResult): strin
   return model ? model : undefined
 }
 
-export function createAgenticDiagnosisProviderRuntime(
+export async function createAgenticDiagnosisProviderRuntime(
   provider: DiscoverWorkingProviderResult,
-): AgenticProviderRuntime {
+): Promise<AgenticProviderRuntime> {
+  // The provider SDKs load only when a diagnosis actually runs.
+  const { createProviderRuntimeForConfig } = await import("../provider-ping")
   const config = {
     ...provider.providerConfig,
     ...provider.credentials,
@@ -213,7 +215,7 @@ async function tryAgenticDiagnosis(
   deps: AgenticRepairDeps,
 ): Promise<boolean> {
   const logsTail = deps.readDaemonLogsTail()
-  const runtime = deps.createProviderRuntime(provider)
+  const runtime = await deps.createProviderRuntime(provider)
 
   // Layer 3: prepend RepairGuide bundle content when present. Loader
   // returns null on missing bundle / I/O error — caller silently falls back

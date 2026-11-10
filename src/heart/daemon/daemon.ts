@@ -60,10 +60,9 @@ import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rs
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 import { withTurnExecutionLease } from "../turn-execution-lease"
-import { FrontendSessionService } from "../frontend-session-service"
+import { FrontendSessionService, lazyFrontendAuthority } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
-import { createFrontendApprovalRuntime, settleFrontendApproval } from "../frontend-approval-runtime"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -941,10 +940,12 @@ export class OuroDaemon {
     const frontendAgentRoot = (agent: string) => path.join(this.bundlesRoot, `${agent}.ouro`)
     this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService({
       journal: new FrontendJournalStore({ agentRoot: frontendAgentRoot }),
-      authority: createFrontendApprovalRuntime({
-        agentRoot: frontendAgentRoot,
-        settleApproval: settleFrontendApproval,
+      /* v8 ignore start -- production wiring: frontend authority tests cover the runtime and the lazy wrapper @preserve */
+      authority: lazyFrontendAuthority(() => {
+        const { createFrontendApprovalRuntime, settleFrontendApproval } = require("../frontend-approval-runtime") as typeof import("../frontend-approval-runtime")
+        return createFrontendApprovalRuntime({ agentRoot: frontendAgentRoot, settleApproval: settleFrontendApproval })
       }),
+      /* v8 ignore stop */
     })
     this.frontendSocketServerFactory = options.frontendSocketServerFactory ?? startFrontendSocketServer
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}

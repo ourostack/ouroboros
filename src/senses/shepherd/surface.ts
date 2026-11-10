@@ -16,7 +16,8 @@ export interface ShepherdSession {
   readonly selected?: boolean
 }
 
-export const SHEPHERD_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export { SHEPHERD_UUID } from "../../heart/shepherd/operations"
+import { SHEPHERD_UUID } from "../../heart/shepherd/operations"
 
 /** Resolve the CLI's local identity, but forbid the resolver's first-encounter creation/promotion. */
 export async function resolveExistingLocalOwner(store: FriendStore, username: string | null = machineOwnerUsername()): Promise<string> {
