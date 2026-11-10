@@ -1,5 +1,4 @@
 import * as crypto from "node:crypto"
-import { simpleParser } from "mailparser"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { TrustLevel } from "@ouro.bot/friends"
 
@@ -833,6 +832,8 @@ interface StoredMailMessageMetadata {
 }
 
 async function parsePrivateMailEnvelope(rawMime: Buffer): Promise<PrivateMailEnvelope> {
+  // mailparser and its charset tables cost about 19 MB per process; load it on the first parse.
+  const { simpleParser } = await import("mailparser")
   const parsed = await simpleParser(rawMime)
   const html = typeof parsed.html === "string" ? parsed.html : undefined
   const parsedText = parsed.text ?? ""

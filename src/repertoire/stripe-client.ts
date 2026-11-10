@@ -8,7 +8,7 @@
  * never escape the calling function's scope.
  */
 
-import StripeConstructor, { type Stripe as StripeInstance } from "stripe"
+import type { Stripe as StripeInstance } from "stripe"
 import { getCredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -64,6 +64,8 @@ function toCardInfo(card: { id: string; last4: string; status: string }): CardIn
 export async function createStripeClient(): Promise<StripeClient> {
   const store = getCredentialStore()
   const apiKey = await store.getRawSecret("stripe.com", "restrictedKey")
+  // Stripe's SDK is about 10 MB and 185 modules; only agents that issue cards load it.
+  const { default: StripeConstructor } = await import("stripe")
   const StripeFactory = StripeConstructor as unknown as new (key: string) => StripeInstance
   const stripe = new StripeFactory(apiKey)
 

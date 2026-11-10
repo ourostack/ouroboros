@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.998",
+      "changes": [
+        "Ouro starts leaner: the CLI and the daemon no longer load the Stripe, Azure storage and identity, or mailparser SDKs at startup. Each loads on the first card, hosted-mail or mail-parse call that needs it, which takes `ouro --version` from 1,483 to about 863 modules and roughly 35 MB less memory per process. An integration contract test keeps product SDKs out of startup and caps its module count and memory."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.997",
       "changes": [
         "The release gate's home-kit check accepts any honest look around the home, shell included, and checks the TACIT line count against the file."

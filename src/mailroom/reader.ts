@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { BlobServiceClient } from "@azure/storage-blob"
-import { DefaultAzureCredential } from "@azure/identity"
+import type { BlobServiceClient } from "@azure/storage-blob"
+import { loadAzureBlobSdk } from "./azure-sdk"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentMailroomRoot, getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
@@ -122,10 +122,12 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
   }
 }
 
-function createBlobCredential(config: MailroomRuntimeConfig): DefaultAzureCredential {
-  return config.azureManagedIdentityClientId
-    ? new DefaultAzureCredential({ managedIdentityClientId: config.azureManagedIdentityClientId })
+function createBlobServiceClient(accountUrl: string, managedIdentityClientId: string | undefined): BlobServiceClient {
+  const { BlobServiceClient: Client, DefaultAzureCredential } = loadAzureBlobSdk()
+  const credential = managedIdentityClientId
+    ? new DefaultAzureCredential({ managedIdentityClientId })
     : new DefaultAzureCredential()
+  return new Client(accountUrl, credential)
 }
 
 function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): {
@@ -137,7 +139,7 @@ function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): 
     const containerName = config.azureContainer ?? "mailroom"
     return {
       store: new AzureBlobMailroomStore({
-        serviceClient: new BlobServiceClient(config.azureAccountUrl, createBlobCredential(config)),
+        serviceClient: createBlobServiceClient(config.azureAccountUrl, config.azureManagedIdentityClientId),
         containerName,
         mailSearchCache: {
           cacheDirForAgent: (agentId) => path.join(getAgentRoot(agentId), "state", "mail-search"),
@@ -168,7 +170,7 @@ export async function readMailroomRegistry(config: MailroomRuntimeConfig): Promi
     throw new Error("mailroom config is missing registryPath or hosted registry coordinates")
   }
 
-  const serviceClient = new BlobServiceClient(registryAzureAccountUrl, createBlobCredential(config))
+  const serviceClient = createBlobServiceClient(registryAzureAccountUrl, config.azureManagedIdentityClientId)
   const blobClient = serviceClient.getContainerClient(registryContainer).getBlockBlobClient(registryBlob)
   if (!await blobClient.exists()) {
     throw new Error(`mailroom registry blob not found: ${registryAzureAccountUrl}/${registryContainer}/${registryBlob}`)
@@ -191,7 +193,7 @@ export async function writeMailroomRegistry(config: MailroomRuntimeConfig, regis
     throw new Error("mailroom config is missing registryPath or hosted registry coordinates")
   }
 
-  const serviceClient = new BlobServiceClient(registryAzureAccountUrl, createBlobCredential(config))
+  const serviceClient = createBlobServiceClient(registryAzureAccountUrl, config.azureManagedIdentityClientId)
   const blobClient = serviceClient.getContainerClient(registryContainer).getBlockBlobClient(registryBlob)
   await blobClient.upload(serialized, Buffer.byteLength(serialized), {
     blobHTTPHeaders: {
@@ -292,12 +294,7 @@ export function resolveHostedMailAuthority(agentName: string = getAgentName()): 
   const azureContainer = textField(mailroom, "azureContainer") ?? "mailroom"
   const azureManagedIdentityClientId = textField(mailroom, "azureManagedIdentityClientId")
   const store = new AzureBlobMailroomStore({
-    serviceClient: new BlobServiceClient(
-      azureAccountUrl,
-      azureManagedIdentityClientId
-        ? new DefaultAzureCredential({ managedIdentityClientId: azureManagedIdentityClientId })
-        : new DefaultAzureCredential(),
-    ),
+    serviceClient: createBlobServiceClient(azureAccountUrl, azureManagedIdentityClientId),
     containerName: azureContainer,
   })
   const result: HostedMailAuthorityResolution = {

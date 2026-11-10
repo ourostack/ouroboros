@@ -1,6 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// The reader loads the Azure SDKs lazily through ../../mailroom/azure-sdk, with
+// a plain require that vi.doMock can't see. Route that loader through import()
+// so each test's doMock of the SDKs still applies.
+beforeEach(() => {
+  vi.doMock("../../mailroom/azure-sdk", async () => {
+    const { BlobServiceClient } = await import("@azure/storage-blob")
+    const { DefaultAzureCredential } = await import("@azure/identity")
+    return { loadAzureBlobSdk: () => ({ BlobServiceClient, DefaultAzureCredential }) }
+  })
+})
 
 afterEach(() => {
+  vi.doUnmock("../../mailroom/azure-sdk")
   vi.doUnmock("@azure/identity")
   vi.doUnmock("@azure/storage-blob")
   vi.doUnmock("../../heart/runtime-credentials")
