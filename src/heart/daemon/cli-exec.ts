@@ -14,7 +14,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
+import { defaultStableVaultEmail, getAgentBundlesRoot, hasStaleWorkbenchBundleEntry, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore, FriendResolver, isLocalMachineOwnerIdentity, machineOwnerUsername, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
 import type { ExternalId, FriendRecord, FriendStore, TrustLevel } from "@ouro.bot/friends"
@@ -3764,12 +3764,6 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): {
   const mcpServers = parsed.mcpServers && typeof parsed.mcpServers === "object" && !Array.isArray(parsed.mcpServers)
     ? parsed.mcpServers
     : undefined
-  const workbenchSensePresent = senses
-    ? Object.prototype.hasOwnProperty.call(senses, "workbench")
-    : false
-  const workbenchMcpPresent = mcpServers
-    ? Object.prototype.hasOwnProperty.call(mcpServers, "ouro_workbench")
-    : false
   const workbenchCommand = mcpServers?.ouro_workbench?.command
   const workbenchEnabled = senses?.workbench?.enabled === true
   const workbenchMcpCommand = typeof workbenchCommand === "string" && workbenchCommand.trim().length > 0
@@ -3783,7 +3777,7 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): {
     a2aEnabled: senses?.a2a?.enabled === true,
     workbenchEnabled,
     workbenchMcpCommand,
-    workbenchHasStaleBundleEntry: workbenchSensePresent || workbenchMcpPresent,
+    workbenchHasStaleBundleEntry: hasStaleWorkbenchBundleEntry(senses, mcpServers),
   }
 }
 
@@ -6359,7 +6353,7 @@ async function executeConnectTelegram(agent: string, deps: OuroCliDeps): Promise
 }
 
 async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promise<string> {
-  const { workbenchMcpCommand, workbenchHasStaleBundleEntry } = readConnectBaySenseFlags(agent, deps)
+  const { workbenchMcpCommand } = readConnectBaySenseFlags(agent, deps)
   const changed = removeWorkbenchMcpRegistration(agent, deps)
   const syncSummary = changed ? await pushAgentBundleAfterCliMutation(agent, deps) : ""
   const executablePath = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
@@ -6380,7 +6374,7 @@ async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promis
   const message = [
     `Workbench runtime injection ready for ${agent}`,
     `OuroWorkbenchMCP found: ${executablePath}`,
-    workbenchHasStaleBundleEntry
+    changed
       ? "agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries"
       : "agent.json: no Workbench entries needed or written",
     `boss launch path: ouro acp-serve --agent ${agent} --workbench-mcp ${executablePath}`,

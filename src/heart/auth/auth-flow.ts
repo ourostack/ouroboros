@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { githubDeviceLogin } from "./github-device-login"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, persistedSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider, type AgentSensesConfig } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
 import { validateAgentDisplayName } from "../../senses/shepherd/agent-presentation"
@@ -83,7 +83,7 @@ function readJsonRecord(filePath: string, label: string): Record<string, unknown
 export function readAgentConfigForAgent(
   agentName: string,
   bundlesRoot = getAgentBundlesRoot(),
-): { configPath: string; config: AgentConfig } {
+): { configPath: string; config: AgentConfig & { senses: AgentSensesConfig } } {
   const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
   const configPath = path.join(agentRoot, "agent.json")
   let parsed = readJsonRecord(configPath, "agent config")
@@ -122,7 +122,7 @@ export function readAgentConfigForAgent(
   // every field present in parsed; senses goes through the same
   // normalization as loadAgentConfig so the two entry points return
   // equivalent configs for the same file.
-  const config: AgentConfig = {
+  const config: AgentConfig & { senses: AgentSensesConfig } = {
     ...(parsed as unknown as AgentConfig),
     displayName: validateAgentDisplayName(parsed.displayName),
     senses: normalizeSenses(parsed.senses, configPath),
@@ -147,6 +147,7 @@ export function writeAgentProviderSelection(
   const resolved = resolveModelForProviderSelection(provider, previousFacing.model)
   const nextConfig = {
     ...config,
+    senses: persistedSenses(config.senses),
     [facingKey]: { ...previousFacing, provider, model: resolved.model },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8")
@@ -201,6 +202,7 @@ export function writeAgentModel(
   const provider = facingBlock.provider
   const nextConfig = {
     ...config,
+    senses: persistedSenses(config.senses),
     [facingKey]: { ...facingBlock, model: modelName },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8")

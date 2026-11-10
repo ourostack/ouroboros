@@ -1230,6 +1230,25 @@ describe("writeAgentModel", () => {
     const updated = JSON.parse(fs.readFileSync(result.configPath, "utf8")) as any
     expect(updated.humanFacing.model).toBe("minimax-text-02")
   })
+
+  it("does not write the runtime-injected Workbench default back into agent.json", () => {
+    emitTestEvent("writeAgentModel omits workbench default")
+    const bundlesRoot = makeTempDir("auth-flow-model-workbench")
+    writeAgentConfig(bundlesRoot, "WorkbenchModel", "anthropic", {
+      humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+      senses: { cli: { enabled: true }, workbench: { enabled: false } },
+    })
+
+    const result = writeAgentModel("WorkbenchModel", "human", "claude-sonnet-4.6", { bundlesRoot })
+    const updated = JSON.parse(fs.readFileSync(result.configPath, "utf8")) as any
+    expect(updated.senses.cli).toEqual({ enabled: true })
+    expect(Object.prototype.hasOwnProperty.call(updated.senses, "workbench")).toBe(false)
+
+    writeAgentProviderSelection("WorkbenchModel", "agent", "github-copilot", bundlesRoot)
+    const reselected = JSON.parse(fs.readFileSync(result.configPath, "utf8")) as any
+    expect(Object.prototype.hasOwnProperty.call(reselected.senses, "workbench")).toBe(false)
+  })
 })
 
 describe("writeAgentProviderSelection with facing", () => {

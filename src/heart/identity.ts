@@ -226,6 +226,31 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   "app-sessions": { enabled: false },
 }
 
+/** What agent.json carries for senses: Workbench is injected at runtime, so bundles need no `workbench` entry. */
+export type PersistedAgentSensesConfig = Omit<AgentSensesConfig, "workbench"> & { workbench?: AgentSenseConfig }
+
+/** Drops the disabled Workbench default before senses are written back to agent.json. */
+export function persistedSenses(senses: AgentSensesConfig): PersistedAgentSensesConfig {
+  const { workbench, ...rest } = senses
+  return workbench.enabled ? { ...rest, workbench } : rest
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+/**
+ * True when agent.json still carries a legacy Workbench registration that
+ * `ouro connect workbench` should clean: `mcpServers.ouro_workbench`, or a
+ * `senses.workbench` entry other than an explicit `{ enabled: false }`.
+ */
+export function hasStaleWorkbenchBundleEntry(rawSenses: unknown, rawMcpServers: unknown): boolean {
+  if (isPlainRecord(rawMcpServers) && Object.prototype.hasOwnProperty.call(rawMcpServers, "ouro_workbench")) return true
+  if (!isPlainRecord(rawSenses) || !Object.prototype.hasOwnProperty.call(rawSenses, "workbench")) return false
+  const rawWorkbench = rawSenses.workbench
+  return !(isPlainRecord(rawWorkbench) && rawWorkbench.enabled === false)
+}
+
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
   const defaults: AgentSensesConfig = {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
@@ -324,7 +349,9 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   return defaults
 }
 
-export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
+export type AgentConfigTemplate = Omit<AgentConfig, "senses"> & { senses: PersistedAgentSensesConfig }
+
+export function buildDefaultAgentTemplate(_agentName: string): AgentConfigTemplate {
   return {
     version: 2,
     enabled: true,
@@ -340,7 +367,6 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       voice: { ...DEFAULT_AGENT_SENSES.voice },
       a2a: { ...DEFAULT_AGENT_SENSES.a2a },
       telegram: { ...DEFAULT_AGENT_SENSES.telegram },
-      workbench: { ...DEFAULT_AGENT_SENSES.workbench },
       shepherd: { ...DEFAULT_AGENT_SENSES.shepherd },
       "app-sessions": { ...DEFAULT_AGENT_SENSES["app-sessions"] },
     },

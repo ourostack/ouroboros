@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1038",
+      "changes": [
+        "New agents no longer start with a senses.workbench entry in agent.json, and an existing senses.workbench: { enabled: false } now reads as disabled instead of a stale Workbench entry. Before, every freshly hatched agent showed Workbench as needs_config, which failed the MCP canary, kept a critical health alert firing and left the context-loss sentinel blocked. Writing a model or provider choice back to agent.json no longer re-adds the entry, and ouro connect shows Workbench as ready for such bundles. senses.workbench: { enabled: true } and mcpServers.ouro_workbench still count as stale until ouro connect workbench cleans them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1034",
       "changes": [
         "Account pool: the fleet burn file uses the machine name this Mac's quota balancer uses (for example laptop), before LocalHostName."
