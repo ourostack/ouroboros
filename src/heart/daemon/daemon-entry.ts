@@ -31,7 +31,7 @@ import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createA2AAwaitOwnerDeliverer } from "../awaiting/a2a-await-delivery"
 import { recordAwaitDispatch } from "../awaiting/await-runtime-state"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
-import { LaunchdCronManager } from "./os-cron"
+import { LaunchdCronManager, hostOsCronManager } from "./os-cron"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import { SupercronicSupervisor } from "./supercronic-supervisor"
 import { writeDaemonTombstone } from "./daemon-tombstone"
@@ -776,7 +776,7 @@ void startDaemonAfterContainerCredentialBootstrap({
 
       const osCronManager = supercronicSupervisor
         ? supercronicSupervisor.namespace(`habit:${agent}`)
-        : new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
+        : hostOsCronManager(process.platform, () => new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) }))
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
@@ -874,7 +874,7 @@ void startDaemonAfterContainerCredentialBootstrap({
     try {
       const awaitOsCronManager = supercronicSupervisor
         ? supercronicSupervisor.namespace(`await:${agent}`)
-        : new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
+        : hostOsCronManager(process.platform, () => new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) }))
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,

@@ -829,6 +829,40 @@ describe("AwaitScheduler", () => {
       }
     })
 
+    it("fires awaits from in-process timers without verification or degradation when the manager fires in process", () => {
+      vi.useFakeTimers()
+      try {
+        deps = makeDeps({ readdir: vi.fn(() => ["x.md"]), readFile: vi.fn(() => "content") })
+        mockParseAwaitFile.mockReturnValue(makePending())
+        const execForVerify = vi.fn(() => "")
+        const scheduler = new AwaitScheduler({
+          agent: "slugger",
+          awaitsDir: "/x",
+          osCronManager: { ...cronManager, firesInProcess: true },
+          onAwaitFire,
+          onAwaitExpire,
+          deps,
+          execForVerify,
+          platform: "linux",
+        })
+        scheduler.start()
+        const initialFires = onAwaitFire.mock.calls.length
+        vi.advanceTimersByTime(5 * 60 * 1000)
+        expect(onAwaitFire.mock.calls.length).toBe(initialFires + 1)
+        expect(execForVerify).not.toHaveBeenCalled()
+        expect(scheduler.getDegradedAwaits()).toEqual([])
+
+        mockParseCadenceToMs.mockReturnValue(null)
+        scheduler.reconcile()
+        expect(scheduler.getDegradedAwaits()).toEqual([
+          { name: "hey_export", reason: "cadence cannot be scheduled with an in-process timer" },
+        ])
+        scheduler.stop()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("considers entry verified when launchctl output matches label", () => {
       const readdir = vi.fn(() => ["x.md"])
       const readFile = vi.fn(() => "content")

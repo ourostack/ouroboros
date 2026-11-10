@@ -6,6 +6,8 @@ export interface OsCronManager {
   sync(jobs: ScheduledTaskJob[]): void
   removeAll(): void
   list(): string[]
+  /** True when the daemon's own timers fire every job and nothing is registered with the OS. */
+  readonly firesInProcess?: boolean
 }
 
 export interface OsCronDeps {
@@ -253,6 +255,31 @@ export class CrontabCronManager implements OsCronManager {
     }
     return result
   }
+}
+
+/**
+ * For hosts with no per-user scheduler we can own: the daemon's in-process
+ * timers fire every job, so nothing is written to the OS. A Linux appliance's
+ * crontab is shared with the system, and a supervised daemon (`ouro service`)
+ * is already running whenever a timer is due.
+ */
+export class InProcessCronManager implements OsCronManager {
+  readonly firesInProcess = true
+
+  sync(jobs: ScheduledTaskJob[]): void {
+    emitNervesEvent({ component: "daemon", event: "daemon.os_cron_in_process", message: "scheduled jobs fire from in-process timers", meta: { jobCount: jobs.length } })
+  }
+
+  removeAll(): void {}
+
+  list(): string[] {
+    return []
+  }
+}
+
+/** launchd on macOS; in-process timers on every other host outside a container. */
+export function hostOsCronManager(platform: string, launchd: () => OsCronManager): OsCronManager {
+  return platform === "darwin" ? launchd() : new InProcessCronManager()
 }
 
 export interface CreateOsCronManagerOptions {

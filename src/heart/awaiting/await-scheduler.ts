@@ -275,6 +275,16 @@ export class AwaitScheduler {
   }
 
   private verifyCronAndCreateFallbacks(jobs: ScheduledTaskJob[]): void {
+    if (this.osCronManager.firesInProcess) {
+      // Nothing is registered with the OS: every await runs on an in-process timer, which is not degraded.
+      for (const job of jobs) {
+        const bareName = job.taskId.slice(AWAIT_CRON_LABEL_PREFIX_MARKER.length + 1)
+        const ms = parseCadenceToMs(this.getAwaitFile(bareName)?.cadence)
+        if (ms !== null) this.createTimerFallback(bareName, ms)
+        else this.degradedAwaitNames.set(bareName, "cadence cannot be scheduled with an in-process timer")
+      }
+      return
+    }
     if (!this.execForVerify && !this.verifyJobs) return
 
     const verifiedLabels = this.verifyJobs?.(jobs)

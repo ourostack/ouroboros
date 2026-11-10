@@ -219,6 +219,8 @@ vi.mock("../../../heart/config", () => ({
   })),
 }))
 
+const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
+
 describe("daemon entrypoint", () => {
   let testHomeRoot: string
   let originalHome: string | undefined
@@ -293,6 +295,7 @@ describe("daemon entrypoint", () => {
   })
 
   afterEach(() => {
+    Object.defineProperty(process, "platform", realPlatform)
     listEnabledBundleAgentsMock.mockReset()
     listEnabledBundleAgentsMock.mockReturnValue([])
     readPrivateRuntimeConfigMock.mockReset()
@@ -658,6 +661,8 @@ describe("daemon entrypoint", () => {
 
   it("boots daemon with default socket and wires signal handlers", async () => {
     vi.resetModules()
+    // launchd label ownership only exists on macOS; other hosts fire habits from in-process timers.
+    Object.defineProperty(process, "platform", { ...realPlatform, value: "darwin" })
     listEnabledBundleAgentsMock.mockReturnValue(["slugger", "ouroboros"])
 
     const start = vi.fn(async () => undefined)
@@ -825,7 +830,9 @@ describe("daemon entrypoint", () => {
     )
     const habitSchedulerOptions = habitSchedulerOptionsMock.mock.calls[0][0] as {
       osCronManager: { ownsLabel: (label: string) => boolean }
+      execForVerify: (command: string) => string
     }
+    expect(habitSchedulerOptions.execForVerify("echo launchd-verified").trim()).toBe("launchd-verified")
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.heartbeat")).toBe(true)
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.slugger.await.vendor-reply")).toBe(false)
     expect(habitSchedulerOptions.osCronManager.ownsLabel("bot.ouro.other.heartbeat")).toBe(false)

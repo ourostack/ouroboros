@@ -4,6 +4,8 @@ import {
   LaunchdCronManager,
   CrontabCronManager,
   createOsCronManager,
+  hostOsCronManager,
+  InProcessCronManager,
   cadenceToSeconds,
   scheduleToCalendarInterval,
   generatePlistXml,
@@ -504,5 +506,22 @@ describe("createOsCronManager", () => {
     expect(manager.list()).toEqual([])
     expect(() => manager.sync([makeJob()])).not.toThrow()
     expect(() => manager.removeAll()).not.toThrow()
+  })
+})
+
+describe("hostOsCronManager", () => {
+  it("uses launchd on macOS and in-process timers everywhere else", () => {
+    const launchd = { sync: vi.fn(), removeAll: vi.fn(), list: vi.fn(() => ["bot.ouro.a.b"]) }
+    expect(hostOsCronManager("darwin", () => launchd)).toBe(launchd)
+    const linux = hostOsCronManager("linux", () => launchd)
+    expect(linux).toBeInstanceOf(InProcessCronManager)
+    expect(linux.firesInProcess).toBe(true)
+  })
+
+  it("registers nothing with the OS", () => {
+    const manager = new InProcessCronManager()
+    manager.sync([{ id: "a:b:cadence", agent: "a", taskId: "b", schedule: "*/5 * * * *", lastRun: null, command: "ouro poke a --habit b", taskPath: "/x" }])
+    manager.removeAll()
+    expect(manager.list()).toEqual([])
   })
 })
