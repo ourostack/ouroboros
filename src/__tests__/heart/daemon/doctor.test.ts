@@ -38,6 +38,7 @@ import {
   checkMailroom,
   checkFriends,
   checkDisk,
+  checkMemory,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
 import { refreshRuntimeCredentialConfig } from "../../../heart/runtime-credentials"
@@ -2573,6 +2574,58 @@ describe("checkLifecycle", () => {
     const activity = cat.checks.find((c) => c.label === "recent daemon activity")
     expect(activity?.status).toBe("warn")
     expect(activity?.detail).toContain("no parseable events")
+  })
+})
+
+describe("checkMemory", () => {
+  const meminfo = (availableKb: number | null) => [
+    "MemTotal:        1011712 kB",
+    "MemFree:          102400 kB",
+    ...(availableKb === null ? [] : [`MemAvailable:    ${String(availableKb).padStart(7)} kB`]),
+  ].join("\n")
+  const linuxDeps = (files: Record<string, string>) => createMockDeps({
+    platform: "linux",
+    readFileSync: (p: string) => {
+      if (p in files) return files[p]!
+      throw new Error(`ENOENT: ${p}`)
+    },
+  })
+
+  it("is not measured off Linux", () => {
+    expect(checkMemory(createMockDeps({ platform: "darwin" }))).toEqual({
+      name: "Memory",
+      checks: [{ label: "available memory", status: "pass", detail: "MemAvailable is measured on Linux only (this host is darwin)" }],
+    })
+  })
+
+  it("passes above the default floor and warns below it", () => {
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(640 * 1024) })).checks[0]).toEqual({
+      label: "available memory", status: "pass", detail: "640 MB available of 988 MB (default 250 MB)",
+    })
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(200 * 1024) })).checks[0]).toMatchObject({
+      status: "warn", detail: "200 MB available of 988 MB, below the 250 MB default; the supervisor waits for memory before starting the daemon",
+    })
+  })
+
+  it("uses the installed sysv service's floor", () => {
+    const service = "#!/bin/sh\nMIN_MEM_AVAILABLE_KB=409600\n"
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(300 * 1024), "/etc/init.d/S99ouro": service })).checks[0]).toMatchObject({
+      status: "warn", detail: expect.stringContaining("below the 400 MB service floor"),
+    })
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(640 * 1024), "/etc/init.d/S99ouro": "MIN_MEM_AVAILABLE_KB=0\n" })).checks[0]).toMatchObject({
+      status: "pass", detail: expect.stringContaining("(default 250 MB)"),
+    })
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(640 * 1024), "/etc/init.d/S99ouro": "#!/bin/sh\n" })).checks[0]).toMatchObject({
+      status: "pass", detail: expect.stringContaining("(default 250 MB)"),
+    })
+  })
+
+  it("warns when /proc/meminfo cannot be read or has no MemAvailable, and copes without MemTotal", () => {
+    expect(checkMemory(linuxDeps({})).checks[0]).toMatchObject({ status: "warn", detail: expect.stringContaining("cannot read /proc/meminfo: ENOENT") })
+    const nonError = createMockDeps({ platform: "linux", readFileSync: () => { throw "denied" } })
+    expect(checkMemory(nonError).checks[0]).toMatchObject({ status: "warn", detail: "cannot read /proc/meminfo: denied" })
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": meminfo(null) })).checks[0]).toMatchObject({ status: "warn", detail: "/proc/meminfo has no MemAvailable line" })
+    expect(checkMemory(linuxDeps({ "/proc/meminfo": "MemAvailable:     655360 kB" })).checks[0]).toMatchObject({ status: "pass", detail: "640 MB available (default 250 MB)" })
   })
 })
 

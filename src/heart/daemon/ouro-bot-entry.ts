@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// First, so every later module can come from the compile cache.
+import "./compile-cache"
 import { redactCliArgs } from "./cli-arg-redaction"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
