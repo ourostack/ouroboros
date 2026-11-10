@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1003",
+      "changes": [
+        "ouro service install takes --min-mem-available-mb, --max-old-space-size, --oom-score-adj and --alert-file; the supervisor backs off from 5 s to 10 min and stops respawning after 5 crashes in 10 minutes, writing one line to the alert file."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1002",
       "changes": [
         "When the bundled Bitwarden CLI is missing one of its own modules (for example after an endpoint security product quarantines a file in it), ouro logs it once and uses the bw on PATH instead of failing to start."
