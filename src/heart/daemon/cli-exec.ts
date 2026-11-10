@@ -7770,7 +7770,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    const installed = deps.linuxService.install({ init: command.init, print: command.print, ...(command.path ? { path: command.path } : {}) })
+    const installed = deps.linuxService.install({
+      init: command.init,
+      print: command.print,
+      ...(command.path ? { path: command.path } : {}),
+      ...(command.supervision ? { supervision: command.supervision } : {}),
+    })
     const message = installed.written
       ? [
         `installed the Ouro ${command.init} service at ${installed.path}`,

@@ -5,6 +5,7 @@
  * interface are the contract between parsing, execution, and default wiring.
  */
 
+import type { ServiceSupervision } from "./linux-service"
 import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-lanes"
@@ -128,7 +129,7 @@ export type OuroCliCommand =
   | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
   | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
   | { kind: "sanctuary.git-exclude" }
-  | { kind: "service.install"; init: "sysv" | "systemd"; path?: string; print: boolean }
+  | { kind: "service.install"; init: "sysv" | "systemd"; path?: string; print: boolean; supervision?: ServiceSupervision }
   | { kind: "service.uninstall" }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "acp-serve"; agent: string; friendId?: string; socketOverride?: string; workbenchMcp?: string | true; observeOnly?: boolean }
@@ -213,7 +214,7 @@ export interface OuroCliDeps {
   pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string; bundlesRoot?: string }) => { filesCompacted: number; bytesFreed: number }
   /** Installs or removes the daemon's supervised Linux service (`ouro service`). */
   linuxService?: {
-    install: (request: { init: "sysv" | "systemd"; path?: string; print: boolean }) => { path: string; content: string; written: boolean }
+    install: (request: { init: "sysv" | "systemd"; path?: string; print: boolean; supervision?: ServiceSupervision }) => { path: string; content: string; written: boolean }
     uninstall: () => { path: string } | null
   }
   friendStore?: FriendStore

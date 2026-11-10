@@ -31,6 +31,18 @@ export interface LinuxServiceRecord {
   socketPath: string
 }
 
+/** How the supervisor treats a small or crashing host. Every field is optional. */
+export interface ServiceSupervision {
+  /** Wait, without counting a crash, until /proc/meminfo MemAvailable reaches this many MB before each start. */
+  minMemAvailableMb?: number
+  /** Node's --max-old-space-size for the daemon, in MB. */
+  maxOldSpaceMb?: number
+  /** oom_score_adj for the daemon and its workers (-1000..1000); higher is killed first under memory pressure. */
+  oomScoreAdj?: number
+  /** The file that gets one line when the circuit breaker stops respawning. Defaults to ~/.ouro-cli/service-alert.log. */
+  alertFile?: string
+}
+
 export interface LinuxServiceOptions {
   nodePath: string
   entryPath: string
@@ -38,6 +50,7 @@ export interface LinuxServiceOptions {
   homeDir: string
   ouroCliHome: string
   envPath?: string
+  supervision?: ServiceSupervision
 }
 
 export interface LinuxServiceDeps {
@@ -52,7 +65,15 @@ export interface LinuxServiceDeps {
 }
 
 export const SERVICE_NAME = "ouro"
-const RESPAWN_DELAY_SECONDS = 10
+/** Restart delays double from the first to the cap; a run this long resets them. */
+const RESTART_DELAY_FIRST_SECONDS = 5
+const RESTART_DELAY_CAP_SECONDS = 600
+const STABLE_RUN_SECONDS = 600
+/** The circuit breaker: this many crashes inside the window stops respawning. */
+const BREAKER_CRASHES = 5
+const BREAKER_WINDOW_SECONDS = 600
+/** How often a supervisor waiting for memory checks MemAvailable again. */
+const MEMORY_RECHECK_SECONDS = 30
 
 export function serviceRecordPath(ouroCliHome: string): string {
   return path.join(ouroCliHome, "service.json")
@@ -75,13 +96,20 @@ export function defaultServicePath(init: LinuxServiceInit, homeDir: string, isRo
     : path.join(homeDir, ".config", "systemd", "user", `${SERVICE_NAME}.service`)
 }
 
+export function defaultAlertFile(ouroCliHome: string): string {
+  return path.join(ouroCliHome, "service-alert.log")
+}
+
 export function generateSysvInitScript(options: LinuxServiceOptions): string {
   const logDir = path.join(options.ouroCliHome, "daemon", "logs")
+  const supervision = options.supervision ?? {}
   const lines = [
     "#!/bin/sh",
     "# Ouro daemon, written by `ouro service install --init sysv`.",
     "# Runs the daemon in the foreground and restarts it when it fails (non-zero",
-    "# exit). A clean exit, such as `ouro stop`, is left stopped.",
+    "# exit). A clean exit, such as `ouro stop`, is left stopped. Restarts back off",
+    `# from ${RESTART_DELAY_FIRST_SECONDS} s, doubling to ${RESTART_DELAY_CAP_SECONDS} s; ${BREAKER_CRASHES} crashes in ${BREAKER_WINDOW_SECONDS / 60} minutes stop`,
+    "# respawning and append one line to ALERT_FILE.",
     "",
     `NODE=${shellQuote(options.nodePath)}`,
     `ENTRY=${shellQuote(options.entryPath)}`,
@@ -89,21 +117,77 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
     `OURO_HOME=${shellQuote(options.homeDir)}`,
     `LOG_DIR=${shellQuote(logDir)}`,
     `PIDFILE=${shellQuote(path.join(options.ouroCliHome, "service.pid"))}`,
+    `ALERT_FILE=${shellQuote(supervision.alertFile ?? defaultAlertFile(options.ouroCliHome))}`,
+    `MIN_MEM_AVAILABLE_KB=${(supervision.minMemAvailableMb ?? 0) * 1024}`,
+    `MAX_OLD_SPACE_MB=${supervision.maxOldSpaceMb ?? ""}`,
+    `OOM_SCORE_ADJ=${supervision.oomScoreAdj ?? ""}`,
     ...(options.envPath ? [`PATH=${shellQuote(options.envPath)}`, "export PATH"] : []),
+    "",
+    "note() {",
+    "  echo \"$(date -u +%Y-%m-%dT%H:%M:%SZ) ouro-service: $*\" >>\"$LOG_DIR/ouro-service.log\"",
+    "}",
+    "",
+    "mem_available_kb() {",
+    "  while read -r key value unit; do",
+    "    if [ \"$key\" = \"MemAvailable:\" ]; then echo \"$value\"; return; fi",
+    "  done </proc/meminfo",
+    "}",
+    "",
+    "# Before each start, wait (without counting a crash) until MemAvailable reaches the floor.",
+    "wait_for_memory() {",
+    "  [ \"$MIN_MEM_AVAILABLE_KB\" -gt 0 ] || return 0",
+    "  waiting=0",
+    "  while [ \"$stopping\" -eq 0 ]; do",
+    "    available=$(mem_available_kb 2>/dev/null)",
+    "    if [ -z \"$available\" ] || [ \"$available\" -ge \"$MIN_MEM_AVAILABLE_KB\" ]; then",
+    "      [ \"$waiting\" -eq 1 ] && note \"MemAvailable ${available:-unknown} kB reached the floor; starting\"",
+    "      return 0",
+    "    fi",
+    "    [ \"$waiting\" -eq 0 ] && note \"MemAvailable ${available} kB is below the ${MIN_MEM_AVAILABLE_KB} kB floor; waiting\"",
+    "    waiting=1",
+    `    sleep ${MEMORY_RECHECK_SECONDS} &`,
+    "    wait $!",
+    "  done",
+    "}",
     "",
     "supervise() {",
     "  stopping=0",
     "  child=",
+    `  delay=${RESTART_DELAY_FIRST_SECONDS}`,
+    "  crashes=",
     "  trap 'stopping=1; [ -n \"$child\" ] && kill \"$child\" 2>/dev/null' TERM INT",
     "  while [ \"$stopping\" -eq 0 ]; do",
-    "    HOME=\"$OURO_HOME\" \"$NODE\" \"$ENTRY\" --socket \"$SOCKET\" >>\"$LOG_DIR/ouro-daemon-stdout.log\" 2>&1 &",
+    "    wait_for_memory",
+    "    [ \"$stopping\" -eq 1 ] && break",
+    "    started=$(date +%s)",
+    "    # The subshell sets oom_score_adj and then becomes node, so the daemon and its workers inherit it.",
+    "    (",
+    "      [ -n \"$OOM_SCORE_ADJ\" ] && echo \"$OOM_SCORE_ADJ\" >/proc/self/oom_score_adj 2>/dev/null",
+    "      HOME=\"$OURO_HOME\" exec \"$NODE\" ${MAX_OLD_SPACE_MB:+--max-old-space-size=$MAX_OLD_SPACE_MB} \"$ENTRY\" --socket \"$SOCKET\"",
+    "    ) >>\"$LOG_DIR/ouro-daemon-stdout.log\" 2>&1 &",
     "    child=$!",
     "    wait \"$child\"",
     "    code=$?",
     "    if [ \"$stopping\" -eq 1 ]; then wait \"$child\" 2>/dev/null; break; fi",
     "    [ \"$code\" -eq 0 ] && break",
-    `    sleep ${RESPAWN_DELAY_SECONDS} &`,
+    "    now=$(date +%s)",
+    `    [ $((now - started)) -ge ${STABLE_RUN_SECONDS} ] && delay=${RESTART_DELAY_FIRST_SECONDS}`,
+    "    recent=",
+    "    count=1",
+    "    for at in $crashes; do",
+    `      if [ $((now - at)) -lt ${BREAKER_WINDOW_SECONDS} ]; then recent=\"$recent $at\"; count=$((count + 1)); fi`,
+    "    done",
+    "    crashes=\"$recent $now\"",
+    `    if [ "$count" -ge ${BREAKER_CRASHES} ]; then`,
+    `      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ouro: the daemon crashed $count times in ${BREAKER_WINDOW_SECONDS / 60} minutes (last exit $code); stopped respawning. Fix the cause, then run: $0 start" >>"$ALERT_FILE"`,
+    "      note \"circuit breaker open after $count crashes; stopped respawning\"",
+    "      break",
+    "    fi",
+    "    note \"daemon exited $code; restarting in ${delay} s\"",
+    "    sleep \"$delay\" &",
     "    wait $!",
+    "    delay=$((delay * 2))",
+    `    [ "$delay" -gt ${RESTART_DELAY_CAP_SECONDS} ] && delay=${RESTART_DELAY_CAP_SECONDS}`,
     "  done",
     "  rm -f \"$PIDFILE\"",
     "}",
@@ -145,21 +229,30 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
 }
 
 export function generateSystemdUnit(options: LinuxServiceOptions, user: boolean): string {
+  const supervision = options.supervision ?? {}
+  const maxOldSpace = supervision.maxOldSpaceMb ? `--max-old-space-size=${supervision.maxOldSpaceMb} ` : ""
   const lines = [
     "# Ouro daemon, written by `ouro service install --init systemd`.",
     "[Unit]",
     "Description=Ouro daemon",
     "After=network-online.target",
     "Wants=network-online.target",
+    // The circuit breaker: after this many starts in the window systemd leaves the unit failed.
+    `StartLimitIntervalSec=${BREAKER_WINDOW_SECONDS}`,
+    `StartLimitBurst=${BREAKER_CRASHES}`,
     "",
     "[Service]",
     "Type=simple",
-    `ExecStart=${systemdQuote(options.nodePath)} ${systemdQuote(options.entryPath)} --socket ${systemdQuote(options.socketPath)}`,
+    `ExecStart=${systemdQuote(options.nodePath)} ${maxOldSpace}${systemdQuote(options.entryPath)} --socket ${systemdQuote(options.socketPath)}`,
     `Environment=${systemdQuote(`HOME=${options.homeDir}`)}`,
     ...(options.envPath ? [`Environment=${systemdQuote(`PATH=${options.envPath}`)}`] : []),
     // A clean exit (ouro stop, SIGTERM) stays stopped; a crash or failed start is retried.
     "Restart=on-failure",
-    `RestartSec=${RESPAWN_DELAY_SECONDS}`,
+    `RestartSec=${RESTART_DELAY_FIRST_SECONDS}`,
+    // systemd 254+ grows the delay to the cap; older versions ignore these and keep RestartSec.
+    "RestartSteps=7",
+    `RestartMaxDelaySec=${RESTART_DELAY_CAP_SECONDS}`,
+    ...(supervision.oomScoreAdj !== undefined ? [`OOMScoreAdjust=${supervision.oomScoreAdj}`] : []),
     "",
     "[Install]",
     `WantedBy=${user ? "default.target" : "multi-user.target"}`,

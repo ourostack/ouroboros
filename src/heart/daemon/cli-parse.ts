@@ -5,6 +5,7 @@
  * Each command group has its own parser; parseOuroCommand dispatches.
  */
 
+import type { ServiceSupervision } from "./linux-service"
 import * as fs from "fs"
 import * as path from "path"
 import type { AgentProvider } from "../identity"
@@ -136,7 +137,7 @@ function parseVoiceCommand(args: string[]): OuroCliCommand {
   return { kind: "voice.join", request }
 }
 
-const SERVICE_USAGE = "Usage: ouro service install --init <sysv|systemd> [--path <file>] [--print] | ouro service uninstall"
+const SERVICE_USAGE = "Usage: ouro service install --init <sysv|systemd> [--path <file>] [--print] [--min-mem-available-mb <mb>] [--max-old-space-size <mb>] [--oom-score-adj <-1000..1000>] [--alert-file <file>] | ouro service uninstall"
 
 function parseServiceCommand(args: string[]): OuroCliCommand {
   const [sub, ...rest] = args
@@ -145,10 +146,30 @@ function parseServiceCommand(args: string[]): OuroCliCommand {
   let init: "sysv" | "systemd" | undefined
   let servicePath: string | undefined
   let print = false
+  const supervision: ServiceSupervision = {}
+  const integer = (value: string | undefined, min: number, max: number): number | undefined => {
+    if (value === undefined || !/^-?\d+$/.test(value)) return undefined
+    const parsed = Number(value)
+    return parsed >= min && parsed <= max ? parsed : undefined
+  }
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]
     const value = rest[index + 1]
-    if (token === "--init" && (value === "sysv" || value === "systemd") && init === undefined) {
+    const megabytes = integer(value, 1, 1_048_576)
+    const oomScoreAdj = integer(value, -1000, 1000)
+    if (token === "--min-mem-available-mb" && megabytes !== undefined && supervision.minMemAvailableMb === undefined) {
+      supervision.minMemAvailableMb = megabytes
+      index += 1
+    } else if (token === "--max-old-space-size" && megabytes !== undefined && supervision.maxOldSpaceMb === undefined) {
+      supervision.maxOldSpaceMb = megabytes
+      index += 1
+    } else if (token === "--oom-score-adj" && oomScoreAdj !== undefined && supervision.oomScoreAdj === undefined) {
+      supervision.oomScoreAdj = oomScoreAdj
+      index += 1
+    } else if (token === "--alert-file" && value && !value.startsWith("--") && supervision.alertFile === undefined) {
+      supervision.alertFile = value
+      index += 1
+    } else if (token === "--init" && (value === "sysv" || value === "systemd") && init === undefined) {
       init = value
       index += 1
     } else if (token === "--path" && value && !value.startsWith("--") && servicePath === undefined) {
@@ -161,7 +182,7 @@ function parseServiceCommand(args: string[]): OuroCliCommand {
     }
   }
   if (!init) throw new Error(SERVICE_USAGE)
-  return { kind: "service.install", init, print, ...(servicePath ? { path: servicePath } : {}) }
+  return { kind: "service.install", init, print, ...(servicePath ? { path: servicePath } : {}), ...(Object.keys(supervision).length > 0 ? { supervision } : {}) }
 }
 
 function parseLogsCommand(args: string[]): OuroCliCommand {

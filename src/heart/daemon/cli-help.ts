@@ -64,8 +64,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   service: {
     category: "Lifecycle",
     description: "Run the daemon as a supervised service on Linux without launchd (SysV init script or systemd unit); `ouro up` then starts it through the service",
-    usage: "ouro service install --init <sysv|systemd> [--path <file>] [--print] | ouro service uninstall",
-    example: "ouro service install --init sysv",
+    usage: "ouro service install --init <sysv|systemd> [--path <file>] [--print] [--min-mem-available-mb <mb>] [--max-old-space-size <mb>] [--oom-score-adj <-1000..1000>] [--alert-file <file>] | ouro service uninstall",
+    example: "ouro service install --init sysv --min-mem-available-mb 250 --max-old-space-size 160 --oom-score-adj 900",
     subcommands: ["install", "uninstall"],
   },
   dev: {

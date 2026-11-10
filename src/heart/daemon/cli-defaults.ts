@@ -39,7 +39,7 @@ import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
-import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps } from "./linux-service"
+import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps, type ServiceSupervision } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -103,13 +103,14 @@ function linuxServiceDeps(): LinuxServiceDeps {
 
 function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linuxService"]> {
   // Resolve the home lazily: building the CLI deps must not consult the home directory.
-  const options = (homeDir: string) => ({
+  const options = (homeDir: string, supervision?: ServiceSupervision) => ({
     nodePath: process.execPath,
     entryPath: resolveDaemonBootEntryPath(homeDir),
     socketPath,
     homeDir,
     ouroCliHome: getOuroCliHome(homeDir),
     envPath: process.env.PATH,
+    ...(supervision ? { supervision } : {}),
   })
   return {
     install: (request) => {
@@ -117,10 +118,10 @@ function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linux
       const deps = linuxServiceDeps()
       if (request.print) {
         const servicePath = request.path ?? defaultServicePath(request.init, homeDir, deps.isRoot)
-        const content = request.init === "sysv" ? generateSysvInitScript(options(homeDir)) : generateSystemdUnit(options(homeDir), !deps.isRoot)
+        const content = request.init === "sysv" ? generateSysvInitScript(options(homeDir, request.supervision)) : generateSystemdUnit(options(homeDir, request.supervision), !deps.isRoot)
         return { path: servicePath, content, written: false }
       }
-      const installed = installLinuxService(deps, options(homeDir), request)
+      const installed = installLinuxService(deps, options(homeDir, request.supervision), request)
       return { path: installed.record.path, content: installed.content, written: true }
     },
     uninstall: () => uninstallLinuxService(linuxServiceDeps(), getOuroCliHome(os.homedir())),

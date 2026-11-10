@@ -3,7 +3,7 @@ import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
-const USAGE = "Usage: ouro service install --init <sysv|systemd> [--path <file>] [--print] | ouro service uninstall"
+const USAGE = "Usage: ouro service install --init <sysv|systemd> [--path <file>] [--print] [--min-mem-available-mb <mb>] [--max-old-space-size <mb>] [--oom-score-adj <-1000..1000>] [--alert-file <file>] | ouro service uninstall"
 
 describe("ouro service", () => {
   it("parses install and uninstall", () => {
@@ -12,6 +12,16 @@ describe("ouro service", () => {
       kind: "service.install", init: "systemd", print: true, path: "/etc/systemd/system/a.service",
     })
     expect(parseOuroCommand(["service", "uninstall"])).toEqual({ kind: "service.uninstall" })
+    expect(parseOuroCommand([
+      "service", "install", "--init", "sysv", "--min-mem-available-mb", "250", "--max-old-space-size", "160",
+      "--oom-score-adj", "900", "--alert-file", "/var/log/ouro-alert",
+    ])).toEqual({
+      kind: "service.install", init: "sysv", print: false,
+      supervision: { minMemAvailableMb: 250, maxOldSpaceMb: 160, oomScoreAdj: 900, alertFile: "/var/log/ouro-alert" },
+    })
+    expect(parseOuroCommand(["service", "install", "--init", "systemd", "--oom-score-adj", "-1000"])).toEqual({
+      kind: "service.install", init: "systemd", print: false, supervision: { oomScoreAdj: -1000 },
+    })
     for (const args of [
       ["service"],
       ["service", "start"],
@@ -25,6 +35,16 @@ describe("ouro service", () => {
       ["service", "install", "--init", "sysv", "--path", "/a", "--path", "/b"],
       ["service", "install", "--init", "sysv", "--print", "--print"],
       ["service", "install", "--init", "sysv", "extra"],
+      ["service", "install", "--init", "sysv", "--min-mem-available-mb", "0"],
+      ["service", "install", "--init", "sysv", "--min-mem-available-mb", "250MB"],
+      ["service", "install", "--init", "sysv", "--min-mem-available-mb"],
+      ["service", "install", "--init", "sysv", "--min-mem-available-mb", "250", "--min-mem-available-mb", "300"],
+      ["service", "install", "--init", "sysv", "--max-old-space-size", "-160"],
+      ["service", "install", "--init", "sysv", "--max-old-space-size", "160", "--max-old-space-size", "200"],
+      ["service", "install", "--init", "sysv", "--oom-score-adj", "1001"],
+      ["service", "install", "--init", "sysv", "--oom-score-adj", "900", "--oom-score-adj", "800"],
+      ["service", "install", "--init", "sysv", "--alert-file", "--print"],
+      ["service", "install", "--init", "sysv", "--alert-file", "/a", "--alert-file", "/b"],
     ]) {
       expect(() => parseOuroCommand(args), args.join(" ")).toThrow(USAGE)
     }
@@ -44,6 +64,9 @@ describe("ouro service", () => {
     const unit = await runOuroCli(["service", "install", "--init", "systemd", "--path", "/x.service"], deps)
     expect(install).toHaveBeenLastCalledWith({ init: "systemd", print: false, path: "/x.service" })
     expect(unit).not.toContain("/etc/init.d/S*")
+
+    await runOuroCli(["service", "install", "--init", "sysv", "--oom-score-adj", "900", "--max-old-space-size", "160"], deps)
+    expect(install).toHaveBeenLastCalledWith({ init: "sysv", print: false, supervision: { oomScoreAdj: 900, maxOldSpaceMb: 160 } })
   })
 
   it("prints the file without installing it when asked", async () => {

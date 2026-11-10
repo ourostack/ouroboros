@@ -4,6 +4,7 @@ const nerves = vi.hoisted(() => ({ emit: vi.fn() }))
 vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: nerves.emit }))
 
 import {
+  defaultAlertFile,
   defaultServicePath,
   generateSysvInitScript,
   generateSystemdUnit,
@@ -68,11 +69,41 @@ describe("linux service", () => {
     expect(script).toContain(`OURO_HOME='/userdata/ouro'`)
     expect(script).toContain(`PATH='/opt/node/bin:/usr/bin:/bin'`)
     expect(script).toContain(`PIDFILE='/userdata/ouro/.ouro-cli/service.pid'`)
-    expect(script).toContain(`HOME="$OURO_HOME" "$NODE" "$ENTRY" --socket "$SOCKET"`)
+    expect(script).toContain(`HOME="$OURO_HOME" exec "$NODE" \${MAX_OLD_SPACE_MB:+--max-old-space-size=$MAX_OLD_SPACE_MB} "$ENTRY" --socket "$SOCKET"`)
     expect(script).toContain(`[ "$code" -eq 0 ] && break`)
-    expect(script).toContain("sleep 10 &")
+    expect(script).toContain(`ALERT_FILE='/userdata/ouro/.ouro-cli/service-alert.log'`)
+    expect(script).toContain("MIN_MEM_AVAILABLE_KB=0\n")
+    expect(script).toContain("MAX_OLD_SPACE_MB=\n")
+    expect(script).toContain("OOM_SCORE_ADJ=\n")
+    expect(script).toContain("  delay=5\n")
+    expect(script).toContain(`[ "$delay" -gt 600 ] && delay=600`)
+    expect(script).toContain(`[ $((now - started)) -ge 600 ] && delay=5`)
+    expect(script).toContain(`if [ "$count" -ge 5 ]; then`)
+    expect(script).toContain(`echo "$OOM_SCORE_ADJ" >/proc/self/oom_score_adj`)
     for (const verb of ["start)", "stop)", "restart)", "status)"]) expect(script).toContain(verb)
     expect(generateSysvInitScript({ ...OPTIONS, envPath: undefined })).not.toContain("export PATH")
+  })
+
+  it("bakes the supervision settings into the init script", () => {
+    const script = generateSysvInitScript({
+      ...OPTIONS,
+      supervision: { minMemAvailableMb: 250, maxOldSpaceMb: 160, oomScoreAdj: 900, alertFile: "/var/log/ouro alert" },
+    })
+    expect(script).toContain("MIN_MEM_AVAILABLE_KB=256000\n")
+    expect(script).toContain("MAX_OLD_SPACE_MB=160\n")
+    expect(script).toContain("OOM_SCORE_ADJ=900\n")
+    expect(script).toContain(`ALERT_FILE='/var/log/ouro alert'`)
+    expect(defaultAlertFile("/h/.ouro-cli")).toBe("/h/.ouro-cli/service-alert.log")
+  })
+
+  it("maps the supervision settings onto systemd's own", () => {
+    const unit = generateSystemdUnit({ ...OPTIONS, supervision: { maxOldSpaceMb: 160, oomScoreAdj: 900, minMemAvailableMb: 250 } }, false)
+    expect(unit).toContain(`ExecStart="/opt/node/bin/node" --max-old-space-size=160 "${OPTIONS.entryPath}"`)
+    expect(unit).toContain("OOMScoreAdjust=900")
+    expect(unit).toContain("StartLimitIntervalSec=600\nStartLimitBurst=5")
+    expect(unit).toContain("RestartSec=5\nRestartSteps=7\nRestartMaxDelaySec=600")
+    expect(generateSystemdUnit({ ...OPTIONS, supervision: { oomScoreAdj: 0 } }, false)).toContain("OOMScoreAdjust=0")
+    expect(generateSystemdUnit(OPTIONS, false)).not.toContain("OOMScoreAdjust")
   })
 
   it("writes a systemd unit that restarts on failure only", () => {
@@ -88,13 +119,17 @@ describe("linux service", () => {
       Description=Ouro daemon
       After=network-online.target
       Wants=network-online.target
+      StartLimitIntervalSec=600
+      StartLimitBurst=5
 
       [Service]
       Type=simple
       ExecStart="/odd \\"dir\\"\\\\node" "/root/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js" --socket "/tmp/ouroboros-daemon.sock"
       Environment="HOME=/userdata/ouro"
       Restart=on-failure
-      RestartSec=10
+      RestartSec=5
+      RestartSteps=7
+      RestartMaxDelaySec=600
 
       [Install]
       WantedBy=default.target
