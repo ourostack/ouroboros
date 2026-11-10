@@ -963,6 +963,70 @@ describe("github-copilot auth flow", () => {
     }
   })
 
+  it("collectRuntimeAuthCredentials uses GitHub device login when gh is not installed", async () => {
+    emitTestEvent("github-copilot device login without gh")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-device")
+    const missing = Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" })
+    const spawnSync = vi.fn().mockReturnValue({ status: null, stdout: "", error: missing })
+    const githubDeviceLogin = vi.fn(async (showCode: (message: string) => void) => {
+      showCode("enter code ABCD-1234")
+      return "gho_from_device"
+    })
+    const progress: string[] = []
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ endpoints: { api: "https://api.copilot.device.com" } }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+    vi.stubEnv("GH_TOKEN", "")
+    vi.stubEnv("GITHUB_TOKEN", "")
+
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "CopilotDevice", provider: "github-copilot", onProgress: (message) => progress.push(message) },
+        { homeDir, spawnSync: spawnSync as any, githubDeviceLogin },
+      )
+      expect(creds).toEqual({ githubToken: "gho_from_device", baseUrl: "https://api.copilot.device.com" })
+      expect(progress).toContain("enter code ABCD-1234")
+      expect(spawnSync).not.toHaveBeenCalledWith("gh", ["auth", "login"], expect.anything())
+    } finally {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("collectRuntimeAuthCredentials runs the real device flow by default and shows the code on stderr without a progress view", async () => {
+    emitTestEvent("github-copilot default device login")
+    const homeDir = makeTempDir("auth-flow-home-ghcopilot-device-default")
+    const missing = Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" })
+    const spawnSync = vi.fn().mockReturnValue({ status: null, stdout: "", error: missing })
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => url.endsWith("/login/device/code")
+        ? { device_code: "d", user_code: "WXYZ-0001", verification_uri: "https://github.com/login/device", interval: 0.001 }
+        : url.endsWith("/login/oauth/access_token")
+          ? { access_token: "gho_default_device" }
+          : { endpoints: { api: "https://api.copilot.default.com" } },
+    })))
+    vi.stubEnv("GH_TOKEN", "")
+    vi.stubEnv("GITHUB_TOKEN", "")
+
+    try {
+      const creds = await collectRuntimeAuthCredentials(
+        { agentName: "CopilotDeviceDefault", provider: "github-copilot" },
+        { homeDir, spawnSync: spawnSync as any },
+      )
+      expect(creds.githubToken).toBe("gho_default_device")
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("enter code WXYZ-0001"))
+    } finally {
+      stderr.mockRestore()
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("collectRuntimeAuthCredentials throws if gh auth login fails", async () => {
     emitTestEvent("github-copilot gh auth login failure")
     const homeDir = makeTempDir("auth-flow-home-ghcopilot-fail")
