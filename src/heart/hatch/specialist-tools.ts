@@ -208,9 +208,9 @@ async function execCompleteAdoption(
     storeVaultUnlockSecret({ agentName: name, email: vault.email, serverUrl: vault.serverUrl }, vaultUnlockSecret)
     await storeHatchlingProviderCredentials(name, deps.provider, deps.credentials)
   } catch (e) {
-    // Rollback: remove the moved bundle
+    // Rollback: put the files back in the temp directory so the guide can retry after a fix
     try {
-      fs.rmSync(targetBundle, { recursive: true, force: true })
+      moveDir(targetBundle, deps.tempDir)
     } catch {
       // Best effort cleanup
     }
@@ -263,6 +263,44 @@ async function execCompleteAdoption(
   })
 
   return JSON.stringify({ success: true, agentName: name, bundlePath: targetBundle })
+}
+
+export type AdoptionOutcome = { ok: true; agentName: string } | { ok: false; error: string }
+
+/**
+ * Read a complete_adoption result. Success is JSON; failures are plain `error: ...` text,
+ * which must reach the human as a failed adoption rather than a JSON parse crash.
+ */
+export function parseAdoptionResult(toolResult: unknown): AdoptionOutcome {
+  let parsed: unknown = toolResult
+  if (typeof toolResult === "string") {
+    try {
+      parsed = JSON.parse(toolResult)
+    } catch {
+      const error = toolResult.trim().replace(/^error:\s*/i, "") || "complete_adoption returned nothing"
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.adoption_failed",
+        message: "complete_adoption reported a failure",
+        meta: { error },
+      })
+      return { ok: false, error }
+    }
+  }
+  const record = (parsed && typeof parsed === "object" ? parsed : {}) as { success?: unknown; agentName?: unknown; error?: unknown }
+  if (record.success === true && typeof record.agentName === "string" && record.agentName) {
+    return { ok: true, agentName: record.agentName }
+  }
+  const error = typeof record.error === "string" && record.error ? record.error : "complete_adoption did not report success"
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.adoption_failed",
+    message: "complete_adoption reported a failure",
+    meta: { error },
+  })
+  return { ok: false, error }
 }
 
 /**

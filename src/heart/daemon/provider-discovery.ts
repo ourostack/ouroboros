@@ -55,6 +55,42 @@ export function scanEnvVarCredentials(
   return results
 }
 
+/**
+ * Env-discovered GitHub Copilot credentials carry only a token; the runtime also needs the
+ * account's Copilot API endpoint. Fill it in the way `ouro auth` does, and drop the option
+ * when discovery fails, because offering it would only fail its ping.
+ */
+export async function completeEnvDiscoveredCredentials(
+  credentials: DiscoveredCredential[],
+  discoverCopilotBaseUrl: (token: string) => Promise<string>,
+): Promise<DiscoveredCredential[]> {
+  const completed: DiscoveredCredential[] = []
+  for (const credential of credentials) {
+    const token = credential.credentials.githubToken
+    if (credential.provider !== "github-copilot" || !token || credential.providerConfig.baseUrl) {
+      completed.push(credential)
+      continue
+    }
+    try {
+      const baseUrl = await discoverCopilotBaseUrl(token)
+      completed.push({
+        ...credential,
+        credentials: { ...credential.credentials, baseUrl },
+        providerConfig: { ...credential.providerConfig, baseUrl },
+      })
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.env_copilot_endpoint_discovery_failed",
+        message: "skipping env github-copilot credential: endpoint discovery failed",
+        meta: { reason: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }
+  return completed
+}
+
 function stringifyProviderFields(fields: Record<string, string | number>): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [key, value] of Object.entries(fields)) {
