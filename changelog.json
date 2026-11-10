@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1079",
+      "changes": [
+        "ouro up restarts a SysV service instead of starting it, so updates on the Comet stop rolling back"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1078",
       "changes": [
         "surface takes channel=teams, so a private-runtime turn (an ouro msg, an await) can tell a friend on Teams now: it sends at once where the Teams sense runs, and otherwise waits in their Teams chat"

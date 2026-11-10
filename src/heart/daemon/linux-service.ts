@@ -200,7 +200,9 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
     "  start)",
     "    if running; then echo \"ouro: already running\"; exit 0; fi",
     "    mkdir -p \"$LOG_DIR\"",
-    "    supervise </dev/null >/dev/null 2>&1 &",
+    "    # A subshell, not a bare function: dash keeps a backgrounded function on the caller's",
+    "    # stdout, so whoever ran `start` would wait on it for the supervisor's whole life.",
+    "    ( supervise ) </dev/null >/dev/null 2>&1 &",
     "    echo $! >\"$PIDFILE\"",
     "    echo \"ouro: started\"",
     "    ;;",
@@ -347,7 +349,12 @@ export function startLinuxService(deps: Pick<LinuxServiceDeps, "readFile" | "exi
   if (!record || record.socketPath !== socketPath) return false
   try {
     if (record.init === "systemd") deps.run("systemctl", systemctl(record, ["start", path.basename(record.path)]))
-    else deps.run(record.path, ["start"])
+    // SysV: `restart`, not `start`. This runs only when the daemon's socket is dead, for
+    // example right after `ouro up` stopped an older daemon to replace it. That daemon
+    // exits 0, so its supervisor is on its way out too; `start` in that moment sees it
+    // still running, says "already running", and nothing brings a daemon back. `restart`
+    // waits for the old supervisor to finish and starts a fresh one.
+    else deps.run(record.path, ["restart"])
   } catch (error) {
     emitNervesEvent({
       level: "warn",
