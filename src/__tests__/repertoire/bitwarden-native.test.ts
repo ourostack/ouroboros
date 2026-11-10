@@ -12,6 +12,7 @@ import {
   NativeVaultUnsupportedError,
   decryptCipherString,
   decryptSyncItems,
+  encryptCipherString,
   nodeVaultRequest,
   sharedNativeVaultReader,
 } from "../../repertoire/bitwarden-native"
@@ -60,6 +61,13 @@ function personalCiphers(userKey: Buffer) {
   ]
 }
 
+const USER_ID = "user-1"
+
+function jwt(id: string, sub: string | null = USER_ID): string {
+  const part = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
+  return `${part({ alg: "none" })}.${part({ ...(sub ? { sub } : {}), jti: id })}.sig`
+}
+
 interface FakeServer {
   fetch: ReturnType<typeof vi.fn>
   calls: string[]
@@ -70,6 +78,7 @@ function fakeServer(keys: Keys, options: {
   prelogin?: () => Response
   token?: (call: number) => Response
   sync?: (call: number) => Response
+  write?: (pathname: string, init: { method?: string; body?: string; headers?: Record<string, string> }) => Response
   pascalCase?: boolean
 } = {}): FakeServer {
   const calls: string[] = []
@@ -77,7 +86,7 @@ function fakeServer(keys: Keys, options: {
   let tokenCalls = 0
   let syncCalls = 0
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
-  const fetchImpl = vi.fn(async (url: string, init: { body?: string }) => {
+  const fetchImpl = vi.fn(async (url: string, init: { method?: string; body?: string; headers?: Record<string, string> }) => {
     const pathname = url.slice(SERVER.length)
     calls.push(pathname)
     bodies.push(String(init.body ?? ""))
@@ -89,8 +98,9 @@ function fakeServer(keys: Keys, options: {
       if (options.token) return options.token(tokenCalls)
       const form = new URLSearchParams(String(init.body))
       if (form.get("password") !== keys.hash) return json(400, { error: "invalid_grant", error_description: "invalid_username_or_password", ErrorModel: { Message: "Username or password is incorrect. Try again" } })
-      return json(200, { access_token: `token-${tokenCalls}`, expires_in: 3600, Key: encrypt(keys.userKey, keys.stretched) })
+      return json(200, { access_token: jwt(`token-${tokenCalls}`), expires_in: 3600, Key: encrypt(keys.userKey, keys.stretched) })
     }
+    if (pathname.startsWith("/api/ciphers") && options.write) return options.write(pathname, init)
     if (pathname === "/api/sync?excludeDomains=true") {
       syncCalls += 1
       if (options.sync) return options.sync(syncCalls)
@@ -179,7 +189,7 @@ describe("NativeVaultReader", () => {
 
   it("defaults the token lifetime to an hour when the server gives none", async () => {
     const keys = await vaultKeys()
-    const server = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: "t", key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
+    const server = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: jwt("t"), key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
     let now = 1_000_000
     const vault = reader(server, { now: () => now })
     await vault.items()
@@ -333,10 +343,139 @@ describe("vault cipher strings", () => {
 
   it("keeps an item with no name, and a login with no uri list", () => {
     const sync = { ciphers: [{ id: "x", type: 1, login: { username: encrypt("u", key), uris: null } }] }
-    expect(decryptSyncItems(sync, key)).toEqual({
+    const { items, skipped, unreadable, raw } = decryptSyncItems(sync, key)
+    expect({ items, skipped, unreadable }).toEqual({
       items: [{ id: "x", name: "", login: { username: "u", password: undefined, uris: [] }, notes: null, revisionDate: undefined }],
       skipped: 0,
       unreadable: 0,
     })
+    expect(raw.get("x")).toBe(sync.ciphers[0])
+  })
+})
+
+describe("NativeVaultReader writes", () => {
+  const write = { name: "providers/github-copilot", username: "github-copilot", password: "{\"pool\":1}", notes: "pool", uri: "https://providers/github-copilot" }
+  const decrypt = (value: string, key: Buffer) => decryptCipherString(value, key).toString("utf8")
+
+  it("creates a login item encrypted with the user key, for this user", async () => {
+    const keys = await vaultKeys()
+    const writes: Array<{ pathname: string; method?: string; body: Record<string, any>; auth?: string }> = []
+    const server = fakeServer(keys, { write: (pathname, init) => {
+      writes.push({ pathname, method: init.method, body: JSON.parse(init.body!), auth: init.headers?.authorization })
+      return new Response(JSON.stringify({ id: "new-1" }), { status: 200 })
+    } })
+    const vault = reader(server)
+    await expect(vault.saveLogin(write)).resolves.toBe("new-1")
+
+    const [{ pathname, method, body, auth }] = writes
+    expect([pathname, method]).toEqual(["/api/ciphers", "POST"])
+    expect(auth).toMatch(/^Bearer /)
+    expect(body).toMatchObject({ type: 1, organizationId: null, key: null, folderId: null, favorite: false, reprompt: 0, fields: null, passwordHistory: null, encryptedFor: USER_ID, lastKnownRevisionDate: null })
+    expect(decrypt(body.name, keys.userKey)).toBe("providers/github-copilot")
+    expect(decrypt(body.notes, keys.userKey)).toBe("pool")
+    expect(decrypt(body.login.username, keys.userKey)).toBe("github-copilot")
+    expect(decrypt(body.login.password, keys.userKey)).toBe("{\"pool\":1}")
+    expect(decrypt(body.login.uris[0].uri, keys.userKey)).toBe("https://providers/github-copilot")
+    expect(server.calls.filter((call) => call.startsWith("/api/sync"))).toHaveLength(0)
+  })
+
+  it("updates an item with its own key, replaying what it does not rewrite and guarding against a newer copy", async () => {
+    const keys = await vaultKeys()
+    const itemKey = crypto.randomBytes(64)
+    const stored = {
+      id: "b", type: 1, key: encrypt(itemKey, keys.userKey), name: encrypt("runtime/config", itemKey), notes: encrypt("old", itemKey),
+      folderId: "folder-1", favorite: true, reprompt: 1, revisionDate: "2026-11-09T01:02:03Z",
+      fields: [{ type: 0, name: "2.enc-name", value: "2.enc-value" }], passwordHistory: [{ password: "2.old", lastUsedDate: "x" }],
+      login: { username: encrypt("runtime", itemKey), password: encrypt("{}", itemKey), totp: "2.totp", uris: [] },
+    }
+    const writes: Array<{ pathname: string; method?: string; body: Record<string, any> }> = []
+    const server = fakeServer(keys, {
+      sync: () => new Response(JSON.stringify({ ciphers: [stored] }), { status: 200 }),
+      write: (pathname, init) => { writes.push({ pathname, method: init.method, body: JSON.parse(init.body!) }); return new Response(JSON.stringify({ Id: "b" }), { status: 200 }) },
+    })
+    const vault = reader(server)
+    await vault.items()
+    await expect(vault.saveLogin({ ...write, name: "runtime/config", notes: null }, "b")).resolves.toBe("b")
+
+    const [{ pathname, method, body }] = writes
+    expect([pathname, method]).toEqual(["/api/ciphers/b", "PUT"])
+    expect(body).toMatchObject({ key: stored.key, folderId: "folder-1", favorite: true, reprompt: 1, fields: stored.fields, passwordHistory: stored.passwordHistory, lastKnownRevisionDate: "2026-11-09T01:02:03Z", notes: null })
+    expect(body.login.totp).toBe("2.totp")
+    expect(decrypt(body.name, itemKey)).toBe("runtime/config")
+    expect(decrypt(body.login.password, itemKey)).toBe("{\"pool\":1}")
+
+    // A write forgets the synced items, so the next read sees it.
+    await vault.items()
+    expect(server.calls.filter((call) => call.startsWith("/api/sync"))).toHaveLength(2)
+  })
+
+  it("fills in what an older server leaves out of an item it updates", async () => {
+    const keys = await vaultKeys()
+    let body: Record<string, any> = {}
+    const server = fakeServer(keys, {
+      sync: () => new Response(JSON.stringify({ ciphers: [{ id: "c", type: 1, name: encrypt("n", keys.userKey) }] }), { status: 200 }),
+      write: (_pathname, init) => { body = JSON.parse(init.body!); return new Response(JSON.stringify({ id: "c" }), { status: 200 }) },
+    })
+    const vault = reader(server)
+    await vault.items()
+    await vault.saveLogin(write, "c")
+    expect(body).toMatchObject({ key: null, folderId: null, favorite: null, fields: null, lastKnownRevisionDate: null })
+    expect(Object.keys(body.login).sort()).toEqual(["password", "uris", "username"])
+  })
+
+  it("refuses to update an item it has not read", async () => {
+    const keys = await vaultKeys()
+    await expect(reader(fakeServer(keys)).saveLogin(write, "zzz")).rejects.toThrow("vault item zzz is not in the latest sync")
+  })
+
+  it("logs in again once when a write's token is rejected", async () => {
+    const keys = await vaultKeys()
+    let calls = 0
+    const server = fakeServer(keys, { write: () => (++calls === 1 ? new Response("", { status: 401 }) : new Response(JSON.stringify({ id: "x" }), { status: 200 })) })
+    await expect(reader(server).saveLogin(write)).resolves.toBe("x")
+    expect(server.calls.filter((call) => call === "/identity/connect/token")).toHaveLength(2)
+  })
+
+  it("names a refused or empty write, with the server's reason", async () => {
+    const keys = await vaultKeys()
+    const stale = fakeServer(keys, {
+      sync: () => new Response(JSON.stringify({ ciphers: [{ id: "d", type: 1, name: encrypt("n", keys.userKey) }] }), { status: 200 }),
+      write: () => new Response(JSON.stringify({ errorModel: { message: "The client copy of this cipher is out of date." } }), { status: 400 }),
+    })
+    const vault = reader(stale)
+    await vault.items()
+    await expect(vault.saveLogin(write, "d")).rejects.toThrow("vault update for Agent@Example.test failed: HTTP 400 The client copy of this cipher is out of date.")
+    await expect(reader(fakeServer(keys, { write: () => new Response(JSON.stringify({ message: "nope" }), { status: 422 }) })).saveLogin(write)).rejects.toThrow("vault create for Agent@Example.test failed: HTTP 422 nope")
+    await expect(reader(fakeServer(keys, { write: () => new Response("", { status: 500 }) })).saveLogin(write)).rejects.toThrow(/failed: HTTP 500$/)
+    await expect(reader(fakeServer(keys, { write: () => new Response("{}", { status: 200 }) })).saveLogin(write)).rejects.toThrow("vault create for Agent@Example.test returned no item id")
+    const silent = reader(fakeServer(keys, {
+      sync: () => new Response(JSON.stringify({ ciphers: [{ id: "e", type: 1, name: encrypt("n", keys.userKey) }] }), { status: 200 }),
+      write: () => new Response("{}", { status: 200 }),
+    }))
+    await silent.items()
+    await expect(silent.saveLogin(write, "e")).rejects.toThrow("vault update for Agent@Example.test returned no item id")
+  })
+
+  it("moves an item to the trash", async () => {
+    const keys = await vaultKeys()
+    const seen: string[] = []
+    const vault = reader(fakeServer(keys, { write: (pathname, init) => { seen.push(`${init.method} ${pathname}`); return new Response("", { status: pathname.includes("missing") ? 404 : 200 }) } }))
+    await vault.deleteItem("a b")
+    expect(seen).toEqual(["PUT /api/ciphers/a%20b/delete"])
+    await expect(vault.deleteItem("missing")).rejects.toThrow("vault delete for Agent@Example.test failed: HTTP 404")
+  })
+
+  it("needs a user id in the access token", async () => {
+    const keys = await vaultKeys()
+    const opaque = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: "opaque", Key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
+    await expect(reader(opaque).items()).rejects.toThrow(new NativeVaultUnsupportedError("an access token without a user id"))
+    const noSub = fakeServer(keys, { token: () => new Response(JSON.stringify({ access_token: jwt("t", null), Key: encrypt(keys.userKey, keys.stretched) }), { status: 200 }) })
+    await expect(reader(noSub).items()).rejects.toThrow("an access token without a user id")
+  })
+
+  it("encrypts what decryptCipherString reads back", () => {
+    const key = crypto.randomBytes(64)
+    expect(decryptCipherString(encryptCipherString("héllo", key), key).toString()).toBe("héllo")
+    expect(decryptCipherString(encryptCipherString(Buffer.from([1, 2, 3]), key), key)).toEqual(Buffer.from([1, 2, 3]))
   })
 })
