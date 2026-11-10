@@ -20,6 +20,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
+import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
@@ -60,6 +61,7 @@ export interface DaemonSenseManagerLike {
   quiesceShepherd?(agent: string): Promise<ShepherdSenseStoppedProof>
   restartSense?(managedName: string): Promise<void>
   reviveSense?(agent: string, sense: string): Promise<DaemonSenseRow | null>
+  reconcilePresence?(): Promise<void>
 }
 
 export interface DaemonSenseManagerOptions {
@@ -75,6 +77,14 @@ export interface DaemonSenseManagerOptions {
     stopAgent?(agent: string): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
+  /**
+   * Whether this machine runs a shared sense under the agent's presence
+   * roster; null when presence does not apply (today's one-home behaviour).
+   * Defaults to reading the bundle's roster and this machine's flag.
+   */
+  presenceOwner?: (agent: string, sense: string) => { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null
+  /** Whether presence is still on for this machine; defaults to `~/.ouro-cli/presence.json`. */
+  presenceFlagOn?: () => boolean
 }
 
 interface SenseConfigFacts {
@@ -727,10 +737,26 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly bundlesRoot: string
   private readonly quiescedShepherdOwners = new Set<string>()
   private readonly initiallyUnmanagedShepherdOwners: Set<string>
+  private readonly presenceOwner: (agent: string, sense: string) => { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null
+  private readonly presenceFlagOn: () => boolean
+  /** Shared senses skipped because another machine owns them; started here when ownership arrives. */
+  private readonly notOwnerSkipped = new Set<string>()
 
   constructor(options: DaemonSenseManagerOptions) {
     const bundlesRoot = options.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
     this.bundlesRoot = bundlesRoot
+    /* v8 ignore start -- production default reads the real roster and machine identity; tests inject presenceOwner @preserve */
+    this.presenceOwner = options.presenceOwner ?? ((agent, sense) => {
+      if (!isSharedSense(sense)) return null
+      const presence = readPresenceForAgent(path.join(bundlesRoot, `${agent}.ouro`))
+      if (!presence) return null
+      const machineId = currentMachineId()
+      const owner = effectiveOwner(presence, sense)
+      const owns = mayRunSense(presence, machineId, sense)
+      return { owns, owner, ownerName: findRosterMachine(presence, owner)?.name ?? owner, waiting: !owns && owner === machineId }
+    })
+    this.presenceFlagOn = options.presenceFlagOn ?? (() => readLocalPresenceSettings().enabled)
+    /* v8 ignore stop */
     this.contexts = new Map(
       options.agents.map((agent) => {
         const { senses, workbenchHasStaleBundleEntry } = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
@@ -766,6 +792,12 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         const parsed = parseSenseSnapshotName(name)
         if (!parsed) return { ok: true }
         if (parsed.sense === "shepherd" && this.quiescedShepherdOwners.has(parsed.agent)) return { ok: false, skip: true, error: "Shepherd is quiesced for maintenance until daemon restart" }
+        const ownership = this.presenceOwner(parsed.agent, parsed.sense)
+        if (ownership && !ownership.owns) {
+          this.notOwnerSkipped.add(name)
+          return { ok: false, skip: true, error: `${parsed.sense}: not owner; ${parsed.agent}'s presence roster gives it to ${ownership.owner ?? "another machine"}` }
+        }
+        this.notOwnerSkipped.delete(name)
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
         context.facts = senseFactsFromRuntimeConfig(
@@ -928,6 +960,39 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     })
 
     await Promise.all(refreshes)
+  }
+
+  /**
+   * Follow the presence roster: stop a shared sense another machine now owns,
+   * and start one this machine now owns. The daemon runs this every minute,
+   * so a handoff takes effect once each machine has pulled it.
+   */
+  async reconcilePresence(): Promise<void> {
+    const snapshots = this.processManager.listAgentSnapshots()
+    for (const [agent, context] of this.contexts.entries()) {
+      for (const sense of ["teams", "bluebubbles", "mail", "voice", "a2a", "telegram"] as const) {
+        if (!context.senses[sense].enabled) continue
+        const ownership = this.presenceOwner(agent, sense)
+        const name = `${agent}:${sense}`
+        if (!ownership) {
+          // The roster is gone: back to the home lease, so run what was held. A flag turned off here keeps
+          // holding until the daemon restarts, which publishes that this machine left before any sense starts.
+          if (this.presenceFlagOn() && this.notOwnerSkipped.delete(name)) await this.processManager.startAgent?.(name)
+          continue
+        }
+        const snapshot = snapshots.find((row) => row.name === name)
+        const running = !!snapshot && (snapshot.pid ?? null) !== null
+        if (!ownership.owns && running) {
+          emitOwnershipChange(agent, sense, false, ownership.owner)
+          this.notOwnerSkipped.add(name)
+          await this.processManager.stopAgent?.(name)
+        } else if (ownership.owns && !running && this.notOwnerSkipped.has(name)) {
+          emitOwnershipChange(agent, sense, true, ownership.owner)
+          this.notOwnerSkipped.delete(name)
+          await this.processManager.startAgent?.(name)
+        }
+      }
+    }
   }
 
   async startAutoStartSenses(): Promise<void> {
@@ -1161,7 +1226,22 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
-      return inventory.map((entry) => ({
+      return inventory.map((entry): DaemonSenseRow => {
+        // A shared sense another machine runs under the presence roster is absent here by design, not broken.
+        const ownership = entry.enabled && isSharedSense(entry.sense) ? this.presenceOwner(agent, entry.sense) : null
+        if (ownership && !ownership.owns) {
+          return {
+            agent,
+            sense: entry.sense,
+            label: entry.label,
+            enabled: true,
+            status: "not_attached",
+            detail: ownership.waiting
+              ? "starts here once the previous owner lets go (presence handoff)"
+              : `runs on ${ownership.ownerName ?? ownership.owner ?? "another machine"} (presence roster)`,
+          }
+        }
+        return {
         agent,
         sense: entry.sense,
         label: entry.label,
@@ -1195,7 +1275,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           oldestActiveTurnStartedAt: blueBubblesRuntimeFacts.oldestActiveTurnStartedAt,
           oldestActiveTurnAgeMs: blueBubblesRuntimeFacts.oldestActiveTurnAgeMs,
         } : {}),
-      }))
+        }
+      })
     })
 
     emitNervesEvent({

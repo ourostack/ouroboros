@@ -99,6 +99,26 @@ When two machines already share bundles, give each agent a home in this order so
 
 If a machine's identity is ever replaced (a new `machine.json`), the agents homed on the old id stop running there. `ouro status` points this out when an agent's home has this machine's name but a different id; run `ouro move <agent> here` to take it back.
 
+### One agent on several machines at once (presence)
+
+An agent can instead be present on several machines at the same time: one named agent, one bundle synced through git, and a presence on each machine that knows exactly which machine it is on. Each machine opts in, and the bundle carries a roster:
+
+```bash
+ouro presence join --agent <agent> --role always-on --name <machine name>   # on each machine
+ouro up                                                                    # restart so the daemon follows the roster
+ouro presence status --agent <agent>
+```
+
+`join` adds this machine to the `presence` block in `agent.json` (by the same compare-and-swap as `ouro move`) and turns presence on for this machine in `~/.ouro-cli/presence.json` (`{ "enabled": true }`, never synced; `OURO_PRESENCE=1|0` overrides it). The first join creates the roster with every shared sense owned by the agent's `home`.
+
+- **Machine-scoped senses** (cli, shepherd, app-sessions) run on every presence and see only their own machine.
+- **Shared senses** (teams, telegram, mail, bluebubbles, voice, a2a) and **habits** (with awaits) run only on the machine the roster names as their owner. Move one with `ouro presence handoff <sense> <machine> --agent <agent>`; the old owner stops it and the new owner starts it within about a minute of each pulling the change (each presence-aware daemon pulls and pushes the bundle every minute).
+- **Where i am.** Every prompt carries a `## where i am` block: this machine's name, role, OS and location, each peer with its last-seen time, and the shared senses this presence owns. Each presence publishes `presence/<machineId>.json` (version, last seen, name, role, OS, location, owned senses) every 15 minutes. `ouro presence location office` records where a moving machine is now.
+- **Never on two machines at once.** `home` stays in `agent.json` for daemons that know only `home`. Until every roster machine has published a presence record at or after the roster's `minVersion`, and while `home` names a machine off the roster, every shared sense stays with `home` and handoffs refuse. A new owner starts a shared sense only once the old owner's record no longer lists it (each presence republishes as soon as what it owns changes). Ownership is static: a sleeping or unreachable owner keeps its senses until it releases them or leaves the roster; automatic failover comes later, with fencing. `ouro rollback` to a version before presence removes this machine's records, so its peers fall back to `home`; turning presence off takes effect at the next daemon start (`ouro up`), which does the same before any sense starts. A daemon with presence off, or a bundle without a roster, behaves exactly as before.
+- **Location and arrival.** Set `"locationCommand": ["<cmd>", "<arg>", …]` in `~/.ouro-cli/presence.json` to have the daemon ask a command each minute where this machine is (it prints a location, or JSON `{ "location": … }`). Set `"onArrive": { "office": ["<cmd>", …] }` to run a command the first time each day the machine arrives somewhere; the daemon hands its output (JSON `.teams` or `.text`, else the raw text) to the agent to tell its owner, once, with a receipt in `state/presence-arrivals.json` so a restart never repeats it.
+- **Keep each presence's own files out of git.** Every presence rewrites its flight recorder and `bundle-meta.json` on each turn or daemon start, so tracking them makes every sync conflict. Before a second machine joins, add these to the bundle's `.gitignore` and untrack them (`git rm -r --cached <paths>`) in one commit: `arc/flight-recorder/latest.json`, `arc/flight-recorder/events/`, `arc/flight-recorder/context-loss-sentinel/` and `bundle-meta.json`.
+- **Priority.** Set `"nice": 10` in `~/.ouro-cli/presence.json` to run this machine's daemon (and everything it starts) at launchd `Nice` 10, for a machine whose foreground work comes first.
+
 ## Step 3: Unlock the agent vault
 
 Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is stored in `agent.json` inside the bundle. See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.

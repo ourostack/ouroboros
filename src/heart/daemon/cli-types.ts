@@ -113,9 +113,13 @@ export type OuroCliCommand =
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string; answersFile?: string; secretFile?: string; noChat?: boolean }
-  | { kind: "rollback"; version?: string }
+  | { kind: "rollback"; version?: string; force?: boolean }
   | { kind: "versions" }
   | { kind: "agent.move"; agent: string }
+  | { kind: "presence.join"; agent: string; role?: string; name?: string }
+  | { kind: "presence.handoff"; agent: string; sense: string; machine: string }
+  | { kind: "presence.status"; agent: string; json?: boolean }
+  | { kind: "presence.location"; location: string }
   | { kind: "self-update"; unattended?: boolean }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }

@@ -21,6 +21,7 @@ import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundl
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
 import { deskSection } from "./desk-section";
+import { whereAmISection } from "./where-am-i";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
 import { formatActiveWorkFrame, formatLiveWorldStateCheckpoint, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
@@ -1892,6 +1893,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Volatile sections from Group 2 (date and rhythm change every turn)
     dateSection(),
     rhythmStatusSection(options?.daemonHealth),
+    whereAmISection(getAgentRoot()),
 
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",

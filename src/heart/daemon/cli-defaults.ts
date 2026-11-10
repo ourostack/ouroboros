@@ -39,6 +39,7 @@ import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
+import { readLocalPresenceSettings } from "./presence"
 import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps, type ServiceSupervision } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -316,7 +317,14 @@ function writeDaemonBootPlist(socketPath: string): string {
     socketPath,
     logDir: path.join(getOuroCliHome(homeDir), "daemon", "logs"),
     envPath: process.env.PATH,
+    ...niceOption(homeDir),
   })
+}
+
+/** `nice` from this machine's `~/.ouro-cli/presence.json`, when set. */
+export function niceOption(homeDir: string): { nice?: number } {
+  const nice = readLocalPresenceSettings(homeDir, {}).nice
+  return nice === undefined ? {} : { nice }
 }
 
 interface LaunchAgentLoadedDeps {
