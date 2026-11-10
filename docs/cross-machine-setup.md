@@ -182,7 +182,18 @@ ouro service install --init systemd   # a systemd unit: system-wide as root, a u
 ouro service install --init sysv      # an init script with a respawn loop, for BusyBox or other non-systemd init
 ```
 
-Both run the daemon in the foreground and restart it only when it fails, so `ouro stop` still stops it. After installing, `ouro up` starts the daemon through the service. Add `--print` to see the file without installing it, or `--path <file>` to write it elsewhere (the SysV default is `/etc/init.d/S99ouro`, which BusyBox and Buildroot run at boot). `ouro service uninstall` removes it.
+Both run the daemon in the foreground and restart it only when it fails, so `ouro stop` still stops it. Restarts back off from 5 seconds, doubling to 10 minutes; a run of 10 minutes or more resets the delay. Five crashes within 10 minutes open a circuit breaker: respawning stops until someone starts the service again.
+
+For a small host, add any of these to `ouro service install`:
+
+| Flag | Effect |
+|------|--------|
+| `--min-mem-available-mb <mb>` | Before each start, wait (without counting a crash) until `MemAvailable` in `/proc/meminfo` reaches this floor. SysV only. |
+| `--max-old-space-size <mb>` | Passed to Node for the daemon. |
+| `--oom-score-adj <n>` | `oom_score_adj` for the daemon and its workers, so under memory pressure the kernel kills them before the rest of the device (for example 900). |
+| `--alert-file <file>` | Where the circuit breaker writes its one line (default `~/.ouro-cli/service-alert.log`). With systemd, the unit's own start limit is the breaker, and `systemctl status` shows it. |
+
+For example, on a 1 GB appliance: `ouro service install --init sysv --min-mem-available-mb 250 --max-old-space-size 160 --oom-score-adj 900`. After installing, `ouro up` starts the daemon through the service. Add `--print` to see the file without installing it, or `--path <file>` to write it elsewhere (the SysV default is `/etc/init.d/S99ouro`, which BusyBox and Buildroot run at boot). `ouro service uninstall` removes it.
 
 ## Step 5: Set up dev tool integration (optional)
 
