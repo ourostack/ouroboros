@@ -843,6 +843,10 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result.map(toProviderMessage)
 }
 
+function isLostResultPlaceholder(content: unknown): boolean {
+  return typeof content === "string" && content.startsWith("error: this tool call's result was lost")
+}
+
 function repairToolCallSequences(
   messages: OpenAI.ChatCompletionMessageParam[],
   inlineReasoningStrippedCallIds: Set<string> = new Set(),
@@ -875,6 +879,36 @@ function repairToolCallSequences(
       message: "removed orphaned tool results from session history",
       meta: { removed },
     })
+  }
+
+  // One result per tool call. Parallel tool calls can leave a call answered twice (a "result was lost"
+  // placeholder written while it was still running, then its real result), and providers reject that with
+  // HTTP 400 on every replay. Keep the real result when there is one, else the first.
+  const duplicates = new Set<number>()
+  for (let i = 0; i < repaired.length; i++) {
+    if (repaired[i]!.role !== "assistant") continue
+    const resultsById = new Map<string, number[]>()
+    for (let j = i + 1; j < repaired.length && repaired[j]!.role !== "assistant" && repaired[j]!.role !== "user"; j++) {
+      const following = repaired[j]!
+      if (following.role !== "tool") continue
+      const id = following.toolCallId!
+      resultsById.set(id, [...(resultsById.get(id) ?? []), j])
+    }
+    for (const indices of resultsById.values()) {
+      if (indices.length < 2) continue
+      const keep = indices.find((j) => !isLostResultPlaceholder(repaired[j]!.content)) ?? indices[0]!
+      for (const j of indices) if (j !== keep) duplicates.add(j)
+    }
+  }
+  if (duplicates.size > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_duplicate_tool_result_repair",
+      component: "mind",
+      message: "kept one result per tool call; dropped duplicates that providers reject",
+      meta: { removed: duplicates.size },
+    })
+    for (const j of [...duplicates].sort((x, y) => y - x)) repaired.splice(j, 1)
   }
 
   let injected = 0
