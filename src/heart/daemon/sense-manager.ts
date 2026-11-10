@@ -20,7 +20,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
-import { emitOwnershipChange, effectiveOwner, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
+import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
@@ -82,7 +82,7 @@ export interface DaemonSenseManagerOptions {
    * roster; null when presence does not apply (today's one-home behaviour).
    * Defaults to reading the bundle's roster and this machine's flag.
    */
-  presenceOwner?: (agent: string, sense: string) => { owns: boolean; owner: string | null } | null
+  presenceOwner?: (agent: string, sense: string) => { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null
   /** Whether presence is still on for this machine; defaults to `~/.ouro-cli/presence.json`. */
   presenceFlagOn?: () => boolean
 }
@@ -737,7 +737,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly bundlesRoot: string
   private readonly quiescedShepherdOwners = new Set<string>()
   private readonly initiallyUnmanagedShepherdOwners: Set<string>
-  private readonly presenceOwner: (agent: string, sense: string) => { owns: boolean; owner: string | null } | null
+  private readonly presenceOwner: (agent: string, sense: string) => { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null
   private readonly presenceFlagOn: () => boolean
   /** Shared senses skipped because another machine owns them; started here when ownership arrives. */
   private readonly notOwnerSkipped = new Set<string>()
@@ -750,7 +750,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       if (!isSharedSense(sense)) return null
       const presence = readPresenceForAgent(path.join(bundlesRoot, `${agent}.ouro`))
       if (!presence) return null
-      return { owns: mayRunSense(presence, currentMachineId(), sense), owner: effectiveOwner(presence, sense) }
+      const machineId = currentMachineId()
+      const owner = effectiveOwner(presence, sense)
+      const owns = mayRunSense(presence, machineId, sense)
+      return { owns, owner, ownerName: findRosterMachine(presence, owner)?.name ?? owner, waiting: !owns && owner === machineId }
     })
     this.presenceFlagOn = options.presenceFlagOn ?? (() => readLocalPresenceSettings().enabled)
     /* v8 ignore stop */
@@ -1223,7 +1226,22 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
-      return inventory.map((entry) => ({
+      return inventory.map((entry): DaemonSenseRow => {
+        // A shared sense another machine runs under the presence roster is absent here by design, not broken.
+        const ownership = entry.enabled && isSharedSense(entry.sense) ? this.presenceOwner(agent, entry.sense) : null
+        if (ownership && !ownership.owns) {
+          return {
+            agent,
+            sense: entry.sense,
+            label: entry.label,
+            enabled: true,
+            status: "not_attached",
+            detail: ownership.waiting
+              ? "starts here once the previous owner lets go (presence handoff)"
+              : `runs on ${ownership.ownerName ?? ownership.owner ?? "another machine"} (presence roster)`,
+          }
+        }
+        return {
         agent,
         sense: entry.sense,
         label: entry.label,
@@ -1257,7 +1275,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           oldestActiveTurnStartedAt: blueBubblesRuntimeFacts.oldestActiveTurnStartedAt,
           oldestActiveTurnAgeMs: blueBubblesRuntimeFacts.oldestActiveTurnAgeMs,
         } : {}),
-      }))
+        }
+      })
     })
 
     emitNervesEvent({

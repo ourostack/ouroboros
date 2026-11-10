@@ -258,6 +258,22 @@ describe("arrival", () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
+  it("runs real commands on the real clock when none are injected, from no recorded location", async () => {
+    writeLocalPresenceSettings({ enabled: true, locationCommand: ["/bin/echo", "office"], onArrive: { office: ["/bin/echo", JSON.stringify({ ok: true, teams: "Real echo." })] } }, homeDir)
+    await new PresenceTicker({ ...ticker()["deps"], run: undefined, now: undefined } as ConstructorParameters<typeof PresenceTicker>[0]).tick()
+    expect(readLocalPresenceSettings(homeDir, {}).location).toBe("office")
+    expect(notify.mock.calls[0]![1]).toContain("Real echo.")
+  })
+
+  it("words an arrival check that fails with something other than an Error", async () => {
+    run = vi.fn(async (argv: string[]) => {
+      if (argv[1] === "where") return "office"
+      throw "plain"
+    })
+    await ticker().tick()
+    expect(notify.mock.calls[0]![1]).toContain("the arrival check failed: plain")
+  })
+
   it("works without a notifier", async () => {
     where = "office"
     await new PresenceTicker({ ...ticker()["deps"], notify: undefined } as ConstructorParameters<typeof PresenceTicker>[0]).tick()

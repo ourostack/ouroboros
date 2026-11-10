@@ -211,6 +211,33 @@ describe("sense ownership in the daemon", () => {
     const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot, presenceOwner: () => ({ owns: false, owner: null }) })
     expect((await options!.configCheck("slugger:teams")).error).toBe("teams: not owner; slugger's presence roster gives it to another machine")
     await expect(manager.reconcilePresence()).resolves.toBeUndefined()
+    expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual({
+      agent: "slugger", sense: "teams", label: "Teams", enabled: true, status: "not_attached", detail: "runs on another machine (presence roster)",
+    })
+  })
+
+  it("shows a shared sense a peer runs as absent by design, naming the peer, or waiting during a handoff", async () => {
+    bundle("slugger", { senses: { teams: { enabled: true }, mail: { enabled: false } } })
+    vi.resetModules()
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class {
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = () => [{ name: "slugger:teams", status: "stopped" }]
+      },
+    }))
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    let ownership: { owns: boolean; owner: string | null; ownerName?: string; waiting?: boolean } | null = { owns: false, owner: MINI, ownerName: "aris-mac-mini" }
+    const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot, presenceOwner: () => ownership })
+    const teams = () => manager.listSenseRows().find((row) => row.sense === "teams")!
+    expect(teams()).toMatchObject({ status: "not_attached", detail: "runs on aris-mac-mini (presence roster)" })
+    ownership = { owns: false, owner: LAPTOP, ownerName: "Aris-MacBook-Pro", waiting: true }
+    expect(teams()).toMatchObject({ status: "not_attached", detail: "starts here once the previous owner lets go (presence handoff)" })
+    ownership = { owns: true, owner: LAPTOP }
+    expect(teams().status).toBe("error")
+    ownership = null
+    expect(teams().status).toBe("error")
+    expect(manager.listSenseRows().find((row) => row.sense === "mail")!.status).toBe("disabled")
   })
 })
 
@@ -306,6 +333,7 @@ describe("ouro presence status --json", () => {
     expect(json.peers[0]).toEqual({ machineId: MINI, name: "aris-mac-mini", role: "always-on", seenAt: null, version: null, location: null })
     expect(json.legacy).toEqual(["Aris-MacBook-Pro", "aris-mac-mini"])
     expect(json.owners.teams).toBe("machine_gone")
+    expect(presenceStatusJson({ presence: legacy, machineId: LAPTOP, settings: { enabled: true } }).machine!.location).toBeNull()
     expect(presenceStatusJson({ presence: legacy, machineId: "machine_x", settings: { enabled: true } }).machine).toEqual({ machineId: "machine_x", name: null, role: null, location: null })
     expect(presenceStatusJson({ presence: null, machineId: MINI, settings: { enabled: false } })).toEqual({ enabled: false, machine: null, peers: [], owns: [], owners: {}, legacy: [] })
   })

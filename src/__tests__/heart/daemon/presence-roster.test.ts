@@ -99,6 +99,13 @@ describe("presence roster commands", () => {
       expect((await handoff("teams", MINI))).toEqual({ ok: true, changed: false, message: "aris-mac-mini already owns slugger's teams" })
     })
 
+    it("names a previous owner that is off the roster by its id", async () => {
+      write({ home: HOME, presence: roster({ teams: "machine_ghost" }) })
+      writePeerRecord(root, record(LAPTOP))
+      writePeerRecord(root, record(MINI))
+      expect((await handoff("teams", "aris-mac-mini")).message).toContain("aris-mac-mini now owns slugger's teams (from machine_ghost)")
+    })
+
     it("refuses while a roster machine may still run a home-only daemon", async () => {
       write({ home: HOME, presence: roster() })
       writePeerRecord(root, record(LAPTOP))
@@ -214,6 +221,82 @@ describe("presence roster commands", () => {
       })
       expect(result.message).toContain("(it now names no machine)")
     })
+
+    it("names an owner that is off the roster by its id when the race picks one", async () => {
+      const remote = path.join(tmp, "remote.git")
+      git(tmp, "init", "--bare", "-q", "-b", "main", remote)
+      const seed = path.join(tmp, "seed")
+      git(tmp, "clone", "-q", remote, seed)
+      git(seed, "checkout", "-q", "-b", "main")
+      fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ sync: { enabled: true, remote: "origin" }, home: HOME, presence: roster() }, null, 2)}\n`)
+      writePeerRecord(seed, record(LAPTOP))
+      writePeerRecord(seed, record(MINI))
+      git(seed, "add", ".")
+      git(seed, "-c", "user.email=t@o", "-c", "user.name=t", "commit", "-q", "-m", "seed")
+      git(seed, "push", "-q", "origin", "main")
+      fs.mkdirSync(bundlesRoot)
+      git(tmp, "clone", "-q", remote, root)
+      let raced = false
+      const result = await handoffPresenceSense({
+        agent: "slugger",
+        bundlesRoot,
+        sense: "teams",
+        target: "aris-mac-mini",
+        network: {
+          fetch: (agentRoot, config) => fetchRemote(agentRoot, config),
+          push: async (agentRoot, config) => {
+            if (!raced) {
+              raced = true
+              const cleared = { sync: { enabled: true, remote: "origin" }, home: HOME, presence: roster({ teams: "machine_ghost" }) }
+              fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify(cleared, null, 2)}\n`)
+              git(seed, "-c", "user.email=t@o", "-c", "user.name=t", "commit", "-qam", "clear")
+              git(seed, "push", "-q", "origin", "main")
+            }
+            return pushHeadToBranch(agentRoot, config)
+          },
+        },
+      })
+      expect(result.message).toContain("(it now names machine_ghost)")
+    })
+
+    it("loses a join cleanly when another machine changes the roster at the same time", async () => {
+      const remote = path.join(tmp, "remote.git")
+      git(tmp, "init", "--bare", "-q", "-b", "main", remote)
+      const seed = path.join(tmp, "seed")
+      git(tmp, "clone", "-q", remote, seed)
+      git(seed, "checkout", "-q", "-b", "main")
+      fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify({ sync: { enabled: true, remote: "origin" }, home: HOME, }, null, 2)}\n`)
+      writePeerRecord(seed, record(LAPTOP))
+      writePeerRecord(seed, record(MINI))
+      git(seed, "add", ".")
+      git(seed, "-c", "user.email=t@o", "-c", "user.name=t", "commit", "-q", "-m", "seed")
+      git(seed, "push", "-q", "origin", "main")
+      fs.mkdirSync(bundlesRoot)
+      git(tmp, "clone", "-q", remote, root)
+      let raced = false
+      const result = await joinPresenceRoster({
+        agent: "slugger",
+        bundlesRoot,
+        machineId: "machine_new",
+        machineName: "new",
+        role: "peer",
+        minVersion: V,
+        network: {
+          fetch: (agentRoot, config) => fetchRemote(agentRoot, config),
+          push: async (agentRoot, config) => {
+            if (!raced) {
+              raced = true
+              const cleared = { sync: { enabled: true, remote: "origin" }, home: HOME, presence: roster({ teams: MINI }) }
+              fs.writeFileSync(path.join(seed, "agent.json"), `${JSON.stringify(cleared, null, 2)}\n`)
+              git(seed, "-c", "user.email=t@o", "-c", "user.name=t", "commit", "-qam", "clear")
+              git(seed, "push", "-q", "origin", "main")
+            }
+            return pushHeadToBranch(agentRoot, config)
+          },
+        },
+      })
+      expect(result.message).toContain("another machine changed slugger's presence roster while this join was being published (run `ouro presence status` to see it)")
+    })
   })
 
   describe("status", () => {
@@ -253,6 +336,8 @@ describe("presence roster commands", () => {
       expect(oddText).toContain("seen 4 h ago")
       expect(oddText).toContain("seen unknown")
       expect(oddText).toContain("- teams: machine_gone")
+      const heldGhost = readPresence({ home: HOME, presence: roster({ teams: "machine_ghost" }) }, true, [record(LAPTOP)])!
+      expect(renderPresenceStatus({ agent: "slugger", presence: heldGhost, flagEnabled: true, machineId: LAPTOP, now })).toContain("- teams: Aris-MacBook-Pro (roster names machine_ghost; held by home until every machine runs presence)")
     })
 
     it("uses a single-machine wording and the clock when no time is given", () => {
