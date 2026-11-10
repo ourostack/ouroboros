@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1070",
+      "changes": [
+        "One SQLite seam: better-sqlite3 loads with the first database, not at startup"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1069",
       "changes": [
         "Lean module graph: ouro --version loads 236 modules instead of 881, an agentless daemon 247 instead of 860"
