@@ -147,7 +147,7 @@ describe("linux service", () => {
     expect(nerves.emit).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.service_installed" }))
 
     expect(startLinuxService(deps, OPTIONS.ouroCliHome, OPTIONS.socketPath)).toBe(true)
-    expect(deps.runs).toEqual([["/etc/init.d/S99ouro", ["start"]]])
+    expect(deps.runs).toEqual([["/etc/init.d/S99ouro", ["restart"]]])
 
     expect(uninstallLinuxService(deps, OPTIONS.ouroCliHome)).toEqual(result.record)
     expect(deps.runs.at(-1)).toEqual(["/etc/init.d/S99ouro", ["stop"]])
@@ -230,4 +230,55 @@ describe("linux service", () => {
       expect(readServiceRecord(deps, OPTIONS.ouroCliHome)).toBeNull()
     }
   })
+})
+
+describe("the generated SysV script, run for real", () => {
+  // ouro up replaces an older daemon by stopping it (the daemon exits 0, so its supervisor
+  // winds down) and then starting the service. `start` in that moment sees the old
+  // supervisor, says "already running", and nothing brings a daemon back; `restart`
+  // must always end with a fresh daemon.
+  it("brings a daemon back when restarted the moment the old one exits cleanly", async () => {
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const { spawnSync } = await import("node:child_process")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sysv-real-"))
+    const cliHome = path.join(root, ".ouro-cli")
+    fs.mkdirSync(cliHome, { recursive: true })
+    const pids = path.join(root, "daemon-pids")
+    const entry = path.join(root, "fake-daemon.cjs")
+    // A daemon that records its pid and exits 0 on SIGTERM. Asked to stop (as daemon.stop
+    // does), it closes its socket at once (here: writes a "stopped" marker) and takes a
+    // second to wind down, as a real daemon does; that second is when `up` starts the service.
+    fs.writeFileSync(entry, [
+      'const fs = require("fs")',
+      `fs.appendFileSync(${JSON.stringify(pids)}, process.pid + "\\n")`,
+      `const stopFile = ${JSON.stringify(path.join(root, "stop-"))} + process.pid`,
+      "process.on('SIGTERM', () => process.exit(0))",
+      "const poll = setInterval(() => { if (fs.existsSync(stopFile)) { clearInterval(poll); fs.writeFileSync(stopFile + '.closed', ''); setTimeout(() => process.exit(0), 1000) } }, 20)",
+    ].join("\n"))
+    const script = path.join(root, "S99ouro")
+    fs.writeFileSync(script, generateSysvInitScript({ ...OPTIONS, nodePath: process.execPath, entryPath: entry, homeDir: root, ouroCliHome: cliHome, socketPath: path.join(root, "d.sock"), envPath: process.env.PATH }), { mode: 0o755 })
+    const readPids = () => (fs.existsSync(pids) ? fs.readFileSync(pids, "utf8").trim().split("\n").filter(Boolean) : [])
+    const waitFor = async (check: () => boolean, ms = 10_000) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) { if (check()) return true; await new Promise((r) => setTimeout(r, 50)) }
+      return false
+    }
+    try {
+      expect(spawnSync(script, ["start"], { encoding: "utf8" }).stdout).toContain("ouro: started")
+      expect(await waitFor(() => readPids().length === 1)).toBe(true)
+      const first = readPids()[0]!
+      fs.writeFileSync(path.join(root, `stop-${first}`), "")
+      expect(await waitFor(() => fs.existsSync(path.join(root, `stop-${first}.closed`)))).toBe(true)
+      expect(spawnSync(script, ["restart"], { encoding: "utf8" }).status).toBe(0)
+      expect(await waitFor(() => readPids().length === 2)).toBe(true)
+      const second = readPids()[1]!
+      expect(second).not.toBe(first)
+      expect(() => process.kill(Number(second), 0)).not.toThrow()
+      expect(spawnSync(script, ["status"], { encoding: "utf8" }).stdout).toContain("ouro: running")
+    } finally {
+      spawnSync(script, ["stop"], { encoding: "utf8" })
+    }
+  }, 30_000)
 })

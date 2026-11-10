@@ -347,7 +347,12 @@ export function startLinuxService(deps: Pick<LinuxServiceDeps, "readFile" | "exi
   if (!record || record.socketPath !== socketPath) return false
   try {
     if (record.init === "systemd") deps.run("systemctl", systemctl(record, ["start", path.basename(record.path)]))
-    else deps.run(record.path, ["start"])
+    // SysV: `restart`, not `start`. This runs only when the daemon's socket is dead, for
+    // example right after `ouro up` stopped an older daemon to replace it. That daemon
+    // exits 0, so its supervisor is on its way out too; `start` in that moment sees it
+    // still running, says "already running", and nothing brings a daemon back. `restart`
+    // waits for the old supervisor to finish and starts a fresh one.
+    else deps.run(record.path, ["restart"])
   } catch (error) {
     emitNervesEvent({
       level: "warn",
