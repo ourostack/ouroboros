@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1087",
+      "changes": [
+        "Owner's explicit asks are not refused: advisory correction hold for family; literal shell variables resolved"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1086",
       "changes": [
         "Presence failover: ouro presence failover take|release <sense> lets a machine run a shared sense in place of an owner that stopped answering, through a machine-local lease under the bundle's state/. The roster is unchanged, so the owner runs the sense again as soon as it is back and never waits on the stand-in; the stand-in's record lists the sense under failover, and status, status --json and where-i-am say who is standing in, since when and why. The Teams tunnel controller in the desk tooling takes the lease after the endpoint stops answering and releases it when the owner reclaims the endpoint."
