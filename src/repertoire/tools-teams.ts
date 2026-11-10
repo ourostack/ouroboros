@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./tools-base";
+import { authRequired } from "./auth-required";
 import { getProfile, graphRequest } from "./graph-client";
 import { queryWorkItems, adoRequest, discoverOrganizations } from "./ado-client";
 import graphEndpoints from "./data/graph-endpoints.json";
@@ -29,7 +30,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.graphToken) {
-        return "AUTH_REQUIRED:graph -- I need access to Microsoft Graph. Please sign in when prompted.";
+        return authRequired(ctx, "graph", "I need access to Microsoft Graph.");
       }
       return graphRequest(ctx.graphToken, "GET", args.path);
     },
@@ -55,7 +56,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.graphToken) {
-        return "AUTH_REQUIRED:graph -- I need access to Microsoft Graph. Please sign in when prompted.";
+        return authRequired(ctx, "graph", "I need access to Microsoft Graph.");
       }
       if (!MUTATE_METHODS.includes(args.method)) {
         return `Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`;
@@ -88,7 +89,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted.";
+        return authRequired(ctx, "ado", "I need access to Azure DevOps.");
       }
       const method = args.method || "GET";
       return adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
@@ -117,7 +118,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return "AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted.";
+        return authRequired(ctx, "ado", "I need access to Azure DevOps.");
       }
       if (!MUTATE_METHODS.includes(args.method)) {
         return `Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`;
@@ -140,7 +141,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!ctx?.graphToken) {
-        return "AUTH_REQUIRED:graph -- I need access to your Microsoft 365 profile. Please sign in when prompted.";
+        return authRequired(ctx, "graph", "I need access to your Microsoft 365 profile.");
       }
       return getProfile(ctx.graphToken);
     },
@@ -164,7 +165,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return "AUTH_REQUIRED:ado -- I need access to your Azure DevOps account. Please sign in when prompted.";
+        return authRequired(ctx, "ado", "I need access to your Azure DevOps account.");
       }
       let org = args.organization;
       if (!org) {

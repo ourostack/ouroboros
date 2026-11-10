@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./tools-base"
+import { authRequired } from "./auth-required"
 import { githubRequest } from "./github-client"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -28,7 +29,7 @@ export const githubToolDefinitions: ToolDefinition[] = [
         meta: {},
       })
       if (!ctx?.githubToken) {
-        return "AUTH_REQUIRED:github -- I need access to GitHub. Please sign in when prompted."
+        return authRequired(ctx, "github", "I need access to GitHub.")
       }
       const owner = "ourostack"
       const repo = "ouroboros"

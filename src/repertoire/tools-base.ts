@@ -115,6 +115,8 @@ export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
   githubToken?: string;
+  /** Connections whose sign-in the sense knows cannot start, with the reason to tell the person. */
+  oauthUnavailable?: Readonly<Record<string, string>>;
   signin: (connectionName: string) => Promise<string | undefined>;
   context?: ResolvedContext;
   friendStore?: FriendStore;
