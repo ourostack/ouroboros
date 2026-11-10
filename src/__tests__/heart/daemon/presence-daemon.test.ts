@@ -23,6 +23,7 @@ function presenceWith(owners: Record<string, string>, records: PeerRecord[] = [r
       machines: [{ machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop" }, { machineId: MINI, name: "aris-mac-mini", role: "always-on" }],
       owners,
     },
+    senses: { teams: { enabled: true }, mail: { enabled: false } },
   }, true, records)!
 }
 
@@ -119,7 +120,8 @@ describe("PresenceTicker", () => {
       name: "aris-mac-mini",
       role: "always-on",
       location: "home office",
-      owns: ["habits"],
+      // Teams has no named owner, so it lives on the always-on machine; disabled mail is nobody's.
+      owns: ["teams", "habits"],
       appSessions: { at: "2026-11-10T04:00:00.000Z", counts: { working: 3 } },
     })])
     clock += 60_000
@@ -354,11 +356,11 @@ describe("PresenceTicker handoff safety", () => {
     const ticker = make()
     await ticker.tick()
     const root = path.join(tmp, "AgentBundles", "slugger.ouro")
-    expect(readPeerRecords(root)[0]!.owns).toEqual(["habits"])
+    expect(readPeerRecords(root)[0]!.owns).toEqual(["teams", "habits"])
     clock += 60_000
     current = presenceWith({ habits: LAPTOP })
     await ticker.tick()
-    expect(readPeerRecords(root)[0]!.owns).toEqual([])
+    expect(readPeerRecords(root)[0]!.owns).toEqual(["teams"])
     expect(readPeerRecords(root)[0]!.seenAt).toBe("2026-11-10T03:06:00.000Z")
   })
 })

@@ -57,21 +57,15 @@ describe("presence roster commands", () => {
   describe("join", () => {
     const join = (machineId: string, machineName: string, role: string) => joinPresenceRoster({ agent: "slugger", bundlesRoot, machineId, machineName, role, minVersion: V })
 
-    it("creates a roster that keeps every shared sense with home", async () => {
+    it("creates a roster that stamps no sense on whoever joins first", async () => {
       write({ home: HOME })
       const result = await join(MINI, "aris-mac-mini", "always-on")
       expect(result).toEqual({ ok: true, changed: true, message: "aris-mac-mini (always-on) is on slugger's roster with no other machine; bundle sync is off, so only this machine sees the change" })
       const presence = read().presence as { owners: Record<string, string>; machines: unknown[]; minVersion: string }
       expect(presence.minVersion).toBe(V)
       expect(presence.machines).toEqual([{ machineId: MINI, name: "aris-mac-mini", role: "always-on" }])
-      expect(presence.owners.teams).toBe(LAPTOP)
-      expect(presence.owners.habits).toBe(LAPTOP)
-    })
-
-    it("gives a new roster's senses to this machine when the agent has no home", async () => {
-      write({})
-      await join(MINI, "aris-mac-mini", "always-on")
-      expect((read().presence as { owners: Record<string, string> }).owners.teams).toBe(MINI)
+      // Unclaimed senses stay with home until an always-on machine is on the roster, then live there.
+      expect(presence.owners).toEqual({})
     })
 
     it("adds a second machine, renames one, and does nothing when nothing changed", async () => {
@@ -316,13 +310,23 @@ describe("presence roster commands", () => {
         `- aris-mac-mini: always-on; ${V}, seen 60 min ago`,
         "owners:",
         "- teams: aris-mac-mini",
-        "- telegram: Aris-MacBook-Pro",
-        "- mail: Aris-MacBook-Pro",
-        "- bluebubbles: Aris-MacBook-Pro",
-        "- voice: Aris-MacBook-Pro",
-        "- a2a: Aris-MacBook-Pro",
+        "- telegram: aris-mac-mini",
+        "- mail: aris-mac-mini",
+        "- bluebubbles: aris-mac-mini",
+        "- voice: aris-mac-mini",
+        "- a2a: aris-mac-mini",
         "- habits: Aris-MacBook-Pro",
       ].join("\n"))
+    })
+
+    it("lists only the senses agent.json turns on, and names the rest as running nowhere", () => {
+      const all = readPresence({ ...agentJson, senses: { teams: { enabled: true }, mail: { enabled: false } } }, true, [record(LAPTOP), record(MINI)])!
+      expect(renderPresenceStatus({ agent: "slugger", presence: all, flagEnabled: true, machineId: LAPTOP, now }).split("\n").slice(-4)).toEqual([
+        "owners:",
+        "- teams: aris-mac-mini",
+        "- habits: Aris-MacBook-Pro",
+        "turned off in agent.json, so running on no machine: telegram, mail, bluebubbles, voice, a2a",
+      ])
     })
 
     it("shows owners held by home while a machine has no record, and old or odd timestamps", () => {
