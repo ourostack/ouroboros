@@ -67,6 +67,15 @@ describe("app-sessions tools", () => {
     expect(appSessionsToolsEnabled(agentRoot)).toBe(false)
   })
 
+  it("join the tool selection only when the sense is on", async () => {
+    const { selectToolsForChannel } = await import("../../repertoire/tools")
+    const names = () => selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, { agentName: "slugger", agentRoot })
+      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name.startsWith("app_sessions_"))
+    expect(names()).toEqual([])
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ senses: { "app-sessions": { enabled: true } } }))
+    expect(names()).toEqual(appSessionsToolDefinitions.map(definition => definition.tool.function.name))
+  })
+
   it("need an agent runtime, and report failures as errors", async () => {
     expect(await call(appSessionsListTool, {}, null as unknown as ToolContext)).toEqual({ error: "the app-sessions tools need an agent runtime" })
     client.listAppSessions.mockImplementationOnce(() => { throw new Error("no GitHub Copilot app database") })

@@ -330,6 +330,18 @@ describe("daemon runtime logging", () => {
     expect(content).not.toContain("senses.shepherd_stream_connected")
   })
 
+  it("gives the app-sessions sense the same quiet warn-level defaults", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    configureDaemonRuntimeLogger("app-sessions", { homeDir: tmpRoot, agentName: "ouroboros" })
+    emitNervesEvent({ component: "senses", event: "senses.app_sessions_snapshot", message: "info is below the default", meta: {} })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_snapshot_error", message: "could not snapshot", meta: { error: "x" } })
+
+    const logFile = path.join(tmpRoot, "AgentBundles", "ouroboros.ouro", "state", "daemon", "logs", "app-sessions.ndjson")
+    const content = await waitForLogContent(logFile, '"event":"senses.app_sessions_snapshot_error"')
+    expect(content).not.toContain('"event":"senses.app_sessions_snapshot"')
+  })
+
   it("persists info-level A2A turn events by default, so a peer turn's sync timing is on record", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     vi.spyOn(process.stderr, "write").mockImplementation(() => true)

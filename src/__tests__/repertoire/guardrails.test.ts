@@ -270,6 +270,17 @@ describe("guardInvocation — structural guardrails", () => {
     }
   })
 
+  it("keeps the owner's Copilot app sessions to family trust", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const { appSessionsToolDefinitions } = await import("../../repertoire/tools-app-sessions")
+    for (const tool of appSessionsToolDefinitions.map(definition => definition.tool.function.name)) {
+      for (const trustLevel of ["stranger", "acquaintance", "friend"] as const) {
+        expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel })).toEqual(expect.objectContaining({ allowed: false, reason: expect.stringContaining("Copilot app sessions") }))
+      }
+      expect(guardInvocation(tool, {}, { readPaths: new Set(), trustLevel: "family" })).toEqual({ allowed: true })
+    }
+  })
+
   it("preserves friend access to unrelated Ouro commands", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("shell", { command: "ouro status" }, { readPaths: new Set(), trustLevel: "friend" })).toEqual({ allowed: true })

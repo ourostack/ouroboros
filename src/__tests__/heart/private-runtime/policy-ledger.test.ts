@@ -292,6 +292,25 @@ describe("private-runtime policy and ledger", () => {
       .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
   })
 
+  it("allows a Copilot app session reply wake only with its reply id and sense refs", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const request = (originRefs: Array<{ kind: string; id: string }>, key: string) => privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "Copilot app session reply",
+      triggerSource: "app-sessions",
+      idempotencyKey: key,
+      originRefs,
+    })
+
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "app-session-reply", id: "s1:10" }, { kind: "sense", id: "app-sessions" }], "app-sessions:slugger:1"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "allow", executable: true, reason: "Copilot app session reply" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "app-session-reply", id: "s1:20" }], "app-sessions:slugger:2"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+    await expect(privateRuntime.requestPrivateTurnDecision(request([{ kind: "sense", id: "app-sessions" }], "app-sessions:slugger:3"), { ...deps, evaluatePolicy: undefined }))
+      .resolves.toMatchObject({ result: "deny", deniedReason: "default policy deny" })
+  })
+
   it("keeps spoofed operator CLI private wakes denied by default", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()
