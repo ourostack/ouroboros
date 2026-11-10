@@ -64,6 +64,7 @@ describe("daemon command plane branches", () => {
       schedulerFireVerifier?: unknown
       schedulerFireConsumer?: unknown
       orphanStartupDrain?: (socketPath: string) => Promise<void>
+      socketAnswering?: (socketPath: string) => Promise<boolean>
       externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
       useDefaultExternalEventSourceReadiness?: boolean
     },
@@ -131,6 +132,7 @@ describe("daemon command plane branches", () => {
       })),
       onStopCommandComplete: options?.onStopCommandComplete,
       orphanStartupDrain: options?.orphanStartupDrain,
+      ...(options?.socketAnswering ? { socketAnswering: options.socketAnswering } : {}),
       ...(!options?.useDefaultExternalEventSourceReadiness
         ? { externalEventSourceReadiness: options?.externalEventSourceReadiness ?? vi.fn(async () => undefined) }
         : {}),
@@ -381,9 +383,8 @@ describe("daemon command plane branches", () => {
     const { daemon, processManager, senseManager } = make(socketPath, undefined, { orphanStartupDrain })
 
     const starting = daemon.start()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(orphanStartupDrain).toHaveBeenCalledWith(socketPath))
 
-    expect(orphanStartupDrain).toHaveBeenCalledWith(socketPath)
     expect(fs.existsSync(socketPath)).toBe(false)
     expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
     expect(senseManager.startAutoStartSenses).not.toHaveBeenCalled()
@@ -395,6 +396,22 @@ describe("daemon command plane branches", () => {
     expect(senseManager.startAutoStartSenses).toHaveBeenCalledTimes(1)
     await expect(sendRaw(socketPath, JSON.stringify({ kind: "daemon.status" }))).resolves.toContain('"ok":true')
     await daemon.stop()
+  })
+
+  it("refuses to start, before any cleanup, while another daemon answers on its socket", async () => {
+    const socketPath = tmpSocketPath("daemon-start-live-socket")
+    fs.writeFileSync(socketPath, "held by a live daemon")
+    const orphanStartupDrain = vi.fn(async () => {})
+    const socketAnswering = vi.fn(async () => true)
+    const { daemon, processManager } = make(socketPath, undefined, { orphanStartupDrain, socketAnswering })
+
+    await expect(daemon.start()).rejects.toThrow(`another daemon already answers on ${socketPath}`)
+
+    expect(socketAnswering).toHaveBeenCalledWith(socketPath)
+    expect(orphanStartupDrain).not.toHaveBeenCalled()
+    expect(fs.readFileSync(socketPath, "utf-8")).toBe("held by a live daemon")
+    expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
+    fs.unlinkSync(socketPath)
   })
 
   it("does not open the socket or autostart when orphan cleanup cannot prove quiescence", async () => {
