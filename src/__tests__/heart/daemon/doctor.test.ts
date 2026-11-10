@@ -30,6 +30,7 @@ import {
   runDoctorChecks,
   checkDaemon,
   checkCliPath,
+  checkGit,
   checkAgents,
   checkSenses,
   checkHabits,
@@ -150,6 +151,7 @@ describe("runDoctorChecks", () => {
     expect(names).toContain("Habits")
     expect(names).toContain("Security")
     expect(names).toContain("Disk")
+    expect(names).toContain("Git")
   })
 
   it("summary counts match the total checks across categories", async () => {
@@ -194,6 +196,51 @@ describe("runDoctorChecks", () => {
 })
 
 // ── CLI PATH checks ──
+
+describe("checkGit", () => {
+  it("passes with the host's git, ignoring the portable git's directory", () => {
+    const deps = createMockDeps({
+      envPath: "/tmp/home/.ouro-cli/tools/git/bin::/usr/bin",
+      existsSync: existsFor(["/tmp/home/.ouro-cli/tools/git/bin/git", "/usr/bin/git"]),
+    })
+    expect(checkGit(deps)).toEqual({ name: "Git", checks: [{ label: "git", status: "pass", detail: "system git: /usr/bin/git" }] })
+  })
+
+  it("passes with only the portable git", () => {
+    const deps = createMockDeps({
+      envPath: "/tmp/home/.ouro-cli/tools/git/bin:/usr/bin",
+      existsSync: existsFor(["/tmp/home/.ouro-cli/tools/git/bin/git"]),
+    })
+    expect(checkGit(deps).checks[0]).toEqual({
+      label: "git", status: "pass", detail: "portable git: /tmp/home/.ouro-cli/tools/git (this host has no git of its own)",
+    })
+  })
+
+  it("fails when a syncing agent has no git, and names the fix for the platform", () => {
+    const deps = createMockDeps({
+      envPath: undefined,
+      platform: "linux",
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/a.ouro/agent.json", "/tmp/bundles/b.ouro/agent.json", "/tmp/bundles/c.ouro/agent.json"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["a.ouro", "b.ouro", "c.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/a.ouro/agent.json": JSON.stringify({ sync: { enabled: true } }),
+        "/tmp/bundles/b.ouro/agent.json": JSON.stringify({ sync: { enabled: false } }),
+        "/tmp/bundles/c.ouro/agent.json": "not json",
+      }),
+    })
+    const fix = ["arm64", "x64", "arm"].includes(process.arch) ? "ouro git install" : "install git with the host's package manager"
+    expect(checkGit(deps).checks[0]).toEqual({
+      label: "git", status: "fail", detail: `no git on this host, and bundle sync needs it for a; fix: ${fix}`,
+    })
+  })
+
+  it("warns when no agent syncs", () => {
+    const deps = createMockDeps({ envPath: "/usr/bin", platform: "darwin" })
+    expect(checkGit(deps).checks[0]).toEqual({
+      label: "git", status: "warn", detail: "no git on this host; bundle sync and `ouro clone` need it; fix: install git with the host's package manager",
+    })
+  })
+})
 
 describe("checkCliPath", () => {
   it("passes when PATH resolves to the managed ouro wrapper", () => {

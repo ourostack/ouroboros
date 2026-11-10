@@ -217,6 +217,16 @@ function parseSelfUpdateHostCommand(args: string[]): OuroCliCommand {
   return { kind: "self-update.enable", ...options }
 }
 
+const GIT_USAGE = "Usage: ouro git install [--force] | ouro git status"
+
+function parseGitCommand(args: string[]): OuroCliCommand {
+  const [sub, ...rest] = args
+  if (sub === "status" && rest.length === 0) return { kind: "git.status" }
+  if (sub === "install" && rest.length === 0) return { kind: "git.install", force: false }
+  if (sub === "install" && rest.length === 1 && rest[0] === "--force") return { kind: "git.install", force: true }
+  throw new Error(GIT_USAGE)
+}
+
 function parseLogsCommand(args: string[]): OuroCliCommand {
   if (args.length === 0) return { kind: "daemon.logs" }
   if (args[0] !== "prune") throw new Error("Usage: ouro logs prune [--agent <name>]")
@@ -3095,6 +3105,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
   if (head === "service") return parseServiceCommand(args.slice(1))
+  if (head === "git") return parseGitCommand(args.slice(1))
   if (head === "sanctuary") {
     if (args.length === 3 && args[1] === "git-exclude" && args[2] === "--print") return { kind: "sanctuary.git-exclude" }
     throw new Error("Usage: ouro sanctuary git-exclude --print")

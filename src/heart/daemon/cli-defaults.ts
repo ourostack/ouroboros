@@ -59,6 +59,7 @@ import {
   splitProviderCredentialFields,
 } from "../provider-credentials"
 import { defaultIsProcessAlive } from "./startup-tui"
+import { portableGitAsset } from "./portable-git"
 import { readDaemonTombstone } from "./daemon-tombstone"
 
 // ── Default implementations ──
@@ -103,6 +104,13 @@ function linuxServiceDeps(): LinuxServiceDeps {
     isRoot: process.getuid?.() === 0,
   }
 }
+
+/* v8 ignore start -- host default: downloads and installs into the real ~/.ouro-cli @preserve */
+async function defaultInstallPortableGit(options: { force?: boolean }): ReturnType<NonNullable<OuroCliDeps["installPortableGit"]>> {
+  const { installPortableGit, createDefaultPortableGitInstallDeps } = await import("./portable-git-install")
+  return installPortableGit(createDefaultPortableGitInstallDeps(), options)
+}
+/* v8 ignore stop */
 
 function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linuxService"]> {
   // Resolve the home lazily: building the CLI deps must not consult the home directory.
@@ -974,6 +982,9 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     pruneDaemonLogs: defaultPruneDaemonLogs,
     linuxService: defaultLinuxService(socketPath),
+    ...(portableGitAsset(process.platform, process.arch) ? { installPortableGit: defaultInstallPortableGit } : {}),
+    /* v8 ignore next -- host default: reads this machine's PATH and ~/.ouro-cli @preserve */
+    describeGit: async () => (await import("./portable-git-install")).describeGitAvailability(),
     ensureSkillManagement: defaultEnsureSkillManagement,
     prepareDaemonRuntimeReplacement: defaultPrepareDaemonRuntimeReplacement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,

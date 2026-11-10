@@ -194,6 +194,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.installPortableGit = undefined
 
     // git --version throws ENOENT
     mockExecFileSync.mockImplementation(() => {
@@ -209,6 +210,45 @@ describe("ouro clone execution", () => {
       .join("\n")
     expect(output).toContain("git is not installed")
     expect(output).toContain("https://git-scm.com")
+  })
+
+  it("git not installed on a host with a portable git: installs it, then clones", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
+    deps.installPortableGit = vi.fn(async () => ({
+      status: "installed" as const,
+      root: "/h/.ouro-cli/tools/git",
+      marker: { release: "v2.56.0-2", asset: "a.tar.gz", sha256: "0".repeat(64), gitVersion: "git version 2.56.0", installedAt: "2026-11-10T08:00:00.000Z" },
+    }))
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
+      return Buffer.from("")
+    })
+
+    await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    const output = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]).join("\n")
+    expect(deps.installPortableGit).toHaveBeenCalledWith({ force: false })
+    expect(output).toContain("git is not installed; installing a portable git (ouro git install)...")
+    expect(output).toContain("installed git version 2.56.0 at /h/.ouro-cli/tools/git")
+    expect(mockExecFileSync.mock.calls.some((c: unknown[]) => c[0] === "git" && (c[1] as string[])[0] === "clone")).toBe(true)
+  })
+
+  it("git not installed and the portable install fails: says why, then the install guide", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+    deps.installPortableGit = vi.fn(async () => { throw new Error("portable git download failed: HTTP 503") })
+    mockExecFileSync.mockImplementation(() => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }) })
+
+    const result = await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    expect(result).toContain("portable git download failed: HTTP 503\ngit is not installed -- install it from https://git-scm.com")
+    expect(mockExecFileSync.mock.calls.some((c: unknown[]) => (c[1] as string[])[0] === "clone")).toBe(false)
   })
 
   it("remote not accessible: outputs 'could not reach remote' message", async () => {
