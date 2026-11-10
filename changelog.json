@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1041",
+      "changes": [
+        "Renumber main above 1038: #1215 landed as 1033 after #1211's 1038, so installs would read main as older than it is"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1033",
       "changes": [
         "Keep one result per tool call on replay; a duplicate (placeholder plus real result) made every later turn 400"
