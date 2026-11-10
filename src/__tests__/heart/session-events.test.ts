@@ -2240,9 +2240,10 @@ describe("session events", () => {
       // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
       // With the fix: prefix match skips system messages, matches user+assistant,
       // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
-      // Keep all six native records while projecting the five current messages.
-      expect(updated.events).toHaveLength(6)
-      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      // Keep the conversation's native records; the superseded system prompt is not conversation.
+      expect(updated.events).toHaveLength(5)
+      expect(updated.events.slice(0, 2)).toEqual(existing.events.slice(1))
+      expect(updated.events.some((event) => event.content === "system prompt v1 with weather=sunny")).toBe(false)
       expect(updated.projection.eventIds).toHaveLength(5)
     })
 
@@ -2286,15 +2287,94 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      expect(updated.events).toHaveLength(6)
-      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
-      expect(updated.events[3]!.role).toBe("system")
-      expect(updated.events[4]!.content).toBe("question B")
-      expect(updated.events[5]!.content).toBe("answer B")
+      expect(updated.events).toHaveLength(5)
+      expect(updated.events.slice(0, 2)).toEqual(existing.events.slice(1))
+      expect(updated.events[2]!).toMatchObject({ role: "system", content: "system v2 different" })
+      expect(updated.events[3]!.content).toBe("question B")
+      expect(updated.events[4]!.content).toBe("answer B")
 
       // Projection should include the new system event + reused non-system + new non-system
       const projected = projectProviderMessages(updated)
       expect(projected).toHaveLength(5)
+    })
+
+    describe("superseded system prompts", () => {
+      const basis = { maxTokens: null, contextMargin: null, inputTokens: null }
+      async function twoTurns(
+        turn1: OpenAI.ChatCompletionMessageParam[],
+        turn2: OpenAI.ChatCompletionMessageParam[],
+        adjust?: (envelope: import("../../heart/session-events").SessionEnvelope) => void,
+        trimmed: OpenAI.ChatCompletionMessageParam[] = turn2,
+      ) {
+        const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+        const first = buildCanonicalSessionEnvelope({
+          existing: null, previousMessages: [], currentMessages: turn1, trimmedMessages: turn1,
+          recordedAt: "2026-11-10T05:00:00.000Z", lastUsage: null, state: null, projectionBasis: basis,
+        }).envelope
+        adjust?.(first)
+        return buildCanonicalSessionEnvelope({
+          existing: first, previousMessages: turn1, currentMessages: turn2, trimmedMessages: trimmed,
+          recordedAt: "2026-11-10T05:01:00.000Z", lastUsage: null, state: null, projectionBasis: basis,
+        }).envelope
+      }
+      const contents = (envelope: { events: Array<{ content: unknown }> }) => envelope.events.map((event) => event.content)
+
+      it("drops a refreshed prompt and says so", async () => {
+        const nerves = await import("../../nerves/runtime")
+        const spy = vi.spyOn(nerves, "emitNervesEvent")
+        const updated = await twoTurns(
+          [{ role: "system", content: "v1" }, { role: "user", content: "hi" }],
+          [{ role: "system", content: "v2" }, { role: "user", content: "hi" }, { role: "assistant", content: "yo" }],
+        )
+        expect(contents(updated)).toEqual(["hi", "v2", "yo"])
+        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ event: "mind.session_system_prompts_dropped", meta: { dropped: 1, kept: 3 } }))
+        spy.mockRestore()
+      })
+
+      it("keeps a prompt another event refers to", async () => {
+        const updated = await twoTurns(
+          [{ role: "system", content: "v1" }, { role: "user", content: "hi" }],
+          [{ role: "system", content: "v2" }, { role: "user", content: "hi" }],
+          (envelope) => { envelope.events[1]!.relations.references = [envelope.events[0]!.id] },
+        )
+        expect(contents(updated)).toEqual(["v1", "hi", "v2"])
+      })
+
+      it("keeps a prompt an approval suspension names", async () => {
+        const updated = await twoTurns(
+          [{ role: "system", content: "v1" }, { role: "user", content: "hi" }],
+          [{ role: "system", content: "v2" }, { role: "user", content: "hi" }],
+          (envelope) => { envelope.approvalSuspensions = [{ approvalId: "a1", sessionEventId: envelope.events[0]!.id } as never] },
+        )
+        expect(contents(updated)).toEqual(["v1", "hi", "v2"])
+      })
+
+      it("keeps a system record without text, such as a redaction marker", async () => {
+        const updated = await twoTurns(
+          [{ role: "system", content: "v1" }, { role: "user", content: "hi" }],
+          [{ role: "system", content: "v2" }, { role: "user", content: "hi" }],
+          (envelope) => { envelope.events[0]!.content = null },
+        )
+        expect(contents(updated)).toEqual([null, "hi", "v2"])
+      })
+
+      it("keeps the newest record even when it is an unprojected prompt, so sequence numbers never repeat", async () => {
+        const updated = await twoTurns(
+          [{ role: "user", content: "hi" }, { role: "system", content: "late prompt" }],
+          [{ role: "user", content: "hi" }],
+        )
+        expect(contents(updated)).toEqual(["hi", "late prompt"])
+      })
+
+      it("drops nothing when nothing is projected", async () => {
+        const updated = await twoTurns(
+          [{ role: "system", content: "v1" }, { role: "user", content: "hi" }],
+          [{ role: "system", content: "v2" }, { role: "user", content: "hi" }],
+          undefined,
+          [],
+        )
+        expect(contents(updated)).toEqual(["v1", "hi", "v2"])
+      })
     })
 
     it("handles no system messages in either array", async () => {
@@ -2373,8 +2453,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      expect(updated.events).toHaveLength(7)
-      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.events).toHaveLength(5)
+      expect(updated.events.filter((event) => event.role !== "system")).toEqual([...existing.events.filter((event) => event.role !== "system"), expect.objectContaining({ content: "new question" })])
+      expect(updated.events.filter((event) => event.role === "system").map((event) => event.content)).toEqual(["system 1 v2", "system 2 v2"])
       expect(updated.projection.eventIds).toHaveLength(5)
     })
 
@@ -2409,8 +2490,8 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      expect(updated.events).toHaveLength(2)
-      expect(updated.events[0]).toEqual(existing.events[0])
+      expect(updated.events).toHaveLength(1)
+      expect(updated.events[0]).toMatchObject({ id: "evt-000002", content: "only system v2" })
       expect(updated.projection.eventIds).toEqual(["evt-000002"])
     })
 
@@ -2654,12 +2735,12 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Only the new system and the two new dialogue messages create records.
-      // Total events created = 21 original + 1 new system + 2 new messages = 24
-      // But only 3 in projection (sys_v2, new_q, new_a)
-      expect(result2.envelope.events).toHaveLength(24)
-      expect(result2.envelope.events.slice(0, result1.envelope.events.length)).toEqual(result1.envelope.events)
-      expect(result2.evictedEvents).toHaveLength(21)
+      // Only the new system and the two new dialogue messages create records, and the superseded
+      // system prompt is dropped: 20 original dialogue + 1 new system + 2 new messages = 23,
+      // of which only 3 are projected (sys_v2, new_q, new_a). All 20 dialogue records are kept.
+      expect(result2.envelope.events).toHaveLength(23)
+      expect(result2.envelope.events.slice(0, 20)).toEqual(result1.envelope.events.slice(1))
+      expect(result2.evictedEvents).toHaveLength(20)
 
       // Phase 3: The native envelope retains history without a separate archive.
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))

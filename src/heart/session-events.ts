@@ -1672,6 +1672,45 @@ function retainedSourceEventIds(
   return originals.some(matches) || sanitizeProviderMessages(originals).some(matches) ? ids : null
 }
 
+/**
+ * The system prompt is rebuilt every turn (it carries live world state), so each turn used to add
+ * a full copy to native history: one long-running private-runtime session held 3,773 of them (329 MB of
+ * 357 MB) and parsing it ran Node out of memory. A system prompt the projection no longer uses is
+ * not conversation, so it is dropped once superseded. System records without text (redaction
+ * markers), events anything refers to, and the newest event (so sequence numbers never repeat)
+ * are always kept.
+ */
+function dropSupersededSystemPrompts(
+  events: SessionEvent[],
+  projectionEventIds: string[],
+  approvalSuspensions: SessionApprovalSuspensionCheckpoint[] | undefined,
+): SessionEvent[] {
+  if (projectionEventIds.length === 0) return events
+  const keep = new Set(projectionEventIds)
+  for (const event of events) {
+    const relations = event.relations
+    for (const id of [relations.replyToEventId, relations.threadRootEventId, relations.supersedesEventId, relations.redactsEventId, ...relations.references]) {
+      if (id) keep.add(id)
+    }
+  }
+  for (const id of JSON.stringify(approvalSuspensions ?? []).match(/evt-\d+/g) ?? []) keep.add(id)
+  const newestSequence = events.reduce((max, event) => Math.max(max, event.sequence), -Infinity)
+  const kept = events.filter((event) =>
+    event.role !== "system"
+    || typeof event.content !== "string"
+    || keep.has(event.id)
+    || event.sequence === newestSequence)
+  if (kept.length < events.length) {
+    emitNervesEvent({
+      component: "mind",
+      event: "mind.session_system_prompts_dropped",
+      message: "dropped superseded system prompts from session history",
+      meta: { dropped: events.length - kept.length, kept: kept.length },
+    })
+  }
+  return kept
+}
+
 export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelopeBuildResult {
   const existing = options.existing
   // Callers pass pre-sanitized messages + pre-captured ingress times.
@@ -1763,15 +1802,16 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   }
 
   const projectionEventIds = selectProjectedEventIds(currentMessages, currentEventIds, trimmedMessages)
+  const keptEvents = dropSupersededSystemPrompts(events, projectionEventIds, existing?.approvalSuspensions)
 
   // Projection omissions are not authority to delete native history.
   const projectionIdSet = new Set(projectionEventIds)
-  const effectiveEvents = selectEffectiveSessionEvents(events)
+  const effectiveEvents = selectEffectiveSessionEvents(keptEvents)
   const effectiveIds = new Set(effectiveEvents.map((event) => event.id))
   const evictedEvents = effectiveEvents.filter((event) => !projectionIdSet.has(event.id))
   const envelope: SessionEnvelope = {
     version: 2,
-    events,
+    events: keptEvents,
     projection: {
       eventIds: projectionEventIds.filter((id) => effectiveIds.has(id)),
       trimmed: evictedEvents.length > 0,
