@@ -9,7 +9,7 @@
       "version": "0.1.0-alpha.1034",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
-        "@ouro.bot/friends": "0.1.0-alpha.17",
+        "@ouro.bot/friends": "0.1.0-alpha.18",
         "@types/react": "^17.0.91",
         "@types/ws": "^8.18.1",
         "ajv": "^8.20.0",
@@ -1454,9 +1454,9 @@
       }
     },
     "node_modules/@ouro.bot/friends": {
-      "version": "0.1.0-alpha.17",
-      "resolved": "https://registry.npmjs.org/@ouro.bot/friends/-/friends-0.1.0-alpha.17.tgz",
-      "integrity": "sha512-hpThUpNVP7StvleA9ue3dNytIDVPuNzmw+lnrlV40hKn3rF79VMUV6X3cH0kjG0EDp4Jpj3hlfxFKEmSu/oaiw==",
+      "version": "0.1.0-alpha.18",
+      "resolved": "https://registry.npmjs.org/@ouro.bot/friends/-/friends-0.1.0-alpha.18.tgz",
+      "integrity": "sha512-28DqPjiZ3kOVNBbFNGWqvfRO11xDn7V0ggaMUZvSx8pY9rHgnbMRzSc5NPtdjDTUpaYS28mRQCNqTgx+R5F8fQ==",
       "license": "Apache-2.0",
       "dependencies": {
         "libsodium-wrappers": "0.8.4"
