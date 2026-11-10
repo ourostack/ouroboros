@@ -101,8 +101,8 @@ function linuxServiceDeps(): LinuxServiceDeps {
 }
 
 function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linuxService"]> {
-  const homeDir = os.homedir()
-  const options = () => ({
+  // Resolve the home lazily: building the CLI deps must not consult the home directory.
+  const options = (homeDir: string) => ({
     nodePath: process.execPath,
     entryPath: resolveDaemonBootEntryPath(homeDir),
     socketPath,
@@ -112,16 +112,17 @@ function defaultLinuxService(socketPath: string): NonNullable<OuroCliDeps["linux
   })
   return {
     install: (request) => {
+      const homeDir = os.homedir()
       const deps = linuxServiceDeps()
       if (request.print) {
         const servicePath = request.path ?? defaultServicePath(request.init, homeDir, deps.isRoot)
-        const content = request.init === "sysv" ? generateSysvInitScript(options()) : generateSystemdUnit(options(), !deps.isRoot)
+        const content = request.init === "sysv" ? generateSysvInitScript(options(homeDir)) : generateSystemdUnit(options(homeDir), !deps.isRoot)
         return { path: servicePath, content, written: false }
       }
-      const installed = installLinuxService(deps, options(), request)
+      const installed = installLinuxService(deps, options(homeDir), request)
       return { path: installed.record.path, content: installed.content, written: true }
     },
-    uninstall: () => uninstallLinuxService(linuxServiceDeps(), getOuroCliHome(homeDir)),
+    uninstall: () => uninstallLinuxService(linuxServiceDeps(), getOuroCliHome(os.homedir())),
   }
 }
 /* v8 ignore stop */
