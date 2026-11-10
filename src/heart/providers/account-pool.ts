@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_TRANCHE_CAPS, pickByTranche, trancheCap, usedPct, type QuotaReading } from "../quota/tranche"
-import { directReading, mergeReadings, type AgentBurn } from "../quota/fleet-readings"
+import { directReading, LOCAL_BALANCER_STATE, mergeReadings, type AgentBurn } from "../quota/fleet-readings"
 
 /**
  * A provider account pool. The accounts are discovered, never hard-coded: they are the GitHub accounts
@@ -47,13 +47,26 @@ export interface DiscoveryDeps {
 export const accountKey = (account: { login: string; host: string }): string => `${account.login}@${account.host}`
 
 /**
- * This Mac's name for the fleet gist: macOS's LocalHostName (unique on the network, and what the fleet tooling
- * keys Macs by), else the host name, lowercased with no dots. Generic host names such as "Mac" would make two
- * machines write one file.
+ * This Mac's name for the fleet gist. First the name the Mac's own quota balancer uses (`last.machine` in
+ * `~/.config/mac-fleet/quota-balance.json`, from the fleet's machines.json, e.g. "laptop"), so the agent's file sits
+ * beside that Mac's `<machine>.quota.txt`. Else macOS's LocalHostName (unique on the network), else the host name.
+ * Lowercased with no dots: a generic host name such as "Mac" would make two machines write one file.
  */
-export function defaultMachineName(deps: { spawnSync?: typeof defaultSpawnSync; hostname?: () => string; platform?: NodeJS.Platform } = {}): string {
+export function defaultMachineName(deps: {
+  spawnSync?: typeof defaultSpawnSync
+  hostname?: () => string
+  platform?: NodeJS.Platform
+  homeDir?: string
+  readFile?: (file: string) => string
+} = {}): string {
   let name = ""
-  if ((deps.platform ?? process.platform) === "darwin") {
+  try {
+    const state = JSON.parse((deps.readFile ?? ((file: string) => fs.readFileSync(file, "utf8")))(path.join(deps.homeDir ?? os.homedir(), LOCAL_BALANCER_STATE))) as { last?: { machine?: unknown } }
+    if (typeof state?.last?.machine === "string") name = state.last.machine.trim()
+  } catch {
+    // no balancer on this Mac
+  }
+  if (!name && (deps.platform ?? process.platform) === "darwin") {
     const result = spawnOf(deps)("/usr/sbin/scutil", ["--get", "LocalHostName"], { encoding: "utf8", timeout: 3000 })
     name = result.status === 0 ? String(result.stdout ?? "").trim() : ""
   }

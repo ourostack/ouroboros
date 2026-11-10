@@ -491,14 +491,23 @@ describe("AccountPool", () => {
     expect((publishBurn.mock.calls[2][0] as { machine: string }).machine).not.toContain(".")
   })
 
-  it("uses macOS's LocalHostName, else the host name, lowercased with no dots", () => {
+  it("uses the Mac balancer's machine name, else macOS's LocalHostName, else the host name, lowercased with no dots", () => {
     const scutil = (status: number, stdout: string) => spawnMock(() => ({ status, stdout }))
-    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(0, "Aris-MacBook-Pro\n"), hostname: () => "Mac" })).toBe("aris-macbook-pro")
-    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(1, ""), hostname: () => "Mac.lan" })).toBe("mac")
-    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(0, undefined as unknown as string), hostname: () => "Box" })).toBe("box")
-    expect(defaultMachineName({ platform: "linux", hostname: () => "My Host.example.com" })).toBe("my-host")
-    expect(defaultMachineName({ platform: "linux" })).toBe(os.hostname().split(".")[0].toLowerCase().replace(/[^a-z0-9-]+/g, "-"))
+    const none = () => { throw new Error("ENOENT") }
+    const state = (value: unknown) => (file: string) => {
+      expect(file).toBe(path.join("/h", ".config", "mac-fleet", "quota-balance.json"))
+      return JSON.stringify(value)
+    }
+    expect(defaultMachineName({ homeDir: "/h", readFile: state({ last: { machine: " laptop " } }), platform: "darwin", spawnSync: scutil(0, "Aris-MacBook-Pro") })).toBe("laptop")
+    expect(defaultMachineName({ homeDir: "/h", readFile: state({ last: { machine: 7 } }), platform: "darwin", spawnSync: scutil(0, "Aris-MacBook-Pro\n") })).toBe("aris-macbook-pro")
+    expect(defaultMachineName({ homeDir: "/h", readFile: state(null), platform: "linux", hostname: () => "Box" })).toBe("box")
+    expect(defaultMachineName({ readFile: none, platform: "darwin", spawnSync: scutil(1, ""), hostname: () => "Mac.lan" })).toBe("mac")
+    expect(defaultMachineName({ readFile: none, platform: "darwin", spawnSync: scutil(0, undefined as unknown as string), hostname: () => "Box" })).toBe("box")
+    expect(defaultMachineName({ readFile: none, platform: "linux", hostname: () => "My Host.example.com" })).toBe("my-host")
+    expect(defaultMachineName({ homeDir: "/nonexistent-home", platform: "linux" })).toBe(os.hostname().split(".")[0].toLowerCase().replace(/[^a-z0-9-]+/g, "-"))
+    expect(typeof defaultMachineName()).toBe("string")
   })
+
 
   it("refreshes readings in the background, at most once per interval, and republishes them", async () => {
     const loadReadings = vi.fn(async () => [reading("ari@msft.ghe.com", 40)])
