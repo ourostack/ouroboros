@@ -159,6 +159,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // daemon.migrate_to_desk_* events around the runMigrateToDesk() entry
   // points.
   "repertoire/desk/classifier",
+  // Loaded first by the CLI entry points, before any project module, so it cannot import nerves; the entry's own
+  // start event reports the compile cache directory it chose.
+  "daemon/compile-cache",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

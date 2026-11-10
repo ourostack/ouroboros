@@ -35,4 +35,5 @@ export function enableOuroCompileCache(
   return result.directory ?? null
 }
 
-enableOuroCompileCache()
+/** The compile cache directory this process uses, or null; the entry point reports it in its start event. */
+export const ouroCompileCacheDirectory = enableOuroCompileCache()
