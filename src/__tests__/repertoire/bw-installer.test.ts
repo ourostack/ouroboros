@@ -15,7 +15,7 @@ vi.mock("node:child_process", () => ({
   execFile: (...args: unknown[]) => mockExecFile(...args),
 }))
 
-import { bwCommand, ensureBwCli, findBundledBwCli, findExecutableOnPath, findExecutableViaNpmPrefix, PINNED_BW_CLI_VERSION } from "../../repertoire/bw-installer"
+import { bwCommand, ensureBwCli, findBundledBwCli, findExecutableOnPath, findExecutableViaNpmPrefix, isBundledBw, isBwMissingModuleError, markBundledBwBroken, PINNED_BW_CLI_VERSION, resetBundledBwStateForTests } from "../../repertoire/bw-installer"
 
 const NO_BUNDLED = (): null => null
 
@@ -40,6 +40,7 @@ describe("ensureBwCli", () => {
     process.env.PATH = ""
     delete process.env.PATHEXT
     delete process.env.OURO_BW_BINARY
+    resetBundledBwStateForTests()
   })
 
   afterEach(() => {
@@ -211,6 +212,32 @@ describe("ensureBwCli", () => {
 
     await expect(ensureBwCli(() => bundled)).resolves.toBe(bundled)
     expect(mockExecFile).not.toHaveBeenCalled()
+  })
+
+  it("falls back to bw on PATH for the rest of the process once the bundled bw is found broken, logging it once", async () => {
+    const binDir = tempDir()
+    const onPath = writeExecutable(path.join(binDir, "bw"))
+    process.env.PATH = binDir
+    const bundled = path.join(tempDir(), "node_modules", "@bitwarden", "cli", "build", "bw.js")
+
+    expect(isBundledBw(bundled)).toBe(false)
+    await expect(ensureBwCli(() => bundled)).resolves.toBe(bundled)
+    expect(isBundledBw(bundled)).toBe(true)
+    expect(isBundledBw(onPath)).toBe(false)
+
+    const missing = "bw CLI error: Error: Cannot find module '../internals/hidden-keys'\nRequire stack: ..."
+    expect(isBwMissingModuleError(new Error(missing))).toBe(true)
+    expect(isBwMissingModuleError(new Error("bw CLI error: vault is locked"))).toBe(false)
+
+    markBundledBwBroken(missing)
+    markBundledBwBroken("a second failure")
+    const broken = nervesEvents.filter((event) => event.event === "repertoire.bw_cli_bundled_broken")
+    expect(broken).toHaveLength(1)
+    expect(broken[0]).toMatchObject({ level: "warn", meta: { bundledPath: bundled, reason: "bw CLI error: Error: Cannot find module '../internals/hidden-keys'" } })
+
+    const findBundled = vi.fn(() => bundled)
+    await expect(ensureBwCli(findBundled)).resolves.toBe(onPath)
+    expect(findBundled).not.toHaveBeenCalled()
   })
 
   it("finds the bundled bw entry point from the @bitwarden/cli package, and says when it is missing", () => {

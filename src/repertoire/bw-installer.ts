@@ -163,6 +163,42 @@ export function findBundledBwCli(
   }
 }
 
+let bundledBwPath: string | null = null
+let bundledBwBroken = false
+
+/** Whether `bwBinaryPath` is the bundled bw that ensureBwCli last returned. */
+export function isBundledBw(bwBinaryPath: string): boolean {
+  return bundledBwPath !== null && bwBinaryPath === bundledBwPath
+}
+
+/** True when bw output shows a damaged install: a module of its own is missing. */
+export function isBwMissingModuleError(error: Error): boolean {
+  return /\bCannot find module\b/.test(error.message)
+}
+
+/**
+ * Stop using the bundled bw for the rest of this process, after it failed to
+ * load one of its own modules (an endpoint security product can quarantine a
+ * file inside it). ensureBwCli then falls back to the bw on PATH. Logged once.
+ */
+export function markBundledBwBroken(reason: string): void {
+  if (bundledBwBroken) return
+  bundledBwBroken = true
+  emitNervesEvent({
+    level: "warn",
+    event: "repertoire.bw_cli_bundled_broken",
+    component: "repertoire",
+    message: "the bw that ships with ouro is missing a module; using bw on PATH instead",
+    meta: { bundledPath: bundledBwPath, reason: reason.split("\n")[0]!.slice(0, 300) },
+  })
+}
+
+/** Test seam: forget the bundled-bw state between tests. */
+export function resetBundledBwStateForTests(): void {
+  bundledBwPath = null
+  bundledBwBroken = false
+}
+
 /** How to spawn a resolved `bw`: a `.js` entry point runs under this Node, anything else directly. */
 export function bwCommand(bwBinaryPath: string, args: string[], nodePath: string = process.execPath): { file: string; args: string[] } {
   return bwBinaryPath.endsWith(".js") ? { file: nodePath, args: [bwBinaryPath, ...args] } : { file: bwBinaryPath, args }
@@ -180,9 +216,10 @@ export async function ensureBwCli(findBundled: () => string | null = findBundled
     throw new Error(`OURO_BW_BINARY is set to ${override}, which is not an executable file`)
   }
 
-  // 1. The bw that ships with ouro
-  const bundled = findBundled()
+  // 1. The bw that ships with ouro, unless it was found broken in this process
+  const bundled = bundledBwBroken ? null : findBundled()
   if (bundled) {
+    bundledBwPath = bundled
     return bundled
   }
 
