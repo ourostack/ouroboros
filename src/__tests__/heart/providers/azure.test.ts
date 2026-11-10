@@ -155,6 +155,21 @@ describe("createAzureTokenProvider", () => {
     )
   })
 
+  it("passes an absent optional @azure/identity through without the sign-in hints", async () => {
+    emitTestEvent("passes an absent optional @azure/identity through without the sign-in hints")
+    const { OptionalPackageMissingError } = await import("../../../heart/optional-packages")
+    mockDefaultAzureCredentialCtor.mockImplementation(() => {
+      throw new OptionalPackageMissingError("@azure/identity", "Azure managed-identity sign-in")
+    })
+
+    const { createAzureTokenProvider } = await import("../../../heart/providers/azure")
+    const failure = await createAzureTokenProvider()().catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(OptionalPackageMissingError)
+    expect((failure as Error).message).toContain("Azure managed-identity sign-in needs @azure/identity")
+    expect((failure as Error).message).not.toContain("az login")
+  })
+
   it("includes non-Error thrown values in the error message", async () => {
     emitTestEvent("includes non-Error thrown values in the error message")
     mockGetToken.mockRejectedValue("raw string failure")

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Edge benchmark: how lean the harness is on the host it runs on.
 //
-// It installs the packed @ouro.bot/cli the way a user would (or measures a
-// built checkout), then measures, per host:
-//   install     bytes on disk, files and packages of a production install
+// It installs the packed @ouro.bot/cli the way a small host would, without
+// dev or optional packages (or measures a built checkout), then measures, per host:
+//   install     bytes on disk, files and packages of that edge install
 //   cli         `ouro --version`: wall time, peak RSS, modules loaded
 //   daemon      an agentless daemon: time to its socket, idle RSS, modules
 //   stack       a daemon with one agent (fake vault, fake provider), idle
@@ -183,7 +183,7 @@ function renderReport(current, baseline, baselineLabel) {
     `### Edge benchmark: ${host.platform}-${host.arch}${host.memoryCapMiB ? `, ${host.memoryCapMiB} MiB memory cap` : ""}`,
     "",
     `Node ${host.node}, ${host.cpus} × ${host.cpuModel || "cpu"}, ${formatValue(host.totalMemBytes, "bytes")} RAM. ` +
-      `Package ${current.package?.version ?? "?"}${current.package?.source ? ` (${current.package.source})` : ""}. ` +
+      `Package ${current.package?.version ?? "?"}${current.package?.source ? ` (${current.package.source}${current.install?.omit ? `, installed with ${current.install.omit}` : ""})` : ""}. ` +
       (baseline ? `Compared with ${baselineLabel || "the baseline"}.` : "No baseline yet."),
     "",
     "| Metric (lower is better) | This run | Baseline | Change |",
@@ -306,14 +306,18 @@ function hostInfo(options) {
   }
 }
 
+// Optional packages are product SDKs (Teams, Azure, Stripe, mail) that a small host leaves out; every
+// stage below must run without them.
+const EDGE_INSTALL_OMIT = ["--omit=dev", "--omit=optional"]
+
 function install(tarball, workDir) {
   const prefix = path.join(workDir, "install")
   fs.mkdirSync(prefix, { recursive: true })
   const started = Date.now()
-  const result = spawnSync("npm", ["install", path.resolve(tarball), "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", prefix], { encoding: "utf8" })
+  const result = spawnSync("npm", ["install", path.resolve(tarball), ...EDGE_INSTALL_OMIT, "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", prefix], { encoding: "utf8" })
   if (result.status !== 0) throw new Error(`npm install failed: ${result.stderr || result.stdout}`)
   const root = path.join(prefix, "node_modules", "@ouro.bot", "cli")
-  return { root, install: { ms: Date.now() - started, tarballBytes: fs.statSync(tarball).size, ...dirStats(prefix) } }
+  return { root, install: { ms: Date.now() - started, tarballBytes: fs.statSync(tarball).size, omit: EDGE_INSTALL_OMIT.join(" "), ...dirStats(prefix) } }
 }
 
 async function measureCli(root, workDir, runs) {

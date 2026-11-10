@@ -1,5 +1,6 @@
 import * as crypto from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
+import { importOptional } from "../heart/optional-packages"
 import type { TrustLevel } from "@ouro.bot/friends"
 
 export type MailPlacement = "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
@@ -833,7 +834,7 @@ interface StoredMailMessageMetadata {
 
 async function parsePrivateMailEnvelope(rawMime: Buffer): Promise<PrivateMailEnvelope> {
   // mailparser and its charset tables cost about 19 MB per process; load it on the first parse.
-  const { simpleParser } = await import("mailparser")
+  const { simpleParser } = await importOptional("mailparser", "Reading mail", () => import("mailparser"))
   const parsed = await simpleParser(rawMime)
   const html = typeof parsed.html === "string" ? parsed.html : undefined
   const parsedText = parsed.text ?? ""
