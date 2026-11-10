@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1029",
+      "changes": [
+        "Account pool: the fleet burn file is named by this Mac's LocalHostName (else the host name), so two Macs with a generic host name such as \"Mac\" never write the same file."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1026",
       "changes": [
         "Private-runtime sessions no longer grow without bound: superseded system prompts are dropped from session history, so a long-running agent's dialog.json stays small instead of reaching hundreds of megabytes and running Node out of memory."
