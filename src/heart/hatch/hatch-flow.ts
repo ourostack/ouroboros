@@ -56,7 +56,9 @@ export interface HatchFlowDeps {
 async function createHatchlingVault(agentName: string, unlockSecret: string): Promise<void> {
   const vault = resolveVaultConfig(agentName)
   const { createVaultAccount } = await import("../../repertoire/vault-setup")
-  const { storeVaultUnlockSecret } = await import("../../repertoire/vault-unlock")
+  const { resolveVaultUnlockStore, storeVaultUnlockSecret } = await import("../../repertoire/vault-unlock")
+  // Fail before creating the account when this machine has nowhere to keep the unlock secret.
+  resolveVaultUnlockStore({ agentName, email: vault.email, serverUrl: vault.serverUrl })
   const created = await createVaultAccount(agentName, vault.serverUrl, vault.email, unlockSecret)
   if (!created.success) throw new Error(`failed to create the vault for ${agentName}: ${created.error}`)
   storeVaultUnlockSecret({ agentName, email: vault.email, serverUrl: vault.serverUrl }, unlockSecret)

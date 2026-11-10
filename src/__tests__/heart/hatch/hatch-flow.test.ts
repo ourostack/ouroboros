@@ -14,9 +14,12 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
   storeProviderCredentials: mockStoreProviderCredentials,
 }))
 
-const vaultMocks = vi.hoisted(() => ({ createVaultAccount: vi.fn(), storeVaultUnlockSecret: vi.fn() }))
+const vaultMocks = vi.hoisted(() => ({ createVaultAccount: vi.fn(), storeVaultUnlockSecret: vi.fn(), resolveVaultUnlockStore: vi.fn() }))
 vi.mock("../../../repertoire/vault-setup", () => ({ createVaultAccount: vaultMocks.createVaultAccount }))
-vi.mock("../../../repertoire/vault-unlock", () => ({ storeVaultUnlockSecret: vaultMocks.storeVaultUnlockSecret }))
+vi.mock("../../../repertoire/vault-unlock", () => ({
+  storeVaultUnlockSecret: vaultMocks.storeVaultUnlockSecret,
+  resolveVaultUnlockStore: vaultMocks.resolveVaultUnlockStore,
+}))
 
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
@@ -73,6 +76,13 @@ describe("hatch flow", () => {
 
     vaultMocks.createVaultAccount.mockResolvedValueOnce({ success: false, error: "account exists" })
     await expect(runHatchFlow({ ...input, agentName: "Vaulted2" }, deps)).rejects.toThrow("failed to create the vault for Vaulted2: account exists")
+
+    vaultMocks.createVaultAccount.mockClear()
+    vaultMocks.resolveVaultUnlockStore.mockImplementationOnce(() => {
+      throw new Error("No supported secure local secret store was found on this machine for Vaulted3.")
+    })
+    await expect(runHatchFlow({ ...input, agentName: "Vaulted3" }, deps)).rejects.toThrow("No supported secure local secret store")
+    expect(vaultMocks.createVaultAccount).not.toHaveBeenCalled()
   })
 
   it("creates a canonical hatchling bundle with family imprint and heartbeat habit", async () => {
