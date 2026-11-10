@@ -618,9 +618,11 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     })
 
     expect(result).toContain("error")
-    // Bundle should be rolled back (removed)
+    // Bundle should be rolled back into the temp directory so the guide can retry
     const finalBundle = path.join(bundlesRoot, "TestAgent.ouro")
     expect(fs.existsSync(finalBundle)).toBe(false)
+    expect(fs.existsSync(path.join(tmpDir, "agent.json"))).toBe(true)
+    expect(fs.existsSync(path.join(tmpDir, "psyche", "SOUL.md"))).toBe(true)
   })
 
   it("rolls back moved bundle when hatchling vault creation fails", async () => {
@@ -647,7 +649,35 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(result).toContain("error: failed to write secrets")
     expect(result).toContain("failed to create vault: account already exists")
     expect(fs.existsSync(path.join(bundlesRoot, "TestAgent.ouro"))).toBe(false)
+    expect(fs.existsSync(path.join(tmpDir, "agent.json"))).toBe(true)
   })
+
+  it("can retry complete_adoption after a failed attempt", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-adopt-retry")
+    cleanup.push(bundlesRoot)
+    mockCreateVaultAccount.mockResolvedValueOnce({ success: false, error: "registration not allowed" })
+
+    const { createSpecialistExecTool, parseAdoptionResult } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      animationWriter: () => {},
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
+    })
+
+    const failed = await execTool("complete_adoption", { name: "TestAgent", handoff_message: "Hello" })
+    expect(parseAdoptionResult(failed)).toEqual({
+      ok: false,
+      error: "failed to write secrets: failed to create vault: registration not allowed",
+    })
+
+    const retried = await execTool("complete_adoption", { name: "TestAgent", handoff_message: "Hello" })
+    expect(parseAdoptionResult(retried)).toEqual({ ok: true, agentName: "TestAgent" })
+    expect(fs.existsSync(path.join(bundlesRoot, "TestAgent.ouro", "agent.json"))).toBe(true)
+  }, 20000)
 
   it("returns error when name parameter is missing", async () => {
     const tmpDir = makeTempDir("spec-tools-adopt-noname")
@@ -818,4 +848,28 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(result).toContain("success")
     expect(fs.existsSync(path.join(bundlesRoot, "NoWriterAgent.ouro"))).toBe(true)
   }, 20000)
+})
+
+describe("parseAdoptionResult", () => {
+  it("reads a successful adoption", async () => {
+    const { parseAdoptionResult } = await import("../../../heart/hatch/specialist-tools")
+    expect(parseAdoptionResult(JSON.stringify({ success: true, agentName: "Housesitter", bundlePath: "/x" })))
+      .toEqual({ ok: true, agentName: "Housesitter" })
+    expect(parseAdoptionResult({ success: true, agentName: "Housesitter" })).toEqual({ ok: true, agentName: "Housesitter" })
+  })
+
+  it("turns plain error text into a failed adoption instead of a JSON parse crash", async () => {
+    const { parseAdoptionResult } = await import("../../../heart/hatch/specialist-tools")
+    expect(parseAdoptionResult("error: failed to write secrets: No supported secure local secret store"))
+      .toEqual({ ok: false, error: "failed to write secrets: No supported secure local secret store" })
+    expect(parseAdoptionResult("   ")).toEqual({ ok: false, error: "complete_adoption returned nothing" })
+  })
+
+  it("treats JSON without success as a failure, keeping its error when present", async () => {
+    const { parseAdoptionResult } = await import("../../../heart/hatch/specialist-tools")
+    expect(parseAdoptionResult(JSON.stringify({ success: false, error: "vault down" }))).toEqual({ ok: false, error: "vault down" })
+    expect(parseAdoptionResult(JSON.stringify({ success: true }))).toEqual({ ok: false, error: "complete_adoption did not report success" })
+    expect(parseAdoptionResult("null")).toEqual({ ok: false, error: "complete_adoption did not report success" })
+    expect(parseAdoptionResult(undefined)).toEqual({ ok: false, error: "complete_adoption did not report success" })
+  })
 })

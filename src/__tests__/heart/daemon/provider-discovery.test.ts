@@ -20,7 +20,7 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: unknown[]) => mockEmitNervesEvent(...args),
 }))
 
-import { describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, discoverWorkingProvider, scanEnvVarCredentials } from "../../../heart/daemon/provider-discovery"
+import { completeEnvDiscoveredCredentials, describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, discoverWorkingProvider, scanEnvVarCredentials } from "../../../heart/daemon/provider-discovery"
 
 function emitTestEvent(testName: string): void {
   mockEmitNervesEvent({
@@ -77,6 +77,48 @@ describe("scanEnvVarCredentials", () => {
         deployment: "gpt-4o",
       },
     })
+  })
+})
+
+describe("completeEnvDiscoveredCredentials", () => {
+  it("adds the Copilot endpoint to a token-only github-copilot credential so its ping can pass", async () => {
+    const [copilot] = scanEnvVarCredentials({ GH_TOKEN: "gho_env" })
+    const discover = vi.fn(async () => "https://api.individual.githubcopilot.com")
+
+    const [completed] = await completeEnvDiscoveredCredentials([copilot], discover)
+
+    expect(discover).toHaveBeenCalledWith("gho_env")
+    expect(completed.credentials).toEqual({ githubToken: "gho_env", baseUrl: "https://api.individual.githubcopilot.com" })
+    expect(completed.providerConfig.baseUrl).toBe("https://api.individual.githubcopilot.com")
+  })
+
+  it("drops a github-copilot credential whose endpoint can't be discovered", async () => {
+    const creds = scanEnvVarCredentials({ GH_TOKEN: "gho_env", ANTHROPIC_API_KEY: "sk-test" })
+
+    const errorResult = await completeEnvDiscoveredCredentials(creds, async () => {
+      throw new Error("GitHub Copilot endpoint discovery failed (HTTP 401).")
+    })
+    const nonErrorResult = await completeEnvDiscoveredCredentials(creds, async () => {
+      throw "offline"
+    })
+
+    expect(errorResult.map((cred) => cred.provider)).toEqual(["anthropic"])
+    expect(nonErrorResult.map((cred) => cred.provider)).toEqual(["anthropic"])
+  })
+
+  it("leaves other providers and already-complete Copilot credentials alone", async () => {
+    const discover = vi.fn(async () => "https://unused.example.com")
+    const complete = {
+      provider: "github-copilot" as const,
+      agentName: "env",
+      credentials: { githubToken: "gho_env" },
+      providerConfig: { baseUrl: "https://api.copilot.example.com" },
+    }
+    const tokenless = { provider: "github-copilot" as const, agentName: "env", credentials: {}, providerConfig: {} }
+    const anthropic = scanEnvVarCredentials({ ANTHROPIC_API_KEY: "sk-test" })[0]
+
+    expect(await completeEnvDiscoveredCredentials([complete, tokenless, anthropic], discover)).toEqual([complete, tokenless, anthropic])
+    expect(discover).not.toHaveBeenCalled()
   })
 })
 

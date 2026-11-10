@@ -26,7 +26,7 @@ import {
   pickRandomIdentity,
 } from "../hatch/specialist-orchestrator"
 import { buildSpecialistSystemPrompt } from "../hatch/specialist-prompt"
-import { getSpecialistTools, createSpecialistExecTool } from "../hatch/specialist-tools"
+import { getSpecialistTools, createSpecialistExecTool, parseAdoptionResult } from "../hatch/specialist-tools"
 import { detectRuntimeMode } from "./runtime-mode"
 import { listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -45,11 +45,12 @@ import { listSessionActivity } from "../session-activity"
 import {
   runRuntimeAuthFlow as defaultRunRuntimeAuthFlow,
   collectRuntimeAuthCredentials,
+  discoverGithubCopilotBaseUrl,
 } from "../auth/auth-flow"
 import { DEFAULT_PROVIDER_MODELS } from "../provider-models"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
-import { describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, scanEnvVarCredentials } from "./provider-discovery"
+import { completeEnvDiscoveredCredentials, describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, scanEnvVarCredentials } from "./provider-discovery"
 import {
   cacheProviderCredentialRecords,
   createProviderCredentialRecord,
@@ -625,7 +626,10 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     }
 
     // Scan environment variables for API keys using the shared helper
-    const envCreds = scanEnvVarCredentials(process.env)
+    const envCreds = await completeEnvDiscoveredCredentials(
+      scanEnvVarCredentials(process.env),
+      (token) => discoverGithubCopilotBaseUrl(token),
+    )
     const envDiscovered: Array<DiscoveredCredential & { envVar: string }> = []
     for (const cred of envCreds) {
       // Enrich with default model and first matching env var name (for display)
@@ -768,13 +772,17 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
 
     // Build specialist tools
     const specialistTools = getSpecialistTools()
+    let lastAdoptionError: string | null = null
     const specialistExecTool = createSpecialistExecTool({
       tempDir,
       credentials: selectedCredentialPayload,
       provider: providerRaw,
       bundlesRoot,
       animationWriter: (text: string) => process.stdout.write(text),
-      promptSecret: defaultPromptSecret,
+      promptSecret: async (question: string) => {
+        const { withTerminalHandedOff } = await import("../../senses/terminal-handoff")
+        return withTerminalHandedOff(() => defaultPromptSecret(question))
+      },
     })
 
     // Run the serpent guide session via runCliSession
@@ -783,6 +791,12 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       tools: specialistTools,
       execTool: specialistExecTool,
       exitOnToolCall: "complete_adoption",
+      // A failed adoption goes back to the guide, which explains it and can retry.
+      exitOnToolResult: (toolResult) => {
+        const outcome = parseAdoptionResult(toolResult)
+        lastAdoptionError = outcome.ok ? null : outcome.error
+        return outcome.ok
+      },
       autoFirstTurn: true,
       banner: false,
       disableCommands: true,
@@ -794,12 +808,14 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     })
 
     if (result.exitReason === "tool_exit" && result.toolResult) {
-      const parsed = typeof result.toolResult === "string" ? JSON.parse(result.toolResult) : result.toolResult
-      if (parsed.success && parsed.agentName) {
-        return parsed.agentName as string
-      }
+      const outcome = parseAdoptionResult(result.toolResult)
+      if (outcome.ok) return outcome.agentName
+      lastAdoptionError = outcome.error
     }
 
+    if (lastAdoptionError) {
+      process.stdout.write(`\nhatch didn't finish: ${lastAdoptionError}\nfix that, then run \`ouro hatch\` again.\n`)
+    }
     return null
   } catch (err) {
     process.stderr.write(`\nouro hatch error: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)

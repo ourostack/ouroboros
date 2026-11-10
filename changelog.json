@@ -8,6 +8,14 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1019",
+      "changes": [
+        "ouro hatch on a host with GH_TOKEN or GITHUB_TOKEN set: the github-copilot option it offers now looks up the account's Copilot endpoint first, so choosing it works instead of failing with 'no credentials configured'.",
+        "The hatchling vault unlock prompt during ouro hatch pauses the conversation view: the spinner stops, the prompt is visible, and what you type is hidden instead of being echoed into the chat input.",
+        "A failed complete_adoption no longer crashes ouro hatch with a JSON parse error: the guide explains the error and can retry, and quitting prints what went wrong."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1021",
       "changes": [
         "A small host's install (npm config set omit optional) is now about 46 MB and 43 packages instead of 221 MB and 426: the bundled Bitwarden CLI and the terminal chat UI (ink, react) are optional packages too. Vault reads and writes are native, so bw is only fetched when a vault needs it, and without the chat UI ouro chats line by line. shell-quote, which the shell guardrails load, is now declared instead of arriving through ink, and a test keeps every runtime import declared. Native vault reads no longer need the access token to name the user (only writes do), and the edge benchmark's fake vault issues a real JWT, so it reads natively again."
