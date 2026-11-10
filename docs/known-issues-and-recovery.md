@@ -98,6 +98,14 @@ Ouro updates itself without the daemon. On macOS, `ouro up` and `ouro self-updat
 
 `ouro status` ends with an `Updates:` line from `~/.ouro-cli/update-state.json`. It starts with `needs attention` when the last pass failed, when the updater has not run for three hours, or when the launchd agent is missing. Run `ouro self-update` to run a pass now and reinstall the agent.
 
+## The daemon refuses to start: "another daemon already answers"
+
+A starting daemon checks its socket first. If another daemon still answers there, it stops before it touches anything: it doesn't apply updates, signal leftover Ouro processes or unlink the socket. Every normal replacement (`ouro up`, a launchd bootout, a staged restart) stops the old daemon first, so this only happens when two daemons race for one socket, for example a test daemon that kept the default `/tmp/ouroboros-daemon.sock` under a temporary `HOME`. Run `ouro stop` to replace the live daemon, or give the second daemon its own `--socket`.
+
+## The daemon refuses to start on a FAT or exFAT home
+
+`~/.ouro-cli` needs Unix sockets, symlinks and file permissions, which FAT and exFAT don't have. On Linux, `ouro up` and the daemon check the filesystem (read-only) and stop with a message naming it. Set `HOME` to a directory on ext4 or another POSIX filesystem; on an appliance, use its ext4 data partition, not removable or media storage.
+
 ## `ouro status --json` times out
 
 Status has a command-specific 5,000 ms end-to-end socket-operation deadline; long agent turns keep their longer command timeout. A timeout still returns parseable diagnostic JSON classified as `timeout`, rather than hanging for the general ten-minute command window. This distinguishes a deadline from immediate socket unavailability, but does not by itself prove whether the timeout occurred before or after connection. Run `ouro doctor` or `ouro up` as indicated by the accompanying details.

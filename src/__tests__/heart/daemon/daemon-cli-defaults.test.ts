@@ -1309,7 +1309,7 @@ describe("daemon CLI default dependency branches", () => {
 
   it("uses default daemon-start process launch and stdout writer", async () => {
     vi.resetModules()
-    // An earlier test's os mock throws from homedir(); starting on Linux reads the ouro home for an installed service.
+    // An earlier test's os mock throws from homedir(); starting on Linux and `ouro up` both resolve the ouro home.
     vi.doUnmock("os")
 
     const restorePlatform = withProcessPlatform("linux")

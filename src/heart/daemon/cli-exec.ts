@@ -8115,6 +8115,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       autoRender: true,
     })
     const daemonAliveAtBootStart = await deps.checkSocketAlive(deps.socketPath)
+    if (!daemonAliveAtBootStart) {
+      const homeFilesystemProblem = deps.checkHomeFilesystem?.() ?? null
+      if (homeFilesystemProblem) {
+        deps.writeStdout(homeFilesystemProblem)
+        return homeFilesystemProblem
+      }
+    }
     ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveAtBootStart))
 
     // ── versioned CLI update check ──

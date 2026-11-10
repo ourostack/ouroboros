@@ -47,7 +47,7 @@ import {
   readPrivateTurnLedger,
 } from "../private-runtime"
 import type { PrivateTurnDecision, PrivateTurnDenialCode, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
-import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
+import { DEFAULT_DAEMON_SOCKET_PATH, checkDaemonSocketAlive } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
@@ -606,6 +606,8 @@ export interface OuroDaemonOptions {
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
+  /** Whether another daemon already answers on the socket. Defaults to a real status probe. */
+  socketAnswering?: (socketPath: string) => Promise<boolean>
   /** Source-specific credential readiness checked before external-event ownership mutation. */
   externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
 }
@@ -907,6 +909,7 @@ export class OuroDaemon {
   private readonly schedulerFireVerifier?: OuroDaemonOptions["schedulerFireVerifier"]
   private readonly schedulerFireConsumer?: OuroDaemonOptions["schedulerFireConsumer"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
+  private readonly socketAnswering: (socketPath: string) => Promise<boolean>
   private readonly externalEventSourceReadiness: (agent: string, source: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
@@ -941,6 +944,7 @@ export class OuroDaemon {
     this.schedulerFireVerifier = options.schedulerFireVerifier
     this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
+    this.socketAnswering = options.socketAnswering ?? checkDaemonSocketAlive
     this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
       const { ensureSanctuarySourceRuntimeReady } = await import("../../senses/sanctuary-runtime")
       await ensureSanctuarySourceRuntimeReady(agent, source)
@@ -1074,6 +1078,19 @@ export class OuroDaemon {
   }
 
   private async startInner(): Promise<void> {
+    // A replacement always stops the old daemon first (ouro up, launchd bootout,
+    // staged restart). A daemon that still answers is live, not orphaned: never
+    // kill its processes or unlink its socket, whatever HOME this one runs under.
+    if (await this.socketAnswering(this.socketPath)) {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.socket_already_served",
+        message: "another daemon already answers on this socket; refusing to start",
+        meta: { socketPath: this.socketPath },
+      })
+      throw new Error(`another daemon already answers on ${this.socketPath}; stop it with ouro stop, or start this one with its own --socket`)
+    }
     const containerPolicy = readContainerRuntimePolicy()
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)

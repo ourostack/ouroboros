@@ -38,6 +38,8 @@ import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
+import { unsupportedHomeFilesystem } from "./home-filesystem"
+import { getOuroCliHome } from "../versioning/ouro-version-manager"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, type HabitPrivateWakeTriggerSource } from "./habit-private-wake"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
@@ -79,6 +81,14 @@ function parseSocketPath(argv: string[]): string {
 
 const socketPath = parseSocketPath(process.argv)
 configureDaemonRuntimeLogger("daemon")
+
+/* v8 ignore start -- refuses to start on a FAT or exFAT home; the check is unit-tested in home-filesystem.test.ts @preserve */
+const homeFilesystemProblem = unsupportedHomeFilesystem(getOuroCliHome())
+if (homeFilesystemProblem) {
+  process.stderr.write(`${homeFilesystemProblem}\n`)
+  process.exit(1)
+}
+/* v8 ignore stop */
 
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())

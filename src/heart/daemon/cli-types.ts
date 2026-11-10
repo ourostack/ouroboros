@@ -186,6 +186,8 @@ export interface OuroCliDeps {
   stdoutColumns?: number
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
+  /** A message when the ouro home sits on a filesystem the runtime cannot use (FAT, exFAT), else null. */
+  checkHomeFilesystem?: () => string | null
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
   listDiscoveredAgents?: () => Promise<string[]> | string[]
   /** Agents this machine's daemon runs (homed here); see agent-home.ts. */
