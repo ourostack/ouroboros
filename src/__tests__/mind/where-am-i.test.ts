@@ -46,6 +46,15 @@ describe("renderWhereAmI", () => {
     ].join("\n"))
   })
 
+  it("names a legacy home that is off the roster by its machine id", () => {
+    const offRoster = { ...agentJson, home: { machineId: "machine_old", machineName: "old" } }
+    const text = renderWhereAmI(readPresence(offRoster, true, [
+      { machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:57:00.000Z" },
+      { machineId: MINI, version: V, seenAt: "2026-11-10T04:00:00.000Z" },
+    ]), mini, NOW)
+    expect(text).toContain("machine_old")
+  })
+
   it("says when a peer has not been seen and shared senses stay with home meanwhile", () => {
     const text = renderWhereAmI(readPresence(agentJson, true, [{ machineId: MINI, version: V, seenAt: "bad" }]), mini, NOW)
     expect(text).toContain("- Aris-MacBook-Pro (laptop): not seen yet (no presence record)")

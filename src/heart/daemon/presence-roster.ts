@@ -138,7 +138,7 @@ export async function handoffPresenceSense(options: HandoffSenseOptions): Promis
         return { kind: "noop", message: `${machine.name} already owns ${agent}'s ${sense}` }
       }
       const previous = effectiveOwner(presence, sense)
-      const previousName = presence.block.machines.find((entry) => entry.machineId === previous)?.name ?? previous ?? "no machine"
+      const previousName = presence.block.machines.find((entry) => entry.machineId === previous)?.name ?? previous
       return {
         kind: "write",
         next: { ...parsed, presence: { ...(parsed.presence as Record<string, unknown>), owners: { ...presence.block.owners, [sense]: machine.machineId } } },
@@ -216,7 +216,7 @@ export function renderPresenceStatus(options: {
   lines.push("owners:")
   for (const sense of SHARED_SENSES) {
     const owner = effectiveOwner(presence, sense)
-    const name = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner ?? "no machine"
+    const name = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner
     const declared = presence.block.owners[sense]
     const held = declared && declared !== owner ? ` (roster names ${presence.block.machines.find((machine) => machine.machineId === declared)?.name ?? declared}; held by home until every machine runs presence)` : ""
     lines.push(`- ${sense}: ${name}${held}`)

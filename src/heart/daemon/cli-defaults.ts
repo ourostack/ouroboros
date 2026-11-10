@@ -322,7 +322,7 @@ function writeDaemonBootPlist(socketPath: string): string {
 }
 
 /** `nice` from this machine's `~/.ouro-cli/presence.json`, when set. */
-function niceOption(homeDir: string): { nice?: number } {
+export function niceOption(homeDir: string): { nice?: number } {
   const nice = readLocalPresenceSettings(homeDir, {}).nice
   return nice === undefined ? {} : { nice }
 }

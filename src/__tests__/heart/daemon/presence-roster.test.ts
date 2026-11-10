@@ -167,6 +167,9 @@ describe("presence roster commands", () => {
         },
       })
       expect(rivalResult).toEqual({ ok: true, changed: false, message: "Aris-MacBook-Pro already owns slugger's teams" })
+      // A refusal decided against the remote's agent.json, on a syncing bundle.
+      const refused = await handoffPresenceSense({ agent: "slugger", bundlesRoot, sense: "shepherd", target: "aris-mac-mini" })
+      expect(refused.message).toContain("shepherd runs on every machine in the roster")
       expect(result).toEqual({
         ok: false,
         changed: false,

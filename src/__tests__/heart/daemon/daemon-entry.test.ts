@@ -861,6 +861,11 @@ describe("daemon entrypoint", () => {
       message: "triggered habit slugger:heartbeat:cadence",
     })
     expect(habitSchedulerTriggerJobMock).toHaveBeenCalledWith("slugger:heartbeat:cadence", "cron")
+    habitSchedulerTriggerJobMock.mockResolvedValueOnce({ ok: false, message: "no such habit" })
+    await expect(daemonOptions.scheduler.triggerHabitJob("slugger:other:cadence")).resolves.toEqual({
+      ok: false,
+      message: "unknown habit job: slugger:other:cadence",
+    })
 
     const originalSetTimeout = globalThis.setTimeout
     const forcedExitTimers: Array<ReturnType<typeof setTimeout>> = []

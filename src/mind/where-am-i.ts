@@ -46,7 +46,7 @@ function sessionCounts(record: PeerRecord | undefined): string {
 
 export function renderWhereAmI(presence: Presence | null, self: MachineInfo, nowMs: number = Date.now()): string {
   if (!presence) return ""
-  const machineName = (id: string | null): string => (id ? rosterMachine(presence, id)?.name ?? id : "no machine")
+  const machineName = (id: string): string => rosterMachine(presence, id)?.name ?? id
   const peers = presence.block.machines.filter((machine) => machine.machineId !== self.machineId)
   const lines = [
     "## where i am",

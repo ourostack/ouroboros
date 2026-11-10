@@ -334,7 +334,7 @@ export function rosterMachine(presence: Presence, machineId: string): PresenceMa
  * The machine that runs a shared sense. While any roster machine may run a
  * daemon that knows only `home`, that is `home`, whatever the roster says.
  */
-export function effectiveOwner(presence: Presence, sense: SharedSense): string | null {
+export function effectiveOwner(presence: Presence, sense: SharedSense): string {
   if (presence.legacy.length > 0 && presence.home) return presence.home.machineId
   return presence.block.owners[sense] ?? presence.home?.machineId ?? presence.block.machines[0].machineId
 }

@@ -354,3 +354,36 @@ describe("ouro rollback below presence", () => {
     expect(parseOuroCommand(["rollback", "0.1.0-alpha.74", "--force"])).toEqual({ kind: "rollback", version: "0.1.0-alpha.74", force: true })
   })
 })
+
+describe("presence coverage edges", () => {
+  it("reads Nice for the daemon plist from presence.json", async () => {
+    const { niceOption } = await import("../../../heart/daemon/cli-defaults")
+    const homeDir = path.join(tmp, "nice-home")
+    expect(niceOption(homeDir)).toEqual({})
+    writeLocalPresenceSettings({ enabled: true, nice: 10 }, homeDir)
+    expect(niceOption(homeDir)).toEqual({ nice: 10 })
+  })
+
+  it("reads the upstream config itself when not given a reader", async () => {
+    bundle("ouroboros", { home: HOME, presence: ROSTER })
+    const result = await checkAgentHomes({ managedAgents: ["ouroboros"], machineId: MINI, bundlesRoot, presenceEnabled: true })
+    expect(result.displaced).toEqual([])
+  })
+
+  it("hands a sense off through the CLI", async () => {
+    const homeDir = path.join(tmp, "cli-home")
+    fs.mkdirSync(path.join(homeDir, ".ouro-cli"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".ouro-cli", "machine.json"), JSON.stringify({ schemaVersion: 1, machineId: MINI, createdAt: "x", updatedAt: "x", hostnameAliases: [] }))
+    const root = bundle("o", { home: HOME, presence: ROSTER })
+    writePeerRecord(root, { machineId: MINI, version: V, seenAt: "2026-11-10T03:00:00.000Z" })
+    writePeerRecord(root, { machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:00:00.000Z" })
+    const out: string[] = []
+    const message = await runOuroCli(["presence", "handoff", "habits", "aris-mac-mini", "--agent", "o"], {
+      socketPath: "/tmp/ouro-test.sock", sendCommand: vi.fn(), startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: (text: string) => { out.push(text) }, checkSocketAlive: vi.fn(async () => false), cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"), setExitCode: vi.fn(), bundlesRoot, homeDir,
+    } as OuroCliDeps)
+    expect(message).toContain("aris-mac-mini now owns o's habits (from Aris-MacBook-Pro)")
+    expect(out).toEqual([message])
+  })
+})
