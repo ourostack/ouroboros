@@ -24,7 +24,6 @@ const { spawn, spawnSync } = require("child_process")
 const PRELOAD = path.join(__dirname, "edge-benchmark-preload.cjs")
 const CLI_RUNNER = path.join(__dirname, "edge-benchmark-cli.cjs")
 const AGENT = "edgebench"
-const VAULT_SERVER_URL = "https://vault.edge-benchmark.test"
 const VAULT_EMAIL = "edgebench@ouro.bot"
 const VAULT_SECRET = "Benchmark1!"
 const MODEL = "claude-sonnet-4.6"
@@ -129,6 +128,8 @@ const METRICS = [
   ["daemon.modules", "daemon (no agents) modules loaded", "count"],
   ["stack.upMs", "one-agent stack: `ouro up` wall time", "ms"],
   ["stack.vaultCalls", "one-agent stack: vault CLI runs during `ouro up`", "count"],
+  ["stack.vaultLogins", "one-agent stack: vault logins during `ouro up`", "count"],
+  ["stack.vaultSyncs", "one-agent stack: vault syncs during `ouro up`", "count"],
   ["stack.processes", "one-agent stack: processes", "count"],
   ["stack.idleRssKb", "one-agent stack: idle RSS, all processes", "kB"],
   ["stack.idlePssKb", "one-agent stack: idle PSS, all processes", "kB"],
@@ -137,6 +138,8 @@ const METRICS = [
   ["turn.settledMs", "turn: message to quiet", "ms"],
   ["turn.modelRequests", "turn: model requests", "count"],
   ["turn.vaultCalls", "turn: vault CLI runs", "count"],
+  ["turn.vaultLogins", "turn: vault logins", "count"],
+  ["turn.vaultSyncs", "turn: vault syncs", "count"],
   ["turn.peakProcesses", "turn: peak processes", "count"],
   ["turn.peakRssKb", "turn: peak RSS, all processes", "kB"],
   ["turn.peakPssKb", "turn: peak PSS, all processes", "kB"],
@@ -426,6 +429,61 @@ process.stderr.write("unexpected fake ${name} args: " + JSON.stringify(args) + "
     `if (args[0] === "store") { const s = read(unlockPath); s[after("service") + ":" + after("account")] = fs.readFileSync(0, "utf8").trim(); write(unlockPath, s); process.exit(0) }`)
 }
 
+/**
+ * A Bitwarden-compatible vault server (prelogin, password login, sync) holding the given items
+ * encrypted the way Vaultwarden stores them, so the stack reads its vault natively, as it does
+ * in production, with the real KDF cost (PBKDF2-SHA256, 600,000 iterations).
+ */
+async function startFakeVault(email, secret) {
+  const crypto = require("crypto")
+  const iterations = 600_000
+  const masterKey = crypto.pbkdf2Sync(secret, email.toLowerCase(), iterations, 32, "sha256")
+  const hash = crypto.pbkdf2Sync(masterKey, secret, 1, 32, "sha256").toString("base64")
+  const expand = (info) => crypto.createHmac("sha256", masterKey).update(Buffer.concat([Buffer.from(info), Buffer.from([1])])).digest()
+  const stretched = Buffer.concat([expand("enc"), expand("mac")])
+  const userKey = crypto.randomBytes(64)
+  const encrypt = (data, key) => {
+    const iv = crypto.randomBytes(16)
+    const cipher = crypto.createCipheriv("aes-256-cbc", key.subarray(0, 32), iv)
+    const ct = Buffer.concat([cipher.update(data), cipher.final()])
+    const mac = crypto.createHmac("sha256", key.subarray(32)).update(iv).update(ct).digest()
+    return `2.${iv.toString("base64")}|${ct.toString("base64")}|${mac.toString("base64")}`
+  }
+  const text = (value) => (typeof value === "string" ? encrypt(Buffer.from(value, "utf8"), userKey) : null)
+  let ciphers = []
+  const setItems = (items) => { ciphers = items.map((item) => ({
+    id: item.id,
+    type: 1,
+    name: text(item.name),
+    notes: text(item.notes),
+    revisionDate: item.revisionDate,
+    login: { username: text(item.login.username), password: text(item.login.password), uris: (item.login.uris || []).map((u) => ({ uri: text(u.uri) })) },
+  })) }
+  const requests = []
+  const server = http.createServer((req, res) => {
+    let body = ""
+    req.setEncoding("utf8")
+    req.on("data", (chunk) => { body += chunk })
+    req.on("end", () => {
+      requests.push(String(req.url).split("?")[0])
+      const send = (status, value) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)) }
+      if (req.url === "/identity/accounts/prelogin") return send(200, { kdf: 0, kdfIterations: iterations })
+      if (req.url === "/identity/connect/token") {
+        const form = new URLSearchParams(body)
+        if (form.get("username") !== email || form.get("password") !== hash) return send(400, { error: "invalid_grant", ErrorModel: { Message: "Username or password is incorrect. Try again" } })
+        return send(200, { access_token: "edge-benchmark-access-token", expires_in: 3600, Key: encrypt(userKey, stretched) })
+      }
+      if (String(req.url).startsWith("/api/sync")) {
+        if (req.headers.authorization !== "Bearer edge-benchmark-access-token") return send(401, {})
+        return send(200, { ciphers })
+      }
+      send(404, {})
+    })
+  })
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve) })
+  return { server, requests, setItems, url: `http://127.0.0.1:${server.address().port}` }
+}
+
 /** An OpenAI-compatible model that answers every request at once and logs when each arrived. */
 async function startFakeModel() {
   const requests = []
@@ -455,7 +513,7 @@ async function startFakeModel() {
   return { server, requests, baseUrl: `http://127.0.0.1:${server.address().port}` }
 }
 
-function seedAgent(home, baseUrl) {
+function seedAgent(home, baseUrl, vaultUrl) {
   const bundlesRoot = path.join(home, "AgentBundles")
   const agentRoot = path.join(bundlesRoot, `${AGENT}.ouro`)
   for (const dir of ["state", "friends", "inbox", "tasks", "desk/_record/diary/daily", "desk/_record/notes"]) {
@@ -469,7 +527,7 @@ function seedAgent(home, baseUrl) {
     senses: { cli: { enabled: false }, teams: { enabled: false }, bluebubbles: { enabled: false } },
     sync: { enabled: false },
     phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
-    vault: { email: VAULT_EMAIL, serverUrl: VAULT_SERVER_URL },
+    vault: { email: VAULT_EMAIL, serverUrl: vaultUrl },
   }, null, 2)}\n`)
   const updatedAt = new Date().toISOString()
   const credential = JSON.stringify({
@@ -506,11 +564,14 @@ async function measureStack(root, workDir, options) {
   const binDir = path.join(stackDir, "bin")
   fs.mkdirSync(binDir, { recursive: true })
   const model = await startFakeModel()
-  const { bundlesRoot, vaultState } = seedAgent(home, model.baseUrl)
+  const vault = await startFakeVault(VAULT_EMAIL, VAULT_SECRET)
+  const vaultUrl = vault.url
+  const { bundlesRoot, vaultState } = seedAgent(home, model.baseUrl, vaultUrl)
+  vault.setItems(vaultState.items)
   const statePath = path.join(stackDir, "vault.json")
   const unlockPath = path.join(stackDir, "unlock.json")
   fs.writeFileSync(statePath, JSON.stringify(vaultState))
-  fs.writeFileSync(unlockPath, JSON.stringify({ [`ouro.vault:${VAULT_SERVER_URL}:${VAULT_EMAIL}`]: VAULT_SECRET }))
+  fs.writeFileSync(unlockPath, JSON.stringify({ [`ouro.vault:${vaultUrl}:${VAULT_EMAIL}`]: VAULT_SECRET }))
   writeFakes(binDir, statePath, unlockPath)
   const vaultCalls = () => {
     try { return fs.readFileSync(`${statePath}.calls`, "utf8").split("\n").filter(Boolean).length } catch { return 0 }
@@ -553,6 +614,8 @@ async function measureStack(root, workDir, options) {
     const stack = {
       upMs: up.ms,
       vaultCalls: vaultCalls(),
+      vaultLogins: vault.requests.filter((url) => url === "/identity/connect/token").length,
+      vaultSyncs: vault.requests.filter((url) => url === "/api/sync").length,
       processes: idle.processes,
       idleRssKb: idle.rssKb,
       idlePssKb: idle.pssKb,
@@ -564,6 +627,7 @@ async function measureStack(root, workDir, options) {
     // Turn: one operator message, measured until the stack is quiet again.
     const before = model.requests.length
     const vaultBefore = vaultCalls()
+    const vaultRequestsBefore = vault.requests.length
     const sampler = startSampler(daemonPid, binDir)
     const sent = Date.now()
     const msg = await cli(["msg", "--to", AGENT, "edge benchmark: say pong"])
@@ -580,6 +644,8 @@ async function measureStack(root, workDir, options) {
       settledMs,
       modelRequests: model.requests.length - before,
       vaultCalls: vaultCalls() - vaultBefore,
+      vaultLogins: vault.requests.slice(vaultRequestsBefore).filter((url) => url === "/identity/connect/token").length,
+      vaultSyncs: vault.requests.slice(vaultRequestsBefore).filter((url) => url === "/api/sync").length,
       peakProcesses: peak.peakProcesses,
       peakRssKb: peak.peakRssKb,
       peakPssKb: peak.peakPssKb,
@@ -593,6 +659,7 @@ async function measureStack(root, workDir, options) {
     await cli(["stop"])
     if (daemonPid) await stopTree(daemonPid)
     await new Promise((resolve) => model.server.close(resolve))
+    await new Promise((resolve) => vault.server.close(resolve))
   }
 }
 
