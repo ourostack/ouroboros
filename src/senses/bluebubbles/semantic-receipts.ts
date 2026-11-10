@@ -4,7 +4,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../../heart/sqlite"
 
 import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -1602,7 +1603,7 @@ function withExclusiveSemanticOwnership<T>(
   storeFs.mkdirSync(path.dirname(ownershipPath), { recursive: true })
   let database: Database.Database | null = null
   try {
-    database = new Database(ownershipPath, { timeout: 0 })
+    database = openDatabase(ownershipPath, { timeout: 0 })
     database.pragma("busy_timeout = 0")
     database.pragma("journal_mode = DELETE")
     database.pragma("synchronous = FULL")

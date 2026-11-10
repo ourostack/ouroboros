@@ -1,7 +1,13 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
+import { createRequire } from "node:module"
+
 import { createServer } from "vite"
+
+// Compiled harness code is CommonJS and loads native drivers (better-sqlite3)
+// with a lazy require. Vite's SSR runner has no require, so give it one.
+globalThis.require ??= createRequire(import.meta.url)
 
 async function enterStartBarrier() {
   const readyPath = process.env.HABIT_CANCEL_CHILD_READY

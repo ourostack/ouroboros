@@ -4,7 +4,8 @@ import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, open
 import { createConnection } from "node:net"
 import * as path from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../sqlite"
 import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -1928,7 +1929,7 @@ function callbackUpdate(value: unknown): JsonObject {
 function withCallbackPlaybackJournal<T>(agentRoot: string, operation: (database: Database.Database) => T): T {
   const databasePath = path.join(agentRoot, CALLBACK_PLAYBACK_JOURNAL)
   mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 })
-  const database = new Database(databasePath)
+  const database = openDatabase(databasePath)
   try {
     chmodSync(databasePath, 0o600)
     database.pragma("journal_mode = DELETE")
