@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1021",
+      "changes": [
+        "Habits run again. The private runtime policy allows a habit wake that carries verified daemon provenance (habit, matching habit-trigger and habit-occurrence refs, and the habit scheduler, habit.poke or habit.probe as source), where before every habit fire was denied as default policy deny. A denied private-turn decision no longer reserves its idempotency key, so a habit whose first attempt was denied, and then retried after a provider credential revision change, runs on its next fire instead of failing forever with idempotency-key fingerprint mismatch."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1015",
       "changes": [
         "ouro auth, ouro vault config set and every other vault write go through Ouro's own Bitwarden client too: it creates, updates or trashes the login item over HTTPS with Node's crypto, keeps an existing item's own key, folder, custom fields and history as stored, refuses to overwrite a newer copy, and reads the item back to check it. Nothing on the vault path runs bw any more unless the vault needs it (Argon2id, two-step login) or OURO_VAULT_NATIVE_READS=0."
