@@ -220,7 +220,8 @@ Habits are the agent's autonomous rhythms — recurring patterns that fire indep
 - The agent sees their own habit body as the private session prompt, with per-run `state/habit-sessions/<runId>/` paths, permission policy, return routes, and an Arc receipt.
 - Runtime timestamps such as `lastRun` live in `state/habits/<habit>.json`; auditable run history lives in `arc/flight-recorder/habit-receipts/`.
 - `fs.watch` + CLI notifications provide event-driven discovery (no polling).
-- Daemon startup reconciles overdue habits through private-runtime policy. The policy allows a habit wake only with verified daemon provenance (`habit`, matching `habit-trigger` and `habit-occurrence` refs plus the habit scheduler, `habit.poke` or `habit.probe` source); the occurrence idempotency key keeps a restart from re-running the same overdue occurrence.
+- Daemon startup reconciles overdue habits through private-runtime policy; it does not spend merely because a habit is due.
+- The policy allows a habit wake only with verified daemon provenance (`habit`, matching `habit-trigger` and `habit-occurrence` refs plus the habit scheduler, `habit.poke` or `habit.probe` source); the occurrence idempotency key keeps a restart from re-running the same overdue occurrence.
 - A denied wake reserves nothing: only an executable allow anchors an idempotency key, so a habit whose first attempt was denied runs on a later fire.
 - Denied/default private-runtime policy records or queues work with zero provider calls.
 - Provider-readiness pings are explicit readiness checks, not private turns.
