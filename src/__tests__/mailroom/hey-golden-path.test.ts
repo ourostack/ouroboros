@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { importMboxToStore } from "../../mailroom/mbox-import"
@@ -91,6 +91,11 @@ afterEach(() => {
 })
 
 describe("HEY MBOX golden path", () => {
+  // The mailroom loads mailparser on its first parse; load it here, outside the test's timer.
+  beforeAll(async () => {
+    await import("mailparser")
+  })
+
   it("imports delegated HEY mail, extracts travel facts, and keeps delegated reads family-only/audited", async () => {
     setAgentName("slugger")
     const storePath = tempDir()
