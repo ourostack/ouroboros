@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1023",
+      "changes": [
+        "Habits run again. The private runtime policy allows a habit wake that carries verified daemon provenance (habit, matching habit-trigger and habit-occurrence refs, and the habit scheduler, habit.poke or habit.probe as source), where before every habit fire was denied as default policy deny. A denied private-turn decision no longer reserves its idempotency key, so a habit whose first attempt was denied, and then retried after a provider credential revision change, runs on its next fire instead of failing forever with idempotency-key fingerprint mismatch."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1020",
       "changes": [
         "Images that MCP tools return (for example a plugin's screenshot tool) now reach the model: vision models get them in a message right after the step's tool results, and other models get a note that images were left out. GitHub Copilot requests that carry images send the Copilot-Vision-Request header, and the Anthropic provider sends base64 images as image blocks."

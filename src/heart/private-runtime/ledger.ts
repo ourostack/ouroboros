@@ -166,40 +166,29 @@ export function recordPrivateTurnDecision(
 
   try {
     const matchingRows = readRows(ledgerPath).filter((row) => row.idempotencyKey === candidate.idempotencyKey)
-    const anchor = matchingRows[0]
-    if (anchor) {
-      if (anchor.requestFingerprint !== candidate.requestFingerprint) {
-        const mismatch = mismatchDecision(candidate, anchor)
-        const writtenMismatch = writeRow(ledgerPath, mismatch)
-        emitDecisionRecorded(deps, { level: "warn", decision: writtenMismatch })
-        return writtenMismatch
-      }
+    // Only an executable allow reserves a key. A deny spent nothing, so a later request under the
+    // same key (for example after a provider credential revision change) is evaluated afresh.
+    const anchor = matchingRows.find((row) => row.executable)
+    if (anchor && anchor.requestFingerprint !== candidate.requestFingerprint) {
+      const mismatch = mismatchDecision(candidate, anchor)
+      const writtenMismatch = writeRow(ledgerPath, mismatch)
+      emitDecisionRecorded(deps, { level: "warn", decision: writtenMismatch })
+      return writtenMismatch
+    }
 
-      const priorExecutable = matchingRows.find((row) => row.requestFingerprint === candidate.requestFingerprint && row.executable)
-      if (priorExecutable && candidate.executable) {
-        return duplicateDecision(priorExecutable)
-      }
+    if (anchor && candidate.executable) {
+      return duplicateDecision(anchor)
+    }
 
-      const latestSameFingerprint = [...matchingRows].reverse().find((row) => row.requestFingerprint === candidate.requestFingerprint)
-      if (
-        latestSameFingerprint
-        && latestSameFingerprint.result === candidate.result
-        && latestSameFingerprint.executable === candidate.executable
-        && latestSameFingerprint.deniedReason === candidate.deniedReason
-        && latestSameFingerprint.denialCode === candidate.denialCode
-      ) {
-        return latestSameFingerprint
-      }
-
-      if (priorExecutable && !candidate.executable) {
-        const written = writeRow(ledgerPath, candidate)
-        emitDecisionRecorded(deps, { level: "warn", decision: written })
-        return written
-      }
-
-      const written = writeRow(ledgerPath, candidate)
-      emitDecisionRecorded(deps, { level: written.result === "allow" ? "info" : "warn", decision: written })
-      return written
+    const latestSameFingerprint = [...matchingRows].reverse().find((row) => row.requestFingerprint === candidate.requestFingerprint)
+    if (
+      latestSameFingerprint
+      && latestSameFingerprint.result === candidate.result
+      && latestSameFingerprint.executable === candidate.executable
+      && latestSameFingerprint.deniedReason === candidate.deniedReason
+      && latestSameFingerprint.denialCode === candidate.denialCode
+    ) {
+      return latestSameFingerprint
     }
 
     const written = writeRow(ledgerPath, candidate)

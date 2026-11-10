@@ -7,6 +7,7 @@ import {
   createProviderCredentialRecord,
   resetProviderCredentialCache,
 } from "../../../heart/provider-credentials"
+import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-private-wake"
 
 const privateRuntimeModulePath = "../../../heart/private-runtime"
 
@@ -375,6 +376,172 @@ describe("private-runtime policy and ledger", () => {
       executable: false,
       deniedReason: "default policy deny",
     })
+  })
+
+  it.each([
+    ["overdue", { kind: "daemon-entry", id: "habit-scheduler" }],
+    ["cron", { kind: "daemon-entry", id: "habit-scheduler" }],
+    ["poke", { kind: "daemon-command", id: "habit.poke" }],
+    ["manual", { kind: "daemon-command", id: "habit.probe" }],
+  ] as const)("allows verified daemon habit %s wakes with the default policy", async (trigger, sourceRef) => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+    const command = buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "housesitter-inbox",
+      trigger,
+      sourceRef,
+      occurrenceId: `${trigger}:first-run:10m`,
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: command.reason,
+      triggerSource: command.triggerSource,
+      idempotencyKey: command.idempotencyKey,
+      budgetClass: command.budgetClass,
+      originRefs: command.originRefs,
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "allow",
+      executable: true,
+      reason: "verified daemon habit",
+      triggerSource: `habit-${trigger}`,
+    })
+  })
+
+  it.each([
+    ["no source ref", "habit-overdue", [
+      { kind: "habit", id: "heartbeat" },
+      { kind: "habit-trigger", id: "overdue" },
+      { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+    ]],
+    ["an unknown source ref", "habit-overdue", [
+      { kind: "habit", id: "heartbeat" },
+      { kind: "habit-trigger", id: "overdue" },
+      { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+      { kind: "daemon-command", id: "private.wake" },
+    ]],
+    ["a trigger ref that differs from the trigger source", "habit-cron", [
+      { kind: "habit", id: "heartbeat" },
+      { kind: "habit-trigger", id: "overdue" },
+      { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+      { kind: "daemon-entry", id: "habit-scheduler" },
+    ]],
+    ["no occurrence ref", "habit-overdue", [
+      { kind: "habit", id: "heartbeat" },
+      { kind: "habit-trigger", id: "overdue" },
+      { kind: "daemon-entry", id: "habit-scheduler" },
+    ]],
+    ["a blank habit ref", "habit-overdue", [
+      { kind: "habit", id: " " },
+      { kind: "habit-trigger", id: "overdue" },
+      { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+      { kind: "daemon-entry", id: "habit-scheduler" },
+    ]],
+    ["an empty trigger", "habit-", [
+      { kind: "habit", id: "heartbeat" },
+      { kind: "habit-trigger", id: "" },
+      { kind: "habit-occurrence", id: "overdue:first-run:30m" },
+      { kind: "daemon-entry", id: "habit-scheduler" },
+    ]],
+  ])("keeps habit wakes with %s denied by default", async (_label, triggerSource, originRefs) => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "habit heartbeat fired",
+      triggerSource,
+      idempotencyKey: `habit:slugger:heartbeat:${triggerSource}:spoofed`,
+      budgetClass: "scheduled",
+      originRefs,
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
+  it("runs a habit on a later fire after its never-run first attempt was denied under an older credential revision", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const ledgerPath = tempLedgerPath()
+    const laneAt = (credentialRevision: string) => vi.fn(async () => ({
+      lane: "inner",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      source: "agent.json",
+      credentialRevision,
+    }))
+    const command = buildHabitPrivateWakeCommand({
+      agent: "slugger",
+      habitName: "housesitter-inbox",
+      trigger: "overdue",
+      sourceRef: { kind: "daemon-entry", id: "habit-scheduler" },
+      occurrenceId: "overdue:first-run:10m",
+    })
+    const request = privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: command.reason,
+      triggerSource: command.triggerSource,
+      idempotencyKey: command.idempotencyKey,
+      budgetClass: command.budgetClass,
+      originRefs: command.originRefs,
+    })
+
+    const denied = await privateRuntime.requestPrivateTurnDecision(request, policyDeps({
+      ledgerPath,
+      resolveProviderLane: laneAt("cred_before_upgrade"),
+      evaluatePolicy: vi.fn(async () => ({
+        result: "deny",
+        reason: "private runtime policy denies by default",
+        deniedReason: "default policy deny",
+      })),
+    }))
+    const laterFire = await privateRuntime.requestPrivateTurnDecision(request, policyDeps({
+      ledgerPath,
+      resolveProviderLane: laneAt("cred_after_refresh"),
+      evaluatePolicy: undefined,
+    }))
+    const repeatFire = await privateRuntime.requestPrivateTurnDecision(request, policyDeps({
+      ledgerPath,
+      resolveProviderLane: laneAt("cred_after_refresh"),
+      evaluatePolicy: undefined,
+    }))
+    const otherRevisionFire = await privateRuntime.requestPrivateTurnDecision(request, policyDeps({
+      ledgerPath,
+      resolveProviderLane: laneAt("cred_much_later"),
+      evaluatePolicy: undefined,
+    }))
+
+    expect(denied).toMatchObject({ result: "deny", executable: false, deniedReason: "default policy deny" })
+    expect(laterFire).toMatchObject({
+      result: "allow",
+      executable: true,
+      reason: "verified daemon habit",
+      idempotencyKey: "habit:slugger:housesitter-inbox:overdue:overdue:first-run:10m",
+    })
+    expect(laterFire.duplicateOf).toBeUndefined()
+    expect(laterFire.requestFingerprint).not.toBe(denied.requestFingerprint)
+    expect(repeatFire).toMatchObject({
+      executable: false,
+      deniedReason: "duplicate private-turn decision already recorded",
+      duplicateOf: laterFire.receiptId,
+    })
+    expect(otherRevisionFire).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "idempotency-key fingerprint mismatch",
+      duplicateOf: laterFire.receiptId,
+    })
+    expect(readLedger(ledgerPath).map((row) => [row.result, row.executable])).toEqual([
+      ["deny", false],
+      ["allow", true],
+      ["deny", false],
+    ])
   })
 
   it("keeps spoofed external-event private wakes denied by default", async () => {
