@@ -103,6 +103,7 @@ describe("readAgentConfigForAgent structural contract", () => {
         telegram: { enabled: false },
         workbench: { enabled: false },
         shepherd: { enabled: false },
+        "app-sessions": { enabled: false },
       })
     } finally {
       tmp.cleanup()

@@ -52,6 +52,7 @@ export const FULL_AGENT_JSON = {
     telegram: { enabled: false },
     workbench: { enabled: true },
     shepherd: { enabled: false },
+    "app-sessions": { enabled: false },
   },
   mcpServers: {
     "test-server": {

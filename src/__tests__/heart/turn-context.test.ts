@@ -585,8 +585,17 @@ describe("buildTurnContext", () => {
       "- A2A: ready",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)",
     ])
+  })
+
+  it("shows the app-sessions sense with its last snapshot when it is on", async () => {
+    mockLoadAgentConfig.mockReturnValue({ senses: { cli: { enabled: true }, "app-sessions": { enabled: true } } })
+    mockLoadConfig.mockReturnValue({})
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toContain("- app-sessions: ready (no snapshot yet; app_sessions_* tools read and write them)")
   })
 
   it("marks enabled Workbench bundle config as stale state", async () => {
@@ -667,6 +676,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -710,6 +720,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -742,6 +753,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -774,6 +786,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -830,6 +843,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -899,6 +913,7 @@ describe("buildTurnContext", () => {
       "- A2A: disabled",
       "- Telegram: disabled",
       "- shepherd: disabled",
+      "- app-sessions: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })

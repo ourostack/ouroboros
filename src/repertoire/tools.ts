@@ -24,6 +24,7 @@ import { observeTool, ponderTool, restTool, settleTool, speakTool } from "./tool
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import { houseCareToolDefinitions } from "./tools-house-care";
 import { shepherdToolDefinitions, shepherdToolsEnabled } from "./tools-shepherd";
+import { appSessionsToolDefinitions, appSessionsToolsEnabled } from "./tools-app-sessions";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
 import { authorizeRoutineActionRequester } from "./relationship-authorization";
@@ -89,7 +90,7 @@ export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, To
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const additionalDefinitions: ToolDefinition[] = [...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...houseCareToolDefinitions, surfaceToolDefinition, ...shepherdToolDefinitions];
+const additionalDefinitions: ToolDefinition[] = [...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...houseCareToolDefinitions, surfaceToolDefinition, ...shepherdToolDefinitions, ...appSessionsToolDefinitions];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 export class ToolSelectionError extends Error {}
@@ -181,6 +182,8 @@ export function selectToolsForChannel(
       ...baseToolDefinitions,
       // The Shepherd tools exist only for an agent that turned the sense on in agent.json.
       ...(shepherdToolsEnabled(context?.agentRoot ?? safeGetAgentRoot()) ? shepherdToolDefinitions : []),
+      // The app-sessions tools exist only for an agent that turned the sense on in agent.json.
+      ...(appSessionsToolsEnabled(context?.agentRoot ?? safeGetAgentRoot()) ? appSessionsToolDefinitions : []),
       ...(capabilities?.channel === "bluebubbles" ? bluebubblesToolDefinitions : []),
       ...(capabilities?.channel === "voice" ? voiceToolDefinitions : []),
       ...(localAudioToolGate({ ...context, context: _context }).ok ? [voiceLocalAudioToolDefinition] : []),

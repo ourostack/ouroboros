@@ -666,6 +666,8 @@ const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "
 // The Shepherd tools read the owner's terminals and speak to them through their desktop, so only family may use them.
 // A call with no known trust level fails closed.
 const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "shepherd_signal", "shepherd_send"])
+// The app-sessions tools read and write the owner's Copilot app sessions on this machine: family only, as Shepherd's.
+const APP_SESSIONS_FAMILY_TOOLS = new Set(["app_sessions_list", "app_sessions_tail", "app_sessions_send", "app_sessions_resume", "app_sessions_new", "app_sessions_archive", "app_sessions_restart", "app_sessions_watch"])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
@@ -1412,6 +1414,9 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
 
   if (SHEPHERD_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
     return deny("the owner's terminals require family trust.")
+  }
+  if (APP_SESSIONS_FAMILY_TOOLS.has(toolName) && context.trustLevel !== "family") {
+    return deny("the owner's Copilot app sessions require family trust.")
   }
 
   // Credential tools have their own trust rules that apply at all levels

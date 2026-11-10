@@ -166,6 +166,16 @@ async function evaluatePolicy(
     }
   }
   if (
+    request.triggerSource === "app-sessions"
+    && hasNonEmptyOriginRef(originRefs, "app-session-reply")
+    && hasOriginRef(originRefs, "sense", "app-sessions")
+  ) {
+    return {
+      result: "allow",
+      reason: "Copilot app session reply",
+    }
+  }
+  if (
     request.triggerSource === "operator-cli"
     && hasOriginRef(originRefs, "cli-command", "ouro msg")
     && hasNonEmptyOriginRef(originRefs, "daemon-receipt")

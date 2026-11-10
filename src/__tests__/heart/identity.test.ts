@@ -237,6 +237,7 @@ describe("buildDefaultAgentTemplate", () => {
         telegram: { enabled: false },
         workbench: { enabled: false },
         shepherd: { enabled: false },
+        "app-sessions": { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -413,6 +414,7 @@ describe("loadAgentConfig", () => {
       telegram: { enabled: false },
       workbench: { enabled: false },
       shepherd: { enabled: false },
+      "app-sessions": { enabled: false },
     })
   })
 
@@ -441,6 +443,7 @@ describe("loadAgentConfig", () => {
       telegram: { enabled: false },
       workbench: { enabled: false },
       shepherd: { enabled: false },
+      "app-sessions": { enabled: false },
     })
   })
 
@@ -472,6 +475,7 @@ describe("loadAgentConfig", () => {
       telegram: { enabled: false },
       workbench: { enabled: false },
       shepherd: { enabled: false },
+      "app-sessions": { enabled: false },
     })
   })
 
