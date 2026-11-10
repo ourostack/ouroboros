@@ -9,7 +9,7 @@ export interface SurfaceRouteResult {
 }
 
 export interface SurfaceDeliveryHint {
-  channel?: "auto" | "voice"
+  channel?: "auto" | "voice" | "teams"
   phoneNumber?: string
 }
 

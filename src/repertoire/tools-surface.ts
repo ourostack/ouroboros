@@ -14,7 +14,7 @@ import type { AttentionItem } from "../arc/attention-types";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
 import type { ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
 
-type SurfaceDeliveryChannel = "auto" | "voice"
+type SurfaceDeliveryChannel = "auto" | "voice" | "teams"
 
 export interface SurfaceDeliveryHint {
   channel?: SurfaceDeliveryChannel
@@ -26,7 +26,7 @@ export interface SurfaceDeliveryHint {
 function normalizeSurfaceDeliveryChannel(value: unknown): SurfaceDeliveryChannel {
   if (typeof value !== "string") return "auto"
   const normalized = value.trim().toLowerCase()
-  return normalized === "voice" ? "voice" : "auto"
+  return normalized === "voice" ? "voice" : normalized === "teams" ? "teams" : "auto"
 }
 
 function parseSurfaceVoiceInitialAudio(args: Record<string, string>): VoiceCallAudioRequest | undefined {
@@ -61,7 +61,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "return a ready thought to a friend or active session without publishing private-runtime work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
+      "return a ready thought to a friend or active session without publishing private-runtime work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. set channel=teams to tell a friend on Teams now (it sends at once where your Teams sense runs, otherwise waits in their Teams chat). does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -79,8 +79,8 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
         },
         channel: {
           type: "string",
-          enum: ["auto", "voice"],
-          description: "optional delivery channel; use voice for a live phone call to a trusted friend, otherwise omit",
+          enum: ["auto", "voice", "teams"],
+          description: "optional delivery channel; use voice for a live phone call to a trusted friend, teams to reach them on Teams now, otherwise omit",
         },
         phoneNumber: {
           type: "string",
@@ -206,6 +206,13 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
         : { status: "failed", detail: voiceResult.detail }
     }
 
+    if (hint?.channel === "teams") {
+      // The friend's latest Teams chat, else a new 1:1 the bot opens by their AAD id.
+      const teamsSession = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
+        .find((activity) => activity.friendId === friendId && activity.channel === "teams")
+      return deliverTeamsOrQueue(teamsSession ?? { friendId, channel: "teams", key: "proactive" }, "for their next Teams message")
+    }
+
     // Priority 1: Bridge-preferred session (if queue item has a bridgeId)
     if (queueItem?.bridgeId) {
       const { createBridgeManager } = await import("../heart/bridges/manager")
@@ -301,7 +308,7 @@ export const surfaceToolDefinition: ToolDefinition = {
       content: args.content ?? "",
       delegationId: args.delegationId,
       friendId: args.friendId,
-      deliveryHint: deliveryHint.channel === "voice" || deliveryHint.phoneNumber ? deliveryHint : undefined,
+      deliveryHint: deliveryHint.channel !== "auto" || deliveryHint.phoneNumber ? deliveryHint : undefined,
       queue,
       routeToFriend,
       advanceObligation: (obligationId, update) => {

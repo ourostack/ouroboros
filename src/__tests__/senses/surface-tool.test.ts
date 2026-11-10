@@ -5,6 +5,7 @@ const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendTelegramAwaitFollowUp = vi.fn()
 const mockGetBridge = vi.fn()
 const mockPlaceTrustedFriendVoiceOutboundCall = vi.fn()
+const mockSendTeamsOffTurn = vi.fn()
 
 vi.mock("fs", () => ({
   existsSync: vi.fn().mockReturnValue(false),
@@ -42,6 +43,10 @@ vi.mock("../../heart/bridges/manager", () => ({
   }),
 }))
 
+vi.mock("../../senses/teams-off-turn", () => ({
+  sendTeamsOffTurn: (...args: unknown[]) => mockSendTeamsOffTurn(...args),
+}))
+
 vi.mock("../../senses/voice/outbound", () => ({
   placeTrustedFriendVoiceOutboundCall: (...args: unknown[]) => mockPlaceTrustedFriendVoiceOutboundCall(...args),
 }))
@@ -61,6 +66,7 @@ describe("surface tool", () => {
     vi.mocked(fs.readdirSync).mockReturnValue([])
     vi.mocked(fs.mkdirSync).mockReset()
     mockListSessionActivity.mockReturnValue([])
+    mockSendTeamsOffTurn.mockReset()
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
       delivered: false,
       reason: "send_error",
@@ -947,6 +953,36 @@ describe("surface tool", () => {
         result: "delivered",
         rawStatus: "delivered",
       })
+    })
+
+    it("surfaceToolDefinition with channel=teams sends now to the friend's latest Teams chat", async () => {
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: true })
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "ari", channel: "cli", key: "session", sessionPath: "/x/cli.json" },
+        { friendId: "ari", channel: "teams", key: "a:chat-1", sessionPath: "/x/teams.json" },
+      ])
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "Ari is at the office.", friendId: "ari", channel: "teams" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toContain("delivered")
+      expect(mockSendTeamsOffTurn).toHaveBeenCalledWith(
+        { friendId: "ari", key: "a:chat-1", text: "Ari is at the office.", origin: "proactive" },
+        expect.objectContaining({ agentRoot: expect.any(String) }),
+      )
+    })
+
+    it("surfaceToolDefinition with channel=teams opens a new chat when the friend has none, and queues when it cannot send", async () => {
+      const fs = await import("fs")
+      mockSendTeamsOffTurn.mockResolvedValue(null)
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "later then", friendId: "ari", channel: "TEAMS" }, { delegatedOrigins: [] } as any)
+
+      expect(mockSendTeamsOffTurn).toHaveBeenCalledWith(expect.objectContaining({ key: "proactive" }), expect.anything())
+      expect(result).toContain("queued")
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/ari\/teams\/proactive\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("later then"),
+      )
     })
 
     it("surfaceToolDefinition records failed voice route attempts for habit receipts", async () => {
