@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1049",
+      "changes": [
+        "Ordinary agents can take external events"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1048",
       "changes": [
         "Edge benchmark ratchet: fail a PR that makes the harness heavier than main"
