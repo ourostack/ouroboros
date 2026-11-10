@@ -177,8 +177,8 @@ describe("pingProvider", () => {
     mockRefreshProviderCredentialPool.mockReset()
   })
 
-  it("creates provider runtimes from explicit config for shared health and repair flows", () => {
-    const runtime = createProviderRuntimeForConfig("minimax", {
+  it("creates provider runtimes from explicit config for shared health and repair flows", async () => {
+    const runtime = await createProviderRuntimeForConfig("minimax", {
       apiKey: "valid-key",
     }, {
       model: "MiniMax-M2.5",
@@ -190,8 +190,8 @@ describe("pingProvider", () => {
     })
   })
 
-  it("fails closed when runtime construction receives an unsupported provider", () => {
-    expect(() => createProviderRuntimeForConfig("unsupported" as never, {} as never)).toThrow(
+  it("fails closed when runtime construction receives an unsupported provider", async () => {
+    await expect(createProviderRuntimeForConfig("unsupported" as never, {} as never)).rejects.toThrow(
       "unsupported provider for ping: unsupported",
     )
   })
@@ -199,8 +199,8 @@ describe("pingProvider", () => {
   it.each([
     ["openai-compatible", "https://api.z.ai/api/paas/v4/"],
     ["openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"],
-  ] as const)("constructs the %s runtime from explicit credentials", (provider, baseUrl) => {
-    const runtime = createProviderRuntimeForConfig(provider, { apiKey: "key", baseUrl })
+  ] as const)("constructs the %s runtime from explicit credentials", async (provider, baseUrl) => {
+    const runtime = await createProviderRuntimeForConfig(provider, { apiKey: "key", baseUrl })
 
     expect(runtime.id).toBe(provider)
   })

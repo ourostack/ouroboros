@@ -8,12 +8,7 @@ import type {
   OpenAICodexProviderConfig,
   OpenAICompatibleProviderConfig,
 } from "./config"
-import { createAnthropicProviderRuntime } from "./providers/anthropic"
-import { createAzureProviderRuntime } from "./providers/azure"
-import { createMinimaxProviderRuntime } from "./providers/minimax"
-import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
-import { classifyGithubCopilotError, createGithubCopilotProviderRuntime } from "./providers/github-copilot"
-import { createOpenAICompatibleProviderRuntime } from "./providers/openai-compatible"
+import { classifyHttpError } from "./providers/error-classification"
 import { getDefaultModelForProvider } from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -171,7 +166,7 @@ export async function pingGithubCopilotModel(
     operation: "model-ping",
     provider: "github-copilot",
     model,
-    classifyError: classifyGithubCopilotError,
+    classifyError: classifyHttpError,
     policy: {
       maxAttempts: 3,
       baseDelayMs: 0,
@@ -208,32 +203,36 @@ function hasEmptyCredentials(provider: AgentProvider, config: ProviderRuntimeCon
   return ![requirements.required, ...(requirements.alternativeRequired ?? [])].some((fields) => fields.every((key) => !!record[key]))
 }
 
-export function createProviderRuntimeForConfig(
+/**
+ * Each provider's module (and the SDK it wraps) loads only when that provider
+ * is pinged, so a daemon checking one agent's provider loads one SDK, not all.
+ */
+export async function createProviderRuntimeForConfig(
   provider: AgentProvider,
   config: ProviderRuntimeConfig,
   options: { model?: string } = {},
-): ProviderRuntime {
+): Promise<ProviderRuntime> {
   // Use the same provider defaults as auth switch and hatch so verification
   // cannot drift to stale provider/model pairings, and pass the checked
   // credentials directly so daemon-side pings do not depend on --agent globals.
   const resolvedModel = options.model ?? getDefaultModelForProvider(provider)
   switch (provider) {
     case "anthropic":
-      return createAnthropicProviderRuntime(resolvedModel, config as AnthropicProviderConfig)
+      return (await import("./providers/anthropic")).createAnthropicProviderRuntime(resolvedModel, config as AnthropicProviderConfig)
     case "azure":
-      return createAzureProviderRuntime(resolvedModel, {
+      return (await import("./providers/azure")).createAzureProviderRuntime(resolvedModel, {
         ...(config as AzureProviderConfig),
         apiVersion: (config as AzureProviderConfig).apiVersion ?? DEFAULT_AZURE_API_VERSION,
       })
     case "minimax":
-      return createMinimaxProviderRuntime(resolvedModel, config as MinimaxProviderConfig)
+      return (await import("./providers/minimax")).createMinimaxProviderRuntime(resolvedModel, config as MinimaxProviderConfig)
     case "openai-codex":
-      return createOpenAICodexProviderRuntime(resolvedModel, config as OpenAICodexProviderConfig)
+      return (await import("./providers/openai-codex")).createOpenAICodexProviderRuntime(resolvedModel, config as OpenAICodexProviderConfig)
     case "github-copilot":
-      return createGithubCopilotProviderRuntime(resolvedModel, config as GithubCopilotProviderConfig)
+      return (await import("./providers/github-copilot")).createGithubCopilotProviderRuntime(resolvedModel, config as GithubCopilotProviderConfig)
     case "openai-compatible":
     case "openai-compatible-gemini":
-      return createOpenAICompatibleProviderRuntime(provider, resolvedModel, config as OpenAICompatibleProviderConfig)
+      return (await import("./providers/openai-compatible")).createOpenAICompatibleProviderRuntime(provider, resolvedModel, config as OpenAICompatibleProviderConfig)
     default:
       throw new Error(`unsupported provider for ping: ${provider}`)
   }
@@ -251,7 +250,7 @@ export async function pingProvider(
 
   let runtime: ProviderRuntime
   try {
-    runtime = createProviderRuntimeForConfig(provider, config, { model: options.model })
+    runtime = await createProviderRuntimeForConfig(provider, config, { model: options.model })
   /* v8 ignore start -- factory creation failure: tested via individual provider init tests @preserve */
   } catch (error) {
     return {
