@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1029",
+      "changes": [
+        "Account pool: the fleet burn file is named by this Mac's LocalHostName (else the host name), so two Macs with a generic host name such as \"Mac\" never write the same file."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1025",
       "changes": [
         "A Copilot account pool's refusals are shared by all of the agent's processes (state/account-refusals.json), so a spent account is skipped everywhere after one 402 or 429 instead of once per process."
