@@ -119,6 +119,7 @@ export type OuroCliCommand =
   | { kind: "presence.join"; agent: string; role?: string; name?: string }
   | { kind: "presence.handoff"; agent: string; sense: string; machine: string }
   | { kind: "presence.status"; agent: string; json?: boolean }
+  | { kind: "presence.failover"; agent: string; action: "take" | "release"; sense: string; reason?: string }
   | { kind: "presence.location"; location: string }
   | { kind: "self-update"; unattended?: boolean }
   | { kind: "self-update.enable"; full?: boolean; minMemAvailableMb?: number; reserveMb?: number; keepVersions?: number }

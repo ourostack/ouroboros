@@ -19,6 +19,7 @@ import {
   effectiveOwner,
   mayRunSense,
   ownedSharedSenses,
+  failoverSenses,
   ownsSense,
   readLocalPresenceSettings,
   readPresenceForAgent,
@@ -219,8 +220,9 @@ export class PresenceTicker {
   private async publish(agent: string, presence: Presence): Promise<void> {
     const now = (this.deps.now ?? (() => new Date()))()
     const owns = ownedSharedSenses(presence, this.deps.machineId)
+    const failover = failoverSenses(presence, this.deps.machineId)
     const last = this.lastPublishedMs.get(agent)
-    const ownsChanged = this.lastOwns.get(agent) !== owns.join(",")
+    const ownsChanged = this.lastOwns.get(agent) !== [...owns, ...failover.map((sense) => `failover:${sense}`)].join(",")
     if (!ownsChanged && last !== undefined && now.getTime() - last < PEER_RECORD_INTERVAL_MS) return
     const agentRoot = path.join(this.deps.bundlesRoot, `${agent}.ouro`)
     const machine = rosterMachine(presence, this.deps.machineId)
@@ -235,11 +237,12 @@ export class PresenceTicker {
       os: describeOs(),
       location: settings.location ?? (machine.role === "always-on" ? "home" : "unknown"),
       owns,
+      ...(failover.length > 0 ? { failover } : {}),
       ...this.deps.extraRecord?.(agent),
     }
     writePeerRecord(agentRoot, record)
     this.lastPublishedMs.set(agent, now.getTime())
-    this.lastOwns.set(agent, owns.join(","))
+    this.lastOwns.set(agent, [...owns, ...failover.map((sense) => `failover:${sense}`)].join(","))
     emitNervesEvent({ component: "daemon", event: "daemon.presence_record_published", message: "published this machine's presence record", meta: { agent, machineId: this.deps.machineId, version: this.deps.version } })
   }
 }
