@@ -446,6 +446,9 @@ async function startFakeVault(email, secret) {
   const expand = (info) => crypto.createHmac("sha256", masterKey).update(Buffer.concat([Buffer.from(info), Buffer.from([1])])).digest()
   const stretched = Buffer.concat([expand("enc"), expand("mac")])
   const userKey = crypto.randomBytes(64)
+  // A JWT naming the account, as Bitwarden and Vaultwarden issue.
+  const jwtPart = (value) => Buffer.from(JSON.stringify(value)).toString("base64url")
+  const accessToken = `${jwtPart({ alg: "none" })}.${jwtPart({ sub: "edge-benchmark-user", email })}.edge-benchmark`
   const encrypt = (data, key) => {
     const iv = crypto.randomBytes(16)
     const cipher = crypto.createCipheriv("aes-256-cbc", key.subarray(0, 32), iv)
@@ -475,10 +478,10 @@ async function startFakeVault(email, secret) {
       if (req.url === "/identity/connect/token") {
         const form = new URLSearchParams(body)
         if (form.get("username") !== email || form.get("password") !== hash) return send(400, { error: "invalid_grant", ErrorModel: { Message: "Username or password is incorrect. Try again" } })
-        return send(200, { access_token: "edge-benchmark-access-token", expires_in: 3600, Key: encrypt(userKey, stretched) })
+        return send(200, { access_token: accessToken, expires_in: 3600, Key: encrypt(userKey, stretched) })
       }
       if (String(req.url).startsWith("/api/sync")) {
-        if (req.headers.authorization !== "Bearer edge-benchmark-access-token") return send(401, {})
+        if (req.headers.authorization !== `Bearer ${accessToken}`) return send(401, {})
         return send(200, { ciphers })
       }
       send(404, {})

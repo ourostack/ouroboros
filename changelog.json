@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1021",
+      "version": "0.1.0-alpha.1023",
       "changes": [
         "Habits run again. The private runtime policy allows a habit wake that carries verified daemon provenance (habit, matching habit-trigger and habit-occurrence refs, and the habit scheduler, habit.poke or habit.probe as source), where before every habit fire was denied as default policy deny. A denied private-turn decision no longer reserves its idempotency key, so a habit whose first attempt was denied, and then retried after a provider credential revision change, runs on its next fire instead of failing forever with idempotency-key fingerprint mismatch."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1021",
+      "changes": [
+        "A small host's install (npm config set omit optional) is now about 46 MB and 43 packages instead of 221 MB and 426: the bundled Bitwarden CLI and the terminal chat UI (ink, react) are optional packages too. Vault reads and writes are native, so bw is only fetched when a vault needs it, and without the chat UI ouro chats line by line. shell-quote, which the shell guardrails load, is now declared instead of arriving through ink, and a test keeps every runtime import declared. Native vault reads no longer need the access token to name the user (only writes do), and the edge benchmark's fake vault issues a real JWT, so it reads natively again."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1016",
+      "changes": [
+        "An agent with a Copilot account pool writes its fleet gist file only when it changed, at most every 30 minutes and at least every 5 hours, to stay inside GitHub's shared gist write budget."
       ]
     },
     {

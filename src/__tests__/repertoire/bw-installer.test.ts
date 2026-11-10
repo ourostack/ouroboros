@@ -283,8 +283,8 @@ describe("ensureBwCli", () => {
   })
 
   it("finds the real bundled bw at the pinned version", () => {
-    const rootPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../package.json"), "utf8")) as { dependencies: Record<string, string> }
-    expect(rootPkg.dependencies["@bitwarden/cli"]).toBe(PINNED_BW_CLI_VERSION)
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../package.json"), "utf8")) as { optionalDependencies: Record<string, string> }
+    expect(rootPkg.optionalDependencies["@bitwarden/cli"]).toBe(PINNED_BW_CLI_VERSION)
     const found = findBundledBwCli()
     expect(found).not.toBeNull()
     const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(found!), "..", "package.json"), "utf8")) as { name: string; version: string }
