@@ -3,11 +3,15 @@ name: edge-benchmark
 # How lean the harness is on each host: install size, startup time, idle and
 # peak memory, modules loaded and turn latency (.github/scripts/edge-benchmark.cjs).
 # Linux runs under a 1 GiB memory cap, the size of the smallest machine we run
-# on. Report-only for now: each run compares itself with main's latest run in
-# the job summary; it does not fail a PR for a regression yet.
+# on. Each pull request compares itself with main's latest run in the job
+# summary, and the ratchet fails the job when a metric gets worse than main by
+# more than its noise allowance (ratchetLimit in the script). To land an
+# intentional regression, label the PR edge-benchmark-regression-accepted and
+# say why in its description.
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches:
       - main
@@ -79,12 +83,18 @@ jobs:
           fi
 
       - name: Report
+        env:
+          GATE: ${{ github.event_name == 'pull_request' && 'on' || 'off' }}
+          ACCEPTED: ${{ contains(github.event.pull_request.labels.*.name, 'edge-benchmark-regression-accepted') && 'label edge-benchmark-regression-accepted' || '' }}
         run: |
+          accepted=()
+          if [ -n "$ACCEPTED" ]; then accepted=(--accepted "$ACCEPTED"); fi
           node .github/scripts/edge-benchmark.cjs report \
             --current "$RUNNER_TEMP/edge-benchmark.json" \
             --baseline "$RUNNER_TEMP/baseline/edge-benchmark.json" \
             --baseline-label "${BASELINE_LABEL:-main}" \
-            --summary "$GITHUB_STEP_SUMMARY"
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --gate "$GATE" "${accepted[@]}"
 
       - name: Upload result
         if: always()

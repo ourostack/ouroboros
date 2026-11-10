@@ -108,3 +108,71 @@ describe("edge-benchmark", () => {
     expect(bench.metricValue({ a: { b: "3" } }, "a.b")).toBeNull()
   })
 })
+
+describe("edge-benchmark ratchet", () => {
+  const linuxArm = { platform: "linux", arch: "arm64" }
+  const run = (host: Record<string, string>, values: Record<string, Record<string, number>>) => ({ host, ...values })
+
+  it("gates counts everywhere, Linux memory, and timings only on linux-arm64", () => {
+    expect(bench.ratchetLimit("install.packages", { platform: "darwin" })).toBe(0)
+    expect(bench.ratchetLimit("cli.modules", { platform: "darwin" })).toBe(0.01)
+    expect(bench.ratchetLimit("install.bytes", { platform: "darwin" })).toBe(0.02)
+    expect(bench.ratchetLimit("turn.peakProcesses", linuxArm)).toBe(0)
+    expect(bench.ratchetLimit("turn.peakProcesses", { platform: "darwin" })).toBeNull()
+    expect(bench.ratchetLimit("daemon.idleRssKb", { platform: "linux", arch: "x64" })).toBe(0.03)
+    expect(bench.ratchetLimit("daemon.idleRssKb", { platform: "darwin", arch: "arm64" })).toBeNull()
+    expect(bench.ratchetLimit("cli.wallMs", linuxArm)).toBe(0.25)
+    expect(bench.ratchetLimit("cli.wallMs", { platform: "linux", arch: "x64" })).toBeNull()
+    expect(bench.ratchetLimit("install.files", linuxArm)).toBeNull()
+    expect(bench.ratchetLimit("cli.wallMs", undefined)).toBeNull()
+  })
+
+  it("flags only what got worse beyond its allowance", () => {
+    const baseline = run(linuxArm, { install: { packages: 44 }, daemon: { idleRssKb: 90_000 }, cli: { wallMs: 460, modules: 900 }, stack: { vaultCalls: 0 } })
+    const current = run(linuxArm, { install: { packages: 45 }, daemon: { idleRssKb: 92_000 }, cli: { wallMs: 600, modules: 905 }, stack: { vaultCalls: 1 } })
+    expect(bench.ratchetViolations(current, baseline).map((row: { key: string }) => row.key)).toEqual(["install.packages", "cli.wallMs", "stack.vaultCalls"])
+    expect(bench.ratchetViolations(current, null)).toEqual([])
+    expect(bench.ratchetViolations(run(linuxArm, {}), baseline)).toEqual([])
+  })
+
+  it("explains a hold, a regression and an accepted regression", () => {
+    expect(bench.renderRatchet([], undefined)).toContain("Ratchet: holds.")
+    const rows = [
+      { label: "install packages", unit: "count", baseline: 44, current: 45, limit: 0 },
+      { label: "daemon idle RSS", unit: "kB", baseline: 90_000, current: 95_000, limit: 0.03 },
+    ]
+    const failing = bench.renderRatchet(rows, undefined)
+    expect(failing).toContain("**Ratchet: 2 regressions.**")
+    expect(failing).toContain("- install packages: 44 → 45 (allowed no increase)")
+    expect(failing).toContain("- daemon idle RSS: 87.9 MiB → 92.8 MiB (allowed +3%)")
+    expect(bench.renderRatchet(rows.slice(0, 1), "label edge-benchmark-regression-accepted")).toContain("**Ratchet: 1 regression accepted** (label edge-benchmark-regression-accepted).")
+  })
+
+  it("fails the report on an unaccepted regression only when gating", () => {
+    const fs = require("fs") as typeof import("fs")
+    const os = require("os") as typeof import("os")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "edge-ratchet-"))
+    const write = (name: string, value: unknown) => { fs.writeFileSync(path.join(dir, name), JSON.stringify(value)); return path.join(dir, name) }
+    const baseline = write("base.json", run(linuxArm, { install: { packages: 44 } }))
+    const current = write("cur.json", run(linuxArm, { install: { packages: 45 } }))
+    const summary = path.join(dir, "summary.md")
+    const stdout = process.stdout.write
+    process.stdout.write = (() => true) as typeof process.stdout.write
+    const exitCode = process.exitCode
+    try {
+      process.exitCode = 0
+      bench.report({ current, baseline })
+      expect(process.exitCode).toBe(0)
+      bench.report({ current, baseline, gate: "on", summary })
+      expect(process.exitCode).toBe(1)
+      expect(fs.readFileSync(summary, "utf8")).toContain("Ratchet: 1 regression.")
+      process.exitCode = 0
+      bench.report({ current, baseline, gate: "on", accepted: "label edge-benchmark-regression-accepted" })
+      expect(process.exitCode).toBe(0)
+    } finally {
+      process.stdout.write = stdout
+      process.exitCode = exitCode
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

@@ -169,6 +169,51 @@ function compare(current, baseline) {
   return rows
 }
 
+/**
+ * The ratchet: how much worse than main a pull request may make each metric before the job fails, as a fraction of
+ * main's value, or null where the metric is too noisy on that host to gate. Calibrated on main's run-to-run spread
+ * (eight runs, 2026-11-10): counts never vary; install size and Linux memory vary under 2%; timings vary 7-12% on
+ * linux-arm64 but 24-140% on linux-x64 and macOS, and macOS memory up to 31%; macOS turn peak processes flip 2/3.
+ */
+const COUNTS = ["install.packages", "stack.processes", "stack.vaultCalls", "stack.vaultLogins", "stack.vaultSyncs", "turn.modelRequests", "turn.vaultCalls", "turn.vaultLogins", "turn.vaultSyncs"]
+const MODULES = ["cli.modules", "daemon.modules", "stack.modules"]
+const MEMORY = ["cli.maxRssKb", "daemon.idleRssKb", "daemon.idlePssKb", "stack.idleRssKb", "stack.idlePssKb", "turn.peakRssKb", "turn.peakPssKb"]
+const TIMINGS = ["cli.wallMs", "daemon.readyMs", "stack.upMs", "turn.firstRequestMs", "turn.settledMs"]
+
+function ratchetLimit(key, host) {
+  const linux = host?.platform === "linux"
+  if (COUNTS.includes(key)) return 0
+  // A short-lived child is sometimes caught by the sampler on macOS (2 or 3 between identical main runs).
+  if (key === "turn.peakProcesses") return linux ? 0 : null
+  if (MODULES.includes(key)) return 0.01
+  if (key === "install.bytes") return 0.02
+  if (MEMORY.includes(key)) return linux ? 0.03 : null
+  if (TIMINGS.includes(key)) return linux && host?.arch === "arm64" ? 0.25 : null
+  return null
+}
+
+/** Metrics this run made worse than the baseline by more than the ratchet allows. */
+function ratchetViolations(current, baseline) {
+  if (!baseline) return []
+  return compare(current, baseline).flatMap((row) => {
+    const limit = ratchetLimit(row.key, current.host)
+    if (limit === null || row.current === null || row.baseline === null) return []
+    return row.current > row.baseline * (1 + limit) ? [{ ...row, limit }] : []
+  })
+}
+
+function renderRatchet(violations, accepted) {
+  if (violations.length === 0) return "**Ratchet: holds.** Nothing got worse than main beyond its noise allowance.\n"
+  const lines = [
+    accepted
+      ? `**Ratchet: ${violations.length} regression${violations.length === 1 ? "" : "s"} accepted** (${accepted}).`
+      : `**Ratchet: ${violations.length} regression${violations.length === 1 ? "" : "s"}.** Make it lean again, or label the pull request \`edge-benchmark-regression-accepted\` and say why in its description.`,
+    "",
+    ...violations.map((row) => `- ${row.label}: ${formatValue(row.baseline, row.unit)} → ${formatValue(row.current, row.unit)} (allowed ${row.limit === 0 ? "no increase" : `+${Math.round(row.limit * 100)}%`})`),
+  ]
+  return `${lines.join("\n")}\n`
+}
+
 function deltaText(delta) {
   if (delta === null) return ""
   const percent = (delta * 100).toFixed(1)
@@ -707,18 +752,20 @@ function report(options) {
   if (!options.current) throw new Error("--current is required")
   const current = JSON.parse(fs.readFileSync(options.current, "utf8"))
   const baseline = options.baseline && fs.existsSync(options.baseline) ? JSON.parse(fs.readFileSync(options.baseline, "utf8")) : null
-  const markdown = renderReport(current, baseline, options.baselineLabel)
+  const violations = options.gate === "on" ? ratchetViolations(current, baseline) : []
+  const markdown = renderReport(current, baseline, options.baselineLabel) + (options.gate === "on" ? `\n${renderRatchet(violations, options.accepted)}` : "")
   process.stdout.write(markdown)
   if (options.summary) fs.appendFileSync(options.summary, markdown)
   // A scenario that could not run is a broken benchmark, not a slow harness.
   if (current.errors?.length) process.exitCode = 1
+  if (violations.length > 0 && !options.accepted) process.exitCode = 1
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.command === "run") await run(options)
   else if (options.command === "report") report(options)
-  else throw new Error("usage: edge-benchmark.cjs run (--tarball <tgz> | --root <dir>) --out <json> | report --current <json> [--baseline <json>] [--summary <file>]")
+  else throw new Error("usage: edge-benchmark.cjs run (--tarball <tgz> | --root <dir>) --out <json> | report --current <json> [--baseline <json>] [--summary <file>] [--gate on [--accepted <reason>]]")
 }
 
 if (require.main === module) {
@@ -728,4 +775,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { parseArgs, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS }
+module.exports = { parseArgs, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
