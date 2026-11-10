@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1010",
+      "changes": [
+        "New app-sessions sense: with senses[\"app-sessions\"].enabled in agent.json, an agent can list, read, message, resume, open and archive this machine's GitHub Copilot app sessions, ask the Mac's app keeper for a courtesy restart, and hear back from the sessions it writes to."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1007",
       "changes": [
         "Unattended onboarding: ouro hatch --answers <json> --secret-file <path> [--no-chat] hatches with no terminal, and ouro vault unlock|create|replace|recover take --secret-file (a file, /dev/stdin or /dev/fd/N), so no secret reaches argv."
