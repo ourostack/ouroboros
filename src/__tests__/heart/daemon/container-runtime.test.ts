@@ -67,9 +67,11 @@ describe("container runtime policy", () => {
 
   it("pins and exposes the Bitwarden CLI before the image drops privileges", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
-    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> }
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { optionalDependencies: Record<string, string> }
 
-    expect(packageJson.dependencies["@bitwarden/cli"]).toMatch(/^\d+\.\d+\.\d+$/u)
+    // Optional for small hosts; the image's npm ci --omit=dev still installs it.
+    expect(packageJson.optionalDependencies["@bitwarden/cli"]).toMatch(/^\d+\.\d+\.\d+$/u)
+    expect(dockerfile).not.toMatch(/--omit[= ]optional/u)
     expect(dockerfile).toContain("test -x /opt/ouro/node_modules/.bin/bw")
     expect(dockerfile).toContain("ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw")
     expect(dockerfile).toContain('BW_VERIFY_ROOT="$(mktemp -d)"')
