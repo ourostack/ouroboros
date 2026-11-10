@@ -259,11 +259,35 @@ const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
 // shell could resolve it into one. A word like that counts as mentioning the folder when its directory part can match the folder's
 // path, so the read-only rule below applies to the command.
 const EXPANSION = "\u0001"
+// Marks a word built from a same-command literal, so the word is still checked though it shows no glob or expansion.
+const SUBSTITUTED = "\u0002"
 const STABLE_VARIABLES = ["HOME", "TMPDIR", "USER"]
 
+// Builtins that can set a variable other than by NAME=value; with any of them present no assignment is trusted.
+const OTHER_VARIABLE_SETTERS = /(?:^|[\s;&|(])(?:read|for|select|declare|typeset|local|readonly|eval|getopts|mapfile|readarray|printf|source|\.|let|export\s+-|unset)(?=$|[\s;&|)])/
+
+/**
+ * Variables this command sets exactly once to a plain literal (`R=gim-home/CIT; gh pr view 1 -R $R`), with where the
+ * assignment ends. Uses after that point are that literal, so they need not count as "could be anything". Quoted values,
+ * expansions in the value, a second assignment to the same name or any other way of setting a variable leave it unknown.
+ */
+function literalAssignments(command: string): Map<string, { value: string; end: number }> {
+  const found = new Map<string, { value: string; end: number }>()
+  if (OTHER_VARIABLE_SETTERS.test(command)) return found
+  for (const match of command.matchAll(/(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_]\w*)=([^\s;&|()<>`$'"\\{}*?[\]~]+)(?=$|[\s;&|)])/g)) {
+    const name = match[1]!
+    // Counts every NAME= in the command, including the one just matched.
+    if (command.match(new RegExp(`(?:^|[^\\w$])${name}=`, "g"))!.length === 1) found.set(name, { value: match[2]!, end: match.index! + match[0].length })
+  }
+  return found
+}
+
 function neutraliseExpansions(command: string): string {
-  return command.replace(/\$\([^)]*\)|`[^`]*`|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|\$\{[^}]*\}/g, (_match, braced: string | undefined, plain: string | undefined) => {
+  const literals = literalAssignments(command)
+  return command.replace(/\$\([^)]*\)|`[^`]*`|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|\$\{[^}]*\}/g, (_match, braced: string | undefined, plain: string | undefined, offset: number) => {
     const name = braced ?? plain
+    const literal = name === undefined ? undefined : literals.get(name)
+    if (literal && offset >= literal.end) return `${SUBSTITUTED}${literal.value}`
     if (name !== undefined && STABLE_VARIABLES.includes(name) && !new RegExp(`\\b${name}=`).test(command) && process.env[name]) return process.env[name]!
     return EXPANSION
   })
@@ -277,8 +301,9 @@ function wordPattern(word: string): RegExp {
 }
 
 function globOrExpansionCouldReach(command: string, folder: string, agentRoot: string): boolean {
-  const tokens = neutraliseExpansions(command).split(/[\s<>|;&()'"]+/).filter((token) => /[*?[{\u0001]/.test(token))
-  return tokens.some((token) => {
+  const tokens = neutraliseExpansions(command).split(/[\s<>|;&()'"]+/).filter((token) => /[*?[{\u0001\u0002]/.test(token))
+  return tokens.some((marked) => {
+    const token = marked.replaceAll(SUBSTITUTED, "")
     const word = token.startsWith("~") ? expandHome(token) : token
     const absolute = word.startsWith("/") || word.startsWith(EXPANSION) ? word : `${agentRoot}/${word}`
     const dir = absolute.slice(0, Math.max(absolute.lastIndexOf("/"), 0))

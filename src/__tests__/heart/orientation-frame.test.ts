@@ -112,6 +112,25 @@ describe("orientation frame", () => {
     } as any)).toBe("visible content\nvisible settle answer")
   })
 
+  it("makes a family speaker's correction hold advisory, never a refusal", () => {
+    // 2026-11-10: Ari's "no i want that fix for borja done" armed a hold that refused the send he asked for.
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: "Babysitter is on it." },
+      { role: "user", content: "no i want that fix for borja done" },
+    ]
+    const family = buildOrientationFrame({ channel: "teams", messages, familySpeaker: true })
+    expect(family.actionPolicy).toMatchObject({ mode: "correction_hold", advisory: true, triggeredBy: "no" })
+    const rendered = renderOrientationFrame(family)
+    expect(rendered).toContain("policy is advisory: nothing is blocked")
+    expect(rendered).toContain("do it now without asking for confirmation")
+    expect(rendered).not.toContain("policy blocks:")
+
+    const other = buildOrientationFrame({ channel: "teams", messages })
+    expect(other.actionPolicy).toMatchObject({ mode: "correction_hold" })
+    expect(other.actionPolicy).not.toHaveProperty("advisory")
+    expect(renderOrientationFrame(other)).toContain("policy blocks: durable_state_write, external_side_effect")
+  })
+
   it("keeps ordinary turns in normal action policy", () => {
     const frame = buildOrientationFrame({
       channel: "cli",

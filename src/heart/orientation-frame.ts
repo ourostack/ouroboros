@@ -84,6 +84,11 @@ export type OrientationActionPolicy =
       triggeredBy?: string
       /** Plain-language statement of what releases the hold, so it is never a silent wall. */
       clearedBy?: string
+      /**
+       * Set when the speaker is family (the agent's own people): the hold is guidance for reading the referent,
+       * never a refusal, because their instruction is the authority to act. Relationship-scoped turns still enforce it.
+       */
+      advisory?: true
     }
 
 export interface OrientationFrame {
@@ -137,6 +142,8 @@ export interface BuildOrientationFrameInput {
   structuredOutputs?: StructuredOutput[]
   source?: OrientationSource
   speechKind?: OrientationSpeechKind
+  /** The person speaking is family-trust, so a correction hold advises instead of refusing tools. */
+  familySpeaker?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -273,6 +280,9 @@ const TERSE_CORRECTION_MAX_WORDS = 12
 const CORRECTION_HOLD_CLEARED_BY =
   "Resolve the referent (orientation_get lists the candidates) or restate the request as a standalone, correction-free instruction. The policy is recomputed from each user turn, so it never carries past this turn."
 
+const CORRECTION_HOLD_ADVISORY =
+  "Advisory only: tools are not blocked. Read the referent first (orientation_get lists the candidates); if the request is clear, do it now without asking for confirmation. Ask only when two readings would lead to different actions."
+
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length
 }
@@ -292,6 +302,7 @@ function deriveActionPolicy(
   combinedSpeech: string,
   priorAssistantReferents: OrientationReferent[],
   latestStructuredOutput: StructuredOutput | undefined,
+  familySpeaker: boolean,
 ): OrientationActionPolicy {
   const holdSignals = signals.filter((signal) => signal !== "correction_marker"
     || correctionMarkerArmsHold(combinedSpeech, priorAssistantReferents, latestStructuredOutput))
@@ -306,7 +317,8 @@ function deriveActionPolicy(
       : "Current user speech appears to correct or revise prior understanding; inspect orientation before mutating durable state.",
     blockedMutationKinds: ["durable_state_write", "external_side_effect"],
     ...(triggeredBy ? { triggeredBy } : {}),
-    clearedBy: CORRECTION_HOLD_CLEARED_BY,
+    clearedBy: familySpeaker ? CORRECTION_HOLD_ADVISORY : CORRECTION_HOLD_CLEARED_BY,
+    ...(familySpeaker ? { advisory: true as const } : {}),
   }
 }
 
@@ -360,6 +372,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
     combinedSpeech,
     priorAssistantReferents,
     candidateStructuredOutput,
+    input.familySpeaker === true,
   )
 
   const frame: OrientationFrame = {
@@ -400,6 +413,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
         speechKind,
         signals,
         blockedMutationKinds: actionPolicy.blockedMutationKinds,
+        advisory: actionPolicy.advisory === true,
         triggeredBy: actionPolicy.triggeredBy ?? null,
         referentCount: priorAssistantReferents.length,
         structuredOutput: candidateStructuredOutput?.id ?? null,
@@ -421,7 +435,9 @@ export function renderOrientationFrame(frame: OrientationFrame): string {
 
   if (frame.actionPolicy.mode === "correction_hold") {
     lines.push(`policy reason: ${frame.actionPolicy.reason}`)
-    lines.push(`policy blocks: ${frame.actionPolicy.blockedMutationKinds.join(", ")}`)
+    lines.push(frame.actionPolicy.advisory
+      ? `policy is advisory: nothing is blocked; check before ${frame.actionPolicy.blockedMutationKinds.join(", ")}`
+      : `policy blocks: ${frame.actionPolicy.blockedMutationKinds.join(", ")}`)
     if (frame.actionPolicy.triggeredBy) {
       lines.push(`policy trigger: correction marker "${frame.actionPolicy.triggeredBy}" in current user speech`)
     }

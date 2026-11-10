@@ -1334,6 +1334,30 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
       })
+      it.each([
+        // 2026-11-10: Ouroboros was refused "that file is part of me" for marking Ari's teammate's PR ready.
+        "R=gim-home/CIT; gh pr ready 634 -R $R && gh pr view 634 -R $R --json state",
+        "export GH_TOKEN=$(gh auth token -u someone); R=gim-home/CIT; gh pr merge 634 -R ${R} --squash",
+        "D=/tmp/work; mkdir -p $D && cp a $D/b",
+      ])("allows a variable set once to a literal outside the protected folders: %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toEqual({ allowed: true })
+      })
+      it.each([
+        "R=/bundle/psyche/SOUL.md; echo x > $R",
+        "R=/bundle; echo x > $R/psyche/SOUL.md",
+        "R=/bundle/psy; echo x > ${R}che/SOUL.md",
+        "R=/tmp/a; R=/bundle/psyche; echo x > $R/SOUL.md",
+        "R=/tmp/a; R=\"/bundle/psyche\"; echo x > $R/SOUL.md",
+        "echo x > $R/SOUL.md; R=/tmp/a",
+        "R=/tmp/a; read R; echo x > $R/SOUL.md",
+        "R=/tmp/a; for R in /bundle/psyche; do echo x > $R/SOUL.md; done",
+        "R=$P; echo x > $R/SOUL.md",
+        "D=/bundle/friends; echo x > $D/peer.json",
+      ])("still refuses a variable that is not a single literal, or whose literal reaches a protected folder: %s", async (command) => {
+        const { guardInvocation } = await import("../../repertoire/guardrails")
+        expect(guardInvocation("shell", { command }, ctx())).toMatchObject({ allowed: false })
+      })
       it("treats HOME, TMPDIR and USER as their real values unless the command sets them, and any other expansion as unknown", async () => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         const prior = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR }
