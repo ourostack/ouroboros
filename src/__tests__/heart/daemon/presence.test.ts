@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -25,6 +25,10 @@ import {
   writePeerRecord,
   type PeerRecord,
 } from "../../../heart/daemon/presence"
+
+// Record freshness depends on the clock; pin it.
+beforeAll(() => { vi.useFakeTimers({ now: Date.parse("2026-11-10T03:05:00.000Z"), toFake: ["Date"] }) })
+afterAll(() => { vi.useRealTimers() })
 
 const LAPTOP = "machine_laptop"
 const MINI = "machine_mini"
@@ -237,6 +241,48 @@ describe("local presence commands and priority", () => {
       expect(readLocalPresenceSettings(home, {})).toEqual({ enabled: true })
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("handoff safety", () => {
+  const fresh = (machineId: string, owns: string[], seenAt = "2026-11-10T03:00:00.000Z"): PeerRecord => ({ machineId, version: V, seenAt, owns })
+
+  it("waits for the old owner's fresh record to let go before running a shared sense", async () => {
+    const { mayRunSense } = await import("../../../heart/daemon/presence")
+    const claimed = readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, ["teams", "habits"])])!
+    expect(ownsSense(claimed, MINI, "teams")).toBe(true)
+    expect(mayRunSense(claimed, MINI, "teams")).toBe(false)
+    expect(mayRunSense(claimed, MINI, "shepherd")).toBe(true)
+    expect(mayRunSense(claimed, LAPTOP, "teams")).toBe(false)
+    const released = readPresence(agentJson(), true, [fresh(MINI, ["teams"]), fresh(LAPTOP, ["habits"])])!
+    expect(mayRunSense(released, MINI, "teams")).toBe(true)
+    // A silent old owner stops counting once its record is stale (and then counts as legacy, so home owns).
+    const silent = readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, ["teams"], "2026-11-10T01:00:00.000Z")], Date.parse("2026-11-10T03:05:00.000Z"))!
+    expect(silent.legacy).toEqual([LAPTOP])
+    expect(mayRunSense(silent, LAPTOP, "teams")).toBe(true)
+  })
+
+  it("counts stale or unreadable records, and a home off the roster, as legacy", async () => {
+    const { isFresh } = await import("../../../heart/daemon/presence")
+    expect(isFresh({ machineId: MINI, version: V, seenAt: "nope" }, Date.now())).toBe(false)
+    const now = Date.parse("2026-11-10T03:05:00.000Z")
+    expect(readPresence(agentJson(), true, [fresh(MINI, []), fresh(LAPTOP, [], "2026-11-10T02:00:00.000Z")], now)!.legacy).toEqual([LAPTOP])
+    const offRoster = agentJson({ home: { machineId: "machine_home", machineName: "home-mac" } })
+    expect(readPresence(offRoster, true, [fresh(MINI, []), fresh(LAPTOP, [])], now)!.legacy).toEqual(["machine_home"])
+    expect(effectiveOwner(readPresence(offRoster, true, [fresh(MINI, []), fresh(LAPTOP, [])], now)!, "teams")).toBe("machine_home")
+  })
+
+  it("removes this machine's record when presence is off here", async () => {
+    const { removePeerRecord } = await import("../../../heart/daemon/presence")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "presence-remove-"))
+    try {
+      writePeerRecord(tmp, record(MINI))
+      expect(removePeerRecord(tmp, MINI)).toBe(true)
+      expect(removePeerRecord(tmp, MINI)).toBe(false)
+      expect(readPeerRecords(tmp)).toEqual([])
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
     }
   })
 })

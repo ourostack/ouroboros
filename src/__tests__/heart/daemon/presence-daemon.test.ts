@@ -1,10 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
 import { PEER_RECORD_INTERVAL_MS, PresenceTicker, describeOs } from "../../../heart/daemon/presence-daemon"
 import { readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings, type PeerRecord, type Presence } from "../../../heart/daemon/presence"
+
+// Record freshness depends on the clock; pin it.
+beforeAll(() => { vi.useFakeTimers({ now: Date.parse("2026-11-10T03:05:00.000Z"), toFake: ["Date"] }) })
+afterAll(() => { vi.useRealTimers() })
 
 const LAPTOP = "machine_laptop"
 const MINI = "machine_mini"
@@ -273,5 +277,69 @@ describe("command output", () => {
     expect(arrivalText('{"text":"yo"}')).toBe("yo")
     expect(arrivalText('{"ok":true}')).toBe('{"ok":true}')
     expect(arrivalText("plain\n")).toBe("plain")
+  })
+})
+
+describe("PresenceTicker handoff safety", () => {
+  let tmp: string
+  let current: Presence | null
+  let running: Set<string>
+  let clock: number
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "presence-safety-"))
+    fs.mkdirSync(path.join(tmp, "AgentBundles", "slugger.ouro"), { recursive: true })
+    running = new Set()
+    clock = Date.parse("2026-11-10T03:05:00.000Z")
+  })
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }) })
+
+  const make = () => new PresenceTicker({
+    agents: ["slugger"],
+    bundlesRoot: path.join(tmp, "AgentBundles"),
+    machineId: MINI,
+    version: V,
+    homeDir: path.join(tmp, "home"),
+    now: () => new Date(clock),
+    readPresence: () => current,
+    startSchedulers: (agent) => { running.add(agent) },
+    stopSchedulers: (agent) => { running.delete(agent) },
+    schedulersRunning: (agent) => running.has(agent),
+  })
+
+  it("holds habits until the old owner's record lets go, then takes them", async () => {
+    current = presenceWith({ habits: MINI }, [{ ...rec(MINI), owns: [] }, { ...rec(LAPTOP), owns: ["habits"] }])
+    const ticker = make()
+    expect(ticker.shouldStartSchedulers("slugger")).toBe(false)
+    await ticker.tick()
+    expect(running.has("slugger")).toBe(false)
+    current = presenceWith({ habits: MINI }, [{ ...rec(MINI), owns: [] }, { ...rec(LAPTOP), owns: [] }])
+    await ticker.tick()
+    expect(running.has("slugger")).toBe(true)
+  })
+
+  it("restarts held schedulers when presence stops applying", async () => {
+    current = presenceWith({ habits: LAPTOP })
+    const ticker = make()
+    expect(ticker.shouldStartSchedulers("slugger")).toBe(false)
+    current = null
+    await ticker.tick()
+    expect(running.has("slugger")).toBe(true)
+    await ticker.tick()
+    expect(running.size).toBe(1)
+  })
+
+  it("publishes at once when what it owns changes", async () => {
+    current = presenceWith({ habits: MINI })
+    running.add("slugger")
+    const ticker = make()
+    await ticker.tick()
+    const root = path.join(tmp, "AgentBundles", "slugger.ouro")
+    expect(readPeerRecords(root)[0]!.owns).toEqual(["habits"])
+    clock += 60_000
+    current = presenceWith({ habits: LAPTOP })
+    await ticker.tick()
+    expect(readPeerRecords(root)[0]!.owns).toEqual([])
+    expect(readPeerRecords(root)[0]!.seenAt).toBe("2026-11-10T03:06:00.000Z")
   })
 })

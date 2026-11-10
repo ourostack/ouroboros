@@ -17,6 +17,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import {
   emitOwnershipChange,
   effectiveOwner,
+  mayRunSense,
   ownedSharedSenses,
   ownsSense,
   readLocalPresenceSettings,
@@ -101,6 +102,8 @@ export function arrivalText(stdout: string): string {
 
 export class PresenceTicker {
   private readonly lastPublishedMs = new Map<string, number>()
+  /** What each agent's last record said this machine owns; a change publishes at once. */
+  private readonly lastOwns = new Map<string, string>()
   /** Agents whose schedulers this machine holds back because another machine owns `habits`. */
   private readonly held = new Set<string>()
 
@@ -109,7 +112,7 @@ export class PresenceTicker {
   /** At daemon start: whether to start this agent's schedulers now. */
   shouldStartSchedulers(agent: string): boolean {
     const presence = this.read(agent)
-    if (!presence || ownsSense(presence, this.deps.machineId, "habits")) return true
+    if (!presence || mayRunSense(presence, this.deps.machineId, "habits")) return true
     this.held.add(agent)
     emitOwnershipChange(agent, "habits", false, effectiveOwner(presence, "habits"))
     return false
@@ -118,7 +121,11 @@ export class PresenceTicker {
   async tick(): Promise<void> {
     const arrived = await this.refreshLocation()
     for (const agent of this.deps.agents) {
-      if (!this.read(agent)) continue
+      if (!this.read(agent)) {
+        // Presence stopped applying: back to the home lease, so run what was held.
+        if (this.held.delete(agent)) this.deps.startSchedulers(agent)
+        continue
+      }
       try {
         await this.deps.sync?.(agent, path.join(this.deps.bundlesRoot, `${agent}.ouro`))
         const presence = this.read(agent)
@@ -195,8 +202,8 @@ export class PresenceTicker {
   }
 
   private reconcileSchedulers(agent: string, presence: Presence): void {
-    const owns = ownsSense(presence, this.deps.machineId, "habits")
     const running = this.deps.schedulersRunning(agent)
+    const owns = running ? ownsSense(presence, this.deps.machineId, "habits") : mayRunSense(presence, this.deps.machineId, "habits")
     if (owns && !running && this.held.has(agent)) {
       this.held.delete(agent)
       emitOwnershipChange(agent, "habits", true, this.deps.machineId)
@@ -210,8 +217,10 @@ export class PresenceTicker {
 
   private async publish(agent: string, presence: Presence): Promise<void> {
     const now = (this.deps.now ?? (() => new Date()))()
+    const owns = ownedSharedSenses(presence, this.deps.machineId)
     const last = this.lastPublishedMs.get(agent)
-    if (last !== undefined && now.getTime() - last < PEER_RECORD_INTERVAL_MS) return
+    const ownsChanged = this.lastOwns.get(agent) !== owns.join(",")
+    if (!ownsChanged && last !== undefined && now.getTime() - last < PEER_RECORD_INTERVAL_MS) return
     const agentRoot = path.join(this.deps.bundlesRoot, `${agent}.ouro`)
     const machine = rosterMachine(presence, this.deps.machineId)
     if (!machine) return
@@ -224,11 +233,12 @@ export class PresenceTicker {
       role: machine.role,
       os: describeOs(),
       location: settings.location ?? (machine.role === "always-on" ? "home" : "unknown"),
-      owns: ownedSharedSenses(presence, this.deps.machineId),
+      owns,
       ...this.deps.extraRecord?.(agent),
     }
     writePeerRecord(agentRoot, record)
     this.lastPublishedMs.set(agent, now.getTime())
+    this.lastOwns.set(agent, owns.join(","))
     emitNervesEvent({ component: "daemon", event: "daemon.presence_record_published", message: "published this machine's presence record", meta: { agent, machineId: this.deps.machineId, version: this.deps.version } })
   }
 }

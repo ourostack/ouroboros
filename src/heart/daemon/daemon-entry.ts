@@ -69,6 +69,7 @@ import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { checkBundleSyncHealth } from "../sync-health"
 import { abortInFlightSync, syncNow } from "../sync"
 import { PresenceTicker } from "./presence-daemon"
+import { readLocalPresenceSettings, removePeerRecord } from "./presence"
 import { clearOwnStaleSyncLock } from "../sync-lock"
 
 function parseSocketPath(argv: string[]): string {
@@ -824,8 +825,21 @@ void startDaemonAfterContainerCredentialBootstrap({
   }
   for (const agent of managedAgents) {
     scheduleStartupSentinelAfterProviderPreload(agent, providerPreload)
+    // Presence off here: stop counting as presence-aware in the bundle, so peers fall back to home.
+    if (!readLocalPresenceSettings().enabled) {
+      try { removePeerRecord(path.join(bundlesRoot, `${agent}.ouro`), daemonMachineId) } catch { /* next start retries */ }
+    }
     // Under a presence roster, only the machine that owns `habits` runs this agent's habits and awaits.
-    if (!presenceTicker.shouldStartSchedulers(agent)) continue
+    if (!presenceTicker.shouldStartSchedulers(agent)) {
+      // Clear cron jobs a crash may have left behind, so they don't fire here while another machine owns habits.
+      for (const manager of [
+        supercronicSupervisor ? supercronicSupervisor.namespace(`habit:${agent}`) : new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) }),
+        supercronicSupervisor ? supercronicSupervisor.namespace(`await:${agent}`) : new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) }),
+      ]) {
+        try { manager.removeAll() } catch { /* best-effort */ }
+      }
+      continue
+    }
     startAgentSchedulers(agent)
   }
 

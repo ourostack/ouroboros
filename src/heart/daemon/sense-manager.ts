@@ -20,7 +20,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
-import { emitOwnershipChange, effectiveOwner, isSharedSense, ownsSense, readPresenceForAgent } from "./presence"
+import { emitOwnershipChange, effectiveOwner, isSharedSense, mayRunSense, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
@@ -747,7 +747,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       if (!isSharedSense(sense)) return null
       const presence = readPresenceForAgent(path.join(bundlesRoot, `${agent}.ouro`))
       if (!presence) return null
-      return { owns: ownsSense(presence, currentMachineId(), sense), owner: effectiveOwner(presence, sense) }
+      return { owns: mayRunSense(presence, currentMachineId(), sense), owner: effectiveOwner(presence, sense) }
     })
     /* v8 ignore stop */
     this.contexts = new Map(
@@ -966,8 +966,12 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       for (const sense of ["teams", "bluebubbles", "mail", "voice", "a2a", "telegram"] as const) {
         if (!context.senses[sense].enabled) continue
         const ownership = this.presenceOwner(agent, sense)
-        if (!ownership) continue
         const name = `${agent}:${sense}`
+        if (!ownership) {
+          // Presence stopped applying here (roster removed, flag off): back to the home lease, so run what was held.
+          if (this.notOwnerSkipped.delete(name)) await this.processManager.startAgent?.(name)
+          continue
+        }
         const snapshot = snapshots.find((row) => row.name === name)
         const running = !!snapshot && (snapshot.pid ?? null) !== null
         if (!ownership.owns && running) {

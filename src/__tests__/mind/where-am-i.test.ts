@@ -1,10 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
 import { renderWhereAmI, whereAmISection, type MachineInfo } from "../../mind/where-am-i"
 import { readPresence, writeLocalPresenceSettings, writePeerRecord, type PeerRecord } from "../../heart/daemon/presence"
+
+// Record freshness depends on the clock; pin it.
+beforeAll(() => { vi.useFakeTimers({ now: Date.parse("2026-11-10T03:05:00.000Z"), toFake: ["Date"] }) })
+afterAll(() => { vi.useRealTimers() })
 
 const LAPTOP = "machine_laptop"
 const MINI = "machine_mini"
@@ -46,7 +50,7 @@ describe("renderWhereAmI", () => {
     const text = renderWhereAmI(readPresence(agentJson, true, [{ machineId: MINI, version: V, seenAt: "bad" }]), mini, NOW)
     expect(text).toContain("- Aris-MacBook-Pro (laptop): not seen yet (no presence record)")
     expect(text).toContain("shared senses i own here: none.")
-    expect(text).toContain("until Aris-MacBook-Pro publishes a presence record, every shared sense stays with home.")
+    expect(text).toContain("until Aris-MacBook-Pro, aris-mac-mini publish a fresh presence record, every shared sense stays with home.")
   })
 
   it("words times in hours and days, empty session counts, and several unseen machines", () => {
@@ -55,7 +59,7 @@ describe("renderWhereAmI", () => {
       { machineId: LAPTOP, version: V, seenAt: "2026-11-10T01:00:00.000Z", appSessions: { at: "x", counts: {} } },
     ]), mini, NOW)
     expect(hoursAgo).toContain("last seen 3 h ago on 0.1.0-alpha.1003\n")
-    expect(hoursAgo).toContain("until aris-mac-mini, c publish a presence record")
+    expect(hoursAgo).toContain("until Aris-MacBook-Pro, aris-mac-mini, c publish a fresh presence record")
     const daysAgo = renderWhereAmI(readPresence(agentJson, true, [{ machineId: LAPTOP, version: V, seenAt: "2026-11-05T04:00:00.000Z" }]), mini, NOW)
     expect(daysAgo).toContain("last seen 5 days ago")
     expect(renderWhereAmI(readPresence(agentJson, true, [{ machineId: LAPTOP, version: V, seenAt: "garbage" }]), mini, NOW)).toContain("last seen at an unknown time")

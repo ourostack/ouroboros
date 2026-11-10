@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { execFileSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
@@ -7,6 +7,10 @@ import * as path from "path"
 import { handoffPresenceSense, joinPresenceRoster, renderPresenceStatus } from "../../../heart/daemon/presence-roster"
 import { readPresence, writePeerRecord, type PeerRecord } from "../../../heart/daemon/presence"
 import { fetchRemote, pushHeadToBranch } from "../../../heart/sync"
+
+// Record freshness depends on the clock; pin it.
+beforeAll(() => { vi.useFakeTimers({ now: Date.parse("2026-11-10T03:05:00.000Z"), toFake: ["Date"] }) })
+afterAll(() => { vi.useRealTimers() })
 
 vi.setConfig({ testTimeout: 30_000 })
 
@@ -101,7 +105,7 @@ describe("presence roster commands", () => {
       writePeerRecord(root, record(MINI, "0.1.0-alpha.988"))
       const result = await handoff("teams", "aris-mac-mini")
       expect(result.ok).toBe(false)
-      expect(result.message).toBe("aris-mac-mini may still run a daemon that only knows `home` (no presence record at 0.1.0-alpha.1003 or later), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first")
+      expect(result.message).toBe("aris-mac-mini may still run a daemon that only knows `home` (no fresh presence record at 0.1.0-alpha.1003 or later), so every shared sense stays with home and nothing changed; start a presence-aware daemon there first")
       expect((read().presence as { owners: Record<string, string> }).owners.teams).toBe(LAPTOP)
     })
 
@@ -110,7 +114,7 @@ describe("presence roster commands", () => {
       delete block.minVersion
       write({ home: HOME, presence: block })
       writePeerRecord(root, record(LAPTOP))
-      expect((await handoff("teams", "aris-mac-mini")).message).toContain("aris-mac-mini may still run a daemon that only knows `home` (no presence record), so")
+      expect((await handoff("teams", "aris-mac-mini")).message).toContain("aris-mac-mini may still run a daemon that only knows `home` (no fresh presence record), so")
     })
 
     it("refuses machine-scoped senses, agents without a roster, and machines off the roster", async () => {

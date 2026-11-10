@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -8,6 +8,10 @@ import { checkAgentHomes, readUpstreamAgentConfig } from "../../../heart/daemon/
 import { generateDaemonPlist } from "../../../heart/daemon/launchd"
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { writeLocalPresenceSettings, writePeerRecord } from "../../../heart/daemon/presence"
+
+// Record freshness depends on the clock; pin it.
+beforeAll(() => { vi.useFakeTimers({ now: Date.parse("2026-11-10T03:05:00.000Z"), toFake: ["Date"] }) })
+afterAll(() => { vi.useRealTimers() })
 
 const LAPTOP = "machine_laptop"
 const MINI = "machine_mini"
@@ -157,10 +161,11 @@ describe("sense ownership in the daemon", () => {
     }))
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     let ownsTeams = false
+    let presenceApplies = true
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      presenceOwner: (_agent, sense) => (sense === "teams" ? { owns: ownsTeams, owner: ownsTeams ? MINI : LAPTOP } : null),
+      presenceOwner: (_agent, sense) => (presenceApplies && sense === "teams" ? { owns: ownsTeams, owner: ownsTeams ? MINI : LAPTOP } : null),
     })
     const skipped = await options!.configCheck("slugger:teams")
     expect(skipped).toEqual({ ok: false, skip: true, error: "teams: not owner; slugger's presence roster gives it to machine_laptop" })
@@ -175,6 +180,12 @@ describe("sense ownership in the daemon", () => {
     ownsTeams = false
     await manager.reconcilePresence()
     expect(stopAgent).toHaveBeenCalledWith("slugger:teams")
+    // The roster goes away: back to the home lease, so the held sense starts again.
+    presenceApplies = false
+    await manager.reconcilePresence()
+    expect(startAgent).toHaveBeenCalledTimes(2)
+    await manager.reconcilePresence()
+    expect(startAgent).toHaveBeenCalledTimes(2)
   })
 
   it("says another machine when the roster names no owner", async () => {
@@ -239,10 +250,11 @@ describe("ouro presence", () => {
     expect(JSON.parse(fs.readFileSync(path.join(homeDir, ".ouro-cli", "presence.json"), "utf-8"))).toEqual({ enabled: true })
     const machineId = (JSON.parse(fs.readFileSync(path.join(homeDir, ".ouro-cli", "machine.json"), "utf-8")) as { machineId: string }).machineId
     expect(await runOuroCli(["presence", "status", "--agent", "o"], deps)).toContain("- aris-mac-mini (this machine): always-on; no presence record yet")
-    expect(JSON.parse(await runOuroCli(["presence", "status", "--agent", "o", "--json"], deps))).toEqual(expect.objectContaining({ enabled: true, owns: [], legacy: ["aris-mac-mini"] }))
+    expect(JSON.parse(await runOuroCli(["presence", "status", "--agent", "o", "--json"], deps))).toEqual(expect.objectContaining({ enabled: true, owns: [], legacy: ["aris-mac-mini", "machine_laptop"] }))
     writePeerRecord(path.join(bundlesRoot, "o.ouro"), { machineId, version: V, seenAt: "2026-11-10T04:00:00.000Z" })
+    // home (the laptop) is not on the roster, so a home-only daemon there may still run teams: refused.
     const handed = await runOuroCli(["presence", "handoff", "teams", "aris-mac-mini", "--agent", "o"], deps)
-    expect(handed).toContain("aris-mac-mini now owns o's teams (from machine_laptop)")
+    expect(handed).toContain("machine_laptop may still run a daemon that only knows `home`")
     expect(await runOuroCli(["presence", "location", "office"], deps)).toBe("this machine's location is now office")
     expect(JSON.parse(fs.readFileSync(path.join(homeDir, ".ouro-cli", "presence.json"), "utf-8"))).toEqual({ enabled: true, location: "office" })
   })
@@ -272,11 +284,11 @@ describe("ouro presence status --json", () => {
     const { presenceStatusJson } = await import("../../../heart/daemon/presence-roster")
     const { readPresence } = await import("../../../heart/daemon/presence")
     expect(parseOuroCommand(["presence", "status", "--json", "--agent", "o"])).toEqual({ kind: "presence.status", agent: "o", json: true })
-    const presence = readPresence({ home: HOME, presence: ROSTER }, true, [{ machineId: LAPTOP, version: V, seenAt: "t", location: "office" }, { machineId: MINI, version: V, seenAt: "u" }])
+    const presence = readPresence({ home: HOME, presence: ROSTER }, true, [{ machineId: LAPTOP, version: V, seenAt: "2026-11-10T03:59:00.000Z", location: "office" }, { machineId: MINI, version: V, seenAt: "2026-11-10T03:58:00.000Z" }])
     expect(presenceStatusJson({ presence, machineId: MINI, settings: { enabled: true } })).toEqual({
       enabled: true,
       machine: { machineId: MINI, name: "aris-mac-mini", role: "always-on", location: "home" },
-      peers: [{ machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop", seenAt: "t", version: V, location: "office" }],
+      peers: [{ machineId: LAPTOP, name: "Aris-MacBook-Pro", role: "laptop", seenAt: "2026-11-10T03:59:00.000Z", version: V, location: "office" }],
       owns: ["teams"],
       owners: { teams: "aris-mac-mini", telegram: "Aris-MacBook-Pro", mail: "Aris-MacBook-Pro", bluebubbles: "Aris-MacBook-Pro", voice: "Aris-MacBook-Pro", a2a: "Aris-MacBook-Pro", habits: "Aris-MacBook-Pro" },
       legacy: [],
