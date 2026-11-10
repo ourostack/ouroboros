@@ -63,7 +63,18 @@ export interface SelfUpdateDeps {
    * a few hundred MB; on a 1 GB device starting one too low starves the rest.
    */
   memory?: () => { availableBytes: number; floorBytes: number } | null
+  /** Waits between memory checks before a restart; defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>
 }
+
+/**
+ * Restarting the daemon briefly runs `ouro up` beside this pass and the daemon
+ * it replaces, so a restart needs this much above the memory floor to keep the
+ * floor while it runs.
+ */
+export const RESTART_MEMORY_HEADROOM_BYTES = 128 * 1024 * 1024
+const RESTART_MEMORY_WAIT_MS = 180_000
+const RESTART_MEMORY_POLL_MS = 10_000
 
 export interface SelfUpdateResult {
   outcome: SelfUpdateOutcome | "busy"
@@ -253,6 +264,22 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
 
   // 4. Activate, then restart a running daemon on the new version.
   const daemonWasRunning = !deps.isDevMode() && await deps.isDaemonRunning()
+  if (daemonWasRunning && deps.memory) {
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+    let memory = deps.memory()
+    for (let polls = 0; memory && memory.availableBytes < memory.floorBytes + RESTART_MEMORY_HEADROOM_BYTES && polls < RESTART_MEMORY_WAIT_MS / RESTART_MEMORY_POLL_MS; polls += 1) {
+      await sleep(RESTART_MEMORY_POLL_MS)
+      memory = deps.memory()
+    }
+    if (memory && memory.availableBytes < memory.floorBytes + RESTART_MEMORY_HEADROOM_BYTES) {
+      const mb = (bytes: number) => Math.round(bytes / (1024 * 1024))
+      return finish("deferred", {
+        summary: `${latest} is installed, but MemAvailable stayed at ${mb(memory.availableBytes)} MB, under the ${mb(memory.floorBytes)} MB floor plus ${mb(RESTART_MEMORY_HEADROOM_BYTES)} MB for the restart; staying on ${currentVersion} and trying again next pass`,
+        latestVersion: latest,
+        source: installSource,
+      })
+    }
+  }
   deps.writeIntent({ schemaVersion: 1, mode: "latest", targetVersion: latest })
   deps.activate(latest)
   if (daemonWasRunning) {

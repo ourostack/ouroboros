@@ -16,6 +16,8 @@ export type SelfUpdateOutcome =
   | "install-failed"
   | "rejected"
   | "rolled-back"
+  /** Installed, but memory stayed too low to restart the daemon on it; the next pass tries again. */
+  | "deferred"
 
 export interface SelfUpdateState {
   schemaVersion: 1
@@ -113,6 +115,9 @@ export function formatUpdateStatusLine(
       break
     case "pinned":
       line = `Updates: pinned to ${version} (checked ${age}; ${state.detail ?? "pin honored"})`
+      break
+    case "deferred":
+      line = `Updates: ${state.latestVersion ?? "a new version"} waits for memory, staying on ${version} (checked ${age}; ${state.detail ?? "deferred"})`
       break
     default:
       line = `Updates: needs attention: ${state.outcome} ${age} on ${version}${state.latestVersion ? ` (latest ${state.latestVersion})` : ""}: ${state.detail ?? "no detail"}`

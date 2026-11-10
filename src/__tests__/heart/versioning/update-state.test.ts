@@ -74,6 +74,10 @@ describe("formatUpdateStatusLine", () => {
     expect(formatUpdateStatusLine(state({ outcome: "pinned", detail: "pin honored until 2026-10-18" }), opts))
       .toBe("Updates: pinned to 0.1.0-alpha.896 (checked 10m ago; pin honored until 2026-10-18)")
     expect(formatUpdateStatusLine(state({ outcome: "pinned" }), opts)).toBe("Updates: pinned to 0.1.0-alpha.896 (checked 10m ago; pin honored)")
+    expect(formatUpdateStatusLine(state({ outcome: "deferred", latestVersion: "0.1.0-alpha.900", detail: "MemAvailable stayed low" }), opts))
+      .toBe("Updates: 0.1.0-alpha.900 waits for memory, staying on 0.1.0-alpha.896 (checked 10m ago; MemAvailable stayed low)")
+    expect(formatUpdateStatusLine(state({ outcome: "deferred", detail: undefined }), opts))
+      .toBe("Updates: a new version waits for memory, staying on 0.1.0-alpha.896 (checked 10m ago; deferred)")
   })
 
   it("leads with needs attention for failures, stale runs and a missing updater", () => {
