@@ -373,6 +373,22 @@ export async function collectGithubCopilotPoolCredentials(
   return credentials
 }
 
+/** Ask GitHub which Copilot API endpoint serves this token's account (`endpoints.api`). */
+export async function discoverGithubCopilotBaseUrl(token: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const response = await fetchImpl("https://api.github.com/copilot_internal/user", {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub Copilot endpoint discovery failed (HTTP ${response.status}). Ensure your GitHub account has Copilot access.`)
+  }
+  const body = await response.json() as { endpoints?: { api?: string } }
+  const baseUrl = body?.endpoints?.api
+  if (!baseUrl) {
+    throw new Error("GitHub Copilot endpoint discovery returned no endpoints.api. Ensure your GitHub account has Copilot access.")
+  }
+  return baseUrl
+}
+
 export async function collectRuntimeAuthCredentials(
   input: RuntimeAuthInput,
   deps: RuntimeAuthDeps,
@@ -433,18 +449,7 @@ export async function collectRuntimeAuthCredentials(
       }
     }
     writeAuthProgress(input, "checking GitHub Copilot access...")
-    const response = await fetch("https://api.github.com/copilot_internal/user", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!response.ok) {
-      throw new Error(`GitHub Copilot endpoint discovery failed (HTTP ${response.status}). Ensure your GitHub account has Copilot access.`)
-    }
-    const body = await response.json() as { endpoints?: { api?: string } }
-    const baseUrl = body?.endpoints?.api
-    /* v8 ignore next -- defensive: valid response but missing endpoints field @preserve */
-    if (!baseUrl) {
-      throw new Error("GitHub Copilot endpoint discovery returned no endpoints.api. Ensure your GitHub account has Copilot access.")
-    }
+    const baseUrl = await discoverGithubCopilotBaseUrl(token)
     return { githubToken: token, baseUrl }
   }
 

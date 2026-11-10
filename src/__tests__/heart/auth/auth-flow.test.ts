@@ -69,6 +69,7 @@ vi.mock("../../../heart/providers/anthropic-token", () => ({
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   collectRuntimeAuthCredentials,
+  discoverGithubCopilotBaseUrl,
   readAccountPoolSettings,
   readAgentConfigForAgent,
   resolveHatchCredentials,
@@ -865,6 +866,19 @@ describe("runtime auth flow", () => {
 })
 
 // --- Unit 3a: github-copilot auth flow tests ---
+
+describe("discoverGithubCopilotBaseUrl", () => {
+  it("returns the account's Copilot API endpoint", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ endpoints: { api: "https://api.copilot.example.com" } }), { status: 200 }))
+    await expect(discoverGithubCopilotBaseUrl("gho_x", fetchImpl as unknown as typeof fetch)).resolves.toBe("https://api.copilot.example.com")
+    expect(fetchImpl).toHaveBeenCalledWith("https://api.github.com/copilot_internal/user", { headers: { Authorization: "Bearer gho_x" } })
+  })
+
+  it("explains a response without endpoints.api", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
+    await expect(discoverGithubCopilotBaseUrl("gho_x", fetchImpl as unknown as typeof fetch)).rejects.toThrow("returned no endpoints.api")
+  })
+})
 
 describe("github-copilot auth flow", () => {
   it("collectRuntimeAuthCredentials reads GH_TOKEN env var first", async () => {
