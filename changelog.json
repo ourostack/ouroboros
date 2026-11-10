@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1018",
+      "changes": [
+        "Hatch and ouro vault create register vault accounts with Vaultwarden's current two-step flow (send-verification-email, then register/finish), falling back to the old /identity/accounts/register only on servers that lack it. When a server has signups closed, the error says to have its admin invite the agent's email.",
+        "OURO_VAULT_UNLOCK_STORE (for example plaintext-file on a headless appliance without secret-tool) picks the local vault unlock store for every ouro command when no --store is given. Hatch (interactive and --answers) and ouro vault create/replace/recover check for a usable unlock store before creating the vault account, so a missing store no longer leaves an orphaned account behind."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1019",
       "changes": [
         "ouro hatch on a host with GH_TOKEN or GITHUB_TOKEN set: the github-copilot option it offers now looks up the account's Copilot endpoint first, so choosing it works instead of failing with 'no credentials configured'.",
