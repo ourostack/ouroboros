@@ -15,6 +15,9 @@ vi.mock("../../nerves/runtime", () => ({
 vi.mock("../../repertoire/bw-installer", () => ({
   bwCommand: (file: string, args: string[]) => ({ file, args }),
   ensureBwCli: vi.fn().mockResolvedValue("/usr/local/bin/bw"),
+  isBundledBw: () => false,
+  isBwMissingModuleError: () => false,
+  markBundledBwBroken: vi.fn(),
 }))
 
 // Mock child_process

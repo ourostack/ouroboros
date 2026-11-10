@@ -515,7 +515,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
 4. Unlock the vault on this machine.
 
-   If readiness instead reports that the local Bitwarden CLI installation is incomplete, repair the CLI selected by Ouro, normally its bundled pinned copy, then run `ouro doctor` before retrying `ouro up`. A working `bw --version` on PATH does not validate Ouro's bundled copy. A missing Node.js module is a local installation failure, not evidence that the vault is locked or provider credentials are invalid. Do not replace the vault or reauthenticate providers to repair missing CLI files. Startup remains blocked until the normal credential and provider checks pass.
+   When the bundled pinned `bw` fails to load one of its own modules (an endpoint security product can quarantine a file inside it), Ouro logs `repertoire.bw_cli_bundled_broken` once and uses the `bw` on PATH for the rest of the process, with that version's own profile directory. If readiness still reports that the local Bitwarden CLI installation is incomplete, no working `bw` was found: repair the CLI selected by Ouro (the bundled copy, or install one on PATH), then run `ouro doctor` before retrying `ouro up`. A working `bw --version` on PATH does not validate Ouro's bundled copy. A missing Node.js module is a local installation failure, not evidence that the vault is locked or provider credentials are invalid. Do not replace the vault or reauthenticate providers to repair missing CLI files. Startup remains blocked until the normal credential and provider checks pass.
 
    ```bash
    ouro vault unlock --agent <agent>

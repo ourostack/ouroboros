@@ -12,7 +12,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
-import { bwCommand, ensureBwCli } from "./bw-installer"
+import { bwCommand, ensureBwCli, isBundledBw, isBwMissingModuleError, markBundledBwBroken } from "./bw-installer"
 
 const MAX_ERROR_DETAIL_LENGTH = 500
 const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
@@ -733,6 +733,8 @@ export class BitwardenCredentialStore implements CredentialStore {
         /* v8 ignore next -- defensive: loginAttempt always throws Error instances @preserve */
         lastError = err instanceof Error ? err : new Error(String(err))
 
+        if (this.switchFromBrokenBundledBw(lastError)) return this.login()
+
         // Don't retry non-transient errors (auth failures, bw not installed)
         if (!isTransientError(lastError)) {
           this.setTerminalLoginError(lastError)
@@ -1028,6 +1030,10 @@ export class BitwardenCredentialStore implements CredentialStore {
         return await operation(session)
       } catch (error) {
         const err = error as Error
+        if (!attemptedFreshSession && this.switchFromBrokenBundledBw(err)) {
+          attemptedFreshSession = true
+          continue
+        }
         if (attemptedFreshSession || !isBwSessionAuthError(err)) {
           throw err
         }
@@ -1036,6 +1042,20 @@ export class BitwardenCredentialStore implements CredentialStore {
         attemptedFreshSession = true
       }
     }
+  }
+
+  /**
+   * When the bundled bw fails to load one of its own modules, stop using it and
+   * drop this session, so the next login resolves the bw on PATH with its own
+   * profile directory. Returns whether it switched.
+   */
+  private switchFromBrokenBundledBw(error: Error): boolean {
+    if (!isBwMissingModuleError(error) || !isBundledBw(this.bwBinaryPath)) return false
+    markBundledBwBroken(error.message)
+    this.onProgress?.("the bundled Bitwarden CLI is damaged; switching to the bw on PATH")
+    this.sessionToken = null
+    this.structuredItemCache = null
+    return true
   }
 
   private async withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {

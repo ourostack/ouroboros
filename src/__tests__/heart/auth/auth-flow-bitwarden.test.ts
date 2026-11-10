@@ -72,6 +72,9 @@ vi.mock("node:child_process", async () => {
 vi.mock("../../../repertoire/bw-installer", () => ({
   bwCommand: (file: string, args: string[]) => ({ file, args }),
   ensureBwCli: vi.fn().mockResolvedValue("/usr/local/bin/bw"),
+  isBundledBw: () => false,
+  isBwMissingModuleError: () => false,
+  markBundledBwBroken: vi.fn(),
 }))
 
 vi.mock("../../../repertoire/vault-unlock", async () => {

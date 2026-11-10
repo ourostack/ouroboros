@@ -19,6 +19,9 @@ let bwBinaryPath = "/nonexistent/bw"
 vi.mock("../../repertoire/bw-installer", () => ({
   bwCommand: (file: string, args: string[]) => ({ file, args }),
   ensureBwCli: vi.fn(async () => bwBinaryPath),
+  isBundledBw: () => false,
+  isBwMissingModuleError: () => false,
+  markBundledBwBroken: vi.fn(),
 }))
 
 const mockExecFile = vi.fn()
