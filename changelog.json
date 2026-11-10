@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1084",
+      "changes": [
+        "Shepherd leaves Copilot app sessions alone while they wait on something besides their human: a session automation, a session they coordinate that is running or moved in the last two hours, a reply they asked another session for, or a message saying they are waiting. It answers a real stall once, then holds until the human writes again, read from the session's own log so a daemon restart cannot reset it. Its automatic messages are signed [Shepherd for <agent>], never as the human."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1083",
       "changes": [
         "The prompt's skills list shows each skill's own 'i use this when…' sentence (or frontmatter description), so a question a skill covers is answered with it, not from whatever the prompt already holds"

@@ -9,6 +9,7 @@ import {
   COPILOT_APP_HOST, copilotAppHumanPresent, copilotAppRequest, copilotAppUrl, createCopilotAppHost, readConversation,
 } from "../../../senses/shepherd/copilot-app"
 import type { ReturnedControl, ShepherdHostObservation } from "../../../senses/shepherd/host"
+import { openDatabase } from "../../../heart/sqlite"
 
 type Frame = Record<string, unknown>
 
@@ -255,6 +256,8 @@ describe("Copilot app conversation", () => {
       ],
       pendingPermission: "p1",
       humanAt: clock - 9 * MINUTE,
+      shepherdAt: null,
+      lastTurnTools: ["bash", "bash", "ask_user", "view", "apply_patch"],
     })
   })
 
@@ -263,8 +266,10 @@ describe("Copilot app conversation", () => {
       { type: "user.message", timestamp: iso(clock - 20 * MINUTE), data: { content: "mine" } },
       { type: "user.message", timestamp: iso(clock - MINUTE), data: { content: "[Slugger for Ari] keep going" } },
       { type: "user.message", data: { content: "no time" } },
+      { type: "user.message", data: { content: "[Slugger for Ari] no time either" } },
     ])
     expect(readConversation(stateDir, SESSION).humanAt).toBe(clock - 20 * MINUTE)
+    expect(readConversation(stateDir, SESSION).shepherdAt).toBe(clock - MINUTE)
   })
 
   it("reads back through large asset lines to find enough conversation", () => {
@@ -455,12 +460,72 @@ describe("Copilot app host: watching for returns", () => {
     await scheduler.run(GRACE_MS)
     expect(returned).toHaveBeenCalledWith({
       sessionId: SESSION, transitionId: `copilot-app:${SESSION}:e-session.idle`, agent: "copilot", cwd: "/Users/me/desk",
-      workspaceTitle: "personal-desk", title: "Fix the thing", lastBody: "All done here.", backgroundWork: false,
+      workspaceTitle: "personal-desk", title: "Fix the thing", lastBody: "All done here.", backgroundWork: false, hold: null,
     })
     // A session that was not busy when listed still reports its stop.
     event(OTHER, "session.idle")
     await settled()
     expect(returned).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: OTHER }))
+    watcher.close()
+  })
+
+  it("holds a stop that waits on other work, and nudges a real stall only once until the human writes", async () => {
+    const { watcher, returned } = await watching()
+    // Waiting on a lane it started: no nudge.
+    writeEvents(SESSION, [
+      { type: "user.message", timestamp: iso(clock - 30 * MINUTE), data: { content: "ship it and tell me" } },
+      { type: "tool.execution_start", data: { toolName: "send_session_message", arguments: {} } },
+      { type: "assistant.message", data: { content: "Asked the fleet lane; holding for its reply." } },
+    ])
+    event(SESSION, "assistant.message", { content: "Asked the fleet lane; holding for its reply." })
+    event(SESSION, "session.idle", {})
+    await settled()
+    expect(returned.mock.calls.at(-1)![0].hold).toMatch(/send_session_message/)
+    // A genuine stall: judged.
+    writeEvents(SESSION, [
+      { type: "user.message", timestamp: iso(clock - 30 * MINUTE), data: { content: "ship it and tell me" } },
+      { type: "assistant.message", data: { content: "Step 2 of 5 is done." } },
+    ])
+    event(SESSION, "assistant.message", { content: "Step 2 of 5 is done." })
+    event(SESSION, "session.idle", {})
+    await settled()
+    expect(returned.mock.calls.at(-1)![0].hold).toBeNull()
+    // Shepherd nudged; the agent did a little and stopped again: held, however often it stops.
+    writeEvents(SESSION, [
+      { type: "user.message", timestamp: iso(clock - 30 * MINUTE), data: { content: "ship it and tell me" } },
+      { type: "user.message", timestamp: iso(clock - MINUTE), data: { content: "[Shepherd for Ouroboros] Keep going." } },
+      { type: "assistant.message", data: { content: "Step 3 of 5 is done." } },
+    ])
+    for (let stop = 0; stop < 3; stop += 1) {
+      event(SESSION, "session.idle", {})
+      await settled()
+      expect(returned.mock.calls.at(-1)![0].hold).toMatch(/already nudged it once/)
+    }
+    // The human wrote again: the next stall may be judged.
+    writeEvents(SESSION, [
+      { type: "user.message", timestamp: iso(clock - MINUTE), data: { content: "[Shepherd for Ouroboros] Keep going." } },
+      { type: "user.message", timestamp: iso(clock - 10_000), data: { content: "and step 4" } },
+      { type: "assistant.message", data: { content: "Step 4 of 5 is done." } },
+    ])
+    event(SESSION, "session.idle", {})
+    await settled()
+    expect(returned.mock.calls.at(-1)![0].hold).toBeNull()
+    watcher.close()
+  })
+
+  it("holds a session with an automation, and one whose records cannot be read", async () => {
+    const { watcher, returned } = await watching()
+    const db = openDatabase(path.join(stateDir, "data.db"))
+    db.exec("CREATE TABLE session_automations (session_id TEXT, owner_session_id TEXT, name TEXT, paused_at TEXT)")
+    db.prepare("INSERT INTO session_automations VALUES (?, NULL, 'Morning check', NULL)").run(SESSION)
+    db.close()
+    event(SESSION, "session.idle", {})
+    await settled()
+    expect(returned.mock.calls.at(-1)![0].hold).toMatch(/Morning check/)
+    fs.mkdirSync(path.join(stateDir, "session-state", OTHER, "events.jsonl"), { recursive: true })
+    event(OTHER, "session.idle", {})
+    await settled()
+    expect(returned.mock.calls.at(-1)![0]).toMatchObject({ sessionId: OTHER, hold: expect.stringMatching(/records could not be read/) })
     watcher.close()
   })
 

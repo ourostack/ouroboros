@@ -6,6 +6,7 @@ import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "./cmux"
 import type { HostSession, HostWatchHandlers, ShepherdHost, ShepherdHostObservation, ShepherdKey } from "./host"
+import { copilotAppHold, type ConversationFacts } from "./copilot-app-holds"
 
 /**
  * The GitHub Copilot app host. The app runs a local WebSocket server whose port and token it
@@ -159,6 +160,10 @@ export interface Conversation {
   pendingPermission: string | null
   /** When the human last messaged the session, in epoch ms. */
   humanAt: number | null
+  /** When a Shepherd-labelled message last reached the session, in epoch ms. */
+  shepherdAt: number | null
+  /** Top-level tools the agent called since the last message it received. */
+  lastTurnTools: string[]
 }
 
 /** The session's recent top-level conversation, oldest first, and what is still waiting on the human. */
@@ -167,6 +172,8 @@ export function readConversation(stateDir: string, sessionId: string): Conversat
   const lines: string[] = []
   const permissions = new Map<string, string>()
   let humanAt: number | null = null
+  let shepherdAt: number | null = null
+  let lastTurnTools: string[] = []
   const push = (block: string): void => {
     for (const line of block.split(/\r?\n/)) lines.push(line)
   }
@@ -187,12 +194,18 @@ export function readConversation(stateDir: string, sessionId: string): Conversat
     if (event.agentId !== undefined) continue
     switch (event.type) {
       case "user.message":
+        lastTurnTools = []
+        if (SHEPHERD_LABEL.test(str(data.content) ?? "")) {
+          const at = Date.parse(str(event.timestamp) ?? "")
+          if (!Number.isNaN(at)) shepherdAt = at
+        }
         if (str(data.content)) push(`› ${str(data.source) ? `(${data.source as string}) ` : ""}${data.content as string}`)
         break
       case "assistant.message":
         if (str(data.content)) push(data.content as string)
         break
       case "tool.execution_start": {
+        if (str(data.toolName)) lastTurnTools.push(data.toolName as string)
         const args = isRecord(data.arguments) ? data.arguments : {}
         const what = str(args.description) ?? str(args.command) ?? str(args.question) ?? str(args.path) ?? ""
         push(`• ${str(data.toolName) ?? "tool"}${what ? `: ${what.replace(/\s+/g, " ").slice(0, 160)}` : ""}`)
@@ -218,7 +231,7 @@ export function readConversation(stateDir: string, sessionId: string): Conversat
   }
   const pending = [...permissions.entries()].at(-1)
   if (pending) lines.push(`Waiting for permission: ${pending[1].replace(/\s+/g, " ").slice(0, 300)}`)
-  return { lines, pendingPermission: pending?.[0] ?? null, humanAt }
+  return { lines, pendingPermission: pending?.[0] ?? null, humanAt, shepherdAt, lastTurnTools }
 }
 
 /** One connection: frames go to `onFrame` until the socket closes. Throws if the socket cannot be created. */
@@ -434,10 +447,24 @@ export function createCopilotAppHost(connection: CopilotAppConnection, options: 
           // Only sessions in the workspace list are judged; a side chat's parent is.
           const session = inventory.find(candidate => candidate.id === sessionId)
           if (!session) return
+          const body = lastBody.get(sessionId) ?? null
+          let hold: string | null
+          try {
+            let facts: ConversationFacts = { humanAt: null, shepherdAt: null, lastTurnTools: [] }
+            try {
+              facts = readConversation(stateDir, sessionId)
+            } catch (error) {
+              // A session with no log yet has said and been sent nothing.
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+            }
+            hold = copilotAppHold(stateDir, sessionId, facts, body, now())
+          } catch (error) {
+            hold = `its records could not be read (${String(error).slice(0, 120)})`
+          }
           handlers.returned({
             sessionId, transitionId, agent: session.agent, cwd: session.cwd ?? null,
             workspaceTitle: session.workspaceTitle ?? null, title: session.title,
-            lastBody: lastBody.get(sessionId) ?? null, backgroundWork,
+            lastBody: body, backgroundWork, hold,
           })
         }, GRACE_MS))
       }
