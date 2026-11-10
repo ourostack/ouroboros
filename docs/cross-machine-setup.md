@@ -236,6 +236,8 @@ For example, on a 1 GB appliance: `ouro service install --init sysv --min-mem-av
 
 `ouro` commands keep Node's compile cache in `~/.ouro-cli/cache/node-compile` (not the OS temp directory, which is RAM-backed on small devices), so a command does not recompile the harness on every run. Set `NODE_COMPILE_CACHE` to put it elsewhere or `NODE_DISABLE_COMPILE_CACHE=1` to turn it off. The daemon and agent processes don't use it: they start once, and a code cache would cost them more resident memory than it saves.
 
+Unattended updates are off on Linux until you turn them on for the machine. On a 1 GB device that also runs other work, for example: `ouro self-update enable --min-mem-available-mb 250 --reserve-mb 128 --keep-versions 2`. The update then installs lean, at the lowest CPU and I/O priority, and only when memory and disk allow; see [known issues](known-issues-and-recovery.md#a-machine-stays-on-an-old-ouro-version).
+
 ## Step 5: Set up dev tool integration (optional)
 
 If you want your agent available in Claude Code (or Codex), ask the agent directly:

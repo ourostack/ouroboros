@@ -52,6 +52,17 @@ export interface SelfUpdateDeps {
    * for anything else.
    */
   diskSpace?: () => { freeBytes: number; neededBytes: number } | null
+  /**
+   * Frees disk by removing installed versions other than the current and previous ones. Called when an install would
+   * not fit, before giving up: otherwise old versions on a small disk would stop every later update for good.
+   */
+  reclaimDisk?: () => void
+  /**
+   * Memory this machine has available and the floor below which an install
+   * must not start, or null when unknown or not limited. An install peaks at
+   * a few hundred MB; on a 1 GB device starting one too low starves the rest.
+   */
+  memory?: () => { availableBytes: number; floorBytes: number } | null
 }
 
 export interface SelfUpdateResult {
@@ -203,11 +214,23 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
   }
 
   // 3. Install (when there is room), validate, smoke test.
-  const space = deps.diskSpace?.() ?? null
+  let space = deps.diskSpace?.() ?? null
+  if (space && space.freeBytes < space.neededBytes && deps.reclaimDisk) {
+    deps.reclaimDisk()
+    space = deps.diskSpace?.() ?? null
+  }
   if (space && space.freeBytes < space.neededBytes) {
     const mib = (bytes: number) => Math.round(bytes / (1024 * 1024))
     return finish("install-failed", {
       summary: `not enough free disk to install ${latest}: ${mib(space.freeBytes)} MiB free, about ${mib(space.neededBytes)} MiB needed; staying on ${currentVersion}`,
+      latestVersion: latest,
+    })
+  }
+  const memory = deps.memory?.() ?? null
+  if (memory && memory.availableBytes < memory.floorBytes) {
+    const mb = (bytes: number) => Math.round(bytes / (1024 * 1024))
+    return finish("install-failed", {
+      summary: `not enough free memory to install ${latest}: MemAvailable ${mb(memory.availableBytes)} MB, below the ${mb(memory.floorBytes)} MB floor; staying on ${currentVersion}`,
       latestVersion: latest,
     })
   }

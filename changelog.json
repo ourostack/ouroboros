@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1061",
+      "changes": [
+        "Unattended updates off macOS are opt-in per machine: lean, gentle, memory floor"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1059",
       "changes": [
         "The prompt budget counts each image (a screenshot from a tool, a pasted picture) as a fixed 1,600 tokens instead of by its base64 length. Before, one 193 KB screenshot was estimated at about 64K tokens, so a small turn looked over budget, lost 122 messages to trimming and then failed with 400 Bad Request. If images still don't fit after optional history is dropped, the budget swaps each whole image for a short note rather than slicing it; the required current user message keeps its images. The context trimmer's token estimate also counts images now: an image after a text part used to count as nothing."

@@ -189,6 +189,51 @@ describe("runSelfUpdate", () => {
     expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
   })
 
+  it("when an install would not fit, removes all but current and previous, then checks again", async () => {
+    const tight = machine()
+    let free = 150
+    tight.deps.diskSpace = () => ({ freeBytes: free * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })
+    tight.deps.reclaimDisk = vi.fn(() => { free = 400 })
+    expect((await runSelfUpdate(tight.deps)).outcome).toBe("updated")
+    expect(tight.deps.reclaimDisk).toHaveBeenCalledTimes(1)
+
+    const stillTight = machine()
+    stillTight.deps.diskSpace = () => ({ freeBytes: 150 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })
+    stillTight.deps.reclaimDisk = vi.fn()
+    const result = await runSelfUpdate(stillTight.deps)
+    expect(result.outcome).toBe("install-failed")
+    expect(stillTight.deps.reclaimDisk).toHaveBeenCalledTimes(1)
+    expect(stillTight.deps.install).not.toHaveBeenCalled()
+
+    const unmeasurable = machine()
+    let measured = false
+    unmeasurable.deps.diskSpace = () => measured ? null : { freeBytes: 150 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 }
+    unmeasurable.deps.reclaimDisk = vi.fn(() => { measured = true })
+    expect((await runSelfUpdate(unmeasurable.deps)).outcome).toBe("updated")
+
+    const roomy = machine()
+    roomy.deps.diskSpace = () => ({ freeBytes: 600 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })
+    roomy.deps.reclaimDisk = vi.fn()
+    await runSelfUpdate(roomy.deps)
+    expect(roomy.deps.reclaimDisk).not.toHaveBeenCalled()
+  })
+
+  it("stops before installing while MemAvailable is below the floor, and installs at or above it", async () => {
+    const low = machine()
+    low.deps.memory = () => ({ availableBytes: 180 * 1024 * 1024, floorBytes: 250 * 1024 * 1024 })
+    const result = await runSelfUpdate(low.deps)
+    expect(result.outcome).toBe("install-failed")
+    expect(result.summary).toBe("not enough free memory to install 0.1.0-alpha.896: MemAvailable 180 MB, below the 250 MB floor; staying on 0.1.0-alpha.805")
+    expect(low.deps.install).not.toHaveBeenCalled()
+    expect(low.state).toMatchObject({ failedVersions: [] })
+    const enough = machine()
+    enough.deps.memory = () => ({ availableBytes: 250 * 1024 * 1024, floorBytes: 250 * 1024 * 1024 })
+    expect((await runSelfUpdate(enough.deps)).outcome).toBe("updated")
+    const unknown = machine()
+    unknown.deps.memory = () => null
+    expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
+  })
+
   it("stringifies a non-Error install failure", async () => {
     const m = machine()
     vi.mocked(m.deps.install).mockRejectedValueOnce("npm exploded")

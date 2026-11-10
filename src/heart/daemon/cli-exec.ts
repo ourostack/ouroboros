@@ -1981,7 +1981,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -7272,6 +7272,39 @@ async function executeSelfUpdate(command: SelfUpdateCliCommand, deps: OuroCliDep
   return message
 }
 
+async function executeHostSelfUpdate(
+  command: Extract<OuroCliCommand, { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const host = deps.hostSelfUpdate
+  if (!host) return returnCliFailure(deps, "self-update settings are not available in this runtime")
+  const { DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB, DEFAULT_SELF_UPDATE_RESERVE_MB, renderHostSelfUpdateConfig } = await import("../versioning/host-self-update")
+  const current = host.read()
+  if (command.kind !== "self-update.status") {
+    const next = command.kind === "self-update.enable"
+      ? {
+        schemaVersion: 1 as const,
+        enabled: true,
+        lean: command.full !== true,
+        minMemAvailableMb: command.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB,
+        reserveMb: command.reserveMb ?? DEFAULT_SELF_UPDATE_RESERVE_MB,
+        ...(command.keepVersions !== undefined ? { keepVersions: command.keepVersions } : {}),
+      }
+      : {
+        schemaVersion: 1 as const, enabled: false, lean: current?.lean ?? true,
+        minMemAvailableMb: current?.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB,
+        reserveMb: current?.reserveMb ?? DEFAULT_SELF_UPDATE_RESERVE_MB,
+        ...(current?.keepVersions !== undefined ? { keepVersions: current.keepVersions } : {}),
+      }
+    host.write(next)
+  }
+  const lines = [renderHostSelfUpdateConfig(command.kind === "self-update.status" ? current : host.read())]
+  if (process.platform === "darwin") lines.push("(on macOS the launchd updater runs updates; this setting is for hosts without it)")
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 function withUpdateStatusLine(message: string, deps: Pick<OuroCliDeps, "readUpdateStatusLine">): string {
   let line: string | null = null
   try {
@@ -8829,6 +8862,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── self-update (unattended-safe update pass; never starts a stopped daemon) ──
   if (command.kind === "self-update") {
     return executeSelfUpdate(command, deps)
+  }
+
+  if (command.kind === "self-update.enable" || command.kind === "self-update.disable" || command.kind === "self-update.status") {
+    return executeHostSelfUpdate(command, deps)
   }
 
   // ── versions command (local install list + published update truth, no daemon socket needed) ──

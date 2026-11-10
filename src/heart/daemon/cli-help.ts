@@ -88,9 +88,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   "self-update": {
     category: "Lifecycle",
-    description: "Update the installed CLI to the newest release from npm or GitHub, restart a running daemon on it, roll back if it fails its checks, and install the hourly launchd updater on macOS",
-    usage: "ouro self-update [--unattended]",
+    description: "Update the installed CLI to the newest release from npm or GitHub, restart a running daemon on it, roll back if it fails its checks, and install the hourly launchd updater on macOS. Elsewhere unattended updates are off until `ouro self-update enable` turns them on for this machine (lean install, lowest CPU and I/O priority, a MemAvailable floor and a disk reserve)",
+    usage: "ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] [--keep-versions <n>] | ouro self-update disable | ouro self-update status",
     example: "ouro self-update",
+    subcommands: ["enable", "disable", "status"],
   },
   versions: {
     category: "Lifecycle",

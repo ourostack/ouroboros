@@ -34,6 +34,7 @@ import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../
 import { readVersionIntent as defaultReadVersionIntent, writeVersionIntent as defaultWriteVersionIntent } from "../versioning/version-intent"
 import { ensureDefaultUpdaterAgent, isDefaultUpdaterAgentInstalled } from "../versioning/self-update-defaults"
 import { formatUpdateStatusLine, readUpdateState } from "../versioning/update-state"
+import { readHostSelfUpdateConfig, writeHostSelfUpdateConfig } from "../versioning/host-self-update"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
@@ -950,6 +951,10 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     getCurrentCliVersion: () => getCurrentVersion({}),
     getPreviousCliVersion: () => getPreviousVersion({}),
     listCliVersions: () => listInstalledVersions({}),
+    hostSelfUpdate: {
+      read: () => readHostSelfUpdateConfig(getOuroCliHome()),
+      write: (config) => writeHostSelfUpdateConfig(getOuroCliHome(), config),
+    },
     runSelfUpdate: async () => {
       const { runSelfUpdate } = await import("../versioning/self-update")
       const { createDefaultSelfUpdateDeps } = await import("../versioning/self-update-defaults")
