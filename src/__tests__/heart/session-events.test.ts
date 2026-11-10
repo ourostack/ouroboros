@@ -1180,6 +1180,28 @@ describe("session events", () => {
     ])
   })
 
+  it("keeps one result per tool call, preferring the real result over a lost-result placeholder", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+    const lost = "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now."
+    const call = (id: string) => ({ id, type: "function" as const, function: { name: "app_sessions_list", arguments: "{}" } })
+    const repaired = sanitizeProviderMessages([
+      { role: "system", content: "sys" },
+      { role: "user", content: "go" },
+      { role: "assistant", content: null, tool_calls: [call("a"), call("b"), call("c"), call("d")] },
+      { role: "tool", content: "real a", tool_call_id: "a" },
+      { role: "tool", content: lost, tool_call_id: "b" },
+      { role: "system", content: "sys" },
+      { role: "tool", content: "real b", tool_call_id: "b" },
+      { role: "tool", content: "first c", tool_call_id: "c" },
+      { role: "tool", content: "second c", tool_call_id: "c" },
+      { role: "tool", content: lost, tool_call_id: "d" },
+      { role: "tool", content: lost, tool_call_id: "d" },
+      { role: "user", content: "next" },
+    ])
+    const results = repaired.filter((message) => message.role === "tool").map((message) => [(message as { tool_call_id: string }).tool_call_id, message.content])
+    expect(results).toEqual([["a", "real a"], ["b", "real b"], ["c", "first c"], ["d", lost]])
+  })
+
   it("canonicalizes duplicate system prompts down to one leading system message", async () => {
     const { sanitizeProviderMessages } = await import("../../heart/session-events")
 
