@@ -1,0 +1,96 @@
+name: edge-benchmark
+
+# How lean the harness is on each host: install size, startup time, idle and
+# peak memory, modules loaded and turn latency (.github/scripts/edge-benchmark.cjs).
+# Linux runs under a 1 GiB memory cap, the size of the smallest machine we run
+# on. Report-only for now: each run compares itself with main's latest run in
+# the job summary; it does not fail a PR for a regression yet.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.host }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: linux-arm64
+            runner: ubuntu-24.04-arm
+          - host: linux-x64
+            runner: ubuntu-24.04
+          - host: macos-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build and pack
+        run: |
+          npm run build
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+
+      - name: Measure
+        run: |
+          tarball=$(ls "$RUNNER_TEMP"/pack/*.tgz)
+          bench=(node .github/scripts/edge-benchmark.cjs run --tarball "$tarball" --out "$RUNNER_TEMP/edge-benchmark.json")
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo systemd-run --scope --quiet -p MemoryMax=1G -p MemorySwapMax=0 \
+              sudo -E -u "$(id -un)" env "PATH=$PATH" "HOME=$HOME" "${bench[@]}" --memory-cap-mib 1024
+          else
+            "${bench[@]}"
+          fi
+
+      - name: Fetch main's latest result
+        if: github.event_name != 'push'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow edge-benchmark.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -n "$run_id" ]; then
+            gh run download "$run_id" -R "$GITHUB_REPOSITORY" --name "edge-benchmark-${{ matrix.host }}" --dir "$RUNNER_TEMP/baseline"
+            echo "BASELINE_LABEL=main (run $run_id)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Report
+        run: |
+          node .github/scripts/edge-benchmark.cjs report \
+            --current "$RUNNER_TEMP/edge-benchmark.json" \
+            --baseline "$RUNNER_TEMP/baseline/edge-benchmark.json" \
+            --baseline-label "${BASELINE_LABEL:-main}" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: edge-benchmark-${{ matrix.host }}
+          path: ${{ runner.temp }}/edge-benchmark.json
+          if-no-files-found: ignore
+          retention-days: 90
