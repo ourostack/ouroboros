@@ -81,38 +81,53 @@ describe("vault crypto primitives", () => {
   })
 })
 
+function tokenResponse(token = "verify-token") {
+  return { ok: true, status: 200, text: async () => JSON.stringify(token), json: async () => token }
+}
+const okResponse = { ok: true, status: 200, json: async () => ({}), text: async () => "" }
+
 describe("createVaultAccount", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFetch.mockReset()
     nervesEvents.length = 0
   })
 
-  it("posts to the correct registration endpoint", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    })
+  it("requests a verification token, then finishes registration with it", async () => {
+    mockFetch.mockResolvedValueOnce(tokenResponse("tok-123")).mockResolvedValueOnce(okResponse)
 
-    await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
 
-    expect(mockFetch).toHaveBeenCalledTimes(1)
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("https://vault.ouro.bot/identity/accounts/register")
-    expect(opts.method).toBe("POST")
-    expect(opts.headers["Content-Type"]).toBe("application/json")
+    expect(result.success).toBe(true)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const [verifyUrl, verifyOpts] = mockFetch.mock.calls[0]
+    expect(verifyUrl).toBe("https://vault.ouro.bot/identity/accounts/register/send-verification-email")
+    expect(verifyOpts.method).toBe("POST")
+    expect(verifyOpts.headers["Content-Type"]).toBe("application/json")
+    expect(verifyOpts.headers.Accept).toBe("application/json")
+    expect(JSON.parse(verifyOpts.body)).toEqual({ email: "ouroboros@ouro.bot", name: "ouroboros", receiveMarketingEmails: false })
+    const [finishUrl, finishOpts] = mockFetch.mock.calls[1]
+    expect(finishUrl).toBe("https://vault.ouro.bot/identity/accounts/register/finish")
+    expect(JSON.parse(finishOpts.body).emailVerificationToken).toBe("tok-123")
+  })
+
+  it("accepts a plain-text verification token", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "plain-token\n" })
+      .mockResolvedValueOnce(okResponse)
+
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+
+    expect(result.success).toBe(true)
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).emailVerificationToken).toBe("plain-token")
   })
 
   it("sends correct registration payload structure", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    })
+    mockFetch.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(okResponse)
 
     await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
 
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body)
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body)
     expect(body.name).toBe("ouroboros")
     expect(body.email).toBe("ouroboros@ouro.bot")
     expect(body.masterPasswordHash).toBeDefined()
@@ -130,23 +145,70 @@ describe("createVaultAccount", () => {
     expect(body.keys.encryptedPrivateKey).toMatch(/^2\..+\|.+\|.+$/)
   })
 
-  it("returns success result on 200", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    })
+  it("falls back to the legacy register endpoint when the server predates the verification flow", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: false, status: 404, statusText: "Not Found", json: async () => ({}) })
+      .mockResolvedValueOnce(okResponse)
 
     const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(true)
-    expect(result.email).toBe("ouroboros@ouro.bot")
-    expect(result.serverUrl).toBe("https://vault.ouro.bot")
-    expect(result.error).toBeUndefined()
+    expect(mockFetch.mock.calls[1][0]).toBe("https://vault.ouro.bot/identity/accounts/register")
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body)
+    expect(body.emailVerificationToken).toBeUndefined()
+    expect(body.masterPasswordHash).toEqual(expect.any(String))
   })
 
-  it("returns failure result on HTTP error", async () => {
-    mockFetch.mockResolvedValue({
+  it("reports legacy register failures against the legacy endpoint", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: false, status: 404, statusText: "Not Found", json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: false, status: 400, statusText: "Bad Request", json: async () => ({ message: "Email already taken" }) })
+
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("Email already taken")
+    expect(result.error).toContain("https://vault.ouro.bot/identity/accounts/register.")
+  })
+
+  it("turns closed signups into an invite instruction", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      json: async () => ({ message: "Registration not allowed or user already exists" }),
+    })
+
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("doesn't allow signups for ouroboros@ouro.bot")
+    expect(result.error).toContain("Invite User")
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it("explains that emailed verification can't finish unattended", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, text: async () => "" })
+
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("requires email verification")
+    expect(result.error).toContain("ouroboros@ouro.bot")
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it("treats a non-string JSON token body as no token", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200, text: async () => "{}" })
+
+    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("requires email verification")
+  })
+
+  it("returns failure result when finishing registration fails", async () => {
+    mockFetch.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce({
       ok: false,
       status: 400,
       statusText: "Bad Request",
@@ -157,7 +219,7 @@ describe("createVaultAccount", () => {
 
     expect(result.success).toBe(false)
     expect(result.error).toContain("Email already taken")
-    expect(result.error).toContain("https://vault.ouro.bot/identity/accounts/register")
+    expect(result.error).toContain("https://vault.ouro.bot/identity/accounts/register/finish")
   })
 
   it("falls back to HTTP status when error response body is not JSON", async () => {
@@ -211,11 +273,7 @@ describe("createVaultAccount", () => {
   })
 
   it("emits nerves events", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    })
+    mockFetch.mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(okResponse)
 
     await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
 

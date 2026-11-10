@@ -431,6 +431,13 @@ ouro hatch --answers ./hatch.json --secret-file /dev/fd/3 --no-chat 3< ./unlock-
 
 `hatch.json` holds `{"agentName", "humanName", "provider", "credentials": {...}}` (the same credential fields as the hatch flags). The secret file is read once and must meet the `ouro vault create` strength rules. The hatch creates the hatchling's vault and saves its local unlock before storing credentials, then starts the daemon. With `--answers`, nothing is prompted: anything missing is a usage error. `--no-chat` skips the first chat. `ouro vault unlock|create|replace|recover --secret-file <path>` work the same way.
 
+### Vault account registration
+
+Hatch and `ouro vault create` register the vault account with the current Bitwarden/Vaultwarden flow: `POST /identity/accounts/register/send-verification-email` with `{ email, name, receiveMarketingEmails: false }` returns a verification token, and `POST /identity/accounts/register/finish` creates the account with that `emailVerificationToken`. Vaultwarden 2026.x removed the old single-step `POST /identity/accounts/register`; Ouro uses it only when a server returns 404 for the verification step.
+
+- If the server has signups closed, it answers "Registration not allowed or user already exists" unless the address was invited. The fix is human-required: the server admin invites the agent's email (Vaultwarden admin panel → Invite User), then the human re-runs hatch or `ouro vault create`.
+- If the server has mail and signup verification on, it emails a link instead of returning a token. Ouro can't finish that unattended and says so; the admin creates or invites the account with verification off, or the human finishes signup from the email.
+
 ## Continue An Existing Agent Bundle
 
 When a bundle is copied, pulled, or cloned onto a machine, the durable Ouro-owned story is bundle plus vault:
