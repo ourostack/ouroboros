@@ -76,6 +76,8 @@ export interface TuiProps {
   readonly onCtrlC: (hasInput: boolean) => CtrlCAction
   readonly onPopQueue: () => string[]
   readonly headerShown: boolean
+  /** A hidden terminal prompt has the terminal: render no live area or input box, read no stdin. */
+  readonly paused?: boolean
   readonly cwd: string
   readonly resumeInfo?: { messageCount: number; timeAgo: string }
   readonly onImageMap?: (images: Map<number, string>) => void
@@ -801,6 +803,7 @@ export function OuroTui({
   resumeInfo,
   onImageMap,
   onHistoryAdd,
+  paused,
 }: TuiProps): React.ReactElement {
   return (
     <Box flexDirection="column">
@@ -820,6 +823,9 @@ export function OuroTui({
         }}
       </Static>
 
+      {/* Paused: unmounting the live area stops the spinner and blinking cursor, and unmounting
+          InputArea drops Ink's stdin listener and raw mode until the prompt hands the terminal back. */}
+      {paused ? null : (<>
       {/* Live area — re-renders on every state change */}
       {(live.loading || live.streamingText || live.activeTool) ? <Box marginTop={1}><Text>{""}</Text></Box> : null}
       <LiveArea live={live} elapsed={elapsedSeconds} />
@@ -841,6 +847,7 @@ export function OuroTui({
         onImageMap={onImageMap}
         onHistoryAdd={onHistoryAdd}
       />
+      </>)}
     </Box>
   )
 }

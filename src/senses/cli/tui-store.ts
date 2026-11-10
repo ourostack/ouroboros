@@ -34,12 +34,15 @@ export class TuiStore {
   private _headerShown = false
   private _inputHistory: string[] = []
   private _queuedInputs: string[] = []
+  private _paused = false
 
   get completedMessages(): readonly CompletedMessage[] { return this._completed }
   get live(): Readonly<LiveState> { return this._live }
   get headerShown(): boolean { return this._headerShown }
   get inputHistory(): readonly string[] { return this._inputHistory }
   get queuedInputs(): readonly string[] { return this._queuedInputs }
+  /** True while a hidden terminal prompt has the terminal (no live area, no input box). */
+  get paused(): boolean { return this._paused }
 
   /** Elapsed seconds since spinner started — computed on demand, not stored */
   getElapsed(): number {
@@ -138,6 +141,16 @@ export class TuiStore {
 
   setKick(): void {
     this._live = { ...this._live, loading: false, kickMessage: formatKick() }
+    this.notify()
+  }
+
+  pause(): void {
+    this._paused = true
+    this.notify()
+  }
+
+  resume(): void {
+    this._paused = false
     this.notify()
   }
 

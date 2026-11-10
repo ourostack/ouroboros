@@ -126,6 +126,7 @@ export function buildSpecialistSystemPrompt(
       "- `complete_adoption`: Finalize the bundle. Validates, asks the harness to collect and confirm the hatchling vault unlock secret through hidden terminal prompts, scaffolds structural dirs, moves to ~/AgentBundles/, writes secrets, plays hatch animation. I call this with `name` (PascalCase) and `handoff_message` (warm message for the human).",
       "- The complete_adoption tool triggers hidden terminal prompts for the hatchling vault unlock secret. I must never ask the human to type the vault unlock secret into chat, and I must never include it in tool arguments.",
       "- `settle`: End the conversation with a final message. I call this after complete_adoption succeeds.",
+      "- If complete_adoption returns `error: ...`, the hatch did not finish. I tell the human in plain words what went wrong and what they can do about it, without asking for any secret in chat. The bundle files are back in the temp directory, so once the problem is fixed I can call complete_adoption again.",
       "",
       "I must call `settle` when I am done to end the session cleanly.",
     ].join("\n"),

@@ -30,6 +30,7 @@ import { StreamingWordWrapper } from "./cli-layout"
 import { resolveImageContent } from "./cli/image-paste"
 import { ImperativeSpinner } from "./cli/spinner-imperative"
 import { writeToolEnd } from "./cli/tool-display"
+import { claimTerminal } from "./terminal-handoff"
 
 export { formatEchoedInputSummary, wrapCliText, StreamingWordWrapper } from "./cli-layout"
 
@@ -493,6 +494,9 @@ export interface RunCliSessionOptions {
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   toolChoiceRequired?: boolean;
   exitOnToolCall?: string;
+  /** With exitOnToolCall: end the session only when this accepts the tool's result. A rejected
+   *  result goes back to the model like any other tool result, so the session stays open. */
+  exitOnToolResult?: (result: string) => boolean;
   pasteDebounceMs?: number;
   /** Pre-built messages to start the session with (skips buildSystem if provided) */
   messages?: OpenAI.ChatCompletionMessageParam[];
@@ -542,6 +546,32 @@ export interface RunCliSessionResult {
   toolResult?: unknown;
 }
 
+type CliExecTool = (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>
+
+/** Wrap execTool so a call to `toolName` ends the session, unless `shouldExit` rejects its result. */
+export function createExitOnToolCallExecTool(
+  execTool: CliExecTool,
+  toolName: string,
+  shouldExit: ((result: string) => boolean) | undefined,
+  onExit: (result: string) => void,
+): CliExecTool {
+  return async (name, args, ctx) => {
+    const result = await execTool(name, args, ctx)
+    if (name !== toolName) return result
+    if (shouldExit && !shouldExit(result)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.cli_exit_tool_declined",
+        message: "exit tool result did not end the session",
+        meta: { tool: name },
+      })
+      return result
+    }
+    onExit(result)
+    return result
+  }
+}
+
 export async function runCliSession(options: RunCliSessionOptions): Promise<RunCliSessionResult> {
   /* v8 ignore start -- integration: runCliSession is interactive, tested via E2E @preserve */
   const registry = createCommandRegistry()
@@ -561,6 +591,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   let cliCallbacks!: ChannelCallbacks & { flushMarkdown(): void }
   let tuiStore: import("./cli/tui-store").TuiStore | null = null
   let inkRef: { unmount: () => void } | null = null
+  let releaseTerminal: (() => void) | null = null
   const inputQueue = useTui ? new InputQueue() : null
   let rl: readline.Interface | null = null
 
@@ -663,6 +694,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           onCtrlC: handleCtrlC,
           onPopQueue: () => { const items = storeRef.popAllQueuedForEditing(); inputQueue!.drainAll(); return items },
           headerShown: storeRef.headerShown,
+          paused: storeRef.paused,
           cwd: process.cwd().replace(process.env.HOME ?? "", "~"),
           resumeInfo,
           onImageMap: (images: Map<number, string>) => { pendingImages = images },
@@ -671,6 +703,15 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       }
 
       inkRef = ink.render(React.createElement(TuiRoot), { exitOnCtrlC: false, patchConsole: false })
+      releaseTerminal = claimTerminal({
+        suspend: async () => {
+          storeRef.pause()
+          // Ink throttles repaints to 32 ms and drops its stdin listener in an effect cleanup;
+          // let both land before the prompt starts reading keystrokes.
+          await new Promise((resolve) => setTimeout(resolve, 80))
+        },
+        resume: () => storeRef.resume(),
+      })
     } catch (err) {
       // Ink failed to load (CJS compat, missing deps, etc.) — fall through to imperative
       emitNervesEvent({
@@ -737,15 +778,11 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   let exitToolFired = false
   const resolvedExecTool = options.execTool
   const wrappedExecTool = options.exitOnToolCall && resolvedExecTool
-    ? async (name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> => {
-        const result = await resolvedExecTool(name, args, ctx)
-        if (name === options.exitOnToolCall) {
-          exitToolResult = result
-          exitToolFired = true
-          currentAbort?.abort()
-        }
-        return result
-      }
+    ? createExitOnToolCallExecTool(resolvedExecTool, options.exitOnToolCall, options.exitOnToolResult, (result) => {
+        exitToolResult = result
+        exitToolFired = true
+        currentAbort?.abort()
+      })
     : resolvedExecTool
 
   // Resolve toolChoiceRequired: use explicit option if set, else fall back to toggle
@@ -937,6 +974,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
   } finally {
     rl?.close()
+    releaseTerminal?.()
     if (inkRef) {
       // Suppress React "state update on unmounted component" warnings during cleanup.
       // Ink's useInput hook fires after unmount — this is harmless but noisy.
