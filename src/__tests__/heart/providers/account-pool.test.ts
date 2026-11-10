@@ -380,19 +380,28 @@ describe("AccountPool", () => {
     expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 1 }, readings: [reading("ari@msft.ghe.com", 10)] })
   })
 
-  it("publishes the agent's burn across its processes", () => {
+  it("publishes the agent's burn across its processes, counted from each one's request times", () => {
     const burnDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-burn-"))
-    fs.writeFileSync(path.join(burnDir, "1.json"), JSON.stringify({ at: NOW - 60_000, requestsPerH: { "ari@msft.ghe.com": 5, "ari@microsoft.ghe.com": 2 } }))
-    fs.writeFileSync(path.join(burnDir, "2.json"), JSON.stringify({ at: NOW - 2 * 60 * 60 * 1000, requestsPerH: { "ari@msft.ghe.com": 100 } }))
-    fs.writeFileSync(path.join(burnDir, "3.json"), "{half")
-    fs.writeFileSync(path.join(burnDir, "4.json"), JSON.stringify({ requestsPerH: { "ari@msft.ghe.com": 100 } }))
-    fs.writeFileSync(path.join(burnDir, "5.json"), JSON.stringify({ at: NOW }))
+    fs.writeFileSync(path.join(burnDir, "1.json"), JSON.stringify({ requests: [
+      { key: "ari@msft.ghe.com", at: NOW - 60_000 },
+      { key: "ari@microsoft.ghe.com", at: NOW - 30_000 },
+      { key: "ari@msft.ghe.com", at: NOW - 2 * 60 * 60 * 1000 },
+      { key: "ari@msft.ghe.com", at: NOW + 60_000 },
+      { key: 7, at: NOW },
+      { key: "ari@msft.ghe.com" },
+    ] }))
+    fs.writeFileSync(path.join(burnDir, "2.json"), "{half")
+    fs.writeFileSync(path.join(burnDir, "3.json"), JSON.stringify({ totals: 9 }))
     fs.writeFileSync(path.join(burnDir, "notes.txt"), "x")
     const publishBurn = vi.fn(async () => true)
-    const { pool: p } = pool([MSFT, MSCOM], { publishBurn, burnDir })
+    const { pool: p, advance } = pool([MSFT, MSCOM], { publishBurn, burnDir })
     p.recordRequest("ari@msft.ghe.com")
-    expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 6, "ari@microsoft.ghe.com": 2 } })
-    expect(JSON.parse(fs.readFileSync(path.join(burnDir, `${process.pid}.json`), "utf8"))).toEqual({ at: NOW, requestsPerH: { "ari@msft.ghe.com": 1 } })
+    expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 2, "ari@microsoft.ghe.com": 1 } })
+    expect(JSON.parse(fs.readFileSync(path.join(burnDir, `${process.pid}.json`), "utf8"))).toEqual({ requests: [{ key: "ari@msft.ghe.com", at: NOW }] })
+    advance(60 * 60 * 1000 - 45_000)
+    // An hour on, the other process's older request has aged out without it writing anything.
+    expect(p.agentBurnPerH(NOW + 60 * 60 * 1000 - 45_000)).toEqual({ "ari@msft.ghe.com": 2, "ari@microsoft.ghe.com": 1 })
+    expect(p.agentBurnPerH(NOW + 2 * 60 * 60 * 1000)).toEqual({})
   })
 
   it("falls back to this process's burn when the shared folder can't be used", () => {

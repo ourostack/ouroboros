@@ -414,6 +414,7 @@ export class AccountPool {
   recordRequest(key: string): void {
     const now = this.now()
     this.requests = [...this.requests.filter((entry) => now - entry.at < HOUR_MS), { key, at: now }]
+    this.shareRequests()
     this.publishIfDue()
   }
 
@@ -440,25 +441,13 @@ export class AccountPool {
     })
   }
 
-  /** Last-hour requests across all of this agent's processes: this process's counts plus each other process's latest. */
-  agentBurnPerH(now: number): Record<string, number> {
-    const own = this.burnPerH()
+  /** Share this process's last-hour request times with the agent's other processes. */
+  private shareRequests(): void {
     const dir = this.options.burnDir
-    if (!dir) return own
-    const total: Record<string, number> = { ...own }
+    if (!dir) return
     try {
       fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ at: now, requestsPerH: own }))
-      for (const name of fs.readdirSync(dir)) {
-        if (name === `${process.pid}.json` || !name.endsWith(".json")) continue
-        try {
-          const other = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as { at?: number; requestsPerH?: Record<string, number> }
-          if (typeof other.at !== "number" || now - other.at >= HOUR_MS) continue
-          for (const [key, count] of Object.entries(other.requestsPerH ?? {})) total[key] = (total[key] ?? 0) + count
-        } catch {
-          // Another process is mid-write; its counts join the next publish.
-        }
-      }
+      fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ requests: this.requests }))
     } catch (error) {
       emitNervesEvent({
         level: "warn",
@@ -468,6 +457,34 @@ export class AccountPool {
         // fs only throws Errors.
         meta: { agent: this.options.agent, error: (error as Error).message },
       })
+    }
+  }
+
+  /** Requests in the hour before `now` across all of this agent's processes, counted from each one's request times. */
+  agentBurnPerH(now: number): Record<string, number> {
+    const total: Record<string, number> = {}
+    const count = (requests: ReadonlyArray<{ key?: unknown; at?: unknown }>) => {
+      for (const entry of requests) {
+        if (typeof entry.key !== "string" || typeof entry.at !== "number" || now - entry.at >= HOUR_MS || entry.at > now) continue
+        total[entry.key] = (total[entry.key] ?? 0) + 1
+      }
+    }
+    count(this.requests)
+    const dir = this.options.burnDir
+    let names: string[] = []
+    try {
+      names = dir ? fs.readdirSync(dir) : []
+    } catch {
+      names = []
+    }
+    for (const name of names) {
+      if (name === `${process.pid}.json` || !name.endsWith(".json")) continue
+      try {
+        const other = JSON.parse(fs.readFileSync(path.join(dir as string, name), "utf8")) as { requests?: unknown }
+        if (Array.isArray(other.requests)) count(other.requests as Array<{ key?: unknown; at?: unknown }>)
+      } catch {
+        // Another process is mid-write; its counts join the next publish.
+      }
     }
     return total
   }
