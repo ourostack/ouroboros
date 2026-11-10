@@ -390,6 +390,9 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     }, WAKE_DELAY_MS)
   }
 
+  /** Automatic input is signed by Shepherd itself: the human sent none of it. */
+  const automaticLabel = `[Shepherd for ${presentation.name}]`
+
   async function dispatch(record: ShepherdJudgedReturnRecord, reply: { text: string },
     instance: string | null, screenFingerprint: string, expected?: ShepherdInspection, canSend?: () => boolean): Promise<boolean> {
     const claim = custody.claimDispatch({ host: host.name, session: record.session, instance, screenFingerprint,
@@ -403,9 +406,9 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
     record.dispatch = { id: claim.id, state: "claimed" }
     let result: { state: "sent" | "not_sent"; reason?: string }
     try {
-      if (expected) result = await host.promptIfUnchanged!(record.session, `[${presentation.name} for ${human}] ${PERIODIC_RESUME}`, expected, canSend)
+      if (expected) result = await host.promptIfUnchanged!(record.session, `${automaticLabel} ${PERIODIC_RESUME}`, expected, canSend)
       else {
-        await host.prompt(record.session, `[${presentation.name} for ${human}] ${reply.text}`)
+        await host.prompt(record.session, `${automaticLabel} ${reply.text}`)
         result = { state: "sent" }
       }
     } catch (error) {
@@ -474,6 +477,13 @@ export async function startShepherdSenseApp(options: ShepherdSenseOptions): Prom
         // Tripped: no judge call and no new escalation until the human looks at the session.
         Object.assign(record, { kind: "loop_guard", reason: `Shepherd stopped answering this session until ${human} focuses it` })
         record.actionBlockReason = "loop_guard"
+        notice = false
+        return
+      }
+      if (!periodic && event.hold) {
+        // The host says this stop is not a stall: no judge call, no input and no notice.
+        Object.assign(record, { kind: "working", reason: `held: ${event.hold}` })
+        record.actionBlockReason = "hold"
         notice = false
         return
       }

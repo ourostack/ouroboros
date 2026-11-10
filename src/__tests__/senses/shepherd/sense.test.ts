@@ -403,7 +403,18 @@ describe("Shepherd sense: answering premature returns", () => {
     const { host, returned } = await start(async () => verdict())
     host.screens.S1 = [SCREENS.claudePremature]
     await returned({ sessionId: "S1" })
-    expect(host.actions).toContain("prompt S1 [Orchid One for Ari] Go ahead and implement it.")
+    expect(host.actions).toContain("prompt S1 [Shepherd for Orchid One] Go ahead and implement it.")
+  })
+
+  it("never judges, answers or tells anyone about a stop the host holds", async () => {
+    const packets: ReturnPacket[] = []
+    const { host, escalations, last, returned } = await start(async (packet) => { packets.push(packet); return verdict() })
+    host.screens.S1 = [SCREENS.claudePremature]
+    await returned({ sessionId: "S1", hold: "it coordinates 2 live sessions and waits on them" })
+    expect(packets).toEqual([])
+    expect(host.actions.filter((action) => action.startsWith("prompt"))).toEqual([])
+    expect(escalations).toEqual([])
+    expect(last()).toMatchObject({ session: "S1", kind: "working", actionBlockReason: "hold", reason: "held: it coordinates 2 live sessions and waits on them" })
   })
 
   const target = { host: "fake", session: "S1", cwd: "/Users/a/code/app", task: null }
@@ -484,7 +495,7 @@ describe("Shepherd sense: answering premature returns", () => {
     expect(packets[0]).toMatchObject({ human: "Ari", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish", lastBody: "token=[redacted] Want me to go ahead?", backgroundWork: false })
     expect(packets[0]!.screen).not.toContain("sk-aaaa")
     expect(packets[0]!.screen.split("\n")).toHaveLength(SCREENS.claudePremature.split("\n").length + 4)
-    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Ouro for Ari] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
+    expect(host.actions.filter((action) => !action.startsWith("pace"))).toEqual(["prompt S1 [Shepherd for Ouro] Go ahead and implement it.", "status S1 answered for Ari: It stopped after a plan."])
     expect(last()).toEqual({
       at: "2026-10-10T20:00:00.000Z", host: "fake", session: "S1", transition: "cmux:B:101", agent: "claude", cwd: "/Users/a/code/app", task: "ouro-md/toolbar-polish",
       kind: "premature", judgeKind: "premature", action: "respond", reason: "It stopped after a plan.", reply: "Go ahead and implement it.", latencyMs: 900, inputTokens: 1200,

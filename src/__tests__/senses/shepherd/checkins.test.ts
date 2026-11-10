@@ -244,7 +244,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
     const parsed = parseVerdict(JSON.stringify({ kind: "premature", reply: { text: "Continue authorized work. ".repeat(15) }, reason: "Unfinished work." }))
     await start(vi.fn(async () => ({ ...parsed, latencyMs: 2, inputTokens: 10 })))
     await advance(8000)
-    expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
+    expect(prompts()).toEqual([`prompt S [Shepherd for Test Shepherd] ${FIXED}`])
     expect(readReturns(root).at(-1)).toMatchObject({ kind: "premature", judgeKind: "premature", replyIssue: "too_long", action: "respond" })
     expect(readReturns(root).at(-1)).not.toHaveProperty("actionBlockReason")
   })
@@ -315,7 +315,7 @@ describe("fresh all-returned-session periodic check-ins", () => {
       expect(packet).toMatchObject({ agent: "Copilot", cwd: "/project", lastBody: null, backgroundWork: false,
         periodicCheckIn: { priorJudgment: kind ? { kind, reason: "Historical reason, never authority" } : null } })
       expect(packet).not.toHaveProperty("networkRecovered")
-      expect(prompts()).toEqual([`prompt S [Test Shepherd for the human] ${FIXED}`])
+      expect(prompts()).toEqual([`prompt S [Shepherd for Test Shepherd] ${FIXED}`])
       expect(actions.some(action => action.startsWith("key "))).toBe(false)
     })
 

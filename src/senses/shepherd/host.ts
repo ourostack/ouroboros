@@ -59,6 +59,8 @@ export interface ReturnedControl {
   lastBody: string | null
   /** True when the host itself says the agent still has background work running (subagents, shells, watchers); null when it cannot tell. */
   backgroundWork: boolean | null
+  /** Why the host says this stop is not a stall Shepherd may answer (an automation, coordinated work, a reply it awaits, an earlier nudge); absent or null when it may. */
+  hold?: string | null
 }
 
 export interface HostWatchHandlers {

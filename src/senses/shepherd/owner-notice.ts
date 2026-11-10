@@ -37,6 +37,7 @@ const BLOCK_DESCRIPTION: Record<ShepherdActionBlockReason, string> = {
   state_changed: "it changed while I was looking",
   custody: "an earlier reply may still be on its way",
   stopped: "Shepherd was stopping",
+  hold: "it's waiting on something besides you, or I already nudged it once",
 }
 
 /** Kinds a "needs-me" owner still hears about. */
