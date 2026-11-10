@@ -32,7 +32,7 @@ import { parseAgentHome, type AgentHome } from "./agent-discovery"
 
 export const PRESENCE_SCHEMA = 1
 
-/** The first harness version that knows presence; a rollback below it leaves the roster (see removeAllPeerRecords). */
+/** The first harness version that knows presence; a rollback below it leaves the roster (see leavePresence). */
 export const PRESENCE_FIRST_VERSION = "0.1.0-alpha.1009"
 
 /** Senses that exist once per agent: exactly one machine runs each. */
