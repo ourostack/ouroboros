@@ -54,6 +54,7 @@ export function createGithubCopilotPooledCaller(config: GithubCopilotProviderCon
     burnDir: path.join(owner.agentRoot, "state", "account-burn"),
     refusalsFile: path.join(owner.agentRoot, "state", "account-refusals.json"),
     publishedFile: path.join(owner.agentRoot, "state", "account-burn-published.json"),
+    readingsFile: path.join(owner.agentRoot, "state", "account-readings.json"),
     /* v8 ignore start -- network readers and publisher: each is tested in its own module @preserve */
     loadReadings: async () => mergeReadings(await loadFleetQuota(gist), await fetchDirectReadings(accounts)),
     publishBurn: gist ? (burn) => publishAgentBurn(gist, burn) : undefined,

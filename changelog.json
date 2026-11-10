@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1066",
+      "changes": [
+        "Account pool: the pool saves its last quota readings to state/account-readings.json after each load and reads them at startup, so a freshly started process chooses its first account with what the fleet last knew. Before, the first turn after a restart chose with no readings and spent one request on an account the fleet already knew was out, got a 429, and only then switched."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1062",
       "changes": [
         "Vault unlock: a sealed-file store for headless hosts without a keychain"

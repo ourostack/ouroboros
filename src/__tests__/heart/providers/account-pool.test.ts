@@ -514,6 +514,40 @@ describe("AccountPool", () => {
     expect(p.beforeTurn()).toBe(MSFT)
   })
 
+  it("starts a new process with the readings the last one saved, so it skips an account the fleet knows is spent", async () => {
+    const readingsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-readings-")), "state", "account-readings.json")
+    const loadReadings = vi.fn(async () => [reading("ari_microsoft@github.com", 100, { remaining: 0 }), reading("ari@microsoft.ghe.com", 40)])
+    const first = pool([EMU, MSCOM], { readingsFile, loadReadings })
+    await first.pool.refreshIfStale()
+    expect(JSON.parse(fs.readFileSync(readingsFile, "utf8"))).toEqual(first.pool.readings)
+    // The next process chooses before any load of its own has landed.
+    const never = vi.fn(() => new Promise<QuotaReading[]>(() => {}))
+    const second = pool([EMU, MSCOM], { readingsFile, loadReadings: never })
+    expect(second.pool.beforeTurn()).toBe(MSCOM)
+    expect(second.records().map((r) => [r.to, r.reason])).toEqual([["ari@microsoft.ghe.com", "start"]])
+  })
+
+  it("ignores a missing, corrupt or malformed readings file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-readings-"))
+    const readingsFile = path.join(dir, "account-readings.json")
+    expect(pool([EMU, MSCOM], { readingsFile }).pool.beforeTurn()).toBe(EMU)
+    fs.writeFileSync(readingsFile, "[{half")
+    expect(pool([EMU, MSCOM], { readingsFile }).pool.beforeTurn()).toBe(EMU)
+    fs.writeFileSync(readingsFile, JSON.stringify({ "ari_microsoft@github.com": 0 }))
+    expect(pool([EMU, MSCOM], { readingsFile }).pool.readings).toEqual([])
+    fs.writeFileSync(readingsFile, JSON.stringify([null, { key: 7, leftPct: 0 }, { key: "ari_microsoft@github.com", leftPct: "0" }, reading("ari@microsoft.ghe.com", 40)]))
+    expect(pool([EMU, MSCOM], { readingsFile }).pool.readings).toEqual([reading("ari@microsoft.ghe.com", 40)])
+  })
+
+  it("keeps its readings when they can't be saved", async () => {
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-readings-")), "file")
+    fs.writeFileSync(blocker, "x")
+    const loadReadings = vi.fn(async () => [reading("ari@microsoft.ghe.com", 40)])
+    const { pool: p } = pool([EMU, MSCOM], { readingsFile: path.join(blocker, "account-readings.json"), loadReadings })
+    await p.refreshIfStale()
+    expect(p.readings).toEqual([reading("ari@microsoft.ghe.com", 40)])
+  })
+
   it("still switches when refusals can't be shared", () => {
     const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-refusals-")), "file")
     fs.writeFileSync(blocker, "x")

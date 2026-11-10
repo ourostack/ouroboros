@@ -330,6 +330,11 @@ export interface AccountPoolOptions {
    * Shared by the agent's processes, so the 30-minute floor holds for the agent, not once per process.
    */
   publishedFile?: string
+  /**
+   * `<agent root>/state/account-readings.json`: the pool's last quota readings, saved after each load and read
+   * at startup, so a fresh process chooses its first account with what the fleet last knew instead of none.
+   */
+  readingsFile?: string
   /** This Mac's fleet name when `machine` isn't given; defaults to `defaultMachineName`. */
   machineName?: () => string
   now?: () => number
@@ -370,6 +375,42 @@ export class AccountPool {
     this.accounts = accounts
     this.options = options
     this.loadSharedRefusals()
+    this.loadSavedReadings()
+  }
+
+  /** Start from the readings an earlier process saved; each keeps its own `at`, so fresher loads still win. */
+  private loadSavedReadings(): void {
+    const file = this.options.readingsFile
+    if (!file) return
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, "utf8")) as unknown
+      if (!Array.isArray(saved)) return
+      this.setReadings(saved.filter((reading): reading is QuotaReading =>
+        !!reading && typeof reading === "object" && typeof reading.key === "string"
+        && (reading.leftPct === null || typeof reading.leftPct === "number")))
+    } catch {
+      // No file yet, or another process is mid-write: start without saved readings.
+    }
+  }
+
+  private saveReadings(): void {
+    const file = this.options.readingsFile
+    if (!file) return
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const temp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(temp, JSON.stringify(this.readings))
+      fs.renameSync(temp, file)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "engine",
+        event: "engine.account_readings_save_failed",
+        message: "could not save account pool readings for the agent's next process",
+        // fs only throws Errors.
+        meta: { agent: this.options.agent, error: (error as Error).message },
+      })
+    }
   }
 
   /** Take in refusals another of the agent's processes recorded; the later end wins. */
@@ -443,6 +484,7 @@ export class AccountPool {
       .then((readings) => {
         this.setReadings(readings)
         this.loadedReadings = true
+        this.saveReadings()
         this.publishIfDue()
       })
       .catch((error: unknown) => {
