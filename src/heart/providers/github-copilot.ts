@@ -15,6 +15,22 @@ export function classifyGithubCopilotError(error: Error): ProviderErrorClassific
 }
 
 
+const IMAGE_PART_PATTERN = /"type"\s*:\s*"(?:image_url|input_image)"/
+
+/**
+ * Copilot rejects a request that contains images unless it carries `Copilot-Vision-Request: true`.
+ * Add it only to requests whose JSON body holds an image part.
+ */
+export function withCopilotVisionHeader(fetchImpl?: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const send = fetchImpl ?? globalThis.fetch
+    if (typeof init?.body !== "string" || !IMAGE_PART_PATTERN.test(init.body)) return send(input, init)
+    const headers = new Headers(init.headers)
+    headers.set("Copilot-Vision-Request", "true")
+    return send(input, { ...init, headers })
+  }
+}
+
 export interface GithubCopilotRuntimeOwner {
   agentName: string;
   agentRoot: string;
@@ -28,7 +44,7 @@ export interface GithubCopilotRuntimeOwner {
 export function createGithubCopilotPooledCaller(config: GithubCopilotProviderConfig, owner?: GithubCopilotRuntimeOwner): PooledCaller<OpenAI> | null {
   const accounts = parseAccountPool(config.accountPool);
   if (accounts.length === 0) return null;
-  const makeClient = (account: { githubToken: string; baseUrl: string }) => new OpenAI({ apiKey: account.githubToken, baseURL: account.baseUrl, maxRetries: 0 });
+  const makeClient = (account: { githubToken: string; baseUrl: string }) => new OpenAI({ apiKey: account.githubToken, baseURL: account.baseUrl, maxRetries: 0, fetch: withCopilotVisionHeader() });
   if (!owner) return createPooledCaller(new AccountPool(accounts, { agent: "(unowned)", switchLog: "", appendLine: () => {} }), makeClient);
   const gist = config.fleetGistId && config.fleetGistToken ? { gistId: config.fleetGistId, token: config.fleetGistToken } : null;
   const pool = getAccountPool(accounts, {
@@ -78,6 +94,7 @@ export function createGithubCopilotProviderRuntime(
     apiKey: config.githubToken,
     baseURL: config.baseUrl,
     maxRetries: 0,
+    fetch: withCopilotVisionHeader(),
   });
   const callModel = <T>(fallback: OpenAI, request: (client: OpenAI) => Promise<T>): Promise<T> =>
     pooled ? pooled.call((pooledClient) => request(pooledClient)) : request(fallback);

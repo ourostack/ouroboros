@@ -1,6 +1,6 @@
 import { vi } from "vitest"
 import { McpManager, type McpOwner, type McpTurnView } from "../../repertoire/mcp-manager"
-import type { McpToolInfo } from "../../repertoire/mcp-client"
+import type { McpContentPart, McpToolInfo } from "../../repertoire/mcp-client"
 
 export const MCP_OWNER = Object.freeze({ agentName: "test-agent", agentRoot: "/mock/test-agent.ouro" })
 export const MCP_CONTEXT = { ...MCP_OWNER, signin: async () => undefined }
@@ -8,7 +8,7 @@ const managers: McpManager[] = []
 
 export function makeMcpView(
   groups: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string; source?: "builtin" | "plugin" | "runtime" }>,
-  result?: { content: Array<{ type: string; text: string }> },
+  result?: { content: McpContentPart[] },
   error?: unknown,
   owner: McpOwner = MCP_OWNER,
 ): McpTurnView {

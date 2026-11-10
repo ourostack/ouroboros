@@ -59,6 +59,19 @@ export function isMcpTransportError(error: unknown): boolean {
     || normalized.includes("not writable")
 }
 
+/** One MCP tool result content part: `text` parts carry `text`, `image` parts carry base64 `data` and `mimeType`. */
+export interface McpContentPart {
+  type: string
+  text?: string
+  data?: string
+  mimeType?: string
+}
+
+export interface McpCallToolResult {
+  content: McpContentPart[]
+  isError?: boolean
+}
+
 export class McpClient {
   private config: McpServerConfig
   private process: ChildProcess | null = null
@@ -164,7 +177,7 @@ export class McpClient {
     name: string,
     args: Record<string, unknown>,
     timeoutOverride?: number,
-  ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
+  ): Promise<McpCallToolResult> {
     const timeout = timeoutOverride ?? this.declaredToolTimeout(name)
     emitNervesEvent({
       event: "mcp.tool_call_start",
@@ -177,7 +190,7 @@ export class McpClient {
       const result = await this.sendRequest("tools/call", {
         name,
         arguments: args,
-      }, timeout) as { content: Array<{ type: string; text: string }>; isError?: boolean }
+      }, timeout) as McpCallToolResult
 
       emitNervesEvent({
         event: "mcp.tool_call_end",

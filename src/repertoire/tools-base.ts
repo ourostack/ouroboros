@@ -99,7 +99,15 @@ export interface HabitSessionToolContext {
   readonly noSend?: true;
 }
 
+/** An image a tool returns alongside its text result (base64 data, not a data URL). */
+export interface ToolResultImage {
+  data: string
+  mimeType: string
+}
+
 export interface ToolContext {
+  /** Set by the engine for one tool call: hands images from the result to the model. */
+  attachToolImages?: (images: ToolResultImage[]) => void;
   /** A validated immutable terminal locator, not relationship authority. */
   readonly currentShepherdSurface?: import("../senses/shepherd/surface").ShepherdSession;
   /** Trusted turn-local subtraction from the normal engine menu; never grants a tool. */
