@@ -723,9 +723,7 @@ describe("daemon entrypoint", () => {
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-
-    expect(start).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
     expect(senseManagerCtor).toHaveBeenCalledTimes(1)
@@ -973,6 +971,10 @@ describe("daemon entrypoint", () => {
     runtimeCredentials.resetRuntimeCredentialConfigCache()
     providerCredentials.resetProviderCredentialCache()
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toBeNull()
+    // Items the vault confirmed missing travel too, so the worker doesn't ask again.
+    runtimeCredentials.applyRuntimeCredentialBootstrapMessage({ type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", absent: ["machineRuntimeConfig"] })
+    expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toMatchObject({ agentName: "slugger", absent: ["machineRuntimeConfig"] })
+    runtimeCredentials.resetRuntimeCredentialConfigCache()
   })
 
   it("completes provider credential warm-up and fresh live readiness before opening the daemon", async () => {
@@ -1619,8 +1621,7 @@ describe("daemon entrypoint", () => {
 
     try {
       await import("../../../heart/daemon/daemon-entry")
-      await Promise.resolve()
-      await Promise.resolve()
+      await vi.waitFor(() => expect(habitSchedulerStartMock).toHaveBeenCalled())
 
       const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
         onStopCommandComplete: () => Promise<void>
@@ -2086,10 +2087,7 @@ describe("daemon entrypoint", () => {
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
     await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(start).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
     expect(habitSchedulerStartMock).toHaveBeenCalledTimes(1)
     expect(habitSchedulerStartPeriodicReconciliationMock).not.toHaveBeenCalled()
     expect(habitSchedulerWatchMock).not.toHaveBeenCalled()

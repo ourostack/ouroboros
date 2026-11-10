@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig } from "../runtime-credentials"
+import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig, RuntimeCredentialItemKind } from "../runtime-credentials"
 import type { ProviderCredentialRecord } from "../provider-credentials"
 
 export interface RuntimeCredentialBootstrap {
@@ -12,6 +12,7 @@ export interface RuntimeCredentialBootstrap {
   machineRuntimeConfig?: RuntimeCredentialConfig
   machineId?: string
   providerCredentialRecords?: ProviderCredentialRecord[]
+  absent?: RuntimeCredentialItemKind[]
 }
 
 export interface DaemonManagedAgent {
@@ -474,6 +475,7 @@ export class DaemonProcessManager {
         if (bootstrap.machineRuntimeConfig) message.machineRuntimeConfig = bootstrap.machineRuntimeConfig
         if (bootstrap.machineId) message.machineId = bootstrap.machineId
         if (bootstrap.providerCredentialRecords) message.providerCredentialRecords = bootstrap.providerCredentialRecords
+        if (bootstrap.absent) message.absent = bootstrap.absent
         try {
           child.send?.(message)
           emitNervesEvent({
@@ -485,6 +487,7 @@ export class DaemonProcessManager {
               runtimeConfig: !!bootstrap.runtimeConfig,
               machineRuntimeConfig: !!bootstrap.machineRuntimeConfig,
               providerCredentialRecords: bootstrap.providerCredentialRecords?.length ?? 0,
+              absent: bootstrap.absent ?? [],
             },
           })
         } catch (error) {

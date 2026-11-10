@@ -3038,6 +3038,11 @@ describe("daemon sense manager", () => {
       agents: Array<{ name: string; getRuntimeCredentialBootstrap?: () => unknown }>
     }).agents.find((agent) => agent.name === "slugger:mail")
     expect(mailAgent?.getRuntimeCredentialBootstrap?.()).toBeNull()
+    // A vault-confirmed absence is worth sending: the sense needn't ask the vault again.
+    const runtimeCredentials = await import("../../../heart/runtime-credentials")
+    runtimeCredentials.applyRuntimeCredentialBootstrapMessage({ type: "ouro.runtimeCredentialBootstrap", agentName: "slugger", absent: ["runtimeConfig"] })
+    expect(mailAgent?.getRuntimeCredentialBootstrap?.()).toMatchObject({ agentName: "slugger", absent: ["runtimeConfig"] })
+    runtimeCredentials.resetRuntimeCredentialConfigCache()
   })
 
   it("uses cached runtime config for default sense checks, refreshes in the background, and returns sense-specific repair hints", async () => {

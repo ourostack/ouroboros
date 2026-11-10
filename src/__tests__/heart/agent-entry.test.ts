@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
-  return {
+  const mock: Record<string, unknown> = {
     applyRuntimeCredentialBootstrapMessage: vi.fn(() => false),
     waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
     readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
@@ -9,6 +9,12 @@ function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
     refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     ...overrides,
+  }
+  // Settled here means "loaded": these tests model a vault that never confirmed an absence.
+  const read = (kind: string) => (kind === "runtimeConfig" ? mock.readRuntimeCredentialConfig : mock.readMachineRuntimeCredentialConfig) as (agent: string) => { ok: boolean }
+  return {
+    runtimeCredentialConfigSettled: vi.fn((agent: string, kind: string) => read(kind)(agent).ok),
+    ...mock,
   }
 }
 

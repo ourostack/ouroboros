@@ -149,10 +149,9 @@ function providerPoolMissingTargets(
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
 import("./runtime-credentials")
   .then(async ({
-    readMachineRuntimeCredentialConfig,
-    readRuntimeCredentialConfig,
     refreshMachineRuntimeCredentialConfig,
     refreshRuntimeCredentialConfig,
+    runtimeCredentialConfigSettled,
     applyRuntimeCredentialBootstrapMessage,
     waitForRuntimeCredentialBootstrap,
   }) => {
@@ -166,7 +165,8 @@ import("./runtime-credentials")
     } else {
       drainBufferedRuntimeCredentialBootstrap(applyRuntimeCredentialBootstrapMessage)
     }
-    if (!readRuntimeCredentialConfig(agentName).ok) {
+    // Ask the vault only for what the daemon's bootstrap didn't settle: each ask spawns the vault CLI.
+    if (!runtimeCredentialConfigSettled(agentName, "runtimeConfig")) {
       await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     const providerPool = readProviderCredentialPool(agentName)
@@ -174,7 +174,7 @@ import("./runtime-credentials")
     if (providerTargets.length > 0 && providerPoolMissingTargets(providerPool, providerTargets)) {
       await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true, providers: providerTargets }).catch(() => undefined)
     }
-    if (!readMachineRuntimeCredentialConfig(agentName).ok) {
+    if (!runtimeCredentialConfigSettled(agentName, "machineRuntimeConfig")) {
       await import("./machine-identity")
         .then(({ loadOrCreateMachineIdentity }) => {
           const machine = loadOrCreateMachineIdentity()

@@ -22,9 +22,9 @@ emitNervesEvent({
 })
 
 import("../heart/runtime-credentials")
-  .then(async ({ readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, waitForRuntimeCredentialBootstrap }) => {
+  .then(async ({ readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, runtimeCredentialConfigSettled, waitForRuntimeCredentialBootstrap }) => {
     await waitForRuntimeCredentialBootstrap(agentName!)
-    if (!readMachineRuntimeCredentialConfig(agentName!).ok) {
+    if (!runtimeCredentialConfigSettled(agentName!, "machineRuntimeConfig")) {
       const { loadOrCreateMachineIdentity } = await import("../heart/machine-identity")
       await refreshMachineRuntimeCredentialConfig(agentName!, loadOrCreateMachineIdentity().machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
     }

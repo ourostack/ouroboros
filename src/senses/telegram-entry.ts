@@ -25,13 +25,16 @@ Promise.all([
   import("../heart/machine-identity"),
   import("./telegram"),
 ])
-  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig }, { loadOrCreateMachineIdentity }, { startTelegramSenseApp }]) => {
+  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, runtimeCredentialConfigSettled }, { loadOrCreateMachineIdentity }, { startTelegramSenseApp }]) => {
     const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
     if (!bootstrapped && !readRuntimeCredentialConfig(agentName).ok) {
       await refreshRuntimeCredentialConfig(agentName)
     }
-    const machine = loadOrCreateMachineIdentity()
-    await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
+    // Each vault ask spawns the vault CLI; skip it when the daemon's bootstrap already settled this machine's config.
+    if (!runtimeCredentialConfigSettled(agentName, "machineRuntimeConfig")) {
+      const machine = loadOrCreateMachineIdentity()
+      await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
+    }
     const app = await startTelegramSenseApp(agentName, true)
     let stopping: Promise<void> | undefined
     const stop = (): void => { stopping ??= app.stop() }

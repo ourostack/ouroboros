@@ -301,6 +301,8 @@ The daemon may read the vault at these boundaries:
 
 The daemon should keep provider and runtime credentials only in process memory after loading them. There is no local provider-key or runtime-secret cache on disk. The vault remains the credential source of truth.
 
+The daemon reads the vault once at startup (`runtime/config`, this machine's `runtime/machines/<machine-id>/config` and the selected providers, all from one vault listing) and hands its managed agent workers and senses a bootstrap over IPC: the items it loaded, plus `absent` for the items the vault said don't exist. A child asks the vault itself only for an item the bootstrap didn't settle (never read, or the vault was unreachable). Each vault ask spawns the vault CLI, which costs seconds and over 100 MB on a small machine, so a child normally starts without one.
+
 ## Failure And Repair
 
 Provider failure handling should use the same shared repair model everywhere: CLI errors, `ouro up`, `ouro status`, start-of-turn provider visibility, and prompt guidance.
