@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1086",
+      "changes": [
+        "Presence failover: ouro presence failover take|release <sense> lets a machine run a shared sense in place of an owner that stopped answering, through a machine-local lease under the bundle's state/. The roster is unchanged, so the owner runs the sense again as soon as it is back and never waits on the stand-in; the stand-in's record lists the sense under failover, and status, status --json and where-i-am say who is standing in, since when and why. The Teams tunnel controller in the desk tooling takes the lease after the endpoint stops answering and releases it when the owner reclaims the endpoint."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1085",
       "changes": [
         "Presence names only the senses agent.json turns on: a disabled sense is listed as running on no machine, never as owned by one, in ouro presence status (with a new disabled list in --json), in published records and in the agent's where-i-am. A shared sense with no named owner now lives on the roster's always-on machine instead of whoever joined first, and joining no longer stamps every sense on the first machine. Where-i-am says whether each sense actually runs here or, per the peer's own record, there, and lists machine-scoped senses from agent.json instead of a fixed list."

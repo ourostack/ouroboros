@@ -2979,7 +2979,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "versions") return { kind: "versions" }
   if (head === "presence") {
-    const usage = "Usage: ouro presence join --agent <name> [--role <role>] [--name <machine name>] | ouro presence handoff <sense> <machine> --agent <name> | ouro presence status --agent <name> [--json] | ouro presence location <home|office|…>"
+    const usage = "Usage: ouro presence join --agent <name> [--role <role>] [--name <machine name>] | ouro presence handoff <sense> <machine> --agent <name> | ouro presence status --agent <name> [--json] | ouro presence failover take|release <sense> --agent <name> [--reason <why>] | ouro presence location <home|office|…>"
     const { agent, rest } = extractAgentFlag(args.slice(1))
     const [sub, ...tail] = rest
     if (sub === "location") {
@@ -2990,6 +2990,12 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     if (sub === "status" && tail.length === 0) return { kind: "presence.status", agent }
     if (sub === "status" && tail.length === 1 && tail[0] === "--json") return { kind: "presence.status", agent, json: true }
     if (sub === "handoff" && tail.length === 2) return { kind: "presence.handoff", agent, sense: tail[0], machine: tail[1] }
+    if (sub === "failover" && (tail[0] === "take" || tail[0] === "release") && tail[1]) {
+      const [action, sense, ...options] = tail as ["take" | "release", string, ...string[]]
+      if (options.length === 0) return { kind: "presence.failover", agent, action, sense }
+      if (action === "take" && options.length === 2 && options[0] === "--reason" && options[1]) return { kind: "presence.failover", agent, action, sense, reason: options[1] }
+      throw new Error(usage)
+    }
     if (sub === "join") {
       const command: { kind: "presence.join"; agent: string; role?: string; name?: string } = { kind: "presence.join", agent }
       for (let i = 0; i < tail.length; i++) {

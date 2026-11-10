@@ -74,13 +74,17 @@ export function renderWhereAmI(presence: Presence | null, self: MachineInfo, now
   // Only senses agent.json turns on: a disabled sense runs on no machine, whatever the roster's owners say.
   const enabled = enabledSharedSenses(presence)
   const own = enabled.filter((sense) => effectiveOwner(presence, sense) === self.machineId)
-  const elsewhere = enabled.filter((sense) => effectiveOwner(presence, sense) !== self.machineId)
+  const standIn = (presence.failover ?? []).filter((lease) => lease.machine === self.machineId)
+  const elsewhere = enabled.filter((sense) => effectiveOwner(presence, sense) !== self.machineId && !standIn.some((lease) => lease.sense === sense))
   const here = own.map((sense) => {
     // The same wait mayRunSense applies: a peer whose record still runs it has not let go yet.
-    const holder = presence.peers.find((peer) => peer.machineId !== self.machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense))
+    const holder = presence.peers.find((peer) => peer.machineId !== self.machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense) && !peer.failover?.includes(sense))
     return holder ? `${sense} (not yet: waiting for ${machineName(holder.machineId)} to let go)` : sense
   })
   lines.push(`shared senses that run here: ${here.length > 0 ? here.join(", ") : "none"}.`)
+  for (const lease of standIn) {
+    lines.push(`i am running ${lease.sense} here in place of ${machineName(lease.from)} since ${ago(lease.since, nowMs)}, because ${lease.reason || "it stopped answering"}; ${machineName(lease.from)} takes it back as soon as it runs again.`)
+  }
   if (elsewhere.length > 0) {
     lines.push(`shared senses that run on a peer: ${elsewhere.map((sense) => {
       const owner = effectiveOwner(presence, sense)

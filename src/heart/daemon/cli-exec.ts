@@ -217,8 +217,8 @@ import type { PingResult, ProviderPingOptions } from "../provider-ping"
 import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listAllBundleAgents, listBundleSyncRows, listEnabledBundleAgents, listHomeBundleAgents } from "./agent-discovery"
 import { machineDisplayName, moveAgentHomeHere } from "./agent-home"
-import { handoffPresenceSense, joinPresenceRoster, presenceStatusJson, renderPresenceStatus } from "./presence-roster"
-import { PRESENCE_FIRST_VERSION, compareVersions, leavePresence, readLocalPresenceSettings, readPeerRecords, readPresence, writeLocalPresenceSettings } from "./presence"
+import { handoffPresenceSense, joinPresenceRoster, presenceFailover, presenceStatusJson, renderPresenceStatus } from "./presence-roster"
+import { PRESENCE_FIRST_VERSION, compareVersions, leavePresence, readFailoverLeases, readLocalPresenceSettings, readPeerRecords, readPresence, readPresenceForAgent, writeLocalPresenceSettings } from "./presence"
 import { listPrunableAgentBundles } from "./prunable-bundle"
 import { runBootSyncProbe, type BootSyncProbeFinding, type BootSyncProbeStatus } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -2011,7 +2011,7 @@ async function installPortableGitForCli(deps: OuroCliDeps, force: boolean): Prom
 // ── toDaemonCommand ──
 
 function toDaemonCommand(command: Exclude<OuroCliCommand, import("../shepherd/operations").ShepherdOperation | { kind: "shepherd.chat" }
- | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" }>): DaemonCommand {
+ | { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | GatewayServeCliCommand | A2AClientCliCommand | WhoamiCliCommand | VoiceCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | SelfUpdateCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DeskAdminCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | SyncCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" } | { kind: "agent.move" } | { kind: "presence.join" } | { kind: "presence.handoff" } | { kind: "presence.status" } | { kind: "presence.failover" } | { kind: "presence.location" } | { kind: "sanctuary.git-exclude" } | { kind: "service.install" } | { kind: "service.uninstall" } | { kind: "self-update.enable" } | { kind: "self-update.disable" } | { kind: "self-update.status" } | { kind: "git.install" } | { kind: "git.status" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -2965,7 +2965,7 @@ function currentMachineId(deps: OuroCliDeps): string {
   }).machineId
 }
 
-type PresenceCliCommand = Extract<OuroCliCommand, { kind: "presence.join" | "presence.handoff" | "presence.status" | "presence.location" }>
+type PresenceCliCommand = Extract<OuroCliCommand, { kind: "presence.join" | "presence.handoff" | "presence.status" | "presence.failover" | "presence.location" }>
 
 async function executePresence(command: PresenceCliCommand, deps: OuroCliDeps): Promise<string> {
   const homeDir = providerCliHomeDir(deps)
@@ -2987,7 +2987,7 @@ async function executePresence(command: PresenceCliCommand, deps: OuroCliDeps): 
     } catch {
       return returnCliFailure(deps, `cannot read ${command.agent}'s agent.json in ${agentRoot}`)
     }
-    const presence = readPresence(agentJson, settings.enabled, readPeerRecords(agentRoot))
+    const presence = readPresence(agentJson, settings.enabled, readPeerRecords(agentRoot), readFailoverLeases(agentRoot))
     if (command.json) {
       const json = JSON.stringify(presenceStatusJson({ presence, machineId: identity.machineId, settings }))
       deps.writeStdout(json)
@@ -3002,6 +3002,13 @@ async function executePresence(command: PresenceCliCommand, deps: OuroCliDeps): 
     })
     deps.writeStdout(message)
     return message
+  }
+  if (command.kind === "presence.failover") {
+    const result = presenceFailover({ agent: command.agent, agentRoot, machineId: identity.machineId, action: command.action, sense: command.sense,
+      reason: command.reason, now: new Date(providerCliNow(deps)), presence: readPresenceForAgent(agentRoot, { homeDir }) })
+    if (!result.ok) return returnCliFailure(deps, result.message)
+    deps.writeStdout(result.message)
+    return result.message
   }
   if (command.kind === "presence.handoff") {
     const result = await handoffPresenceSense({ agent: command.agent, bundlesRoot, sense: command.sense, target: command.machine })
@@ -9489,7 +9496,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
 
   // ── presence: one agent on several machines (local, no daemon needed) ──
-  if (command.kind === "presence.join" || command.kind === "presence.handoff" || command.kind === "presence.status" || command.kind === "presence.location") {
+  if (command.kind === "presence.join" || command.kind === "presence.handoff" || command.kind === "presence.status" || command.kind === "presence.failover" || command.kind === "presence.location") {
     return executePresence(command, deps)
   }
 

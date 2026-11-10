@@ -15,11 +15,14 @@ import {
   effectiveOwner,
   enabledSharedSenses,
   senseEnabled,
+  holdsFailover,
   findRosterMachine,
   isSharedSense,
   parsePresenceBlock,
   readPeerRecords,
+  readFailoverLeases,
   readPresence,
+  writeFailoverLeases,
   type PeerRecord,
   type Presence,
   type PresenceBlock,
@@ -147,12 +150,55 @@ export async function handoffPresenceSense(options: HandoffSenseOptions): Promis
   })
 }
 
+/**
+ * `ouro presence failover take|release <sense>`: run a shared sense here in place of its owner while the owner is
+ * unreachable, or stop doing so. The roster is unchanged, so the owner runs the sense again as soon as it is back; the
+ * stand-in (or whatever watches for that, such as the Teams tunnel controller) then releases.
+ */
+export function presenceFailover(options: {
+  agent: string
+  agentRoot: string
+  machineId: string
+  action: "take" | "release"
+  sense: string
+  reason?: string
+  now: Date
+  presence: Presence | null
+}): { ok: boolean; message: string } {
+  const { agent, agentRoot, machineId, action, sense, presence } = options
+  emitNervesEvent({ component: "daemon", event: "daemon.presence_failover", message: `presence failover ${action}`, meta: { agent, sense, action } })
+  const leases = readFailoverLeases(agentRoot)
+  if (action === "release") {
+    const rest = leases.filter((lease) => lease.sense !== sense)
+    if (rest.length === leases.length) return { ok: true, message: `this machine was not standing in for ${agent}'s ${sense}; nothing to release` }
+    writeFailoverLeases(agentRoot, rest)
+    return { ok: true, message: `released ${agent}'s ${sense}: this machine stops it within about a minute, and its owner runs it` }
+  }
+  if (!presence) return { ok: false, message: `presence is off here or ${agent} has no roster, so there is no owner to stand in for` }
+  if (!isSharedSense(sense)) return { ok: false, message: `${sense} is not a shared sense; shared senses are ${SHARED_SENSES.join(", ")}` }
+  const me = presence.block.machines.find((machine) => machine.machineId === machineId)
+  if (!me) return { ok: false, message: `this machine is not on ${agent}'s roster; run \`ouro presence join --agent ${agent}\` first` }
+  const owner = effectiveOwner(presence, sense)
+  const ownerName = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner
+  if (owner === machineId) return { ok: false, message: `${me.name} already owns ${agent}'s ${sense}; there is nothing to stand in for` }
+  if (leases.some((lease) => lease.sense === sense && lease.machine === machineId)) {
+    return { ok: true, message: `${me.name} is already standing in for ${ownerName} on ${agent}'s ${sense}` }
+  }
+  const reason = options.reason?.trim() || `${ownerName} stopped answering`
+  writeFailoverLeases(agentRoot, [...leases.filter((lease) => lease.sense !== sense), { sense, machine: machineId, from: owner, since: options.now.toISOString(), reason }])
+  return {
+    ok: true,
+    message: `${me.name} now runs ${agent}'s ${sense} in place of ${ownerName} (${reason}); the daemon starts it within about a minute. ${ownerName} takes it back as soon as it runs again; release with \`ouro presence failover release ${sense} --agent ${agent}\``,
+  }
+}
+
 /** `ouro presence status --json`: this machine, its peers and what it owns, for tools such as an arrival check. */
 export function presenceStatusJson(options: { presence: Presence | null; machineId: string; settings: { enabled: boolean; location?: string } }): {
   enabled: boolean
   machine: { machineId: string; name: string | null; role: string | null; location: string | null } | null
   peers: Array<{ machineId: string; name: string; role: string; seenAt: string | null; version: string | null; location: string | null }>
   owns: string[]
+  failover: Array<{ sense: string; from: string; since: string; reason: string }>
   owners: Record<string, string | null>
   /** Shared senses agent.json turns off: they run on no machine. */
   disabled: string[]
@@ -160,7 +206,7 @@ export function presenceStatusJson(options: { presence: Presence | null; machine
 } {
   const { presence, machineId, settings } = options
   emitNervesEvent({ component: "daemon", event: "daemon.presence_status_json", message: "rendered presence status as json", meta: { active: presence !== null } })
-  if (!presence) return { enabled: settings.enabled, machine: null, peers: [], owns: [], owners: {}, disabled: [], legacy: [] }
+  if (!presence) return { enabled: settings.enabled, machine: null, peers: [], owns: [], failover: [], owners: {}, disabled: [], legacy: [] }
   const me = presence.block.machines.find((machine) => machine.machineId === machineId)
   const owners: Record<string, string | null> = {}
   for (const sense of enabledSharedSenses(presence)) {
@@ -176,7 +222,10 @@ export function presenceStatusJson(options: { presence: Presence | null; machine
       const record = presence.peers.find((peer) => peer.machineId === machine.machineId)
       return { machineId: machine.machineId, name: machine.name, role: machine.role, seenAt: record?.seenAt ?? null, version: record?.version ?? null, location: record?.location ?? null }
     }),
-    owns: enabledSharedSenses(presence).filter((sense) => effectiveOwner(presence, sense) === machineId),
+    owns: enabledSharedSenses(presence).filter((sense) => effectiveOwner(presence, sense) === machineId || holdsFailover(presence, machineId, sense)),
+    failover: (presence.failover ?? []).filter((lease) => lease.machine === machineId).map((lease) => ({
+      sense: lease.sense, from: presence.block.machines.find((machine) => machine.machineId === lease.from)?.name ?? lease.from, since: lease.since, reason: lease.reason,
+    })),
     owners,
     disabled: SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense)),
     legacy: presence.legacy.map((id) => presence.block.machines.find((machine) => machine.machineId === id)?.name ?? id),
@@ -220,7 +269,9 @@ export function renderPresenceStatus(options: {
     const name = presence.block.machines.find((machine) => machine.machineId === owner)?.name ?? owner
     const declared = presence.block.owners[sense]
     const held = declared && declared !== owner ? ` (roster names ${presence.block.machines.find((machine) => machine.machineId === declared)?.name ?? declared}; held by home until every machine runs presence)` : ""
-    lines.push(`- ${sense}: ${name}${held}`)
+    const standIn = presence.failover?.find((lease) => lease.sense === sense)
+    const failover = standIn ? `; this machine stands in for it since ${standIn.since} (${standIn.reason})` : ""
+    lines.push(`- ${sense}: ${name}${held}${failover}`)
   }
   const off = SHARED_SENSES.filter((sense) => !senseEnabled(presence, sense))
   if (off.length > 0) lines.push(`turned off in agent.json, so running on no machine: ${off.join(", ")}`)

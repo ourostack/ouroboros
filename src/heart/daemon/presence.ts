@@ -79,6 +79,8 @@ export interface PeerRecord {
   os?: string
   location?: string
   owns?: string[]
+  /** Of `owns`, the senses it runs only as a stand-in for an unreachable owner. */
+  failover?: string[]
   appSessions?: { at: string; counts: Record<string, number>; sessions?: PeerAppSession[] }
 }
 
@@ -90,6 +92,23 @@ export interface Presence {
   peers: PeerRecord[]
   /** The senses agent.json turns on (habits unless turned off); absent when agent.json has no senses block, meaning all. */
   enabledSenses?: string[]
+  /** Shared senses this machine runs in place of their owner while the owner is unreachable (machine-local leases). */
+  failover?: FailoverLease[]
+}
+
+/**
+ * A stand-in's lease on a shared sense: this machine runs it because its owner stopped answering. The roster's owner
+ * is unchanged, so the owner takes the sense back as soon as it runs again, and the stand-in lets go when it sees that.
+ * Leases live under the bundle's untracked `state/`, so each one belongs to the machine that took it.
+ */
+export interface FailoverLease {
+  sense: SharedSense
+  /** The machine holding the lease (this one). */
+  machine: string
+  /** The owner it stands in for. */
+  from: string
+  since: string
+  reason: string
 }
 
 export interface LocalPresenceSettings {
@@ -178,6 +197,7 @@ export function parsePeerRecord(value: unknown): PeerRecord | null {
     if (field) record[key] = field
   }
   if (Array.isArray(value.owns)) record.owns = value.owns.filter((sense): sense is string => typeof sense === "string")
+  if (Array.isArray(value.failover)) record.failover = value.failover.filter((sense): sense is string => typeof sense === "string")
   if (isRecord(value.appSessions)) record.appSessions = value.appSessions as PeerRecord["appSessions"]
   return record
 }
@@ -281,7 +301,7 @@ export function writeLocalPresenceSettings(settings: LocalPresenceSettings, home
  * The presence this machine should follow, or null for today's one-home lease
  * (flag off, or no usable block).
  */
-export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords: PeerRecord[]): Presence | null {
+export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords: PeerRecord[], failover: FailoverLease[] = []): Presence | null {
   if (!localFlag || !isRecord(agentJson)) return null
   const block = parsePresenceBlock(agentJson.presence)
   if (!block) return null
@@ -295,7 +315,7 @@ export function readPresence(agentJson: unknown, localFlag: boolean, peerRecords
   // A home off the roster runs every shared sense under the home lease.
   if (home && !block.machines.some((machine) => machine.machineId === home.machineId)) legacy.push(home.machineId)
   const enabledSenses = enabledSensesOf(agentJson.senses)
-  return { block, home, legacy, peers: peerRecords, ...(enabledSenses ? { enabledSenses } : {}) }
+  return { block, home, legacy, peers: peerRecords, ...(enabledSenses ? { enabledSenses } : {}), ...(failover.length > 0 ? { failover } : {}) }
 }
 
 /** The senses a `senses` block turns on. Habits run on schedulers, not a senses entry, so they count unless turned off. */
@@ -332,7 +352,56 @@ export function alwaysOnMachine(presence: Presence | { block: PresenceBlock }): 
 export function mayRunSense(presence: Presence, machineId: string, sense: string): boolean {
   if (!ownsSense(presence, machineId, sense)) return false
   if (!isSharedSense(sense)) return true
-  return !presence.peers.some((peer) => peer.machineId !== machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense))
+  // A stand-in runs the sense because its owner is gone, whatever the owner's last record said.
+  if (holdsFailover(presence, machineId, sense)) return true
+  // The owner never waits on a stand-in: the stand-in lets go once the owner runs the sense again.
+  return !presence.peers.some((peer) => peer.machineId !== machineId && isRosterMember(presence, peer.machineId) && peer.owns?.includes(sense) && !peer.failover?.includes(sense))
+}
+
+/** Whether this machine holds a failover lease on the sense. */
+export function holdsFailover(presence: Presence, machineId: string, sense: string): boolean {
+  return !!presence.failover?.some((lease) => lease.sense === sense && lease.machine === machineId)
+}
+
+export function failoverLeasePath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "presence", "failover.json")
+}
+
+/** This machine's failover leases; a missing or malformed file holds none. */
+export function readFailoverLeases(agentRoot: string): FailoverLease[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(failoverLeasePath(agentRoot), "utf-8"))
+  } catch {
+    return []
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.leases)) return []
+  const leases: FailoverLease[] = []
+  for (const lease of parsed.leases) {
+    if (!isRecord(lease)) continue
+    const sense = text(lease.sense)
+    const machine = text(lease.machine)
+    const from = text(lease.from)
+    const since = text(lease.since)
+    if (!sense || !isSharedSense(sense) || !machine || !from || !since) continue
+    leases.push({ sense, machine, from, since, reason: text(lease.reason) ?? "" })
+  }
+  return leases
+}
+
+/** Replace this machine's failover leases (an empty list removes the file's leases). */
+export function writeFailoverLeases(agentRoot: string, leases: FailoverLease[]): void {
+  const target = failoverLeasePath(agentRoot)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  const temp = `${target}.${process.pid}.tmp`
+  fs.writeFileSync(temp, `${JSON.stringify({ leases }, null, 2)}\n`, "utf-8")
+  fs.renameSync(temp, target)
+  emitNervesEvent({ component: "daemon", event: "daemon.presence_failover_written", message: "updated this machine's failover leases", meta: { agentRoot, senses: leases.map((lease) => lease.sense) } })
+}
+
+/** The shared senses this machine runs as a stand-in. */
+export function failoverSenses(presence: Presence, machineId: string): SharedSense[] {
+  return SHARED_SENSES.filter((sense) => holdsFailover(presence, machineId, sense))
 }
 
 /** Read the bundle's agent.json, the local flag and the peer records together. */
@@ -345,7 +414,7 @@ export function readPresenceForAgent(agentRoot: string, options: { homeDir?: str
   } catch {
     return null
   }
-  return readPresence(agentJson, true, readPeerRecords(agentRoot))
+  return readPresence(agentJson, true, readPeerRecords(agentRoot), readFailoverLeases(agentRoot))
 }
 
 export function isRosterMember(presence: Presence, machineId: string): boolean {
@@ -369,7 +438,7 @@ export function effectiveOwner(presence: Presence, sense: SharedSense): string {
 export function ownsSense(presence: Presence, machineId: string, sense: string): boolean {
   if (!isRosterMember(presence, machineId)) return false
   if (!isSharedSense(sense)) return true
-  return effectiveOwner(presence, sense) === machineId
+  return effectiveOwner(presence, sense) === machineId || holdsFailover(presence, machineId, sense)
 }
 
 export function ownedSharedSenses(presence: Presence, machineId: string): SharedSense[] {
