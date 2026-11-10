@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1000",
       "changes": [
-        "ouro service install --init sysv|systemd keeps the daemon running on Linux hosts without launchd, restarting it only after a failure; ouro up starts the daemon through the installed service."
+        "ouro service install --init sysv|systemd keeps the daemon running on Linux hosts without launchd, restarting it only after a failure; ouro up starts the daemon through the installed service, and spawns it directly for another socket or when the service will not start."
       ]
     },
     {
