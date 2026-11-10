@@ -610,6 +610,12 @@ export interface OuroDaemonOptions {
   socketAnswering?: (socketPath: string) => Promise<boolean>
   /** Source-specific credential readiness checked before external-event ownership mutation. */
   externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
+  /**
+   * Starts one unattended `ouro self-update` pass outside the daemon when the update checker sees a newer release, and
+   * says what happened. macOS runs the updater from its own launch agent, so the default is null there; elsewhere
+   * (Linux appliances) the daemon is the updater's schedule.
+   */
+  selfUpdateLauncher?: (() => Promise<string>) | null
 }
 
 interface DaemonWorkerRow {
@@ -874,6 +880,13 @@ export async function handleAgentAskTurn(
   }, runtime)
 }
 
+/* v8 ignore start -- platform default: tests inject the launcher, and the launcher itself is production wiring @preserve */
+function defaultSelfUpdateLauncher(): (() => Promise<string>) | null {
+  if (process.platform === "darwin") return null
+  return async () => (await import("../versioning/self-update-defaults")).launchUnattendedSelfUpdate()
+}
+/* v8 ignore stop */
+
 export class OuroDaemon {
   private readonly socketPath: string
   private readonly processManager: DaemonProcessManagerLike
@@ -911,6 +924,7 @@ export class OuroDaemon {
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
   private readonly socketAnswering: (socketPath: string) => Promise<boolean>
   private readonly externalEventSourceReadiness: (agent: string, source: string) => Promise<void>
+  private readonly selfUpdateLauncher: (() => Promise<string>) | null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -945,6 +959,7 @@ export class OuroDaemon {
     this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
     this.socketAnswering = options.socketAnswering ?? checkDaemonSocketAlive
+    this.selfUpdateLauncher = options.selfUpdateLauncher !== undefined ? options.selfUpdateLauncher : defaultSelfUpdateLauncher()
     this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
       const { ensureSanctuarySourceRuntimeReady } = await import("../../senses/sanctuary-runtime")
       await ensureSanctuarySourceRuntimeReady(agent, source)
@@ -1108,8 +1123,20 @@ export class OuroDaemon {
         meta: { reason: this.mode === "dev" ? "dev mode" : "container policy" },
       })
     } else {
+      const launchSelfUpdate = this.selfUpdateLauncher
       startUpdateChecker({
         currentVersion,
+        ...(launchSelfUpdate ? {
+          onUpdate: async (update: { latestVersion?: string }) => {
+            const outcome = await launchSelfUpdate()
+            emitNervesEvent({
+              component: "daemon",
+              event: "daemon.self_update_launched",
+              message: "update checker saw a newer release and asked the unattended updater to run",
+              meta: { currentVersion, latestVersion: update.latestVersion ?? null, outcome },
+            })
+          },
+        } : {}),
         deps: {
           distTag: CLI_UPDATE_DIST_TAG,
           /* v8 ignore start -- integration: real HTTP fetch @preserve */

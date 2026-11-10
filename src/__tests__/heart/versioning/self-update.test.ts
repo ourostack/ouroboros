@@ -167,6 +167,28 @@ describe("runSelfUpdate", () => {
     expect(m.state).toMatchObject({ failedVersions: [], detail: "could not install 0.1.0-alpha.896 from any source" })
   })
 
+  it("stops before installing when the disk is too full for another version, without marking the release bad", async () => {
+    const m = machine()
+    m.deps.diskSpace = () => ({ freeBytes: 150 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("install-failed")
+    expect(result.summary).toBe("not enough free disk to install 0.1.0-alpha.896: 150 MiB free, about 287 MiB needed; staying on 0.1.0-alpha.805")
+    expect(m.deps.install).not.toHaveBeenCalled()
+    expect(m.current).toBe("0.1.0-alpha.805")
+    expect(m.state).toMatchObject({ failedVersions: [], consecutiveFailures: 1 })
+  })
+
+  it("installs when there is room, or when free disk cannot be measured", async () => {
+    const roomy = machine()
+    roomy.deps.diskSpace = () => ({ freeBytes: 600 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })
+    expect((await runSelfUpdate(roomy.deps)).outcome).toBe("updated")
+    const unknown = machine()
+    unknown.deps.diskSpace = () => null
+    expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
+  })
+
   it("stringifies a non-Error install failure", async () => {
     const m = machine()
     vi.mocked(m.deps.install).mockRejectedValueOnce("npm exploded")

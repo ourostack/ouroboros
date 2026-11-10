@@ -190,7 +190,50 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
     },
     isDevMode: () => fs.existsSync(path.join(cliHome, "dev-config.json")),
     acquireLock: () => acquireLock(cliHome),
+    diskSpace: () => {
+      try {
+        const stats = fs.statfsSync(cliHome)
+        const current = getCurrentVersion({ homeDir })
+        const currentBytes = current ? directoryBytes(path.join(cliHome, "versions", current)) : 0
+        // Another version is about the size of this one; without one to measure, assume a full install.
+        return { freeBytes: stats.bavail * stats.bsize, neededBytes: (currentBytes || 256 * 1024 * 1024) + INSTALL_HEADROOM_BYTES }
+      } catch {
+        return null
+      }
+    },
   }
+}
+
+/** Room left after an install, for logs, sessions and the next update's download. */
+const INSTALL_HEADROOM_BYTES = 64 * 1024 * 1024
+
+/** Disk used by a directory tree (allocated blocks, symlinks not followed). */
+function directoryBytes(dir: string): number {
+  let total = 0
+  const pending = [dir]
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(entryPath)
+        continue
+      }
+      try {
+        const stat = fs.lstatSync(entryPath)
+        total += stat.blocks ? stat.blocks * 512 : stat.size
+      } catch {
+        // gone mid-walk
+      }
+    }
+  }
+  return total
 }
 
 function nodeMajorOf(nodePath: string): number | null {
@@ -202,6 +245,24 @@ function nodeMajorOf(nodePath: string): number | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Starts one unattended `ouro self-update` pass as its own process group, so it outlives the daemon restart it may
+ * perform. Used where no launch agent schedules the updater (Linux). Returns what happened.
+ */
+export function launchUnattendedSelfUpdate(options: { homeDir?: string } = {}): string {
+  const cliHome = getOuroCliHome(options.homeDir ?? os.homedir())
+  if (isSelfUpdateLockHeld(cliHome)) return "busy"
+  const launcher = path.join(cliHome, "bin", "ouro-launcher.js")
+  if (!fs.existsSync(launcher)) return "no-launcher"
+  const child = spawn(process.execPath, [launcher, "self-update", "--unattended"], {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, OURO_UNATTENDED: "1" },
+  })
+  child.unref()
+  return "started"
 }
 
 export function ensureDefaultUpdaterAgent(options: { homeDir?: string } = {}): UpdaterAgentResult | null {

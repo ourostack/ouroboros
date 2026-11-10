@@ -69,7 +69,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     mocks.containerPolicy = null
   })
 
-  function makeDaemon(socketPath: string, bundlesRoot?: string) {
+  function makeDaemon(socketPath: string, bundlesRoot?: string, extra: Record<string, unknown> = { selfUpdateLauncher: null }) {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -113,6 +113,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mailboxServerFactory,
+      ...extra,
     } as any)
     return { daemon, processManager }
   }
@@ -169,6 +170,30 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       }),
     )
     expect(mocks.startUpdateChecker.mock.calls[0]?.[0]).not.toHaveProperty("onUpdate")
+
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
+  it("runs the unattended updater when the checker sees a newer release, where no launch agent does", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-self-update-"))
+    const selfUpdateLauncher = vi.fn(async () => "started")
+    const { daemon } = makeDaemon(tmpSocketPath("daemon-boot-self-update"), bundlesRoot, { selfUpdateLauncher })
+
+    await daemon.start()
+    await daemon.stop()
+
+    const onUpdate = mocks.startUpdateChecker.mock.calls[0]?.[0]?.onUpdate
+    expect(onUpdate).toEqual(expect.any(Function))
+    await onUpdate({ available: true, latestVersion: "0.1.0-test.2" })
+    expect(selfUpdateLauncher).toHaveBeenCalledOnce()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.self_update_launched",
+      meta: { currentVersion: "0.1.0-test", latestVersion: "0.1.0-test.2", outcome: "started" },
+    }))
+    await onUpdate({ available: true })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.self_update_launched", meta: expect.objectContaining({ latestVersion: null }),
+    }))
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
