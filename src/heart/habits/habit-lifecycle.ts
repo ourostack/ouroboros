@@ -4,7 +4,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../sqlite"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -1161,7 +1162,7 @@ function withCoordination<T>(
   fs.mkdirSync(paths.root, { recursive: true })
   let database: Database.Database
   try {
-    database = new Database(paths.coordination)
+    database = openDatabase(paths.coordination)
     database.pragma(`busy_timeout = ${busyTimeoutMs}`)
   } catch (error) {
     throw new HabitLifecycleError("lifecycle_coordination_failed", { cause: error })

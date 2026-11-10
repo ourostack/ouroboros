@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import Database from "better-sqlite3"
+import { openDatabase } from "../../heart/sqlite"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
 import { shepherdStateDir, type ReturnRecord } from "./returns"
@@ -144,7 +144,7 @@ export function openFeedbackStore(file: string): FeedbackStore {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
   }
   privateFile(file)
-  const database = new Database(file)
+  const database = openDatabase(file)
   try {
     const version = database.pragma("user_version", { simple: true })
     if (version !== 0 && version !== 1) refuse("unsupported database schema")

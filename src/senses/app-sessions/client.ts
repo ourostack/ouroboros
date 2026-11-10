@@ -3,7 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../../heart/sqlite"
 import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { copilotAppUrl } from "../shepherd/copilot-app"
@@ -120,7 +121,7 @@ export function assertSessionId(id: string): string {
 function withDatabase<T>(stateDir: string, read: (db: Database.Database) => T): T {
   const file = path.join(stateDir, "data.db")
   if (!fs.existsSync(file)) throw new Error(`no GitHub Copilot app database at ${file}`)
-  const db = new Database(file, { readonly: true, fileMustExist: true, timeout: 3_000 })
+  const db = openDatabase(file, { readonly: true, fileMustExist: true, timeout: 3_000 })
   try {
     return read(db)
   } finally {

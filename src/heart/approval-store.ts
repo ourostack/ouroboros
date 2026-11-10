@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes as createRandomBytes, randomUUID as
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-import Database from "better-sqlite3"
+import { openDatabase } from "./sqlite"
 
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -588,7 +588,7 @@ function observeClose<T>(operation: () => T): T {
 
 export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore {
   fs.mkdirSync(path.dirname(options.databasePath), { recursive: true })
-  const database = new Database(options.databasePath)
+  const database = openDatabase(options.databasePath)
   database.pragma("journal_mode = WAL")
   database.pragma("busy_timeout = 5000")
   database.exec(`
@@ -1047,7 +1047,7 @@ export interface ApprovalAcceptanceProjection {
 
 export function readApprovalsByScenarioHandleDigest(databasePath: string, scenarioHandleDigest: string): ApprovalAcceptanceProjection[] {
   assertHash(scenarioHandleDigest, "invalid_scenario_handle_digest")
-  const database = new Database(databasePath, { readonly: true, fileMustExist: true })
+  const database = openDatabase(databasePath, { readonly: true, fileMustExist: true })
   try {
     const rows = database.prepare(`
       SELECT a.record_json, c.owner_id, c.owner_pid, c.epoch AS continuation_epoch, c.state AS continuation_state,

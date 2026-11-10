@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../../heart/sqlite"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { shepherdStateDir } from "./returns"
 import type { ShepherdInputReceipt } from "../../heart/shepherd/custody-types"
@@ -188,7 +189,7 @@ export function openCustodyDatabase(file: string, mode: "read" | "maintenance-re
   }
   privateFile(file)
   for (const suffix of ["-journal", "-wal", "-shm"]) if (fs.lstatSync(`${file}${suffix}`, { throwIfNoEntry: false })) privateFile(`${file}${suffix}`)
-  const database = new Database(file, { fileMustExist: true, readonly })
+  const database = openDatabase(file, { fileMustExist: true, readonly })
   try {
     const version = database.pragma("user_version", { simple: true })
     if (![0, 1, 2].includes(Number(version)) || version === 0 && readonly) refuse("unsupported database schema")

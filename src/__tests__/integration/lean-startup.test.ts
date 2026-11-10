@@ -26,10 +26,12 @@ const PRODUCT_SDKS = [
   "ajv",
   "fast-glob",
   "ws",
+  // The SQLite driver loads with the first database a store opens.
+  "better-sqlite3",
 ]
 const CAPS = {
-  version: { modules: 280, maxRssMb: 125 },
-  daemon: { modules: 290, maxRssMb: 130 },
+  version: { modules: 265, maxRssMb: 125 },
+  daemon: { modules: 275, maxRssMb: 130 },
 }
 
 const REPO_ROOT = process.cwd()

@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import Database from "better-sqlite3"
+import type Database from "better-sqlite3"
+import { openDatabase } from "../heart/sqlite"
 
 import { emitNervesEvent } from "../nerves/runtime"
 import { probeHabitBootIdentity, probeHabitProcessStartedAt } from "../heart/habits/habit-lifecycle"
@@ -168,7 +169,7 @@ function checkTemporary(pin: SessionConfinement, filePath: string, identity: fs.
 
 function openLeaseDatabase(lockPath: string, busyTimeoutMs = 0, confinement: SessionConfinement | null = null): Database.Database {
   checkConfinement(confinement)
-  const database = new Database(lockPath)
+  const database = openDatabase(lockPath)
   try {
     database.pragma(`busy_timeout = ${busyTimeoutMs}`)
     database.transaction(() => {
