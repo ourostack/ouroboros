@@ -920,7 +920,7 @@ describe("daemon entrypoint", () => {
 
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
-    expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String))
+    expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String), { pingProvider: expect.any(Function) })
     const supervisorOptions = supercronicMocks.options.mock.calls[0]?.[0] as { onFatal: (error: Error) => void }
     supervisorOptions.onFatal(new Error("restart budget exhausted in test"))
     expect(emitNervesEvent).toHaveBeenCalledWith({
@@ -1036,7 +1036,7 @@ describe("daemon entrypoint", () => {
 
     await import("../../../heart/daemon/daemon-entry")
 
-    await vi.waitFor(() => expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String)))
+    await vi.waitFor(() => expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String), { pingProvider: expect.any(Function) }))
     expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
     expect(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(checkAgentConfigWithProviderHealth.mock.invocationCallOrder[0]!)
     expect(start).not.toHaveBeenCalled()

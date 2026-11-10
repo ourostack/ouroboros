@@ -36,6 +36,7 @@ import { readContainerRuntimePolicy } from "./container-runtime"
 import { SupercronicSupervisor } from "./supercronic-supervisor"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { pingProviderInChild } from "../provider-ping-child"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { activatePortableGit } from "./portable-git"
@@ -737,7 +738,8 @@ async function prepareProviderRuntime(): Promise<void> {
       // Read from the same vault listing: whether this machine has config or not, the
       // daemon then knows, and its bootstrap spares each worker and sense a vault CLI run.
       await refreshMachineRuntimeCredentialConfig(agent, daemonMachineId, { preserveCachedOnFailure: true })
-      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+      // The ping runs in a child process, so the provider SDK it loads doesn't stay in the daemon.
+      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot, { pingProvider: pingProviderInChild })
       if (result.ok) return null
       emitNervesEvent({
         level: "warn",
