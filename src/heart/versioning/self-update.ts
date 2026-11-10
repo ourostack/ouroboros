@@ -16,7 +16,8 @@ import type { VersionIntent } from "./version-intent"
  *  2. Ask every release source for the newest version. When nothing is newer
  *     but a running daemon still reports an older version (a pass was killed
  *     between activation and restart), restart it on CurrentVersion.
- *  3. Install it, validate the payload and run its `--version` smoke test.
+ *  3. Unless the disk is too full for another version, install it, validate the
+ *     payload and run its `--version` smoke test.
  *  4. Activate it. If the daemon was running, restart it on the new version
  *     and check that it answers; otherwise leave the daemon stopped.
  *  5. On a failed check, reactivate the previous version, pin it with reason
@@ -45,6 +46,12 @@ export interface SelfUpdateDeps {
   /** True while `ouro dev` owns the daemon; the updater must not replace a dev daemon. */
   isDevMode: () => boolean
   acquireLock: () => (() => void) | null
+  /**
+   * Free disk where versions are installed and roughly what one more version needs, or null when unknown. A pass
+   * that would fill the disk stops before installing; on a small device a half-written install can leave no room
+   * for anything else.
+   */
+  diskSpace?: () => { freeBytes: number; neededBytes: number } | null
 }
 
 export interface SelfUpdateResult {
@@ -195,7 +202,15 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
     })
   }
 
-  // 3. Install, validate, smoke test.
+  // 3. Install (when there is room), validate, smoke test.
+  const space = deps.diskSpace?.() ?? null
+  if (space && space.freeBytes < space.neededBytes) {
+    const mib = (bytes: number) => Math.round(bytes / (1024 * 1024))
+    return finish("install-failed", {
+      summary: `not enough free disk to install ${latest}: ${mib(space.freeBytes)} MiB free, about ${mib(space.neededBytes)} MiB needed; staying on ${currentVersion}`,
+      latestVersion: latest,
+    })
+  }
   let installSource: ReleaseSourceName
   try {
     installSource = await deps.install(latest, lookup)
