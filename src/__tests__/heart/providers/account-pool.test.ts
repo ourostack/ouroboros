@@ -287,11 +287,12 @@ describe("refusalUntil", () => {
   it("refuses a spent quota until its reset, or the first of next month", () => {
     expect(refusalUntil(402, new Error("payment required"), "2026-12-01T00:00:00.000Z", NOW)).toBe(Date.parse("2026-12-01T00:00:00.000Z"))
     expect(refusalUntil(429, new Error("429 quota exceeded"), null, NOW)).toBe(Date.parse("2026-12-01T00:00:00.000Z"))
-    expect(refusalUntil(429, "monthly limit exceeded", "2026-01-01T00:00:00.000Z", NOW)).toBe(Date.parse("2026-12-01T00:00:00.000Z"))
+    expect(refusalUntil(429, "billing limit reached", "2026-01-01T00:00:00.000Z", NOW)).toBe(Date.parse("2026-12-01T00:00:00.000Z"))
   })
 
   it("refuses a plain rate limit for five minutes", () => {
     expect(refusalUntil(429, new Error("too many requests"), null, NOW)).toBe(NOW + 5 * 60_000)
+    expect(refusalUntil(429, new Error("429 Rate limit exceeded"), "2026-12-01T00:00:00.000Z", NOW)).toBe(NOW + 5 * 60_000)
     expect(refusalUntil(429, null, null, NOW)).toBe(NOW + 5 * 60_000)
     expect(refusalUntil(429, { headers: { "retry-after": "soon" } }, null, NOW)).toBe(NOW + 5 * 60_000)
   })
@@ -362,6 +363,46 @@ describe("AccountPool", () => {
     expect(p.burnPerH()).toEqual({ "ari@msft.ghe.com": 2, "ari@microsoft.ghe.com": 1 })
     advance(60 * 60 * 1000 - 1000)
     expect(p.burnPerH()).toEqual({ "ari@microsoft.ghe.com": 1 })
+  })
+
+  it("doesn't publish until readings have loaded, so a new process never blanks the agent's readings", async () => {
+    const publishBurn = vi.fn(async () => true)
+    let release: (readings: QuotaReading[]) => void = () => {}
+    const loadReadings = vi.fn(() => new Promise<QuotaReading[]>((resolve) => { release = resolve }))
+    const { pool: p } = pool([MSFT], { publishBurn, loadReadings })
+    p.beforeTurn()
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).not.toHaveBeenCalled()
+    release([reading("ari@msft.ghe.com", 10)])
+    await p.refreshIfStale()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+    expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 1 }, readings: [reading("ari@msft.ghe.com", 10)] })
+  })
+
+  it("publishes the agent's burn across its processes", () => {
+    const burnDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-burn-"))
+    fs.writeFileSync(path.join(burnDir, "1.json"), JSON.stringify({ at: NOW - 60_000, requestsPerH: { "ari@msft.ghe.com": 5, "ari@microsoft.ghe.com": 2 } }))
+    fs.writeFileSync(path.join(burnDir, "2.json"), JSON.stringify({ at: NOW - 2 * 60 * 60 * 1000, requestsPerH: { "ari@msft.ghe.com": 100 } }))
+    fs.writeFileSync(path.join(burnDir, "3.json"), "{half")
+    fs.writeFileSync(path.join(burnDir, "4.json"), JSON.stringify({ requestsPerH: { "ari@msft.ghe.com": 100 } }))
+    fs.writeFileSync(path.join(burnDir, "5.json"), JSON.stringify({ at: NOW }))
+    fs.writeFileSync(path.join(burnDir, "notes.txt"), "x")
+    const publishBurn = vi.fn(async () => true)
+    const { pool: p } = pool([MSFT, MSCOM], { publishBurn, burnDir })
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 6, "ari@microsoft.ghe.com": 2 } })
+    expect(JSON.parse(fs.readFileSync(path.join(burnDir, `${process.pid}.json`), "utf8"))).toEqual({ at: NOW, requestsPerH: { "ari@msft.ghe.com": 1 } })
+  })
+
+  it("falls back to this process's burn when the shared folder can't be used", () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-burn-")), "not-a-dir")
+    fs.writeFileSync(file, "x")
+    const publishBurn = vi.fn(async () => true)
+    const { pool: p } = pool([MSFT], { publishBurn, burnDir: file })
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn.mock.calls[0][0]).toMatchObject({ requestsPerH: { "ari@msft.ghe.com": 1 } })
+    expect(p.agentBurnPerH(NOW)).toEqual({ "ari@msft.ghe.com": 1 })
   })
 
   it("names the machine from the host name when none is configured", () => {

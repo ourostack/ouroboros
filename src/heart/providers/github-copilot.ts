@@ -7,8 +7,7 @@ import { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponses
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
 import * as path from "path";
-import { getAgentName, getAgentRoot } from "../identity";
-import { createPooledCaller, fetchDirectReadings, getAccountPool, parseAccountPool, type PooledCaller } from "./account-pool";
+import { AccountPool, createPooledCaller, fetchDirectReadings, getAccountPool, parseAccountPool, type PooledCaller } from "./account-pool";
 import { loadFleetQuota, mergeReadings, publishAgentBurn } from "../quota/fleet-readings";
 
 export function classifyGithubCopilotError(error: Error): ProviderErrorClassification {
@@ -16,24 +15,40 @@ export function classifyGithubCopilotError(error: Error): ProviderErrorClassific
 }
 
 
-/** The agent's account pool for this turn, when `ouro auth` discovered one; null for a single account. */
-export function createGithubCopilotPooledCaller(config: GithubCopilotProviderConfig): PooledCaller<OpenAI> | null {
+export interface GithubCopilotRuntimeOwner {
+  agentName: string;
+  agentRoot: string;
+}
+
+/**
+ * The agent's account pool for this turn, when `ouro auth` discovered one; null for a single account.
+ * Without an owning agent (a daemon-side ping, provider discovery) the pool still switches on a 402 or 429,
+ * but keeps no state between calls, writes no switch log and publishes nothing.
+ */
+export function createGithubCopilotPooledCaller(config: GithubCopilotProviderConfig, owner?: GithubCopilotRuntimeOwner): PooledCaller<OpenAI> | null {
   const accounts = parseAccountPool(config.accountPool);
   if (accounts.length === 0) return null;
+  const makeClient = (account: { githubToken: string; baseUrl: string }) => new OpenAI({ apiKey: account.githubToken, baseURL: account.baseUrl, maxRetries: 0 });
+  if (!owner) return createPooledCaller(new AccountPool(accounts, { agent: "(unowned)", switchLog: "", appendLine: () => {} }), makeClient);
   const gist = config.fleetGistId && config.fleetGistToken ? { gistId: config.fleetGistId, token: config.fleetGistToken } : null;
   const pool = getAccountPool(accounts, {
-    agent: getAgentName(),
+    agent: owner.agentName,
     machine: config.fleetMachine,
-    switchLog: path.join(getAgentRoot(), "state", "account-switches.jsonl"),
+    switchLog: path.join(owner.agentRoot, "state", "account-switches.jsonl"),
+    burnDir: path.join(owner.agentRoot, "state", "account-burn"),
     /* v8 ignore start -- network readers and publisher: each is tested in its own module @preserve */
     loadReadings: async () => mergeReadings(await loadFleetQuota(gist), await fetchDirectReadings(accounts)),
     publishBurn: gist ? (burn) => publishAgentBurn(gist, burn) : undefined,
     /* v8 ignore stop */
   });
-  return createPooledCaller(pool, (account) => new OpenAI({ apiKey: account.githubToken, baseURL: account.baseUrl, maxRetries: 0 }));
+  return createPooledCaller(pool, makeClient);
 }
 
-export function createGithubCopilotProviderRuntime(model: string, config: GithubCopilotProviderConfig = getGithubCopilotConfig()): ProviderRuntime {
+export function createGithubCopilotProviderRuntime(
+  model: string,
+  config: GithubCopilotProviderConfig = getGithubCopilotConfig(),
+  owner?: GithubCopilotRuntimeOwner,
+): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
     event: "engine.provider_init",
@@ -58,7 +73,7 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
   if (modelCaps.reasoningEffort) capabilities.add("reasoning-effort");
 
   // With an account pool the account is chosen here, between turns; a 402 or 429 moves it mid-request.
-  const pooled = createGithubCopilotPooledCaller(config);
+  const pooled = createGithubCopilotPooledCaller(config, owner);
   const client = pooled ? pooled.client() : new OpenAI({
     apiKey: config.githubToken,
     baseURL: config.baseUrl,

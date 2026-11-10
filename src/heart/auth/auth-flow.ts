@@ -337,6 +337,7 @@ export async function collectGithubCopilotPoolCredentials(
   settings: AccountPoolSettings,
   deps: RuntimeAuthDeps,
 ): Promise<HatchCredentialsInput> {
+  /* v8 ignore next -- tests always inject spawnSync; the default is for production @preserve */
   const spawnSync = deps.spawnSync ?? defaultSpawnSync
   writeAuthProgress(input, "discovering the Copilot accounts signed in on this machine...")
   const discovery = await discoverAccountPool(settings, { spawnSync, homeDir: deps.homeDir })

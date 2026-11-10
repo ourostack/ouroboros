@@ -424,6 +424,7 @@ describe("github-copilot account pool", () => {
     { login: "ari", host: "microsoft.ghe.com", baseUrl: "https://copilot-api.microsoft.ghe.com", githubToken: "t-mscom" },
   ])
   const config = { githubToken: "t-msft", baseUrl: "https://copilot-api.msft.ghe.com", accountPool: pool }
+  const owner = { agentName: "testagent", agentRoot: "/mock/repo/testagent" }
   const quota = () => Object.assign(new Error("429 quota exceeded"), { status: 429 })
 
   it("has no pool for a single-account credential", async () => {
@@ -433,7 +434,7 @@ describe("github-copilot account pool", () => {
 
   it("builds the turn's client from the pool's account", async () => {
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    createGithubCopilotProviderRuntime("claude-opus-5.5", { ...config, fleetGistId: "g", fleetGistToken: "gt", fleetMachine: "laptop" })
+    createGithubCopilotProviderRuntime("claude-opus-5.5", { ...config, fleetGistId: "g", fleetGistToken: "gt", fleetMachine: "laptop" }, owner)
     expect(mockOpenAICtor).toHaveBeenCalledTimes(1)
     expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "t-msft", baseURL: "https://copilot-api.msft.ghe.com" }))
   })
@@ -448,14 +449,24 @@ describe("github-copilot account pool", () => {
     expect(mockOpenAICtor).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: "t-mscom", baseURL: "https://copilot-api.microsoft.ghe.com" }))
   })
 
-  it("keeps the next turn on the account it switched to", async () => {
+  it("keeps the owning agent's next turn on the account it switched to", async () => {
     const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
-    const first = createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    const first = createGithubCopilotProviderRuntime("claude-opus-5.5", config, owner)
     mockStreamChatCompletion.mockRejectedValueOnce(quota()).mockResolvedValueOnce({ content: "ok" })
     await first.streamTurn({ messages: [], activeTools: [], callbacks: {} as any })
     mockOpenAICtor.mockClear()
-    createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    createGithubCopilotProviderRuntime("claude-opus-5.5", config, owner)
     expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "t-mscom" }))
+  })
+
+  it("without an owning agent still switches, but keeps no state between runtimes", async () => {
+    const { createGithubCopilotProviderRuntime } = await import("../../../heart/providers/github-copilot")
+    const first = createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    mockStreamChatCompletion.mockRejectedValueOnce(quota()).mockResolvedValueOnce({ content: "ok" })
+    await expect(first.streamTurn({ messages: [], activeTools: [], callbacks: {} as any })).resolves.toEqual({ content: "ok" })
+    mockOpenAICtor.mockClear()
+    createGithubCopilotProviderRuntime("claude-opus-5.5", config)
+    expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "t-msft" }))
   })
 
   it("switches on a 429 for the Responses API and for pings", async () => {

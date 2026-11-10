@@ -248,7 +248,8 @@ export function refusalUntil(status: number, error: unknown, reset: string | nul
   const seconds = Number(retryAfter)
   if (retryAfter && Number.isFinite(seconds) && seconds > 0) return now + seconds * 1000
   const message = error instanceof Error ? error.message : String(error)
-  if (status === 402 || /quota|limit exceeded|billing/i.test(message)) {
+  // Only a spent quota waits for the reset; a plain "rate limit exceeded" is a short throttle.
+  if (status === 402 || /quota|billing/i.test(message)) {
     const resetAt = Date.parse(reset ?? "")
     if (Number.isFinite(resetAt) && resetAt > now) return resetAt
     const date = new Date(now)
@@ -276,6 +277,11 @@ export interface AccountPoolOptions {
   machine?: string
   /** `<agent root>/state/account-switches.jsonl`. */
   switchLog: string
+  /**
+   * `<agent root>/state/account-burn/`: each of the agent's processes writes its own last-hour request counts
+   * here, so the published burn is the agent's total, not one process's.
+   */
+  burnDir?: string
   now?: () => number
   appendLine?: (file: string, line: string) => void
   /** Fresh readings (local balancer state, fleet gist, and each account's own answer). */
@@ -301,6 +307,7 @@ export class AccountPool {
   private requests: Array<{ key: string; at: number }> = []
   private lastRefresh = -Infinity
   private lastPublish = -Infinity
+  private loadedReadings = false
   private refreshing: Promise<void> | null = null
   private readonly options: AccountPoolOptions
 
@@ -344,6 +351,7 @@ export class AccountPool {
     this.refreshing = load()
       .then((readings) => {
         this.setReadings(readings)
+        this.loadedReadings = true
         this.publishIfDue()
       })
       .catch((error: unknown) => {
@@ -409,23 +417,59 @@ export class AccountPool {
     this.publishIfDue()
   }
 
-  /** Rewrite this agent's file in the fleet gist every few minutes while it runs. */
+  /**
+   * Rewrite this agent's file in the fleet gist every few minutes while it runs, once readings have loaded
+   * (so a process that just started never blanks the agent's published readings).
+   */
   publishIfDue(): void {
     const now = this.now()
     const publish = this.options.publishBurn
-    if (!publish || now - this.lastPublish < (this.options.publishMs ?? 5 * 60 * 1000)) return
+    const loaded = this.loadedReadings || !this.options.loadReadings
+    if (!publish || !loaded || now - this.lastPublish < (this.options.publishMs ?? 5 * 60 * 1000)) return
     this.lastPublish = now
     void publish({
       agent: this.options.agent,
       machine: this.options.machine ?? os.hostname().split(".")[0].toLowerCase().replace(/\./g, "-"),
       at: new Date(now).toISOString(),
       current: this.currentKey,
-      requestsPerH: this.burnPerH(),
+      requestsPerH: this.agentBurnPerH(now),
       readings: this.accounts.map(accountKey).flatMap((key) => {
         const found = this.readings.find((reading) => reading.key === key)
         return found ? [found] : []
       }),
     })
+  }
+
+  /** Last-hour requests across all of this agent's processes: this process's counts plus each other process's latest. */
+  agentBurnPerH(now: number): Record<string, number> {
+    const own = this.burnPerH()
+    const dir = this.options.burnDir
+    if (!dir) return own
+    const total: Record<string, number> = { ...own }
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ at: now, requestsPerH: own }))
+      for (const name of fs.readdirSync(dir)) {
+        if (name === `${process.pid}.json` || !name.endsWith(".json")) continue
+        try {
+          const other = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as { at?: number; requestsPerH?: Record<string, number> }
+          if (typeof other.at !== "number" || now - other.at >= HOUR_MS) continue
+          for (const [key, count] of Object.entries(other.requestsPerH ?? {})) total[key] = (total[key] ?? 0) + count
+        } catch {
+          // Another process is mid-write; its counts join the next publish.
+        }
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "engine",
+        event: "engine.account_burn_share_failed",
+        message: "could not share this process's burn with the agent's other processes",
+        // fs only throws Errors.
+        meta: { agent: this.options.agent, error: (error as Error).message },
+      })
+    }
+    return total
   }
 
   burnPerH(): Record<string, number> {

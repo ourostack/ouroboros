@@ -132,7 +132,13 @@ export interface ProviderTurnRequest {
 }
 
 interface ProviderRegistry {
-  resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null;
+  resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord, owner?: RuntimeAgentScope): ProviderRuntime | null;
+}
+
+/** The agent a runtime bills for; a github-copilot account pool keeps its state and switch log per agent. */
+interface RuntimeAgentScope {
+  agentName: string;
+  agentRoot: string;
 }
 
 interface ProviderRuntimeFactoryCache {
@@ -203,7 +209,7 @@ async function getProviderRuntimeFingerprint(facing: Facing, owner?: RuntimeOwne
 
 export function createProviderRegistry(): ProviderRegistry {
   return {
-    resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null {
+    resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord, owner?: RuntimeAgentScope): ProviderRuntime | null {
       const providerConfig = { ...credential.config, ...credential.credentials };
       switch (provider) {
         case "azure":
@@ -215,7 +221,7 @@ export function createProviderRegistry(): ProviderRegistry {
         case "openai-codex":
           return createOpenAICodexProviderRuntime(model, providerConfig as unknown as Parameters<typeof createOpenAICodexProviderRuntime>[1]);
         case "github-copilot":
-          return createGithubCopilotProviderRuntime(model, providerConfig as unknown as Parameters<typeof createGithubCopilotProviderRuntime>[1]);
+          return createGithubCopilotProviderRuntime(model, providerConfig as unknown as Parameters<typeof createGithubCopilotProviderRuntime>[1], owner);
         case "openai-compatible":
         case "openai-compatible-gemini":
           return createOpenAICompatibleProviderRuntime(provider, model, providerConfig as unknown as Parameters<typeof createOpenAICompatibleProviderRuntime>[2]);
@@ -231,7 +237,9 @@ export async function getProviderRuntime(facing: Facing = "human", owner?: Runti
     const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing, scope);
     const cached = _providerRuntimeFactories[facing];
     if (!cached || cached.fingerprint !== fingerprint) {
-      const create = () => createProviderRegistry().resolve(binding.provider, binding.model, credential);
+      const agentName = scope?.agentName ?? getAgentName();
+      const runtimeOwner = { agentName, agentRoot: scope?.agentRoot ?? getAgentRoot(agentName) };
+      const create = () => createProviderRegistry().resolve(binding.provider, binding.model, credential, runtimeOwner);
       runtime = create();
       _providerRuntimeFactories[facing] = runtime ? { fingerprint, create } : null;
     } else {
