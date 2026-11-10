@@ -189,6 +189,22 @@ describe("runSelfUpdate", () => {
     expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
   })
 
+  it("stops before installing while MemAvailable is below the floor, and installs at or above it", async () => {
+    const low = machine()
+    low.deps.memory = () => ({ availableBytes: 180 * 1024 * 1024, floorBytes: 250 * 1024 * 1024 })
+    const result = await runSelfUpdate(low.deps)
+    expect(result.outcome).toBe("install-failed")
+    expect(result.summary).toBe("not enough free memory to install 0.1.0-alpha.896: MemAvailable 180 MB, below the 250 MB floor; staying on 0.1.0-alpha.805")
+    expect(low.deps.install).not.toHaveBeenCalled()
+    expect(low.state).toMatchObject({ failedVersions: [] })
+    const enough = machine()
+    enough.deps.memory = () => ({ availableBytes: 250 * 1024 * 1024, floorBytes: 250 * 1024 * 1024 })
+    expect((await runSelfUpdate(enough.deps)).outcome).toBe("updated")
+    const unknown = machine()
+    unknown.deps.memory = () => null
+    expect((await runSelfUpdate(unknown.deps)).outcome).toBe("updated")
+  })
+
   it("stringifies a non-Error install failure", async () => {
     const m = machine()
     vi.mocked(m.deps.install).mockRejectedValueOnce("npm exploded")

@@ -12,6 +12,7 @@ import type { SelfUpdateDeps } from "./self-update"
 import { readUpdateState, writeUpdateState } from "./update-state"
 import { chooseUpdaterNodePath, ensureUpdaterAgent, UPDATER_PLIST_LABEL, type UpdaterAgentResult } from "./updater-launchd"
 import { readVersionIntent, writeVersionIntent } from "./version-intent"
+import { DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB, gentleUpdaterCommand, memAvailableBytes, readHostSelfUpdateConfig } from "./host-self-update"
 
 const DAEMON_UP_TIMEOUT_MS = 10 * 60_000
 const DAEMON_HEALTH_WAIT_MS = 90_000
@@ -195,13 +196,39 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
         const stats = fs.statfsSync(cliHome)
         const current = getCurrentVersion({ homeDir })
         const currentBytes = current ? directoryBytes(path.join(cliHome, "versions", current)) : 0
+        const reserveBytes = (readHostSelfUpdateConfig(cliHome)?.reserveMb ?? 0) * 1024 * 1024
         // Another version is about the size of this one; without one to measure, assume a full install.
-        return { freeBytes: stats.bavail * stats.bsize, neededBytes: (currentBytes || 256 * 1024 * 1024) + INSTALL_HEADROOM_BYTES }
+        return { freeBytes: stats.bavail * stats.bsize, neededBytes: (currentBytes || 256 * 1024 * 1024) + INSTALL_HEADROOM_BYTES + reserveBytes }
+      } catch {
+        return null
+      }
+    },
+    memory: () => {
+      if (process.platform !== "linux") return null
+      try {
+        const availableBytes = memAvailableBytes(fs.readFileSync("/proc/meminfo", "utf8"))
+        if (availableBytes === null) return null
+        const floorMb = readHostSelfUpdateConfig(cliHome)?.minMemAvailableMb ?? DEFAULT_SELF_UPDATE_MIN_MEM_AVAILABLE_MB
+        return { availableBytes, floorBytes: floorMb * 1024 * 1024 }
       } catch {
         return null
       }
     },
   }
+}
+
+function whichCommand(command: string): string | null {
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, command)
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // not here
+    }
+  }
+  return null
 }
 
 /** Room left after an install, for logs, sessions and the next update's download. */
@@ -253,13 +280,16 @@ function nodeMajorOf(nodePath: string): number | null {
  */
 export function launchUnattendedSelfUpdate(options: { homeDir?: string } = {}): string {
   const cliHome = getOuroCliHome(options.homeDir ?? os.homedir())
+  const config = readHostSelfUpdateConfig(cliHome)
+  if (!config?.enabled) return "not-enabled"
   if (isSelfUpdateLockHeld(cliHome)) return "busy"
   const launcher = path.join(cliHome, "bin", "ouro-launcher.js")
   if (!fs.existsSync(launcher)) return "no-launcher"
-  const child = spawn(process.execPath, [launcher, "self-update", "--unattended"], {
+  const command = gentleUpdaterCommand(process.execPath, [launcher, "self-update", "--unattended"], whichCommand)
+  const child = spawn(command.file, command.args, {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, OURO_UNATTENDED: "1" },
+    env: { ...process.env, OURO_UNATTENDED: "1", ...(config.lean ? { npm_config_omit: "optional" } : {}) },
   })
   child.unref()
   return "started"

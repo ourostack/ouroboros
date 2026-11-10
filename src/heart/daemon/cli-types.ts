@@ -121,6 +121,9 @@ export type OuroCliCommand =
   | { kind: "presence.status"; agent: string; json?: boolean }
   | { kind: "presence.location"; location: string }
   | { kind: "self-update"; unattended?: boolean }
+  | { kind: "self-update.enable"; full?: boolean; minMemAvailableMb?: number; reserveMb?: number }
+  | { kind: "self-update.disable" }
+  | { kind: "self-update.status" }
   | { kind: "daemon.dev"; repoPath?: string; clone?: boolean; clonePath?: string }
   | { kind: "attention.list"; agent?: string }
   | { kind: "attention.show"; id: string; agent?: string }
@@ -242,6 +245,11 @@ export interface OuroCliDeps {
   reExecFromNewVersion?: (args: string[]) => never
   getPreviousCliVersion?: () => string | null
   listCliVersions?: () => string[]
+  /** This machine's unattended-update choice for hosts without launchd (`ouro self-update enable|disable|status`). */
+  hostSelfUpdate?: {
+    read: () => import("../versioning/host-self-update").HostSelfUpdateConfig | null
+    write: (config: import("../versioning/host-self-update").HostSelfUpdateConfig) => void
+  }
   /** One unattended update pass (`ouro self-update`). */
   runSelfUpdate?: () => Promise<SelfUpdateResult>
   /** Install or refresh the launchd updater agent; null where unsupported. */

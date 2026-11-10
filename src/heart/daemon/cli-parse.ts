@@ -185,6 +185,35 @@ function parseServiceCommand(args: string[]): OuroCliCommand {
   return { kind: "service.install", init, print, ...(servicePath ? { path: servicePath } : {}), ...(Object.keys(supervision).length > 0 ? { supervision } : {}) }
 }
 
+const SELF_UPDATE_USAGE = "Usage: ouro self-update [--unattended] | ouro self-update enable [--full] [--min-mem-available-mb <mb>] [--reserve-mb <mb>] | ouro self-update disable | ouro self-update status"
+
+function parseSelfUpdateHostCommand(args: string[]): OuroCliCommand {
+  const [action, ...rest] = args
+  if (action !== "enable") {
+    if (rest.length > 0) throw new Error(SELF_UPDATE_USAGE)
+    return action === "disable" ? { kind: "self-update.disable" } : { kind: "self-update.status" }
+  }
+  const options: { full?: boolean; minMemAvailableMb?: number; reserveMb?: number } = {}
+  const megabytes = (value: string | undefined): number | undefined =>
+    value !== undefined && /^\d+$/.test(value) && Number(value) <= 1_048_576 ? Number(value) : undefined
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index]
+    const value = megabytes(rest[index + 1])
+    if (token === "--full" && options.full === undefined) {
+      options.full = true
+    } else if (token === "--min-mem-available-mb" && value !== undefined && options.minMemAvailableMb === undefined) {
+      options.minMemAvailableMb = value
+      index += 1
+    } else if (token === "--reserve-mb" && value !== undefined && options.reserveMb === undefined) {
+      options.reserveMb = value
+      index += 1
+    } else {
+      throw new Error(SELF_UPDATE_USAGE)
+    }
+  }
+  return { kind: "self-update.enable", ...options }
+}
+
 function parseLogsCommand(args: string[]): OuroCliCommand {
   if (args.length === 0) return { kind: "daemon.logs" }
   if (args[0] !== "prune") throw new Error("Usage: ouro logs prune [--agent <name>]")
@@ -2970,8 +2999,9 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "self-update") {
     const rest = args.slice(1)
+    if (rest[0] === "enable" || rest[0] === "disable" || rest[0] === "status") return parseSelfUpdateHostCommand(rest)
     const unknown = rest.filter((token) => token !== "--unattended")
-    if (unknown.length > 0) throw new Error("Usage: ouro self-update [--unattended]")
+    if (unknown.length > 0) throw new Error(SELF_UPDATE_USAGE)
     return { kind: "self-update", ...(rest.includes("--unattended") ? { unattended: true } : {}) }
   }
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
