@@ -315,6 +315,11 @@ export interface AccountPoolOptions {
    * Shared by the agent's processes, so one 402 or 429 benches an account for all of them, not once per process.
    */
   refusalsFile?: string
+  /**
+   * `<agent root>/state/account-burn-published.json`: when the agent last wrote its gist file, and what it wrote.
+   * Shared by the agent's processes, so the 30-minute floor holds for the agent, not once per process.
+   */
+  publishedFile?: string
   /** This Mac's fleet name when `machine` isn't given; defaults to `defaultMachineName`. */
   machineName?: () => string
   now?: () => number
@@ -507,7 +512,9 @@ export class AccountPool {
     const now = this.now()
     const publish = this.options.publishBurn
     const loaded = this.loadedReadings || !this.options.loadReadings
-    if (!publish || !loaded || now - this.lastPublish < (this.options.publishMs ?? 30 * 60 * 1000)) return
+    if (!publish || !loaded) return
+    this.loadSharedPublish()
+    if (now - this.lastPublish < (this.options.publishMs ?? 30 * 60 * 1000)) return
     const content = {
       current: this.currentKey,
       requestsPerH: this.agentBurnPerH(now),
@@ -521,12 +528,49 @@ export class AccountPool {
     if (signature === this.lastPublished && !stale) return
     this.lastPublish = now
     this.lastPublished = signature
+    this.saveSharedPublish()
     void publish({
       agent: this.options.agent,
       machine: this.options.machine ?? (this.machineName ??= (this.options.machineName ?? defaultMachineName)()),
       at: new Date(now).toISOString(),
       ...content,
     })
+  }
+
+  /** Take in a later gist write by another of the agent's processes. */
+  private loadSharedPublish(): void {
+    const file = this.options.publishedFile
+    if (!file) return
+    try {
+      const shared = JSON.parse(fs.readFileSync(file, "utf8")) as { at?: unknown; signature?: unknown }
+      if (typeof shared.at === "number" && shared.at > this.lastPublish) {
+        this.lastPublish = shared.at
+        this.lastPublished = typeof shared.signature === "string" ? shared.signature : ""
+      }
+    } catch {
+      // No file yet, or another process is mid-write.
+    }
+  }
+
+  /** Claim this write before it goes out, so the agent's other processes hold off. */
+  private saveSharedPublish(): void {
+    const file = this.options.publishedFile
+    if (!file) return
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const temp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(temp, JSON.stringify({ at: this.lastPublish, signature: this.lastPublished }))
+      fs.renameSync(temp, file)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "engine",
+        event: "engine.account_publish_share_failed",
+        message: "could not share the gist write time with the agent's other processes",
+        // fs only throws Errors.
+        meta: { agent: this.options.agent, error: (error as Error).message },
+      })
+    }
   }
 
   /** Share this process's last-hour request times with the agent's other processes. */
