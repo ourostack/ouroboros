@@ -2601,9 +2601,9 @@ describe("runAgent", () => {
   })
 
   it.each([
-    { model: "MiniMax-VL-01", visible: true },
-    { model: "test-model", visible: false },
-  ])("hands tool result images to $model after the step's tool results (visible=$visible)", async ({ model, visible }) => {
+    { model: "MiniMax-VL-01", visible: true, text: "front door" },
+    { model: "test-model", visible: false, text: "" },
+  ])("hands tool result images to $model after the step's tool results (visible=$visible)", async ({ model, visible, text }) => {
     vi.resetModules()
     await setupMinimax("test-key", model)
     const core = await import("../../heart/core")
@@ -2623,7 +2623,7 @@ describe("runAgent", () => {
     const execTool = vi.fn(async (_name: string, args: Record<string, string>, ctx?: { attachToolImages?: (images: Array<{ data: string; mimeType: string }>) => void }) => {
       if (args.path === "door.png") {
         ctx?.attachToolImages?.([{ data: "iVBORw0KGgo=", mimeType: "image/png" }])
-        return "front door"
+        return text
       }
       return "notes"
     })
@@ -2655,7 +2655,7 @@ describe("runAgent", () => {
       const secondRequest = mockCreate.mock.calls[1][0]
       expect(secondRequest.messages.at(-1)).toEqual(afterTools)
     } else {
-      expect(toolMessages[0].content).toBe("front door\n\n[1 image(s) returned, but test-model can't view images, so they were left out.]")
+      expect(toolMessages[0].content).toBe("[1 image(s) returned, but test-model can't view images, so they were left out.]")
       expect(afterTools.role).toBe("assistant")
       expect(messages.some((m) => m.role === "user" && Array.isArray(m.content))).toBe(false)
     }
