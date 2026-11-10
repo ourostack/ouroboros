@@ -8,6 +8,7 @@ import {
   apiBaseForHost,
   chooseAccount,
   createPooledCaller,
+  defaultMachineName,
   discoverAccount,
   discoverAccountPool,
   fetchDirectReadings,
@@ -477,12 +478,26 @@ describe("AccountPool", () => {
     expect(p.onRefusal("ari_microsoft@github.com", 429, new Error("429 quota exceeded"))).toBe(MSCOM)
   })
 
-  it("names the machine from the host name when none is configured", () => {
+  it("names the machine once, from this Mac's own name, when none is configured", () => {
     const publishBurn = vi.fn(async () => true)
-    const p = new AccountPool([MSFT], { agent: "a", switchLog: "/x", appendLine: () => {}, publishBurn })
+    const machineName = vi.fn(() => "aris-mac-mini")
+    const p = new AccountPool([MSFT], { agent: "a", switchLog: "/x", appendLine: () => {}, publishBurn, machineName, publishMs: 0 })
     p.recordRequest("ari@msft.ghe.com")
-    expect(publishBurn.mock.calls[0][0]).toMatchObject({ machine: os.hostname().split(".")[0].toLowerCase(), current: null })
-    expect((publishBurn.mock.calls[0][0] as { machine: string }).machine).not.toContain(".")
+    p.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn.mock.calls.map((call) => (call[0] as { machine: string }).machine)).toEqual(["aris-mac-mini", "aris-mac-mini"])
+    expect(machineName).toHaveBeenCalledTimes(1)
+    const q = new AccountPool([MSFT], { agent: "a", switchLog: "/x", appendLine: () => {}, publishBurn })
+    q.recordRequest("ari@msft.ghe.com")
+    expect((publishBurn.mock.calls[2][0] as { machine: string }).machine).not.toContain(".")
+  })
+
+  it("uses macOS's LocalHostName, else the host name, lowercased with no dots", () => {
+    const scutil = (status: number, stdout: string) => spawnMock(() => ({ status, stdout }))
+    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(0, "Aris-MacBook-Pro\n"), hostname: () => "Mac" })).toBe("aris-macbook-pro")
+    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(1, ""), hostname: () => "Mac.lan" })).toBe("mac")
+    expect(defaultMachineName({ platform: "darwin", spawnSync: scutil(0, undefined as unknown as string), hostname: () => "Box" })).toBe("box")
+    expect(defaultMachineName({ platform: "linux", hostname: () => "My Host.example.com" })).toBe("my-host")
+    expect(defaultMachineName({ platform: "linux" })).toBe(os.hostname().split(".")[0].toLowerCase().replace(/[^a-z0-9-]+/g, "-"))
   })
 
   it("refreshes readings in the background, at most once per interval, and republishes them", async () => {

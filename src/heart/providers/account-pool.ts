@@ -46,6 +46,21 @@ export interface DiscoveryDeps {
 
 export const accountKey = (account: { login: string; host: string }): string => `${account.login}@${account.host}`
 
+/**
+ * This Mac's name for the fleet gist: macOS's LocalHostName (unique on the network, and what the fleet tooling
+ * keys Macs by), else the host name, lowercased with no dots. Generic host names such as "Mac" would make two
+ * machines write one file.
+ */
+export function defaultMachineName(deps: { spawnSync?: typeof defaultSpawnSync; hostname?: () => string; platform?: NodeJS.Platform } = {}): string {
+  let name = ""
+  if ((deps.platform ?? process.platform) === "darwin") {
+    const result = spawnOf(deps)("/usr/sbin/scutil", ["--get", "LocalHostName"], { encoding: "utf8", timeout: 3000 })
+    name = result.status === 0 ? String(result.stdout ?? "").trim() : ""
+  }
+  if (!name) name = (deps.hostname ?? os.hostname)().split(".")[0]
+  return name.toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+}
+
 export function apiBaseForHost(host: string): string {
   return host === "github.com" ? "https://api.github.com" : `https://api.${host}`
 }
@@ -287,6 +302,8 @@ export interface AccountPoolOptions {
    * Shared by the agent's processes, so one 402 or 429 benches an account for all of them, not once per process.
    */
   refusalsFile?: string
+  /** This Mac's fleet name when `machine` isn't given; defaults to `defaultMachineName`. */
+  machineName?: () => string
   now?: () => number
   appendLine?: (file: string, line: string) => void
   /** Fresh readings (local balancer state, fleet gist, and each account's own answer). */
@@ -317,6 +334,7 @@ export class AccountPool {
   private lastPublish = -Infinity
   private lastPublished = ""
   private loadedReadings = false
+  private machineName: string | null = null
   private refreshing: Promise<void> | null = null
   private readonly options: AccountPoolOptions
 
@@ -492,7 +510,7 @@ export class AccountPool {
     this.lastPublished = signature
     void publish({
       agent: this.options.agent,
-      machine: this.options.machine ?? os.hostname().split(".")[0].toLowerCase().replace(/\./g, "-"),
+      machine: this.options.machine ?? (this.machineName ??= (this.options.machineName ?? defaultMachineName)()),
       at: new Date(now).toISOString(),
       ...content,
     })
