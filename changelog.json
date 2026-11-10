@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1026",
+      "changes": [
+        "Private-runtime sessions no longer grow without bound: superseded system prompts are dropped from session history, so a long-running agent's dialog.json stays small instead of reaching hundreds of megabytes and running Node out of memory."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1025",
       "changes": [
         "A Copilot account pool's refusals are shared by all of the agent's processes (state/account-refusals.json), so a spent account is skipped everywhere after one 402 or 429 instead of once per process."
