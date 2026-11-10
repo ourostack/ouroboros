@@ -288,7 +288,10 @@ export interface AccountPoolOptions {
   loadReadings?: () => Promise<QuotaReading[]>
   publishBurn?: (burn: AgentBurn) => Promise<boolean>
   refreshMs?: number
+  /** Least time between gist writes; default 30 minutes. */
   publishMs?: number
+  /** Rewrite an unchanged file after this long, so it never goes stale; default 5 hours. */
+  republishMs?: number
   caps?: readonly number[]
 }
 
@@ -307,6 +310,7 @@ export class AccountPool {
   private requests: Array<{ key: string; at: number }> = []
   private lastRefresh = -Infinity
   private lastPublish = -Infinity
+  private lastPublished = ""
   private loadedReadings = false
   private refreshing: Promise<void> | null = null
   private readonly options: AccountPoolOptions
@@ -419,25 +423,34 @@ export class AccountPool {
   }
 
   /**
-   * Rewrite this agent's file in the fleet gist every few minutes while it runs, once readings have loaded
-   * (so a process that just started never blanks the agent's published readings).
+   * Rewrite this agent's file in the fleet gist when it has changed, at most every 30 minutes (GitHub allows
+   * 100 gist writes an hour per user, shared by the whole fleet), and at least every 5 hours so the balancer,
+   * which trusts a reading for 6 hours, keeps it. Never before readings have loaded, so a process that just
+   * started never blanks the agent's published readings. Switching accounts never waits on this.
    */
   publishIfDue(): void {
     const now = this.now()
     const publish = this.options.publishBurn
     const loaded = this.loadedReadings || !this.options.loadReadings
-    if (!publish || !loaded || now - this.lastPublish < (this.options.publishMs ?? 5 * 60 * 1000)) return
-    this.lastPublish = now
-    void publish({
-      agent: this.options.agent,
-      machine: this.options.machine ?? os.hostname().split(".")[0].toLowerCase().replace(/\./g, "-"),
-      at: new Date(now).toISOString(),
+    if (!publish || !loaded || now - this.lastPublish < (this.options.publishMs ?? 30 * 60 * 1000)) return
+    const content = {
       current: this.currentKey,
       requestsPerH: this.agentBurnPerH(now),
       readings: this.accounts.map(accountKey).flatMap((key) => {
         const found = this.readings.find((reading) => reading.key === key)
         return found ? [found] : []
       }),
+    }
+    const signature = JSON.stringify(content)
+    const stale = now - this.lastPublish >= (this.options.republishMs ?? 5 * 60 * 60 * 1000)
+    if (signature === this.lastPublished && !stale) return
+    this.lastPublish = now
+    this.lastPublished = signature
+    void publish({
+      agent: this.options.agent,
+      machine: this.options.machine ?? os.hostname().split(".")[0].toLowerCase().replace(/\./g, "-"),
+      at: new Date(now).toISOString(),
+      ...content,
     })
   }
 

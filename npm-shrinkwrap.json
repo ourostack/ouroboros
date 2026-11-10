@@ -1,12 +1,12 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1015",
+  "version": "0.1.0-alpha.1016",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@ouro.bot/cli",
-      "version": "0.1.0-alpha.1015",
+      "version": "0.1.0-alpha.1016",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
         "@bitwarden/cli": "2026.9.1",
