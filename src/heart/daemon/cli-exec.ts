@@ -2291,7 +2291,16 @@ function defaultRepairVaultEmail(agentName: string, config: AgentConfig): string
   return defaultStableVaultEmail(agentName)
 }
 
-function ensureVaultSecretPrompt(promptSecret: OuroCliDeps["promptSecret"], action: "create" | "replace" | "recover" | "unlock"): (question: string) => Promise<string> {
+function ensureVaultSecretPrompt(
+  promptSecret: OuroCliDeps["promptSecret"],
+  action: "create" | "replace" | "recover" | "unlock",
+  secretFile?: string,
+): (question: string) => Promise<string> {
+  if (secretFile) {
+    // Read once: /dev/stdin can only be read once, and a confirmation prompt asks again.
+    const secret = readSecretValueFile("--secret-file", secretFile)
+    return async () => secret
+  }
   if (promptSecret) return promptSecret
   throw new Error(`vault ${action} requires an interactive secret prompt that does not echo the vault unlock secret`)
 }
@@ -2364,7 +2373,7 @@ async function executeVaultUnlock(
   if (command.agent === "SerpentGuide") {
     throw new Error("SerpentGuide does not have a persistent credential vault. Hatch bootstrap uses selected provider credentials in memory only.")
   }
-  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "unlock")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "unlock", command.secretFile)
   const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const vault = resolveVaultConfig(command.agent, config.vault)
   const unlockSecret = await promptSecret(`Ouro vault unlock secret for ${vault.email}: `)
@@ -2432,7 +2441,7 @@ async function executeVaultCreate(
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? config.vault?.email ?? configuredVault.email
-  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create", command.secretFile)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
   const unlockSecret = await promptConfirmedVaultUnlockSecret({
     promptSecret,
@@ -2531,7 +2540,7 @@ async function executeVaultReplace(
     throw new Error("SerpentGuide does not have a persistent credential vault. Replace the hatchling agent vault, not SerpentGuide.")
   }
   if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("replace")
-  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "replace")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "replace", command.secretFile)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
@@ -2611,7 +2620,7 @@ async function executeVaultRecover(
   }
   if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("recover")
   const sourceImports = command.sources.map(readVaultRecoverSource)
-  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "recover")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "recover", command.secretFile)
   const now = providerCliNow(deps)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)

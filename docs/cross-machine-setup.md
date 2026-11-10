@@ -100,6 +100,14 @@ If this is an existing bundle, unlock its vault on this machine before starting 
 ouro vault unlock --agent <agent>
 ```
 
+On a headless machine with no terminal to type into (an appliance set up over a script), give the secret on standard input instead; it is read once and never appears in argv or shell history:
+
+```bash
+ouro vault unlock --agent <agent> --secret-file /dev/stdin < unlock-secret.txt
+```
+
+`ouro vault create`, `replace` and `recover` take the same `--secret-file <path>` (a file, `/dev/stdin` or `/dev/fd/<n>`); the secret must still meet the strength rules.
+
 Ouro stores local unlock material in Keychain, DPAPI, Secret Service, or an explicit plaintext fallback if the human chooses it. Local unlock material is a machine-local cache, not a credential source of truth.
 
 If `ouro vault status --agent <agent>` says the vault locator is not configured in `agent.json`, this agent has not set up its vault yet. Run `ouro vault create --agent <agent>`, enter the new unlock secret twice when prompted, save it outside Ouro, then re-enter provider credentials with `ouro auth --agent <agent>`.

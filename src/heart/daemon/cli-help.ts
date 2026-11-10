@@ -638,23 +638,23 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "vault create": {
     description: "Create an agent credential vault and store local unlock material",
-    usage: "ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
+    usage: "ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>] [--secret-file <path>]",
     example: "ouro vault create --email ouroboros@ouro.bot",
   },
   "vault replace": {
     description: "Create an empty agent vault at the stable agent email when no unlock secret or JSON export exists",
-    usage: "ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
+    usage: "ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>] [--secret-file <path>]",
     example: "ouro vault replace",
   },
   "vault recover": {
     description: "Create an agent vault at the stable agent email and import local JSON credential exports",
-    usage: "ouro vault recover [--agent <name>] --from <json> [--from <json> ...] [--email <email>] [--server <url>] [--store <store>]",
+    usage: "ouro vault recover [--agent <name>] --from <json> [--from <json> ...] [--email <email>] [--server <url>] [--store <store>] [--secret-file <path>]",
     example: "ouro vault recover --from ./credentials.json",
   },
   "vault unlock": {
     description: "Unlock an existing agent credential vault on this machine",
-    usage: "ouro vault unlock [--agent <name>] [--store <store>]",
-    example: "ouro vault unlock",
+    usage: "ouro vault unlock [--agent <name>] [--store <store>] [--secret-file <path>]",
+    example: "ouro vault unlock --secret-file /dev/stdin < secret.txt",
   },
   "vault status": {
     description: "Show whether this machine can unlock an agent credential vault",

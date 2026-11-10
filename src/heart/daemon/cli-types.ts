@@ -55,10 +55,10 @@ export type OuroCliCommand =
   | { kind: "provider.status"; agent?: string }
   | { kind: "provider.refresh"; agent?: string }
   | { kind: "repair"; agent?: string }
-  | { kind: "vault.create"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.replace"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.recover"; agent?: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.unlock"; agent?: string; store?: VaultUnlockStoreKind }
+  | { kind: "vault.create"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean; secretFile?: string }
+  | { kind: "vault.replace"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean; secretFile?: string }
+  | { kind: "vault.recover"; agent?: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean; secretFile?: string }
+  | { kind: "vault.unlock"; agent?: string; store?: VaultUnlockStoreKind; secretFile?: string }
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; valueFile?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }

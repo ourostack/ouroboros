@@ -852,6 +852,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   let serverUrl: string | undefined
   let store: VaultUnlockStoreKind | undefined
   let generateUnlockSecret = false
+  let secretFile: string | undefined
   const sources: string[] = []
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -889,6 +890,14 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       generateUnlockSecret = true
       continue
     }
+    // The unlock secret is read from a file (or /dev/stdin, /dev/fd/N), never from argv.
+    if (token === "--secret-file" && sub !== "status") {
+      const value = rest[i + 1]
+      if (!value || value.startsWith("--") || secretFile !== undefined) throw new Error("--secret-file requires one path (use /dev/stdin to pipe the secret).")
+      secretFile = value
+      i += 1
+      continue
+    }
     throw new Error("Usage: ouro vault create|replace|recover|unlock|status [--agent <name>]")
   }
 
@@ -903,6 +912,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "replace") {
@@ -913,6 +923,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "recover") {
@@ -927,10 +938,11 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
       ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+      ...(secretFile ? { secretFile } : {}),
     }
   }
   if (sub === "unlock") {
-    return { kind: "vault.unlock", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
+    return { kind: "vault.unlock", ...(agent ? { agent } : {}), ...(store ? { store } : {}), ...(secretFile ? { secretFile } : {}) }
   }
   return { kind: "vault.status", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
 }
