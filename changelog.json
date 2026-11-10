@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1046",
+      "changes": [
+        "Account pool: the fleet gist write cadence (at most every 30 minutes) is shared by all of an agent's processes through state/account-burn-published.json, not kept per process."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1041",
       "changes": [
         "Renumber main above 1038: #1215 landed as 1033 after #1211's 1038, so installs would read main as older than it is"

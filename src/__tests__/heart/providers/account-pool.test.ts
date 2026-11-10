@@ -391,6 +391,48 @@ describe("AccountPool", () => {
     expect(publishBurn).toHaveBeenCalledTimes(4)
   })
 
+  it("holds the 30-minute floor across the agent's processes, through a shared publish record", () => {
+    const publishedFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-published-")), "state", "account-burn-published.json")
+    const publishBurn = vi.fn(async () => true)
+    const first = pool([MSFT], { publishBurn, publishedFile })
+    first.pool.beforeTurn()
+    first.pool.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fs.readFileSync(publishedFile, "utf8"))).toMatchObject({ at: NOW })
+    // Another process (a sense, or the worker after a restart) starts 10 minutes later: it holds off.
+    const second = pool([MSFT], { publishBurn, publishedFile })
+    second.advance(10 * 60 * 1000)
+    second.pool.beforeTurn()
+    second.pool.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+    // Past the floor, the content changed, so it writes, and the first process then holds off in turn.
+    second.advance(25 * 60 * 1000)
+    second.pool.recordRequest("ari@msft.ghe.com")
+    expect(publishBurn).toHaveBeenCalledTimes(2)
+    first.advance(36 * 60 * 1000)
+    first.pool.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(2)
+    // A record without a signature still holds the floor.
+    const third = pool([MSFT], { publishBurn, publishedFile })
+    fs.writeFileSync(publishedFile, JSON.stringify({ at: NOW, signature: 7 }))
+    third.pool.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(2)
+    // A half-written record is ignored.
+    fs.writeFileSync(publishedFile, "{half")
+    const fourth = pool([MSFT], { publishBurn, publishedFile })
+    fourth.pool.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(3)
+  })
+
+  it("still publishes when the publish record can't be shared", () => {
+    const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-account-published-")), "file")
+    fs.writeFileSync(blocker, "x")
+    const publishBurn = vi.fn(async () => true)
+    const { pool: p } = pool([MSFT], { publishBurn, publishedFile: path.join(blocker, "account-burn-published.json") })
+    p.publishIfDue()
+    expect(publishBurn).toHaveBeenCalledTimes(1)
+  })
+
   it("doesn't publish until readings have loaded, so a new process never blanks the agent's readings", async () => {
     const publishBurn = vi.fn(async () => true)
     let release: (readings: QuotaReading[]) => void = () => {}
