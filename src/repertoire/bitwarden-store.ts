@@ -13,6 +13,7 @@ import * as path from "node:path"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 import { bwCommand, ensureBwCli, isBundledBw, isBwMissingModuleError, markBundledBwBroken } from "./bw-installer"
+import { NativeVaultReader, NativeVaultUnsupportedError, sharedNativeVaultReader } from "./bitwarden-native"
 
 const MAX_ERROR_DETAIL_LENGTH = 500
 const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
@@ -612,6 +613,12 @@ type StructuredItemCache = {
   malformedNames: Set<string>
 }
 
+/** Reads go over HTTPS unless OURO_VAULT_NATIVE_READS=0; tests inject a reader or read through bw. */
+function defaultNativeReader(serverUrl: string, email: string, masterPassword: string): NativeVaultReader | null {
+  if (process.env.OURO_VAULT_NATIVE_READS === "0" || process.env.VITEST !== undefined) return null
+  return sharedNativeVaultReader(serverUrl, email, masterPassword)
+}
+
 // ---------------------------------------------------------------------------
 // BitwardenCredentialStore
 // ---------------------------------------------------------------------------
@@ -632,6 +639,8 @@ export class BitwardenCredentialStore implements CredentialStore {
   private terminalLoginErrorAt = 0
   private bwBinaryPath = "bw"
   private structuredItemCache: StructuredItemCache | null = null
+  /** Reads the vault over HTTPS without bw; null once it reports the vault unsupported, or when off. */
+  private nativeReader: Pick<NativeVaultReader, "items" | "invalidate"> | null
 
   constructor(
     serverUrl: string,
@@ -643,6 +652,8 @@ export class BitwardenCredentialStore implements CredentialStore {
       onLoginSuccess?: () => void | Promise<void>
       /** Each step as it starts, for a human watching a vault command. */
       onProgress?: (detail: string) => void
+      /** Reads without bw; defaults to the HTTPS reader unless OURO_VAULT_NATIVE_READS=0. Null reads through bw. */
+      nativeReader?: Pick<NativeVaultReader, "items" | "invalidate"> | null
     } = {},
   ) {
     this.serverUrl = serverUrl
@@ -653,6 +664,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     this.onInvalidUnlockSecret = options.onInvalidUnlockSecret
     this.onLoginSuccess = options.onLoginSuccess
     this.onProgress = options.onProgress
+    this.nativeReader = options.nativeReader !== undefined ? options.nativeReader : defaultNativeReader(serverUrl, email, masterPassword)
   }
 
   isReady(): boolean {
@@ -1097,9 +1109,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
-    )
+    const item = await this.withTransientRetry(() => this.readItemByDomain(domain))
 
     if (!item) {
       emitNervesEvent({
@@ -1127,9 +1137,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   async getRawSecret(domain: string, field: string): Promise<string> {
-    const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
-    )
+    const item = await this.withTransientRetry(() => this.readItemByDomain(domain))
 
     if (!item) {
       throw new Error(`no credential found for domain "${domain}"`)
@@ -1197,6 +1205,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       this.assertStoredCredentialMatches(domain, data, savedItem)
     })
     this.structuredItemCache = null
+    this.nativeReader?.invalidate()
 
     emitNervesEvent({
       event: "repertoire.bw_credential_store_end",
@@ -1214,10 +1223,9 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { backend: "bitwarden" },
     })
 
-    const stdout = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.execBw(["list", "items"], session)),
+    const items = await this.withTransientRetry(async () =>
+      (await this.nativeItems()) ?? parseBwItems(await this.withSessionRetry((session) => this.execBw(["list", "items"], session)), "bw list items"),
     )
-    const items = parseBwItems(stdout, "bw list items")
 
     const results: CredentialMeta[] = items.map((item) => ({
       domain: item.name,
@@ -1258,6 +1266,7 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
     this.structuredItemCache = null
+    this.nativeReader?.invalidate()
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -1270,6 +1279,38 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   // --- Private ---
+
+  /** One item by name: from the native reader when it serves this vault, else through bw. */
+  private async readItemByDomain(domain: string): Promise<BwLoginItem | null> {
+    const native = await this.nativeItems()
+    if (native) return native.find((item) => item.name === domain) ?? null
+    return this.withSessionRetry((session) => this.findItemByDomain(domain, session))
+  }
+
+  /** Every item through the native reader, or null when reads go through bw. */
+  private async nativeItems(): Promise<BwLoginItem[] | null> {
+    const reader = this.nativeReader
+    if (!reader) return null
+    try {
+      return await reader.items()
+    } catch (error) {
+      /* v8 ignore next -- defensive: the reader always throws Error instances @preserve */
+      const err = error instanceof Error ? error : new Error(String(error))
+      if (err instanceof NativeVaultUnsupportedError) {
+        this.nativeReader = null
+        emitNervesEvent({
+          level: "warn",
+          event: "repertoire.native_vault_fallback",
+          component: "repertoire",
+          message: "reading this vault through bw instead",
+          meta: { email: this.email, serverUrl: this.serverUrl, reason: err.message },
+        })
+        return null
+      }
+      if (isBwInvalidUnlockSecretMessage(err.message)) await this.notifyInvalidUnlockSecret(err)
+      throw err
+    }
+  }
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
     if (shouldUseStructuredItemLookup(domain)) {

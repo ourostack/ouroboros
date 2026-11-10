@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1011",
+      "changes": [
+        "Daemons read the vault without the bw CLI: a native client does the Bitwarden prelogin, PBKDF2-SHA256 password login, sync and AES-256-CBC + HMAC decryption over HTTPS with Node's crypto, shared by every store in a process. Runtime config and provider credentials load even when endpoint security quarantines files inside bw, and no bw process starts on the read path. Writes still use bw; vaults this client does not support (Argon2id, two-step login) fall back to bw, and OURO_VAULT_NATIVE_READS=0 turns it off."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1010",
       "changes": [
         "New app-sessions sense: with senses[\"app-sessions\"].enabled in agent.json, an agent can list, read, message, resume, open and archive this machine's GitHub Copilot app sessions, ask the Mac's app keeper for a courtesy restart, and hear back from the sessions it writes to."
