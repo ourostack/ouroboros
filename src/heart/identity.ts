@@ -43,8 +43,8 @@ export interface AgentSenseConfig {
   hostUsername?: string
   /**
    * Shepherd only: which judged returns the owner hears about directly, as a plain message on their
-   * channel with no model turn. "every" (the default), "needs-me" (gates, finished work and a tripped
-   * loop guard), or "off".
+   * channel with no model turn. "off" (the default: the agent judges each return in its private turn and tells the
+   * owner what matters), "needs-me" (gates, finished work and a tripped loop guard), or "every".
    */
   notify?: ShepherdNoticePolicy
   checkInMinutes?: number

@@ -1279,15 +1279,15 @@ describe("Shepherd sense: wiring", () => {
     }
   })
 
-  it("reads the owner notice policy from agent.json, and reports every return when it cannot", () => {
-    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
+  it("reads the owner notice policy from agent.json, and leaves the decision to the agent when it is unset or unreadable", () => {
+    expect(noticePolicy(AGENT, agentRoot)).toBe("off")
     const config = { version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "m" }, agentFacing: { provider: "anthropic", model: "m" }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] }, senses: { shepherd: { enabled: true } } }
     fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify(config))
-    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
+    expect(noticePolicy(AGENT, agentRoot)).toBe("off")
     fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ ...config, senses: { shepherd: { enabled: true, notify: "needs-me" } } }))
     expect(noticePolicy(AGENT, agentRoot)).toBe("needs-me")
     fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ ...config, senses: { shepherd: { enabled: true, notify: "loud" } } }))
-    expect(noticePolicy(AGENT, agentRoot)).toBe("every")
+    expect(noticePolicy(AGENT, agentRoot)).toBe("off")
   })
 
   it("names the human from the family friend for this OS user, else any family friend", () => {
@@ -1357,8 +1357,9 @@ describe("Shepherd sense: wiring", () => {
   })
 })
 
-describe("Shepherd sense: the default owner notice", () => {
-  it("queues a notice for each judged return and names sessions from the host's list", async () => {
+describe("Shepherd sense: the direct owner notice", () => {
+  it("with notify every, queues a notice for each judged return and names sessions from the host's list", async () => {
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ version: 2, enabled: true, humanFacing: { provider: "anthropic", model: "m" }, agentFacing: { provider: "anthropic", model: "m" }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] }, senses: { shepherd: { enabled: true, notify: "every" } } }))
     const host = fakeHost()
     host.screens.S1 = [SCREENS.claudePremature]
     const list = vi.spyOn(host, "list")

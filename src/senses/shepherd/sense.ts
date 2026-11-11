@@ -141,13 +141,16 @@ export function escalationContent(record: ReturnRecord, human: string): string {
   ].join("\n")
 }
 
-/** `senses.shepherd.notify` from agent.json; "every" when it is unset or the config cannot be read. */
+/**
+ * `senses.shepherd.notify` from agent.json; "off" when it is unset or the config cannot be read. Off still hands every
+ * return that matters to the agent's private turn, so the agent, not a fixed rule, decides what reaches its owner.
+ */
 export function noticePolicy(agent: string, agentRoot: string): ShepherdNoticePolicy {
   try {
-    return loadAgentConfig({ agentName: agent, agentRoot }).senses?.shepherd?.notify ?? "every"
+    return loadAgentConfig({ agentName: agent, agentRoot }).senses?.shepherd?.notify ?? "off"
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_policy_default", message: "could not read the Shepherd notice policy, so every return is reported", meta: { agent, error: (error as Error).message } })
-    return "every"
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.shepherd_notice_policy_default", message: "could not read the Shepherd notice policy, so no fixed-rule notices are sent; the agent still judges each return", meta: { agent, error: (error as Error).message } })
+    return "off"
   }
 }
 

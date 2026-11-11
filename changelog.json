@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1097",
+      "changes": [
+        "Shepherd's direct Teams notices are now off unless an agent turns them on (`senses.shepherd.notify`). Shepherd still hands every return that matters to the agent's private turn, so by default the agent, not a fixed rule, decides what reaches its owner. Under the old default of `every`, an owner got a message for each Copilot session Shepherd checked."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1096",
       "changes": [
         "Shepherd's private escalation now gives Ouroboros real guidance on when its owner needs a return: tell them when work they asked for is ready or done, when only they can unblock a session, or when something has gone wrong; leave routine progress; check what they asked not to hear about; batch several returns into one message; answer follow-up questions in that chat. Ouroboros now also saves anything a person asks it to stop telling them about. With `senses.shepherd.notify: off`, Ouroboros, not a fixed rule, decides what reaches the owner."
