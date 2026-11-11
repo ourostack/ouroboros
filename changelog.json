@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1094",
+      "changes": [
+        "The prompt no longer points Ouroboros at the retired planner -> doer -> merger flow: harness friction follows the self-fix workflow, and complex fixes go through coding_spawn. The sync-and-merge doc drops its link to the retired work-merger skill."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1093",
       "changes": [
         "Setup and validation guidance for senses (Teams, BlueBubbles, A2A, Workbench, mail golden paths, voice) moves out of the always-on prompt into the harness skill `sense-setup`, which the agent loads when asked to enable, set up, repair or validate a sense: about 1.7k fewer tokens on every turn. The sense status table, the mail-reading rules, the Workbench runtime signal and outbound voice routing stay always-on."
