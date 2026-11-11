@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1093",
+      "changes": [
+        "Setup and validation guidance for senses (Teams, BlueBubbles, A2A, Workbench, mail golden paths, voice) moves out of the always-on prompt into the harness skill `sense-setup`, which the agent loads when asked to enable, set up, repair or validate a sense: about 1.7k fewer tokens on every turn. The sense status table, the mail-reading rules, the Workbench runtime signal and outbound voice routing stay always-on."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1092",
       "changes": [
         "The system prompt names Ouroboros's tools instead of repeating each tool's description, which every provider already sends with the tool's schema: about 8.5k fewer tokens on every turn (Teams 20.5k → 11.6k, inner 19.9k → 11.8k, cli 19.6k → 11.5k, measured on the ouroboros bundle)."

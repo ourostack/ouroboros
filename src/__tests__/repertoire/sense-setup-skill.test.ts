@@ -1,0 +1,46 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { describe, expect, it } from "vitest"
+
+// Setup and validation guidance for senses loads on demand from this harness skill;
+// the always-on prompt only points at it (see runtimeInfoSection in src/mind/prompt.ts).
+describe("sense-setup harness skill", () => {
+  it("carries the setup, mail validation and voice setup guidance", () => {
+    const skill = fs.readFileSync(path.resolve(process.cwd(), "skills", "sense-setup.md"), "utf-8")
+    expect(skill).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
+    expect(skill).toContain("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist.")
+    expect(skill).toContain("I guide the flow end-to-end")
+    expect(skill).toContain("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup.")
+    expect(skill).toContain("If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue")
+    expect(skill).toContain("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP.")
+    expect(skill).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(skill).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
+    expect(skill).toContain("--no-delegated-source")
+    expect(skill).toContain("docs/agent-mail-setup.md")
+    expect(skill).toContain("ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>")
+    expect(skill).toContain("If discovery cannot find a unique file")
+    expect(skill).toContain("ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>")
+    expect(skill).toContain("I should not offload path-discovery ceremony to the human")
+    expect(skill).toContain("do not invent `ouro doctor --agent <agent>`")
+    expect(skill).toContain("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
+    expect(skill).toContain("golden path 1, HEY archive to work object")
+    expect(skill).toContain("golden path 2, native mail and Screener")
+    expect(skill).toContain("golden path 3, cross-sense reaction")
+    expect(skill).toContain("golden path 4, Ouro Mailbox audit")
+    expect(skill).toContain("mail validation question discipline: if a human asks a hypothetical")
+    expect(skill).toContain("answer that hypothetical first")
+    expect(skill).toContain("Do not replace the answer with current access logs")
+    expect(skill).toContain("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation")
+    expect(skill).toContain("not additional paths")
+    expect(skill).toContain("do not include diagnostic commands, tool names, or status checks in the answer")
+    expect(skill).toContain("mail diagnostic naming: `ouro doctor` is installation-wide")
+    expect(skill).toContain("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP")
+    expect(skill).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
+    expect(skill).toContain("injects the `ouro_workbench` MCP into my turn at runtime")
+    expect(skill).toContain("without any `agent.json` `mcpServers.ouro_workbench` entry")
+    expect(skill).toContain("teams setup truth: run `ouro connect teams --agent <agent>`")
+    expect(skill).toContain("a2a setup truth: run `ouro connect a2a --agent <agent>`")
+    expect(skill).toContain("voice setup truth: voice sessions are transcript-first local sessions")
+    expect(skill).not.toContain("Outbound phone calls are first-class Voice delivery")
+  })
+})
