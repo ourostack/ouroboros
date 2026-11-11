@@ -836,10 +836,9 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
   const visibleTools = options?.relationshipToolNames
     ? activeTools.filter((tool) => options.relationshipToolNames!.includes(tool.function.name))
     : activeTools;
-  const list = visibleTools
-    .map((t) => `- ${t.function.name}: ${t.function.description}`)
-    .join("\n");
-  return `## my tools\n${list}`;
+  // Every provider sends these tools' full schemas, descriptions included, with the request, so the prompt names them only.
+  const list = visibleTools.map((t) => t.function.name).join(", ");
+  return `## my tools\n${list}\n(each tool's description and parameters arrive with its schema)`;
 }
 
 export function toolRestrictionSection(context?: ResolvedContext): string {

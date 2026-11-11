@@ -1382,9 +1382,9 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my tools")
-    expect(result).toContain("- read_file:")
-    expect(result).toContain("- shell:")
-    expect(result).toContain("- web_search:")
+    expect(result).toMatch(/## my tools\n[^\n]*\bread_file\b/)
+    expect(result).toMatch(/## my tools\n[^\n]*\bshell\b/)
+    expect(result).toMatch(/## my tools\n[^\n]*\bweb_search\b/)
   })
 
   it("includes desk section with the desk-vocab body", async () => {
@@ -1699,7 +1699,7 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
     expect(result).not.toContain("## tool behavior")
     expect(result).not.toContain("tool_choice is set to \"required\"")
-    expect(result).toContain("- settle:")
+    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1802,7 +1802,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
     // The tools section should list settle when defaults on
-    expect(result).toContain("- settle:")
+    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
   })
 
   it("toolsSection still includes flow tools when toolChoiceRequired is false", async () => {
@@ -1813,8 +1813,8 @@ describe("buildSystem", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
-    expect(result).toContain("- ponder:")
-    expect(result).toContain("- settle:")
+    expect(result).toMatch(/## my tools\n[^\n]*\bponder\b/)
+    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
   })
 
   it("private runtime tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
@@ -1848,9 +1848,9 @@ describe("buildSystem", () => {
       } as any],
     }))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(toolsBlock).toContain("- custom_lookup:")
-    expect(toolsBlock).toContain("- ponder:")
-    expect(toolsBlock).toContain("- settle:")
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bcustom_lookup\b/)
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bponder\b/)
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bsettle\b/)
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -3324,8 +3324,8 @@ describe("buildSystem with context", () => {
     }
 
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx))
-    expect(result).toContain("- read_file:")
-    expect(result).toContain("- shell:")
+    expect(result).toMatch(/## my tools\n[^\n]*\bread_file\b/)
+    expect(result).toMatch(/## my tools\n[^\n]*\bshell\b/)
   })
 
   it("omits context section when context is undefined", async () => {
@@ -3641,11 +3641,11 @@ describe("buildSystem with context", () => {
     const result = flattenSystemPrompt(await buildSystem("inner"))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
 
-    expect(toolsBlock).toContain("- surface:")
-    expect(toolsBlock).not.toContain("- send_message:")
-    expect(toolsBlock).toContain("- rest:")
-    expect(toolsBlock).toContain("- ponder:")
-    expect(toolsBlock).not.toContain("- settle:")
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bsurface\b/)
+    expect(toolsBlock).not.toMatch(/## my tools\n[^\n]*\bsend_message\b/)
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\brest\b/)
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bponder\b/)
+    expect(toolsBlock).not.toMatch(/## my tools\n[^\n]*\bsettle\b/)
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
     expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
@@ -3658,7 +3658,7 @@ describe("buildSystem with context", () => {
       tools: [{ type: "function", function: { name: "rest", description: "duplicate rest" } } as any],
     }))
     const duplicateToolsBlock = duplicateResult.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(duplicateToolsBlock.match(/- rest:/g)).toHaveLength(1)
+    expect(duplicateToolsBlock.match(/\brest\b/g)).toHaveLength(1)
   })
 
   it("buildSystem('cli') does NOT include metacognitive framing", async () => {
@@ -4351,7 +4351,7 @@ describe("groupChatParticipationSection", () => {
     }
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx as any))
     expect(result).toContain("observe")
-    expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toContain("- observe:")
+    expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toMatch(/## my tools\n[^\n]*\bobserve\b/)
     expect(result).toMatch(/reaction|tapback/i)
   })
 
@@ -4369,7 +4369,7 @@ describe("groupChatParticipationSection", () => {
     }
     const result = flattenSystemPrompt(await buildSystem("teams", { isReactionSignal: true }, ctx as any))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(toolsBlock).toContain("- observe:")
+    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bobserve\b/)
   })
 })
 
