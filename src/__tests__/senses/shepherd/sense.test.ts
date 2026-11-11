@@ -1315,6 +1315,17 @@ describe("Shepherd sense: wiring", () => {
     expect(escalationContent({ ...record, kind: "gate", agent: "codex\u0007", cwd: "/x/repo" }, "Ari")).toContain("codex in repo handed control back")
   })
 
+  it("asks the agent to judge whether the human needs a return, respect what they asked not to hear about, and batch", () => {
+    const record: ReturnRecord = { at: "t", host: "cmux", session: "S", transition: "x", agent: null, cwd: null, task: null, kind: "done", action: "let_through", reason: "r", reply: null, latencyMs: null, inputTokens: null }
+    const content = escalationContent({ ...record, kind: "done" }, "Ari")
+    expect(content).toContain("Decide whether Ari needs this now; most returns don't.")
+    expect(content).toContain("Routine progress, an agent's internal steps, and anything another agent or the session itself will handle don't need them")
+    expect(content).toContain("check get_friend_note for what they've asked not to hear about, and respect it")
+    expect(content).toContain("with several returns in one message rather than one each")
+    expect(content).toContain("If they reply with a question, answer it in that chat")
+    expect(content).not.toContain("if it matters to them")
+  })
+
   it("queues escalations in the private runtime and wakes it, logging a refused or failed wake", async () => {
     queueEscalation(AGENT, "[Shepherd return]", 1_000)
     const dir = path.join(agentRoot, "state", "pending", "self", "inner", "dialog")

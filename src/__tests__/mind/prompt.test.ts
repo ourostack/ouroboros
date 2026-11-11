@@ -5294,7 +5294,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const result = flattenSystemPrompt(await buildSystem("cli"))
     // Locked content: 5 numbered contracts
     expect(result).toContain("## tool contracts")
-    expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
+    expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately, including anything they ask me to stop telling them about")
     expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
     expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
     expect(result).toContain("4. `search_facts` -- when I need older written facts")
