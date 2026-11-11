@@ -166,6 +166,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
     const deliverTeamsOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
       const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
       const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive" }, { agentRoot })
+      if (sent?.forwardedTo) return { status: "queued", detail: `forwarded to ${sent.forwardedTo}, which runs Teams; it sends on its next sync` }
       return sent?.delivered ? { status: "delivered", detail: "sent to Teams now" } : queueToSession(target, detail)
     }
     const deliverOrQueue = (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> =>

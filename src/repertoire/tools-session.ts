@@ -1074,7 +1074,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             } as const
           },
           teams: async (request) => {
-            let result: Awaited<ReturnType<typeof import("../senses/teams")["sendProactiveTeamsMessageToSession"]>> | null
+            let result: import("../senses/teams-off-turn").OffTurnTeamsSendResult | null
             if (ctx?.botApi) {
               const { sendProactiveTeamsMessageToSession } = await import("../senses/teams")
               result = await sendProactiveTeamsMessageToSession({
@@ -1103,6 +1103,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               return {
                 status: "unavailable",
                 detail: "live delivery unavailable right now; queued for the next active turn",
+              } as const
+            }
+            if (result.forwardedTo) {
+              return {
+                status: "forwarded",
+                detail: `forwarded to ${result.forwardedTo}, which runs Teams; it sends on its next sync, usually within a couple of minutes`,
               } as const
             }
             if (result.delivered) {

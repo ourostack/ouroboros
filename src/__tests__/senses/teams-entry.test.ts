@@ -1,6 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const startTeamsOutboxDrain = vi.fn()
+const sendTeamsOffTurn = vi.fn()
 
 describe("teams entrypoint", () => {
+  beforeEach(() => {
+    startTeamsOutboxDrain.mockReset()
+    sendTeamsOffTurn.mockReset()
+    vi.doMock("../../senses/teams-outbox", () => ({ startTeamsOutboxDrain }))
+    vi.doMock("../../senses/teams-off-turn", () => ({ sendTeamsOffTurn }))
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
   })
@@ -29,7 +39,14 @@ describe("teams entrypoint", () => {
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(startTeamsApp).toHaveBeenCalledTimes(1)
+      expect(startTeamsOutboxDrain).toHaveBeenCalledTimes(1)
     })
+    // It sends what other presences forwarded here, and never forwards those again.
+    const [agentRoot, send] = startTeamsOutboxDrain.mock.calls[0]!
+    expect(agentRoot).toMatch(/slugger\.ouro$/)
+    const request = { friendId: "ari", key: "chat-1", text: "hi", origin: "send_message" }
+    await send(request)
+    expect(sendTeamsOffTurn).toHaveBeenCalledWith(request, { agentRoot, forward: false })
     argvSpy.mockRestore()
   })
 

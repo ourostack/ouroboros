@@ -850,6 +850,30 @@ describe("send_message tool", () => {
     }))
   })
 
+  it("reports a teams send forwarded to the machine that runs Teams without queueing it here", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    const recordSurfaceAttempt = vi.fn()
+    mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, forwardedTo: "aris-mac-mini" })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-4",
+      channel: "teams",
+      key: "target-thread",
+      content: "forward this teams message to the owner",
+    }, makeTrustedTeamsTurnContext({ botApi: undefined, habitSession: { recordSurfaceAttempt } }))
+
+    expect(result.toLowerCase()).toContain("queued for later")
+    expect(result).toContain("forwarded to aris-mac-mini, which runs Teams; it sends on its next sync, usually within a couple of minutes")
+    expect(result).not.toContain("next active turn")
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "teams",
+      result: "queued",
+      rawStatus: "forwarded",
+    }))
+  })
+
   it("falls back to truthful queued status when teams adapter reports undelivered without a specific reason", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

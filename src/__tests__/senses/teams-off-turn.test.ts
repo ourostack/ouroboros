@@ -238,10 +238,87 @@ describe("sendTeamsOffTurn", () => {
     expect(fs.existsSync(path.join(agentRoot, "state", "teams", "off-turn-sent.json"))).toBe(false)
   })
 
-  it("returns null so the caller queues when there is no client here", async () => {
+  const outboxFiles = () => {
+    try {
+      return fs.readdirSync(path.join(agentRoot, "presence", "outbox"))
+    } catch {
+      return []
+    }
+  }
+
+  it("forwards to the machine that runs Teams, once, without queueing here", async () => {
+    mocks.machine.mockReturnValue({ machineId: "laptop" })
+    const result = await sendTeamsOffTurn(request, { agentRoot, now: () => 1_700_000_000_000 })
+    expect(result).toEqual({ delivered: false, forwardedTo: "aris-mac-mini" })
+    expect(mocks.teamsSend).not.toHaveBeenCalled()
+    expect(mocks.liveBot).not.toHaveBeenCalled()
+    const files = outboxFiles()
+    expect(files).toHaveLength(1)
+    expect(files[0]).toMatch(/^1700000000000-laptop-[0-9a-f]{8}\.json$/)
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "presence", "outbox", files[0]!), "utf-8"))).toEqual({
+      version: 1,
+      friendId: "ari",
+      key: "chat-1",
+      text: request.text,
+      origin: "send_message",
+      fromMachineId: "laptop",
+      createdAt: new Date(1_700_000_000_000).toISOString(),
+    })
+    expect(fs.existsSync(path.join(agentRoot, "state", "pending"))).toBe(false)
+    expect(fs.readdirSync(path.join(agentRoot, "state", "outbox-tmp"))).toEqual([])
+    const forwarded = mocks.events.find((e) => e.event === "senses.teams_forwarded_to_owner")
+    expect(forwarded?.meta).toEqual({ friendId: "ari", owner: "aris-mac-mini" })
+    expect(JSON.stringify(mocks.events)).not.toContain(request.text)
+  })
+
+  it("carries the intent and authorizing session in the forwarded file", async () => {
+    mocks.machine.mockReturnValue({ machineId: "laptop" })
+    const authorizingSession = { friendId: "ari", channel: "cli", key: "session", trustLevel: "family" }
+    await sendTeamsOffTurn({ ...request, intent: "explicit_cross_chat", authorizingSession }, { agentRoot })
+    const [file] = outboxFiles()
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "presence", "outbox", file!), "utf-8"))).toMatchObject({ intent: "explicit_cross_chat", authorizingSession })
+  })
+
+  it("names an owner off the roster by its id, and a machine without identity as unknown", async () => {
+    mocks.machine.mockReturnValue(null)
+    mocks.presence.mockReturnValue({ ...presenceOwnedBy("mini"), home: { machineId: "old-home" }, legacy: ["old-home"] })
+    expect(await sendTeamsOffTurn(request, { agentRoot })).toEqual({ delivered: false, forwardedTo: "old-home" })
+    expect(outboxFiles()[0]).toMatch(/-unknown-[0-9a-f]{8}\.json$/)
+  })
+
+  it("forwards while this machine waits for the previous owner to let go", async () => {
+    mocks.presence.mockReturnValue(presenceOwnedBy("mini", [{ machineId: "laptop", owns: ["teams"] } as never]))
+    expect(await sendTeamsOffTurn(request, { agentRoot })).toEqual({ delivered: false, forwardedTo: "aris-mac-mini" })
+    expect(outboxFiles()).toHaveLength(1)
+  })
+
+  it("never forwards a forwarded send again", async () => {
+    mocks.machine.mockReturnValue({ machineId: "laptop" })
+    expect(await sendTeamsOffTurn(request, { agentRoot, forward: false })).toBeNull()
+    expect(outboxFiles()).toEqual([])
+    expect(reasons()).toEqual(["teams_runs_elsewhere"])
+  })
+
+  it("returns null so the caller queues when the forward cannot be written", async () => {
+    mocks.machine.mockReturnValue({ machineId: "laptop" })
+    fs.writeFileSync(path.join(agentRoot, "presence"), "not a directory")
+    expect(await sendTeamsOffTurn(request, { agentRoot })).toBeNull()
+    expect(mocks.events.find((e) => e.event === "senses.teams_off_turn_unavailable")).toMatchObject({ level: "warn", meta: { reason: "outbox_write_failed" } })
+  })
+
+  it("returns null and forwards nothing when the Teams sense is off", async () => {
+    mocks.agentConfig.mockReturnValue({ senses: {} })
     mocks.machine.mockReturnValue({ machineId: "laptop" })
     expect(await sendTeamsOffTurn(request, { agentRoot })).toBeNull()
-    expect(mocks.teamsSend).not.toHaveBeenCalled()
+    expect(outboxFiles()).toEqual([])
+    expect(reasons()).toEqual(["teams_disabled"])
+  })
+
+  it("returns null so the caller queues when this machine runs Teams but has no bot", async () => {
+    mocks.primary.mockReturnValue(noSecondary)
+    mocks.secondary.mockReturnValue(noSecondary)
+    expect(await sendTeamsOffTurn(request, { agentRoot })).toBeNull()
+    expect(outboxFiles()).toEqual([])
   })
 
   it("ignores an unreadable ledger and drops non-numeric entries", async () => {
