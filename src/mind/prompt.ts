@@ -897,7 +897,7 @@ function skillsSection(): string {
 function toolContractsSection(channel: Channel, options?: BuildSystemOptions): string {
   const lines = [
     `## tool contracts`,
-    `1. \`save_friend_note\` -- when I learn something about a person, I save it immediately.`,
+    `1. \`save_friend_note\` -- when I learn something about a person, I save it immediately, including anything they ask me to stop telling them about.`,
     `2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately to my Desk record diary.`,
     `3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.`,
     `4. \`search_facts\` -- when I need older written facts, I search the Desk record diary.`,

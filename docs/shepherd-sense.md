@@ -307,7 +307,7 @@ After every judged return, the owner hears what happened in one short plain-text
 - **Untrusted text.** Agent, folder, reply and reason are cut to one bounded line with control characters and anything Teams could read as markup or a mention (`< > [ ] * ~ # | \ @`, backticks) removed, and the message is sent as plain text.
 - **Policy.** `senses.shepherd.notify` in `agent.json`: `every` (the default), `needs-me` (gates, finished work and a tripped loop guard) or `off`.
 
-The private escalation to the Ouro agent above is unchanged, so it can still act on gates and deliveries.
+The private escalation to the Ouro agent above is unchanged, so it can still act on gates and deliveries. To let the agent decide what reaches its owner, set `off`: each gate, delivery, outside wait, tripped loop guard and newsworthy update still reaches its private turn, with guidance on when the owner needs it, to respect what the owner asked not to hear about (their friend note), and to batch several returns into one message. The owner's reply lands in the same chat, so follow-up questions and "stop telling me about this" work there.
 
 Every judgment is one JSON line in `state/senses/shepherd/returns.jsonl` in the agent bundle (directory `0700`, file `0600`, rotated once at 2 MB, never synced): time, host, terminal, transition id, agent, folder, task, kind, action, reason, reply, latency and input tokens.
 
