@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1089",
+  "version": "0.1.0-alpha.1090",
   "engines": {
     "node": ">=22"
   },
@@ -109,13 +109,22 @@
     "multer": "2.5.0",
     "tmp": "0.2.7",
     "@microsoft/teams.apps": {
-      "@azure/msal-node": "^5.2.2"
+      "@azure/msal-node": "^7.1.0"
     },
     "@testing-library/react": {
       "react": "$react",
       "@types/react": "$@types/react"
     },
     "shell-quote": "^1.8.4",
-    "node-forge": "1.4.2"
+    "node-forge": "1.4.3",
+    "eslint": {
+      "minimatch": "^11.0.1"
+    },
+    "@eslint/config-array": {
+      "minimatch": "^11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   }
 }

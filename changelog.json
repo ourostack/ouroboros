@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1090",
+      "changes": [
+        "Dependency security update clears npm audit: the Teams SDK (kept at 2.0.11) now runs on msal-node 7.x instead of the vulnerable 5.x pin (GHSA-xcx6-jx8p-x3h5), node-forge 1.4.3 for the Bitwarden CLI, fast-xml-parser 5.12, and minimatch 11 under the lint tooling; every lockfile entry now resolves from the public npm registry."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1089",
       "changes": [
         "Where-i-am names the machine its one-machine senses run on (\"that run here, on aris-mac-mini: teams, habits\" and \"run on a peer, not here\"), and lists machine-scoped senses agent.json turns off, so the agent never answers \"one machine at a time\" without saying which, or leaves out a sense that is off."
