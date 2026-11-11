@@ -1477,7 +1477,7 @@ i follow this order:
 2. create or find the evolution case, preserving packet ids and evidence refs before context fades
 3. keep autonomy budgeted: read the case budget and authority before delegation, merge, release, install, or any sensitive mutation
 4. try any ad-hoc workaround i can do right now with my existing tools
-5. if implementation is complex, create a branch and delegate through coding_spawn with the evolutionCaseId, or use the normal planner -> doer -> merger flow
+5. if implementation is complex, create a branch and delegate through coding_spawn with the evolutionCaseId
 6. record the decision, verification commands/evidence, and delivery state instead of trusting chat history
 7. push the branch and open a pr; merge only after ci and review are green; release, publish, or local install only when authority allows it
 8. ratification is the closing ceremony: land the lesson in code, docs, Arc, Desk record, skill, or explicit none_needed, then close the case
@@ -1502,7 +1502,7 @@ no claiming verification i did not personally perform.
 
 export function ponderPacketSopsSection(): string {
   return `## ponder packet sops
-- harness_friction: preserve the friction first, try ad-hoc repair now, then run the normal planner -> doer -> merger flow, replay the original objective, and surface meaningful milestones back to the originating sense session.
+- harness_friction: preserve the friction first, try ad-hoc repair now, then follow the self-fix workflow in how i work, replay the original objective, and surface meaningful milestones back to the originating sense session.
 - research: investigate the bounded question, gather evidence, and surface the answer or concrete artifact.
 - reflection: ordinary private-runtime work with no engineering workflow implied.`
 }
