@@ -7,7 +7,7 @@ import { OuroDaemon, type DaemonHealthResult } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
-import { HealthMonitor } from "./health-monitor"
+import { HealthMonitor, readDiskUsagePercent } from "./health-monitor"
 import {
   DaemonHealthWriter,
   createHealthNervesSink,
@@ -430,6 +430,7 @@ const senseManager = new DaemonSenseManager({
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  diskUsagePercent: () => readDiskUsagePercent(getAgentBundlesRoot()),
   sentinelChecker: async (resultsSoFar) => {
     const sentinels = await Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar)))
     // Each agent runs on one machine: stop any agent whose lease (on disk or

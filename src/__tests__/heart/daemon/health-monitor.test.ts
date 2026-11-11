@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { HealthMonitor } from "../../../heart/daemon/health-monitor"
+import { HealthMonitor, readDiskUsagePercent } from "../../../heart/daemon/health-monitor"
 
 describe("HealthMonitor", () => {
   it("reports all checks as ok when snapshots, jobs, and disk usage are healthy", async () => {
@@ -171,6 +171,20 @@ describe("HealthMonitor", () => {
       "[critical] agent-processes: non-running agents: ouroboros",
     )
     expect(alertSink).toHaveBeenNthCalledWith(2, "[critical] disk-space: disk usage critical (95%)")
+  })
+
+  it("says plainly when disk usage can't be read, instead of reporting it healthy", async () => {
+    const monitor = new HealthMonitor({
+      processManager: { listAgentSnapshots: () => [{ name: "slugger", status: "running" }] },
+      scheduler: { listJobs: () => [{ id: "nightly", lastRun: "2026-03-07T00:00:00.000Z" }] },
+      diskUsagePercent: () => null,
+    })
+
+    await expect(monitor.runChecks()).resolves.toContainEqual({
+      name: "disk-space",
+      status: "warn",
+      message: "disk usage could not be read",
+    })
   })
 
   it("includes the bundle sync check and reports a throwing checker as a warning", async () => {
@@ -743,5 +757,26 @@ describe("HealthMonitor", () => {
       expect(probeResult).toBeDefined()
       expect(probeResult!.name).toBe("sense-probe:my-custom-sense")
     })
+  })
+})
+
+describe("readDiskUsagePercent", () => {
+  it("reports the share of the volume in use, as df does", () => {
+    expect(readDiskUsagePercent("/bundles", () => ({ blocks: 242837545, bavail: 12904290 }))).toBe(95)
+    expect(readDiskUsagePercent("/bundles", () => ({ blocks: 1000, bavail: 1000 }))).toBe(0)
+  })
+
+  it("returns null when the volume can't be read or its numbers make no sense", () => {
+    expect(readDiskUsagePercent("/missing", () => { throw new Error("ENOENT") })).toBeNull()
+    expect(readDiskUsagePercent("/bundles", () => ({ blocks: 0, bavail: 0 }))).toBeNull()
+    expect(readDiskUsagePercent("/bundles", () => ({ blocks: 10, bavail: 11 }))).toBeNull()
+    expect(readDiskUsagePercent("/bundles", () => ({ blocks: 10, bavail: -1 }))).toBeNull()
+  })
+
+  it("reads the real volume by default", () => {
+    const percent = readDiskUsagePercent(process.cwd())
+    expect(percent).not.toBeNull()
+    expect(percent).toBeGreaterThanOrEqual(0)
+    expect(percent).toBeLessThanOrEqual(100)
   })
 })
