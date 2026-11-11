@@ -30,7 +30,8 @@ export interface CrossChatDeliveryResult {
 }
 
 export interface CrossChatDirectDeliveryResult {
-  status: "delivered_now" | "unavailable" | "blocked" | "failed"
+  /** "forwarded": handed to the machine that runs the channel, which sends it; nothing is queued here. */
+  status: "delivered_now" | "unavailable" | "blocked" | "failed" | "forwarded"
   detail: string
 }
 
@@ -148,6 +149,27 @@ export async function deliverCrossChatMessage(
           channel: request.channel,
           key: request.key,
           status: result.status,
+        },
+      })
+      return result
+    }
+
+    if (direct.status === "forwarded") {
+      const result = {
+        status: "queued_for_later",
+        detail: direct.detail,
+        rawStatus: "forwarded",
+      } satisfies CrossChatDeliveryResult
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.cross_chat_delivery_end",
+        message: "forwarded cross-chat delivery to the machine that runs the channel",
+        meta: {
+          friendId: request.friendId,
+          channel: request.channel,
+          key: request.key,
+          status: result.status,
+          rawStatus: result.rawStatus,
         },
       })
       return result

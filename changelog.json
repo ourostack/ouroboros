@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1095",
+      "changes": [
+        "A presence that does not run Teams now forwards a Teams send to the machine that does through the bundle, instead of queueing it locally where it was never delivered."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1094",
       "changes": [
         "The prompt no longer points Ouroboros at the retired planner -> doer -> merger flow: harness friction follows the self-fix workflow, and complex fixes go through coding_spawn. The sync-and-merge doc drops its link to the retired work-merger skill."

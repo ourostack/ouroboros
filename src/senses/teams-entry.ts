@@ -35,6 +35,14 @@ import("../heart/runtime-credentials")
     }
     const { startTeamsApp } = await import("./teams")
     startTeamsApp()
+    // This process runs only where Teams runs, so it sends what other presences forwarded here.
+    const [{ startTeamsOutboxDrain }, { sendTeamsOffTurn }, { getAgentRoot }] = await Promise.all([
+      import("./teams-outbox"),
+      import("./teams-off-turn"),
+      import("../heart/identity"),
+    ])
+    const agentRoot = getAgentRoot()
+    startTeamsOutboxDrain(agentRoot, (request) => sendTeamsOffTurn(request, { agentRoot, forward: false }))
   })
   .catch(async (error) => {
     const { describeStartupError } = await import("../heart/optional-packages")

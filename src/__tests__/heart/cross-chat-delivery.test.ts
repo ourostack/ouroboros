@@ -284,6 +284,36 @@ describe("deliverCrossChatMessage", () => {
     expect(queuePending).toHaveBeenCalledTimes(1)
   })
 
+  it("reports a send forwarded to the machine that runs the channel as queued, without queueing it here", async () => {
+    const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
+    const queuePending = vi.fn()
+    const teamsDeliver = vi.fn().mockResolvedValue({
+      status: "forwarded",
+      detail: "forwarded to aris-mac-mini, which runs Teams",
+    })
+
+    const result = await deliverCrossChatMessage({
+      friendId: "friend-uuid-1",
+      channel: "teams",
+      key: "chat-1",
+      content: "the build is out",
+      intent: "generic_outreach",
+    }, {
+      agentName: "slugger",
+      queuePending,
+      deliverers: {
+        teams: teamsDeliver,
+      },
+    })
+
+    expect(result).toEqual({
+      status: "queued_for_later",
+      detail: "forwarded to aris-mac-mini, which runs Teams",
+      rawStatus: "forwarded",
+    })
+    expect(queuePending).not.toHaveBeenCalled()
+  })
+
   it("surfaces thrown transport errors as failed delivery instead of silently queueing them", async () => {
     const { deliverCrossChatMessage } = await loadCrossChatDeliveryModule()
     const queuePending = vi.fn()

@@ -985,6 +985,16 @@ describe("surface tool", () => {
       )
     })
 
+    it("surfaceToolDefinition with channel=teams forwards to the machine that runs Teams without queueing here", async () => {
+      const fs = await import("fs")
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, forwardedTo: "aris-mac-mini" })
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "over to the mini", friendId: "ari", channel: "teams" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toContain("queued")
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(expect.stringMatching(/\/state\/pending\//), expect.anything())
+    })
+
     it("surfaceToolDefinition records failed voice route attempts for habit receipts", async () => {
       mockPlaceTrustedFriendVoiceOutboundCall.mockResolvedValueOnce({
         status: "blocked",
