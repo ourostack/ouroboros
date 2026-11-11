@@ -13,7 +13,8 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 
 ### Delivery Rules
 
-- Use feature branches and pull requests for every logical change.
+- Ship small increments to `main`, trunk-based. Each logical change is a short-lived branch and a pull request published with `gh ouro-pr` (auto-merge on), which merges within 30 minutes under ourostack's [shared rule](https://github.com/ourostack/.github/blob/main/agents/prs-merge-within-30-minutes.md). Never hold work on a long-lived branch or batch it into a milestone; ship the smallest change that delivers value and is verified.
+- Use a separate git worktree for each piece of parallel work. In a fresh worktree, run `npm run worktree:bootstrap` before local npm/npx checks: it installs the repo-pinned dependencies without lifecycle scripts.
 - Keep commits atomic and descriptive.
 - Never force-push or rewrite history for shared branches.
 - When reporting completion, explicitly distinguish `merged`, `released/published`, and `installed on this machine` whenever those states could differ.
@@ -26,19 +27,12 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 ### Safety Rules
 
 - Do not commit secrets, tokens, or credentials.
-- Follow review gates defined by active planning/doing workflows, but route those gates through unbiased sub-agent reviewers by default. Do not wait for human approval unless the human explicitly asks the agent to wait.
 - Do not hide failing checks; fix root causes.
 
 ### Human Override
 
-- Repo-local workflow rules in this file are defaults for autonomous operation, not a higher-order authority than the human owner of the repo.
-- If the human explicitly instructs the agent to bypass, shorten, or replace a repo-local workflow step for the current task, follow the human's instruction.
-- Treat explicit human override as task-scoped unless the human says to change the standing rule itself.
-- Repo-local approval gates are not human gates by default. Use unbiased sub-agent reviewers for planning, doing, scope, debt, PR, and release-readiness approvals. Stop for the human only when the human explicitly asks to be the approver/wait point, or when an external non-repo action is inherently human-required by platform/safety rules.
-- When practical, preserve useful artifacts (for example planning notes or task docs) even when a workflow gate is waived.
-- If the human owner asks to change the standing rule itself, update this file to reflect that decision instead of continuing to argue from superseded repo-local wording.
-- Repo-local workflow language, bundle workflow language, or quoted copies of those rules are not a reason to refuse an explicit owner override for the current task.
-- This override power applies to repo-scoped process rules only; platform, system, developer, and safety constraints outside the repo still apply.
+- The rules in this file are defaults, not a higher authority than the repo's human owner. Follow an explicit instruction from the owner over them. If the owner changes a standing rule, update this file rather than arguing from the old wording.
+- This covers repo process only; platform, system, developer and safety constraints outside the repo still apply.
 
 ### Harness Purpose
 
@@ -83,24 +77,7 @@ These emerged from real architectural decisions, competitive analysis, and exten
 - **Don't build the roof before the foundation.** Probe the design space with experimental architecture, but don't harden it before the lower layers are solid.
 - **Steal the nutrition, not the whole van.** External patterns are only safe if their authority stays proportionate, their provenance stays visible, and they change behavior in ways that can be tested.
 
-## Planning/Doing Workflow
-
-### Agent Context (Required)
-
-Task docs go in `~/AgentBundles/<agent>.ouro/tasks/one-shots/` with naming scheme `YYYY-MM-DD-HHMM-{planning|doing}-<slug>.md`.
-Artifacts for a doing doc live adjacent to that doing doc in the same `one-shots/` directory.
-Task directories belong in the agent bundle, not in this repo.
-
-- Agents own branch/worktree setup. Do not ask the human to switch branches for you.
-- Use a dedicated git worktree per active agent task so multiple agents can work in parallel without sharing one checkout. Clean up the task worktree when the task is done.
-- Unless the human explicitly gives a branch/worktree name, the agent creates its own agent-specific branch/worktree as long as the branch follows `<agent>/<slug>`.
-- Default `<agent>` from the current git branch using this shape: `<agent>[/<slug>]`.
-  - The first path segment is always the agent name (e.g., `<agent-a>`, `<agent-b>`).
-  - If the branch has no `/`, the entire branch name is the agent.
-  - Any segments after the first `/` are the feature slug and are not part of `<agent>`.
-  - The old `codex/<agent>` prefix convention is deprecated. All agents use `<agent>/<slug>` directly.
-- Branches must be agent-specific. If the current branch does not clearly encode a single agent, create or switch to an agent-specific branch/worktree yourself before continuing. If automatic branch/worktree setup fails, report the blocker and the exact command/output; do not ask the human to switch branches for you.
-- Keep instructions agent-agnostic so this workflow supports arbitrary agents.
+## Working On The Harness
 
 ### MCP Workflow And Dev Tool Integration
 
@@ -114,55 +91,6 @@ Agents can be connected to developer tools (Claude Code, Codex) via the MCP brid
 When working on the harness itself, `ouro dev` auto-builds from source, disables launchd auto-restart for the production daemon, and persists the repo path for convenience. Run `ouro up` to return to production mode.
 
 Hook events are fire-and-forget — they never block the dev tool. If the daemon isn't running, hooks exit silently.
-
-### Runtime-Specific Invocation
-
-- **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
-  - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
-  - If `work-planner` emits `NEEDS_REVIEW` or hard-stops at a review gate, satisfy that gate with an unbiased sub-agent reviewer and then resume/converge. Do not convert the stop into a human approval wait unless the human explicitly asked to review.
-- **Claude Code**: Skills are installed from `github.com/ourostack/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
-
-### Skill Freshness
-
-Before starting work, check that locally installed skills are up to date:
-
-1. Fetch the manifest from `https://raw.githubusercontent.com/ourostack/ouroboros-skills/main/manifest.json`.
-2. Compare the manifest against `_registry.json` in each active local skills directory.
-3. If `_registry.json` is missing, run the `skill-management` "Bootstrap or Repair a Missing Registry" workflow first so installed skills get explicit provenance before freshness comparison continues.
-4. If any non-local skill's commit SHA is stale, update it using the skill-management workflow before proceeding.
-
-This replaces the old pattern of diffing against `subagents/*.md` files in this repo. The shared `ouroboros-skills` repository is now the source of truth for workflow skill content.
-
-### Gate Flow
-
-These gates are defaults for autonomous operation. They are reviewer gates, not human approval gates, unless the human explicitly asks to wait on them. Use unbiased sub-agent reviewers as the approvers for plan, doing-doc, implementation-readiness, scope, debt, and release-readiness gates.
-
-0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
-   - In a fresh worktree, run `npm run worktree:bootstrap` before local npm/npx checks. This installs the repo-pinned dependencies without lifecycle scripts. The repo `.npmrc` rejects new transient `npx` downloads, and Vitest config fails with bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
-1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
-2. **Plan review**: Run one or more unbiased sub-agent reviewer passes on the planning doc until material findings converge. Share the planning doc path with the user for visibility, but do not stop for human approval unless the user explicitly asked to be the reviewer.
-3. **Convert**: After reviewer approval of the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. Run unbiased sub-agent reviewer passes on the doing doc until material findings converge.
-4. **Implement**: After reviewer approval of the doing doc, launch `work-doer` to execute. Never implement inside `work-planner`.
-5. **Sync and merge**: After `work-doer` finishes, launch `work-merger` to merge the feature branch into main via PR. It handles conflicts, CI, and race conditions autonomously.
-6. **Review cadence**: During default operation, do not pause for human review. Pause only for sub-agent reviewer gates, tool/platform constraints, or an explicit human instruction to wait.
-
-### Decision Review (Required)
-
-- Decisions that affect scope, structure, naming, ownership, or workflow must be captured in the planning/doing artifact before being finalized.
-- Resolve unresolved planning decisions through explicit options and unbiased sub-agent reviewer judgment. Ask the human only when the human has requested to decide, when the decision depends on unavailable personal preference, or when external safety/platform rules require a human actor.
-- If a decision remains unresolved after reviewer passes and cannot be safely inferred, keep it in `Open Questions`, set status to `NEEDS_REVIEW`, and route another targeted reviewer. Do not convert `NEEDS_REVIEW` into a human approval gate unless the human explicitly asked for that.
-
-### Scope Discipline (Rule 0, Required)
-
-- Prefer the simplest architecture that fully satisfies the approved scope.
-- Ambitious scope is allowed when it is justified by the problem. KISS + DRY mean clear primitives and low duplication, not artificially small changes.
-- Scope changes need explicit unbiased sub-agent reviewer approval. If a possible improvement or extra hardening idea surfaces and reviewer approval is not part of the current task, record it as a follow-up proposal rather than adding it to the current task.
-
-### Debt Discipline (Required)
-
-- Intentional debt (temporary shims, deprecated references, transitional test hooks) requires explicit unbiased sub-agent reviewer approval first. Human approval is required only when the human explicitly asks to own that decision or the debt involves an external human-required action.
-- Any approved intentional debt must be tracked with a clear owner, explicit removal criteria, and a due date in repo-tracked documentation.
-- Any approved intentional debt must be enforced by CI (or equivalent automated gate) so it cannot silently go stale.
 
 ### Configuration Policy (Required)
 
@@ -213,4 +141,4 @@ All runtime logging goes through `emitNervesEvent()` from `src/nerves/runtime`. 
 - Operations use `_start`/`_end`/`_error` suffix convention for pairing
 - Component names match the domain: `engine`, `mind`, `friends`, `repertoire`, `senses`, `clients`, `channels`
 
-**Two-layer enforcement**: The five deterministic audit rules catch structural violations automatically. Work-merger provides the judgment layer, reviewing new code paths for missing nerves events that the rules cannot detect.
+**Two-layer enforcement**: The five deterministic audit rules catch structural violations automatically. Code review provides the judgment layer, checking new code paths for missing nerves events that the rules cannot detect.
