@@ -1,3 +1,4 @@
+import * as fs from "fs"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonHealthResult } from "./daemon"
 
@@ -22,7 +23,7 @@ export interface HealthMonitorOptions {
     listDegradedJobs?: () => Array<{ id: string; reason: string }>
   }
   alertSink?: (message: string) => Promise<void> | void
-  diskUsagePercent?: () => number
+  diskUsagePercent?: () => number | null
   sentinelChecker?: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   /** Reports bundles whose git sync keeps failing or skips oversized files. */
   bundleSyncChecker?: () => DaemonHealthResult[]
@@ -32,11 +33,22 @@ export interface HealthMonitorOptions {
   senseProbeProvider?: () => SenseProbe[]
 }
 
+/** Percent of the volume holding `dir` that is in use, as `df` reports it, or null when it can't be read. */
+export function readDiskUsagePercent(dir: string, statfs: (dir: string) => { blocks: number; bavail: number } = fs.statfsSync): number | null {
+  try {
+    const { blocks, bavail } = statfs(dir)
+    if (!(blocks > 0) || !(bavail >= 0) || bavail > blocks) return null
+    return Math.round((100 * (blocks - bavail)) / blocks)
+  } catch {
+    return null
+  }
+}
+
 export class HealthMonitor {
   private readonly processManager: HealthMonitorOptions["processManager"]
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
-  private readonly diskUsagePercent: () => number
+  private readonly diskUsagePercent: () => number | null
   private readonly sentinelChecker: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   private readonly bundleSyncChecker: () => DaemonHealthResult[]
   private readonly onCriticalAgent: (agentName: string) => void
@@ -160,7 +172,13 @@ export class HealthMonitor {
     }
 
     const diskPercent = this.diskUsagePercent()
-    if (diskPercent >= 90) {
+    if (diskPercent === null) {
+      results.push({
+        name: "disk-space",
+        status: "warn",
+        message: "disk usage could not be read",
+      })
+    } else if (diskPercent >= 90) {
       results.push({
         name: "disk-space",
         status: "critical",

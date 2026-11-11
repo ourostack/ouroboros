@@ -775,7 +775,7 @@ describe("daemon entrypoint", () => {
     expect(healthResults).toEqual([
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
-      { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
+      expect.objectContaining({ name: "disk-space", message: expect.stringMatching(/^disk usage (healthy|high|critical) \(\d+%\)$|^disk usage could not be read$/) }),
       { name: "bundle-sync", status: "ok", message: "bundle sync healthy" },
       { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
       { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },

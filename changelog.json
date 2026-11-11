@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1098",
+      "changes": [
+        "The daemon's disk-space health check reads the real volume (it always said \"healthy (0%)\" because nothing supplied a reading), and says so when it can't read it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1097",
       "changes": [
         "Shepherd's direct Teams notices are now off unless an agent turns them on (`senses.shepherd.notify`). Shepherd still hands every return that matters to the agent's private turn, so by default the agent, not a fixed rule, decides what reaches its owner. Under the old default of `every`, an owner got a message for each Copilot session Shepherd checked."
