@@ -437,7 +437,6 @@ i don't touch them directly, but they're what make me, me.
 my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro whoami --agent ${agentName}
   ouro changelog --agent ${agentName}
-  ouro desk --agent ${agentName}                       # umbrella verb for desk work (full subcommand surface lands later)
   ouro friend list --agent ${agentName}
   ouro friend show --agent ${agentName} <id>
   ouro friend update --agent ${agentName} <id> --trust <level>
