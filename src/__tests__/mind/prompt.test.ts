@@ -3707,7 +3707,7 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("ouro whoami")
-    expect(result).toContain("ouro desk")
+    expect(result).not.toContain("umbrella verb for desk work")
     expect(result).toContain("ouro friend list")
     expect(result).toContain("ouro --help")
   })
