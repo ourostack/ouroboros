@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1091",
+      "changes": [
+        "Ouroboros's desk section says its desk is plain Markdown in the bundle's Git repo, tended with ordinary tools (grep, read, edit), not Desk's skills and MCP tools, which no machine installs any more; and the prompt stops listing `ouro desk` task verbs, which answered \"no MCP servers configured\" everywhere (the hosted-Desk admin verbs stay)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1090",
       "changes": [
         "Dependency security update clears npm audit: the Teams SDK (kept at 2.0.11) now runs on msal-node 7.x instead of the vulnerable 5.x pin (GHSA-xcx6-jx8p-x3h5), node-forge 1.4.3 for the Bitwarden CLI, fast-xml-parser 5.12, and minimatch 11 under the lint tooling; every lockfile entry now resolves from the public npm registry."
