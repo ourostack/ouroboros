@@ -142,6 +142,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
             const out = tailWithNotice(stdout, home)
             const err = tailWithNotice(stderr, home)
             error.message = shellFailureText(error, timeout, out, err)
+            emitNervesEvent({ level: "info", component: "tools", event: "tool.shell_failed", message: "a shell command failed; its exit, stdout and stderr go back to the agent", meta: { code: typeof error.code === "number" ? error.code : null, killed: Boolean(error.killed) } })
             reject(Object.assign(error, { stdout: out, stderr: err }))
           }
           else resolve(stdout)
