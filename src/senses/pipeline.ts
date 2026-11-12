@@ -738,6 +738,18 @@ export function startPostTurnSync(agentRoot: string, config: SyncConfig): void {
   })
 }
 
+/**
+ * What every outward sense says when a turn errors and provider failover has nothing to say.
+ * Such turns used to end in silence: the owner saw no reply, prodded, and later got
+ * the late answer followed by a greeting to a prod (D-004); the step-limit stop was the
+ * observed cause (D-007). The engine still refuses to answer without evidence.
+ */
+export function erroredTurnReply(errorMessage: string | undefined): string {
+  return /iteration limit exhausted/u.test(errorMessage ?? "")
+    ? "I hit my step limit in the middle of that job and couldn't finish it. Tell me to continue and I'll pick up from where I stopped."
+    : "I couldn't finish that one: something went wrong before I had an answer. Ask me again and I'll retry."
+}
+
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
   return withTurnExecutionLease(() => handleInboundTurnExclusive(input))
 }
@@ -1528,6 +1540,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     messages: sessionMessages,
     drainedPending: pending,
     ...(input.switchedProvider ? { switchedProvider: input.switchedProvider } : {}),
+    // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.
+    ...(result.outcome === "errored" && input.channel !== "inner" && input.channel !== "cli" ? { failoverMessage: erroredTurnReply(result.error?.message) } : {}),
   }
   } finally {
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
