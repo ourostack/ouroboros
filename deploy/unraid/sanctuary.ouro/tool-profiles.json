@@ -84,6 +84,7 @@
         "media_blocklist",
         "media_manual_import",
         "media_quality_profile",
+        "media_release_profile",
         "media_fill_missing"
       ],
       "effectScopes": [
@@ -222,6 +223,7 @@
         "media_blocklist",
         "media_manual_import",
         "media_quality_profile",
+        "media_release_profile",
         "media_fill_missing"
       ],
       "contextScopes": [

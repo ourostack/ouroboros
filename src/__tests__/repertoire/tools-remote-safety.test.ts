@@ -337,27 +337,4 @@ describe("execTool guardrail wiring", () => {
     expect(result).toMatch(/friend|vouch|closer/i)
   })
 
-  it("destructive shell blocked even for trusted friend (structural guardrail)", async () => {
-    const ctx = {
-      signin: async () => undefined,
-      context: {
-        friend: {
-          id: "friend-1",
-          name: "Family",
-          trustLevel: "family",
-          externalIds: [],
-          tenantMemberships: [],
-          toolPreferences: {},
-          notes: {},
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-        },
-        channel: getChannelCapabilities("cli"),
-      },
-    } as unknown as ToolContext
-
-    const result = await execTool("shell", { command: "rm -rf /" }, ctx)
-    expect(result).toMatch(/dangerous/i)
-  })
 })

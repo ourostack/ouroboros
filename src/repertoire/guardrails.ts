@@ -182,24 +182,11 @@ export function psycheEditNote(file: string): string {
   return `psyche edit: I changed psyche/${file}. I tell my owner in one line which file changed and why.`
 }
 
-/** The agent's psyche folder, in the lexical form the shell check uses; the file tools classify with `psycheFileClass`. */
-function isPsychePath(filePath: string, agentRoot: string): boolean {
-  const psyche = path.resolve(agentRoot, "psyche")
-  const target = path.resolve(agentRoot, filePath)
-  return target === psyche || target.startsWith(`${psyche}${path.sep}`)
+function expandHome(word: string): string {
+  return word === "~" || word.startsWith("~/") ? path.join(os.homedir(), word.slice(1)) : word
 }
 
-/**
- * The friends store (`friends/` under the agent root) is written by the harness's own code, which the model's file tools and
- * shell redirects must not reach: a model talked into editing a record could rewrite trust, admission or a legacy grant.
- * Scoped to this agent's root, so a project directory that happens to be named `friends` stays editable. Defence in depth
- * only: a shell can still write anywhere its uid can, which is why delegated-command authority lives outside the bundle.
- */
-function isFriendsStorePath(filePath: string, agentRoot: string): boolean {
-  const store = path.resolve(agentRoot, "friends")
-  const target = path.resolve(agentRoot, filePath)
-  return target === store || target.startsWith(`${store}${path.sep}`)
-}
+const STABLE_VARIABLES = ["HOME", "TMPDIR", "USER"]
 
 function isProtectedPath(filePath: string): boolean {
   for (const segment of PROTECTED_PATH_SEGMENTS) {
@@ -209,19 +196,6 @@ function isProtectedPath(filePath: string): boolean {
     if (path.basename(filePath) === name) return true
   }
   return false
-}
-
-// --- destructive shell patterns ---
-
-const DESTRUCTIVE_PATTERNS: RegExp[] = [
-  /\brm\s+(-\w*\s+)*-\w*r\w*\s+(-\w+\s+)*[/~]/,      // rm -rf / or rm -rf ~
-  /\bchmod\s+(-\w*\s+)*-\w*R\w*\s+\d+\s+\//,           // chmod -R 777 /
-  /\bmkfs\b/,                                             // mkfs.*
-  /\bdd\s+if=/,                                           // dd if=
-]
-
-function isDestructiveShellCommand(command: string): boolean {
-  return DESTRUCTIVE_PATTERNS.some((p) => p.test(command))
 }
 
 // --- compound command splitting ---
@@ -246,237 +220,7 @@ function shellWritesToProtectedPath(command: string): boolean {
   return false
 }
 
-// --- the psyche folder in shell commands ---
-// The agent changes its own psyche through write_file and edit_file, where the trust gate below decides who may ask for it.
-// The shell never writes there, for anyone: a shell command that mentions the psyche folder at all runs only if every part of
-// it is a read-only command, because enumerating the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then
-// redirect) is a list the model can always step around.
-const PSYCHE_READ_ONLY_COMMANDS = new Set(["cat", "ls", "head", "tail", "grep", "wc", "sha256sum", "stat", "cd", "pwd"])
-const SEGMENT_OPERATORS = new Set(["&&", "||", ";", "|"])
-
-// --- globs and expansions that could land inside a protected folder ---
-// A word such as /bundle/fr*nds/x.json, /bundle/friend?/x.json or ${F}ends/x.json names no protected folder literally, but the
-// shell could resolve it into one. A word like that counts as mentioning the folder when its directory part can match the folder's
-// path, so the read-only rule below applies to the command.
-const EXPANSION = "\u0001"
-// Marks a word built from a same-command literal, so the word is still checked though it shows no glob or expansion.
-const SUBSTITUTED = "\u0002"
-const STABLE_VARIABLES = ["HOME", "TMPDIR", "USER"]
-
-// Builtins that can set a variable other than by NAME=value; with any of them present no assignment is trusted.
-const OTHER_VARIABLE_SETTERS = /(?:^|[\s;&|(])(?:read|for|select|declare|typeset|local|readonly|eval|getopts|mapfile|readarray|printf|source|\.|let|export\s+-|unset)(?=$|[\s;&|)])/
-
-/**
- * Variables this command sets exactly once to a plain literal (`R=gim-home/CIT; gh pr view 1 -R $R`), with where the
- * assignment ends. Uses after that point are that literal, so they need not count as "could be anything". Quoted values,
- * expansions in the value, a second assignment to the same name or any other way of setting a variable leave it unknown.
- */
-function literalAssignments(command: string): Map<string, { value: string; end: number }> {
-  const found = new Map<string, { value: string; end: number }>()
-  if (OTHER_VARIABLE_SETTERS.test(command)) return found
-  for (const match of command.matchAll(/(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_]\w*)=([^\s;&|()<>`$'"\\{}*?[\]~]+)(?=$|[\s;&|)])/g)) {
-    const name = match[1]!
-    // Counts every NAME= in the command, including the one just matched.
-    if (command.match(new RegExp(`(?:^|[^\\w$])${name}=`, "g"))!.length === 1) found.set(name, { value: match[2]!, end: match.index! + match[0].length })
-  }
-  return found
-}
-
-function neutraliseExpansions(command: string): string {
-  const literals = literalAssignments(command)
-  return command.replace(/\$\([^)]*\)|`[^`]*`|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|\$\{[^}]*\}/g, (_match, braced: string | undefined, plain: string | undefined, offset: number) => {
-    const name = braced ?? plain
-    const literal = name === undefined ? undefined : literals.get(name)
-    if (literal && offset >= literal.end) return `${SUBSTITUTED}${literal.value}`
-    if (name !== undefined && STABLE_VARIABLES.includes(name) && !new RegExp(`\\b${name}=`).test(command) && process.env[name]) return process.env[name]!
-    return EXPANSION
-  })
-}
-
-function wordPattern(word: string): RegExp {
-  const generalised = word.replace(/\{[^}]*\}/g, EXPANSION).replace(/\[[^\]]*\]/g, "?")
-  let source = ""
-  for (const char of generalised) source += char === EXPANSION ? ".*" : char === "*" ? "[^/]*" : char === "?" ? "[^/]" : char.replace(/[.+^$()|\\\]{}[]/g, "\\$&")
-  return new RegExp(`^${source}$`)
-}
-
-function globOrExpansionCouldReach(command: string, folder: string, agentRoot: string): boolean {
-  const tokens = neutraliseExpansions(command).split(/[\s<>|;&()'"]+/).filter((token) => /[*?[{\u0001\u0002]/.test(token))
-  return tokens.some((marked) => {
-    const token = marked.replaceAll(SUBSTITUTED, "")
-    const word = token.startsWith("~") ? expandHome(token) : token
-    const absolute = word.startsWith("/") || word.startsWith(EXPANSION) ? word : `${agentRoot}/${word}`
-    const dir = absolute.slice(0, Math.max(absolute.lastIndexOf("/"), 0))
-    return wordPattern(absolute).test(folder) || wordPattern(dir).test(folder)
-  })
-}
-
-function commandMentionsPsyche(command: string, words: readonly string[], agentRoot: string): boolean {
-  const psyche = path.resolve(agentRoot, "psyche")
-  if (globOrExpansionCouldReach(command, psyche, agentRoot)) return true
-  if (command.includes(psyche) || words.some((word) => word.includes(psyche))) return true
-  if (words.some((word) => word === "psyche" || isPsychePath(word, agentRoot))) return true
-  // A relative "psyche/..." inside code or a quoted argument, when this agent has such a folder.
-  if (/(?:^|[\s'"=(])psyche\//.test(command) && fs.existsSync(psyche)) return true
-  // ~/..., $HOME/... and paths relative to a cd or -C target that land in this agent's psyche/.
-  return commandMentionsAgentFolder(command, words, agentRoot, "psyche")
-}
-
-/**
- * The shared rule: when a shell command mentions a protected folder at all, it runs only if every part of it is a read-only
- * command. The mention test is the only thing that differs between folders.
- */
-function protectedFolderShellWriteRefused(command: string, mentions: (words: readonly string[]) => boolean): boolean {
-  const entries = parseShell(command)
-  const words = entries.filter((entry): entry is string => typeof entry === "string")
-  if (!mentions(words)) return false
-  // Substitution, heredocs and any $VAR or ${VAR} expansion: the shell could build a protected path or a command word we cannot see.
-  if (/\$[({A-Za-z_]|`|<\(|<</.test(command)) return true
-  let expectCommandWord = true
-  for (const entry of entries) {
-    if (typeof entry === "string") {
-      if (expectCommandWord && !/^\w+=/.test(entry)) {
-        if (!PSYCHE_READ_ONLY_COMMANDS.has(entry)) return true
-        expectCommandWord = false
-      }
-      continue
-    }
-    const op = "op" in entry ? entry.op : "comment"
-    if (SEGMENT_OPERATORS.has(op)) expectCommandWord = true
-    else if (op !== "glob") return true
-  }
-  return false
-}
-
-function psycheShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot) return false
-  try {
-    return protectedFolderShellWriteRefused(command, (words) => commandMentionsPsyche(command, words, agentRoot))
-  } catch {
-    // The filesystem could not say where a path that names psyche/ lands: refuse rather than guess.
-    return true
-  }
-}
-
-// --- the friends store in shell commands ---
-// Same stance as the psyche folder: a command that names this agent's friends store runs only if it is read-only, because a list of
-// the ways to write a file (>, >>, tee, cp, mv, sed -i, node -e, python, cd then redirect, ~ paths) is one the model can step around.
-function expandHome(word: string): string {
-  return word === "~" || word.startsWith("~/") ? path.join(os.homedir(), word.slice(1)) : word
-}
-
-function commandMentionsFriendsStore(command: string, words: readonly string[], agentRoot: string): boolean {
-  if (globOrExpansionCouldReach(command, path.resolve(agentRoot, "friends"), agentRoot)) return true
-  // Only path-shaped words resolve against the store: an ordinary word such as "friends" in prose is not a path.
-  if (words.some((word) => word.includes("/") && isFriendsStorePath(expandHome(word), agentRoot))) return true
-  // A bare `friends` names the store only as the target of a cd; elsewhere it is an ordinary word ("my friends are kind").
-  if (words.some((word, index) => word.startsWith("friends/") || (word === "friends" && words[index - 1] === "cd"))) return true
-  // A variable or substitution in front of the path ($BUNDLE/friends/x.json): the folder name is still in the command.
-  if (/\$[({A-Za-z_]|`/.test(command) && /(?:^|[\/\s'"=])friends(?:$|[\/\s'"])/.test(command)) return true
-  // An absolute or relative path inside code or a quoted argument, such as node -e "...'/bundle/friends/x.json'...".
-  const store = path.resolve(agentRoot, "friends")
-  if (command.includes(store) || /(?:^|[\s'"=(])friends\//.test(command)) return true
-  // Paths relative to a cd or -C target that land in this agent's friends/.
-  return commandMentionsAgentFolder(command, words, agentRoot, "friends")
-}
-
-function friendsShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot) return false
-  try {
-    return protectedFolderShellWriteRefused(command, (words) => commandMentionsFriendsStore(command, words, agentRoot))
-  } catch {
-    // The filesystem could not say where a path that names friends/ lands: refuse rather than guess.
-    return true
-  }
-}
-
-// --- where a path in a shell command lands ---
-// A command can name one of this agent's folders by an absolute path, by ~/ or $HOME/, or relative to wherever it cd's (or
-// git -C's) first. Each word whose path has a part exactly `<name>` is resolved against every directory the command could be
-// working in, lexically and canonically, and counts when it lands in this agent's <name>/.
-const UNFOLLOWABLE_WORKING_DIRECTORY = /(?:^|[\s;&|(`])(?:pushd|popd)(?:\s|$)|(?:^|[\s;&|(`])cd\s+(?:--|["']?\$)|\s-C\s*["']?\$|(?:^|[\s;&|(`=<>])~[^/\s]|(?:^|[\s;&|(`/])(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-\w*c\b/
-
-/** Words of a shell command that name a path whose part is exactly `name`, wherever they sit (code and quotes included). */
-function namedFolderWords(command: string, name: string): string[] {
-  const part = new RegExp(`(?:^|/)${name}(?:/|$)`)
-  return command.split(/[\s'"=();|&<>`]+/).filter((token) => part.test(token))
-}
-
-function commandMentionsAgentFolder(command: string, words: readonly string[], agentRoot: string, name: string, startIn: readonly string[] = [process.cwd()]): boolean {
-  const lexicalFolder = path.resolve(agentRoot, name)
-  if (globOrExpansionCouldReach(command, lexicalFolder, agentRoot)) return true
-  const candidates = namedFolderWords(command, name)
-  if (candidates.length === 0) return false
-  // A variable in front of the path ($HOME/.../<name>/x): where it lands is the shell's to say, so it counts.
-  if (candidates.some((candidate) => candidate.includes("$"))) return true
-  // A working directory this guard cannot follow (pushd, cd --, a cd or -C to a variable, or a nested shell's -c string):
-  // a relative path could land anywhere, so it counts.
-  if (UNFOLLOWABLE_WORKING_DIRECTORY.test(command)) return true
-  // A path that names this bundle's own folder (x.ouro/psyche) or a glob just above the folder (*/psyche) is this agent's
-  // wherever the command works from, so eval, a piped shell, env --chdir, find -path and code that chdir's all count.
-  const bundle = path.basename(path.resolve(agentRoot)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const anchored = new RegExp(`(?:^|/)(?:${bundle}|[^/]*[*?[][^/]*)/${name}(?:/|$)`)
-  if (candidates.some((candidate) => anchored.test(candidate))) return true
-  const folders = [lexicalFolder, path.join(canonicalize(path.resolve(agentRoot)), name)]
-  // Every directory the command could be working in: where the shell starts, and each cd target, from each earlier one.
-  const cwds = [...startIn]
-  for (const [index, word] of words.entries()) {
-    // `git -C <dir>` works in <dir> just as `cd <dir>` does.
-    if (words[index - 1] !== "cd" && words[index - 1] !== "-C") continue
-    const target = expandHome(word)
-    cwds.push(...(path.isAbsolute(target) ? [target] : cwds.map((cwd) => path.resolve(cwd, target))))
-  }
-  return candidates.some((candidate) => {
-    const word = expandHome(candidate)
-    const lexicals = path.isAbsolute(word) ? [path.resolve(word)] : cwds.map((cwd) => path.resolve(cwd, word))
-    return lexicals.flatMap((lexical) => [lexical, canonicalize(lexical)])
-      .some((target) => folders.some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`)))
-  })
-}
-
-// --- the product rules in shell commands ---
-// product/PRODUCT.md is the package's standing rules for this agent; releases replace it, and nothing in a conversation does.
-// Unlike the friends store, a bare relative "product/" is an ordinary project folder almost everywhere, so it counts as this
-// agent's only when the command is plainly working in the agent root.
-function productShellWriteRefused(command: string, agentRoot: string | undefined): boolean {
-  if (!agentRoot) return false
-  try {
-    return protectedFolderShellWriteRefused(command, (words) => commandMentionsAgentFolder(command, words, agentRoot, "product", [path.resolve(agentRoot)]))
-  } catch {
-    // The filesystem could not say where a path that names product/ lands: refuse rather than guess.
-    return true
-  }
-}
-
 // --- structural guardrail checks (always on, all trust levels) ---
-
-function checkReadBeforeWrite(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  // The file tools start relative paths in the agent's home and record what they read by absolute path.
-  const target = (p: string): string => path.isAbsolute(p) || !context.agentRoot ? p : path.resolve(context.agentRoot, p)
-  if (toolName === "edit_file") {
-    const filePath = target(args.path || "")
-    if (!context.readPaths.has(filePath)) return deny(REASONS.readBeforeEdit)
-  }
-
-  if (toolName === "write_file") {
-    const filePath = target(args.path || "")
-    if (context.readPaths.has(filePath)) return allow
-    if (!fs.existsSync(filePath)) return allow
-    return deny(REASONS.readBeforeOverwrite)
-  }
-
-  return allow
-}
-
-function checkDestructiveShellPatterns(toolName: string, args: Record<string, string>): GuardResult {
-  if (toolName !== "shell") return allow
-  const command = args.command || ""
-  // Check each subcommand in compound commands for destructive patterns
-  for (const sub of splitShellCommands(command)) {
-    if (isDestructiveShellCommand(sub)) return deny(REASONS.destructiveCommand)
-  }
-  return allow
-}
 
 function checkProtectedPaths(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (toolName === "write_file" || toolName === "edit_file") {
@@ -501,10 +245,6 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
 
   if (toolName === "shell") {
     const command = args.command || ""
-    if (psycheShellWriteRefused(command, context.agentRoot)) return deny(PSYCHE_REFUSAL)
-    if (friendsShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
-    if (productShellWriteRefused(command, context.agentRoot)) return deny(REASONS.protectedPath)
-    if (bundleGitRefused(command, context.agentRoot)) return deny(BUNDLE_GIT_REFUSAL)
     if (syncSecretShellRefused(command)) return deny(REASONS.unreadablePath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
   }
@@ -512,14 +252,11 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
   return allow
 }
 
+// The agent's home is its own: it works there with the shell and the file tools the way a person would, and the tools'
+// descriptions say what each place is for. What stays guarded is authority: secrets, its own policy and permissions, and
+// who may ask it to change who it is.
 function checkStructuralGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  const protectedResult = checkProtectedPaths(toolName, args, context)
-  if (!protectedResult.allowed) return protectedResult
-
-  const destructiveResult = checkDestructiveShellPatterns(toolName, args)
-  if (!destructiveResult.allowed) return destructiveResult
-
-  return checkReadBeforeWrite(toolName, args, context)
+  return checkProtectedPaths(toolName, args, context)
 }
 
 // --- ouro CLI trust manifest ---

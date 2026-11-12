@@ -328,6 +328,48 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       expect(out.queue[0]).not.toHaveProperty("error_message")
     })
 
+    it("clears and blocklists a fake release on sight, so the app looks for a real copy, and shows only the real rows", async () => {
+      // The Nov 2026 shape: the indexer title looked like a film; the download client's name ended in .exe.
+      queues.radarr = [
+        { id: 11, movieId: 3, downloadId: "fake", title: "You Can See Everything 2026 1080p WEB ETHE", outputPath: "/downloads/You.Can.See.Everything.2026.1080p.exe", status: "completed" },
+        { id: 12, movieId: 3, downloadId: "real", title: "Autumn.in.New.York.2000.1080p.BluRay", status: "downloading" },
+      ]
+      const out = await mod.mediaQueue({ kind: "movie" })
+      expect(deletes()).toEqual([expect.objectContaining({ url: expect.stringContaining("/api/v3/queue/11?") })])
+      const query = new URL(deletes()[0].url).searchParams
+      expect(Object.fromEntries(query)).toMatchObject({ removeFromClient: "true", blocklist: "true", skipRedownload: "false" })
+      expect(out.cleared_fakes).toEqual([{ title: "You Can See Everything 2026 1080p WEB ETHE", reason: "its name ends in .exe, a program, not a video" }])
+      expect(out.cleared_note).toMatch(/no decision is needed/u)
+      expect(out).toMatchObject({ count: 1, shown: 1, summary: "1 queue row; 0 stalled." })
+      expect(out.queue.map((r: any) => r.queue_id)).toEqual([12])
+      expect(out).not.toHaveProperty("fakes_not_cleared")
+    })
+
+    it("knows a fake by the app's executable warning or a program in its status, removes a season pack once, and reports a delete that fails", async () => {
+      queues.sonarr = [
+        stalledRow(21, { downloadId: "pack", title: "Show.S01.1080p", statusMessages: [{ title: "Show.S01E01.scr", messages: [] }] }),
+        stalledRow(22, { downloadId: "pack", title: "Show.S01.1080p" }),
+        stalledRow(23, { downloadId: "warn", title: "Other.S02", statusMessages: [{ title: "x", messages: [null, "Caution: Found executable file with extension: '.exe'"] }] }),
+        stalledRow(24, { downloadId: "keep", title: "Movie.Comedy.Night.2024", statusMessages: [{ messages: ["One or more episodes expected"] }, null] }),
+      ]
+      deleteStatus[23] = 500
+      const out = await mod.mediaQueue({ kind: "series", service_id: 7 })
+      expect(deletes().map((c) => Number(c.url.split("/queue/")[1].split("?")[0]))).toEqual([21, 23])
+      expect(out.cleared_fakes).toEqual([{ title: "Show.S01.1080p", reason: "it holds Show.S01E01.scr, a program, not a video" }])
+      expect(out.fakes_not_cleared).toEqual([expect.objectContaining({ queue_id: 23, title: "Other.S02", reason: "Sonarr flagged it: Caution: Found executable file with extension: '.exe'" })])
+      // The pack's sibling row went with it; the failed fake and the real row stay on view.
+      expect(out.queue.map((r: any) => r.queue_id)).toEqual([23, 24])
+    })
+
+    it("leaves titles that only contain a program's letters alone", async () => {
+      const { fakeReleaseReason } = mod
+      for (const title of ["Coming.2.America.2021.1080p", "Scream.1996.mkv", "Batman.Begins.2005", "The.Commitments.1991.com.mkv", null]) {
+        expect(fakeReleaseReason({ title, movieId: 1 }), String(title)).toBeNull()
+      }
+      expect(fakeReleaseReason({ title: "Film.2024.MSI ", movieId: 1 })).toBe("its name ends in .msi, a program, not a video")
+      expect(fakeReleaseReason({ title: "Film", statusMessages: [{ messages: ["Found executable file"] }], movieId: 1 })).toBe("Radarr flagged it: Found executable file")
+    })
+
     it("lists the whole queue of a kind when no item is named, truncated at the cap", async () => {
       queues.sonarr = Array.from({ length: 230 }, (_, i) => ({ id: i + 1, seriesId: 7, title: `R${i}` }))
       const sonarr = await mod.mediaQueue({ kind: "series" })
@@ -359,10 +401,10 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       } finally { vi.useRealTimers() }
     })
 
-    it("is declared as a closed read-only tool", () => {
+    it("is declared as a closed tool whose one write is the fake-release rule", () => {
       const tool = mod.TOOLS.find((t: any) => t.name === "media_queue")
       expect(tool.inputSchema.additionalProperties).toBe(false)
-      expect(tool.description).toMatch(/Read-only/u)
+      expect(tool.description).toMatch(/Its one write is the household's standing rule/u)
       expect(tool.description).toMatch(/sanctuary_get_download_queue only sees the usenet/u)
     })
   })

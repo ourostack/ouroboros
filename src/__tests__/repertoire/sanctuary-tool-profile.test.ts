@@ -14,7 +14,7 @@ import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 const SANCTUARY_MEDIA_MCP_TOOLS = [
   "media_search", "media_request", "media_request_status",
   "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
-  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_quality_profile", "media_fill_missing",
+  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_quality_profile", "media_release_profile", "media_fill_missing",
 ] as const
 // The daily house-care sweep and its digest: native tools added to the owner and agent-peer profiles in v17 and v8.
 const HOUSE_CARE_TOOLS = ["house_sweep", "house_digest_send"]
