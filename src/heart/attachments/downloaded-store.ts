@@ -1,7 +1,6 @@
-import * as fs from "node:fs/promises"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { writeFileAtomic } from "../atomic-file"
 import { cacheRecentAttachment } from "./store"
 import { originalStoragePath } from "./originals"
 import { buildDownloadedAttachmentRecord, type DownloadedAttachmentRecord, type DownloadedAttachmentSource } from "./sources/downloaded"
@@ -29,25 +28,6 @@ export async function readBoundedResponse(response: Response, limit: number): Pr
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total)
 }
 
-export async function atomicWriteFile(filePath: string, buffer: Buffer): Promise<void> {
-  const directory = path.dirname(filePath)
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 })
-  const temporary = `${filePath}.${randomUUID()}.tmp`
-  let handle: fs.FileHandle | undefined
-  try {
-    handle = await fs.open(temporary, "wx", 0o600)
-    await handle.writeFile(buffer)
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await fs.rename(temporary, filePath)
-    const directoryHandle = await fs.open(directory, "r")
-    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
-  } finally {
-    await handle?.close().catch(() => undefined)
-    await fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error })
-  }
-}
 
 /** Keep a downloaded file as the original of an attachment record and remember it for the agent's attachment tools. */
 export async function storeDownloadedAttachment<TSource extends DownloadedAttachmentSource>(input: {
@@ -68,7 +48,7 @@ export async function storeDownloadedAttachment<TSource extends DownloadedAttach
   })
   const provisional = buildDownloadedAttachmentRecord(input.source, describe(path.resolve(input.agentRoot, "state", "attachments", ".pending", input.sourceId)))
   const localPath = originalStoragePath(input.agentRoot, provisional, provisional.mimeType)
-  await atomicWriteFile(localPath, input.buffer)
+  await writeFileAtomic(localPath, input.buffer)
   emitNervesEvent({ component: "engine", event: "engine.downloaded_attachment_stored", message: "downloaded attachment stored", meta: { source: input.source, byteCount: input.buffer.length } })
   return cacheRecentAttachment(input.agentName, buildDownloadedAttachmentRecord(input.source, describe(localPath)), input.agentRoot) as DownloadedAttachmentRecord<TSource>
 }

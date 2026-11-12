@@ -1,6 +1,5 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
 
 import {
   digestApprovalSuspensionCheckpointPayload,
@@ -10,6 +9,7 @@ import {
   type ApprovalTokenStore,
 } from "./tool-approval"
 import { emitNervesEvent } from "../nerves/runtime"
+import { writeFileAtomicSync } from "./atomic-file"
 
 function readObject<T>(filePath: string): Record<string, T> {
   try {
@@ -23,16 +23,7 @@ function readObject<T>(filePath: string): Record<string, T> {
 }
 
 function atomicWrite(filePath: string, value: unknown): void {
-  const directory = path.dirname(filePath)
-  fs.mkdirSync(directory, { recursive: true })
-  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
-  fs.writeFileSync(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 })
-  const temporaryHandle = fs.openSync(temporary, "r")
-  try { fs.fsyncSync(temporaryHandle) } finally { fs.closeSync(temporaryHandle) }
-  fs.renameSync(temporary, filePath)
-  fs.chmodSync(filePath, 0o600)
-  const directoryHandle = fs.openSync(directory, "r")
-  try { fs.fsyncSync(directoryHandle) } finally { fs.closeSync(directoryHandle) }
+  writeFileAtomicSync(filePath, `${JSON.stringify(value)}\n`)
 }
 
 export class FileApprovalCheckpointStore implements ApprovalSuspensionCheckpointStore {

@@ -9,6 +9,7 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { extractEventText, type SessionEvent } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
+import { writeFileAtomicSync } from "../heart/atomic-file"
 
 export const OWNER_CHAT_HANDOFF_MS = 2 * 60 * 60 * 1000
 
@@ -38,10 +39,7 @@ export function readHeldNotices(filePath: string): HeldNotice[] {
 }
 
 export function writeHeldNotices(filePath: string, notices: readonly HeldNotice[]): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const temporary = `${filePath}.${process.pid}.tmp`
-  fs.writeFileSync(temporary, JSON.stringify(notices), { mode: 0o600 })
-  fs.renameSync(temporary, filePath)
+  writeFileAtomicSync(filePath, JSON.stringify(notices))
   emitNervesEvent({ component: "senses", event: "senses.telegram_held_notices_saved", message: "saved the house notices held during a handoff", meta: { held: notices.length } })
 }
 
@@ -116,7 +114,5 @@ export function readReleasedHeldKeys(filePath: string): string[] {
 export function recordReleasedHeldKeys(filePath: string, keys: readonly string[]): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const next = [...readReleasedHeldKeys(filePath).filter((key) => !keys.includes(key)), ...keys].slice(-RELEASED_KEYS_LIMIT)
-  const temporary = `${filePath}.${process.pid}.tmp`
-  fs.writeFileSync(temporary, JSON.stringify(next), { mode: 0o600 })
-  fs.renameSync(temporary, filePath)
+  writeFileAtomicSync(filePath, JSON.stringify(next))
 }

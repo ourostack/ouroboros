@@ -4,6 +4,7 @@ import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
+import { writeFileAtomicSync } from "../atomic-file"
 
 export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "escalated" | "recovered"
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
@@ -357,14 +358,7 @@ function observationFromInput(input: ExternalEventInput, now: string, digest: st
 function atomicWriteJson(filePath: string, value: unknown, errorPrefix: string): void {
   const serialized = `${JSON.stringify(value, null, 2)}\n`
   if (Buffer.byteLength(serialized) > MAX_EVENT_RECORD_BYTES) throw new Error(`${errorPrefix} must be bounded`)
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
-  fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
-  const handle = fs.openSync(temporary, "r")
-  try { fs.fsyncSync(handle) } finally { fs.closeSync(handle) }
-  fs.renameSync(temporary, filePath)
-  const directory = fs.openSync(path.dirname(filePath), "r")
-  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+  writeFileAtomicSync(filePath, serialized)
 }
 
 function atomicWrite(recordPath: string, record: ExternalEventRecord): void {

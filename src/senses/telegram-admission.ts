@@ -10,6 +10,7 @@ import {
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
 import { escapeTelegramHtml } from "./telegram-client"
+import { writeJsonAtomicSync } from "../heart/atomic-file"
 
 export { FIXED_ADMISSION_ACKNOWLEDGEMENT }
 
@@ -268,20 +269,7 @@ function validateRecord(value: unknown, expectedId?: string): asserts value is T
   }
 }
 
-function atomicWrite(filePath: string, value: unknown): void {
-  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
-  const handle = fs.openSync(temporaryPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600)
-  try {
-    fs.writeFileSync(handle, `${JSON.stringify(value, null, 2)}\n`, "utf8")
-    fs.fsyncSync(handle)
-  } finally {
-    fs.closeSync(handle)
-  }
-  fs.renameSync(temporaryPath, filePath)
-  fs.chmodSync(filePath, 0o600)
-  const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-}
+const atomicWrite = writeJsonAtomicSync
 
 function readBoundedPrivateJson(filePath: string, maxBytes: number, label: string): unknown {
   const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
