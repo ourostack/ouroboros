@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1102",
       "changes": [
-        "Every sense understands attachments the same way: voice notes are transcribed and images described in iMessage, Telegram and Teams alike, through one shared module. Teams now receives files, pictures and voice clips instead of dropping them. Image description uses the agent's MiniMax key whatever its chat provider. The Butler image carries whisper.cpp and ffmpeg."
+        "Every sense understands attachments the same way: voice notes are transcribed and images described in iMessage, Telegram and Teams alike, through one shared module. Teams now receives files, pictures and voice clips instead of dropping them. Image description uses the agent's MiniMax key whatever its chat provider. Storing a download and finishing a transcription are now logged. The Butler image carries whisper.cpp and ffmpeg."
       ]
     },
     {
