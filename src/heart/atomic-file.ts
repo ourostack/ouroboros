@@ -1,4 +1,5 @@
 import * as fs from "node:fs"
+import * as fsp from "node:fs/promises"
 import * as path from "node:path"
 import { randomUUID } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -48,4 +49,25 @@ export function writeFileAtomicSync(filePath: string, contents: string | Uint8Ar
 /** `writeFileAtomicSync` for a JSON value, pretty-printed with a trailing newline. */
 export function writeJsonAtomicSync(filePath: string, value: unknown, options: AtomicWriteOptions = {}): void {
   writeFileAtomicSync(filePath, `${JSON.stringify(value, null, 2)}\n`, options)
+}
+
+/** The async `writeFileAtomicSync`, for large buffers on a sense's hot path. Folders it creates are private (0o700). */
+export async function writeFileAtomic(filePath: string, buffer: Uint8Array): Promise<void> {
+  const directory = path.dirname(filePath)
+  await fsp.mkdir(directory, { recursive: true, mode: 0o700 })
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`
+  let handle: fsp.FileHandle | undefined
+  try {
+    handle = await fsp.open(temporary, "wx", 0o600)
+    await handle.writeFile(buffer)
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fsp.rename(temporary, filePath)
+    const directoryHandle = await fsp.open(directory, "r")
+    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+  } finally {
+    await handle?.close().catch(() => undefined)
+    await fsp.unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error })
+  }
 }
