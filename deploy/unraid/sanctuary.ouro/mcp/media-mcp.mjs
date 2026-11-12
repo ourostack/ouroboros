@@ -972,22 +972,22 @@ export function queueRowView(r, nowMs, previous) {
   }
 }
 
-// A film or show never ships as a program. A download whose name or files end in one, or that Sonarr/Radarr flag for an
+// A film or show never ships as a program or a zip. A download whose name or files end in one, or that Sonarr/Radarr flag for an
 // executable, is a fake release (often malware); the household's standing rule is to clear and blocklist it on sight.
-export const FAKE_RELEASE_FILE = /\.(exe|scr|bat|msi|cmd|com|vbs|ps1|lnk)$/iu
+export const FAKE_RELEASE_FILE = /\.(exe|scr|bat|msi|cmd|com|vbs|ps1|lnk|zip)$/iu
 const EXECUTABLE_WARNING = /executable file/iu
 
 /** Why a queue row is a fake release, or null when it is not one. */
 export function fakeReleaseReason(r) {
   for (const name of [r.title, r.outputPath]) {
     const m = typeof name === "string" ? name.trim().match(FAKE_RELEASE_FILE) : null
-    if (m) return `its name ends in .${m[1].toLowerCase()}, a program, not a video`
+    if (m) return `its name ends in .${m[1].toLowerCase()}, a program or archive, not a video`
   }
   for (const s of r.statusMessages ?? []) {
     for (const line of [s?.title, ...(s?.messages ?? [])]) {
       if (typeof line !== "string") continue
       const m = line.trim().match(FAKE_RELEASE_FILE)
-      if (m) return `it holds ${line.trim()}, a program, not a video`
+      if (m) return `it holds ${line.trim()}, a program or archive, not a video`
       if (EXECUTABLE_WARNING.test(line)) return `${serviceName(r)} flagged it: ${line.trim()}`
     }
   }
@@ -1051,7 +1051,7 @@ export async function mediaQueue(a) {
   return {
     kind: a.kind, ...(item ? { service_id: item.id, title: item.title } : {}),
     count: total, shown: shown.length, ...(total > shown.length ? { truncated: true } : {}), queue: shown,
-    ...(fakes.cleared.length ? { cleared_fakes: fakes.cleared, cleared_note: "These were fake releases (a program, not a video). Each is removed from the download client and blocklisted, and Sonarr/Radarr will look for a real copy. Tell the person in one line which title and why; no decision is needed." } : {}),
+    ...(fakes.cleared.length ? { cleared_fakes: fakes.cleared, cleared_note: "These were fake releases (a program or archive, not a video). Each is removed from the download client and blocklisted, and Sonarr/Radarr will look for a real copy. Tell the person in one line which title and why; no decision is needed." } : {}),
     ...(fakes.failed.length ? { fakes_not_cleared: fakes.failed } : {}),
     summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
       : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled${shown.some((r) => r.stall?.state === "suspected") ? `, ${shown.filter((r) => r.stall?.state === "suspected").length} suspected (no ETA, to be confirmed by a check 30 minutes later)` : ""}.`,
@@ -2108,7 +2108,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_queue",
-    description: "View of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs nothing. Its one write is the household's standing rule: a download that is a program rather than a video (.exe, .scr, .bat, .msi, .cmd, .com, .vbs, .ps1, .lnk, or flagged by Sonarr/Radarr as an executable) is a fake release, so it is removed, blocklisted and listed in cleared_fakes; that needs no one's decision. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders. While a watched download is in the queue and media_fill_missing has not reported goal_met, answer each ticking check with resolve_await verdict 'no'.",
+    description: "View of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs nothing. Its one write is the household's standing rule: a download that is a program rather than a video (.exe, .scr, .bat, .msi, .cmd, .com, .vbs, .ps1, .lnk, .zip, or flagged by Sonarr/Radarr as an executable) is a fake release, so it is removed, blocklisted and listed in cleared_fakes; that needs no one's decision. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders. While a watched download is in the queue and media_fill_missing has not reported goal_met, answer each ticking check with resolve_await verdict 'no'.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },

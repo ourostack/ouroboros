@@ -338,7 +338,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       expect(deletes()).toEqual([expect.objectContaining({ url: expect.stringContaining("/api/v3/queue/11?") })])
       const query = new URL(deletes()[0].url).searchParams
       expect(Object.fromEntries(query)).toMatchObject({ removeFromClient: "true", blocklist: "true", skipRedownload: "false" })
-      expect(out.cleared_fakes).toEqual([{ title: "You Can See Everything 2026 1080p WEB ETHE", reason: "its name ends in .exe, a program, not a video" }])
+      expect(out.cleared_fakes).toEqual([{ title: "You Can See Everything 2026 1080p WEB ETHE", reason: "its name ends in .exe, a program or archive, not a video" }])
       expect(out.cleared_note).toMatch(/no decision is needed/u)
       expect(out).toMatchObject({ count: 1, shown: 1, summary: "1 queue row; 0 stalled." })
       expect(out.queue.map((r: any) => r.queue_id)).toEqual([12])
@@ -355,7 +355,7 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       deleteStatus[23] = 500
       const out = await mod.mediaQueue({ kind: "series", service_id: 7 })
       expect(deletes().map((c) => Number(c.url.split("/queue/")[1].split("?")[0]))).toEqual([21, 23])
-      expect(out.cleared_fakes).toEqual([{ title: "Show.S01.1080p", reason: "it holds Show.S01E01.scr, a program, not a video" }])
+      expect(out.cleared_fakes).toEqual([{ title: "Show.S01.1080p", reason: "it holds Show.S01E01.scr, a program or archive, not a video" }])
       expect(out.fakes_not_cleared).toEqual([expect.objectContaining({ queue_id: 23, title: "Other.S02", reason: "Sonarr flagged it: Caution: Found executable file with extension: '.exe'" })])
       // The pack's sibling row went with it; the failed fake and the real row stay on view.
       expect(out.queue.map((r: any) => r.queue_id)).toEqual([23, 24])
@@ -366,7 +366,8 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       for (const title of ["Coming.2.America.2021.1080p", "Scream.1996.mkv", "Batman.Begins.2005", "The.Commitments.1991.com.mkv", null]) {
         expect(fakeReleaseReason({ title, movieId: 1 }), String(title)).toBeNull()
       }
-      expect(fakeReleaseReason({ title: "Film.2024.MSI ", movieId: 1 })).toBe("its name ends in .msi, a program, not a video")
+      expect(fakeReleaseReason({ title: "Film.2024.MSI ", movieId: 1 })).toBe("its name ends in .msi, a program or archive, not a video")
+      expect(fakeReleaseReason({ title: "Show.S01E02.1080p.WEB.zip", seriesId: 1 })).toBe("its name ends in .zip, a program or archive, not a video")
       expect(fakeReleaseReason({ title: "Film", statusMessages: [{ messages: ["Found executable file"] }], movieId: 1 })).toBe("Radarr flagged it: Found executable file")
     })
 
