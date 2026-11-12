@@ -1320,6 +1320,19 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       }
     })
 
+    it("refuses a write into product/ or one a link carries into policy, and allows an ordinary home file", async () => {
+      const agentRoot = tempBundle()
+      fs.mkdirSync(path.join(agentRoot, "state", "policy"), { recursive: true })
+      const policy = path.join(agentRoot, "state", "policy", "steward.json")
+      fs.writeFileSync(policy, "{}")
+      const target = path.join(agentRoot, "notes.md")
+      fs.symlinkSync(policy, target)
+      const { guardInvocation } = await import("../../repertoire/guardrails")
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set(), agentRoot, ...family("telegram") })).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+      expect(guardInvocation("write_file", { path: path.join(agentRoot, "product", "PRODUCT.md") }, { readPaths: new Set(), agentRoot, ...family("telegram") })).toMatchObject({ allowed: false, reason: expect.stringContaining("protected") })
+      expect(guardInvocation("write_file", { path: path.join(agentRoot, "plain.md") }, { readPaths: new Set(), agentRoot, ...family("telegram") })).toEqual({ allowed: true })
+    }, 30_000)
+
     it("creates TACIT when it does not exist yet", async () => {
       const agentRoot = tempBundle()
       const target = path.join(agentRoot, "psyche", "TACIT.md")
@@ -1657,7 +1670,7 @@ describe("protected folders resolve paths the way the file tools do", () => {
   })
 })
 
-describe("sync owns the bundle's git, and its key is closed to the read-only file tools", () => {
+describe("the sync key is closed to the read-only file tools; git in the bundle is the agent's own", () => {
   let tmp: string
   let bundle: string
 
@@ -1681,18 +1694,7 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     const { guardInvocation } = await import("../../repertoire/guardrails")
     return guardInvocation("shell", { command }, { readPaths: new Set(), agentRoot: bundle, trustLevel: "family" })
   }
-  // The psyche guard runs first and keeps its own line for the commands in `psycheFirst`, which it refuses anyway.
-  async function expectRefused(commands: string[], reason: string, psycheFirst: string[]) {
-    const { PSYCHE_REFUSAL } = await import("../../repertoire/guardrails")
-    const results = []
-    for (const command of commands) results.push({ command, result: await shell(command) })
-    expect(results).toEqual(commands.map((command) => ({ command, result: { allowed: false, reason: psycheFirst.includes(command) ? PSYCHE_REFUSAL : reason } })))
-    // The bundle guard refuses every one of them on its own too, including the ones the psyche guard answers first.
-    const { bundleGitRefused } = await import("../../repertoire/guardrails")
-    expect(commands.filter((command) => !bundleGitRefused(command, bundle))).toEqual([])
-  }
-
-  it("allows git elsewhere and commands that only mention git", async () => {
+  it("allows git anywhere, its own bundle included, and commands that only mention git", async () => {
     const allowed = [
       "git -C /tmp/repo status",
       "cd - && git -C /tmp/repo log",
@@ -1716,20 +1718,11 @@ describe("sync owns the bundle's git, and its key is closed to the read-only fil
     const bad = []
     for (const command of allowed) { const r = await shell(command); if (!r.allowed) bad.push(command) }
     expect(bad).toEqual([])
-    const { bundleGitRefused, guardInvocation } = await import("../../repertoire/guardrails")
+    // The bundle is the agent's home: git in it is allowed, with or without an agent root.
+    const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("shell", { command: `git -C ${bundle} status` }, { readPaths: new Set() })).toEqual({ allowed: true })
-    // A runner's unreadable argument is not its command; the psyche guard answers this one first in a turn.
-    expect(bundleGitRefused("find /tmp/repo -exec $X git -C /tmp/repo log \\;", bundle)).toBe(false)
-    // An unreadable command word with no git after it runs something else; the later git is read on its own.
-    expect(bundleGitRefused("$RUN ls; git -C /tmp/repo log", bundle)).toBe(false)
-    // An unset stable variable stays unknown, so git aimed through it is refused.
-    const savedTmp = process.env.TMPDIR
-    delete process.env.TMPDIR
-    try {
-      expect(bundleGitRefused("git -C $TMPDIR/repo log", bundle)).toBe(true)
-    } finally {
-      process.env.TMPDIR = savedTmp
-    }
+    expect(await shell(`git -C ${bundle} log --oneline -5`)).toEqual({ allowed: true })
+    expect(await shell("git status && git log -1")).toEqual({ allowed: true })
   })
 
   it("refuses any shell command that names the key's directory, with the plain unreadable line", async () => {
