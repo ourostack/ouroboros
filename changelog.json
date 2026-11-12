@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1100",
       "changes": [
-        "The butler works in its home without refusals: the shell no longer refuses commands that use $VAR or $(...), read-before-write and the destructive-command block are gone, and the home map says what each place is for. A failed shell command shows its exit, stdout and stderr. A stale replayed thinking block is dropped and the turn retried instead of failing. media_queue clears and blocklists fake releases that are programs, and the new media_release_profile tool sets Radarr/Sonarr release profiles."
+        "The butler works in its home without refusals: the shell no longer refuses commands that use $VAR or $(...), read-before-write and the destructive-command block are gone, and the home map says what each place is for. A failed shell command shows its exit, stdout and stderr. A stale replayed thinking block is dropped and the turn retried instead of failing. media_queue clears and blocklists fake releases that are programs or archives, and the new media_release_profile tool (owner profile v20, agent-peer v10) sets Radarr/Sonarr release profiles."
       ]
     },
     {
