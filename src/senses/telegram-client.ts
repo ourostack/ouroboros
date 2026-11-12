@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto"
+import { readFileSync } from "node:fs"
+import { createHash, createHmac, timingSafeEqual } from "node:crypto"
+import { writeFileAtomicSync } from "../heart/atomic-file"
 
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -49,17 +49,7 @@ export interface TelegramOffsetStore {
   save(nextUpdateId: number): void
 }
 
-function durableAtomicWrite(path: string, contents: string): void {
-  const directory = dirname(path)
-  mkdirSync(directory, { recursive: true })
-  const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`
-  writeFileSync(temporaryPath, contents, { mode: 0o600 })
-  const temporary = openSync(temporaryPath, "r")
-  try { fsyncSync(temporary) } finally { closeSync(temporary) }
-  renameSync(temporaryPath, path)
-  const directoryHandle = openSync(directory, "r")
-  try { fsyncSync(directoryHandle) } finally { closeSync(directoryHandle) }
-}
+const durableAtomicWrite = (filePath: string, contents: string): void => writeFileAtomicSync(filePath, contents)
 
 export class FileTelegramOffsetStore implements TelegramOffsetStore {
   constructor(private readonly path: string) {}

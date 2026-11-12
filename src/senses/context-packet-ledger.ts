@@ -6,6 +6,7 @@ import {
   type SenseContextPacket,
   type SenseContextPacketMessage,
 } from "./context-packets"
+import { writeJsonAtomicSync } from "../heart/atomic-file"
 
 export interface SenseContextPacketWriteResult {
   packetPath: string
@@ -137,12 +138,7 @@ function receiptPath(agentRoot: string, packet: SenseContextPacket): string {
   return path.join(receiptsDir(agentRoot, packet.sense), `${packet.packetId}.json`)
 }
 
-function atomicWriteJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-  fs.renameSync(tmpPath, filePath)
-}
+const atomicWriteJson = writeJsonAtomicSync
 
 function preview160(message: SenseContextPacketMessage): { sourceRef: string; preview: string } {
   return {

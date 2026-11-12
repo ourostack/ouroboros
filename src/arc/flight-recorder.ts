@@ -12,6 +12,7 @@ import {
   type ReturnObligation,
 } from "./obligations"
 import { listActivePonderPackets, listPonderPackets, type PonderPacket } from "./packets"
+import { writeJsonAtomicSync } from "../heart/atomic-file"
 
 export type FlightRecorderConfidence = "current" | "stale_risky" | "unknown"
 export type FlightRecorderHealthStatus = "ok" | "degraded" | "unavailable"
@@ -260,12 +261,7 @@ function eventDay(recordedAt: string): string {
   return recordedAt.slice(0, 10) || "unknown"
 }
 
-function atomicWriteJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-  fs.renameSync(tmpPath, filePath)
-}
+const atomicWriteJson = writeJsonAtomicSync
 
 function cappedArray(values: string[]): string[] {
   return values.map((value) => capStructuredRecordString(value))

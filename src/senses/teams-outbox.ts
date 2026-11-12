@@ -4,6 +4,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { OUTBOUND_ORIGINS, type OutboundOrigin } from "../heart/session-events"
 import type { ProactiveTeamsSessionSendResult } from "./teams"
+import { writeFileAtomicSync } from "../heart/atomic-file"
 
 /**
  * Teams sends that a presence without the Teams sense hands to the machine that runs it. A non-owner writes one file
@@ -47,13 +48,8 @@ export function writeTeamsOutboxEntry(agentRoot: string, entry: TeamsOutboxNewEn
   const hash = createHash("sha256").update(body).digest("hex").slice(0, 8)
   const name = `${nowMs}-${entry.fromMachineId.replace(/[^\w.-]/g, "_")}-${hash}.json`
   const dir = teamsOutboxDir(agentRoot)
-  const tempDir = path.join(agentRoot, "state", "outbox-tmp")
-  fs.mkdirSync(dir, { recursive: true })
-  fs.mkdirSync(tempDir, { recursive: true })
-  const temp = path.join(tempDir, `${name}.${process.pid}.tmp`)
-  fs.writeFileSync(temp, body, "utf-8")
   const target = path.join(dir, name)
-  fs.renameSync(temp, target)
+  writeFileAtomicSync(target, body, { temporaryDirectory: path.join(agentRoot, "state", "outbox-tmp") })
   return target
 }
 

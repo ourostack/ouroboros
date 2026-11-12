@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { isDeepStrictEqual } from "node:util"
@@ -6,6 +6,7 @@ import { withFileLock } from "../../heart/file-lock"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
 import { shepherdStateDir, type ReturnRecord } from "./returns"
+import { writeFileAtomicSync } from "../../heart/atomic-file"
 
 export type NoticeDeliveryState = "pending" | "sent" | "unknown"
 export interface NoticeDelivery {
@@ -77,13 +78,7 @@ function atomicWrite(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const encoded = JSON.stringify(value)
   if (Buffer.byteLength(encoded) > MAX_BYTES) throw new Error("Shepherd notice outbox exceeds its 2 MiB limit")
-  const temp = `${file}.${randomUUID()}.tmp`
-  const fd = fs.openSync(temp, "wx", 0o600)
-  try {
-    fs.writeFileSync(fd, encoded)
-    fs.fsyncSync(fd)
-  } finally { fs.closeSync(fd) }
-  fs.renameSync(temp, file)
+  writeFileAtomicSync(file, encoded)
 }
 
 function persist(root: string, entries: NoticeOutboxEntry[]): void {

@@ -18,6 +18,7 @@ import {
   type AgentProviderVisibility,
   type ProviderVisibilityLane,
 } from "./provider-visibility"
+import { writeJsonAtomicSync } from "./atomic-file"
 
 export type ContextLossSentinelTrigger =
   | "post_turn"
@@ -187,12 +188,7 @@ export function contextLossSentinelPaths(agentRoot: string): ContextLossSentinel
   }
 }
 
-function atomicWriteJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`
-  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-  fs.renameSync(tmpPath, filePath)
-}
+const atomicWriteJson = writeJsonAtomicSync
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

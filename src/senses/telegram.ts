@@ -106,6 +106,7 @@ import {
   type TelegramEffectAuthorizationInput,
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
+import { writeFileAtomicSync } from "../heart/atomic-file"
 
 interface FullVisibilityProgress { fallback?: () => string | undefined }
 
@@ -463,13 +464,7 @@ async function appendSanctuaryTurnReceipt(
     while (aggregateBytes > TELEGRAM_TURN_LEDGER_MAX_BYTES && lines.length > 1) {
       aggregateBytes -= Buffer.byteLength(lines.shift()!) + 1
     }
-    const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
-    writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
-    const handle = openSync(temporary, "r")
-    try { fsyncSync(handle) } finally { closeSync(handle) }
-    renameSync(temporary, filePath)
-    const directory = openSync(path.dirname(filePath), "r")
-    try { fsyncSync(directory) } finally { closeSync(directory) }
+    writeFileAtomicSync(filePath, `${lines.join("\n")}\n`)
   })
   telegramTurnLedgerTails.set(filePath, current)
   try { await current } finally { if (telegramTurnLedgerTails.get(filePath) === current) telegramTurnLedgerTails.delete(filePath) }

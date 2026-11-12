@@ -11,6 +11,7 @@ import { chooseTeamsBot, liveBotApi } from "./shepherd/owner-notice"
 import type { ProactiveTeamsSessionSendParams, ProactiveTeamsSessionSendResult, TeamsBotApi } from "./teams"
 import type { OutboundOrigin } from "../heart/session-events"
 import { writeTeamsOutboxEntry } from "./teams-outbox"
+import { writeFileAtomicSync } from "../heart/atomic-file"
 
 /**
  * A Teams bot client for a turn that did not arrive on Teams (an `ouro msg`, a habit, a private-runtime turn), so a send
@@ -130,10 +131,7 @@ function readLedger(agentRoot: string, now: number): Record<string, number> {
 
 function writeLedger(agentRoot: string, ledger: Record<string, number>): void {
   const target = ledgerPath(agentRoot)
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  const temp = `${target}.${process.pid}.tmp`
-  fs.writeFileSync(temp, `${JSON.stringify(ledger)}\n`, { mode: 0o600 })
-  fs.renameSync(temp, target)
+  writeFileAtomicSync(target, `${JSON.stringify(ledger)}\n`)
 }
 
 /** `forwardedTo` names the machine that runs Teams when this one handed the send to it instead of sending. */
