@@ -172,7 +172,7 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
     && context.trustLevel === "family"
     && context.channel !== undefined && PSYCHE_IDENTITY_CHANNELS.has(context.channel)
     && context.isGroupChat !== true
-    // Teams does not yet tell the turn whether it is a group chat, so there only an explicit one-to-one counts.
+    // On Teams only an explicit one-to-one counts: the sense reports a conversation of unknown type as one-to-one.
     && (context.channel !== "teams" || context.isGroupChat === false)
 }
 

@@ -800,6 +800,11 @@ export function parseTeamsQuotedReply(
 }
 
 // Context from the Teams activity that carries OAuth tokens and signin ability
+/** Teams calls a one-to-one chat "personal"; a group chat or channel is shared with other people. Unknown counts as one-to-one, as before. */
+export function teamsIsGroupChat(conversationType: unknown): boolean {
+  return conversationType !== undefined && conversationType !== "personal"
+}
+
 export interface TeamsMessageContext {
   /** The incoming activity itself, distinct from a quoted reply target. */
   inboundActivityId?: string
@@ -813,6 +818,8 @@ export interface TeamsMessageContext {
   /** Logical connections (graph, ado, github) whose sign-in is known not to start, with the reason. */
   oauthUnavailable?: Readonly<Record<string, string>>
   signin: (connectionName: string) => Promise<string | undefined>
+  /** Whether other people share this conversation (a group chat or channel), from Teams' own conversation type. */
+  isGroupChat?: boolean
   // AAD identity fields (extracted from bot activity)
   aadObjectId?: string
   tenantId?: string
@@ -1086,7 +1093,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       provider,
       externalId,
       tenantId: teamsContext?.tenantId,
-      isGroupChat: false,
+      isGroupChat: teamsContext?.isGroupChat ?? false,
       groupHasFamilyMember: false,
       hasExistingGroupWithFamily: false,
       enforceTrustGate,
@@ -1356,6 +1363,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const teamsContext: TeamsMessageContext = {
         replyToId: activity.replyToId,
         signin: async () => undefined,
+        isGroupChat: teamsIsGroupChat(activity.conversation?.conversationType),
         aadObjectId: activity.from?.aadObjectId,
         tenantId: activity.conversation?.tenantId,
         displayName: activity.from?.name,
@@ -1550,6 +1558,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const teamsContext: TeamsMessageContext = {
         inboundActivityId: activity.id,
         replyToId: activity.replyToId,
+        isGroupChat: teamsIsGroupChat(activity.conversation?.conversationType),
         quotedReply: parseTeamsQuotedReply(activity.attachments, { botId: activity.recipient?.id ?? app.id, userId }),
         graphToken,
         adoToken,
