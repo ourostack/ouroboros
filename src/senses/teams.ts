@@ -20,6 +20,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
+import { teamsInboundText } from "./teams-attachments"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
 import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
@@ -1581,7 +1582,15 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         teamsSendImage: createTeamsImageSender((message) => ctx.send(message), activity.id, aiLabelEntities() as Entity[]),
       }
 
-      await handleTeamsMessage(text, stream, convId, teamsContext, sendText)
+      const agentName = getAgentName()
+      const inboundText = await teamsInboundText(text, {
+        agentName,
+        agentRoot: getAgentRoot(agentName),
+        attachments: activity.attachments,
+        /* v8 ignore next -- live SDK token manager; ingestTeamsAttachments tests cover the token use @preserve */
+        getBotToken: async () => (await app.tokenManager.getBotToken())?.toString(),
+      })
+      await handleTeamsMessage(inboundText, stream, convId, teamsContext, sendText)
     } catch (err: unknown) {
       reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       const msg = err instanceof Error ? err.message : String(err)

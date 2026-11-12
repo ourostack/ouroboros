@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
+import { readBoundedResponse, storeDownloadedAttachment } from "../heart/attachments/downloaded-store"
 import { cacheRecentAttachment } from "../heart/attachments/store"
 import { getRecentAttachment } from "../heart/attachments/store"
 import { originalStoragePath } from "../heart/attachments/originals"
@@ -12,47 +12,6 @@ import type { TelegramBotApi, TelegramInboundAttachment } from "./telegram-clien
 export const MAX_TELEGRAM_ATTACHMENT_BYTES = 20_000_000
 const MAX_TELEGRAM_ATTACHMENTS_PER_MESSAGE = 8
 const SAFE_FILE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}$/u
-
-async function readBounded(response: Response, limit: number): Promise<Buffer> {
-  const advertised = Number(response.headers.get("content-length"))
-  if (Number.isFinite(advertised) && advertised > limit) throw new Error("advertised size exceeds limit")
-  if (!response.body) throw new Error("empty response body")
-  const chunks: Uint8Array[] = []
-  let total = 0
-  const reader = response.body.getReader()
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.byteLength
-      if (total > limit) throw new Error("download exceeds limit")
-      chunks.push(value)
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined)
-  }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total)
-}
-
-async function atomicWrite(filePath: string, buffer: Buffer): Promise<void> {
-  const directory = path.dirname(filePath)
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 })
-  const temporary = `${filePath}.${randomUUID()}.tmp`
-  let handle: fs.FileHandle | undefined
-  try {
-    handle = await fs.open(temporary, "wx", 0o600)
-    await handle.writeFile(buffer)
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-    await fs.rename(temporary, filePath)
-    const directoryHandle = await fs.open(directory, "r")
-    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
-  } finally {
-    await handle?.close().catch(() => undefined)
-    await fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error })
-  }
-}
 
 export async function ingestTelegramAttachments(input: {
   agentName: string
@@ -113,23 +72,16 @@ export async function ingestTelegramAttachments(input: {
           ? await fetchImpl(`https://api.telegram.org/file/bot${input.botToken}/${remote.file_path}`, { signal: AbortSignal.timeout(30_000) })
           : (() => { throw new Error("attachment transport is unavailable") })()
       if (!response.ok) throw new Error(`download failed with HTTP ${response.status}`)
-      const buffer = await readBounded(response, MAX_TELEGRAM_ATTACHMENT_BYTES)
-      const provisional = buildTelegramAttachmentRecord({
-        fileId: candidate.fileId,
+      const buffer = await readBoundedResponse(response, MAX_TELEGRAM_ATTACHMENT_BYTES)
+      const record = await storeDownloadedAttachment({
+        agentName: input.agentName,
+        agentRoot: input.agentRoot,
+        source: "telegram",
+        sourceId: candidate.fileId,
         displayName: candidate.displayName,
         mimeType: candidate.mimeType ?? response.headers.get("content-type") ?? undefined,
-        byteCount: buffer.length,
-        localPath: path.resolve(input.agentRoot, "state", "attachments", ".pending", candidate.fileId),
+        buffer,
       })
-      const localPath = originalStoragePath(input.agentRoot, provisional, provisional.mimeType)
-      await atomicWrite(localPath, buffer)
-      const record = cacheRecentAttachment(input.agentName, buildTelegramAttachmentRecord({
-        fileId: candidate.fileId,
-        displayName: candidate.displayName,
-        mimeType: provisional.mimeType,
-        byteCount: buffer.length,
-        localPath,
-      }), input.agentRoot)
       attachments.push(record)
       emitNervesEvent({ component: "senses", event: "senses.telegram_attachment_ingested", message: "Telegram attachment entered the shared attachment store", meta: { kind: record.kind, byteCount: buffer.length } })
     } catch (error) {

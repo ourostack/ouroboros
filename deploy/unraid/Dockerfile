@@ -1,3 +1,15 @@
+# Speech-to-text for voice notes from every sense: whisper.cpp built for any x86-64/arm64 CPU, at a pinned, verified commit.
+FROM node:22-bookworm-slim AS whisper
+ARG WHISPER_CPP_VERSION=v1.8.7
+ARG WHISPER_CPP_COMMIT=48f628a84833905ee4a0658ee6d4a5c915ce1997
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git cmake make g++ \
+  && git clone --depth 1 --branch "$WHISPER_CPP_VERSION" https://github.com/ggml-org/whisper.cpp /src/whisper.cpp \
+  && test "$(git -C /src/whisper.cpp rev-parse HEAD)" = "$WHISPER_CPP_COMMIT" \
+  && cmake -S /src/whisper.cpp -B /src/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF \
+  && cmake --build /src/build --target whisper-cli -j"$(nproc)" \
+  && install -m 0755 /src/build/bin/whisper-cli /usr/local/bin/whisper-cli
+
 FROM node:22-bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/ourostack/ouroboros"
@@ -7,7 +19,7 @@ ARG TARGETARCH
 ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
 ARG SUPERCRONIC_ARM64_SHA256=c0576a8eb092e3f79108ed0a2155a25c7766af78456e5a6070e54757ef513bfe
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ git openssh-client sudo \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg procps python3 make g++ git openssh-client sudo \
   && rm -rf /var/lib/apt/lists/* \
   && case "$TARGETARCH" in amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_AMD64_SHA256" ;; arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_ARM64_SHA256" ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
   && curl -fsSLo /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-${TARGETARCH}" \
@@ -18,6 +30,8 @@ RUN apt-get update \
   && groupadd --system --gid 10002 ouro-sync \
   && useradd --system --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ouro-sync
 
+COPY --from=whisper /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+RUN whisper-cli --help >/dev/null 2>&1 && ffmpeg -version >/dev/null
 WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
 RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund \

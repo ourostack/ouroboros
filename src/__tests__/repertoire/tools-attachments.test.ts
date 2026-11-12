@@ -370,6 +370,23 @@ describe("attachment tool handlers", () => {
     )
   })
 
+  it("reports a vision failure that is not a missing key as a describe_image failure, not a credential problem", async () => {
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = writeFile(agentRoot, "normalized-fail.png", "png")
+    const attachment = buildCliLocalFileAttachmentRecord({ path: "/tmp/fail.png", mimeType: "image/png", byteCount: 3 })
+    cacheRecentAttachment("testagent", attachment, agentRoot)
+    vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
+      attachmentId: attachment.id, variant: "vision_safe", path: normalizedPath, displayName: "fail.png", mimeType: "image/png", byteCount: 3,
+    })
+    vi.mocked(minimaxVlmDescribe).mockRejectedValue(new Error("vision model timed out"))
+
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+    const raw = await tool.handler({ attachment_id: attachment.id, prompt: "what is this?" })
+
+    expect(raw).toContain("vision model timed out")
+    expect(raw).not.toContain("describe_image:minimax-missing-key")
+  })
+
   it("returns a structured friction envelope when an attachment cannot be found", async () => {
     makeAgentRoot()
     const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!

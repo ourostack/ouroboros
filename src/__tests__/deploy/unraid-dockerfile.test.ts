@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 
-const DOCKERFILE = readFileSync("deploy/unraid/Dockerfile", "utf8")
+// The runtime stage is the last FROM; earlier stages only build tools it copies in.
+const FULL_DOCKERFILE = readFileSync("deploy/unraid/Dockerfile", "utf8")
+const DOCKERFILE = FULL_DOCKERFILE.slice(FULL_DOCKERFILE.lastIndexOf("\nFROM ") + 1)
 const KNOWN_HOSTS = readFileSync("deploy/unraid/github_known_hosts", "utf8")
 
 // GitHub's published SSH host key fingerprints (https://api.github.com/meta, ssh_key_fingerprints), read 2026-11-06.

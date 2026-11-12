@@ -6,8 +6,7 @@ import {
   redactBlueBubblesHealthDetailForNerves,
 } from "../../heart/daemon/bluebubbles-health-diagnostics"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { MINIMAX_PROVIDER_BASE_URL } from "../../heart/providers/minimax"
-import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
+import { describeImage } from "../../heart/attachments/understand"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
 import { verifyBlueBubblesServerAccount } from "./host-account-verifier"
@@ -840,32 +839,7 @@ export function createBlueBubblesClient(
           const agentConfig = loadAgentConfig()
           const chatModel: string = agentConfig.humanFacing.model
           const chatProvider: string = agentConfig.humanFacing.provider
-          const vlmDescribe: VlmDescribeFn = async (params) => {
-            if (chatProvider !== "minimax") {
-              throw new Error(
-                "VLM fallback requires a minimax credential for this agent — " +
-                "configure one or switch to a vision-capable chat model",
-              )
-            }
-            const { readProviderCredentialRecord } = await import("../../heart/provider-credentials")
-            const credential = await readProviderCredentialRecord(getAgentName(), "minimax")
-            const apiKey = credential.ok ? credential.record.credentials.apiKey : undefined
-            if (!apiKey) {
-              throw new Error(
-                "VLM fallback: minimax API key not found in the agent vault — " +
-                "run `ouro auth --agent <agent> --provider minimax`",
-              )
-            }
-            return minimaxVlmDescribe({
-              apiKey: String(apiKey),
-              prompt: params.prompt,
-              imageDataUrl: params.imageDataUrl,
-              baseURL: MINIMAX_PROVIDER_BASE_URL,
-              attachmentGuid: params.attachmentGuid,
-              mimeType: params.mimeType,
-              chatModel: params.chatModel,
-            })
-          }
+          const vlmDescribe: VlmDescribeFn = (params) => describeImage(getAgentName(), params)
           // VLM prompt context wants the user's raw inbound text — NOT
           // the agent-facing rendering, which now carries the attachment
           // marker after the B2 fix. Pull it from the source payload.

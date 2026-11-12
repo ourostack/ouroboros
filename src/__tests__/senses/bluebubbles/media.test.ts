@@ -684,7 +684,7 @@ describe("BlueBubbles media hydration", () => {
     )
     expect(execFile).toHaveBeenCalledWith(
       "ffmpeg",
-      expect.arrayContaining(["-i", "/tmp/ouro-bb-audio-123/Voice Note.m4a", "/tmp/ouro-bb-audio-123/Voice Note.wav"]),
+      expect.arrayContaining(["-i", "/tmp/ouro-bb-audio-123/Voice Note.m4a", "/tmp/ouro-bb-audio-123/audio.wav"]),
       expect.any(Object),
       expect.any(Function),
     )
@@ -694,12 +694,12 @@ describe("BlueBubbles media hydration", () => {
         "-m",
         path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
         "-f",
-        "/tmp/ouro-bb-audio-123/Voice Note.wav",
+        "/tmp/ouro-bb-audio-123/audio.wav",
       ]),
       expect.any(Object),
       expect.any(Function),
     )
-    expect(readFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/Voice Note.json", "utf8")
+    expect(readFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/audio.json", "utf8")
     expect(rm).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123", { recursive: true, force: true })
     expect(result).toEqual({
       inputParts: [],
