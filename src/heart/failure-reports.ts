@@ -5,7 +5,7 @@ import * as path from "node:path"
 import gte from "semver/functions/gte"
 import valid from "semver/functions/valid"
 const semver = { gte, valid }
-import type { FriendStore } from "@ouro.bot/friends"
+import type { FriendRecord, FriendStore } from "@ouro.bot/friends"
 import { ready } from "@ouro.bot/friends/a2a-client"
 import { escalationHolders, holdsEscalation, pinnedHolderDid } from "../a2a/escalation-grants"
 import { FileOutboxStore } from "../a2a/outbox-store"
@@ -78,6 +78,7 @@ export interface FailureReportRecord {
 export type FileReportResult =
   | { ok: true; id: string; shortId: string; duplicate: boolean; recipients: number }
   | { ok: false; reason: "no_escalation_peer" | "rate_limited" | "invalid"; detail: string }
+  | { ok: false; reason: "no_escalation_peer"; detail: string; saved: true; id: string; shortId: string; duplicate: boolean }
 
 export type ResolveReportResult =
   | { ok: true; id: string; status: "resolved" }
@@ -173,6 +174,8 @@ export function pruneClosedReports(agentRoot: string, now: number = Date.now()):
   for (const record of listFailureReports(agentRoot)) {
     if (record.status === "closed" && record.closedAt && now - Date.parse(record.closedAt) > CLOSED_REPORT_RETENTION_MS) {
       fs.rmSync(reportFile(agentRoot, record.id), { force: true })
+      const outbox = new FileOutboxStore(agentRoot)
+      for (const recipient of record.recipients) outbox.forgetOnce(recipient, `failure-report:${record.id}`)
       pruned += 1
     }
   }
@@ -205,14 +208,15 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
     pruneClosedReports(agentRoot, now)
     const existing = listFailureReports(agentRoot)
     // A replay conversation never folds: each gate run must leave a fresh report to read back.
-    const open = replay ? undefined : existing.find((record) => !record.replay && record.fingerprint === fingerprint && record.status !== "closed")
+    const open = replay ? undefined : existing.find((record) => !record.replay && record.fingerprint === fingerprint && record.status !== "closed"
+      && (Object.keys(record.outboxEntries).length > 0 || record.origin.friendId === origin.friendId))
     if (open) {
-      const folded = await foldRepeat(agentRoot, open.id, { error, failedTool, origin }, now)
+      const folded = await foldRepeat(agentRoot, store, open.id, { error, failedTool, origin }, now)
       if (folded) return folded
     }
 
     const holders = (await escalationHolders(agentRoot, store, now)).filter((holder) => replay ? isReplayWindowOpen(agentRoot, holder.id, now) : !isReplayIdentity(agentRoot, holder.id))
-    if (holders.length === 0) return { ok: false, reason: "no_escalation_peer", detail: replay ? "no replay escalation peer" : "no friend holds the escalation grant" } as const
+    if (holders.length === 0 && replay) return { ok: false, reason: "no_escalation_peer", detail: "no replay escalation peer" } as const
     // Replay identities (the same check that keeps them out of owner policy) have no budget: every gate run files its reports, and the gate acknowledges them.
     const real = existing.filter((record) => !record.replay)
     if (!replay && overBudget(real.map((record) => Date.parse(record.createdAt)), now, REPORTS_PER_HOUR, REPORTS_PER_DAY)) {
@@ -226,30 +230,79 @@ export async function fileFailureReport(agentRoot: string, store: FriendStore, i
     const record: FailureReportRecord = {
       id, shortId: id.slice(0, 8), fingerprint, createdAt: new Date(now).toISOString(), lastSeenAt: new Date(now).toISOString(), occurrences: 1,
       severity: input.severity, ariWords, tried, error, failedTool, origin, replay,
-      recipients: holders.map((holder) => holder.id), outboxEntries: {}, status: "open",
-    }
-    const outbox = new FileOutboxStore(agentRoot)
-    for (const holder of holders) {
-      record.outboxEntries[holder.id] = outbox.append(holder.id, {
-        kind: "failure_report",
-        body: reportBody(record),
-        meta: {
-          reportId: id, shortId: record.shortId, severity: record.severity, failedTool, fingerprint, ariWords: record.ariWords, conversation: { channel: origin.channel, key: origin.key },
-          origin: { friendId: origin.friendId, friendName: origin.friendName, trustLevel: origin.trustLevel, ownerOrigin: origin.ownerOrigin },
-        },
-      }, now).id
+      recipients: holders.map(holder => holder.id), outboxEntries: {}, status: "open",
     }
     writeReport(agentRoot, record)
-    emitNervesEvent({ component: "senses", event: "senses.failure_report_filed", message: "filed a failure report", meta: { reportId: id, severity: record.severity, recipients: holders.length, replay, ownerOrigin: origin.ownerOrigin } })
-    return { ok: true, id, shortId: record.shortId, duplicate: false, recipients: holders.length } as const
+    await withFileLock(lockDir(agentRoot), `report-${id}`, async () => {
+      const fresh = readFailureReport(agentRoot, id)
+      if (!fresh) throw new Error("saved failure report disappeared before enqueue")
+      Object.assign(record, fresh)
+      await enqueueReport(agentRoot, record, holders, now)
+    })
+    emitNervesEvent({ component: "senses", event: "senses.failure_report_filed", message: "retained a failure report and queued available authorized recipients", meta: { reportId: id, severity: record.severity, recipients: Object.keys(record.outboxEntries).length, replay, ownerOrigin: origin.ownerOrigin } })
+    return filingResult(record, false)
   })
 }
 
+function filingResult(record: FailureReportRecord, duplicate: boolean): FileReportResult {
+  const recipients = Object.keys(record.outboxEntries).length
+  if (!recipients) {
+    return { ok: false, reason: "no_escalation_peer", detail: "no friend holds the escalation grant", saved: true, id: record.id, shortId: record.shortId, duplicate }
+  }
+  return { ok: true, id: record.id, shortId: record.shortId, duplicate, recipients }
+}
+
+/** The report is durable before its outbox entries; appendOnce covers a crash between append and recording the entry. */
+async function enqueueReport(agentRoot: string, record: FailureReportRecord, holders: FriendRecord[], now: number): Promise<void> {
+  const outbox = new FileOutboxStore(agentRoot)
+  record.recipients = [...new Set([...Object.keys(record.outboxEntries), ...holders.map(holder => holder.id)])]
+  writeReport(agentRoot, record)
+  for (const holder of holders) {
+    if (record.outboxEntries[holder.id] || !holdsEscalation(agentRoot, holder, now)) continue
+    const entry = await outbox.appendOnce(holder.id, `failure-report:${record.id}`, {
+      kind: "failure_report", body: reportBody(record), durable: true,
+      meta: {
+        reportId: record.id, shortId: record.shortId, severity: record.severity, failedTool: record.failedTool, fingerprint: record.fingerprint,
+        ariWords: record.ariWords, conversation: { channel: record.origin.channel, key: record.origin.key }, origin: record.origin,
+      },
+    }, now)
+    record.outboxEntries[holder.id] = entry.id
+    writeReport(agentRoot, record)
+  }
+}
+
+/** Retry locally retained reports only against current real escalation grants, never by assigning a grant. */
+export async function dispatchPendingFailureReports(agentRoot: string, store: FriendStore, now: number = Date.now()): Promise<number> {
+  const needsDelivery = (record: FailureReportRecord) => record.recipients.length === 0 || record.recipients.some(id => !record.outboxEntries[id])
+  const pending = listFailureReports(agentRoot).filter(record => record.status === "open" && !record.replay && needsDelivery(record))
+  if (!pending.length) return 0
+  const holders = (await escalationHolders(agentRoot, store, now)).filter(holder => !isReplayIdentity(agentRoot, holder.id))
+  let dispatched = 0
+  for (const listed of pending) {
+    await withFileLock(lockDir(agentRoot), `report-${listed.id}`, async () => {
+      const record = readFailureReport(agentRoot, listed.id)
+      if (!record || record.status !== "open" || record.replay || !needsDelivery(record)
+        || (record.origin.friendId !== null && isReplayIdentity(agentRoot, record.origin.friendId))) return
+      const before = Object.keys(record.outboxEntries).length
+      await enqueueReport(agentRoot, record, holders, now)
+      if (Object.keys(record.outboxEntries).length > before) dispatched += 1
+    })
+  }
+  emitNervesEvent({ component: "senses", event: "senses.failure_reports_retried", message: "retried locally retained failure reports against current escalation grants", meta: { pending: pending.length, dispatched } })
+  return dispatched
+}
+
 /** Counts a repeat on the open report (re-read under the report's own lock) and tells the recipients, at most once a day per report. */
-async function foldRepeat(agentRoot: string, id: string, repeat: { error: string; failedTool: string | null; origin: ReportOrigin }, now: number): Promise<FileReportResult | null> {
-  return withFileLock(lockDir(agentRoot), `report-${id}`, () => {
+async function foldRepeat(agentRoot: string, store: FriendStore, id: string, repeat: { error: string; failedTool: string | null; origin: ReportOrigin }, now: number): Promise<FileReportResult | null> {
+  return withFileLock(lockDir(agentRoot), `report-${id}`, async () => {
     const fresh = readFailureReport(agentRoot, id)
     if (!fresh || fresh.status === "closed") return null
+    if (fresh.recipients.length === 0 || fresh.recipients.some(recipient => !fresh.outboxEntries[recipient])) {
+      const holders = (await escalationHolders(agentRoot, store, now)).filter(holder => !isReplayIdentity(agentRoot, holder.id))
+      await enqueueReport(agentRoot, fresh, holders, now)
+      writeReport(agentRoot, { ...fresh, occurrences: fresh.occurrences + 1, lastSeenAt: new Date(now).toISOString() })
+      return filingResult(fresh, true)
+    }
     const occurrences = fresh.occurrences + 1
     const notify = fresh.lastRepeatNoticeAt === undefined || now - Date.parse(fresh.lastRepeatNoticeAt) >= DAY_MS
     if (notify) {

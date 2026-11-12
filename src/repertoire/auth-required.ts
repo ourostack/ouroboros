@@ -8,6 +8,7 @@ import type { ToolContext } from "./tools-base"
  */
 export function authRequired(ctx: ToolContext | undefined, connection: string, need: string): string {
   const unavailable = ctx?.oauthUnavailable?.[connection]
+    || (!ctx?.oauthAvailable?.includes(connection) ? "this channel has no OAuth sign-in route. human-required: use a configured Teams OAuth connection; an agent cannot supply consent or borrow another account's credentials." : undefined)
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.auth_required",

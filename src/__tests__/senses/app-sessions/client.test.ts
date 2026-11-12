@@ -9,7 +9,7 @@ import type WebSocket from "ws"
 import {
   appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
   listAppSessions, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
-  resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, type RunFile,
+  readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, type RunFile,
 } from "../../../senses/app-sessions/client"
 
 type Frame = Record<string, unknown>
@@ -244,6 +244,20 @@ describe("listing the sidebar", () => {
     expect(listAppSessions({ stateDir })).toMatchObject([{ id: WS, name: "Old", remote: false, project: null }])
   })
 
+  it("keeps project association, creator provenance and observable parent placement distinct", () => {
+    const handle = db()
+    handle.exec("ALTER TABLE workspaces ADD COLUMN creator_session_id TEXT; ALTER TABLE workspaces ADD COLUMN coordinating_creator_session_id TEXT")
+    handle.prepare("UPDATE workspaces SET creator_session_id = ?, coordinating_creator_session_id = ? WHERE session_id = ?").run(CHAT, CHAT, WS)
+    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ projectId: "p1", creatorSessionId: CHAT, coordinatingCreatorSessionId: CHAT, sidebarPlacement: "unknown" })
+    expect(listAppSessions(options()).find(row => row.id === CHAT)).not.toHaveProperty("parentSessionId")
+    handle.exec("ALTER TABLE workspaces ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN creator_session_id TEXT")
+    handle.prepare("UPDATE workspaces SET parent_session_id = ? WHERE session_id = ?").run(CHAT, WS)
+    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ parentSessionId: CHAT, sidebarPlacement: "unknown" })
+    expect(listAppSessions(options()).find(row => row.id === CHAT)).toMatchObject({ parentSessionId: null, creatorSessionId: null, sidebarPlacement: "unknown" })
+    expect(listAppSessions(options()).find(row => row.id === STUCK)).toMatchObject({ parentSessionId: null, sidebarPlacement: "unknown" })
+    handle.close()
+  })
+
   it("throws plainly when the app has no database here", () => {
     fs.rmSync(path.join(stateDir, "data.db"))
     expect(() => listAppSessions({ stateDir })).toThrow("no GitHub Copilot app database")
@@ -256,6 +270,15 @@ describe("listing the sidebar", () => {
       sessions: [{ id: WS, name: "Fix the thing", state: "working" }, { id: STUCK, name: "(unnamed)", state: "stuck" }, { id: CHAT, name: "A chat", state: "idle" }],
     })
     expect(snapshot({ stateDir }).at).toMatch(/^\d{4}-/)
+  })
+
+  it("derives counts and sessions from one observed sidebar rather than reading a different revision", () => {
+    const rows = listAppSessions(options())
+    fs.rmSync(path.join(stateDir, "data.db"))
+    expect(snapshot(options(), rows)).toMatchObject({
+      counts: { working: 1, idle: 1, waiting: 0, stuck: 1 },
+      sessions: rows.map(({ id, name, state }) => ({ id, name, state })),
+    })
   })
 })
 
@@ -271,11 +294,71 @@ describe("reading a session", () => {
       event("user.message", { content: "x".repeat(5000) }, { timestamp: undefined }),
     ])
     const messages = tailAppSession(WS, 3, { stateDir })
-    expect(messages.map(message => [message.role, message.text.length])).toEqual([["assistant", 5], ["user", 0], ["user", 4000]])
+    expect(messages.map(message => [message.role, message.text.length])).toEqual([["user", 2], ["assistant", 5], ["user", 4000]])
+    expect(messages[2].truncated).toBe(true)
     expect(messages[2].at).toBeNull()
     expect(tailAppSession(WS, 0, { stateDir })).toHaveLength(1)
     expect(tailAppSession(CHAT, 5, { stateDir })).toEqual([])
     expect(messagesIn([{ type: "assistant.message" }])).toEqual([])
+  })
+
+  it("finds the requested conversation across large non-message events", () => {
+    const conversation = Array.from({ length: 12 }, (_, index) =>
+      event(index % 2 ? "assistant.message" : "user.message", { content: `turn ${index}` }))
+    writeEvents(WS, [
+      ...conversation.slice(0, 11),
+      event("model.messages_snapshot", { padding: "x".repeat(3 * 1024 * 1024) }),
+      event("session.binary_asset", { padding: "x".repeat(9 * 1024 * 1024) }),
+      ...conversation.slice(11),
+    ])
+    expect(tailAppSession(WS, 12, { stateDir }).map(message => message.text))
+      .toEqual(conversation.map(item => item.data.content))
+    expect(readAppSessionHistory(WS, 12, { stateDir })).toMatchObject({ requestedCount: 12, returnedCount: 12, skippedEvents: 1, source: "local_event_log" })
+  })
+
+  it("reports short, missing, malformed and truncated history without fabricating completeness", () => {
+    expect(readAppSessionHistory(CHAT, 12, options())).toMatchObject({ missing: true, returnedCount: 0, beginningReached: false })
+    const file = writeEvents(WS, ["", "not json", event("assistant.message", { content: "é".repeat(300_000) })])
+    const history = readAppSessionHistory(WS, 12, options())
+    expect(history).toMatchObject({ missing: false, beginningReached: true, returnedCount: 1, skippedEvents: 1, observedAt: iso(NOW) })
+    expect(history.messages[0]).toMatchObject({ text: "é".repeat(4000), truncated: true })
+    fs.writeFileSync(file, "")
+    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ beginningReached: true, logBytes: 0, returnedCount: 0 })
+    fs.writeFileSync(file, JSON.stringify(event("user.message", { content: "no final newline" })))
+    expect(tailAppSession(WS, 12, options())[0].text).toBe("no final newline")
+    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(path.dirname(file), "not a directory")
+    expect(() => readAppSessionHistory(WS, 12, options())).toThrow()
+  })
+
+  it("does not discard a preceding message when an oversized line aligns with a chunk boundary or starts the file", () => {
+    const first = JSON.stringify(event("user.message", { content: "first" })) + "\n"
+    const last = JSON.stringify(event("assistant.message", { content: "last" })) + "\n"
+    const empty = JSON.stringify(event("session.binary_asset", { padding: "" })) + "\n"
+    const huge = JSON.stringify(event("session.binary_asset", { padding: "x".repeat(9 * 1024 * 1024 - Buffer.byteLength(last) - Buffer.byteLength(empty)) })) + "\n"
+    const file = writeEvents(WS, [])
+    fs.writeFileSync(file, first + huge + last)
+    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ returnedCount: 2, skippedEvents: 1, beginningReached: true })
+    expect(tailAppSession(WS, 12, options()).map(message => message.text)).toEqual(["first", "last"])
+    fs.writeFileSync(file, huge + last)
+    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ returnedCount: 1, skippedEvents: 1 })
+  })
+
+  it("reads forward in bounded complete-event batches and survives oversized or incomplete lines", () => {
+    const file = writeEvents(WS, [
+      event("assistant.message", { content: "first" }),
+      event("session.binary_asset", { padding: "x".repeat(9 * 1024 * 1024) }),
+      "malformed", "", event("assistant.message", { content: "last" }),
+    ])
+    const seen: Frame[] = []
+    const first = readNewAppEvents(WS, 0, 1, item => seen.push(item), options())
+    expect(first.offset).toBeLessThan(first.logBytes)
+    const next = readNewAppEvents(WS, first.offset, 20 * 1024 * 1024, item => seen.push(item), options())
+    expect(next).toMatchObject({ offset: fs.statSync(file).size, skippedEvents: 2 })
+    expect(messagesIn(seen).map(message => message.text)).toEqual(["first", "last"])
+    fs.appendFileSync(file, '{"type":"assistant.message"')
+    expect(readNewAppEvents(WS, next.offset, 100, item => seen.push(item), options()).offset).toBe(next.offset)
+    expect(readNewAppEvents(CHAT, 0, 100, () => undefined, options())).toEqual({ offset: 0, logBytes: 0, skippedEvents: 0 })
   })
 
   it("reads the log from an offset, bounded, and knows its size", () => {
@@ -401,15 +484,85 @@ describe("opening and archiving", () => {
     })
     app.on("send_message", (frame, socket) => socket.push({ type: "session_message_sent", request_id: frame.request_id }))
     const result = await openAppChat({ name: "Probe", prompt: "Reply PROBE-OK", cwd: "/tmp/x", agent: "desk:worker", model: "m1" }, options())
-    expect(result).toEqual({ ok: true, sessionId: CHAT, sent: { ok: true, reply: "session_message_sent", messageId: null, error: null }, error: null })
+    expect(result).toMatchObject({ ok: true, created: true, sessionId: CHAT, sent: { ok: true, reply: "session_message_sent", messageId: null, error: null }, error: null, placement: { kind: "chat", verified: false, associationVerified: true, workspaceId: null, sidebarPlacement: "unknown" } })
     expect(app.requests.map(frame => frame.type)).toEqual(["create_session", "rename_session", "send_message"])
     expect(app.requests[0]).toMatchObject({ cwd: "/tmp/x", session_type: "general_chat", agent: "desk:worker", model: "m1" })
     expect(app.requests[1]).toEqual({ type: "rename_session", session_id: CHAT, title: "Probe" })
   })
 
-  it("opens a bare chat in the home folder", async () => {
+  it("does not claim creation success when the app's acknowledgement has no observable session", async () => {
     app.on("create_session", (frame, socket) => socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT }))
-    expect(await openAppChat({}, options())).toEqual({ ok: true, sessionId: CHAT, sent: null, error: null })
+    const result = await openAppChat({}, options())
+    expect(result).toMatchObject({ ok: false, created: true, sessionId: CHAT, placement: { verified: false } })
+    expect(result.error).toContain("not observable")
+  })
+
+  it("keeps creation distinct from initial prompt delivery and verified chat placement", async () => {
+    const handle = db()
+    handle.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN creator_session_id TEXT; ALTER TABLE sessions ADD COLUMN coordinating_creator_session_id TEXT")
+    handle.close()
+    app.on("create_session", (frame, socket) => {
+      addSession({ id: CHAT, title: "Probe", type: "general_chat" })
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+    })
+
+    app.on("send_message", (frame, socket) => socket.push({ type: "error", request_id: frame.request_id, message: "rejected" }))
+    const result = await openAppChat({ prompt: "go" }, options())
+    expect(result).toMatchObject({ ok: false, created: true, sessionId: CHAT, sent: { ok: false }, placement: { kind: "chat", workspaceId: null, parentSessionId: null, creatorSessionId: null, coordinatingCreatorSessionId: null, sidebarPlacement: "unknown" } })
+  })
+
+  it("reports placement verification errors and unexpected workspace association without hiding created resources", async () => {
+    app.on("create_session", (frame, socket) => {
+      addSession({ id: WS })
+      addWorkspace({ id: "created-workspace", session: WS })
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: WS })
+    })
+    expect(await openAppChat({ name: "Probe", prompt: "go" }, options())).toMatchObject({ ok: false, created: true, placement: { kind: "workspace", verified: false, associationVerified: true }, error: expect.stringContaining("unexpected workspace") })
+    expect(app.requests.map(frame => frame.type)).toEqual(["create_session"])
+    app.on("create_session", (frame, socket) => {
+      fs.rmSync(path.join(stateDir, "data.db"))
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+    })
+    expect(await openAppChat({}, options())).toMatchObject({ ok: false, created: true, placement: { verified: false }, error: expect.stringContaining("could not be verified") })
+  })
+
+  it("retains the created session when a rename or initial-send operation throws", async () => {
+    app.on("create_session", (frame, socket) => {
+      addSession({ id: CHAT, type: "general_chat" })
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+      fs.rmSync(path.join(stateDir, "run", "ws.port"))
+    })
+    expect(await openAppChat({ name: "Probe" }, options())).toMatchObject({ ok: false, created: true, sessionId: CHAT, error: expect.stringContaining("not running") })
+    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
+    app.on("create_session", (frame, socket) => {
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+      fs.rmSync(path.join(stateDir, "data.db"))
+    })
+    expect(await openAppChat({ prompt: "go" }, options())).toMatchObject({ ok: false, created: true, sessionId: CHAT, error: expect.stringContaining("database") })
+  })
+
+  it("retains creation custody when the session disappears after rename", async () => {
+    app.on("create_session", (frame, socket) => {
+      addSession({ id: CHAT, type: "general_chat" })
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+    })
+    app.on("rename_session", (_frame, socket) => {
+      const handle = db()
+      handle.prepare("DELETE FROM sessions WHERE id = ?").run(CHAT)
+      handle.close()
+      socket.close()
+    })
+    expect(await openAppChat({ name: "Probe", prompt: "go" }, options())).toMatchObject({
+      ok: false, created: true, sessionId: CHAT, sent: null, error: expect.stringContaining("no longer observable after rename"),
+    })
+    expect(app.requests.map(frame => frame.type)).toEqual(["create_session", "rename_session"])
+  })
+  it("opens a bare chat in the home folder", async () => {
+    app.on("create_session", (frame, socket) => {
+      addSession({ id: CHAT, type: "general_chat" })
+      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
+    })
+    expect(await openAppChat({}, options())).toMatchObject({ ok: true, created: true, sessionId: CHAT, sent: null, error: null })
     expect(app.requests).toEqual([expect.objectContaining({ type: "create_session", cwd: os.homedir() })])
     expect(app.requests[0]).not.toHaveProperty("agent")
   })

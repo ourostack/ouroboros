@@ -53,6 +53,19 @@ async function setup(options: { escalation?: Parameters<typeof startA2AServer>[0
 }
 
 describe("outbox/list and outbox/ack over the sealed wire", () => {
+  it("retries a retained report at A2A startup without requiring fix-confirmation configuration", async () => {
+    const { store, peers, agentRoot, outbox } = await setup()
+    await server!.close()
+    server = null
+    setEscalationGrant(agentRoot, peers.claude!.id, { grant: false, source: "test" })
+    const result = await fileFailureReport(agentRoot, store, { ariWords: "track a task", tried: "read history", error: "history incomplete", severity: "medium", origin: { friendId: peers.ari!.id, channel: "telegram", key: "k" } })
+    expect(result).toMatchObject({ ok: false, saved: true })
+    setEscalationGrant(agentRoot, peers.claude!.id, { grant: true, source: "test", did: peers.claude!.client.did })
+    server = await startA2AServer({ agentName: tmp!.agentName, agentRoot, port: 0, identity: asSelf(), turnRunner: async () => ({ response: "chat" }) })
+    expect(outbox.list(peers.claude!.id).entries).toHaveLength(1)
+    expect(outbox.list(peers.stranger!.id).entries).toEqual([])
+  })
+
   it("returns a peer only its own outbox and clears it on ack", async () => {
     const { peers, cardUrl, outbox } = await setup()
     const mine = outbox.append(peers.stranger!.id, { kind: "await_outcome", body: "your await resolved" })

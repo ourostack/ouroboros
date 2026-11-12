@@ -1799,18 +1799,19 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["graph"],
     }
 
     const result = await execTool("graph_profile", {}, ctx)
     expect(result).toBe("AUTH_REQUIRED:graph -- I need access to your Microsoft 365 profile. Please sign in when prompted.")
   })
 
-  it("graph_profile returns AUTH_REQUIRED when no ToolContext provided", async () => {
+  it("graph_profile returns AUTH_UNAVAILABLE when no ToolContext provided", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
 
     const result = await execTool("graph_profile", {})
-    expect(result).toBe("AUTH_REQUIRED:graph -- I need access to your Microsoft 365 profile. Please sign in when prompted.")
+    expect(result).toContain("AUTH_UNAVAILABLE:graph")
   })
 
   it("passes ToolContext to ado_work_items handler", async () => {
@@ -1837,6 +1838,7 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["ado"],
     }
 
     const result = await execTool("ado_work_items", { organization: "myorg" }, ctx)
@@ -1861,12 +1863,12 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
     expect(queryWorkItems).toHaveBeenCalledWith("test-token", "myorg", expect.stringContaining("SELECT"))
   })
 
-  it("ado_work_items returns AUTH_REQUIRED when no ToolContext provided", async () => {
+  it("ado_work_items returns AUTH_UNAVAILABLE when no ToolContext provided", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
 
     const result = await execTool("ado_work_items", { organization: "myorg" })
-    expect(result).toBe("AUTH_REQUIRED:ado -- I need access to your Azure DevOps account. Please sign in when prompted.")
+    expect(result).toContain("AUTH_UNAVAILABLE:ado")
   })
 
   it("ado_work_items without org: single org auto-selects", async () => {
@@ -2069,18 +2071,19 @@ describe("execTool for generic Graph tools", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["graph"],
     }
 
     const result = await execTool("graph_query", { path: "/me" }, ctx)
     expect(result).toContain("AUTH_REQUIRED:graph")
   })
 
-  it("graph_query returns AUTH_REQUIRED when no ToolContext", async () => {
+  it("graph_query returns AUTH_UNAVAILABLE when no ToolContext", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
 
     const result = await execTool("graph_query", { path: "/me" })
-    expect(result).toContain("AUTH_REQUIRED:graph")
+    expect(result).toContain("AUTH_UNAVAILABLE:graph")
   })
 
   it("graph_mutate calls graphRequest with specified method and body", async () => {
@@ -2156,6 +2159,7 @@ describe("execTool for generic Graph tools", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["graph"],
     }
 
     const result = await execTool("graph_mutate", { method: "POST", path: "/me/messages" }, ctx)
@@ -2206,18 +2210,19 @@ describe("execTool for generic ADO tools", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["ado"],
     }
 
     const result = await execTool("ado_query", { organization: "myorg", path: "/_apis/projects" }, ctx)
     expect(result).toContain("AUTH_REQUIRED:ado")
   })
 
-  it("ado_query returns AUTH_REQUIRED when no ToolContext", async () => {
+  it("ado_query returns AUTH_UNAVAILABLE when no ToolContext", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
 
     const result = await execTool("ado_query", { organization: "myorg", path: "/_apis/projects" })
-    expect(result).toContain("AUTH_REQUIRED:ado")
+    expect(result).toContain("AUTH_UNAVAILABLE:ado")
   })
 
   it("ado_mutate calls adoRequest with specified method and body", async () => {
@@ -2259,6 +2264,7 @@ describe("execTool for generic ADO tools", () => {
       graphToken: undefined,
       adoToken: undefined,
       signin: vi.fn(),
+      oauthAvailable: ["ado"],
     }
 
     const result = await execTool("ado_mutate", { method: "POST", organization: "myorg", path: "/_apis/wit/workitems" }, ctx)
@@ -2991,9 +2997,9 @@ describe("github tool registration", () => {
   it("allDefinitions includes file_ouroboros_bug (via execTool)", async () => {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
-    // If file_ouroboros_bug is registered, calling it without a token returns AUTH_REQUIRED
+    // A registered tool without a sign-in adapter must not promise a prompt.
     const result = await execTool("file_ouroboros_bug", { title: "t" })
-    expect(result).toContain("AUTH_REQUIRED:github")
+    expect(result).toContain("AUTH_UNAVAILABLE:github")
   })
 
   it("summarizeArgs returns title key=value for file_ouroboros_bug", async () => {

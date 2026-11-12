@@ -23,6 +23,35 @@ The only Ouro-owned durable credential locations are the bundle and the agent va
 
 Do not introduce a second credential source of truth. Raw credentials belong in the owning agent's vault. Bundle files may contain references, configuration, state, and vault coordinates, but not raw credentials.
 
+### GitHub issue authorization and blocked reports
+
+`file_ouroboros_bug` uses the current Teams user's GitHub OAuth token, supplied by the configured GitHub Bot
+Framework connection (see [OAuth setup](OAUTH-SETUP.md)). The portable vault configuration stores the Teams/OAuth
+connection configuration, not a general-purpose issue-filing token. `ouro auth --provider github-copilot` authorizes
+the model provider; it does not authorize this issue tool. The tool never borrows provider, app or host `gh` tokens.
+
+An adapter declares `oauthAvailable` only for logical services whose sign-in it can start this turn. A no-op
+`signin` callback is not evidence of capability. `AUTH_REQUIRED` is emitted only for a declared available service;
+missing or unavailable routes return `AUTH_UNAVAILABLE` with the reason. Outside a configured Teams channel,
+**human-required** recovery is to sign in and submit a sanitized issue at
+<https://github.com/ourostack/ouroboros/issues/new>, or configure the Teams connection and consent there.
+
+**Agent-runnable** recovery is `report_failure`: valid real reports remain in the owning bundle's
+`state/reports/<id>.json` even when no friend holds a root-owned escalation grant. The result then says
+`filed: false`, `saved: true`, `delivery: "pending_authorization"`, with the local path and report id.
+This is not delivery to engineers and is not a GitHub issue. Repeating the same failure from the same origin
+folds into that pending report and retries against current grants; the A2A server also retries pending reports
+at startup and on its existing confirmation interval. An authorized delivery queues an idempotent peer outbox
+entry; it does not prove the peer has read it. Minimal durable enqueue/acknowledgment receipts prevent a retry
+from duplicating an acknowledged delivery after interrupted report persistence. They are removed when the
+closed report is pruned. Replay reports remain isolated and are not put in this real queue.
+Rate limits and runtime-derived owner attribution apply to local saves as well as deliveries.
+
+**Human-required** escalation setup uses a verified peer and the existing root-owned grant procedure
+(`ouro a2a escalation grant --friend <id> --did <did:key> --agent <agent>`, run as root).
+No missing grant is created automatically. Keep reports private until a human or authorized agent has sanitized
+them for an external tracker; local reports can contain the owner's words and conversation coordinates.
+
 ### Agent display identity
 
 `agent.json` may include `displayName`, the agent's human-facing name. It does not

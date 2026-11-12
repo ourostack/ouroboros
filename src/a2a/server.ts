@@ -24,7 +24,7 @@ import { receiveRefusalError } from "./refusals"
 import { startRelayInbox, type RelayConfigStore, type RelayInboxHandle, type RelayOwnerNotifier, type RelayTimers } from "./relay-inbox"
 import { fileRelayRetirements } from "./relay-retirements"
 import { handleOutboxCommand, isOutboxMethod, parseOutboxCommand, OUTBOX_ERROR_INVALID, OUTBOX_ERROR_REFUSED } from "./outbox-wire"
-import { confirmResolvedReports, type ConfirmDeps } from "../heart/failure-reports"
+import { confirmResolvedReports, dispatchPendingFailureReports, type ConfirmDeps } from "../heart/failure-reports"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
@@ -457,14 +457,13 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   // Resolved failure reports are confirmed to the owner once the running version reaches the fix: now, after each
   // resolution, and on a timer, so a fix that lands with a restart is announced without anyone calling again.
   const confirmReports = async (): Promise<void> => {
-    if (!options.escalation) return
     try {
-      await confirmResolvedReports(agentRoot, { ...options.escalation, ...(inboundShareDeps ? { friends: inboundShareDeps.store } : {}) })
+      await dispatchPendingFailureReports(agentRoot, inboundShareDeps?.store ?? new FileFriendStore(`${agentRoot}/friends`))
+      if (options.escalation) await confirmResolvedReports(agentRoot, { ...options.escalation, ...(inboundShareDeps ? { friends: inboundShareDeps.store } : {}) })
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_escalation_confirm_error", message: "confirming resolved failure reports failed", meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) } })
     }
   }
-  let confirmTimer: NodeJS.Timeout | undefined
 
   // The message/send branch as one function, so a sealed message that arrives through the relay inbox runs exactly the
   // path a direct POST runs. `req` is absent for a relayed message: there are no HTTP headers to take a sender hint from.
@@ -794,11 +793,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   endpointUrl.search = ""
   endpointUrl.hash = ""
 
-  if (options.escalation) {
-    await confirmReports()
-    confirmTimer = setInterval(() => { void confirmReports() }, options.escalation.confirmIntervalMs ?? ESCALATION_CONFIRM_INTERVAL_MS)
-    confirmTimer.unref()
-  }
+  await confirmReports()
+  const confirmTimer = setInterval(() => { void confirmReports() }, options.escalation?.confirmIntervalMs ?? ESCALATION_CONFIRM_INTERVAL_MS)
+  confirmTimer.unref()
 
   if (options.relay && inboundShareDeps) {
     const seen = inboundShareDeps.seen as FileA2ASeenLedger
@@ -827,7 +824,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     endpointUrl: endpointUrl.toString(),
     ...(relayInbox ? { relay: relayInbox } : {}),
     close: () => new Promise<void>((resolve, reject) => {
-      if (confirmTimer) clearInterval(confirmTimer)
+      clearInterval(confirmTimer)
       relayInbox?.stop()
       server.close((error) => {
         if (error) {

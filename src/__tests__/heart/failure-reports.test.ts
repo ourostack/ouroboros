@@ -8,11 +8,22 @@ import { setEscalationGrant } from "../../a2a/escalation-grants"
 import { FileOutboxStore } from "../../a2a/outbox-store"
 import { agentMetaFor, makeTestIdentity, signedResolution } from "../test-helpers/resolution-signing"
 import {
-  confirmResolvedReports, errorClass, fileFailureReport, fixLiveNoticeText, failureFingerprint, listFailureReports, readFailureReport,
+  confirmResolvedReports, dispatchPendingFailureReports, errorClass, fileFailureReport, fixLiveNoticeText, failureFingerprint, listFailureReports, readFailureReport,
   reportBody, reportsDir, resolveFailureReport, pruneClosedReports, CLOSED_REPORT_RETENTION_MS, REPORTS_PER_DAY, REPORTS_PER_HOUR, REPORTS_PER_ORIGIN_DAY, REPORTS_PER_ORIGIN_HOUR, type FailureReportInput,
 } from "../../heart/failure-reports"
 
 const replay = vi.hoisted(() => ({ open: new Set<string>(), identities: new Set<string>() }))
+const filesystem = vi.hoisted(() => ({ afterReportRename: null as ((file: string) => void) | null }))
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>()
+  return {
+    ...actual,
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      actual.renameSync(...args)
+      if (String(args[1]).includes(`${path.sep}state${path.sep}reports${path.sep}`)) filesystem.afterReportRename?.(String(args[1]))
+    },
+  }
+})
 vi.mock("../../a2a/replay-harness", () => ({
   isReplayWindowOpen: (_root: string, friendId: string) => replay.open.has(friendId),
   isReplayIdentity: (_root: string, friendId: string) => replay.identities.has(friendId) || replay.open.has(friendId),
@@ -22,7 +33,7 @@ let tmp: TmpBundleHandle | null = null
 let holderKey: Awaited<ReturnType<typeof makeTestIdentity>>
 let currentStore: FileFriendStore
 beforeEach(async () => { replay.open.clear(); replay.identities.clear(); holderKey = await makeTestIdentity() })
-afterEach(() => { tmp?.cleanup(); tmp = null })
+afterEach(() => { filesystem.afterReportRename = null; tmp?.cleanup(); tmp = null })
 
 const T0 = Date.parse("2026-10-08T12:00:00.000Z")
 const NOW = "2026-10-08T00:00:00.000Z"
@@ -86,11 +97,116 @@ describe("filing failure reports", () => {
     expect(body).toContain("A session with an unknown friend (unknown trust) reported: a")
   })
 
-  it("refuses an incomplete report and says so when nobody holds the grant", async () => {
+  it("refuses incomplete reports but retains a pending report when nobody holds the grant", async () => {
     const { agentRoot, store } = await setup([])
     expect(await fileFailureReport(agentRoot, store, input({ error: "   " }), T0)).toMatchObject({ ok: false, reason: "invalid" })
     expect(await fileFailureReport(agentRoot, store, input(), T0)).toMatchObject({ ok: false, reason: "no_escalation_peer", detail: "no friend holds the escalation grant" })
+    const [pending] = listFailureReports(agentRoot)
+    expect(pending).toMatchObject({ status: "open", recipients: [], ariWords: input().ariWords })
+    const repeated = await fileFailureReport(agentRoot, store, input(), T0 + 1)
+    expect(repeated).toMatchObject({ ok: false, reason: "no_escalation_peer", saved: true, duplicate: true, id: pending!.id })
+    expect(listFailureReports(agentRoot)).toHaveLength(1)
+  })
+
+  it("retries a retained report after a real grant appears without duplicate delivery or granting anyone", async () => {
+    const { agentRoot, store, outbox } = await setup([])
+    await store.put("later-peer", friend("later-peer", { kind: "agent", agentMeta: agentMetaFor(holderKey) }))
+    await fileFailureReport(agentRoot, store, input(), T0)
+    const [pending] = listFailureReports(agentRoot)
+    expect(outbox.list("later-peer").entries).toEqual([])
+    setEscalationGrant(agentRoot, "later-peer", { grant: true, source: "test", did: holderKey.did })
+    const retry = await fileFailureReport(agentRoot, store, input(), T0 + 1)
+    expect(retry).toMatchObject({ ok: true, duplicate: true, id: pending!.id, recipients: 1 })
+    expect(outbox.list("later-peer").entries.filter(entry => entry.kind === "failure_report")).toHaveLength(1)
+    await fileFailureReport(agentRoot, store, input(), T0 + 2)
+    expect(outbox.list("later-peer").entries.filter(entry => entry.kind === "failure_report")).toHaveLength(1)
+  })
+
+  it("fails explicitly if the saved report disappeared before enqueue", async () => {
+    const { agentRoot, store, outbox } = await setup()
+    filesystem.afterReportRename = file => {
+      filesystem.afterReportRename = null
+      fs.rmSync(file)
+    }
+    await expect(fileFailureReport(agentRoot, store, input(), T0)).rejects.toThrow("saved failure report disappeared")
+    expect(outbox.list("claude").entries).toEqual([])
     expect(listFailureReports(agentRoot)).toEqual([])
+  })
+
+  it("retains a pending report if the holder's grant is revoked after discovery but before enqueue", async () => {
+    const { agentRoot, store, outbox } = await setup()
+    filesystem.afterReportRename = () => {
+      filesystem.afterReportRename = null
+      setEscalationGrant(agentRoot, "claude", { grant: false, source: "test" })
+    }
+    expect(await fileFailureReport(agentRoot, store, input(), T0)).toMatchObject({
+      ok: false, saved: true, reason: "no_escalation_peer",
+    })
+    expect(outbox.list("claude").entries).toEqual([])
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0 + 1)).toBe(0)
+  })
+
+  it("dispatches pending reports idempotently and preserves trust/replay boundaries", async () => {
+    const { agentRoot, store, outbox } = await setup([])
+    const peerInput = input({ origin: { friendId: "peer-a", channel: "a2a", key: "peer" } })
+    await fileFailureReport(agentRoot, store, input(), T0)
+    await fileFailureReport(agentRoot, store, peerInput, T0)
+    expect(listFailureReports(agentRoot)).toHaveLength(2)
+    expect(listFailureReports(agentRoot).find(record => record.origin.friendId === "peer-a")?.origin.ownerOrigin).toBe(false)
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0)).toBe(0)
+    await store.put("later", friend("later", { kind: "agent", agentMeta: agentMetaFor(holderKey), admissionState: "revoked" }))
+    setEscalationGrant(agentRoot, "later", { grant: true, source: "test", did: holderKey.did })
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0)).toBe(0)
+    expect(outbox.list("later").entries).toEqual([])
+    await store.put("later", friend("later", { kind: "agent", agentMeta: agentMetaFor(holderKey) }))
+    replay.identities.add("peer-a")
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0)).toBe(1)
+    expect(outbox.list("later").entries).toHaveLength(1)
+    replay.identities.delete("peer-a")
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0)).toBe(1)
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0)).toBe(0)
+    expect(outbox.list("later").entries).toHaveLength(2)
+  })
+
+  it("recovers an outbox append interrupted before recording its id without duplicating it", async () => {
+    const { agentRoot, store, outbox } = await setup()
+    const realAppend = FileOutboxStore.prototype.appendOnce
+    const interrupted = vi.spyOn(FileOutboxStore.prototype, "appendOnce").mockImplementationOnce(async function(...args) {
+      await realAppend.apply(this, args)
+      throw new Error("interrupted after append")
+    })
+    await expect(fileFailureReport(agentRoot, store, input(), T0)).rejects.toThrow("interrupted after append")
+    interrupted.mockRestore()
+    expect(listFailureReports(agentRoot)).toHaveLength(1)
+    expect(outbox.list("claude").entries).toHaveLength(1)
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0 + 1)).toBe(1)
+    expect(outbox.list("claude").entries).toHaveLength(1)
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0 + 2)).toBe(0)
+  })
+
+  it("does not resend an acknowledged report after interrupted persistence, and can recover through a replacement holder", async () => {
+    const { agentRoot, store, outbox } = await setup()
+    const realAppend = FileOutboxStore.prototype.appendOnce
+    const interrupted = vi.spyOn(FileOutboxStore.prototype, "appendOnce").mockImplementationOnce(async function(this: FileOutboxStore, ...args) {
+      const entry = await realAppend.apply(this, args)
+      outbox.ack("claude", [entry.id])
+      throw new Error("interrupted after ack")
+    })
+    await expect(fileFailureReport(agentRoot, store, input(), T0)).rejects.toThrow("interrupted after ack")
+    interrupted.mockRestore()
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0 + 1)).toBe(1)
+    expect(outbox.list("claude").entries).toHaveLength(0)
+    const [acked] = listFailureReports(agentRoot)
+    expect(Object.keys(acked!.outboxEntries)).toEqual(["claude"])
+
+    const failed = vi.spyOn(FileOutboxStore.prototype, "appendOnce").mockRejectedValueOnce(new Error("outbox unavailable"))
+    await expect(fileFailureReport(agentRoot, store, input({ error: "different failure" }), T0 + 2)).rejects.toThrow("outbox unavailable")
+    failed.mockRestore()
+    setEscalationGrant(agentRoot, "claude", { grant: false, source: "test" })
+    await store.put("replacement", friend("replacement", { kind: "agent", agentMeta: agentMetaFor(holderKey) }))
+    setEscalationGrant(agentRoot, "replacement", { grant: true, source: "test", did: holderKey.did })
+    expect(await dispatchPendingFailureReports(agentRoot, store, T0 + 3)).toBe(1)
+    expect(outbox.list("replacement").entries).toHaveLength(1)
   })
 
   it("folds a repeat of the same failure into the open report without a second outbox entry", async () => {

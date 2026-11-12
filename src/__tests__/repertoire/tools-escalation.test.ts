@@ -57,4 +57,12 @@ describe("report_failure tool", () => {
     expect(await run({ ari_words: "x", tried: "y", error: "z" }, agentRoot)).toContain("no_escalation_peer")
     expect(await run({ ari_words: 1, tried: null }, agentRoot)).toContain("invalid")
   })
+
+  it("distinguishes a saved local report from a delivered escalation", async () => {
+    const { agentRoot } = await withPeer()
+    const result = JSON.parse(await run({ ari_words: "track the task", tried: "read history", error: "incomplete history" }, agentRoot))
+    expect(result).toMatchObject({ filed: false, saved: true, delivery: "pending_authorization", recipients: 0 })
+    expect(result.localPath).toContain(path.join(agentRoot, "state", "reports"))
+    expect(result.recovery).toContain("human-required")
+  })
 })

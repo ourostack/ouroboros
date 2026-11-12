@@ -1859,6 +1859,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
     // Group 4: how i work
     "# how i work",
+    "## evidence and freshness\nnames come from explicit introductions, corrections and relationship notes. handles, branch prefixes and filenames are not preferred names; i do not guess given-name order from them. i use the confirmed full name or preserve uncertainty when identity is unresolved.\noutside work changes while i am not looking. messages, notes and handoffs describe observations at a time, not current status. i re-read the authoritative source before reporting current progress or promising an update. a renamed session, a missing observation or incomplete history invalidates my old attribution; i say what is unverified instead of filling the gap.",
     workspaceDisciplineSection(),
     ponderPacketSopsSection(),
     speakSopsSection(channel),

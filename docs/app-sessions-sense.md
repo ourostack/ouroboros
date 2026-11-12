@@ -18,10 +18,10 @@ gains the `app_sessions_*` tools.
 | Tool | What it does |
 | --- | --- |
 | `app_sessions_list` `{ state? }` | Every sidebar session with its id, name, state (`working`, `waiting` for the person, `stuck`, `idle`), why, project and last activity, plus counts. |
-| `app_sessions_tail` `{ session, count? }` | The session's last user and assistant messages (default 6, at most 50). |
+| `app_sessions_tail` `{ session, count? }` | The session's last visible user and assistant messages (default 6, at most 50), current name/state and local-history coverage. |
 | `app_sessions_send` `{ session, message, delivery?, watch? }` | Delivers a message the way the app's message box does (`send_message`, `immediate` or `enqueue`), and waits up to two minutes for the app to accept it. |
 | `app_sessions_resume` `{ session, note? }` | Sends the resume nudge the Mac's app keeper sends after a restart, to a stuck or stopped session. |
-| `app_sessions_new` `{ name?, prompt?, cwd?, agent?, model? }` | Opens a new chat session (for example a throwaway probe). |
+| `app_sessions_new` `{ name?, prompt?, cwd?, agent?, model?, target? }` | Creates a general chat (for example a throwaway probe), with actual creation, initial-message acceptance and placement reported separately. `target: "workspace"` and project/workspace/parent requests are refused without creating anything. |
 | `app_sessions_archive` `{ session }` | Archives a session the agent opened with `app_sessions_new`. |
 | `app_sessions_restart` `{ action?: "status" \| "enqueue", why? }` | Reads the app keeper's restart status, or queues a courtesy restart through it. |
 | `app_sessions_watch` `{ session, watch? }` | Starts or stops bringing a session's replies back to the agent. |
@@ -32,6 +32,31 @@ event; none is gated beyond the harness's usual trust rule (the tools are family
 **Stuck** means the app does not say the session is running, but its own history (`events.jsonl`) shows its agent loop
 stopped mid-turn, or between turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`,
 plan approval or permission request is open.
+
+**History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
+the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
+snapshots do not consume the requested count. Messages over 4,000 characters carry `truncated: true`; malformed or
+oversized event lines (over 8 MiB) are skipped with an explicit `skippedEvents` count and `coverage: "incomplete"`.
+The result includes `observedAt`, `source: "local_event_log"`, requested/returned counts, scanned/log bytes,
+`beginningReached`, and `missing`. A missing log is not proof of no conversation. Remote sessions carry
+`coverage: "local-only"`: the harness cannot prove this Mac has received every remote event.
+
+**Observations are not live status.** Tail results include the current sidebar name, state and last activity.
+`renamedFrom` flags a difference from the watched name. Re-read `app_sessions_list` and `app_sessions_tail` before
+reporting current progress or promising an update; a historical reply does not establish what work a session owns
+now. A name change invalidates the old attribution, not necessarily the session itself.
+
+**Creation is not workspace placement.** This connector's `create_session` protocol creates `general_chat`.
+Neither `cwd`, a repository mentioned in the prompt, nor a task-like title selects a project or tree parent.
+Use native app project-session creation for workspace work. `app_sessions_new` reports `created`, `sessionId`,
+`sent`, and `placement`: actual observed kind, name, workspace/project ids, known parent/creator ids, and
+`sidebarPlacement`. Project association and creator provenance do not prove where a child appears in the sidebar.
+`associationVerified` confirms the observed kind/association, not tree placement. This connector has no authoritative
+sidebar hierarchy read, so `sidebarPlacement` stays `unknown` and `placement.verified` stays false, even when raw
+parent ids are available. Missing hierarchy columns mean unknown, not a fabricated null parent. If a create acknowledgement cannot be
+verified in the current sidebar, the result is `ok: false`, `created: true`, with unverified placement; do not create
+a duplicate blindly. A failed first message likewise is not overall success, but the created session remains in
+the agent's probe inventory for inspection/cleanup. `watching` requires actual message acceptance.
 
 **Sending waits.** A session whose runtime is not loaded loads first, often for more than 20 seconds, and closing the
 socket before the app answers cancels the send. The tool always waits for the app's `session_message_sent` or
@@ -55,6 +80,13 @@ The sense process does two things:
   runtime is woken (`triggerSource: "app-sessions"`), the way Shepherd's returns arrive. So a conversation with another
   session, such as a steward session, works both ways.
 
+Watch reads advance forward from their cursor in bounded batches, so a large burst is drained over several polls
+rather than silently jumping over earlier replies. An oversized or malformed event produces an observation-gap
+notice, not a fabricated session reply. Failed delivery leaves the cursor and name unchanged for retry.
+Each delivered burst carries the observation time, current sidebar identity/state when available, and message
+timestamps. Renames trigger a notice even without a finished reply; after delivery the watch adopts the current
+name. If the sidebar cannot be read, reply attribution is explicitly unverified.
+
 ## How it talks to the app
 
 `src/senses/app-sessions/client.ts` is the per-machine client, with no harness dependencies beyond logging, so other
@@ -67,5 +99,5 @@ senses (the fleet view) build on it:
   `archive_workspace`;
 - the keeper through its launch agent (`launchctl print`, then `node app-keeper.mjs status --json` or `enqueue`).
 
-Its exports: `listAppSessions`, `snapshot`, `tailAppSession`, `sendToAppSession`, `resumeAppSession`, `openAppChat`,
+Its exports: `listAppSessions`, `snapshot`, `tailAppSession`, `readAppSessionHistory`, `readNewAppEvents`, `sendToAppSession`, `resumeAppSession`, `openAppChat`,
 `archiveAppSession`, `restartEnqueue`, `restartStatus`, `appRunning`, and the event-log helpers the sense uses.

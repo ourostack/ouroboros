@@ -44,6 +44,11 @@ export interface AppSessionRow {
   workspaceId: string | null
   workspaceType: string | null
   project: string | null
+  projectId: string | null
+  parentSessionId?: string | null
+  creatorSessionId?: string | null
+  coordinatingCreatorSessionId?: string | null
+  sidebarPlacement: "unknown"
   state: AppSessionState
   /** What the session's own state rests on, in a few words. */
   detail: string
@@ -65,6 +70,7 @@ export interface AppMessage {
   at: string | null
   role: "user" | "assistant"
   text: string
+  truncated?: boolean
 }
 
 export interface SendResult {
@@ -83,7 +89,8 @@ const CHAT_ARCHIVE_WAIT_MS = 20_000
 const RENAME_WAIT_MS = 1_500
 const KEEPER_WAIT_MS = 20_000
 const STATUS_TAIL_BYTES = 512 * 1024
-const MESSAGE_TAIL_BYTES = 2 * 1024 * 1024
+const EVENT_CHUNK_BYTES = 256 * 1024
+const MAX_EVENT_BYTES = 8 * 1024 * 1024
 const MESSAGE_MAX_CHARS = 4_000
 /** A cut loop this fresh may just be a turn the database has not marked running yet. */
 const STUCK_GRACE_MS = 120_000
@@ -136,6 +143,10 @@ interface DbRow {
   name: string | null
   title: string | null
   project: string | null
+  project_id: string | null
+  parent_session_id?: string | null
+  creator_session_id?: string | null
+  coordinating_creator_session_id?: string | null
   is_running: number | null
   was_interrupted: number | null
   execution_location: string | null
@@ -144,13 +155,13 @@ interface DbRow {
 }
 
 const WORKSPACE_ROWS = `
-SELECT w.session_id AS id, w.id AS workspace_id, w.workspace_type, w.name, s.title, p.name AS project,
+SELECT w.session_id AS id, w.id AS workspace_id, w.workspace_type, w.name, s.title, p.name AS project, w.project_id,
   s.is_running, s.was_interrupted, s.execution_location, w.host_id, coalesce(s.updated_at, w.updated_at) AS updated_at
 FROM workspaces w LEFT JOIN sessions s ON s.id = w.session_id LEFT JOIN projects p ON p.id = w.project_id
 WHERE w.archived_at IS NULL AND w.session_id IS NOT NULL`
 
 const CHAT_ROWS = `
-SELECT s.id, NULL AS workspace_id, NULL AS workspace_type, NULL AS name, s.title, NULL AS project,
+SELECT s.id, NULL AS workspace_id, NULL AS workspace_type, NULL AS name, s.title, NULL AS project, NULL AS project_id,
   s.is_running, s.was_interrupted, s.execution_location, NULL AS host_id, s.updated_at
 FROM sessions s
 WHERE s.archived_at IS NULL AND s.session_type IN ('general_chat', 'agent')`
@@ -163,7 +174,12 @@ function databaseRows(stateDir: string): DbRow[] {
   return withDatabase(stateDir, (db) => {
     // Older app builds have no host_id on workspaces.
     const workspaces = hasColumn(db, "workspaces", "host_id") ? WORKSPACE_ROWS : WORKSPACE_ROWS.replace("w.host_id", "NULL AS host_id")
-    return [...db.prepare(workspaces).all() as DbRow[], ...db.prepare(CHAT_ROWS).all() as DbRow[]]
+    const withHierarchy = (query: string, table: "workspaces" | "sessions", alias: "w" | "s") => {
+      const columns = ["parent_session_id", "creator_session_id", "coordinating_creator_session_id"]
+        .filter(column => hasColumn(db, table, column)).map(column => `${alias}.${column}`)
+      return columns.length ? query.replace("SELECT ", `SELECT ${columns.join(", ")}, `) : query
+    }
+    return [...db.prepare(withHierarchy(workspaces, "workspaces", "w")).all() as DbRow[], ...db.prepare(withHierarchy(CHAT_ROWS, "sessions", "s")).all() as DbRow[]]
   })
 }
 
@@ -327,6 +343,11 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
       workspaceId: row.workspace_id,
       workspaceType: row.workspace_type,
       project: row.project,
+      projectId: row.project_id,
+      ...("parent_session_id" in row ? { parentSessionId: row.parent_session_id } : {}),
+      ...("creator_session_id" in row ? { creatorSessionId: row.creator_session_id } : {}),
+      ...("coordinating_creator_session_id" in row ? { coordinatingCreatorSessionId: row.coordinating_creator_session_id } : {}),
+      sidebarPlacement: "unknown",
       state,
       detail,
       isRunning,
@@ -341,8 +362,7 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
 }
 
 /** Counts by state and every session's id, name and state: the cheap picture a sense or a fleet view carries. */
-export function snapshot(options: AppSessionsOptions = {}): AppSessionsSnapshot {
-  const rows = listAppSessions(options)
+export function snapshot(options: AppSessionsOptions = {}, rows: AppSessionRow[] = listAppSessions(options)): AppSessionsSnapshot {
   const counts: Record<AppSessionState, number> = { working: 0, idle: 0, waiting: 0, stuck: 0 }
   for (const row of rows) counts[row.state] += 1
   return {
@@ -353,10 +373,130 @@ export function snapshot(options: AppSessionsOptions = {}): AppSessionsSnapshot 
   }
 }
 
-/** The session's last `count` user and assistant messages, oldest first. */
+function openEventLog(id: string, options: AppSessionsOptions): number | null {
+  try {
+    return fs.openSync(eventLogPath(id, options), "r")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+export interface AppSessionHistory {
+  messages: AppMessage[]
+  observedAt: string
+  source: "local_event_log"
+  requestedCount: number
+  returnedCount: number
+  logBytes: number
+  scannedBytes: number
+  beginningReached: boolean
+  skippedEvents: number
+  missing: boolean
+}
+
+/** Scan backwards until enough visible messages or the beginning, with bounded memory, not a fixed byte tail. */
+export function readAppSessionHistory(id: string, count: number, options: AppSessionsOptions = {}): AppSessionHistory {
+  const requestedCount = Math.min(50, Math.max(1, Math.trunc(count) || 1))
+  const result: AppSessionHistory = {
+    messages: [], observedAt: new Date((options.now ?? Date.now)()).toISOString(), source: "local_event_log",
+    requestedCount, returnedCount: 0, logBytes: 0, scannedBytes: 0, beginningReached: false, skippedEvents: 0, missing: false,
+  }
+  const fd = openEventLog(id, options)
+  if (fd === null) return { ...result, missing: true }
+  try {
+    let position = fs.fstatSync(fd).size
+    result.logBytes = position
+    let carry = Buffer.alloc(0)
+    let dropping = false
+    const keep = (line: Buffer): void => {
+      if (dropping || line.length > MAX_EVENT_BYTES) {
+        result.skippedEvents += 1
+        dropping = false
+        return
+      }
+      if (!line.length) return
+      const events = parseEventLines(line.toString("utf-8"))
+      if (!events.length) result.skippedEvents += 1
+      result.messages.push(...messagesIn(events))
+    }
+    while (position > 0 && result.messages.length < requestedCount) {
+      const length = Math.min(EVENT_CHUNK_BYTES, position)
+      position -= length
+      const chunk = Buffer.alloc(length)
+      fs.readSync(fd, chunk, 0, length, position)
+      result.scannedBytes += length
+      const buffer = Buffer.concat([chunk, carry])
+      let end = buffer.length
+      for (let at = buffer.lastIndexOf(10, end - 1); at >= 0; at = end > 0 ? buffer.lastIndexOf(10, end - 1) : -1) {
+        keep(buffer.subarray(at + 1, end))
+        end = at
+        if (result.messages.length >= requestedCount) break
+      }
+      carry = buffer.subarray(0, end)
+      if (dropping || carry.length > MAX_EVENT_BYTES) {
+        dropping = true
+        carry = Buffer.alloc(0)
+      }
+    }
+    if (position === 0 && result.messages.length < requestedCount) {
+      keep(carry)
+      result.beginningReached = true
+    }
+    result.messages.reverse()
+    result.returnedCount = result.messages.length
+    emitNervesEvent({ component: "senses", event: "senses.app_sessions_history_read", message: "read bounded conversation history", meta: { session: id, returned: result.returnedCount, scannedBytes: result.scannedBytes, skippedEvents: result.skippedEvents } })
+    return result
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/** Compatibility array view; tools also expose the read's coverage and observation time. */
 export function tailAppSession(id: string, count: number, options: AppSessionsOptions = {}): AppMessage[] {
-  assertSessionId(id)
-  return messagesIn(tailEvents(stateDirOf(options), id, MESSAGE_TAIL_BYTES)).slice(-Math.max(1, count))
+  return readAppSessionHistory(id, count, options).messages
+}
+
+/** Read forward from a watch cursor; stop at a complete event after the budget, never jump to the newest tail. */
+export function readNewAppEvents(id: string, from: number, maxBytes: number, visit: (event: Frame) => void, options: AppSessionsOptions = {}): { offset: number; logBytes: number; skippedEvents: number } {
+  const fd = openEventLog(id, options)
+  if (fd === null) return { offset: 0, logBytes: 0, skippedEvents: 0 }
+  try {
+    const logBytes = fs.fstatSync(fd).size
+    const result = { offset: Math.min(from, logBytes), logBytes, skippedEvents: 0 }
+    let position = result.offset
+    let carry = Buffer.alloc(0)
+    let dropping = false
+    while (position < logBytes) {
+      const chunk = Buffer.alloc(Math.min(EVENT_CHUNK_BYTES, logBytes - position))
+      fs.readSync(fd, chunk, 0, chunk.length, position)
+      const buffer = Buffer.concat([carry, chunk])
+      const start = position - carry.length
+      position += chunk.length
+      let lineStart = 0
+      for (let at = buffer.indexOf(10); at >= 0; at = buffer.indexOf(10, lineStart)) {
+        const line = buffer.subarray(lineStart, at)
+        if (dropping || line.length > MAX_EVENT_BYTES) result.skippedEvents += 1
+        else if (line.length) {
+          const events = parseEventLines(line.toString("utf-8"))
+          if (!events.length) result.skippedEvents += 1
+          for (const event of events) visit(event)
+        }
+        dropping = false
+        result.offset = start + at + 1
+        lineStart = at + 1
+        if (result.offset - from >= maxBytes) return result
+      }
+      carry = buffer.subarray(lineStart)
+      if (dropping || carry.length > MAX_EVENT_BYTES) {
+        dropping = true
+        carry = Buffer.alloc(0)
+      }
+    }
+    return result
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /** The top-level user and assistant messages among `events`. */
@@ -366,8 +506,9 @@ export function messagesIn(events: Frame[]): AppMessage[] {
     if (event.agentId !== undefined) continue
     const data = isRecord(event.data) ? event.data : {}
     const text = typeof data.content === "string" ? data.content : ""
-    if (event.type === "user.message") messages.push({ at: str(event.timestamp), role: "user", text: text.slice(0, MESSAGE_MAX_CHARS) })
-    if (event.type === "assistant.message" && text.trim()) messages.push({ at: str(event.timestamp), role: "assistant", text: text.slice(0, MESSAGE_MAX_CHARS) })
+    if ((event.type === "user.message" || event.type === "assistant.message") && text.trim()) {
+      messages.push({ at: str(event.timestamp), role: event.type === "user.message" ? "user" : "assistant", text: text.slice(0, MESSAGE_MAX_CHARS), ...(text.length > MESSAGE_MAX_CHARS ? { truncated: true } : {}) })
+    }
   }
   return messages
 }
@@ -489,6 +630,19 @@ export interface OpenChatResult {
   sessionId: string | null
   sent: SendResult | null
   error: string | null
+  created?: boolean
+  placement?: {
+    verified: boolean
+    associationVerified: boolean
+    kind?: AppSessionRow["kind"]
+    name?: string
+    workspaceId?: string | null
+    projectId?: string | null
+    parentSessionId?: string | null
+    creatorSessionId?: string | null
+    coordinatingCreatorSessionId?: string | null
+    sidebarPlacement: AppSessionRow["sidebarPlacement"]
+  }
 }
 
 /** A new chat session in the sidebar (`create_session`), named, with an optional first message. */
@@ -512,11 +666,38 @@ export async function openAppChat(
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_open_error", message: "the Copilot app did not create a session", meta: { error } })
     return { ok: false, sessionId: null, sent: null, error }
   }
-  const id = made.session_id as string
-  if (request.name) await exchange([{ type: "rename_session", session_id: id, title: request.name }], { waitMs: RENAME_WAIT_MS }, options)
-  const sent = request.prompt ? await sendToAppSession(id, request.prompt, options) : null
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_opened", message: "opened a Copilot app chat session", meta: { session: id, named: !!request.name, prompted: !!request.prompt } })
-  return { ok: true, sessionId: id, sent, error: null }
+  const id = assertSessionId(made.session_id as string)
+  let sent: SendResult | null = null
+  let placement: NonNullable<OpenChatResult["placement"]> = { verified: false, associationVerified: false, sidebarPlacement: "unknown" }
+  let error: string | null = null
+  try {
+    const row = listAppSessions(options).find(session => session.id === id)
+    if (!row) error = "session created but not observable in the current sidebar; placement is unverified"
+    else {
+      placement = {
+        verified: false, associationVerified: true, kind: row.kind, name: row.name, workspaceId: row.workspaceId, projectId: row.projectId,
+        sidebarPlacement: row.sidebarPlacement,
+        ...(row.parentSessionId !== undefined ? { parentSessionId: row.parentSessionId } : {}),
+        ...(row.creatorSessionId !== undefined ? { creatorSessionId: row.creatorSessionId } : {}),
+        ...(row.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: row.coordinatingCreatorSessionId } : {}),
+      }
+      if (row.kind !== "chat") error = "session created with unexpected workspace association; inspect its actual placement"
+      else {
+        if (request.name) {
+          await exchange([{ type: "rename_session", session_id: id, title: request.name }], { waitMs: RENAME_WAIT_MS }, options)
+          const renamed = listAppSessions(options).find(session => session.id === id)
+          if (!renamed) throw new Error("created session is no longer observable after rename")
+          placement.name = renamed.name
+        }
+        sent = request.prompt ? await sendToAppSession(id, request.prompt, options) : null
+        if (sent && !sent.ok) error = `session created but initial message was not accepted: ${sent.error}`
+      }
+    }
+  } catch (cause) {
+    error = `session created but follow-up or placement could not be verified: ${(cause as Error).message}`
+  }
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_opened", message: "created a Copilot app session and checked actual association", meta: { session: id, named: !!request.name, prompted: !!request.prompt, associationVerified: placement.associationVerified, error } })
+  return { ok: error === null, created: true, sessionId: id, sent, placement, error }
 }
 
 /** Archive one session: its workspace when it has one, else the chat itself. */
