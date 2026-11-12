@@ -22,7 +22,9 @@ import type { IdentityProvider, Channel } from "@ouro.bot/friends"
 import { getPendingDir, drainPending } from "../mind/pending"
 import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
+import { erroredTurnReply, handleInboundTurn, type InboundTurnInput } from "./pipeline"
+
+export { erroredTurnReply }
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -484,18 +486,6 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * Caller provides channel, session key, friend, and message;
  * this function handles all pipeline wiring.
  */
-/**
- * What an outward sense says when a turn errors and provider failover has nothing to say.
- * Such turns used to end in silence: the owner saw no reply, prodded, and later got
- * the late answer followed by a greeting to a prod (D-004); the step-limit stop was the
- * observed cause (D-007). The engine still refuses to answer without evidence.
- */
-export function erroredTurnReply(errorMessage: string | undefined): string {
-  return /iteration limit exhausted/u.test(errorMessage ?? "")
-    ? "I hit my step limit in the middle of that job and couldn't finish it. Tell me to continue and I'll pick up from where I stopped."
-    : "I couldn't finish that one: something went wrong before I had an answer. Ask me again and I'll retry."
-}
-
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   options = { ...options, ...(options.shepherdSession ? { shepherdSession: Object.freeze({ ...options.shepherdSession }) } : {}) }
   return withTurnExecutionLease(async () => {

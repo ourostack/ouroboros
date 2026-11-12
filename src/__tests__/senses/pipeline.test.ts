@@ -2136,6 +2136,27 @@ describe("handleInboundTurn", () => {
       )
     })
 
+    it("answers an errored turn on every outward sense, naming the step limit, and keeps the inner channel silent", async () => {
+      const { erroredTurnReply } = await import("../../senses/pipeline")
+      const stepLimit = await handleInboundTurn(makeInput({
+        channel: "teams",
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored", error: new Error("provider iteration limit exhausted at response 8") }),
+      }))
+      expect(stepLimit.failoverMessage).toBe(erroredTurnReply("provider iteration limit exhausted"))
+      expect(stepLimit.failoverMessage).toMatch(/step limit/u)
+
+      const noError = await handleInboundTurn(makeInput({ channel: "bluebubbles", runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }) }))
+      expect(noError.failoverMessage).toMatch(/something went wrong/u)
+
+      for (const channel of ["inner", "cli"] as const) {
+        const quiet = await handleInboundTurn(makeInput({ channel, runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }) }))
+        expect(quiet.failoverMessage).toBeUndefined()
+      }
+
+      const settled = await handleInboundTurn(makeInput({ channel: "teams", runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }) }))
+      expect(settled.failoverMessage).toBeUndefined()
+    })
+
     it("sets mustResolveBeforeHandoff from exact turn-start no-handoff language", async () => {
       const input = makeInput({
         continuityIngressTexts: ["keep going until you're done"],
