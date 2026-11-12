@@ -595,7 +595,7 @@ describe("Ouro Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 19,
+        version: 20,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["bundle_push", "bundle_pull_rebase", "steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),

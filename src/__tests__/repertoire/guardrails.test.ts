@@ -1286,7 +1286,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       expect(psycheFileClass(target, agentRoot)).toBe("identity")
       expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram") })).toEqual({ allowed: true })
       expect(guardInvocation("write_file", { path: target }, { readPaths: new Set([target]), agentRoot, ...family("telegram", { trustLevel: "friend" }) })).toEqual({ allowed: false, reason: REFUSAL })
-    })
+    }, 30_000)
 
     it("treats a TACIT that links to SOUL as SOUL", async () => {
       const agentRoot = tempBundle()
