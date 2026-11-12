@@ -1,12 +1,25 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { registerGlobalLogSink, type LogEvent } from "../../nerves"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { FileOutboxStore, OUTBOX_LIST_MAX_CHARS, OUTBOX_MAX_BODY_CHARS, OUTBOX_MAX_ENTRIES, isOutboxEntryId, outboxRoot } from "../../a2a/outbox-store"
 
+const filesystem = vi.hoisted(() => ({ afterReceiptRead: null as (() => void) | null }))
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>()
+  return {
+    ...actual,
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      const value = actual.readFileSync(...args)
+      if (String(args[0]).includes(`${path.sep}.receipts${path.sep}`)) filesystem.afterReceiptRead?.()
+      return value
+    },
+  }
+})
+
 let tmp: TmpBundleHandle | null = null
-afterEach(() => { tmp?.cleanup(); tmp = null })
+afterEach(() => { filesystem.afterReceiptRead = null; tmp?.cleanup(); tmp = null })
 function store() { tmp = createTmpBundle({ agentName: `outbox-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` }); return { store: new FileOutboxStore(tmp.agentRoot), agentRoot: tmp.agentRoot } }
 
 describe("peer outbox store", () => {
@@ -106,5 +119,36 @@ describe("peer outbox store", () => {
     const entries = await Promise.all(Array.from({ length: 6 }, () => outbox.appendOnce("peer-a", "await:z:resolved", { kind: "await_outcome", body: "done" })))
     expect(new Set(entries.map((entry) => entry.id)).size).toBe(1)
     expect(outbox.list("peer-a").entries).toHaveLength(1)
+  })
+
+  it("durable deliveries retain only an identity receipt across ack and can finish a pre-append intent", async () => {
+    const { store: outbox, agentRoot } = store()
+    const input = { kind: "failure_report", body: "private report", durable: true as const }
+    const first = await outbox.appendOnce("peer", "report:r", input, 1_760_000_000_000)
+    expect((await outbox.appendOnce("peer", "report:r", input)).id).toBe(first.id)
+    const dir = path.join(outboxRoot(agentRoot), ".receipts", "peer")
+    const receiptFile = path.join(dir, fs.readdirSync(dir)[0])
+    expect(fs.readFileSync(receiptFile, "utf8")).not.toContain("private report")
+    // A durable intent exists before append; losing an unacked entry resumes the same id.
+    fs.rmSync(path.join(outboxRoot(agentRoot), "peer", `${first.id}.json`))
+    expect((await outbox.appendOnce("peer", "report:r", input)).id).toBe(first.id)
+    outbox.ack("peer", [first.id])
+    expect((await outbox.appendOnce("peer", "report:r", input)).id).toBe(first.id)
+    expect(outbox.list("peer").entries).toEqual([])
+    outbox.forgetOnce("peer", "report:r")
+    expect(fs.existsSync(receiptFile)).toBe(false)
+    expect((await outbox.appendOnce("peer", "report:r", input)).id).not.toBe(first.id)
+    fs.writeFileSync(receiptFile, '{"id":"invalid","acknowledged":false}')
+    await expect(outbox.appendOnce("peer", "report:r", input)).rejects.toThrow("invalid durable outbox receipt")
+    fs.writeFileSync(receiptFile, JSON.stringify({ id: first.id, acknowledged: false }))
+    fs.rmSync(path.join(outboxRoot(agentRoot), "peer", fs.readdirSync(path.join(outboxRoot(agentRoot), "peer"))[0]))
+    filesystem.afterReceiptRead = () => {
+      filesystem.afterReceiptRead = null
+      fs.rmSync(receiptFile)
+    }
+    await expect(outbox.appendOnce("peer", "report:r", input)).rejects.toThrow("receipt disappeared")
+    const invalid = outbox.append("other", { kind: "k", body: "x", meta: { durableOnce: true } })
+    expect(() => outbox.ack("other", [invalid.id])).toThrow("no dedupe key")
+    expect(outbox.list("other").entries).toHaveLength(1)
   })
 })

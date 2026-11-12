@@ -3,10 +3,14 @@ import { authRequired } from "../../repertoire/auth-required"
 
 describe("authRequired", () => {
   it("promises a sign-in prompt only when one can appear", () => {
-    expect(authRequired({ signin: async () => undefined }, "graph", "I need access to Microsoft Graph."))
+    expect(authRequired({ signin: async () => undefined, oauthAvailable: ["graph"] }, "graph", "I need access to Microsoft Graph."))
       .toBe("AUTH_REQUIRED:graph -- I need access to Microsoft Graph. Please sign in when prompted.")
-    expect(authRequired(undefined, "ado", "I need access to Azure DevOps."))
-      .toBe("AUTH_REQUIRED:ado -- I need access to Azure DevOps. Please sign in when prompted.")
+    const unavailable = authRequired(undefined, "ado", "I need access to Azure DevOps.")
+    expect(unavailable).toContain("AUTH_UNAVAILABLE:ado")
+    expect(unavailable).toContain("human-required")
+    expect(unavailable).not.toContain("when prompted")
+    expect(authRequired({ signin: async () => undefined }, "github", "GitHub needed.")).toContain("AUTH_UNAVAILABLE:github")
+    expect(authRequired({ signin: async () => undefined, oauthUnavailable: { github: "" } }, "github", "GitHub needed.")).toContain("AUTH_UNAVAILABLE:github")
   })
 
   it("says exactly why sign-in can't start, without the AUTH_REQUIRED marker that would retry it", () => {

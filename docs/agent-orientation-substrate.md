@@ -8,6 +8,19 @@ The goal is not a prettier dashboard. The goal is that an agent can wake up
 inside the harness, understand what matters, continue work, and ask for help
 without the human rebuilding context.
 
+## Identity and outside-work evidence
+
+Explicit introductions, corrections and relationship notes establish how to address a person. Handles, branch
+prefixes and filenames are aliases, not evidence of a preferred given name or name order. Use a confirmed full
+name or preserve uncertainty instead of deriving one from an alias. Current friend notes are rendered in that
+relationship's prompt; a note about a colleague on the owner's record is available in the owner's conversation,
+not guaranteed to be retrieved in an unrelated relationship. Never hard-code private people into the harness.
+
+Outside-work messages and notes are point-in-time observations. Re-read the authoritative source before reporting
+current progress, placement or promises of updates. Renames, missing observations and incomplete history make old
+attributions unverified; they do not authorize filling gaps from narrative continuity. App-sessions reads and
+watch returns carry current identity and coverage alongside historical messages; see [the sense contract](app-sessions-sense.md).
+
 ## Source Inputs
 
 This scope incorporates the website draft at `/blog/dont-call-it-memory`,

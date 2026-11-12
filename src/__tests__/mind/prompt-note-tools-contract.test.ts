@@ -174,4 +174,19 @@ describe("prompt note/friend contracts", () => {
     expect(system).toContain("My psyche files")
     expect(system).toContain("My desk")
   })
+
+  it("grounds colleague names in explicit evidence and treats outside progress as point-in-time", async () => {
+    const { buildSystem, flattenSystemPrompt, contextSection } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli"))
+    expect(system).toContain("handles, branch prefixes and filenames are not preferred names")
+    expect(system).toContain("re-read the authoritative source before reporting current progress")
+    const { getChannelCapabilities } = await import("@ouro.bot/friends")
+    const friend: import("@ouro.bot/friends").FriendRecord = {
+      id: "owner", name: "Owner", role: "friend", trustLevel: "family", admissionState: "active", initiativePolicy: "reactive_only",
+      externalIds: [], tenantMemberships: [], toolPreferences: {}, connections: [],
+      notes: { "colleague-dana": { value: "Dana Lee uses Dana; branch handle dlee is only an alias.", savedAt: "2026-11-11T00:00:00Z" } },
+      totalTokens: 0, createdAt: "2026-11-11T00:00:00Z", updatedAt: "2026-11-11T00:00:00Z", schemaVersion: 1,
+    }
+    expect(contextSection({ friend, channel: getChannelCapabilities("cli") })).toContain("Dana Lee uses Dana")
+  })
 })

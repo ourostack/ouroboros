@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const client = vi.hoisted(() => ({
   listAppSessions: vi.fn(),
   snapshot: vi.fn(),
-  tailAppSession: vi.fn(),
+  readAppSessionHistory: vi.fn(),
   eventLogSize: vi.fn(),
   sendToAppSession: vi.fn(),
   resumeAppSession: vi.fn(),
@@ -31,7 +31,7 @@ let agentRoot: string
 let ctx: ToolContext
 
 const row = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
-  id, name, kind: "workspace", workspaceId: "w", workspaceType: "branch", project: "desk", state: "idle", detail: "its turn ended",
+  id, name, kind: "workspace", workspaceId: "w", workspaceType: "branch", project: "desk", projectId: "p", sidebarPlacement: "unknown", state: "idle", detail: "its turn ended",
   isRunning: false, wasInterrupted: false, remote: false, updatedAt: null, lastActivity: "t", ...extra,
 })
 
@@ -43,9 +43,10 @@ beforeEach(() => {
   agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "app-sessions-tools-"))
   ctx = { agentName: "slugger", agentRoot } as unknown as ToolContext
   for (const fn of Object.values(client)) fn.mockReset()
-  client.listAppSessions.mockReturnValue([row(A, "Babysitter", { state: "stuck" }), row(B, "Other", { remote: true }), row(C, "Third")])
+  client.listAppSessions.mockReturnValue([row(A, "Babysitter", { state: "stuck", parentSessionId: null, creatorSessionId: C, coordinatingCreatorSessionId: C }), row(B, "Other", { remote: true }), row(C, "Third")])
   client.snapshot.mockReturnValue({ at: "t", appRunning: true, counts: { working: 0, idle: 2, waiting: 0, stuck: 1 }, sessions: [] })
   client.eventLogSize.mockReturnValue(42)
+  client.readAppSessionHistory.mockReturnValue({ messages: [], observedAt: "t", source: "local_event_log", requestedCount: 6, returnedCount: 0, logBytes: 0, scannedBytes: 0, beginningReached: true, skippedEvents: 0, missing: false })
 })
 
 afterEach(() => {
@@ -86,7 +87,7 @@ describe("app-sessions tools", () => {
     const all = await call(appSessionsListTool, {})
     expect(all).toMatchObject({ appRunning: true, counts: { stuck: 1 } })
     expect(all.sessions).toEqual([
-      { id: A, name: "Babysitter", state: "stuck", why: "its turn ended", kind: "workspace", project: "desk", lastActivity: "t" },
+      expect.objectContaining({ id: A, name: "Babysitter", state: "stuck", why: "its turn ended", kind: "workspace", project: "desk", lastActivity: "t", workspaceId: "w", projectId: "p", parentSessionId: null, creatorSessionId: C, coordinatingCreatorSessionId: C, sidebarPlacement: "unknown" }),
       expect.objectContaining({ id: B, remote: true }),
       expect.objectContaining({ id: C }),
     ])
@@ -94,8 +95,7 @@ describe("app-sessions tools", () => {
   })
 
   it("resolves a session by id or unique prefix", async () => {
-    client.tailAppSession.mockReturnValue([])
-    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ session: A, name: "Babysitter" })
+    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ session: A, name: "Babysitter", parentSessionId: null, creatorSessionId: C, coordinatingCreatorSessionId: C, sidebarPlacement: "unknown" })
     expect(await call(appSessionsTailTool, { session: "3333" })).toMatchObject({ session: C })
     expect(await call(appSessionsTailTool, { session: "1111" })).toEqual({ error: "'1111' matches 2 sessions; give more of the id" })
     expect(await call(appSessionsTailTool, { session: "9999" })).toEqual({ error: expect.stringContaining("no session '9999'") })
@@ -104,12 +104,22 @@ describe("app-sessions tools", () => {
   })
 
   it("tails a bounded number of messages", async () => {
-    client.tailAppSession.mockReturnValue([{ at: "t", role: "assistant", text: "hi" }])
-    expect(await call(appSessionsTailTool, { session: A })).toEqual({ session: A, name: "Babysitter", messages: [{ at: "t", role: "assistant", text: "hi" }] })
+    client.readAppSessionHistory.mockReturnValue({ messages: [{ at: "t", role: "assistant", text: "hi" }], observedAt: "t", skippedEvents: 0 })
+    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ session: A, name: "Babysitter", state: "stuck", observedAt: "t", coverage: "local", messages: [{ at: "t", role: "assistant", text: "hi" }] })
     await call(appSessionsTailTool, { session: A, count: 500 })
     await call(appSessionsTailTool, { session: A, count: "3" })
     await call(appSessionsTailTool, { session: A, count: -1 })
-    expect(client.tailAppSession.mock.calls.map(args => args[1])).toEqual([6, 50, 3, 1])
+    expect(client.readAppSessionHistory.mock.calls.map(args => args[1])).toEqual([6, 50, 3, 1])
+  })
+
+  it("marks incomplete, missing and remote-local history and a changed watched name explicitly", async () => {
+    watchSession(agentRoot, A, "Earlier work", 0, Date.now())
+    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ renamedFrom: "Earlier work", coverage: "local" })
+    expect(await call(appSessionsTailTool, { session: B })).toMatchObject({ coverage: "local-only" })
+    client.readAppSessionHistory.mockReturnValueOnce({ messages: [], skippedEvents: 1 })
+    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ coverage: "incomplete" })
+    client.readAppSessionHistory.mockReturnValueOnce({ messages: [], missing: true })
+    expect(await call(appSessionsTailTool, { session: A })).toMatchObject({ coverage: "missing" })
   })
 
   it("sends a message and watches for the reply", async () => {
@@ -139,8 +149,8 @@ describe("app-sessions tools", () => {
   })
 
   it("opens a chat it may later archive, watching it when it has a first message", async () => {
-    client.openAppChat.mockResolvedValue({ ok: true, sessionId: C, sent: null, error: null })
-    expect(await call(appSessionsNewTool, { name: " Probe ", prompt: "Reply OK", cwd: "/x", agent: "desk:worker", model: "m" })).toEqual({ ok: true, sessionId: C, sent: null, error: null, watching: true })
+    client.openAppChat.mockResolvedValue({ ok: true, sessionId: C, sent: { ok: true }, error: null })
+    expect(await call(appSessionsNewTool, { target: "chat", name: " Probe ", prompt: "Reply OK", cwd: "/x", agent: "desk:worker", model: "m" })).toMatchObject({ ok: true, sessionId: C, sent: { ok: true }, error: null, watching: true })
     expect(client.openAppChat).toHaveBeenLastCalledWith({ name: "Probe", prompt: "Reply OK", cwd: "/x", agent: "desk:worker", model: "m" }, {})
     expect(readProbes(agentRoot)[C].name).toBe("Probe")
     expect(readWatches(agentRoot)[C].offset).toBe(0)
@@ -148,10 +158,26 @@ describe("app-sessions tools", () => {
     expect(await call(appSessionsNewTool, { prompt: " " })).toMatchObject({ watching: false })
     expect(client.openAppChat).toHaveBeenLastCalledWith({}, {})
     expect(readProbes(agentRoot)[B].name).toBeNull()
+    client.openAppChat.mockResolvedValue({ ok: true, sessionId: B, sent: { ok: true }, error: null })
     expect(await call(appSessionsNewTool, { prompt: "go" })).toMatchObject({ watching: true })
     expect(readWatches(agentRoot)[B].name).toBeNull()
     client.openAppChat.mockResolvedValue({ ok: false, sessionId: null, sent: null, error: "refused" })
     expect(await call(appSessionsNewTool, {})).toEqual({ ok: false, sessionId: null, sent: null, error: "refused" })
+  })
+
+  it("remembers an actually created session even if its prompt or placement failed, without claiming it is watching", async () => {
+    client.openAppChat.mockResolvedValue({ ok: false, created: true, sessionId: C, sent: { ok: false }, placement: { verified: false, associationVerified: true, kind: "chat", name: "Actual name", sidebarPlacement: "unknown" }, error: "prompt refused" })
+    expect(await call(appSessionsNewTool, { name: "Requested name", prompt: "go" })).toMatchObject({ ok: false, created: true, watching: false, placement: { kind: "chat" } })
+    expect(readProbes(agentRoot)[C].name).toBe("Actual name")
+    expect(readWatches(agentRoot)[C]).toBeUndefined()
+  })
+
+  it("refuses workspace or parent placement rather than creating an unrelated chat", async () => {
+    expect(await call(appSessionsNewTool, { name: "Task", target: "workspace" })).toMatchObject({ error: expect.stringContaining("standalone chat") })
+    expect(await call(appSessionsNewTool, { name: "Task", project: "repo" })).toMatchObject({ error: expect.stringContaining("standalone chat") })
+    expect(await call(appSessionsNewTool, { name: "Task", workspace: "folder" })).toMatchObject({ error: expect.stringContaining("standalone chat") })
+    expect(await call(appSessionsNewTool, { name: "Task", parent_session: A })).toMatchObject({ error: expect.stringContaining("standalone chat") })
+    expect(client.openAppChat).not.toHaveBeenCalled()
   })
 
   it("archives only sessions it opened", async () => {

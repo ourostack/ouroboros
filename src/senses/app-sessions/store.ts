@@ -77,7 +77,7 @@ export function unwatchSession(agentRoot: string, id: string): boolean {
  * Apply the loop's progress to the watch file as it is now, so a watch a tool added meanwhile survives: offsets
  * only move forward, and expired watches go.
  */
-export function updateWatches(agentRoot: string, offsets: Record<string, number>, now: number): void {
+export function updateWatches(agentRoot: string, offsets: Record<string, number>, now: number, observations: Record<string, { name?: string; previousOffset: number }> = {}): void {
   const watches = readWatches(agentRoot)
   for (const [id, entry] of Object.entries(watches)) {
     if (entry.until <= now) {
@@ -85,7 +85,9 @@ export function updateWatches(agentRoot: string, offsets: Record<string, number>
       continue
     }
     const offset = offsets[id]
-    if (offset !== undefined && offset > entry.offset) entry.offset = offset
+    const observation = observations[id]
+    if (offset !== undefined && (offset > entry.offset || observation?.previousOffset === entry.offset)) entry.offset = offset
+    if (observation?.name !== undefined) entry.name = observation.name
   }
   writeJson(watchFile(agentRoot), watches)
 }

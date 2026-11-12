@@ -117,6 +117,8 @@ export interface ToolContext {
   githubToken?: string;
   /** Connections whose sign-in the sense knows cannot start, with the reason to tell the person. */
   oauthUnavailable?: Readonly<Record<string, string>>;
+  /** Logical OAuth services whose adapter can actually start sign-in this turn; a no-op signin is not capability. */
+  oauthAvailable?: readonly string[];
   signin: (connectionName: string) => Promise<string | undefined>;
   context?: ResolvedContext;
   friendStore?: FriendStore;

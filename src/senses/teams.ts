@@ -999,6 +999,9 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     graphToken: teamsContext.graphToken,
     adoToken: teamsContext.adoToken,
     githubToken: teamsContext.githubToken,
+    oauthAvailable: ([
+      ["graph", teamsContext.graphConnectionName], ["ado", teamsContext.adoConnectionName], ["github", teamsContext.githubConnectionName],
+    ] as const).filter(([service, name]) => name && !teamsContext.oauthUnavailable?.[service]).map(([service]) => service),
     ...(teamsContext.oauthUnavailable ? { oauthUnavailable: teamsContext.oauthUnavailable } : {}),
     signin: teamsContext.signin,
     summarize: createSummarize("human"),
