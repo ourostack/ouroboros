@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1105",
+      "changes": [
+        "Teams now tells the agent when a chat is shared with other people, so a Teams group chat or channel no longer gets one-to-one privileges."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1104",
       "changes": [
         "Agent state is written through one atomic file writer. Telegram handoff notices, the Teams off-turn ledger and the Teams outbox no longer share a temporary file between two writes in the same process, and state files are created private."

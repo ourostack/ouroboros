@@ -6399,6 +6399,18 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(input.capabilities).toEqual(expect.objectContaining({ senseType: "closed", channel: "teams" }))
   })
 
+  it("tells the pipeline when the Teams conversation is shared with other people", async () => {
+    vi.resetModules()
+    const { mockHandleInboundTurn } = mockPipelineDeps()
+    const teams = await import("../../senses/teams")
+    expect([teams.teamsIsGroupChat("personal"), teams.teamsIsGroupChat("groupChat"), teams.teamsIsGroupChat("channel"), teams.teamsIsGroupChat(undefined)]).toEqual([false, true, true, false])
+
+    const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    await teams.handleTeamsMessage("hello all", mockStream as any, "conv-group", { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", isGroupChat: true })
+    await teams.handleTeamsMessage("hello", mockStream as any, "conv-1to1", { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc" })
+    expect(mockHandleInboundTurn.mock.calls.map(([input]: any[]) => input.isGroupChat)).toEqual([true, false])
+  })
+
   it("shows the model the message a Teams reply quotes (2026-10-29)", async () => {
     vi.resetModules()
     const { mockHandleInboundTurn } = mockPipelineDeps()
