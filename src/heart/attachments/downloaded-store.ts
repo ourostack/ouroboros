@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { randomUUID } from "node:crypto"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { cacheRecentAttachment } from "./store"
 import { originalStoragePath } from "./originals"
 import { buildDownloadedAttachmentRecord, type DownloadedAttachmentRecord, type DownloadedAttachmentSource } from "./sources/downloaded"
@@ -68,5 +69,6 @@ export async function storeDownloadedAttachment<TSource extends DownloadedAttach
   const provisional = buildDownloadedAttachmentRecord(input.source, describe(path.resolve(input.agentRoot, "state", "attachments", ".pending", input.sourceId)))
   const localPath = originalStoragePath(input.agentRoot, provisional, provisional.mimeType)
   await atomicWriteFile(localPath, input.buffer)
+  emitNervesEvent({ component: "engine", event: "engine.downloaded_attachment_stored", message: "downloaded attachment stored", meta: { source: input.source, byteCount: input.buffer.length } })
   return cacheRecentAttachment(input.agentName, buildDownloadedAttachmentRecord(input.source, describe(localPath)), input.agentRoot) as DownloadedAttachmentRecord<TSource>
 }

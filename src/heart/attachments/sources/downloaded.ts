@@ -27,7 +27,7 @@ export function buildDownloadedAttachmentRecord<TSource extends DownloadedAttach
   const label = SOURCE_LABEL[source]
   if (!input.sourceId.trim()) throw new Error(`${label} attachment file id is required`)
   if (!path.isAbsolute(input.localPath)) throw new Error(`${label} attachment local path must be absolute`)
-  emitNervesEvent({ component: "engine", event: `engine.${source}_attachment_record_built`, message: `${label} attachment record entered the shared attachment substrate`, meta: {} })
+  emitNervesEvent({ component: "engine", event: "engine.downloaded_attachment_record_built", message: `${label} attachment record entered the shared attachment substrate`, meta: { source } })
   return createAttachmentRecord({
     source,
     sourceId: input.sourceId,

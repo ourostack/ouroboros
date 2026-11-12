@@ -15,7 +15,11 @@ vi.mock("node:fs/promises", async (importActual) => {
 import { cacheRecentAttachment, readRecentAttachments } from "../../heart/attachments/store"
 import { materializeAttachment } from "../../heart/attachments/materialize"
 import { originalStoragePath } from "../../heart/attachments/originals"
-import { buildTelegramAttachmentRecord, telegramAttachmentSourceAdapter } from "../../heart/attachments/sources/telegram"
+import { buildDownloadedAttachmentRecord, downloadedAttachmentSourceAdapter } from "../../heart/attachments/sources/downloaded"
+
+const telegramAttachmentSourceAdapter = downloadedAttachmentSourceAdapter("telegram")
+const buildTelegramAttachmentRecord = ({ fileId, ...rest }: { fileId: string; displayName: string; mimeType?: string; byteCount?: number; localPath: string }) =>
+  buildDownloadedAttachmentRecord("telegram", { sourceId: fileId, ...rest })
 import { ingestTelegramAttachments } from "../../senses/telegram-attachments"
 import { createTelegramLongPoll, type TelegramInboundMessage } from "../../senses/telegram-client"
 

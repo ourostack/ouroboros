@@ -5,7 +5,9 @@ import { cacheRecentAttachment } from "../heart/attachments/store"
 import { getRecentAttachment } from "../heart/attachments/store"
 import { originalStoragePath } from "../heart/attachments/originals"
 import { ensureReadableFile } from "../heart/attachments/originals"
-import { buildTelegramAttachmentRecord, type TelegramAttachmentRecord } from "../heart/attachments/sources/telegram"
+import { buildDownloadedAttachmentRecord, type DownloadedAttachmentRecord } from "../heart/attachments/sources/downloaded"
+
+type TelegramAttachmentRecord = DownloadedAttachmentRecord<"telegram">
 import { emitNervesEvent } from "../nerves/runtime"
 import type { TelegramBotApi, TelegramInboundAttachment } from "./telegram-client"
 
@@ -40,8 +42,8 @@ export async function ingestTelegramAttachments(input: {
           continue
         }
       }
-      const recoverable = buildTelegramAttachmentRecord({
-        fileId: candidate.fileId,
+      const recoverable = buildDownloadedAttachmentRecord("telegram", {
+        sourceId: candidate.fileId,
         displayName: candidate.displayName,
         mimeType: candidate.mimeType,
         byteCount: candidate.byteCount,
@@ -51,8 +53,8 @@ export async function ingestTelegramAttachments(input: {
       try {
         const stat = await fs.lstat(recoverablePath)
         if (!stat.isFile() || stat.size > MAX_TELEGRAM_ATTACHMENT_BYTES) throw new Error("persisted attachment is invalid")
-        const recovered = cacheRecentAttachment(input.agentName, buildTelegramAttachmentRecord({
-          fileId: candidate.fileId,
+        const recovered = cacheRecentAttachment(input.agentName, buildDownloadedAttachmentRecord("telegram", {
+          sourceId: candidate.fileId,
           displayName: candidate.displayName,
           mimeType: candidate.mimeType,
           byteCount: stat.size,

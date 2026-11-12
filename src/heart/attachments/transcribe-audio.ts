@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentToolsRoot } from "../identity"
 
 // One speech-to-text path for every sense: a voice note from iMessage, Telegram or Teams becomes text the same way.
@@ -126,7 +127,9 @@ export async function transcribeAudioFile(audioPath: string, options: Transcribe
     const modelPath = await ensureWhisperCppModel(options.timeoutMs, options.fetchImpl ?? fetch)
     await convertToWhisperWav(audioPath, wavPath, options.timeoutMs)
     await execFileText(whisperCliPath, ["-m", modelPath, "-f", wavPath, "-oj", "-of", outputBase], Math.max(options.timeoutMs, 120_000))
-    return whisperCppTranscriptText(await fs.readFile(`${outputBase}.json`, "utf8"))
+    const transcript = whisperCppTranscriptText(await fs.readFile(`${outputBase}.json`, "utf8"))
+    emitNervesEvent({ component: "senses", event: "senses.audio_transcribed", message: "audio transcribed with whisper.cpp", meta: { characters: transcript.length } })
+    return transcript
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined)
   }

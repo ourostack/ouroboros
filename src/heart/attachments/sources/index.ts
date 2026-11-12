@@ -2,13 +2,12 @@ import type { AttachmentSourceKind } from "../types"
 import type { AttachmentSourceAdapter } from "./adapter"
 import { blueBubblesAttachmentSourceAdapter } from "./bluebubbles"
 import { cliLocalFileAttachmentSourceAdapter } from "./cli-local-file"
-import { telegramAttachmentSourceAdapter } from "./telegram"
 import { downloadedAttachmentSourceAdapter } from "./downloaded"
 
 const ATTACHMENT_SOURCE_ADAPTERS: Record<AttachmentSourceKind, AttachmentSourceAdapter> = {
   bluebubbles: blueBubblesAttachmentSourceAdapter,
   "cli-local-file": cliLocalFileAttachmentSourceAdapter,
-  telegram: telegramAttachmentSourceAdapter,
+  telegram: downloadedAttachmentSourceAdapter("telegram"),
   teams: downloadedAttachmentSourceAdapter("teams"),
 }
 
