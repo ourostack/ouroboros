@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.1099",
       "changes": [
         "Read requested visible Copilot app history across tool-heavy logs; preserve watch backlogs and expose freshness, renames and local coverage.",
-        "Retain blocked failure reports locally and retry only real escalation grants, with durable acknowledgment-safe delivery; report unavailable GitHub consent routes truthfully.",
+        "Retain blocked failure reports locally and retry only real escalation grants, with durable acknowledgment-safe delivery; retry timers run without optional confirmation setup and stop on server close. Report unavailable GitHub consent routes truthfully.",
         "Refuse unsupported Copilot workspace/parent creation targets and separate created sessions, accepted prompts, verified association and unknown sidebar placement; ground names in explicit relationship evidence."
       ]
     },

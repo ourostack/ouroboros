@@ -464,7 +464,6 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_escalation_confirm_error", message: "confirming resolved failure reports failed", meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) } })
     }
   }
-  let confirmTimer: NodeJS.Timeout | undefined
 
   // The message/send branch as one function, so a sealed message that arrives through the relay inbox runs exactly the
   // path a direct POST runs. `req` is absent for a relayed message: there are no HTTP headers to take a sender hint from.
@@ -795,7 +794,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   endpointUrl.hash = ""
 
   await confirmReports()
-  confirmTimer = setInterval(() => { void confirmReports() }, options.escalation?.confirmIntervalMs ?? ESCALATION_CONFIRM_INTERVAL_MS)
+  const confirmTimer = setInterval(() => { void confirmReports() }, options.escalation?.confirmIntervalMs ?? ESCALATION_CONFIRM_INTERVAL_MS)
   confirmTimer.unref()
 
   if (options.relay && inboundShareDeps) {
@@ -825,7 +824,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     endpointUrl: endpointUrl.toString(),
     ...(relayInbox ? { relay: relayInbox } : {}),
     close: () => new Promise<void>((resolve, reject) => {
-      if (confirmTimer) clearInterval(confirmTimer)
+      clearInterval(confirmTimer)
       relayInbox?.stop()
       server.close((error) => {
         if (error) {
