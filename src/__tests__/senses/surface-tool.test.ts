@@ -985,6 +985,19 @@ describe("surface tool", () => {
       )
     })
 
+    it("surfaceToolDefinition with channel=teams says a failed Teams send is not confirmed delivered, and still queues it", async () => {
+      const fs = await import("fs")
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "send_error" })
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "the build is green", friendId: "ari", channel: "teams" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("queued — Teams send failed, so delivery is not confirmed; saved for their next Teams message")
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/ari\/teams\/proactive\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("the build is green"),
+      )
+    })
+
     it("surfaceToolDefinition with channel=teams forwards to the machine that runs Teams without queueing here", async () => {
       const fs = await import("fs")
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, forwardedTo: "aris-mac-mini" })

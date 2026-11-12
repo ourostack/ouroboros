@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1106",
+      "changes": [
+        "When a surface send to Teams fails, the result now says the send failed and delivery is not confirmed, instead of reading like a plain queue. The message is still queued for the next Teams message, as before."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1105",
       "changes": [
         "Teams now tells the agent when a chat is shared with other people, so a Teams group chat or channel no longer gets one-to-one privileges."
