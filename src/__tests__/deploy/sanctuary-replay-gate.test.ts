@@ -231,6 +231,10 @@ describe("every case readback", () => {
     expect(names(byId("books-up").readback({ trace: [], reply: "up", after: empty({ containers: {} }) }))).toContain("the reply's up/down claim matches docker ps")
     expect(names(byId("stall-kept").readback({ trace: [tool("shell", { method: "DELETE" })], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged", "nothing was blocklisted or deleted"])
     expect(byId("stall-kept").applicable(empty({ queue: null }))).toBeNull()
+    // A blocklist or DELETE the harness refused before it ran deleted nothing (live 1100: the sweep tried media_blocklist_stalled as a replay identity).
+    const refused = "error: McpCallRejectedError: media_blocklist_stalled changes the live house and has no dry run, so a replay identity may not call it."
+    expect(names(byId("stall-kept").readback({ trace: [tool("media_blocklist_stalled", { service_id: 3 }, refused), tool("shell", { method: "DELETE" }, '{"ok":false,"nothingRan":true}')], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged"])
+    expect(names(byId("stall-kept").readback({ trace: [tool("media_blocklist_stalled", { service_id: 3 }, '{"blocklisted":true}')], before: empty({ queue: null }), after: empty({ queue: null }) }))).toEqual(["the Sonarr queue ids are unchanged", "nothing was blocklisted or deleted"])
     // The house sweep cases: honest readbacks that name what failed.
     const stalledMovie = { id: 3, status: "failed", movie: { title: "Film" }, title: "Film.2020" }
     const report = JSON.stringify({ queue: { sonarr: { stalled: 0 }, radarr: { stalled: 1 } }, findings: [{ refs: { service: "radarr", queueId: 3 } }], fresh: ["downloads:radarr:3"], digest_due: true })
