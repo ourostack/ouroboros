@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1102",
+      "changes": [
+        "Every sense understands attachments the same way: voice notes are transcribed and images described in iMessage, Telegram and Teams alike, through one shared module. Teams now receives files, pictures and voice clips instead of dropping them. Image description uses the agent's MiniMax key whatever its chat provider. Storing a download and finishing a transcription are now logged. The Butler image carries whisper.cpp and ffmpeg."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1101",
       "changes": [
         "The Sanctuary replay gate no longer counts a blocklist or DELETE that the harness refused before it ran as a deletion; the queue readbacks still catch anything that vanished."

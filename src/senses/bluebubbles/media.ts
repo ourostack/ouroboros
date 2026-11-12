@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentName, getAgentRoot, getAgentToolsRoot } from "../../heart/identity"
+import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { transcribeAudioFile, VOICE_NOTE_TRANSCRIPT_PREFIX } from "../../heart/attachments/transcribe-audio"
+import { IMAGE_DESCRIPTION_TEXT, imageDescriptionPrompt } from "../../heart/attachments/understand"
 import { getModelCapabilities } from "../../heart/model-capabilities"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
 import { cacheRecentAttachment } from "../../heart/attachments/store"
@@ -76,18 +77,7 @@ interface BlueBubblesMediaDeps {
   userText?: string
 }
 
-// Pin the exact wrapper strings so tests and code read from one source.
-export const VLM_TEXT_WRAPPERS = {
-  description: (desc: string): string => `[image description: ${desc}]`,
-  failure: (reason: string): string => `[image description failed: ${reason}]`,
-} as const
-
-// D3 prompt template. Included here (not templated out) because the contract
-// is load-bearing — see planning doc section D3 and AX-4.
-function buildVlmPrompt(userText: string | undefined): string {
-  const body = userText ?? ""
-  return `User message: "${body}"\n\nDescribe this image in detail, focusing on anything relevant to what the user said above.\nInclude any text visible in the image verbatim.`
-}
+export const VLM_TEXT_WRAPPERS = IMAGE_DESCRIPTION_TEXT
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".caf", ".ogg"])
 const AUDIO_EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
@@ -110,21 +100,6 @@ const AUDIO_INPUT_FORMAT_BY_EXTENSION: Record<string, "mp3" | "wav"> = {
   ".wav": "wav",
   ".mp3": "mp3",
 }
-const WHISPER_CPP_FORMULA = "whisper-cpp"
-const WHISPER_CPP_MODEL_NAME = "ggml-base.en.bin"
-const WHISPER_CPP_MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${WHISPER_CPP_MODEL_NAME}`
-
-// Lazy — getAgentToolsRoot() requires identity to be resolved, which isn't
-// true at module-load time in most unit test contexts. Tests that only touch
-// the image/VLM path shouldn't break because the audio path asked for a
-// tools root they don't need.
-function whisperCppPaths(): { toolsDir: string; modelsDir: string; modelPath: string } {
-  const toolsDir = path.join(getAgentToolsRoot(), "whisper-cpp")
-  const modelsDir = path.join(toolsDir, "models")
-  const modelPath = path.join(modelsDir, WHISPER_CPP_MODEL_NAME)
-  return { toolsDir, modelsDir, modelPath }
-}
-
 function describeAttachment(attachment: BlueBubblesAttachmentSummary): string {
   return attachment.transferName?.trim() || attachment.guid?.trim() || "attachment"
 }
@@ -155,142 +130,16 @@ function audioFormatForInput(contentType?: string, attachment?: BlueBubblesAttac
   return AUDIO_INPUT_FORMAT_BY_CONTENT_TYPE[contentType ?? ""] ?? AUDIO_INPUT_FORMAT_BY_EXTENSION[extension]
 }
 
-async function execFileText(file: string, args: string[], timeout: number): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    execFile(file, args, { timeout }, (error, stdout = "", stderr = "") => {
-      if (error) {
-        const detail = stderr.trim() || stdout.trim() || error.message
-        reject(new Error(detail))
-        return
-      }
-      resolve(stdout)
-    })
-  })
-}
-
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.access(targetPath)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function resolveWhisperCppBinary(timeoutMs: number): Promise<string> {
-  try {
-    const existing = (await execFileText("which", ["whisper-cli"], timeoutMs)).trim()
-    if (existing) {
-      return existing
-    }
-  } catch {
-    // fall through to managed install
-  }
-
-  let prefix = ""
-  try {
-    prefix = (await execFileText("brew", ["--prefix", WHISPER_CPP_FORMULA], timeoutMs)).trim()
-    if (prefix) {
-      const candidate = path.join(prefix, "bin", "whisper-cli")
-      if (await pathExists(candidate)) {
-        return candidate
-      }
-    }
-  } catch {
-    // fall through to managed install
-  }
-
-  await execFileText("brew", ["install", WHISPER_CPP_FORMULA], Math.max(timeoutMs, 300_000))
-  prefix = (await execFileText("brew", ["--prefix", WHISPER_CPP_FORMULA], timeoutMs)).trim()
-  if (!prefix) {
-    throw new Error("whisper.cpp installed but brew did not return a usable prefix")
-  }
-  const candidate = path.join(prefix, "bin", "whisper-cli")
-  if (!await pathExists(candidate)) {
-    throw new Error("whisper.cpp installed but whisper-cli binary is missing")
-  }
-  return candidate
-}
-
-async function ensureWhisperCppModel(timeoutMs: number, fetchImpl: typeof fetch): Promise<string> {
-  const { modelsDir, modelPath } = whisperCppPaths()
-  try {
-    await fs.access(modelPath)
-    return modelPath
-  } catch {
-    await fs.mkdir(modelsDir, { recursive: true })
-    const response = await fetchImpl(WHISPER_CPP_MODEL_URL, {
-      method: "GET",
-      signal: AbortSignal.timeout(Math.max(timeoutMs, 300_000)),
-    })
-    if (!response.ok) {
-      throw new Error(`failed to download whisper.cpp model: HTTP ${response.status}`)
-    }
-    await fs.writeFile(modelPath, Buffer.from(await response.arrayBuffer()))
-    return modelPath
-  }
-}
-
-async function convertAudioForWhisperCpp(sourcePath: string, outputPath: string, timeoutMs: number): Promise<void> {
-  try {
-    await execFileText(
-      "ffmpeg",
-      ["-y", "-i", sourcePath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", outputPath],
-      Math.max(timeoutMs, 120_000),
-    )
-    return
-  } catch (ffmpegError) {
-    try {
-      await execFileText(
-        "afconvert",
-        ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", sourcePath, outputPath],
-        Math.max(timeoutMs, 120_000),
-      )
-      return
-    } catch (afconvertError) {
-      const ffmpegReason = (ffmpegError as Error).message
-      const afconvertReason = (afconvertError as Error).message
-      throw new Error(`failed to prepare audio for whisper.cpp (ffmpeg: ${ffmpegReason}; afconvert: ${afconvertReason})`)
-    }
-  }
-}
-
 async function transcribeAudioWithWhisperCpp(
   params: BlueBubblesAudioTranscriptionParams,
   modelFetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-bb-audio-"))
   const filename = sanitizeFilename(describeAttachment(params.attachment))
-  const extension = fileExtensionForAudio(params.attachment, params.contentType)
-  const audioPath = path.join(workDir, `${path.parse(filename).name}${extension}`)
-  const wavPath = path.join(workDir, `${path.parse(audioPath).name}.wav`)
-  const outputBase = path.join(workDir, path.parse(audioPath).name)
-
+  const audioPath = path.join(workDir, `${path.parse(filename).name}${fileExtensionForAudio(params.attachment, params.contentType)}`)
   try {
     await fs.writeFile(audioPath, params.buffer)
-    const whisperCliPath = await resolveWhisperCppBinary(params.timeoutMs)
-    const modelPath = await ensureWhisperCppModel(params.timeoutMs, modelFetchImpl)
-    await convertAudioForWhisperCpp(audioPath, wavPath, params.timeoutMs)
-    await execFileText(
-      whisperCliPath,
-      ["-m", modelPath, "-f", wavPath, "-oj", "-of", outputBase],
-      Math.max(params.timeoutMs, 120_000),
-    )
-
-    const transcriptPath = `${outputBase}.json`
-    const raw = await fs.readFile(transcriptPath, "utf8")
-    const parsed = JSON.parse(raw) as { text?: unknown; transcription?: Array<{ text?: unknown }> }
-    if (typeof parsed.text === "string") {
-      return parsed.text.trim()
-    }
-    if (Array.isArray(parsed.transcription)) {
-      return parsed.transcription
-        .map((entry) => (typeof entry?.text === "string" ? entry.text.trim() : ""))
-        .filter(Boolean)
-        .join(" ")
-        .trim()
-    }
-    return ""
+    return await transcribeAudioFile(audioPath, { timeoutMs: params.timeoutMs, fetchImpl: modelFetchImpl })
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined)
   }
@@ -383,7 +232,7 @@ export async function hydrateBlueBubblesAttachments(
           const normalizedMime = normalized.mimeType ?? persistedRecord.mimeType ?? "image/jpeg"
           const dataUrl = `data:${normalizedMime};base64,${normalizedBuffer.toString("base64")}`
           const description = await deps.vlmDescribe({
-            prompt: buildVlmPrompt(deps.userText),
+            prompt: imageDescriptionPrompt(deps.userText),
             imageDataUrl: dataUrl,
             attachmentGuid: attachment.guid,
             mimeType: normalizedMime,
@@ -437,7 +286,7 @@ export async function hydrateBlueBubblesAttachments(
           notices.push(`attachment hydration failed for ${name}: empty audio transcript`)
           continue
         }
-        transcriptAdditions.push(`voice note transcript: ${transcript}`)
+        transcriptAdditions.push(`${VOICE_NOTE_TRANSCRIPT_PREFIX}${transcript}`)
         continue
       }
 

@@ -3,6 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { spawn } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { whisperCppTranscriptText } from "../../heart/attachments/transcribe-audio"
 import { buildVoiceTranscript } from "./transcript"
 import type { VoiceTranscriber, VoiceTranscriptionRequest, VoiceTranscript } from "./types"
 
@@ -22,29 +23,13 @@ export interface WhisperCppTranscriberOptions {
   removeDir?: (dir: string) => Promise<void>
 }
 
-interface WhisperCppJson {
-  text?: unknown
-  transcription?: Array<{ text?: unknown }>
-}
-
 export function parseWhisperCppTranscriptJson(raw: string): string {
-  let parsed: WhisperCppJson
+  let text: string
   try {
-    parsed = JSON.parse(raw) as WhisperCppJson
+    text = whisperCppTranscriptText(raw)
   } catch (error) {
     throw new Error(`invalid whisper.cpp JSON: ${String(error)}`)
   }
-
-  const text = typeof parsed.text === "string"
-    ? parsed.text.trim()
-    : Array.isArray(parsed.transcription)
-      ? parsed.transcription
-          .map((entry) => typeof entry.text === "string" ? entry.text.trim() : "")
-          .filter(Boolean)
-          .join(" ")
-          .trim()
-      : ""
-
   if (!text) {
     throw new Error("empty whisper.cpp transcript")
   }

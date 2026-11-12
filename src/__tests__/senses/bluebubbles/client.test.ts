@@ -3523,7 +3523,7 @@ describe("BlueBubbles client", () => {
       vi.doUnmock("../../../heart/provider-credentials")
     })
 
-    it("vlmDescribe closure throws AX-2 error when provider is not minimax", async () => {
+    it("vlmDescribe closure describes with the minimax key even when the chat provider is not minimax", async () => {
       const { loadAgentConfig } = await import("../../../heart/identity")
       vi.mocked(loadAgentConfig).mockReturnValue({
         humanFacing: { provider: "anthropic", model: "MiniMax-M2.5" },
@@ -3539,7 +3539,7 @@ describe("BlueBubbles client", () => {
         hydrateBlueBubblesAttachments,
       }))
 
-      const minimaxVlmDescribe = vi.fn()
+      const minimaxVlmDescribe = vi.fn().mockResolvedValue("a cat")
       vi.doMock("../../../heart/providers/minimax-vlm", () => ({
         minimaxVlmDescribe,
       }))
@@ -3596,14 +3596,8 @@ describe("BlueBubbles client", () => {
           prompt: "p",
           imageDataUrl: "data:image/png;base64,xx",
         }),
-      ).rejects.toThrow(/VLM fallback requires a minimax credential/)
-      await expect(
-        depsArg.vlmDescribe({
-          prompt: "p",
-          imageDataUrl: "data:image/png;base64,xx",
-        }),
-      ).rejects.toThrow(/configure|vision-capable chat model/)
-      expect(minimaxVlmDescribe).not.toHaveBeenCalled()
+      ).resolves.toBe("a cat")
+      expect(minimaxVlmDescribe).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "sk-test", prompt: "p" }))
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
@@ -3685,7 +3679,7 @@ describe("BlueBubbles client", () => {
           prompt: "p",
           imageDataUrl: "data:image/png;base64,xx",
         }),
-      ).rejects.toThrow(/minimax API key not found|re-run credential setup/i)
+      ).rejects.toThrow(/needs a MiniMax API key in the agent vault/)
       expect(minimaxVlmDescribe).not.toHaveBeenCalled()
 
       vi.doUnmock("../../../senses/bluebubbles/media")

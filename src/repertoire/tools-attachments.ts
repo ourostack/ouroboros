@@ -1,9 +1,6 @@
-import * as fs from "node:fs/promises"
 import type OpenAI from "openai"
 import { getAgentName } from "../heart/identity"
-import { readProviderCredentialRecord } from "../heart/provider-credentials"
-import { MINIMAX_PROVIDER_BASE_URL } from "../heart/providers/minimax"
-import { minimaxVlmDescribe } from "../heart/providers/minimax-vlm"
+import { describeImage, imageFileDataUrl } from "../heart/attachments/understand"
 import { listRecentAttachments } from "../heart/attachments/store"
 import { materializeAttachment } from "../heart/attachments/materialize"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -130,13 +127,6 @@ function normalizeMaterializeError(tool: string, attachmentId: string, reason: s
   })
 }
 
-async function buildImageDataUrl(filePath: string, mimeType?: string): Promise<string> {
-  const buffer = await fs.readFile(filePath)
-  const encoded = buffer.toString("base64")
-  const normalizedMime = mimeType?.trim().toLowerCase() || "image/jpeg"
-  return `data:${normalizedMime};base64,${encoded}`
-}
-
 export const attachmentToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -260,10 +250,12 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       try {
         const materialized = await materializeAttachment(agentName, attachmentId, { variant: "vision_safe" })
-        const imageDataUrl = await buildImageDataUrl(materialized.path, materialized.mimeType)
-        const credential = await readProviderCredentialRecord(agentName, "minimax")
-        const apiKey = credential.ok ? credential.record.credentials.apiKey : undefined
-        if (!apiKey) {
+        const imageDataUrl = await imageFileDataUrl(materialized.path, materialized.mimeType)
+        let description: string
+        try {
+          description = await describeImage(agentName, { prompt, imageDataUrl, attachmentGuid: attachmentId, mimeType: materialized.mimeType })
+        } catch (error) {
+          if (!/MiniMax API key/.test(normalizeThrownReason(error))) throw error
           return frictionToolResult("describe_image", {
             kind: "external_blocker",
             recoverability: "blocked",
@@ -277,15 +269,6 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
             ],
           })
         }
-
-        const description = await minimaxVlmDescribe({
-          apiKey: String(apiKey),
-          prompt,
-          imageDataUrl,
-          baseURL: MINIMAX_PROVIDER_BASE_URL,
-          attachmentGuid: attachmentId,
-          mimeType: materialized.mimeType,
-        })
         emitNervesEvent({
           component: "tools",
           event: "tool.describe_image_success",

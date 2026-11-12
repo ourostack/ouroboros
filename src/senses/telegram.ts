@@ -72,8 +72,8 @@ import { openApprovalStore } from "../heart/approval-store"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
 import { findPendingObligationForRequest, fulfillObligation, markObligationReturnReady, readObligation } from "../arc/obligations"
 import { buildOrientationFrame } from "../heart/orientation-frame"
-import { renderAttachmentBlock } from "../heart/attachments/render"
 import { ingestTelegramAttachments } from "./telegram-attachments"
+import { attachmentTurnLines, ATTACHMENT_WORDS_TIMEOUT_MS } from "../heart/attachments/understand"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import {
@@ -1549,8 +1549,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       attachments: message.attachments ?? [],
     })
     const attachmentIds = ingested.attachments.map((attachment) => attachment.id)
+    const attachmentLines = await attachmentTurnLines(ingested.attachments, { agentName: options.agentName, agentRoot, userText: message.text, timeoutMs: ATTACHMENT_WORDS_TIMEOUT_MS })
     return {
-      text: shieldDelegatedBanner([message.text, renderAttachmentBlock(ingested.attachments), ...(message.attachmentNotices ?? []), ...ingested.notices].filter(Boolean).join("\n")),
+      text: shieldDelegatedBanner([message.text, ...attachmentLines, ...(message.attachmentNotices ?? []), ...ingested.notices].filter(Boolean).join("\n")),
       attachmentIds,
     }
   }
