@@ -50,13 +50,17 @@ describe("file_ouroboros_bug handler", () => {
   })
 
   it("returns AUTH_REQUIRED:github when githubToken is missing", async () => {
-    const result = await handler({ title: "test" }, { signin: async () => undefined } as any)
+    const result = await handler({ title: "test" }, { signin: async () => undefined, oauthAvailable: ["github"] })
     expect(result).toContain("AUTH_REQUIRED:github")
   })
 
-  it("returns AUTH_REQUIRED:github when ctx is undefined", async () => {
+  it("provides a manual recovery route instead of promising sign-in outside Teams", async () => {
     const result = await handler({ title: "test" })
-    expect(result).toContain("AUTH_REQUIRED:github")
+    expect(result).toContain("AUTH_UNAVAILABLE:github")
+    expect(result).toContain("human-required")
+    expect(result).toContain("https://github.com/ourostack/ouroboros/issues/new")
+    expect(result).not.toContain("AUTH_REQUIRED")
+    expect(githubRequest).not.toHaveBeenCalled()
   })
 
   it("calls githubRequest with correct method, path, and body on success", async () => {

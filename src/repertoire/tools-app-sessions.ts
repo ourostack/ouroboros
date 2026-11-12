@@ -3,9 +3,9 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   archiveAppSession, eventLogSize, listAppSessions, openAppChat, restartEnqueue, restartStatus, resumeAppSession,
-  sendToAppSession, snapshot, tailAppSession, type AppSessionState, type AppSessionsOptions,
+  readAppSessionHistory, sendToAppSession, snapshot, type AppSessionRow, type AppSessionState, type AppSessionsOptions,
 } from "../senses/app-sessions/client"
-import { addProbe, readProbes, removeProbe, unwatchSession, watchSession } from "../senses/app-sessions/store"
+import { addProbe, readProbes, readWatches, removeProbe, unwatchSession, watchSession } from "../senses/app-sessions/store"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
 /**
@@ -51,14 +51,14 @@ async function run(tool: string, ctx: ToolContext | undefined, body: (agentRoot:
 }
 
 /** A full session id, or a unique prefix of one (the first 8 characters are enough). */
-function resolveSession(value: unknown): { id: string; name: string | null } {
+function resolveSession(value: unknown): AppSessionRow {
   const wanted = text(value)
   if (!wanted) throw new Error("name a session: its id, or the start of it, from app_sessions_list")
   const rows = listAppSessions(clientOptions)
   const exact = rows.find(row => row.id === wanted)
-  if (exact) return { id: exact.id, name: exact.name }
+  if (exact) return exact
   const matches = rows.filter(row => row.id.startsWith(wanted))
-  if (matches.length === 1) return { id: matches[0].id, name: matches[0].name }
+  if (matches.length === 1) return matches[0]
   if (matches.length > 1) throw new Error(`'${wanted}' matches ${matches.length} sessions; give more of the id`)
   throw new Error(`no session '${wanted}' in this Mac's Copilot app sidebar (app_sessions_list shows them)`)
 }
@@ -74,7 +74,7 @@ export const appSessionsListTool: ToolDefinition = {
     type: "function",
     function: {
       name: "app_sessions_list",
-      description: "Every session in this Mac's GitHub Copilot app sidebar: id, name, state (working, waiting for the person, stuck = stopped mid-work and not running, idle), why, project and last activity, plus counts. Read-only.",
+      description: "Every session in this Mac's GitHub Copilot app sidebar: id, name, state, why, last activity, actual kind/workspaceId/projectId and known creator/parent ids. Project association is not sidebar nesting; sidebarPlacement is unknown when the local schema cannot prove it. Refresh before reporting where work lives. Read-only.",
       parameters: {
         type: "object",
         properties: { state: { type: "string", enum: [...STATES], description: "Only sessions in this state." } },
@@ -85,12 +85,18 @@ export const appSessionsListTool: ToolDefinition = {
   handler: (args, ctx) => run("app_sessions_list", ctx, () => {
     const state = text(args.state)
     const rows = listAppSessions(clientOptions)
-    const picture = snapshot(clientOptions)
+    const picture = snapshot(clientOptions, rows)
     return {
+      observedAt: picture.at,
       appRunning: picture.appRunning,
       counts: picture.counts,
       sessions: rows.filter(row => !state || row.state === state).map(row => ({
-        id: row.id, name: row.name, state: row.state, why: row.detail, kind: row.kind, project: row.project, lastActivity: row.lastActivity, ...(row.remote ? { remote: true } : {}),
+        id: row.id, name: row.name, state: row.state, why: row.detail, kind: row.kind, workspaceId: row.workspaceId,
+        project: row.project, projectId: row.projectId, sidebarPlacement: row.sidebarPlacement,
+        ...(row.parentSessionId !== undefined ? { parentSessionId: row.parentSessionId } : {}),
+        ...(row.creatorSessionId !== undefined ? { creatorSessionId: row.creatorSessionId } : {}),
+        ...(row.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: row.coordinatingCreatorSessionId } : {}),
+        lastActivity: row.lastActivity, ...(row.remote ? { remote: true } : {}),
       })),
     }
   }),
@@ -103,7 +109,7 @@ export const appSessionsTailTool: ToolDefinition = {
     type: "function",
     function: {
       name: "app_sessions_tail",
-      description: "A Copilot app session's last messages (the person's or agent's prompts and the session's replies), oldest first. Read-only.",
+      description: "A Copilot app session's last visible prompts and replies, oldest first, with current name/state, observation time and local-log coverage. Re-read before reporting current progress: older messages and watched names are not live status. Remote history is only what this Mac has received. Read-only.",
       parameters: {
         type: "object",
         properties: { session: sessionParam, count: { type: "number", description: "How many messages, 1-50. Default 6." } },
@@ -112,10 +118,22 @@ export const appSessionsTailTool: ToolDefinition = {
       },
     },
   },
-  handler: (args, ctx) => run("app_sessions_tail", ctx, () => {
+  handler: (args, ctx) => run("app_sessions_tail", ctx, (agentRoot) => {
     const session = resolveSession(args.session)
     const count = Math.min(50, Math.max(1, Math.trunc(Number(args.count) || 6)))
-    return { session: session.id, name: session.name, messages: tailAppSession(session.id, count, clientOptions) }
+    const history = readAppSessionHistory(session.id, count, clientOptions)
+    const watchedName = readWatches(agentRoot)[session.id]?.name
+    return {
+      session: session.id, name: session.name, state: session.state, lastActivity: session.lastActivity,
+      kind: session.kind, workspaceId: session.workspaceId, projectId: session.projectId, sidebarPlacement: session.sidebarPlacement,
+      ...(session.parentSessionId !== undefined ? { parentSessionId: session.parentSessionId } : {}),
+      ...(session.creatorSessionId !== undefined ? { creatorSessionId: session.creatorSessionId } : {}),
+      ...(session.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: session.coordinatingCreatorSessionId } : {}),
+      ...history,
+      ...(watchedName && watchedName !== session.name ? { renamedFrom: watchedName } : {}),
+      coverage: history.missing ? "missing" : history.skippedEvents ? "incomplete" : session.remote ? "local-only" : "local",
+      freshness: "point-in-time; re-read before reporting current progress",
+    }
   }),
   summaryKeys: ["session"],
   riskProfile: { mutates: "none", risk: "low" },
@@ -185,7 +203,7 @@ export const appSessionsNewTool: ToolDefinition = {
     type: "function",
     function: {
       name: "app_sessions_new",
-      description: "Open a new chat session in this Mac's Copilot app (for example a throwaway probe), named, with an optional first message. You may archive the sessions you open with app_sessions_archive. Its first reply comes back to you.",
+      description: "Create a standalone general chat, NOT a project/workspace session and NOT a child under an existing workspace. cwd and prompt text do not choose sidebar placement. Workspace/project/parent targets are unsupported and refused without creating anything. Returns actual kind/association and verified or unknown placement; do not claim workspace placement from a project id or delegated child. Initial message acceptance is separate from creation. You may archive any session this tool created.",
       parameters: {
         type: "object",
         properties: {
@@ -194,22 +212,30 @@ export const appSessionsNewTool: ToolDefinition = {
           cwd: { type: "string", description: "Working folder. Default: the home folder." },
           agent: { type: "string", description: "Custom agent to run as, for example desk:worker." },
           model: { type: "string", description: "Model id." },
+          target: { type: "string", enum: ["chat", "workspace"], description: "Default chat. workspace is unsupported and refused; use the app's native project-session creation instead." },
+          project: { type: "string", description: "Project placement is unsupported by this tool and refused." },
+          workspace: { type: "string", description: "Workspace placement is unsupported by this tool and refused." },
+          parent_session: { type: "string", description: "Parent/child placement is unsupported by this tool and refused." },
         },
         additionalProperties: false,
       },
     },
   },
   handler: (args, ctx) => run("app_sessions_new", ctx, async (agentRoot) => {
+    if ((text(args.target) && text(args.target) !== "chat") || args.project !== undefined || args.workspace !== undefined || args.parent_session !== undefined) {
+      throw new Error("app_sessions_new supports only a standalone chat; workspace/project/parent placement is unsupported. Nothing was created. Use the Copilot app's native project-session creation and verify its actual sidebar placement.")
+    }
     const name = text(args.name)
     const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined
     const opened = await openAppChat({
       ...(name ? { name } : {}), ...(prompt ? { prompt } : {}),
       ...(text(args.cwd) ? { cwd: text(args.cwd) } : {}), ...(text(args.agent) ? { agent: text(args.agent) } : {}), ...(text(args.model) ? { model: text(args.model) } : {}),
     }, clientOptions)
-    if (!opened.ok) return { ...opened }
-    addProbe(agentRoot, opened.sessionId!, name || null, Date.now())
-    if (prompt) watch(agentRoot, opened.sessionId!, name || null, 0)
-    return { ...opened, watching: !!prompt }
+    if (!opened.sessionId) return { ...opened }
+    addProbe(agentRoot, opened.sessionId, opened.placement?.name ?? (name || null), Date.now())
+    const watching = !!prompt && opened.sent?.ok === true
+    if (watching) watch(agentRoot, opened.sessionId, opened.placement?.name ?? (name || null), 0)
+    return { ...opened, watching }
   }),
   summaryKeys: ["name"],
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "opens a new agent session in the owner's Copilot app" },

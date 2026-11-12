@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { withFileLock } from "../heart/file-lock"
@@ -34,6 +34,31 @@ export const OUTBOX_LIST_MAX_CHARS = 12_000
 
 const FRIEND_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
 const ENTRY_ID = /^\d{13}-[0-9a-f]{6}$/u
+
+interface OnceReceipt { id: string; acknowledged: boolean }
+
+function onceReceiptFile(agentRoot: string, friendId: string, key: string): string {
+  entryDir(agentRoot, friendId)
+  return path.join(outboxRoot(agentRoot), ".receipts", friendId, `${createHash("sha256").update(key).digest("hex")}.json`)
+}
+
+function readOnceReceipt(file: string): OnceReceipt | null {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(file, "utf8")) as OnceReceipt
+    if (!isOutboxEntryId(receipt.id) || typeof receipt.acknowledged !== "boolean") throw new Error("invalid durable outbox receipt")
+    return receipt
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+function writeOnceReceipt(file: string, receipt: OnceReceipt): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(receipt)}\n`, { mode: 0o600 })
+  fs.renameSync(tmp, file)
+}
 
 export function isOutboxEntryId(value: unknown): value is string {
   return typeof value === "string" && ENTRY_ID.test(value)
@@ -73,9 +98,12 @@ export class FileOutboxStore {
 
   /** Adds one entry for `friendId`. The oldest entries beyond the cap are dropped so a peer that never reads cannot fill the disk. */
   append(friendId: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, now: number = Date.now()): OutboxEntry {
+    return this.persistEntry(friendId, input, `${String(Math.trunc(now)).padStart(13, "0")}-${randomBytes(3).toString("hex")}`, now)
+  }
+
+  private persistEntry(friendId: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, id: string, now: number): OutboxEntry {
     const dir = entryDir(this.agentRoot, friendId)
     fs.mkdirSync(dir, { recursive: true })
-    const id = `${String(now).padStart(13, "0")}-${randomBytes(3).toString("hex")}`
     const entry: OutboxEntry = {
       id,
       kind: input.kind,
@@ -109,16 +137,39 @@ export class FileOutboxStore {
   }
 
   /** Like `append`, but a second call with the same `dedupeKey` while the first entry is still unacked returns that entry, so a retried delivery cannot double-post. */
-  async appendOnce(friendId: string, dedupeKey: string, input: { kind: string; body: string; meta?: Record<string, unknown> }, now: number = Date.now()): Promise<OutboxEntry> {
+  async appendOnce(friendId: string, dedupeKey: string, input: { kind: string; body: string; meta?: Record<string, unknown>; durable?: true }, now: number = Date.now()): Promise<OutboxEntry> {
     const dir = entryDir(this.agentRoot, friendId)
     // The check and the append happen under one cross-process lock, so two senses retrying the same delivery cannot both miss it.
     return withFileLock(path.join(this.agentRoot, "state", "outbox", ".locks"), `once-${friendId}`, () => {
+      if (input.durable) {
+        const file = onceReceiptFile(this.agentRoot, friendId, dedupeKey)
+        let receipt = readOnceReceipt(file)
+        if (!receipt) {
+          receipt = { id: `${String(Math.trunc(now)).padStart(13, "0")}-${randomBytes(3).toString("hex")}`, acknowledged: false }
+          writeOnceReceipt(file, receipt)
+        }
+        const entry = readEntry(path.join(dir, `${receipt.id}.json`))
+        if (entry) return entry
+        // Ack persists its receipt before deletion; re-read after checking the entry to close that race.
+        const current = readOnceReceipt(file)
+        if (!current) throw new Error("durable outbox receipt disappeared")
+        if (current.acknowledged) return {
+          id: receipt.id, kind: input.kind, createdAt: new Date(Number(receipt.id.slice(0, 13))).toISOString(),
+          body: input.body.slice(0, OUTBOX_MAX_BODY_CHARS), meta: { ...input.meta, dedupeKey, durableOnce: true },
+        }
+        return this.persistEntry(friendId, { ...input, meta: { ...input.meta, dedupeKey, durableOnce: true } }, receipt.id, Number(receipt.id.slice(0, 13)))
+      }
       for (const id of sortedIds(dir)) {
         const entry = readEntry(path.join(dir, `${id}.json`))
         if (entry?.meta?.dedupeKey === dedupeKey) return entry
       }
       return this.append(friendId, { ...input, meta: { ...input.meta, dedupeKey } }, now)
     })
+  }
+
+  /** A producer removes its minimal durable receipt only when it will never retry that logical delivery again. */
+  forgetOnce(friendId: string, dedupeKey: string): void {
+    fs.rmSync(onceReceiptFile(this.agentRoot, friendId, dedupeKey), { force: true })
   }
 
   /** Entries after `since` (exclusive), oldest first, within the count and size limits. */
@@ -149,6 +200,12 @@ export class FileOutboxStore {
     for (const id of ids) {
       const file = isOutboxEntryId(id) ? path.join(dir, `${id}.json`) : null
       if (file && fs.existsSync(file)) {
+        const entry = readEntry(file)
+        if (entry?.meta?.durableOnce === true) {
+          const key = entry.meta.dedupeKey
+          if (typeof key !== "string") throw new Error("durable outbox entry has no dedupe key")
+          writeOnceReceipt(onceReceiptFile(this.agentRoot, friendId, key), { id, acknowledged: true })
+        }
         fs.rmSync(file, { force: true })
         acked.push(id)
       } else {

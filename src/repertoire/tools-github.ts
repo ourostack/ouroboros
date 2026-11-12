@@ -9,7 +9,7 @@ export const githubToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "file_ouroboros_bug",
-        description: "File a bug or feature request on the ouroboros harness repo. Requires GitHub OAuth authorization.",
+        description: "File a bug or feature request on the ouroboros harness repo. Requires GitHub OAuth authorization from a configured Teams connection. Outside that channel, use the returned human-required issue route and report_failure to preserve the problem locally; no host/provider credentials are borrowed.",
         parameters: {
           type: "object",
           properties: {
@@ -29,7 +29,8 @@ export const githubToolDefinitions: ToolDefinition[] = [
         meta: {},
       })
       if (!ctx?.githubToken) {
-        return authRequired(ctx, "github", "I need access to GitHub.")
+        const recovery = authRequired(ctx, "github", "I need access to GitHub.")
+        return `${recovery}\nNot filed on GitHub. human-required: sign in at https://github.com/ourostack/ouroboros/issues/new and submit the title/body after checking for private data. agent-runnable: call report_failure to retain the failure locally if no authorized filing route is available.`
       }
       const owner = "ourostack"
       const repo = "ouroboros"

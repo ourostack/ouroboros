@@ -23,6 +23,7 @@ function makeCtx(overrides?: any) {
   return {
     adoToken: "test-token",
     signin: vi.fn(),
+    oauthAvailable: ["ado"],
     context: {
       friend: { id: "uuid-1", name: "Jordan", externalIds: [{ provider: "aad" as const, externalId: "jordan@contoso.com", tenantId: "t1", linkedAt: "2026-01-01" }], tenantMemberships: ["t1"], toolPreferences: {}, notes: {}, createdAt: "2026-01-01", updatedAt: "2026-01-01", schemaVersion: 1 },
       channel: { channel: "teams" as const, availableIntegrations: ["ado" as const, "graph" as const], supportsMarkdown: true, supportsStreaming: true, supportsRichCards: true, maxMessageLength: 28000 },
