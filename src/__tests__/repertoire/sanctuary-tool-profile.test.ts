@@ -14,7 +14,7 @@ import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 const SANCTUARY_MEDIA_MCP_TOOLS = [
   "media_search", "media_request", "media_request_status",
   "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
-  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_quality_profile", "media_fill_missing",
+  "media_search_now", "media_queue", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import", "media_quality_profile", "media_release_profile", "media_fill_missing",
 ] as const
 // The daily house-care sweep and its digest: native tools added to the owner and agent-peer profiles in v17 and v8.
 const HOUSE_CARE_TOOLS = ["house_sweep", "house_digest_send"]
@@ -31,9 +31,9 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(19)
-    expect(owner.toolNames).toHaveLength(76)
-    expect(new Set(owner.toolNames).size).toBe(76)
+    expect(owner.version).toBe(20)
+    expect(owner.toolNames).toHaveLength(77)
+    expect(new Set(owner.toolNames).size).toBe(77)
     expect(owner.toolNames).toEqual(expect.arrayContaining([...HOUSE_CARE_TOOLS, ...SYNC_TOOLS]))
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
@@ -54,7 +54,7 @@ describe("Sanctuary active tool profile", () => {
     expect(names).toContain("send_message")
     expect(names).toEqual(expect.arrayContaining(SYNC_TOOLS))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(19)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(20)
     expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -86,7 +86,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const peer = packaged.profiles["sanctuary-agent-peer"]
-    expect(peer.version).toBe(9)
+    expect(peer.version).toBe(10)
     expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container" && !SYNC_TOOLS.includes(name) && !OWNER_ONLY_HOME_TOOLS.includes(name)))
     expect(peer.contextScopes).toEqual(owner.contextScopes)
     expect(peer.effectScopes).toEqual(owner.effectScopes)

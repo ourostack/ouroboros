@@ -290,6 +290,18 @@ function isAnthropicAuthFailure(error: Error): boolean {
 }
 
 
+/** The 400 the API returns when a replayed thinking block's signature no longer matches the history before it. */
+const STALE_THINKING_SIGNATURE = /Invalid `signature` in `thinking` block|bound to a different conversation/;
+
+/** The same history with every thinking and redacted_thinking block taken out of assistant turns. */
+export function withoutThinkingBlocks(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+    const content = (message.content as Array<{ type?: unknown }>).filter((block) => block.type !== "thinking" && block.type !== "redacted_thinking");
+    return { ...message, content };
+  });
+}
+
 async function streamAnthropicMessages(
   client: Anthropic,
   model: string,
@@ -351,13 +363,24 @@ async function streamAnthropicMessages(
   }
 
   let response: AsyncIterable<Record<string, unknown>>;
+  const create = () => client.messages.create(
+    params as unknown as Anthropic.MessageCreateParamsStreaming,
+    request.signal ? { signal: request.signal } : {},
+  ) as Promise<AsyncIterable<Record<string, unknown>>>;
   try {
-    response = await client.messages.create(
-      params as unknown as Anthropic.MessageCreateParamsStreaming,
-      request.signal ? { signal: request.signal } : {},
-    ) as AsyncIterable<Record<string, unknown>>;
+    response = await create();
   } catch (error) {
-    throw error instanceof Error ? error : new Error(String(error));
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (!STALE_THINKING_SIGNATURE.test(failure.message)) throw failure;
+    // A replayed thinking block is bound to the history it was made in; once that history changes the API refuses it.
+    // The turn is still answerable without the old reasoning, so drop it and ask once more.
+    params.messages = withoutThinkingBlocks(messages);
+    emitNervesEvent({
+      level: "warn", component: "engine", event: "engine.anthropic_stale_thinking_dropped",
+      message: "a replayed thinking block was refused as bound to another conversation; retrying without thinking history",
+      meta: { model },
+    });
+    response = await create();
   }
 
   let content = "";

@@ -143,7 +143,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "write_file",
-        description: "Prefer this tool for creating new files or fully replacing existing ones. You MUST read an existing file with read_file before overwriting it. Prefer edit_file for modifying existing files -- it only sends the diff.",
+        description: "Create a file, or replace one whole. It writes what you send and nothing of what was there, so read an existing file first when you mean to keep any of it. Prefer edit_file for a change to part of a file -- it only sends the diff.",
         parameters: {
           type: "object",
           properties: { path: { type: "string" }, content: { type: "string" } },
@@ -170,7 +170,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       function: {
         name: "edit_file",
         description:
-          "Surgically edit a file by replacing an exact string. The file MUST have been read via read_file first -- this tool will reject the call otherwise. old_string must match EXACTLY ONE location in the file -- if it matches zero or multiple, the edit fails. To fix: provide more surrounding context to make the match unique. Preserve exact indentation (tabs/spaces) from the file. Prefer this over write_file for modifications -- it only sends the diff.",
+          "Surgically edit a file by replacing an exact string. old_string must match EXACTLY ONE location in the file -- if it matches zero or multiple, the edit fails. To fix: provide more surrounding context to make the match unique. Preserve exact indentation (tabs/spaces) from the file. Prefer this over write_file for modifications -- it only sends the diff.",
         parameters: {
           type: "object",
           properties: {

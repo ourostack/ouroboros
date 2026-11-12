@@ -74,13 +74,28 @@ describe("shell at home", () => {
     expect(error!.message).toContain("err2500")
     expect(error!.message).not.toContain("err500\n")
     expect(error!.stderr).toContain("full output saved to")
-    expect(fs.readdirSync(path.join(home, "state", "tool-output")).length).toBeGreaterThanOrEqual(2)
+    expect(fs.readdirSync(path.join(home, "state", "tool-output")).length).toBe(1)
   })
 
   it("keeps a short failure whole", async () => {
     const error = await shell.handler({ command: "echo bad >&2; exit 2" }, ctx as any).then(() => undefined, (e: Error) => e)
     expect(error!.message).toContain("bad")
     expect(fs.existsSync(path.join(home, "state", "tool-output"))).toBe(false)
+  })
+
+  it("tells the agent how a failed command ended and shows both its stdout and its stderr", async () => {
+    const error = await shell.handler({ command: "echo '{\"records\":[]}'; echo 'HTTP 401' >&2; exit 22" }, ctx as any).then(() => undefined, (e: Error) => e)
+    expect(error!.message).toBe('the command exited with code 22\nstdout:\n{"records":[]}\nstderr:\nHTTP 401')
+  })
+
+  it("names a timeout, a command that could not start and a silent failure precisely", async () => {
+    const { shellFailureText } = await import("../../repertoire/tools-shell")
+    expect(shellFailureText({ killed: true, signal: "SIGTERM" }, 30000, "partial\n", "")).toBe(
+      "the command was stopped after 30000 ms (SIGTERM); pass a larger timeout_ms or background: true for long work\nstdout:\npartial",
+    )
+    expect(shellFailureText({ code: "ENOENT" }, 30000, "", "")).toBe("the command could not start: ENOENT\nit printed nothing")
+    expect(shellFailureText({}, 30000, "", "")).toBe("the command could not start: unknown error\nit printed nothing")
+    expect(shellFailureText({ code: 1 }, 30000, "  \n", "")).toBe("the command exited with code 1\nit printed nothing")
   })
 
   it("starts a background shell in the agent's home", async () => {

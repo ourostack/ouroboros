@@ -24,6 +24,18 @@ function shellHome(ctx?: ToolContext): string {
  * Keep the last 2000 lines or 30,000 characters of a command's output. When something is cut, the whole output
  * is saved under the home's state/tool-output folder (owner-only) and the notice names that file.
  */
+/** A failed command as one result: how it ended, then stdout and stderr, each only when it printed something. */
+export function shellFailureText(error: { code?: unknown; signal?: unknown; killed?: boolean }, timeout: number, stdout: string, stderr: string): string {
+  const ended = error.killed && error.signal
+    ? `the command was stopped after ${timeout} ms (${String(error.signal)}); pass a larger timeout_ms or background: true for long work`
+    : typeof error.code === "number" ? `the command exited with code ${error.code}` : `the command could not start: ${String(error.code ?? "unknown error")}`
+  const parts = [ended]
+  if (stdout.trim()) parts.push(`stdout:\n${stdout.trimEnd()}`)
+  if (stderr.trim()) parts.push(`stderr:\n${stderr.trimEnd()}`)
+  if (!stdout.trim() && !stderr.trim()) parts.push("it printed nothing")
+  return parts.join("\n")
+}
+
 function tailWithNotice(output: string, home: string): string {
   const body = output.endsWith("\n") ? output.slice(0, -1) : output
   const lines = body.split("\n")
@@ -54,7 +66,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "shell",
-        description: "Run a shell command in your home; cd does not persist between calls. Keeps the last 2000 lines or 30,000 characters of output and saves the full output to a file it names when it cuts.",
+        description: "Run a shell command in your home; cd does not persist between calls, and a failed command comes back with how it ended, its stdout and its stderr. Keeps the last 2000 lines or 30,000 characters of output and saves the full output to a file it names when it cuts.",
         parameters: {
           type: "object",
           properties: {
@@ -125,9 +137,13 @@ export const shellToolDefinitions: ToolDefinition[] = [
       const raw = await new Promise<string>((resolve, reject) => {
         const child = exec(a.command, { encoding: "utf-8", timeout, cwd: home, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
           if (error) {
-            // A failing command's output gets the same tail cap and saved file.
-            error.message = tailWithNotice(error.message, home)
-            reject(Object.assign(error, { stdout: tailWithNotice(stdout, home), stderr: tailWithNotice(stderr, home) }))
+            // A failing command's output gets the same tail cap and saved file, and the agent sees all of it: how it ended,
+            // what it printed and what it complained about. Node's own message keeps only stderr.
+            const out = tailWithNotice(stdout, home)
+            const err = tailWithNotice(stderr, home)
+            error.message = shellFailureText(error, timeout, out, err)
+            emitNervesEvent({ level: "info", component: "tools", event: "tool.shell_failed", message: "a shell command failed; its exit, stdout and stderr go back to the agent", meta: { code: typeof error.code === "number" ? error.code : null, killed: Boolean(error.killed) } })
+            reject(Object.assign(error, { stdout: out, stderr: err }))
           }
           else resolve(stdout)
         })

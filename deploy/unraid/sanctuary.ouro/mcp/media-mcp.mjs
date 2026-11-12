@@ -972,7 +972,55 @@ export function queueRowView(r, nowMs, previous) {
   }
 }
 
-// Read-only: the Sonarr/Radarr download queue (torrent and usenet alike). Grabs, removes and blocklists nothing.
+// A film or show never ships as a program or a zip. A download whose name or files end in one, or that Sonarr/Radarr flag for an
+// executable, is a fake release (often malware); the household's standing rule is to clear and blocklist it on sight.
+export const FAKE_RELEASE_FILE = /\.(exe|scr|bat|msi|cmd|com|vbs|ps1|lnk|zip)$/iu
+const EXECUTABLE_WARNING = /executable file/iu
+
+/** Why a queue row is a fake release, or null when it is not one. */
+export function fakeReleaseReason(r) {
+  for (const name of [r.title, r.outputPath]) {
+    const m = typeof name === "string" ? name.trim().match(FAKE_RELEASE_FILE) : null
+    if (m) return `its name ends in .${m[1].toLowerCase()}, a program or archive, not a video`
+  }
+  for (const s of r.statusMessages ?? []) {
+    for (const line of [s?.title, ...(s?.messages ?? [])]) {
+      if (typeof line !== "string") continue
+      const m = line.trim().match(FAKE_RELEASE_FILE)
+      if (m) return `it holds ${line.trim()}, a program or archive, not a video`
+      if (EXECUTABLE_WARNING.test(line)) return `${serviceName(r)} flagged it: ${line.trim()}`
+    }
+  }
+  return null
+}
+const serviceName = (r) => (r.seriesId !== undefined ? "Sonarr" : "Radarr")
+
+/** Clears and blocklists the fake releases among rows, so the app looks for a real copy; returns what it cleared. */
+export async function clearFakeReleases(kind, rows) {
+  const fakes = rows.map((r) => ({ r, reason: fakeReleaseReason(r) })).filter((f) => f.reason)
+  if (!fakes.length) return { kept: rows, cleared: [], failed: [] }
+  const cleared = []
+  const failed = []
+  const seen = new Set()
+  const stuck = new Set()
+  const keyOf = (r) => r.downloadId ?? `row-${r.id}`
+  // Rows of one season pack share a download: removing one removes it, so each download is removed once.
+  for (const { r, reason } of fakes) {
+    const key = keyOf(r)
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      await arrFor(kind)(`/queue/${r.id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: false } })
+      cleared.push({ title: r.title ?? null, reason })
+    } catch (error) {
+      stuck.add(key)
+      failed.push({ queue_id: r.id ?? null, title: r.title ?? null, reason, error: String(error?.message ?? error).slice(0, 200) })
+    }
+  }
+  return { kept: rows.filter((r) => !seen.has(keyOf(r)) || stuck.has(keyOf(r))), cleared, failed }
+}
+
+// The Sonarr/Radarr download queue (torrent and usenet alike). Its only write is the standing fake-release rule above.
 export async function mediaQueue(a) {
   if (a.kind !== "series" && a.kind !== "movie") return { result: "invalid_kind", message: "kind must be 'series' or 'movie'." }
   let rows
@@ -994,13 +1042,17 @@ export async function mediaQueue(a) {
       if (!records.length || !(Number(q?.totalRecords) > page * QUEUE_PAGE_SIZE) || rows.length >= QUEUE_VIEW_MAX_ROWS) break
     }
   }
-  total = Math.max(total ?? 0, rows.length)
+  const fakes = await clearFakeReleases(a.kind, rows)
+  rows = fakes.kept
+  total = Math.max((total ?? 0) - fakes.cleared.length, rows.length)
   const now = Date.now()
   // Looking records the sighting in the local progress memory (never in Sonarr/Radarr), so this call can confirm a stall too.
   const shown = rows.slice(0, QUEUE_VIEW_MAX_ROWS).map((r) => queueRowView(r, now, observeProgress(progressKey(r, a.kind), r.sizeleft ?? 0, now)))
   return {
     kind: a.kind, ...(item ? { service_id: item.id, title: item.title } : {}),
     count: total, shown: shown.length, ...(total > shown.length ? { truncated: true } : {}), queue: shown,
+    ...(fakes.cleared.length ? { cleared_fakes: fakes.cleared, cleared_note: "These were fake releases (a program or archive, not a video). Each is removed from the download client and blocklisted, and Sonarr/Radarr will look for a real copy. Tell the person in one line which title and why; no decision is needed." } : {}),
+    ...(fakes.failed.length ? { fakes_not_cleared: fakes.failed } : {}),
     summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
       : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled${shown.some((r) => r.stall?.state === "suspected") ? `, ${shown.filter((r) => r.stall?.state === "suspected").length} suspected (no ETA, to be confirmed by a check 30 minutes later)` : ""}.`,
     note: "Sonarr/Radarr do not report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
@@ -1867,6 +1919,45 @@ const OWNER_WORDS_REQUIRED = { result: "owner_words_required", message: "Pass ow
 const itemView = (item) => ({ service_id: item.id, title: item.title ?? null, quality_profile_id: item.qualityProfileId ?? null })
 const UPGRADE_NEXT_STEP = "The profile now allows the upgrade. Call media_search_now (or media_release_search) for the item so Radarr/Sonarr looks for a better release; do not ask the owner to open a settings page."
 
+// Release profiles are the apps' own rules for which releases to take: a release whose title holds an ignored term is never
+// grabbed, and one missing a required term is skipped. Writes follow media_quality_profile: dry run first, owner_words to apply.
+const releaseProfileView = (p) => ({ id: p.id, name: p.name ?? null, enabled: p.enabled !== false,
+  ignored: [].concat(p.ignored ?? []), required: [].concat(p.required ?? []) })
+const termList = (v) => (Array.isArray(v) ? v : typeof v === "string" ? [v] : []).map((x) => String(x).trim()).filter(Boolean)
+
+export async function mediaReleaseProfile(a) {
+  if (!kindOk(a)) return invalidKind()
+  const action = a.action ?? "read"
+  const client = arrFor(a.kind)
+  const profiles = await client("/releaseprofile")
+  if (action === "read") return { kind: a.kind, result: "release_profiles", profiles: profiles.map(releaseProfileView) }
+  if (action !== "set") return { result: "invalid_action", message: "action must be 'read' or 'set'." }
+  const name = typeof a.name === "string" ? a.name.trim() : ""
+  if (!name) return { result: "name_required", message: "Pass name: the release profile to create or change (matched case-insensitively)." }
+  const ignored = termList(a.ignored)
+  const required = termList(a.required)
+  if (!ignored.length && !required.length && a.enabled === undefined) {
+    return { result: "no_change_requested", message: "Pass ignored terms, required terms or enabled." }
+  }
+  const current = profiles.find((p) => String(p.name ?? "").toLowerCase() === name.toLowerCase())
+  const before = current ? releaseProfileView(current) : null
+  const next = { ...(current ?? { name, indexerId: 0, tags: [] }),
+    enabled: a.enabled ?? current?.enabled ?? true,
+    ignored: a.ignored !== undefined ? ignored : [].concat(current?.ignored ?? []),
+    required: a.required !== undefined ? required : [].concat(current?.required ?? []) }
+  const after = releaseProfileView({ ...next, id: current?.id ?? null })
+  if (a.dry_run !== false) return { kind: a.kind, result: "dry_run", before, after, message: "Nothing changed. Pass dry_run false with owner_words to apply." }
+  const ownerWords = typeof a.owner_words === "string" ? a.owner_words.trim() : ""
+  if (!ownerWords) return OWNER_WORDS_REQUIRED
+  const saved = current
+    ? await client(`/releaseprofile/${current.id}`, { method: "PUT", body: next })
+    : await client("/releaseprofile", { method: "POST", body: next })
+  const failed = auditQualityChange({ at: new Date().toISOString(), tool: "media_release_profile", action, kind: a.kind, owner_words: ownerWords,
+    owner_words_note: OWNER_WORDS_NOTE_AUDIT, caller: typeof a.caller === "string" ? a.caller : "unknown", before, after })
+  return { kind: a.kind, result: current ? "updated" : "created", before, after: releaseProfileView({ ...next, ...(saved ?? {}) }),
+    applied_at: new Date().toISOString(), owner_words_note: OWNER_WORDS_NOTE, ...(failed ? { audit_error: failed } : {}) }
+}
+
 export async function mediaQualityProfile(a) {
   if (!kindOk(a)) return invalidKind()
   const action = a.action ?? "read"
@@ -2017,7 +2108,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_queue",
-    description: "Read-only view of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs, removes and blocklists nothing. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders. While a watched download is in the queue and media_fill_missing has not reported goal_met, answer each ticking check with resolve_await verdict 'no'.",
+    description: "View of the Sonarr/Radarr download queue, torrent and usenet alike: for each row the title, status, trackedDownloadState, percent, timeleft, size left, download client and whether it is stalled. Use this to see whether a series or movie download is progressing (this is the tool for torrent downloads; sanctuary_get_download_queue only sees the usenet/SABnzbd queue). Give service_id, tmdb_id or title for one item, or omit them for the whole queue of that kind. It grabs nothing. Its one write is the household's standing rule: a download that is a program rather than a video (.exe, .scr, .bat, .msi, .cmd, .com, .vbs, .ps1, .lnk, .zip, or flagged by Sonarr/Radarr as an executable) is a fake release, so it is removed, blocklisted and listed in cleared_fakes; that needs no one's decision. Seeders and peers are not reported by Sonarr/Radarr; use media_indexer_search for a release's seeders. While a watched download is in the queue and media_fill_missing has not reported goal_met, answer each ticking check with resolve_await verdict 'no'.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
@@ -2129,6 +2220,21 @@ const TOOL_LIST = [
     }, required: ["kind"] },
   },
   {
+    name: "media_release_profile",
+    description: "Read and set the Radarr/Sonarr release profiles: the apps' own standing rules for which releases to take. A release whose title holds an ignored term is never grabbed; one missing a required term is skipped. Use it for household rules such as never taking fake releases that are programs (ignored: a regex like /\\.(exe|scr|bat|msi)$/i, end-anchored so titles like Scream or Batman stay fine). action read (default) lists them. action set creates or changes the profile called name; ignored and required replace that list when given. A set is a dry run showing before and after until dry_run is false; applying takes owner_words, the owner's words asking for it. The fake-release rule in media_queue runs regardless; this keeps such releases from being grabbed at all.",
+    inputSchema: { type: "object", properties: {
+      kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
+      action: { type: "string", enum: ["read", "set"], description: "Default read." },
+      name: { type: "string", description: "set: the release profile's name; an existing one is changed, otherwise it is created." },
+      ignored: { type: "array", items: { type: "string" }, description: "set: terms or /regex/ that a release title must not contain." },
+      required: { type: "array", items: { type: "string" }, description: "set: terms or /regex/ that a release title must contain." },
+      enabled: { type: "boolean", description: "set: whether the profile is in force. Default: unchanged, or true for a new one." },
+      dry_run: { type: "boolean", description: "Default true: report before and after without changing anything. Pass false to apply." },
+      owner_words: { type: "string", description: "Required to apply: the owner's exact words asking for this change." },
+      caller: { type: "string", description: "Filled in by the runtime for the audit line; leave it out." },
+    }, required: ["kind"] },
+  },
+  {
     name: "media_manual_import",
     description: "Map downloaded files to episodes by hand when their names carry the wrong numbering (Sonarr only). mode 'preview' lists the files of a download with the parsed and mapped episodes and rejections. mode 'import' takes files [{path, episode_ids}]: paths must come from that download's preview and episode_ids must belong to the series; quality and languages come from the preview. Match files to episodes by title using media_episodes.",
     inputSchema: { type: "object", properties: {
@@ -2177,6 +2283,7 @@ const HANDLERS = {
   media_blocklist: mediaBlocklist,
   media_manual_import: mediaManualImport,
   media_quality_profile: mediaQualityProfile,
+  media_release_profile: mediaReleaseProfile,
 }
 
 // ------------------------------------------------------------ jsonrpc stdio

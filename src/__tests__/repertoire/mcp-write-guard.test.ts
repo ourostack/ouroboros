@@ -19,8 +19,8 @@ const ctxFor = (friendId: string, profileId = "sanctuary-agent-peer", name = "Fr
 const write = { kind: "movie", action: "set_upgrade", dry_run: false, owner_words: "do it" }
 
 describe("guardMcpArgs", () => {
-  it("only the media quality profile tool is owner-only", () => {
-    expect([...OWNER_ONLY_WRITE_TOOLS]).toEqual(["media_quality_profile"])
+  it("only the media quality and release profile tools are owner-only", () => {
+    expect([...OWNER_ONLY_WRITE_TOOLS]).toEqual(["media_quality_profile", "media_release_profile"])
   })
 
   it("lets the owner apply and stamps who asked, ignoring any caller the model wrote", () => {

@@ -49,12 +49,10 @@ describe("file tools work from the agent's home", () => {
       await run("edit_file", { path: "notes/a.md", old_string: "two", new_string: "three" })
       expect(fs.readFileSync(path.join(home, "notes/a.md"), "utf-8")).toBe("one three")
     })
-    it("a relative edit and overwrite work through the guarded call path after a read, and still demand the read", async () => {
+    it("a relative edit and overwrite work through the guarded call path without a read first", async () => {
       put("notes/x.md", "alpha beta")
       const guarded = { ...ctx, context: { friend: { kind: "human", trustLevel: "family" } } } as unknown as ToolContext
-      // Not read yet: the guard refuses both.
-      expect(await execTool("edit_file", { path: "notes/x.md", old_string: "alpha", new_string: "gamma" }, guarded)).toContain("read")
-      expect(await execTool("write_file", { path: "notes/x.md", content: "new" }, guarded)).toContain("read")
+      expect(await execTool("write_file", { path: "notes/y.md", content: "unread" }, guarded)).toContain("ok")
       expect(await execTool("read_file", { path: "notes/x.md" }, guarded)).toBe("alpha beta")
       expect(await execTool("edit_file", { path: "notes/x.md", old_string: "alpha", new_string: "gamma" }, guarded)).not.toContain("error")
       expect(fs.readFileSync(path.join(home, "notes", "x.md"), "utf-8")).toBe("gamma beta")

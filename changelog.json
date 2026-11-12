@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1100",
+      "changes": [
+        "The butler works in its home without refusals: the shell no longer refuses commands that use $VAR or $(...), git runs in its own home, and read-before-write and the destructive-command block are gone, and the home map says what each place is for. A failed shell command shows its exit, stdout and stderr. A stale replayed thinking block is dropped and the turn retried instead of failing. media_queue clears and blocklists fake releases that are programs or archives, and the new media_release_profile tool (owner profile v20, agent-peer v10) sets Radarr/Sonarr release profiles."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1099",
       "changes": [
         "Read requested visible Copilot app history across tool-heavy logs; preserve watch backlogs and expose freshness, renames and local coverage.",
