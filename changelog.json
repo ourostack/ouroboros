@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1115",
+      "changes": [
+        "An issue drain can list `ignoredLabels` (for example `agent:drain`): adding or removing one of those labels no longer wakes the drain. Labels starting with `drain:` stay ignored as before, and any other label still wakes it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1114",
       "changes": [
         "An issue drain can list `ignoredBodyTrailers` (for example `Active-at`, `Waiting-for`): an edit that changes only those `Key: value` lines of an issue body, such as a lane's hourly beat, no longer wakes the drain. Any other body edit still does, and a drain without the setting behaves as before."

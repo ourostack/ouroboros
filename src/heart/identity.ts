@@ -69,6 +69,11 @@ export interface IssueDrainConfig {
    * on a schedule. A body edit that changes only those lines does not wake the drain.
    */
   ignoredBodyTrailers?: string[]
+  /**
+   * Label names (`agent:drain`) the drain's lanes add or remove as part of their own work. Adding or removing one does
+   * not wake the drain. Labels starting with `drain:` are always ignored, with or without this list.
+   */
+  ignoredLabels?: string[]
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -284,12 +289,15 @@ export function normalizeIssueDrains(rawSense: Record<string, unknown>, configFi
     const seen = new Set<string>()
     result.issueDrains = (issueDrains as unknown[]).map((entry, index) => {
       const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
-      const { repo, session, account, ignoredBodyTrailers } = item
+      const { repo, session, account, ignoredBodyTrailers, ignoredLabels } = item
       if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(`issueDrains[${index}].repo must be "owner/name"`)
       if (typeof session !== "string" || !session.trim()) fail(`issueDrains[${index}].session must be a Copilot app session id`)
       if (account !== undefined && (typeof account !== "string" || !account.trim())) fail(`issueDrains[${index}].account must be a GitHub login`)
       if (ignoredBodyTrailers !== undefined && (!Array.isArray(ignoredBodyTrailers) || ignoredBodyTrailers.some(key => typeof key !== "string" || !/^[\w][\w -]*$/.test(key.trim())))) {
         fail(`issueDrains[${index}].ignoredBodyTrailers must be an array of trailer keys such as "Active-at"`)
+      }
+      if (ignoredLabels !== undefined && (!Array.isArray(ignoredLabels) || ignoredLabels.some(name => typeof name !== "string" || !name.trim()))) {
+        fail(`issueDrains[${index}].ignoredLabels must be an array of label names such as "agent:drain"`)
       }
       if (seen.has(repo as string)) fail(`issueDrains[${index}].repo ${repo as string} is listed twice`)
       seen.add(repo as string)
@@ -298,6 +306,7 @@ export function normalizeIssueDrains(rawSense: Record<string, unknown>, configFi
         session: (session as string).trim(),
         ...(account !== undefined ? { account: (account as string).trim() } : {}),
         ...(ignoredBodyTrailers !== undefined ? { ignoredBodyTrailers: (ignoredBodyTrailers as string[]).map(key => key.trim()) } : {}),
+        ...(ignoredLabels !== undefined ? { ignoredLabels: (ignoredLabels as string[]).map(name => name.trim()) } : {}),
       }
     })
   }
