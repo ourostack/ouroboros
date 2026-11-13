@@ -15,6 +15,8 @@ export interface SeenIssue {
   updatedAt: string
   /** Digest of the title and body, so an edit shows even when the poll missed the comment or event around it. */
   digest?: string
+  /** The trailer keys left out of `digest` (comma-joined). A digest made with other keys is not comparable. */
+  ignored?: string
   /** Epoch ms when the issue left the open list. Its record stays, so a closed issue that comes back unchanged is not new. */
   goneAt?: number
 }

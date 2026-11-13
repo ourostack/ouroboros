@@ -273,10 +273,10 @@ describe("loadAgentConfig", () => {
 
   it("reads the app-sessions issue drains and their cadence", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
-    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft " }]
+    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft ", ignoredBodyTrailers: [" Active-at ", "Waiting-for"] }]
     expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: drains, issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({
       enabled: true,
-      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft" }],
+      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft", ignoredBodyTrailers: ["Active-at", "Waiting-for"] }],
       issuePollMinutes: 2,
     })
     expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
@@ -288,6 +288,9 @@ describe("loadAgentConfig", () => {
     [{ issueDrains: [{ repo: "no-slash", session: "s" }] }, "issueDrains[0].repo"],
     [{ issueDrains: [{ repo: "a/b", session: " " }] }, "issueDrains[0].session"],
     [{ issueDrains: [{ repo: "a/b", session: "s", account: 3 }] }, "issueDrains[0].account"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: "Active-at" }] }, "issueDrains[0].ignoredBodyTrailers"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: ["Active-at:"] }] }, "issueDrains[0].ignoredBodyTrailers"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: [3] }] }, "issueDrains[0].ignoredBodyTrailers"],
     [{ issueDrains: [{ repo: "a/b", session: "s" }, { repo: "a/b", session: "t" }] }, "listed twice"],
     [{ issuePollMinutes: 0 }, "issuePollMinutes"],
     [{ issuePollMinutes: "5" }, "issuePollMinutes"],

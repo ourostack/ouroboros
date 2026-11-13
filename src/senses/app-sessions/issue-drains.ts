@@ -56,7 +56,16 @@ export function wakeMessage(repo: string, events: IssueEvent[]): string {
   return `New or changed issues in ${repo}: ${shown.join(", ")}${more}. Drain them.`
 }
 
-const digestOf = (issue: GhIssue): string => createHash("sha1").update(`${issue.title}\n${issue.body ?? ""}`).digest("hex").slice(0, 16)
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/** The body without its ignored trailer lines (`Active-at: …`), so an edit that touches only those lines leaves the digest alone. */
+function bodyWithoutTrailers(body: string, keys: string[]): string {
+  if (keys.length === 0) return body
+  const trailer = new RegExp(`^[ \\t]*(?:${keys.map(escapeRegExp).join("|")})[ \\t]*:.*(?:\\r?\\n|$)`, "gim")
+  return body.replace(trailer, "").trimEnd()
+}
+
+const digestOf = (issue: GhIssue, keys: string[]): string => createHash("sha1").update(`${issue.title}\n${bodyWithoutTrailers(issue.body ?? "", keys)}`).digest("hex").slice(0, 16)
 
 /** The drain's own status comment: the marker, written by the polling account. Its creation and every edit are skipped. */
 const ownStatus = (comment: GhComment, login: string): boolean => comment.user?.login?.toLowerCase() === login.toLowerCase() && !!comment.body?.includes(DRAIN_STATUS_MARKER)
@@ -66,9 +75,9 @@ const newsEvent = (event: GhIssueEvent): boolean =>
   event.event === "reopened" || ((event.event === "labeled" || event.event === "unlabeled") && !event.label?.name?.startsWith(DRAIN_LABEL_PREFIX))
 
 /** Whether anyone but the drain changed the issue since `before`: a new issue, an edit, another comment, a reopen or a label outside the drain's own. */
-async function changedByOthers(api: GithubApi, repo: string, issue: GhIssue, before: SeenIssue | undefined, digest: string): Promise<boolean> {
+async function changedByOthers(api: GithubApi, repo: string, issue: GhIssue, before: SeenIssue | undefined, digest: string, ignored: string): Promise<boolean> {
   if (!before) return true
-  if (before.digest && before.digest !== digest) return true
+  if (before.digest && (before.ignored ?? "") === ignored && before.digest !== digest) return true
   const since = before.updatedAt
   const comments = (await api.comments(repo, issue.number, since)).filter(comment => comment.updated_at > since)
   if (comments.some(comment => !ownStatus(comment, api.login))) return true
@@ -88,15 +97,17 @@ export async function pollDrain(
   try {
     const api = await deps.connect(drain.account)
     const issues = await api.openIssues(drain.repo)
+    const trailers = drain.ignoredBodyTrailers ?? []
+    const ignored = trailers.join(",")
     const seen: Record<string, SeenIssue> = {}
     const recorded: IssueEvent[] = []
     for (const issue of issues) {
       const key = String(issue.number)
       const before = seenIssue(state.seen[key])
-      const digest = digestOf(issue)
-      seen[key] = { updatedAt: issue.updated_at, digest }
+      const digest = digestOf(issue, trailers)
+      seen[key] = { updatedAt: issue.updated_at, digest, ...(ignored ? { ignored } : {}) }
       if (!state.seeded || before?.updatedAt === issue.updated_at) continue
-      if (await changedByOthers(api, drain.repo, issue, before, digest)) recorded.push({ number: issue.number, title: issue.title, updatedAt: issue.updated_at })
+      if (await changedByOthers(api, drain.repo, issue, before, digest, ignored)) recorded.push({ number: issue.number, title: issue.title, updatedAt: issue.updated_at })
     }
     for (const [key, entry] of Object.entries(state.seen)) {
       const gone = seenIssue(entry)!
