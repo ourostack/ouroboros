@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1114",
+      "changes": [
+        "An issue drain can list `ignoredBodyTrailers` (for example `Active-at`, `Waiting-for`): an edit that changes only those `Key: value` lines of an issue body, such as a lane's hourly beat, no longer wakes the drain. Any other body edit still does, and a drain without the setting behaves as before."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1113",
       "changes": [
         "Issue drains are woken only by changes someone other than the drain made: the drain's own status comment (by marker and revision) and its own `drain:` label changes no longer count as activity, so a drain stops waking on issues that did not change. A new comment, a body or title edit, a reopen or another label still wakes it once; a closed issue the drain handled never wakes it, and its waiting event is dropped."

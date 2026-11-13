@@ -64,6 +64,11 @@ export interface IssueDrainConfig {
   session: string
   /** The signed-in GitHub login to poll as (`gh auth token --user`); omitted, the CLI's active account. */
   account?: string
+  /**
+   * Trailer keys (`Active-at`, `Waiting-for`) whose `Key: value` lines in an issue body are plan data the lanes rewrite
+   * on a schedule. A body edit that changes only those lines does not wake the drain.
+   */
+  ignoredBodyTrailers?: string[]
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -279,13 +284,21 @@ export function normalizeIssueDrains(rawSense: Record<string, unknown>, configFi
     const seen = new Set<string>()
     result.issueDrains = (issueDrains as unknown[]).map((entry, index) => {
       const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
-      const { repo, session, account } = item
+      const { repo, session, account, ignoredBodyTrailers } = item
       if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(`issueDrains[${index}].repo must be "owner/name"`)
       if (typeof session !== "string" || !session.trim()) fail(`issueDrains[${index}].session must be a Copilot app session id`)
       if (account !== undefined && (typeof account !== "string" || !account.trim())) fail(`issueDrains[${index}].account must be a GitHub login`)
+      if (ignoredBodyTrailers !== undefined && (!Array.isArray(ignoredBodyTrailers) || ignoredBodyTrailers.some(key => typeof key !== "string" || !/^[\w][\w -]*$/.test(key.trim())))) {
+        fail(`issueDrains[${index}].ignoredBodyTrailers must be an array of trailer keys such as "Active-at"`)
+      }
       if (seen.has(repo as string)) fail(`issueDrains[${index}].repo ${repo as string} is listed twice`)
       seen.add(repo as string)
-      return { repo: repo as string, session: (session as string).trim(), ...(account !== undefined ? { account: (account as string).trim() } : {}) }
+      return {
+        repo: repo as string,
+        session: (session as string).trim(),
+        ...(account !== undefined ? { account: (account as string).trim() } : {}),
+        ...(ignoredBodyTrailers !== undefined ? { ignoredBodyTrailers: (ignoredBodyTrailers as string[]).map(key => key.trim()) } : {}),
+      }
     })
   }
   if (issuePollMinutes !== undefined) {

@@ -32,7 +32,7 @@ const seenAt = (updatedAt: string) => ({ updatedAt, digest: expect.any(String) }
 const statusComment = (id: number, updated_at: string, login = "arimendelow"): GhComment => ({ id, body: `Triaged.\n${DRAIN_STATUS_MARKER}`, updated_at, user: { login } })
 const labelEvent = (created_at: string, label: string, event = "labeled"): GhIssueEvent => ({ id: 1, event, created_at, label: { name: label } })
 
-function world(issues: GhIssue[], comments: Record<number, GhComment[]> = {}, events: Record<number, GhIssueEvent[]> = {}) {
+function world(issues: GhIssue[], comments: Record<number, GhComment[]> = {}, events: Record<number, GhIssueEvent[]> = {}, drain = DRAIN) {
   const api: GithubApi = {
     login: "arimendelow",
     openIssues: vi.fn(async () => issues),
@@ -42,7 +42,7 @@ function world(issues: GhIssue[], comments: Record<number, GhComment[]> = {}, ev
   const connect = vi.fn(async () => api)
   const send = vi.fn(async () => ({ ok: true, error: null as string | null }))
   const states: Record<string, DrainState> = {}
-  const poll = (at = NOW) => pollDrain(DRAIN, states, () => undefined, { connect, send, now: at })
+  const poll = (at = NOW) => pollDrain(drain, states, () => undefined, { connect, send, now: at })
   return { api, connect, send, states, poll, issues }
 }
 
@@ -210,6 +210,73 @@ describe("pollDrain", () => {
     expect(w.states[DRAIN.repo]!.seen["1"]).toBeDefined()
     await w.poll(NOW + 31 * 24 * 3_600_000)
     expect(w.states[DRAIN.repo]!.seen).toEqual({})
+  })
+
+  describe("ignored body trailers", () => {
+    const plan = { ...DRAIN, ignoredBodyTrailers: ["Active-at", "Waiting-for", "Waiting-until"] }
+    const spec = "Fix the thing.\n\n- step one\n- step two"
+    const beat = (at: string, extra = "") => `${spec}${extra}\n\nActive-at: ${at}`
+
+    it("does not wake when an edit changed only those lines, however they came or went", async () => {
+      const w = world([issue(1, T(0), "Issue 1", spec)], {}, {}, plan)
+      await w.poll()
+      const bodies = [
+        beat(T(5)),
+        beat(T(10)),
+        `${beat(T(15))}\nWaiting-for: review of #3\nWaiting-until: 2026-11-14`,
+        `${spec}\nwaiting-for:   a different reason\n\n  ACTIVE-AT: ${T(20)}\r\n`,
+        spec,
+      ]
+      for (const [i, body] of bodies.entries()) {
+        w.issues[0] = issue(1, T(5 + i * 5), "Issue 1", body)
+        await w.poll()
+      }
+      expect(w.send).not.toHaveBeenCalled()
+      expect(w.states[DRAIN.repo]!.seen["1"]).toMatchObject({ updatedAt: T(25), ignored: "Active-at,Waiting-for,Waiting-until" })
+    })
+
+    it("still wakes, once, for a real edit made alongside a trailer edit", async () => {
+      const w = world([issue(1, T(0), "Issue 1", beat(T(0)))], {}, {}, plan)
+      await w.poll()
+      w.issues[0] = issue(1, T(5), "Issue 1", beat(T(5), "\n- step three"))
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+      w.issues[0] = issue(1, T(10), "Issue 1", beat(T(10), "\n- step three"))
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+    })
+
+    it("only drops whole lines that start with a listed key", async () => {
+      const w = world([issue(1, T(0), "Issue 1", "We set Active-at: now in prose.")], {}, {}, plan)
+      await w.poll()
+      w.issues[0] = issue(1, T(5), "Issue 1", "We set Active-at: later in prose.")
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+    })
+
+    it("wakes for the same trailer edit in a repository with no such config", async () => {
+      const w = world([issue(1, T(0), "Issue 1", beat(T(0)))])
+      await w.poll()
+      w.issues[0] = issue(1, T(5), "Issue 1", beat(T(5)))
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+      expect(w.states[DRAIN.repo]!.seen["1"]).not.toHaveProperty("ignored")
+    })
+
+    it("does not wake when the keys are added to a drain's config, then honours them", async () => {
+      const w = world([issue(1, T(0), "Issue 1", beat(T(0)))])
+      await w.poll()
+      const configured = world(w.issues, {}, {}, plan)
+      configured.states[DRAIN.repo] = w.states[DRAIN.repo]!
+      w.issues[0] = issue(1, T(5), "Issue 1", beat(T(5)))
+      await configured.poll()
+      w.issues[0] = issue(1, T(10), "Issue 1", beat(T(10)))
+      await configured.poll()
+      expect(configured.send).not.toHaveBeenCalled()
+      w.issues[0] = issue(1, T(15), "Issue 1", beat(T(15), "\n- step three"))
+      await configured.poll()
+      expect(configured.send).toHaveBeenCalledTimes(1)
+    })
   })
 
   it("reads the plain updated_at an older version stored, and records the full revision from then on, for an issue with no body", async () => {
