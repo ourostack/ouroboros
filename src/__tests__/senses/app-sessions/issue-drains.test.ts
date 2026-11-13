@@ -11,7 +11,7 @@ vi.mock("../../../senses/app-sessions/client", () => client)
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   connectGithub, DRAIN_STATUS_MARKER, pollDrain, pollIssueDrains, sendWake, wakeMessage,
-  type GhComment, type GhIssue, type GithubApi,
+  type GhComment, type GhIssue, type GhIssueEvent, type GithubApi,
 } from "../../../senses/app-sessions/issue-drains"
 import { drainStatusLines, readDrainStates, type DrainState } from "../../../senses/app-sessions/issue-drain-state"
 
@@ -26,13 +26,18 @@ beforeEach(() => {
 })
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.clearAllMocks(); vi.unstubAllGlobals() })
 
-const issue = (number: number, updated_at: string, title = `Issue ${number}`): GhIssue => ({ number, title, updated_at })
+const issue = (number: number, updated_at: string, title = `Issue ${number}`, body = "body"): GhIssue => ({ number, title, updated_at, body })
+const T = (minute: number): string => `2026-11-13T01:${String(minute).padStart(2, "0")}:00Z`
+const seenAt = (updatedAt: string) => ({ updatedAt, digest: expect.any(String) })
+const statusComment = (id: number, updated_at: string, login = "arimendelow"): GhComment => ({ id, body: `Triaged.\n${DRAIN_STATUS_MARKER}`, updated_at, user: { login } })
+const labelEvent = (created_at: string, label: string, event = "labeled"): GhIssueEvent => ({ id: 1, event, created_at, label: { name: label } })
 
-function world(issues: GhIssue[], comments: Record<number, GhComment[]> = {}) {
+function world(issues: GhIssue[], comments: Record<number, GhComment[]> = {}, events: Record<number, GhIssueEvent[]> = {}) {
   const api: GithubApi = {
     login: "arimendelow",
     openIssues: vi.fn(async () => issues),
     comments: vi.fn(async (_repo, n) => comments[n] ?? []),
+    issueEvents: vi.fn(async (_repo, n) => events[n] ?? []),
   }
   const connect = vi.fn(async () => api)
   const send = vi.fn(async () => ({ ok: true, error: null as string | null }))
@@ -46,7 +51,7 @@ describe("pollDrain", () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z"), issue(2, "2026-11-13T02:00:00Z")])
     await w.poll()
     expect(w.send).not.toHaveBeenCalled()
-    expect(w.states[DRAIN.repo]).toMatchObject({ seeded: true, openCount: 2, pending: [], seen: { 1: "2026-11-13T01:00:00Z", 2: "2026-11-13T02:00:00Z" } })
+    expect(w.states[DRAIN.repo]).toMatchObject({ seeded: true, openCount: 2, pending: [], seen: { 1: seenAt("2026-11-13T01:00:00Z"), 2: seenAt("2026-11-13T02:00:00Z") } })
   })
 
   it("wakes once per new or changed issue revision and never again for the same one", async () => {
@@ -58,59 +63,167 @@ describe("pollDrain", () => {
     expect(w.send).toHaveBeenCalledWith(DRAIN.session, "New or changed issues in ourostack/desk: #2 New thing. Drain them.")
     await w.poll()
     expect(w.send).toHaveBeenCalledTimes(1)
-    w.issues[0] = issue(1, "2026-11-13T04:00:00Z", "Issue 1")
+    w.issues[0] = issue(1, "2026-11-13T04:00:00Z", "Issue 1", "edited")
     await w.poll()
     expect(w.send).toHaveBeenCalledTimes(2)
     expect(w.states[DRAIN.repo]).toMatchObject({ pending: [], lastWakeCount: 1, lastWakeAt: new Date(NOW).toISOString() })
   })
 
-  it("batches every change from one poll into a single message, and drops closed issues from the seen markers", async () => {
+  it("batches every change from one poll into a single message, and keeps a closed issue's marker, flagged gone", async () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z"), issue(9, "2026-11-13T01:00:00Z")])
     await w.poll()
     w.issues.splice(0, 2, issue(1, "2026-11-13T05:00:00Z", "One\nwith\nlines"), issue(3, "2026-11-13T05:01:00Z"), issue(4, "2026-11-13T05:02:00Z"))
     await w.poll()
     expect(w.send).toHaveBeenCalledTimes(1)
     expect(w.send).toHaveBeenCalledWith(DRAIN.session, "New or changed issues in ourostack/desk: #1 One with lines, #3 Issue 3, #4 Issue 4. Drain them.")
-    expect(Object.keys(w.states[DRAIN.repo]!.seen)).toEqual(["1", "3", "4"])
+    expect(Object.keys(w.states[DRAIN.repo]!.seen)).toEqual(["1", "3", "4", "9"])
+    expect(w.states[DRAIN.repo]!.seen["9"]).toMatchObject({ updatedAt: "2026-11-13T01:00:00Z", goneAt: NOW })
   })
 
   it("does not wake for the drain's own status comment, matched by marker, author and revision", async () => {
-    const w = world([issue(1, "2026-11-13T01:00:00Z")])
+    const w = world([issue(1, T(0))])
     await w.poll()
-    w.issues[0] = issue(1, "2026-11-13T02:00:00Z")
-    ;(w.api.comments as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { body: `Triaged.\n${DRAIN_STATUS_MARKER}`, updated_at: "2026-11-13T02:00:00Z", user: { login: "ArimenDelow" } },
-    ])
+    w.issues[0] = issue(1, T(5))
+    ;(w.api.comments as ReturnType<typeof vi.fn>).mockResolvedValue([statusComment(10, T(5), "ArimenDelow")])
     await w.poll()
     expect(w.send).not.toHaveBeenCalled()
-    expect(w.api.comments).toHaveBeenCalledWith(DRAIN.repo, 1, "2026-11-13T01:00:00Z")
-    expect(w.states[DRAIN.repo]!.seen["1"]).toBe("2026-11-13T02:00:00Z")
+    expect(w.api.comments).toHaveBeenCalledWith(DRAIN.repo, 1, T(0))
+    expect(w.states[DRAIN.repo]!.seen["1"]).toMatchObject(seenAt(T(5)))
+  })
+
+  it("does not wake when the drain's label changes land after its status comment, nor when it edits that comment again", async () => {
+    const w = world([issue(1, T(0))])
+    await w.poll()
+    // The status comment is the older revision; the drain's label edits made the issue's updated_at newer than any comment.
+    w.issues[0] = issue(1, T(7))
+    w.api.comments = vi.fn(async () => [statusComment(10, T(5))])
+    w.api.issueEvents = vi.fn(async () => [labelEvent(T(6), "drain: in progress"), labelEvent(T(7), "drain: triaged", "unlabeled")])
+    await w.poll()
+    w.issues[0] = issue(1, T(9))
+    w.api.comments = vi.fn(async () => [statusComment(10, T(9))])
+    w.api.issueEvents = vi.fn(async () => [])
+    await w.poll()
+    w.issues[0] = issue(1, T(12))
+    w.api.comments = vi.fn(async () => [])
+    w.api.issueEvents = vi.fn(async () => [labelEvent(T(12), "drain: triaged")])
+    await w.poll()
+    expect(w.send).not.toHaveBeenCalled()
+    expect(w.states[DRAIN.repo]!.seen["1"]).toMatchObject(seenAt(T(12)))
+  })
+
+  it("wakes once for someone else's comment next to the drain's own, and not again on the next poll", async () => {
+    const w = world([issue(1, T(0))])
+    await w.poll()
+    w.issues[0] = issue(1, T(8))
+    // Same timestamp as the drain's comment, different comment id: only the marked one is the drain's.
+    w.api.comments = vi.fn(async () => [statusComment(10, T(8)), { id: 11, body: "me too", updated_at: T(8), user: { login: "someone" } }])
+    await w.poll()
+    expect(w.send).toHaveBeenCalledTimes(1)
+    await w.poll()
+    await w.poll()
+    expect(w.send).toHaveBeenCalledTimes(1)
   })
 
   it.each([
-    ["a comment by the same account without the marker", [{ body: "Ari says hi", updated_at: "2026-11-13T02:00:00Z", user: { login: "arimendelow" } }]],
-    ["a marked comment by someone else", [{ body: DRAIN_STATUS_MARKER, updated_at: "2026-11-13T02:00:00Z", user: { login: "someone" } }]],
-    ["a comment with no author", [{ body: DRAIN_STATUS_MARKER, updated_at: "2026-11-13T02:00:00Z" }]],
+    ["a comment by the same account without the marker", [{ id: 1, body: "Ari says hi", updated_at: T(5), user: { login: "arimendelow" } }]],
+    ["a marked comment by someone else", [{ id: 1, body: DRAIN_STATUS_MARKER, updated_at: T(5), user: { login: "someone" } }]],
+    ["a comment with no author", [{ id: 1, body: DRAIN_STATUS_MARKER, updated_at: T(5) }]],
     ["an external comment beside the status comment", [
-      { body: "me too", updated_at: "2026-11-13T01:30:00Z", user: { login: "someone" } },
-      { body: DRAIN_STATUS_MARKER, updated_at: "2026-11-13T02:00:00Z", user: { login: "arimendelow" } },
+      { id: 1, body: "me too", updated_at: T(3), user: { login: "someone" } },
+      statusComment(2, T(5)),
     ]],
-    ["a status comment that is not the newest change", [{ body: DRAIN_STATUS_MARKER, updated_at: "2026-11-13T01:30:00Z", user: { login: "arimendelow" } }]],
-    ["a change with no comment at all (label, title, state)", []],
-    ["a comment that predates the last marker", [{ body: DRAIN_STATUS_MARKER, updated_at: "2026-11-13T01:00:00Z", user: { login: "arimendelow" } }]],
   ])("still wakes for %s", async (_name, comments) => {
-    const w = world([issue(1, "2026-11-13T01:00:00Z")])
+    const w = world([issue(1, T(0))])
     await w.poll()
-    w.issues[0] = issue(1, "2026-11-13T02:00:00Z")
+    w.issues[0] = issue(1, T(5))
     ;(w.api.comments as ReturnType<typeof vi.fn>).mockResolvedValue(comments)
     await w.poll()
     expect(w.send).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    ["a title edit", issue(1, T(5), "Renamed"), []],
+    ["a body edit", issue(1, T(5), "Issue 1", "new body"), []],
+    ["a reopen", issue(1, T(5)), [{ id: 1, event: "reopened", created_at: T(5) }]],
+    ["a label outside the drain's own", issue(1, T(5)), [labelEvent(T(5), "bug")]],
+    ["a label removed outside the drain's own", issue(1, T(5)), [labelEvent(T(5), "wontfix", "unlabeled")]],
+  ])("still wakes for %s", async (_name, changed, events) => {
+    const w = world([issue(1, T(0))], {}, { 1: events })
+    await w.poll()
+    w.issues[0] = changed
+    await w.poll()
+    expect(w.send).toHaveBeenCalledTimes(1)
+    await w.poll()
+    expect(w.send).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ["a status comment older than the issue's last change", [statusComment(10, T(3))], []],
+    ["a comment from before the recorded revision", [statusComment(10, T(0))], []],
+    ["a close, an assignment and the drain's labels", [], [{ id: 1, event: "closed", created_at: T(5) }, { id: 2, event: "assigned", created_at: T(5) }, labelEvent(T(5), "drain: triaged")]],
+    ["events from before the recorded revision", [], [{ id: 1, event: "reopened", created_at: T(0) }, labelEvent(T(0), "bug")]],
+    ["a change with no comment and no event", [], []],
+  ])("does not wake for %s", async (_name, comments, events) => {
+    const w = world([issue(1, T(0))], { 1: comments }, { 1: events })
+    await w.poll()
+    w.issues[0] = issue(1, T(5))
+    await w.poll()
+    expect(w.send).not.toHaveBeenCalled()
+  })
+
+  it("never wakes for a closed issue the drain handled, and drops its waiting event", async () => {
+    const w = world([issue(1, T(0)), issue(2, T(0))])
+    await w.poll()
+    w.issues.splice(0, 2, issue(1, T(5), "Issue 1", "edited"), issue(2, T(5), "Issue 2", "edited"))
+    w.send.mockResolvedValueOnce({ ok: false, error: "queued behind the app" })
+    await w.poll()
+    expect(w.states[DRAIN.repo]!.pending.map(event => event.number)).toEqual([1, 2])
+    w.issues.splice(0, 1)
+    await w.poll()
+    expect(w.send).toHaveBeenLastCalledWith(DRAIN.session, "New or changed issues in ourostack/desk: #2 Issue 2. Drain them.")
+    w.issues.length = 0
+    await w.poll()
+    await w.poll()
+    expect(w.send).toHaveBeenCalledTimes(2)
+  })
+
+  it("treats a closed issue that returns unchanged as seen, and one that is reopened as news", async () => {
+    const w = world([issue(1, T(0)), issue(2, T(0))], {}, { 2: [{ id: 1, event: "closed", created_at: T(5) }, { id: 2, event: "reopened", created_at: T(9) }] })
+    await w.poll()
+    const [one, two] = w.issues
+    w.issues.length = 0
+    await w.poll()
+    w.issues.push(one!)
+    await w.poll()
+    expect(w.send).not.toHaveBeenCalled()
+    expect(w.states[DRAIN.repo]!.seen["1"]).not.toHaveProperty("goneAt")
+    w.issues.push(issue(2, T(10), two!.title))
+    await w.poll()
+    expect(w.send).toHaveBeenCalledWith(DRAIN.session, "New or changed issues in ourostack/desk: #2 Issue 2. Drain them.")
+  })
+
+  it("forgets a closed issue's marker after a month", async () => {
+    const w = world([issue(1, T(0))])
+    await w.poll()
+    w.issues.length = 0
+    await w.poll()
+    expect(w.states[DRAIN.repo]!.seen["1"]).toBeDefined()
+    await w.poll(NOW + 31 * 24 * 3_600_000)
+    expect(w.states[DRAIN.repo]!.seen).toEqual({})
+  })
+
+  it("reads the plain updated_at an older version stored, and records the full revision from then on, for an issue with no body", async () => {
+    const w = world([{ number: 1, title: "Issue 1", updated_at: T(0), body: null }])
+    w.states[DRAIN.repo] = { seeded: true, seen: { 1: T(0) }, pending: [] }
+    await w.poll()
+    expect(w.send).not.toHaveBeenCalled()
+    expect(w.states[DRAIN.repo]!.seen["1"]).toEqual(seenAt(T(0)))
+  })
+
   it("an authentication or network failure wakes no one and leaves every marker and pending event alone", async () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z")])
     await w.poll()
-    w.issues[0] = issue(1, "2026-11-13T02:00:00Z")
+    w.issues[0] = issue(1, "2026-11-13T02:00:00Z", "Issue 1", "edited")
     const before = structuredClone(w.states[DRAIN.repo]!)
     w.connect.mockRejectedValueOnce(new Error("the GitHub CLI has no token for arimendelow"))
     await w.poll(NOW + 1000)
@@ -140,10 +253,12 @@ describe("pollDrain", () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z"), issue(2, "2026-11-13T01:00:00Z")])
     await w.poll()
     w.issues.splice(0, 2, issue(1, "2026-11-13T02:00:00Z"), issue(2, "2026-11-13T02:00:00Z"))
-    ;(w.api.comments as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("GitHub answered HTTP 403"))
+    ;(w.api.comments as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("GitHub answered HTTP 403"))
+      .mockResolvedValue([{ id: 1, body: "me too", updated_at: "2026-11-13T02:00:00Z", user: { login: "someone" } }])
     await w.poll()
     expect(w.send).not.toHaveBeenCalled()
-    expect(w.states[DRAIN.repo]!.seen).toEqual({ 1: "2026-11-13T01:00:00Z", 2: "2026-11-13T01:00:00Z" })
+    expect(w.states[DRAIN.repo]!.seen).toEqual({ 1: seenAt("2026-11-13T01:00:00Z"), 2: seenAt("2026-11-13T01:00:00Z") })
     await w.poll()
     expect(w.send).toHaveBeenCalledTimes(1)
   })
@@ -151,11 +266,11 @@ describe("pollDrain", () => {
   it("keeps recorded events when the wake is refused, then sends them with the next poll's changes in one message", async () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z")])
     await w.poll()
-    w.issues[0] = issue(1, "2026-11-13T02:00:00Z")
+    w.issues[0] = issue(1, "2026-11-13T02:00:00Z", "Issue 1", "v2")
     w.send.mockResolvedValueOnce({ ok: false, error: "the app did not answer in time" })
     await w.poll()
     expect(w.states[DRAIN.repo]).toMatchObject({ pending: [{ number: 1, title: "Issue 1", updatedAt: "2026-11-13T02:00:00Z" }], lastError: "could not wake the drain: the app did not answer in time" })
-    w.issues[0] = issue(1, "2026-11-13T03:00:00Z")
+    w.issues[0] = issue(1, "2026-11-13T03:00:00Z", "Issue 1", "v3")
     w.issues.push(issue(2, "2026-11-13T03:00:00Z"))
     await w.poll()
     expect(w.send).toHaveBeenLastCalledWith(DRAIN.session, "New or changed issues in ourostack/desk: #1 Issue 1, #2 Issue 2. Drain them.")
@@ -165,7 +280,7 @@ describe("pollDrain", () => {
   it("treats a send that throws, or a refusal with no reason, as a failed wake", async () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z")])
     await w.poll()
-    w.issues[0] = issue(1, "2026-11-13T02:00:00Z")
+    w.issues[0] = issue(1, "2026-11-13T02:00:00Z", "Issue 1", "v2")
     w.send.mockRejectedValueOnce(new Error("socket closed"))
     await w.poll()
     expect(w.states[DRAIN.repo]!.lastError).toBe("could not wake the drain: socket closed")
@@ -189,15 +304,38 @@ describe("pollIssueDrains", () => {
   it("persists state across runs, one message per repository, and forgets repositories no longer configured", async () => {
     const other = { repo: "ourostack/ouro-ui", session: "9fd90fff-2ae7-4f49-8356-bd8c0b66d6db" }
     let updated = "2026-11-13T01:00:00Z"
-    const connect = vi.fn(async (): Promise<GithubApi> => ({ login: "x", openIssues: async repo => [issue(repo === DRAIN.repo ? 1 : 7, updated)], comments: async () => [] }))
+    let title = "before"
+    const connect = vi.fn(async (): Promise<GithubApi> => ({ login: "x", openIssues: async repo => [issue(repo === DRAIN.repo ? 1 : 7, updated, title)], comments: async () => [], issueEvents: async () => [] }))
     const send = vi.fn(async () => ({ ok: true, error: null }))
     await pollIssueDrains(root, [DRAIN, other], { connect, send, now: NOW })
     expect(send).not.toHaveBeenCalled()
     updated = "2026-11-13T02:00:00Z"
+    title = "after"
     await pollIssueDrains(root, [DRAIN, other], { connect, send, now: NOW })
     expect(send.mock.calls.map(call => call[0])).toEqual([DRAIN.session, other.session])
     await pollIssueDrains(root, [DRAIN], { connect, send, now: NOW })
     expect(Object.keys(readDrainStates(root))).toEqual([DRAIN.repo])
+  })
+
+  it("saves the seen revision and the event before the wake goes out, so a repeat poll or a restart never wakes twice", async () => {
+    let updated = "2026-11-13T01:00:00Z"
+    const connect = vi.fn(async (): Promise<GithubApi> => ({
+      login: "arimendelow",
+      openIssues: async () => [issue(1, updated, "Issue 1", updated)],
+      comments: async () => [],
+      issueEvents: async () => [],
+    }))
+    const onDisk: Array<ReturnType<typeof readDrainStates>[string]> = []
+    const send = vi.fn(async () => { onDisk.push(readDrainStates(root)[DRAIN.repo]!); return { ok: true, error: null } })
+    await pollIssueDrains(root, [DRAIN], { connect, send, now: NOW })
+    updated = "2026-11-13T02:00:00Z"
+    await pollIssueDrains(root, [DRAIN], { connect, send, now: NOW + 1000 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(onDisk[0]).toMatchObject({ seen: { 1: seenAt(updated) }, pending: [{ number: 1, updatedAt: updated }] })
+    // A new run per poll reads the state back from disk, as the daemon does after a restart.
+    for (let i = 1; i <= 3; i++) await pollIssueDrains(root, [DRAIN], { connect, send, now: NOW + 1000 + i * 16_000 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(readDrainStates(root)[DRAIN.repo]).toMatchObject({ pending: [], lastWakeCount: 1 })
   })
 
   it("reads no state when none was written", () => {
@@ -216,6 +354,7 @@ describe("connectGithub", () => {
       .mockResolvedValueOnce(response([{ ...issue(1, "u1") }, { ...issue(2, "u2"), pull_request: {} }], { link: '<next>; rel="next"' }))
       .mockResolvedValueOnce(response([issue(3, "u3")]))
       .mockResolvedValueOnce(response([{ body: "c", updated_at: "u" }]))
+      .mockResolvedValueOnce(response([{ id: 1, event: "reopened", created_at: "u" }]))
     vi.stubGlobal("fetch", fetchMock)
     const api = await connectGithub("arimendelow")
     expect(gh.spawnSync).toHaveBeenCalledWith("gh", ["auth", "token", "--hostname", "github.com", "--user", "arimendelow"], expect.objectContaining({ encoding: "utf8" }))
@@ -226,6 +365,8 @@ describe("connectGithub", () => {
     expect(fetchMock.mock.calls[0]![1].headers.Authorization).toBe("Bearer tok")
     expect(await api.comments("o/r", 5, "2026-11-13T01:00:00Z")).toEqual([{ body: "c", updated_at: "u" }])
     expect(fetchMock.mock.calls[2]![0]).toBe("https://api.github.com/repos/o/r/issues/5/comments?since=2026-11-13T01%3A00%3A00Z&per_page=100&page=1")
+    expect(await api.issueEvents("o/r", 5)).toEqual([{ id: 1, event: "reopened", created_at: "u" }])
+    expect(fetchMock.mock.calls[3]![0]).toBe("https://api.github.com/repos/o/r/issues/5/events?per_page=100&page=1")
   })
 
   it("asks GitHub who the active account is when none is configured", async () => {

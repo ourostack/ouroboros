@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import type { IssueDrainConfig } from "../../heart/identity"
 import { cleanGhEnv } from "../../heart/providers/account-pool"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { sendToAppSession, type AppSessionsOptions } from "./client"
-import { drainStateFile, readDrainStates, type DrainState, type IssueEvent } from "./issue-drain-state"
+import { drainStateFile, readDrainStates, seenIssue, type DrainState, type IssueEvent, type SeenIssue } from "./issue-drain-state"
 import { writeJson } from "./store"
 
 /**
@@ -11,15 +12,23 @@ import { writeJson } from "./store"
  * lists each repository's open issues and messages the drain's session when one is new or changed since the last
  * poll. Events are written to disk before anyone is woken, so a crash or a refused message loses nothing; an
  * authentication or network failure is recorded for `ouro status` and leaves every marker where it was.
+ *
+ * `updated_at` alone is not a revision: the drain's own label edits and status comment move it too. An issue wakes the
+ * drain only when something other than the drain changed it since the revision last recorded for that issue.
  */
 export const ISSUE_POLL_MS = 5 * 60_000
 /** A drain's own status comment carries this marker, so its creation and edits do not wake the drain again. */
 export const DRAIN_STATUS_MARKER = "<!-- ouro-drain-status -->"
+/** The drain moves an issue through labels in this namespace (`drain: triaged`, `drain: in progress`); changing them is not news. */
+export const DRAIN_LABEL_PREFIX = "drain:"
+/** A closed issue's record is kept this long, so one that comes back unchanged is not mistaken for a new issue. */
+const GONE_MS = 30 * 24 * 3_600_000
 const MAX_TITLES = 20
 const PAGE = 100
 
-export interface GhIssue { number: number; title: string; updated_at: string }
-export interface GhComment { body?: string | null; updated_at: string; user?: { login?: string } | null }
+export interface GhIssue { number: number; title: string; updated_at: string; body?: string | null }
+export interface GhComment { id?: number; body?: string | null; updated_at: string; user?: { login?: string } | null }
+export interface GhIssueEvent { id?: number; event: string; created_at: string; label?: { name?: string } | null }
 
 export interface GithubApi {
   /** The login the poll runs as. */
@@ -27,6 +36,8 @@ export interface GithubApi {
   openIssues(repo: string): Promise<GhIssue[]>
   /** Comments created or edited after `since`. */
   comments(repo: string, issue: number, since: string): Promise<GhComment[]>
+  /** The issue's timeline events (label changes, closes, reopens), oldest first. */
+  issueEvents(repo: string, issue: number): Promise<GhIssueEvent[]>
 }
 
 export type ConnectGithub = (account: string | undefined) => Promise<GithubApi>
@@ -45,10 +56,24 @@ export function wakeMessage(repo: string, events: IssueEvent[]): string {
   return `New or changed issues in ${repo}: ${shown.join(", ")}${more}. Drain them.`
 }
 
-/** Only the drain's own status comment explains the issue's newest change. */
-function ownStatusOnly(issue: GhIssue, comments: GhComment[], login: string): boolean {
-  const own = (comment: GhComment): boolean => comment.user?.login?.toLowerCase() === login.toLowerCase() && !!comment.body?.includes(DRAIN_STATUS_MARKER)
-  return comments.some(comment => own(comment) && comment.updated_at === issue.updated_at) && comments.every(own)
+const digestOf = (issue: GhIssue): string => createHash("sha1").update(`${issue.title}\n${issue.body ?? ""}`).digest("hex").slice(0, 16)
+
+/** The drain's own status comment: the marker, written by the polling account. Its creation and every edit are skipped. */
+const ownStatus = (comment: GhComment, login: string): boolean => comment.user?.login?.toLowerCase() === login.toLowerCase() && !!comment.body?.includes(DRAIN_STATUS_MARKER)
+
+/** A reopen, or a label change outside the drain's own namespace. Closes, assignments, mentions and the drain's labels are not news. */
+const newsEvent = (event: GhIssueEvent): boolean =>
+  event.event === "reopened" || ((event.event === "labeled" || event.event === "unlabeled") && !event.label?.name?.startsWith(DRAIN_LABEL_PREFIX))
+
+/** Whether anyone but the drain changed the issue since `before`: a new issue, an edit, another comment, a reopen or a label outside the drain's own. */
+async function changedByOthers(api: GithubApi, repo: string, issue: GhIssue, before: SeenIssue | undefined, digest: string): Promise<boolean> {
+  if (!before) return true
+  if (before.digest && before.digest !== digest) return true
+  const since = before.updatedAt
+  const comments = (await api.comments(repo, issue.number, since)).filter(comment => comment.updated_at > since)
+  if (comments.some(comment => !ownStatus(comment, api.login))) return true
+  const events = (await api.issueEvents(repo, issue.number)).filter(event => event.created_at > since)
+  return events.some(newsEvent)
 }
 
 /** Poll one drain's repository, record what changed, then wake its session once with the whole batch. */
@@ -63,18 +88,24 @@ export async function pollDrain(
   try {
     const api = await deps.connect(drain.account)
     const issues = await api.openIssues(drain.repo)
-    const seen: Record<string, string> = {}
+    const seen: Record<string, SeenIssue> = {}
     const recorded: IssueEvent[] = []
     for (const issue of issues) {
       const key = String(issue.number)
-      const before = state.seen[key]
-      seen[key] = issue.updated_at
-      if (!state.seeded || before === issue.updated_at) continue
-      if (before && ownStatusOnly(issue, (await api.comments(drain.repo, issue.number, before)).filter(comment => comment.updated_at > before), api.login)) continue
-      recorded.push({ number: issue.number, title: issue.title, updatedAt: issue.updated_at })
+      const before = seenIssue(state.seen[key])
+      const digest = digestOf(issue)
+      seen[key] = { updatedAt: issue.updated_at, digest }
+      if (!state.seeded || before?.updatedAt === issue.updated_at) continue
+      if (await changedByOthers(api, drain.repo, issue, before, digest)) recorded.push({ number: issue.number, title: issue.title, updatedAt: issue.updated_at })
     }
+    for (const [key, entry] of Object.entries(state.seen)) {
+      const gone = seenIssue(entry)!
+      const goneAt = gone.goneAt ?? deps.now
+      if (!(key in seen) && deps.now - goneAt < GONE_MS) seen[key] = { ...gone, goneAt }
+    }
+    const open = new Set(issues.map(issue => issue.number))
     const numbers = new Set(recorded.map(event => event.number))
-    state.pending = [...state.pending.filter(event => !numbers.has(event.number)), ...recorded]
+    state.pending = [...state.pending.filter(event => open.has(event.number) && !numbers.has(event.number)), ...recorded]
     state.seen = seen
     state.seeded = true
     state.openCount = issues.length
@@ -126,8 +157,9 @@ export const connectGithub: ConnectGithub = async (account) => {
   }
   const all = async <T>(route: string): Promise<T[]> => {
     const items: T[] = []
+    const join = route.includes("?") ? "&" : "?"
     for (let page = 1; ; page++) {
-      const { body, next } = await get(`${route}&per_page=${PAGE}&page=${page}`)
+      const { body, next } = await get(`${route}${join}per_page=${PAGE}&page=${page}`)
       items.push(...(body as T[]))
       if (!next) return items
     }
@@ -137,6 +169,7 @@ export const connectGithub: ConnectGithub = async (account) => {
     login,
     openIssues: async (repo) => (await all<GhIssue & { pull_request?: unknown }>(`/repos/${repo}/issues?state=open&sort=updated&direction=desc`)).filter(issue => !issue.pull_request),
     comments: (repo, issue, since) => all<GhComment>(`/repos/${repo}/issues/${issue}/comments?since=${encodeURIComponent(since)}`),
+    issueEvents: (repo, issue) => all<GhIssueEvent>(`/repos/${repo}/issues/${issue}/events`),
   }
 }
 

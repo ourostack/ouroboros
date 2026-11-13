@@ -9,11 +9,21 @@ export interface IssueEvent {
   updatedAt: string
 }
 
+/** The revision of an issue the drain was last told about, or last chose to ignore. */
+export interface SeenIssue {
+  /** The issue's `updated_at` when it was recorded: the watermark for comments and events that happened after. */
+  updatedAt: string
+  /** Digest of the title and body, so an edit shows even when the poll missed the comment or event around it. */
+  digest?: string
+  /** Epoch ms when the issue left the open list. Its record stays, so a closed issue that comes back unchanged is not new. */
+  goneAt?: number
+}
+
 export interface DrainState {
   /** False until the first successful poll, which records what is already open without waking anyone. */
   seeded: boolean
-  /** Issue number → the `updated_at` already recorded as seen. */
-  seen: Record<string, string>
+  /** Issue number → the revision already recorded as seen. A bare string is the `updated_at` an older version stored. */
+  seen: Record<string, SeenIssue | string>
   /** Recorded events the drain has not yet been told about. */
   pending: IssueEvent[]
   lastPollAt?: string
@@ -23,6 +33,7 @@ export interface DrainState {
   lastError?: string
 }
 
+export const seenIssue = (entry: SeenIssue | string | undefined): SeenIssue | undefined => typeof entry === "string" ? { updatedAt: entry } : entry
 
 export const drainStateFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "issue-drains.json")
 
