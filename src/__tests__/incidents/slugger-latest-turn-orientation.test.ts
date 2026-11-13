@@ -17,7 +17,6 @@ import {
   reserveObservation,
 } from "../../senses/bluebubbles/latest-turn"
 import type { BlueBubblesNormalizedMessage } from "../../senses/bluebubbles/model"
-import { classifyBlueBubblesReaction } from "../../senses/bluebubbles/reaction-policy"
 
 const CHAT_GUID = "iMessage;-;alex@synthetic.test"
 const CHAT_IDENTIFIER = "alex@synthetic.test"
@@ -225,17 +224,11 @@ it("replays the RSVP request, grounded response, and later reaction without losi
     chatGuid: CHAT_GUID,
     chatIdentifier: CHAT_IDENTIFIER,
   })
-  const reactionDecision = classifyBlueBubblesReaction({
-    fromMe: false,
-    action: "add",
-    canonicalValue: "love",
-  })
   const reactionPromotion = promote(reactionReservation, {
     chatGuid: CHAT_GUID,
     chatIdentifier: CHAT_IDENTIFIER,
   })
 
-  expect(reactionDecision).toEqual({ route: "capture_only", outcome: "capture_only_positive" })
   expect(reactionPromotion.status).toBe("promoted")
   expect(requestCapability.signal.aborted).toBe(true)
   expect(isCurrent(requestCapability)).toBe(false)

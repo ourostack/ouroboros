@@ -40,6 +40,7 @@ import {
   BlueBubblesIgnoredEventError,
   describeBlueBubblesReaction,
   normalizeBlueBubblesEvent,
+  renderBlueBubblesEditText,
   renderBlueBubblesReactionText,
   type BlueBubblesChatRef,
   type BlueBubblesNormalizedEvent,
@@ -76,10 +77,6 @@ import {
 } from "./semantic-receipts"
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
-import {
-  classifyBlueBubblesReaction,
-  type BlueBubblesReactionPolicyDecision,
-} from "./reaction-policy"
 import {
   awaitDeliveryAdmission,
   beginObservationBatch,
@@ -194,6 +191,19 @@ function adoptBlueBubblesSemanticObservation(
     reactivateObservation(existing.reservation)
   }
   return existing
+}
+
+/**
+ * A capture seeded at startup already holds its causal place. Fold the recovery pass's fresh reservation into it now, so
+ * the lane schedules by the seeded order and a newer recovered turn never waits on an older capture's unfolded duplicate.
+ */
+function seededObservationReservation(
+  keyHash: string,
+  fresh: BlueBubblesObservationReservation,
+): BlueBubblesObservationReservation {
+  return semanticObservationGenerations.has(keyHash)
+    ? adoptBlueBubblesSemanticObservation(keyHash, fresh, false).reservation
+    : fresh
 }
 
 function suspendBlueBubblesSemanticObservation(
@@ -504,6 +514,8 @@ interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
   orientationConversationKind: OrientationConversationKind
   latestTurnCapability: BlueBubblesLatestTurnCapability
   publishAcceptedReceipt: () => void
+  /** The turn answers a reaction, so the agent may choose to stay silent. */
+  isReactionSignal?: boolean
 }
 
 class BlueBubblesRecoveryTurnTimeoutError extends Error {
@@ -2309,6 +2321,7 @@ async function handleBlueBubblesNormalizedEvent(
             ...mcpOwner,
             currentIngressEvidence: options.currentIngressEvidence,
           },
+          ...(options.isReactionSignal ? { isReactionSignal: true } : {}),
         },
         callbacks: failoverAwareCallbacks,
         sessionTurnLease,
@@ -2735,9 +2748,26 @@ function canonicalizeBlueBubblesEvent(
 function isCaptureOnlyBlueBubblesMutation(
   capture: BlueBubblesSemanticCaptureV1,
 ): boolean {
-  return capture.event.kind === "reaction"
-    || capture.event.kind === "edit"
-    || capture.event.kind === "unsend"
+  return capture.event.kind === "unsend"
+}
+
+/** A reaction or an edit is speech to the agent: it arrives as a message carrying the shared rendering, aimed at the message it changes. */
+function blueBubblesInteractionAsMessage(event: Extract<BlueBubblesDirectionObservedEvent, { kind: "mutation" }>): BlueBubblesDirectionObservedMessage {
+  return {
+    kind: "message",
+    eventType: event.eventType,
+    messageGuid: event.messageGuid,
+    timestamp: event.timestamp,
+    fromMe: event.fromMe,
+    sender: event.sender,
+    chat: event.chat,
+    text: event.textForAgent,
+    textForAgent: event.textForAgent,
+    attachments: [],
+    hasPayloadData: false,
+    requiresRepair: false,
+    ...(event.targetMessageGuid ? { replyToGuid: event.targetMessageGuid } : {}),
+  }
 }
 
 function isAuditOnlySemanticCapture(capture: BlueBubblesSemanticCaptureV1): boolean {
@@ -2792,7 +2822,7 @@ function semanticCaptureToNormalizedEvent(
   const textForAgent = reaction
     ? renderBlueBubblesReactionText(reaction, { guid: targetMessageGuid })
     : event.kind === "edit"
-      ? event.text ? `edited message: ${event.text}` : "edited a message"
+      ? renderBlueBubblesEditText(event.text)
       : event.kind === "unsend"
         ? "unsent a message"
         : event.kind === "read"
@@ -2851,47 +2881,14 @@ export function seedBlueBubblesStartupSemanticObservations(
   return seeded
 }
 
-interface CapturedReactionClassification {
-  decision: BlueBubblesReactionPolicyDecision
-}
-
-async function classifyCapturedBlueBubblesReaction(
-  captured: CapturedBlueBubblesSemanticEvent,
-): Promise<CapturedReactionClassification | null> {
-  const event = captured.capture.event
-  if (event.kind !== "reaction" || !event.canonicalAction || !event.canonicalValue) return null
-
-  const input = {
-    fromMe: event.fromMe,
-    action: event.canonicalAction,
-    canonicalValue: event.canonicalValue,
-  }
-  return { decision: classifyBlueBubblesReaction(input) }
-}
-
 interface BlueBubblesSemanticHandledDisposition {
   outcome: BlueBubblesSemanticHandledOutcome
   detailCode: string | null
 }
 
-function captureOnlyHandledDisposition(
-  capture: BlueBubblesSemanticCaptureV1,
-  reactionDecision: BlueBubblesReactionPolicyDecision | null,
-): BlueBubblesSemanticHandledDisposition {
-  if (capture.event.kind !== "reaction") {
-    return {
-      outcome: capture.event.kind === "edit" ? "edit_capture_only" : "unsend_capture_only",
-      detailCode: null,
-    }
-  }
-  const classifiedOutcome = reactionDecision!.outcome
-  if (classifiedOutcome === "capture_only_negative" || classifiedOutcome === "capture_only_question") {
-    return {
-      outcome: "capture_only_unknown",
-      detailCode: classifiedOutcome,
-    }
-  }
-  return { outcome: classifiedOutcome, detailCode: null }
+/** Only an unsend is kept without a turn: it takes words back and adds none for the agent to answer. */
+function captureOnlyHandledDisposition(): BlueBubblesSemanticHandledDisposition {
+  return { outcome: "unsend_capture_only", detailCode: null }
 }
 
 function auditOnlyHandledOutcome(
@@ -3052,9 +3049,6 @@ async function handleCapturedBlueBubblesSemanticEvent(
   }
   try {
     options.lifecycleSignal?.throwIfAborted()
-    const reactionClassification = await classifyCapturedBlueBubblesReaction(captured)
-    options.lifecycleSignal?.throwIfAborted()
-    const reactionDecision = reactionClassification?.decision ?? null
     if (captured.capture.event.fromMe) {
       emitNervesEvent({
         component: "senses",
@@ -3127,7 +3121,8 @@ async function handleCapturedBlueBubblesSemanticEvent(
       }
     } else {
       const captureOnlyMutation = isCaptureOnlyBlueBubblesMutation(captured.capture)
-      const repaired = captureOnlyMutation && captured.normalized.chat.chatGuid?.trim()
+      // A reaction, edit or unsend carries what the turn needs in the webhook itself; only a routed message is re-fetched.
+      const repaired = captured.normalized.kind === "mutation" && captured.normalized.chat.chatGuid?.trim()
         ? captured.normalized
         : await resolvedDeps.createClient().repairEvent(captured.normalized)
       options.lifecycleSignal?.throwIfAborted()
@@ -3153,7 +3148,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
           throw new Error("semantic_capture_routing_invalid")
         }
         const disposition = captureOnlyMutation
-          ? captureOnlyHandledDisposition(captured.capture, reactionDecision)
+          ? captureOnlyHandledDisposition()
           : { outcome: "message_observed" as const, detailCode: null }
         publishTerminalReceipt(disposition.outcome, disposition.detailCode)
         semanticHandlingCompleted = true
@@ -3166,7 +3161,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       }
       latestTurnCapability = promotion.capability
       if (captureOnlyMutation) {
-        const disposition = captureOnlyHandledDisposition(captured.capture, reactionDecision)
+        const disposition = captureOnlyHandledDisposition()
         publishTerminalReceipt(disposition.outcome, disposition.detailCode)
         semanticHandlingCompleted = true
         return {
@@ -3176,8 +3171,13 @@ async function handleCapturedBlueBubblesSemanticEvent(
           reason: "mutation_state_only",
         }
       }
-      if (identityGroundedRepaired.kind === "mutation") {
-        const outcome = auditOnlyHandledOutcome(identityGroundedRepaired.mutationType as "read" | "delivery")
+      const interaction = identityGroundedRepaired.kind === "mutation"
+        && (identityGroundedRepaired.mutationType === "reaction" || identityGroundedRepaired.mutationType === "edit")
+        ? identityGroundedRepaired
+        : null
+      const turnEvent = interaction ? blueBubblesInteractionAsMessage(interaction) : identityGroundedRepaired
+      if (turnEvent.kind === "mutation") {
+        const outcome = auditOnlyHandledOutcome(turnEvent.mutationType as "read" | "delivery")
         publishTerminalReceipt(outcome)
         semanticHandlingCompleted = true
         return {
@@ -3188,7 +3188,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         }
       }
       const canonicalEvent = canonicalizeBlueBubblesEvent(
-        identityGroundedRepaired,
+        turnEvent,
         latestTurnCapability,
       )
 
@@ -3203,6 +3203,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         orientationEvidence: captured.capture.event,
         orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
         publishAcceptedReceipt,
+        ...(interaction?.mutationType === "reaction" ? { isReactionSignal: true } : {}),
       }
       let failedReplyVisible = false
       if (retryFailedReply) {
@@ -3855,7 +3856,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       status: "ready",
       capture,
       normalized,
-      observationReservation: reserveBlueBubblesObservation(normalized),
+      observationReservation: seededObservationReservation(capture.keyHash, reserveBlueBubblesObservation(normalized)),
     })
   }
 

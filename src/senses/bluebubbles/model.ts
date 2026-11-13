@@ -1,3 +1,4 @@
+import { renderChatInteraction } from "../../heart/chat-interaction"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderAttachmentBlock } from "../../heart/attachments/render"
@@ -309,8 +310,6 @@ const REACTION_VOCABULARY: ReadonlyArray<{
   { code: 2006, name: "custom", verb: "reacted with custom emoji to", noun: "custom emoji" },
 ]
 
-const REACTION_EXCERPT_MAX_LENGTH = 80
-
 export function describeBlueBubblesReaction(
   raw: string,
   rawTransportValue: string = raw,
@@ -333,25 +332,6 @@ export function describeBlueBubblesReaction(
   }
 }
 
-function reactionExcerpt(text: string): string {
-  return text.length > REACTION_EXCERPT_MAX_LENGTH
-    ? `${text.slice(0, REACTION_EXCERPT_MAX_LENGTH - 3)}...`
-    : text
-}
-
-function reactionTargetPhrase(target: BlueBubblesReactionTarget): string {
-  const text = target.text?.trim()
-  if (text) {
-    const owner = target.fromMe === true ? "your" : target.fromMe === false ? "their" : "a"
-    return `${owner} message: "${reactionExcerpt(text)}"`
-  }
-  // Never hand the agent a bare "reacted with love" stub — say plainly that the
-  // referent is missing so it can ask instead of guessing what was approved.
-  return target.guid
-    ? `an unidentified message (target guid ${target.guid}; its text could not be resolved)`
-    : "an unidentified message (the reaction carried no target message reference)"
-}
-
 /**
  * Render a reaction as speech the agent can act on: what the tapback was, whether
  * it was added or removed, and which message it points at.
@@ -360,14 +340,13 @@ export function renderBlueBubblesReactionText(
   reaction: BlueBubblesReactionDescriptor,
   target: BlueBubblesReactionTarget,
 ): string {
-  const phrase = reactionTargetPhrase(target)
-  if (reaction.action === "remove") {
-    const noun = reaction.noun ?? reaction.raw.replace(/^-/, "")
-    return `removed their ${noun} reaction from ${phrase}`
-  }
-  return reaction.verb
-    ? `${reaction.verb} ${phrase}`
-    : `reacted with ${reaction.raw} to ${phrase}`
+  return renderChatInteraction({
+    kind: "reaction",
+    label: reaction.action === "remove" ? reaction.noun ?? reaction.raw.replace(/^-/, "") : reaction.raw,
+    ...(reaction.verb ? { verb: reaction.verb } : {}),
+    removed: reaction.action === "remove",
+    target: { ...(target.guid ? { id: `guid ${target.guid}` } : {}), ...(target.text ? { text: target.text } : {}), ...(typeof target.fromMe === "boolean" ? { fromAgent: target.fromMe } : {}) },
+  })
 }
 
 function stripPartPrefix(guid?: string): string | undefined {
@@ -375,6 +354,11 @@ function stripPartPrefix(guid?: string): string | undefined {
   const trimmed = guid.trim()
   const marker = trimmed.lastIndexOf("/")
   return marker >= 0 ? trimmed.slice(marker + 1) : trimmed
+}
+
+/** iMessage edits carry only the new text, aimed at the message they replace. */
+export function renderBlueBubblesEditText(newText: string | null | undefined): string {
+  return renderChatInteraction({ kind: "edit", newText: newText ?? "", target: {} })
 }
 
 // Reactions never reach here: `detectMutationType` returns "reaction" only when a
@@ -385,8 +369,7 @@ function buildMutationText(
   data: JsonRecord,
 ): string {
   if (mutationType === "edit") {
-    const editedText = readString(data, "text")?.trim() ?? ""
-    return editedText ? `edited message: ${editedText}` : "edited a message"
+    return renderBlueBubblesEditText(readString(data, "text"))
   }
   if (mutationType === "unsend") {
     return "unsent a message"
