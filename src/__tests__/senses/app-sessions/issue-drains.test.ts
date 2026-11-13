@@ -212,6 +212,51 @@ describe("pollDrain", () => {
     expect(w.states[DRAIN.repo]!.seen).toEqual({})
   })
 
+  describe("ignored labels", () => {
+    const lanes = { ...DRAIN, ignoredLabels: ["agent:drain"] }
+
+    it("does not wake when a configured label is added or removed, nor for the default drain: prefix beside it", async () => {
+      const w = world([issue(1, T(0))], {}, {}, lanes)
+      await w.poll()
+      w.issues[0] = issue(1, T(5))
+      w.api.issueEvents = vi.fn(async () => [labelEvent(T(5), "agent:drain"), labelEvent(T(5), "drain: in progress")])
+      await w.poll()
+      w.issues[0] = issue(1, T(10))
+      w.api.issueEvents = vi.fn(async () => [labelEvent(T(10), "Agent:Drain", "unlabeled"), labelEvent(T(10), "drain: triaged", "unlabeled")])
+      await w.poll()
+      expect(w.send).not.toHaveBeenCalled()
+    })
+
+    it("still wakes for an unconfigured label, even beside a configured one, and for a configured label's lookalike", async () => {
+      for (const other of ["bug", "agent:drain-extra"]) {
+        const w = world([issue(1, T(0))], {}, {}, lanes)
+        await w.poll()
+        w.issues[0] = issue(1, T(5))
+        w.api.issueEvents = vi.fn(async () => [labelEvent(T(5), "agent:drain"), labelEvent(T(5), other)])
+        await w.poll()
+        expect(w.send).toHaveBeenCalledTimes(1)
+      }
+    })
+
+    it("treats a label event that names no label as news", async () => {
+      const w = world([issue(1, T(0))], {}, {}, lanes)
+      await w.poll()
+      w.issues[0] = issue(1, T(5))
+      w.api.issueEvents = vi.fn(async () => [{ id: 1, event: "labeled", created_at: T(5) }])
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+    })
+
+    it("wakes for that same label in a repository that does not configure it", async () => {
+      const w = world([issue(1, T(0))])
+      await w.poll()
+      w.issues[0] = issue(1, T(5))
+      w.api.issueEvents = vi.fn(async () => [labelEvent(T(5), "agent:drain")])
+      await w.poll()
+      expect(w.send).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe("ignored body trailers", () => {
     const plan = { ...DRAIN, ignoredBodyTrailers: ["Active-at", "Waiting-for", "Waiting-until"] }
     const spec = "Fix the thing.\n\n- step one\n- step two"

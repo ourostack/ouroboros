@@ -273,10 +273,10 @@ describe("loadAgentConfig", () => {
 
   it("reads the app-sessions issue drains and their cadence", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
-    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft ", ignoredBodyTrailers: [" Active-at ", "Waiting-for"] }]
+    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft ", ignoredBodyTrailers: [" Active-at ", "Waiting-for"], ignoredLabels: [" agent:drain "] }]
     expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: drains, issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({
       enabled: true,
-      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft", ignoredBodyTrailers: ["Active-at", "Waiting-for"] }],
+      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft", ignoredBodyTrailers: ["Active-at", "Waiting-for"], ignoredLabels: ["agent:drain"] }],
       issuePollMinutes: 2,
     })
     expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
@@ -291,6 +291,8 @@ describe("loadAgentConfig", () => {
     [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: "Active-at" }] }, "issueDrains[0].ignoredBodyTrailers"],
     [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: ["Active-at:"] }] }, "issueDrains[0].ignoredBodyTrailers"],
     [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: [3] }] }, "issueDrains[0].ignoredBodyTrailers"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredLabels: "agent:drain" }] }, "issueDrains[0].ignoredLabels"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredLabels: [" "] }] }, "issueDrains[0].ignoredLabels"],
     [{ issueDrains: [{ repo: "a/b", session: "s" }, { repo: "a/b", session: "t" }] }, "listed twice"],
     [{ issuePollMinutes: 0 }, "issuePollMinutes"],
     [{ issuePollMinutes: "5" }, "issuePollMinutes"],
