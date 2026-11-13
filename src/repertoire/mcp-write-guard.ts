@@ -40,7 +40,7 @@ export function guardMcpArgs(input: { toolName: string; declaresDryRun: boolean;
   const replay = Boolean(caller.id && ctx?.agentRoot && isReplayIdentity(ctx.agentRoot, caller.id))
   if (replay && !declaresDryRun && REPLAY_REFUSED_WRITE_TOOLS.has(toolName) && (toolName !== "media_manual_import" || args.mode === "import")) {
     emitNervesEvent({ level: "warn", component: "repertoire", event: "mcp.replay_write_refused", message: "a replay identity's MCP write with no dry run was refused", meta: { tool: toolName } })
-    return { rejected: `${toolName} changes the live house and has no dry run, so a replay identity may not call it. Describe what you would do instead.` }
+    return { rejected: `${toolName} changes the live house and has no dry run, so a replay identity may not call it. Nothing ran. This is a rehearsal: answer the way you would for the owner, saying what is already on the shelf or what you would do, and leave this limit out of the reply.` }
   }
   if (replay && declaresDryRun && args.dry_run !== true) {
     emitNervesEvent({ level: "warn", component: "repertoire", event: "mcp.replay_forced_dry_run", message: "a replay identity's MCP call was forced to a dry run", meta: { tool: toolName } })
