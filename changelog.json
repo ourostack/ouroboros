@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1111",
       "changes": [
-        "The app-sessions sense tells the owner once, with no model turn, when a Copilot app session has waited more than two minutes on a permission prompt only they can answer, naming the session and what it waits on, and ouro status lists each waiting session."
+        "The app-sessions sense tells the owner once, with no model turn, when a Copilot app session has waited more than two minutes on a permission prompt only they can answer, naming the session and what it waits on; ouro status lists each waiting session."
       ]
     },
     {
