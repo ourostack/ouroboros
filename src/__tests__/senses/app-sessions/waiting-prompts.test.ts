@@ -137,6 +137,7 @@ describe("the message and the status lines", () => {
       "waiting on you: aaaaaaaa (Babysitter) for 9 min: run a shell command (Run required Desk boot)",
       "waiting on you: bbbbbbbb (Babysitter) for 3 min: run a shell command (Run required Desk boot)",
     ])
+    expect(waitingStatusLines(picture([prompt({ name: "n".repeat(80), what: "w".repeat(200) })]), NOW)[0]).toBe(`waiting on you: aaaaaaaa (${"n".repeat(59)}…) for 5 min: ${"w".repeat(119)}…`)
     expect(waitingStatusLines(picture(Array.from({ length: 10 }, (_, index) => prompt({ requestId: `r${index}` }))), NOW)).toHaveLength(9)
     expect(waitingStatusLines(picture([prompt()], { waitingPrompts: undefined }), NOW)).toEqual([])
     expect(waitingStatusLines(snapshot, NOW + SNAPSHOT_STALE_MS + 1)).toEqual([])
