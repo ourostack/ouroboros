@@ -18,7 +18,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
-import { drainStatusLines, readDrainStates } from "../../senses/app-sessions/issue-drains"
+import { drainStatusLines, readDrainStates } from "../../senses/app-sessions/issue-drain-state"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
 import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"

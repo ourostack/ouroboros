@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process"
-import * as path from "node:path"
 import type { IssueDrainConfig } from "../../heart/identity"
 import { cleanGhEnv } from "../../heart/providers/account-pool"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { sendToAppSession, type AppSessionsOptions } from "./client"
-import { appSessionsStateDir, readJson, writeJson } from "./store"
+import { drainStateFile, readDrainStates, type DrainState, type IssueEvent } from "./issue-drain-state"
+import { writeJson } from "./store"
 
 /**
  * Issue drains: Copilot app sessions that work a GitHub repository's issues. A deterministic poll (no model turn)
@@ -17,27 +17,6 @@ export const ISSUE_POLL_MS = 5 * 60_000
 export const DRAIN_STATUS_MARKER = "<!-- ouro-drain-status -->"
 const MAX_TITLES = 20
 const PAGE = 100
-
-export interface IssueEvent {
-  number: number
-  title: string
-  /** The issue's `updated_at` when the event was recorded. */
-  updatedAt: string
-}
-
-export interface DrainState {
-  /** False until the first successful poll, which records what is already open without waking anyone. */
-  seeded: boolean
-  /** Issue number → the `updated_at` already recorded as seen. */
-  seen: Record<string, string>
-  /** Recorded events the drain has not yet been told about. */
-  pending: IssueEvent[]
-  lastPollAt?: string
-  openCount?: number
-  lastWakeAt?: string
-  lastWakeCount?: number
-  lastError?: string
-}
 
 export interface GhIssue { number: number; title: string; updated_at: string }
 export interface GhComment { body?: string | null; updated_at: string; user?: { login?: string } | null }
@@ -52,12 +31,6 @@ export interface GithubApi {
 
 export type ConnectGithub = (account: string | undefined) => Promise<GithubApi>
 export type SendWake = (session: string, message: string) => Promise<{ ok: boolean; error: string | null }>
-
-const stateFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "issue-drains.json")
-
-export function readDrainStates(agentRoot: string): Record<string, DrainState> {
-  return readJson<Record<string, DrainState>>(stateFile(agentRoot), {})
-}
 
 const blank = (): DrainState => ({ seeded: false, seen: {}, pending: [] })
 
@@ -131,7 +104,7 @@ export async function pollDrain(
 export async function pollIssueDrains(agentRoot: string, drains: IssueDrainConfig[], deps: { connect: ConnectGithub; send: SendWake; now: number }): Promise<void> {
   const stored = readDrainStates(agentRoot)
   const states: Record<string, DrainState> = Object.fromEntries(drains.map(drain => [drain.repo, stored[drain.repo] ?? blank()]))
-  const save = (): void => writeJson(stateFile(agentRoot), states)
+  const save = (): void => writeJson(drainStateFile(agentRoot), states)
   for (const drain of drains) await pollDrain(drain, states, save, deps)
   save()
 }
@@ -169,20 +142,4 @@ export const connectGithub: ConnectGithub = async (account) => {
 export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message) => {
   const result = await sendToAppSession(session, message, { ...client, delivery: "enqueue" })
   return { ok: result.ok, error: result.error }
-}
-
-function ago(iso: string, now: number): string {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000))
-  return minutes < 1 ? "just now" : minutes < 90 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`
-}
-
-/** One `ouro status` line per drain: its last poll, open issues, events waiting, last wake and last error. */
-export function drainStatusLines(drains: IssueDrainConfig[], states: Record<string, DrainState>, now: number): string[] {
-  return drains.map(drain => {
-    const state = states[drain.repo]
-    const head = `issue drain ${drain.repo} -> ${drain.session.slice(0, 8)}`
-    if (!state?.lastPollAt) return `${head}: not polled yet`
-    const wake = state.lastWakeAt ? `${ago(state.lastWakeAt, now)} (${state.lastWakeCount} issue${state.lastWakeCount === 1 ? "" : "s"})` : "never"
-    return `${head}: polled ${ago(state.lastPollAt, now)}, ${state.openCount ?? "?"} open, ${state.pending.length} waiting, last wake ${wake}${state.lastError ? `, last error: ${state.lastError}` : ""}`
-  })
 }

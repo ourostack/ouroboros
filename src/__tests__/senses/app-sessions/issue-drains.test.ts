@@ -9,9 +9,10 @@ const client = vi.hoisted(() => ({ sendToAppSession: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
 import {
-  connectGithub, DRAIN_STATUS_MARKER, drainStatusLines, pollDrain, pollIssueDrains, readDrainStates, sendWake, wakeMessage,
-  type DrainState, type GhComment, type GhIssue, type GithubApi,
+  connectGithub, DRAIN_STATUS_MARKER, pollDrain, pollIssueDrains, sendWake, wakeMessage,
+  type GhComment, type GhIssue, type GithubApi,
 } from "../../../senses/app-sessions/issue-drains"
+import { drainStatusLines, readDrainStates, type DrainState } from "../../../senses/app-sessions/issue-drain-state"
 
 const DRAIN = { repo: "ourostack/desk", session: "58fbd57e-e371-4169-b013-2f413ab4a046", account: "arimendelow" }
 const NOW = Date.parse("2026-11-13T06:00:00Z")
