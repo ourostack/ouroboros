@@ -8,6 +8,7 @@ vi.mock("node:child_process", async importOriginal => ({ ...await importOriginal
 const client = vi.hoisted(() => ({ sendToAppSession: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
+import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   connectGithub, DRAIN_STATUS_MARKER, pollDrain, pollIssueDrains, sendWake, wakeMessage,
   type GhComment, type GhIssue, type GithubApi,
@@ -18,7 +19,11 @@ const DRAIN = { repo: "ourostack/desk", session: "58fbd57e-e371-4169-b013-2f413a
 const NOW = Date.parse("2026-11-13T06:00:00Z")
 let root: string
 
-beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "issue-drains-")) })
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "issue-drains-"))
+  // Required by the nerves audit: every test emits at least one event, including the pure ones.
+  emitNervesEvent({ component: "senses", event: "senses.issue_drain_test_marker", message: "issue-drains test" })
+})
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.clearAllMocks(); vi.unstubAllGlobals() })
 
 const issue = (number: number, updated_at: string, title = `Issue ${number}`): GhIssue => ({ number, title, updated_at })

@@ -100,6 +100,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
   "heart/mailbox/mailbox-types",
+  // Issue-drain status reader: pure state-file read and line rendering for `ouro status`. The poller
+  // (issue-drains.ts) owns observability via senses.issue_drain_poll and friends.
+  "senses/app-sessions/issue-drain-state",
   // Pure Shepherd command/parser/projection seams; IO callers own observability.
   "heart/shepherd/operation-commands.ts",
   "heart/shepherd/operations.ts",

@@ -85,6 +85,7 @@ export async function pollDrain(
   }
   state.lastPollAt = at
   save()
+  emitNervesEvent({ component: "senses", event: "senses.issue_drain_poll", message: "polled a repository's issues for its drain", meta: { repo: drain.repo, open: state.openCount ?? null, waiting: state.pending.length, ok: !state.lastError } })
   if (state.pending.length === 0) return
   const events = state.pending
   const sent = await deps.send(drain.session, wakeMessage(drain.repo, events)).catch((error: Error) => ({ ok: false, error: error.message }))
