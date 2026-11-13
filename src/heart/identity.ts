@@ -66,7 +66,11 @@ export interface WakeRunnerConfig {
   everySeconds?: number
   /** The session (full id) that receives a wake that names none. */
   session?: string
+  /** "immediate" (default) puts a wake in at the session's next turn boundary; "enqueue" holds it until the session's current run ends. */
+  delivery?: WakeDelivery
 }
+
+export type WakeDelivery = "immediate" | "enqueue"
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
 export const SHEPHERD_NOTICE_POLICIES: readonly ShepherdNoticePolicy[] = ["every", "needs-me", "off"]
@@ -282,11 +286,12 @@ export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFi
     const names = new Set<string>()
     result.wakeRunners = (wakeRunners as unknown[]).map((entry, index) => {
       const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
-      const { name, command, everySeconds, session } = item
+      const { name, command, everySeconds, session, delivery } = item
       if (typeof name !== "string" || !name.trim()) fail(`wakeRunners[${index}].name must be a non-empty name`)
       if (!Array.isArray(command) || command.length === 0 || command.some(part => typeof part !== "string" || !part)) fail(`wakeRunners[${index}].command must be a non-empty array of strings`)
       if (everySeconds !== undefined && (typeof everySeconds !== "number" || !Number.isInteger(everySeconds) || everySeconds < 10)) fail(`wakeRunners[${index}].everySeconds must be a whole number of seconds, 10 or more`)
       if (session !== undefined && (typeof session !== "string" || !session.trim())) fail(`wakeRunners[${index}].session must be a Copilot app session id`)
+      if (delivery !== undefined && delivery !== "immediate" && delivery !== "enqueue") fail(`wakeRunners[${index}].delivery must be "immediate" or "enqueue"`)
       const key = (name as string).trim()
       if (names.has(key)) fail(`wakeRunners[${index}].name ${key} is listed twice`)
       names.add(key)
@@ -295,6 +300,7 @@ export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFi
         command: command as string[],
         ...(everySeconds !== undefined ? { everySeconds: everySeconds as number } : {}),
         ...(session !== undefined ? { session: (session as string).trim() } : {}),
+        ...(delivery !== undefined ? { delivery: delivery as WakeDelivery } : {}),
       }
     })
   }

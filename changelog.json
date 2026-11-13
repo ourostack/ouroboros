@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1117",
+      "changes": [
+        "Wakes from a wake runner are delivered immediately by default: the Copilot app puts the message into the session at its next turn boundary. They used to be queued behind the session's current run, and a drain that works for hours without going idle received news about new issues hours late, including about issues that had since closed. A runner entry can set `delivery` to `\"enqueue\"` to keep the old behavior."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1116",
       "changes": [
         "The issue-drain poller moved to Desk, and the app-sessions sense now only runs commands and delivers their wakes. Add a `wakeRunners` entry to `senses.app-sessions` in agent.json (`name`, `command` as an argv array, optional `everySeconds` of 10 or more, default 300, and optional `session`): the sense runs the command on that cadence, sends each wake it prints to its session, and runs the wake's `done` command to report delivery. `ouro status` lists each runner and the command's own status lines, and the daemon still starts without loading the app client. `issueDrains` and `issuePollMinutes` are retired: a config that still has them shows a notice and is otherwise ignored, so move the drains to Desk's drain config (same fields, same state shape, so seen markers carry over) before updating. See docs/app-sessions-sense.md."
