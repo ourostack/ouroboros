@@ -340,4 +340,16 @@ describe("parseStatusPayload extended worker fields", () => {
       }],
     })).toBeNull()
   })
+
+  it("prints a sense row's extra lines, such as each issue drain, under the row", () => {
+    const data = {
+      overview: makeOverview(),
+      workers: [],
+      senses: [makeSenseRow({ sense: "app-sessions", detail: "5 working", lines: ["issue drain ourostack/desk -> 58fbd57e: polled 2m ago, 3 open, 0 waiting, last wake never", 7] })],
+    }
+    expect(parseStatusPayload(data)!.senses[0]!.lines).toEqual(["issue drain ourostack/desk -> 58fbd57e: polled 2m ago, 3 open, 0 waiting, last wake never"])
+    const output = formatDaemonStatusOutput({ ok: true, data }, "fallback").replace(/\u001b\[[0-9;]*m/g, "")
+    expect(output).toContain("      issue drain ourostack/desk -> 58fbd57e: polled 2m ago, 3 open, 0 waiting, last wake never")
+    expect(parseStatusPayload({ overview: makeOverview(), workers: [], senses: [makeSenseRow()] })!.senses[0]!.lines).toBeUndefined()
+  })
 })

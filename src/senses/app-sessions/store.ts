@@ -30,7 +30,7 @@ export function appSessionsStateDir(agentRoot: string): string {
   return path.join(agentRoot, "state", "senses", "app-sessions")
 }
 
-function readJson<T>(file: string, fallback: T): T {
+export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf-8")) as T
   } catch {
@@ -38,7 +38,7 @@ function readJson<T>(file: string, fallback: T): T {
   }
 }
 
-function writeJson(file: string, value: unknown): void {
+export function writeJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const next = `${file}.${process.pid}.next`
   fs.writeFileSync(next, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })

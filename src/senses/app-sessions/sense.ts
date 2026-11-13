@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto"
 import { requestPrivateWake } from "../../heart/daemon/socket-client"
-import { getAgentRoot } from "../../heart/identity"
+import { getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
+import { connectGithub, ISSUE_POLL_MS, pollIssueDrains, sendWake, type ConnectGithub, type SendWake } from "./issue-drains"
 import { listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { readWatches, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
 
@@ -28,6 +29,8 @@ export interface AppSessionsSenseOptions {
   now?: () => number
   schedule?: (fn: () => void, ms: number) => () => void
   deliver?: Deliver
+  connectGithub?: ConnectGithub
+  sendWake?: SendWake
 }
 
 /** The replies the session finished since `entry.offset`, and the offset to continue from. */
@@ -130,6 +133,18 @@ export function recordSnapshot(agentRoot: string, client: AppSessionsOptions, no
   return result
 }
 
+/** Poll the issue drains in `agent.json` once; returns the milliseconds until the next poll. A bad config is logged and retried then. */
+export async function checkIssueDrains(agentName: string, agentRoot: string, deps: { connect: ConnectGithub; send: SendWake; now: number }): Promise<number> {
+  try {
+    const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
+    if (config?.enabled && config.issueDrains?.length) await pollIssueDrains(agentRoot, config.issueDrains, deps)
+    return config?.issuePollMinutes ? config.issuePollMinutes * 60_000 : ISSUE_POLL_MS
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.issue_drain_error", message: "could not check the issue drains", meta: { error: (error as Error).message } })
+    return ISSUE_POLL_MS
+  }
+}
+
 export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop: () => void; done: () => Promise<void> } {
   const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
   const now = options.now ?? Date.now
@@ -140,6 +155,8 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let cancelSnapshot: () => void
   let cancelWatch: (() => void) | null = null
   let inFlight: Promise<unknown> = Promise.resolve()
+  let cancelIssues: (() => void) | null = null
+  let issuePoll: Promise<unknown> = Promise.resolve()
 
   const snapshotTick = (): void => {
     if (stopped) return
@@ -154,16 +171,24 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       if (!stopped) cancelWatch = schedule(watchTick, WATCH_POLL_MS)
     })
   }
+  const issueTick = (): void => {
+    if (stopped) return
+    issuePoll = checkIssueDrains(options.agentName, agentRoot, { connect: options.connectGithub ?? connectGithub, send: options.sendWake ?? sendWake(client), now: now() }).then(ms => {
+      if (!stopped) cancelIssues = schedule(issueTick, ms)
+    })
+  }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_start", message: "app-sessions sense started", meta: { agent: options.agentName } })
   snapshotTick()
   watchTick()
+  issueTick()
   return {
     stop: () => {
       stopped = true
       cancelSnapshot()
       cancelWatch?.()
+      cancelIssues?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => inFlight.then(() => undefined),
+    done: () => Promise.all([inFlight, issuePoll]).then(() => undefined),
   }
 }

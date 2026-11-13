@@ -271,6 +271,31 @@ describe("loadAgentConfig", () => {
     expect(() => normalizeSenses({ shepherd: { enabled: true, checkInMinutes: value } }, "/test/agent.json")).toThrow("checkInMinutes")
   })
 
+  it("reads the app-sessions issue drains and their cadence", async () => {
+    const { normalizeSenses } = await import("../../heart/identity")
+    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft " }]
+    expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: drains, issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({
+      enabled: true,
+      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft" }],
+      issuePollMinutes: 2,
+    })
+    expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
+  })
+
+  it.each([
+    [{ issueDrains: "x" }, "issueDrains must be an array"],
+    [{ issueDrains: [null] }, "issueDrains[0].repo"],
+    [{ issueDrains: [{ repo: "no-slash", session: "s" }] }, "issueDrains[0].repo"],
+    [{ issueDrains: [{ repo: "a/b", session: " " }] }, "issueDrains[0].session"],
+    [{ issueDrains: [{ repo: "a/b", session: "s", account: 3 }] }, "issueDrains[0].account"],
+    [{ issueDrains: [{ repo: "a/b", session: "s" }, { repo: "a/b", session: "t" }] }, "listed twice"],
+    [{ issuePollMinutes: 0 }, "issuePollMinutes"],
+    [{ issuePollMinutes: "5" }, "issuePollMinutes"],
+  ])("rejects invalid issue drain config instead of dropping it: %j", async (extra, message) => {
+    const { normalizeSenses } = await import("../../heart/identity")
+    expect(() => normalizeSenses({ "app-sessions": { enabled: true, ...extra } }, "/test/agent.json")).toThrow(message)
+  })
+
   it("reads and parses agent.json schema", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({

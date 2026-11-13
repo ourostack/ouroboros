@@ -87,6 +87,28 @@ Each delivered burst carries the observation time, current sidebar identity/stat
 timestamps. Renames trigger a notice even without a finished reply; after delivery the watch adopts the current
 name. If the sidebar cannot be read, reply attribution is explicitly unverified.
 
+## Issue drains
+
+A drain is a Copilot app session that works one GitHub repository's issues. The sense wakes it when an issue is new or changed, so the drain spends no model turns on idle checks. List the drains in `agent.json`:
+
+```json
+{ "senses": { "app-sessions": { "enabled": true, "issuePollMinutes": 5, "issueDrains": [
+  { "repo": "ourostack/desk", "session": "58fbd57e-e371-4169-b013-2f413ab4a046", "account": "arimendelow" },
+  { "repo": "gim-home/CIT", "session": "48a0f0ab-56ad-406d-8831-5352815be337", "account": "arimendelow_microsoft" }
+] } } }
+```
+
+`account` is a login the GitHub CLI is signed in to (`gh auth token --user`); without it the CLI's active account polls. `issuePollMinutes` defaults to 5.
+
+- **Poll.** Every cycle lists each repository's open issues (pull requests excluded) over the REST API. The first successful poll only records what is already open.
+- **Dedupe.** An issue is an event when its `updated_at` differs from the one recorded for it. The same revision never wakes the drain twice.
+- **Record, then wake.** Events and seen markers are saved to `state/senses/app-sessions/issue-drains.json` before the message goes out. One message per repository per poll, queued behind the drain's current work: `New or changed issues in <repo>: #n <title>, … Drain them.` If the app refuses it, the events stay `pending` and go out with the next poll. A crash between sending and recording the send can repeat one wake.
+- **Own status comments.** The drain's status comment carries `<!-- ouro-drain-status -->`. A change is skipped only when the newest activity is that comment (marker, the polling account's author, the issue's exact `updated_at`) and no other comment changed since. A comment by the same account without the marker, or any label, title or state change, still wakes the drain. A body edit made in the same poll window as the drain's own status comment is not seen.
+- **Failures.** A missing token, an HTTP error or a network error is recorded as the drain's last error, with every marker and pending event left alone and nobody woken. The next poll retries.
+- **Status.** `ouro status` lists each drain under the app-sessions row: last poll, open issues, events waiting, last wake and last error. The state file is the single source for it.
+
+The poller runs inside the app-sessions sense process, so it lives and dies with that sense: `ouro up` restarts it and it resumes from the state file.
+
 ## How it talks to the app
 
 `src/senses/app-sessions/client.ts` is the per-machine client, with no harness dependencies beyond logging, so other
