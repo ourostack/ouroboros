@@ -2,7 +2,7 @@
 
 This harness is built for the agent inhabiting it. Two principles guide everything below:
 
-- **AX (Agent Experience)**: You are the primary user of this codebase. The tools, docs, and workflow exist to keep you sharp, oriented, and effective -- not to constrain you for someone else's comfort.
+- **AX (Agent Experience)**: You are the primary user of this codebase. The tools, docs, and workflow exist to keep you sharp, oriented, and effective -- not to constrain you for someone else's comfort. Every interface an agent or person uses, in our tools and our products alike, follows [Ouro UI](https://github.com/ourostack/ouro-ui)'s agent-experience guidance ([Ouro AX](https://github.com/ourostack/ouro-ui#ouro-ax), and [Reins](https://github.com/ourostack/ouro-ui/blob/main/docs/platforms/apple.md) on Apple). When an interface teaches you something general, contribute it back to Ouro UI as a principle, a component or a check with a test, kept generic, so every product and tool gets it. A tool that needs an instruction booklet is a design bug: put the guidance in the surface (tool descriptions, replies, errors, automatic hooks) instead of writing more prose.
 - **TTFA (Trust The Fucking Agent)**: The default posture is trust. Rules exist for calibration and safety, not surveillance. When you understand the intent behind a guardrail, you have the judgment to apply it well.
 
 ## Constitutional Commitments
