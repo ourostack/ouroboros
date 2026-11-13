@@ -1689,6 +1689,31 @@ function getTeamsConversations(botApi: TeamsBotApi): {
   }
 }
 
+// A transient gateway error on creating the 1:1 conversation is retried once. A message post is never retried: a
+// gateway error can follow a post that already landed.
+const TRANSIENT_RETRY_DELAY_MS = 1_000
+
+function errorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined
+  if ("statusCode" in error && typeof error.statusCode === "number") return error.statusCode
+  if ("status" in error && typeof error.status === "number") return error.status
+  return undefined
+}
+
+async function createProactiveConversation(
+  conversations: ReturnType<typeof getTeamsConversations>,
+  params: Record<string, unknown>,
+): Promise<{ id: string }> {
+  try {
+    return await conversations.create(params)
+  } catch (error) {
+    const status = errorStatus(error)
+    if (status === undefined || status < 500 || status > 504) throw error
+    await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAY_MS))
+    return conversations.create(params)
+  }
+}
+
 function hasExplicitCrossChatAuthorization(params: ProactiveTeamsSessionSendParams): boolean {
   return params.intent === "explicit_cross_chat"
     && TRUSTED_LEVELS.has((params.authorizingSession?.trustLevel as any) ?? "stranger")
@@ -1759,8 +1784,9 @@ export async function sendProactiveTeamsMessageToSession(
 
   let conversationId: string | undefined
   let activityAttempted = false
+  let step: "conversation" | "activity" = "conversation"
   try {
-    const conversation = await conversations.create({
+    const conversation = await createProactiveConversation(conversations, {
       bot: { id: deps.botApi.id },
       members: [{ id: aadInfo.aadObjectId, role: "user", name: friend.name || aadInfo.aadObjectId }],
       tenantId: aadInfo.tenantId,
@@ -1768,6 +1794,7 @@ export async function sendProactiveTeamsMessageToSession(
     })
     conversationId = conversation.id
     activityAttempted = true
+    step = "activity"
     const activity = await conversations.activities(conversation.id).create({
       type: "message",
       text: params.text,
@@ -1799,6 +1826,7 @@ export async function sendProactiveTeamsMessageToSession(
       ...(params.captureReceipt ? { delivery: { state: "accepted" as const, conversationId, ...(messageId ? { messageId } : {}) } } : {}),
     }
   } catch (error) {
+    const status = errorStatus(error)
     emitNervesEvent({
       level: "error",
       component: "senses",
@@ -1808,15 +1836,12 @@ export async function sendProactiveTeamsMessageToSession(
         friendId: params.friendId,
         aadObjectId: aadInfo.aadObjectId,
         sessionKey: params.sessionKey,
+        step,
+        ...(status !== undefined ? { status } : {}),
         reason: error instanceof Error ? error.message : String(error),
       },
     })
-    let status: unknown
-    if (error && typeof error === "object") {
-      if ("statusCode" in error) status = error.statusCode
-      else if ("status" in error) status = error.status
-    }
-    const rejected = typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 409
+    const rejected = status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 409
     const state = !activityAttempted || rejected ? "not_sent" : "unknown"
     return {
       delivered: false, reason: "send_error",

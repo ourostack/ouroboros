@@ -869,6 +869,35 @@ describe("sendProactiveTeamsMessageToSession", () => {
     expect(uncertain).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown", conversationId: "conv-123" } })
   })
 
+  it("retries a transient gateway error on creating the conversation once", async () => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const botApi = makeBotApi()
+    botApi._mocks.conversationsCreate.mockRejectedValueOnce(Object.assign(new Error("Request failed with status code 502"), { status: 502 }))
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.",
+    }, { botApi, store })).toEqual({ delivered: true })
+    expect(botApi._mocks.conversationsCreate).toHaveBeenCalledTimes(2)
+    expect(botApi._mocks.activityCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it("names the failing step and HTTP status when the conversation cannot be created", async () => {
+    const store = new FileFriendStore("/mock")
+    vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
+    const botApi = makeBotApi({ createError: Object.assign(new Error("Request failed with status code 502"), { status: 502 }) })
+    const teams = await loadTeams()
+    expect(await teams.sendProactiveTeamsMessageToSession({
+      friendId: "friend-uuid-1", sessionKey: "session", text: "Coding agent returned.", captureReceipt: true,
+    }, { botApi, store })).toEqual({ delivered: false, reason: "send_error", delivery: { state: "not_sent" } })
+    expect(botApi._mocks.conversationsCreate).toHaveBeenCalledTimes(2)
+    expect(botApi._mocks.activityCreate).not.toHaveBeenCalled()
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.teams_proactive_send_error",
+      meta: expect.objectContaining({ step: "conversation", status: 502 }),
+    }))
+  })
+
   it("treats an explicit HTTP rejection as not sent rather than retrying an unknown outcome", async () => {
     const store = new FileFriendStore("/mock")
     vi.mocked(store.get).mockResolvedValue(makeFriend({ trustLevel: "family" }))
