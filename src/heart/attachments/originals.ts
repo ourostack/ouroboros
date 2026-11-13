@@ -31,7 +31,21 @@ export function extensionForAttachment(displayName: string, mimeType?: string): 
     case "audio/mpeg":
       return ".mp3"
     case "audio/mp4":
+    case "audio/x-m4a":
       return ".m4a"
+    case "audio/ogg":
+      return ".ogg"
+    case "audio/wav":
+    case "audio/x-wav":
+      return ".wav"
+    case "audio/x-caf":
+      return ".caf"
+    case "audio/aac":
+      return ".aac"
+    case "video/mp4":
+      return ".mp4"
+    case "video/quicktime":
+      return ".mov"
     default:
       return ""
   }

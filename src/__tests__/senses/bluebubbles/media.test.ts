@@ -7,6 +7,21 @@ const testState = vi.hoisted(() => ({
   agentRoot: "",
 }))
 
+// The original is written atomically (temporary file, then rename). Route those bytes to the test's own writeFile under the final path, so assertions name the file the agent keeps.
+function withAtomicWrites<T extends { writeFile: (...args: any[]) => unknown }>(fsMock: T) {
+  const finalPath = (temporary: string) => temporary.replace(/\.\d+\.[0-9a-f-]{36}\.tmp$/, "")
+  return {
+    ...fsMock,
+    open: vi.fn(async (filePath: string) => ({
+      writeFile: (bytes: unknown) => fsMock.writeFile(finalPath(filePath), bytes),
+      sync: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    })),
+    rename: vi.fn(async () => undefined),
+    unlink: vi.fn(async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) }),
+  }
+}
+
 vi.mock("../../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
   return {
@@ -627,7 +642,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(Buffer.from("audio-bytes"), {
@@ -728,7 +743,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -792,7 +807,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -855,7 +870,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -921,7 +936,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -971,7 +986,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockRejectedValue(new Error("cleanup failed"))
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1030,7 +1045,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1086,7 +1101,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1151,7 +1166,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1209,7 +1224,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1257,7 +1272,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1311,7 +1326,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1373,7 +1388,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile: vi.fn(), rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
@@ -1490,7 +1505,7 @@ describe("BlueBubbles media hydration", () => {
     const rm = vi.fn().mockResolvedValue(undefined)
 
     vi.doMock("node:child_process", () => ({ execFile }))
-    vi.doMock("node:fs/promises", () => ({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
+    vi.doMock("node:fs/promises", () => withAtomicWrites({ access, mkdir, mkdtemp, writeFile, readFile, rm }))
     vi.doMock("node:os", () => ({ homedir: () => "/Users/test", tmpdir: () => "/tmp" }))
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")

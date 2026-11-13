@@ -1,3 +1,4 @@
+import { DownloadTooLargeError, readBoundedResponse } from "../../heart/attachments/downloaded-store"
 import * as path from "node:path"
 import { MAX_ATTACHMENT_DOWNLOAD_BYTES_IMAGE } from "../../heart/attachments/image-normalize"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -110,15 +111,18 @@ export async function downloadBlueBubblesAttachment(
   }
 
   const contentType = inferContentType(attachment, response.headers.get("content-type"))
-  const buffer = Buffer.from(await response.arrayBuffer())
   const actualLimit = maxDownloadBytesForAttachment(attachment, contentType)
-  if (buffer.length > actualLimit) {
+  let buffer: Buffer
+  try {
+    buffer = response.body ? await readBoundedResponse(response, actualLimit) : Buffer.alloc(0)
+  } catch (error) {
+    if (!(error instanceof DownloadTooLargeError)) throw error
     emitNervesEvent({
       level: "warn",
       component: "senses",
       event: "senses.bluebubbles_attachment_download_error",
       message: "bluebubbles attachment download failed",
-      meta: { attachmentGuid: guid, reason: "actual_limit_exceeded", actualLimit, byteCount: buffer.length, contentType: contentType ?? null },
+      meta: { attachmentGuid: guid, reason: "actual_limit_exceeded", actualLimit, contentType: contentType ?? null },
     })
     throw new Error(`attachment exceeds ${actualLimit} byte limit`)
   }
