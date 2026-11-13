@@ -52,4 +52,17 @@ describe("downloadBlueBubblesAttachment", () => {
       ),
     ).rejects.toThrow("attachment exceeds 33554432 byte limit")
   })
+
+  it("stops at the limit without the whole body, passes other failures through, and accepts an empty body", async () => {
+    const download = (response: Response) => downloadBlueBubblesAttachment({ guid: "VOICE-1", transferName: "note.caf" }, config, channelConfig, vi.fn().mockResolvedValue(response))
+    let pulled = 0
+    const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(1024 * 1024)) } })
+    await expect(download(new Response(endless, { status: 200, headers: { "content-type": "audio/x-caf" } }))).rejects.toThrow(/byte limit/)
+    expect(pulled).toBeLessThan(1024)
+
+    const broken = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error("connection reset")) } })
+    await expect(download(new Response(broken, { status: 200 }))).rejects.toThrow("connection reset")
+
+    await expect(download(new Response(null, { status: 200 }))).resolves.toEqual({ buffer: Buffer.alloc(0), contentType: undefined })
+  })
 })

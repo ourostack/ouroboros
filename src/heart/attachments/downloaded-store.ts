@@ -7,9 +7,12 @@ import { buildDownloadedAttachmentRecord, type DownloadedAttachmentRecord, type 
 
 // Download and keep an inbound file the same way for every sense: read no more than the limit, write it atomically, remember it.
 
+/** The file is bigger than the sense may keep. Other download failures stay plain errors. */
+export class DownloadTooLargeError extends Error {}
+
 export async function readBoundedResponse(response: Response, limit: number): Promise<Buffer> {
   const advertised = Number(response.headers.get("content-length"))
-  if (Number.isFinite(advertised) && advertised > limit) throw new Error("advertised size exceeds limit")
+  if (Number.isFinite(advertised) && advertised > limit) throw new DownloadTooLargeError("advertised size exceeds limit")
   if (!response.body) throw new Error("empty response body")
   const chunks: Uint8Array[] = []
   let total = 0
@@ -19,7 +22,7 @@ export async function readBoundedResponse(response: Response, limit: number): Pr
       const { done, value } = await reader.read()
       if (done) break
       total += value.byteLength
-      if (total > limit) throw new Error("download exceeds limit")
+      if (total > limit) throw new DownloadTooLargeError("download exceeds limit")
       chunks.push(value)
     }
   } finally {

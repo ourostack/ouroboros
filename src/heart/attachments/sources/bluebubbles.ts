@@ -1,4 +1,4 @@
-import * as fs from "node:fs/promises"
+import { writeFileAtomic } from "../../atomic-file"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import type { BlueBubblesAttachmentSummary } from "../../../senses/bluebubbles/model"
@@ -97,8 +97,7 @@ export async function persistBlueBubblesAttachmentSource(
 ): Promise<BlueBubblesAttachmentRecord> {
   const normalizedAttachment = normalizeBlueBubblesRecord(attachment)
   const targetPath = originalStoragePath(agentRoot, normalizedAttachment, input.mimeType)
-  await fs.mkdir(path.dirname(targetPath), { recursive: true })
-  await fs.writeFile(targetPath, input.buffer)
+  await writeFileAtomic(targetPath, input.buffer)
 
   const updated = buildBlueBubblesAttachmentRecord(
     {
