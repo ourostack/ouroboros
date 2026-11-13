@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1110",
       "changes": [
-        "Issue-drain sessions wake when a repository's issue is new or changed: the app-sessions sense polls GitHub every five minutes with no model turn, saves events before messaging the drain, skips the drain's own marked status comments, logs each poll, and shows each drain's last poll, open count, waiting events, last wake and last error in ouro status."
+        "Issue-drain sessions wake when a repository's issue is new or changed: the app-sessions sense polls GitHub every five minutes with no model turn, saves events before messaging the drain, skips the drain's own marked status comments, logs every poll, and shows each drain's last poll, open count, waiting events, last wake and last error in ouro status."
       ]
     },
     {

@@ -125,6 +125,17 @@ describe("pollDrain", () => {
     expect(w.states[DRAIN.repo]!.lastError).toBeUndefined()
   })
 
+  it("a failure on the very first poll leaves the drain unseeded, so the next good poll still records without waking", async () => {
+    const w = world([issue(1, "2026-11-13T01:00:00Z")])
+    w.connect.mockRejectedValueOnce(new Error("GitHub answered HTTP 401 for /user"))
+    await w.poll()
+    expect(w.states[DRAIN.repo]).toMatchObject({ seeded: false, seen: {}, pending: [], lastError: "GitHub answered HTTP 401 for /user" })
+    expect(w.states[DRAIN.repo]!.openCount).toBeUndefined()
+    await w.poll()
+    expect(w.send).not.toHaveBeenCalled()
+    expect(w.states[DRAIN.repo]).toMatchObject({ seeded: true, openCount: 1 })
+  })
+
   it("a failure while reading comments leaves the markers where they were", async () => {
     const w = world([issue(1, "2026-11-13T01:00:00Z"), issue(2, "2026-11-13T01:00:00Z")])
     await w.poll()
