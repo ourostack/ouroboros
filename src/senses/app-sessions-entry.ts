@@ -21,7 +21,20 @@ emitNervesEvent({
   meta: { entry: "app-sessions", agentName },
 })
 
-import("./app-sessions/sense")
+// The owner notice for a session frozen on a prompt sends through Teams, which reads the machine's runtime credentials.
+import("../heart/runtime-credentials")
+  .then(async ({ refreshMachineRuntimeCredentialConfig, runtimeCredentialConfigSettled, waitForRuntimeCredentialBootstrap }) => {
+    try {
+      await waitForRuntimeCredentialBootstrap(agentName!)
+      if (!runtimeCredentialConfigSettled(agentName!, "machineRuntimeConfig")) {
+        const { loadOrCreateMachineIdentity } = await import("../heart/machine-identity")
+        await refreshMachineRuntimeCredentialConfig(agentName!, loadOrCreateMachineIdentity().machineId, { preserveCachedOnFailure: true })
+      }
+    } catch (error) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_credentials_unavailable", message: "runtime credentials are unavailable; owner notices wait until they are", meta: { agentName, error: error instanceof Error ? error.message : String(error) } })
+    }
+    return import("./app-sessions/sense")
+  })
   .then(({ startAppSessionsSense }) => {
     const app = startAppSessionsSense({ agentName: agentName! })
     const shutdown = (): void => {

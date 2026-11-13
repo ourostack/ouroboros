@@ -9,6 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { TeamsBotApi } from "../teams"
 import type { BlueBubblesClient } from "../bluebubbles/client"
 import type { ProactiveBlueBubblesSessionSendParams, ProactiveBlueBubblesSessionSendResult } from "../bluebubbles"
+import type { OutboundOrigin } from "../../heart/session-events"
 import type { HostSession } from "./host"
 import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
 import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
@@ -283,6 +284,8 @@ export function createNoticeSender(agentRoot: string, deps: {
   secondary?: () => TeamsConfig
   botApi?: (config: TeamsConfig) => Promise<TeamsBotApi>
   createBlueBubblesClient?: () => BlueBubblesClient
+  /** How the saved message is labelled; a caller other than Shepherd names itself. */
+  origin?: OutboundOrigin
   sendBlueBubbles?: (params: ProactiveBlueBubblesSessionSendParams, deps: { createClient: () => BlueBubblesClient; createFriendStore: () => FileFriendStore }) => Promise<ProactiveBlueBubblesSessionSendResult>
 } = {}): NoticeSender {
   const bots = new Map<string, Promise<TeamsBotApi>>()
@@ -301,7 +304,7 @@ export function createNoticeSender(agentRoot: string, deps: {
       }
       const store = new FileFriendStore(path.join(agentRoot, "friends"))
       return send(
-        { friendId: target.friendId, sessionKey: target.key, text, intent: "generic_outreach", deliveryId, origin: "shepherd" },
+        { friendId: target.friendId, sessionKey: target.key, text, intent: "generic_outreach", deliveryId, origin: deps.origin ?? "shepherd" },
         { createClient: () => client, createFriendStore: () => store },
       )
     }
@@ -317,7 +320,7 @@ export function createNoticeSender(agentRoot: string, deps: {
     }
     const { sendProactiveTeamsMessageToSession } = await import("../teams")
     return sendProactiveTeamsMessageToSession(
-      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId, origin: "shepherd" },
+      { friendId: target.friendId, sessionKey: target.key, text, textFormat: "plain", intent: "generic_outreach", captureReceipt: true, deliveryId, origin: deps.origin ?? "shepherd" },
       { botApi: await bot, store: new FileFriendStore(path.join(agentRoot, "friends")) },
     )
   }

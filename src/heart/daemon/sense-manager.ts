@@ -3,7 +3,7 @@ import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeIssueDrains, type AgentSensesConfig, type SenseName } from "../identity"
+import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeIssueDrains, type AgentSensesConfig, type IssueDrainConfig, type SenseName } from "../identity"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -20,6 +20,7 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
 import { drainStatusLines, readDrainStates } from "../../senses/app-sessions/issue-drain-state"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
+import { waitingStatusLines } from "../../senses/app-sessions/waiting-status"
 import { DaemonProcessManager } from "./process-manager"
 import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
@@ -202,6 +203,12 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
   }
 
   return { senses: defaults, workbenchHasStaleBundleEntry }
+}
+
+/** The app-sessions row's `ouro status` lines: sessions waiting on the owner, then each issue drain. */
+function appSessionsLines(agentRoot: string, drains: IssueDrainConfig[] | undefined, now: number): { lines?: string[] } {
+  const lines = [...waitingStatusLines(readSnapshot(agentRoot), now), ...(drains?.length ? drainStatusLines(drains, readDrainStates(agentRoot), now) : [])]
+  return lines.length ? { lines } : {}
 }
 
 function textField(record: Record<string, unknown> | undefined, key: string): string {
@@ -1258,9 +1265,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           : entry.sense === "workbench"
             ? WORKBENCH_RUNTIME_INJECTION_DETAIL
             : "not enabled in agent.json",
-        ...(entry.enabled && entry.sense === "app-sessions" && context.senses["app-sessions"].issueDrains?.length ? {
-          lines: drainStatusLines(context.senses["app-sessions"].issueDrains, readDrainStates(path.join(this.bundlesRoot, `${agent}.ouro`)), Date.now()),
-        } : {}),
+        ...(entry.enabled && entry.sense === "app-sessions" ? appSessionsLines(path.join(this.bundlesRoot, `${agent}.ouro`), context.senses["app-sessions"].issueDrains, Date.now()) : {}),
         ...(entry.sense === "bluebubbles" && blueBubblesConfigured ? {
           proofMethod: blueBubblesRuntimeFacts.proofMethod,
           lastProofAt: blueBubblesRuntimeFacts.lastProofAt,

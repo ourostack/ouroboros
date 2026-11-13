@@ -220,6 +220,57 @@ describe("snapshots", () => {
   })
 })
 
+describe("a session waiting on a permission prompt", () => {
+  const request = (requestId: string, timestamp: string) => ({ type: "permission.requested", timestamp, data: { requestId, permissionRequest: { kind: "extension-permission-access", extensionName: "plugin:desk:session-label", capabilities: ["register hooks"] } } })
+
+  it("is in the snapshot with its name, what it waits on and since when", () => {
+    makeDb()
+    appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])
+    expect(recordSnapshot(agentRoot, { stateDir }, NOW)).toMatchObject({
+      counts: { waiting: 1 },
+      waitingPrompts: [{ session: ID, name: "Babysitter", requestId: "r1", what: "let the extension plugin:desk:session-label register hooks", since: Date.parse("2026-11-10T02:50:00.000Z") }],
+    })
+  })
+
+  it("is told to the owner once by the running sense, with no model turn, and nothing is said while nothing waits", async () => {
+    makeDb()
+    const scheduler = manualScheduler()
+    const notifyOwner = vi.fn(async () => "sent" as const)
+    let clock = NOW
+    const sense = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => clock, schedule: scheduler.schedule, deliver: async () => undefined, notifyOwner })
+    await sense.done()
+    expect(notifyOwner).not.toHaveBeenCalled()
+
+    appendEvents([request("r1", "2026-11-10T02:59:00.000Z")])
+    clock = NOW + 30_000
+    scheduler.fire(SNAPSHOT_MS)
+    await sense.done()
+    expect(notifyOwner).not.toHaveBeenCalled()
+
+    clock = NOW + 2 * 60_000
+    scheduler.fire(SNAPSHOT_MS)
+    await sense.done()
+    expect(notifyOwner).toHaveBeenCalledTimes(1)
+    expect(notifyOwner).toHaveBeenCalledWith(expect.stringContaining("\"Babysitter\" waits on let the extension plugin:desk:session-label register hooks, for 3 min. Only you can answer it, in the Copilot app"), [`${ID}:r1`])
+
+    clock = NOW + 3 * 60_000
+    scheduler.fire(SNAPSHOT_MS)
+    await sense.done()
+    expect(notifyOwner).toHaveBeenCalledTimes(1)
+    sense.stop()
+  })
+
+  it("survives a notice that fails", async () => {
+    makeDb()
+    appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])
+    const scheduler = manualScheduler()
+    const sense = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: scheduler.schedule, deliver: async () => undefined, notifyOwner: async () => { throw new Error("no bot") } })
+    await sense.done()
+    expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(1)
+    sense.stop()
+  })
+})
+
 describe("the sense", () => {
   it("snapshots every minute and checks watches every ten seconds until stopped", async () => {
     makeDb()

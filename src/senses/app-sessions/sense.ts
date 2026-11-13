@@ -7,6 +7,7 @@ import { realSchedule } from "../shepherd/cmux"
 import { connectGithub, ISSUE_POLL_MS, pollIssueDrains, sendWake, type ConnectGithub, type SendWake } from "./issue-drains"
 import { listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { readWatches, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
+import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 
 /**
  * The app-sessions perception loop. Every minute it snapshots the app's sessions (counts and stuck ids) into the
@@ -31,6 +32,8 @@ export interface AppSessionsSenseOptions {
   deliver?: Deliver
   connectGithub?: ConnectGithub
   sendWake?: SendWake
+  /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
+  notifyOwner?: NotifyOwner
 }
 
 /** The replies the session finished since `entry.offset`, and the offset to continue from. */
@@ -121,9 +124,14 @@ export async function checkWatches(agentRoot: string, deliver: Deliver, client: 
 export function recordSnapshot(agentRoot: string, client: AppSessionsOptions, now: number): SenseSnapshot {
   let result: SenseSnapshot
   try {
-    const picture = snapshot({ ...client, now: () => now })
+    const rows = listAppSessions({ ...client, now: () => now })
+    const picture = snapshot({ ...client, now: () => now }, rows)
     const names = new Map(picture.sessions.map(row => [row.id, row.name]))
-    result = { ...picture, stuck: picture.sessions.filter(row => row.state === "stuck").map(row => ({ id: row.id, name: names.get(row.id)! })) }
+    result = {
+      ...picture,
+      stuck: picture.sessions.filter(row => row.state === "stuck").map(row => ({ id: row.id, name: names.get(row.id)! })),
+      waitingPrompts: waitingPromptsOf(agentRoot, rows, now),
+    }
   } catch (error) {
     result = { at: new Date(now).toISOString(), appRunning: false, counts: { working: 0, idle: 0, waiting: 0, stuck: 0 }, sessions: [], stuck: [], error: (error as Error).message }
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_snapshot_error", message: "could not snapshot the Copilot app's sessions", meta: { error: result.error! } })
@@ -157,10 +165,15 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let inFlight: Promise<unknown> = Promise.resolve()
   let cancelIssues: (() => void) | null = null
   let issuePoll: Promise<unknown> = Promise.resolve()
+  let waitingPoll: Promise<unknown> = Promise.resolve()
+  const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
 
   const snapshotTick = (): void => {
     if (stopped) return
-    recordSnapshot(agentRoot, client, now())
+    const taken = recordSnapshot(agentRoot, client, now())
+    waitingPoll = waitingPoll.then(() => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
+    })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
   }
   const watchTick = (): void => {
@@ -189,6 +202,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       cancelIssues?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, issuePoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, issuePoll, waitingPoll]).then(() => undefined),
   }
 }

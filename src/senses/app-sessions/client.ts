@@ -57,6 +57,17 @@ export interface AppSessionRow {
   remote: boolean
   updatedAt: string | null
   lastActivity: string | null
+  /** The oldest permission request still open, whatever else the session waits on. */
+  prompt?: PermissionPrompt
+}
+
+/** A permission request the person has not answered yet, from the session's own history. */
+export interface PermissionPrompt {
+  requestId: string
+  /** What is being asked, in a few plain words. */
+  what: string
+  /** When the app recorded the request, if its event carries a time. */
+  at: string | null
 }
 
 export interface AppSessionsSnapshot {
@@ -240,12 +251,37 @@ export interface TailFacts {
   loopCut: boolean
   detail: string
   lastActivity: string | null
+  /** The oldest permission request still open, whatever else the session waits on. */
+  prompt?: PermissionPrompt
+}
+
+const PERMISSION_WHAT: Record<string, string> = {
+  shell: "run a shell command",
+  write: "change a file",
+  read: "read a file",
+  url: "open a web address",
+  mcp: "use a connected tool",
+  "custom-tool": "use a custom tool",
+  "extension-management": "change an extension",
+}
+
+/** The request in a few plain words. A command's text stays out: it can carry secrets. */
+export function describePermission(request: unknown): string {
+  const record = isRecord(request) ? request : {}
+  const kind = str(record.kind)
+  if (kind === "extension-permission-access") {
+    const capabilities = Array.isArray(record.capabilities) ? record.capabilities.filter((item): item is string => typeof item === "string").join(", ") : ""
+    return `let the extension ${str(record.extensionName) ?? "(unnamed)"} ${capabilities || "ask for access"}`
+  }
+  const what = (kind && PERMISSION_WHAT[kind]) || (kind ? `a ${kind} permission` : "a permission")
+  const intention = str(record.intention)
+  return intention ? `${what} (${intention})` : what
 }
 
 /** What the session's own history says about its agent loop. Sub-agent events are their parent's business. */
 export function tailFacts(events: Frame[]): TailFacts {
   const tools = new Map<string, string>()
-  const permissions = new Set<string>()
+  const permissions = new Map<string, PermissionPrompt>()
   let last: string | null = null
   let lastActivity: string | null = null
   let askedTools = false
@@ -260,7 +296,7 @@ export function tailFacts(events: Frame[]): TailFacts {
     }
     if (type === "tool.execution_start" && str(data.toolCallId)) tools.set(data.toolCallId as string, str(data.toolName) ?? "")
     if (type === "tool.execution_complete" && str(data.toolCallId)) tools.delete(data.toolCallId as string)
-    if (type === "permission.requested" && str(data.requestId) && data.resolvedByHook !== true) permissions.add(data.requestId as string)
+    if (type === "permission.requested" && str(data.requestId) && data.resolvedByHook !== true) permissions.set(data.requestId as string, { requestId: data.requestId as string, what: describePermission(data.permissionRequest), at: str(event.timestamp) })
     if (type === "permission.completed" && str(data.requestId)) permissions.delete(data.requestId as string)
     if (!LOOP.has(type)) continue
     // Only a person's stop counts; a runtime shutdown cancels sub-agents with other reasons.
@@ -290,7 +326,8 @@ export function tailFacts(events: Frame[]): TailFacts {
     loopCut = true
     detail = `mid-turn (last ${last})`
   }
-  return { awaiting, loopCut, detail, lastActivity }
+  const prompt = permissions.values().next().value
+  return { awaiting, loopCut, detail, lastActivity, ...(prompt ? { prompt } : {}) }
 }
 
 const factsCache = new Map<string, { key: string; facts: TailFacts }>()
@@ -355,6 +392,7 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
       remote: (!!row.host_id && row.host_id !== "local") || (!!row.execution_location && row.execution_location !== "local"),
       updatedAt: row.updated_at,
       lastActivity: facts.lastActivity ?? row.updated_at,
+      ...(facts.prompt ? { prompt: facts.prompt } : {}),
     })
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_listed", message: "listed the Copilot app's sessions", meta: { sessions: rows.length } })
