@@ -1684,6 +1684,30 @@ describe("daemon sense manager", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
+  it("lists the sessions waiting on the owner under the app-sessions row", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, "app-sessions": { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({ agents: ["slugger"], bundlesRoot })
+    const row = () => manager.listSenseRows().find((entry) => entry.sense === "app-sessions")!
+    expect(row().lines).toBeUndefined()
+    const now = Date.now()
+    const { writeSnapshot } = await import("../../../senses/app-sessions/store")
+    writeSnapshot(path.join(bundlesRoot, "slugger.ouro"), {
+      at: new Date(now).toISOString(), appRunning: true, counts: { working: 0, idle: 0, waiting: 1, stuck: 0 }, sessions: [], stuck: [],
+      waitingPrompts: [{ session: "1a2b3c4d-0000", name: "Babysitter", requestId: "r1", what: "run a shell command", since: now - 5 * 60_000 }],
+    })
+    expect(row().lines).toEqual(["waiting on you: 1a2b3c4d (Babysitter) for 5 min: run a shell command"])
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
   it("lists each issue drain under the app-sessions row, and tolerates drains the config rejects", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const drain = { repo: "ourostack/desk", session: "58fbd57e-e371-4169-b013-2f413ab4a046" }

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type WebSocket from "ws"
 
 import {
-  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
+  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
   listAppSessions, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
   readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, type RunFile,
 } from "../../../senses/app-sessions/client"
@@ -182,6 +182,26 @@ describe("what a session's history says", () => {
     expect(tailFacts([event("permission.requested", { requestId: "r1" }), event("permission.completed", { requestId: "r1" })]).awaiting).toBe(null)
   })
 
+  it("keeps the oldest open permission request, with its time and a plain description, whatever else the session waits on", () => {
+    const ask = { permissionRequest: { kind: "shell", intention: "Run required Desk boot", fullCommandText: "secret-token" } }
+    expect(tailFacts([event("permission.requested", { requestId: "r1", ...ask }), event("permission.requested", { requestId: "r2" })]).prompt)
+      .toEqual({ requestId: "r1", what: "run a shell command (Run required Desk boot)", at: OLD })
+    expect(tailFacts([event("permission.requested", { requestId: "r1" }), event("permission.completed", { requestId: "r1" }), event("permission.requested", { requestId: "r2" })]).prompt?.requestId).toBe("r2")
+    expect(tailFacts([event("permission.requested", { requestId: "r1" }), event("permission.completed", { requestId: "r1" })])).not.toHaveProperty("prompt")
+    expect(tailFacts([{ type: "permission.requested", data: { requestId: "r1" } }]).prompt?.at).toBe(null)
+    const both = tailFacts([event("tool.execution_start", { toolCallId: "t1", toolName: "ask_user" }), event("permission.requested", { requestId: "r1" })])
+    expect(both.awaiting).toBe("input")
+    expect(both.prompt?.requestId).toBe("r1")
+  })
+
+  it("describes a permission request without echoing a command", () => {
+    expect(describePermission({ kind: "extension-permission-access", extensionName: "plugin:desk:session-label", capabilities: ["register hooks"] })).toBe("let the extension plugin:desk:session-label register hooks")
+    expect(describePermission({ kind: "extension-permission-access" })).toBe("let the extension (unnamed) ask for access")
+    expect(describePermission({ kind: "write" })).toBe("change a file")
+    expect(describePermission({ kind: "folder-trust" })).toBe("a folder-trust permission")
+    expect(describePermission(undefined)).toBe("a permission")
+  })
+
   it("classifies: waiting first, then running, then a cut loop as stuck once it is not fresh", () => {
     const facts = { awaiting: null, loopCut: false, detail: "its turn ended", lastActivity: OLD }
     expect(classify(false, { ...facts, awaiting: "permission" }, NOW)).toEqual({ state: "waiting", detail: "waiting for a permission answer" })
@@ -215,6 +235,13 @@ describe("listing the sidebar", () => {
     expect(rows[0]).toMatchObject({ workspaceId: "w1", workspaceType: "branch", project: "personal-desk", isRunning: true, remote: false, lastActivity: OLD })
     expect(rows[1]).toMatchObject({ remote: true, project: null, lastActivity: OLD, workspaceType: "worktree" })
     expect(rows[2]).toMatchObject({ wasInterrupted: true, workspaceId: null, kind: "chat" })
+  })
+
+  it("carries a session's open permission prompt on its row", () => {
+    writeEvents(CHAT, [event("permission.requested", { requestId: "r1", permissionRequest: { kind: "url" } })])
+    const rows = listAppSessions(options())
+    expect(rows.find(row => row.id === CHAT)).toMatchObject({ state: "waiting", prompt: { requestId: "r1", what: "open a web address", at: OLD } })
+    expect(rows.find(row => row.id === WS)).not.toHaveProperty("prompt")
   })
 
   it("skips archived, session-less, duplicate and malformed rows, and names what has no name", () => {

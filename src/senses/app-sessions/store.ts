@@ -16,8 +16,20 @@ export interface WatchEntry {
   until: number
 }
 
+/** A session waiting on a permission prompt that only the person can answer in the app. */
+export interface WaitingPrompt {
+  session: string
+  name: string
+  requestId: string
+  what: string
+  /** When the prompt opened (epoch ms): the app's event time, else the first snapshot that saw it. */
+  since: number
+}
+
 export interface SenseSnapshot extends AppSessionsSnapshot {
   stuck: Array<{ id: string; name: string }>
+  /** Absent in a snapshot written before this field existed. */
+  waitingPrompts?: WaitingPrompt[]
   error?: string
 }
 
