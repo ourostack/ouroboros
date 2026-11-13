@@ -48,6 +48,22 @@ export interface AgentSenseConfig {
    */
   notify?: ShepherdNoticePolicy
   checkInMinutes?: number
+  /**
+   * app-sessions only: Copilot app sessions that drain a GitHub repository's issues. The sense polls each repository
+   * (no model turn) and messages the session when an issue is new or changed.
+   */
+  issueDrains?: IssueDrainConfig[]
+  /** app-sessions only: minutes between issue polls (default 5). */
+  issuePollMinutes?: number
+}
+
+export interface IssueDrainConfig {
+  /** `owner/name` on github.com. */
+  repo: string
+  /** The Copilot app session (full id) that drains the repository. */
+  session: string
+  /** The signed-in GitHub login to poll as (`gh auth token --user`); omitted, the CLI's active account. */
+  account?: string
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -251,6 +267,34 @@ export function hasStaleWorkbenchBundleEntry(rawSenses: unknown, rawMcpServers: 
   return !(isPlainRecord(rawWorkbench) && rawWorkbench.enabled === false)
 }
 
+export function normalizeIssueDrains(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "issueDrains" | "issuePollMinutes"> {
+  function fail(what: string): never {
+    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid issue drains", meta: { path: configFile } })
+    throw new Error(`agent.json at ${configFile}: senses.app-sessions.${what}.`)
+  }
+  const { issueDrains, issuePollMinutes } = rawSense
+  const result: Pick<AgentSenseConfig, "issueDrains" | "issuePollMinutes"> = {}
+  if (issueDrains !== undefined) {
+    if (!Array.isArray(issueDrains)) fail("issueDrains must be an array")
+    const seen = new Set<string>()
+    result.issueDrains = (issueDrains as unknown[]).map((entry, index) => {
+      const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
+      const { repo, session, account } = item
+      if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(`issueDrains[${index}].repo must be "owner/name"`)
+      if (typeof session !== "string" || !session.trim()) fail(`issueDrains[${index}].session must be a Copilot app session id`)
+      if (account !== undefined && (typeof account !== "string" || !account.trim())) fail(`issueDrains[${index}].account must be a GitHub login`)
+      if (seen.has(repo as string)) fail(`issueDrains[${index}].repo ${repo as string} is listed twice`)
+      seen.add(repo as string)
+      return { repo: repo as string, session: (session as string).trim(), ...(account !== undefined ? { account: (account as string).trim() } : {}) }
+    })
+  }
+  if (issuePollMinutes !== undefined) {
+    if (typeof issuePollMinutes !== "number" || !Number.isFinite(issuePollMinutes) || issuePollMinutes < 1) fail("issuePollMinutes must be a number of at least 1")
+    result.issuePollMinutes = issuePollMinutes
+  }
+  return result
+}
+
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
   const defaults: AgentSensesConfig = {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
@@ -341,6 +385,10 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
         ...(notify !== undefined ? { notify: notify as ShepherdNoticePolicy } : {}),
         ...(checkInMinutes !== undefined ? { checkInMinutes: normalizedCheckInMinutes } : {}),
       }
+      continue
+    }
+    if (senseName === "app-sessions") {
+      defaults[senseName] = { enabled, ...normalizeIssueDrains(rawSense as Record<string, unknown>, configFile) }
       continue
     }
     defaults[senseName] = { enabled }

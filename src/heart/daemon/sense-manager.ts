@@ -3,7 +3,7 @@ import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, type AgentSensesConfig, type SenseName } from "../identity"
+import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeIssueDrains, type AgentSensesConfig, type SenseName } from "../identity"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -18,6 +18,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
+import { drainStatusLines, readDrainStates } from "../../senses/app-sessions/issue-drains"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { DaemonProcessManager } from "./process-manager"
 import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
@@ -48,6 +49,8 @@ export interface DaemonSenseRow {
   stalledTurnCount?: number
   oldestActiveTurnStartedAt?: string
   oldestActiveTurnAgeMs?: number
+  /** Extra status lines under the row, such as each issue drain's last poll. */
+  lines?: string[]
 }
 
 export interface DaemonSenseManagerLike {
@@ -182,6 +185,14 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
       // A missing or malformed host account stays unset, so BlueBubbles fails closed.
       if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
         defaults[sense] = { enabled, hostUsername: hostUsername.trim() }
+      }
+      // Issue drains the config rejects stay unset here; the sense itself reports the error when it polls.
+      if (sense === "app-sessions") {
+        try {
+          defaults[sense] = { enabled, ...normalizeIssueDrains(rawSense as Record<string, unknown>, agentJsonPath) }
+        } catch {
+          defaults[sense] = { enabled }
+        }
       }
     }
   }
@@ -1247,6 +1258,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           : entry.sense === "workbench"
             ? WORKBENCH_RUNTIME_INJECTION_DETAIL
             : "not enabled in agent.json",
+        ...(entry.enabled && entry.sense === "app-sessions" && context.senses["app-sessions"].issueDrains?.length ? {
+          lines: drainStatusLines(context.senses["app-sessions"].issueDrains, readDrainStates(path.join(this.bundlesRoot, `${agent}.ouro`)), Date.now()),
+        } : {}),
         ...(entry.sense === "bluebubbles" && blueBubblesConfigured ? {
           proofMethod: blueBubblesRuntimeFacts.proofMethod,
           lastProofAt: blueBubblesRuntimeFacts.lastProofAt,

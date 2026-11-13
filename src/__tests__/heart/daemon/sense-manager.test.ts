@@ -1684,6 +1684,27 @@ describe("daemon sense manager", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
+  it("lists each issue drain under the app-sessions row, and tolerates drains the config rejects", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const drain = { repo: "ourostack/desk", session: "58fbd57e-e371-4169-b013-2f413ab4a046" }
+    const agentJson = (appSessions: unknown) => ({ version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, "app-sessions": appSessions }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+    writeAgentJson(bundlesRoot, "slugger", agentJson({ enabled: true, issueDrains: [drain] }))
+    writeAgentJson(bundlesRoot, "badger", agentJson({ enabled: true, issueDrains: "nope" }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({ agents: ["slugger", "badger"], bundlesRoot })
+    const row = (agent: string) => manager.listSenseRows().find((entry) => entry.agent === agent && entry.sense === "app-sessions")!
+    expect(row("slugger").lines).toEqual(["issue drain ourostack/desk -> 58fbd57e: not polled yet"])
+    expect(row("badger").lines).toBeUndefined()
+    fs.rmSync(bundlesRoot, { recursive: true, force: true })
+  })
+
   it("reports Shepherd as blocked when the machine vault item cannot be read", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", { version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, shepherd: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })

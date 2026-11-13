@@ -102,7 +102,8 @@ export function isEligible(key: string, eligible: PoolEligibility = "work"): boo
 /* v8 ignore next -- tests always inject spawnSync; the default is for production @preserve */
 const spawnOf = (deps: DiscoveryDeps): typeof defaultSpawnSync => deps.spawnSync ?? defaultSpawnSync
 
-function cleanGhEnv(): NodeJS.ProcessEnv {
+/** The environment for a `gh` call that must use the CLI's stored accounts, not a token in the environment. */
+export function cleanGhEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH].filter(Boolean).join(":") }
   delete env.GH_TOKEN
   delete env.GITHUB_TOKEN

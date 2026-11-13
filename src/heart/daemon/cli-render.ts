@@ -62,6 +62,7 @@ interface StatusSenseRow {
   stalledTurnCount?: number
   oldestActiveTurnStartedAt?: string
   oldestActiveTurnAgeMs?: number
+  lines?: string[]
 }
 
 interface StatusWorkerRow {
@@ -256,6 +257,7 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     if (stalledTurnCount !== null) parsed.stalledTurnCount = stalledTurnCount
     if (oldestActiveTurnStartedAt !== null) parsed.oldestActiveTurnStartedAt = oldestActiveTurnStartedAt
     if (oldestActiveTurnAgeMs !== null) parsed.oldestActiveTurnAgeMs = oldestActiveTurnAgeMs
+    if (Array.isArray(row.lines)) parsed.lines = row.lines.filter((line): line is string => typeof line === "string")
     return parsed
   })
 
@@ -553,6 +555,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         const dot = row.enabled ? statusDot(row.status) : dim("○")
         const statusText = (row.enabled ? row.status : "disabled").padEnd(statusWidth)
         lines.push(`    ${name} ${dot} ${statusText}  ${dim(formatSenseDetail(row))}`)
+        for (const extra of row.lines ?? []) lines.push(`      ${dim(extra)}`)
       }
     }
     lines.push("")
