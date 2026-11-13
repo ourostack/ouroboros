@@ -4,10 +4,10 @@ import { getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
-import { connectGithub, ISSUE_POLL_MS, pollIssueDrains, sendWake, type ConnectGithub, type SendWake } from "./issue-drains"
 import { listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { readWatches, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
+import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, type RunCommand, type SendWake } from "./wake-runner"
 
 /**
  * The app-sessions perception loop. Every minute it snapshots the app's sessions (counts and stuck ids) into the
@@ -30,7 +30,7 @@ export interface AppSessionsSenseOptions {
   now?: () => number
   schedule?: (fn: () => void, ms: number) => () => void
   deliver?: Deliver
-  connectGithub?: ConnectGithub
+  runCommand?: RunCommand
   sendWake?: SendWake
   /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
   notifyOwner?: NotifyOwner
@@ -141,15 +141,26 @@ export function recordSnapshot(agentRoot: string, client: AppSessionsOptions, no
   return result
 }
 
-/** Poll the issue drains in `agent.json` once; returns the milliseconds until the next poll. A bad config is logged and retried then. */
-export async function checkIssueDrains(agentName: string, agentRoot: string, deps: { connect: ConnectGithub; send: SendWake; now: number }): Promise<number> {
+/** How long to wait before looking again when no wake runner is configured, so one added to `agent.json` starts within five minutes. */
+export const WAKE_RUNNER_IDLE_MS = 5 * 60_000
+
+/**
+ * Run the wake runners in `agent.json` that are due and return the milliseconds until the next one is. `due` remembers each
+ * runner's next run between calls. A bad config is logged and looked at again later.
+ */
+export async function checkWakeRunners(agentName: string, agentRoot: string, deps: { run: RunCommand; send: SendWake; now: number }, due: Map<string, number> = new Map()): Promise<number> {
   try {
     const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
-    if (config?.enabled && config.issueDrains?.length) await pollIssueDrains(agentRoot, config.issueDrains, deps)
-    return config?.issuePollMinutes ? config.issuePollMinutes * 60_000 : ISSUE_POLL_MS
+    const runners = config?.enabled ? config.wakeRunners ?? [] : []
+    const every = (name: string): number => (runners.find(runner => runner.name === name)?.everySeconds ?? WAKE_RUNNER_DEFAULT_SECONDS) * 1000
+    const ready = new Set(runners.filter(runner => (due.get(runner.name) ?? 0) <= deps.now).map(runner => runner.name))
+    if (runners.length && ready.size) await runWakeRunners(agentRoot, runners, deps, ready)
+    for (const name of ready) due.set(name, deps.now + every(name))
+    for (const name of [...due.keys()]) if (!runners.some(runner => runner.name === name)) due.delete(name)
+    return runners.length ? Math.max(1000, Math.min(...runners.map(runner => due.get(runner.name)! - deps.now))) : WAKE_RUNNER_IDLE_MS
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.issue_drain_error", message: "could not check the issue drains", meta: { error: (error as Error).message } })
-    return ISSUE_POLL_MS
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.wake_runner_config_error", message: "could not check the wake runners", meta: { error: (error as Error).message } })
+    return WAKE_RUNNER_IDLE_MS
   }
 }
 
@@ -163,8 +174,9 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let cancelSnapshot: () => void
   let cancelWatch: (() => void) | null = null
   let inFlight: Promise<unknown> = Promise.resolve()
-  let cancelIssues: (() => void) | null = null
-  let issuePoll: Promise<unknown> = Promise.resolve()
+  let cancelRunners: (() => void) | null = null
+  let runnerPoll: Promise<unknown> = Promise.resolve()
+  const due = new Map<string, number>()
   let waitingPoll: Promise<unknown> = Promise.resolve()
   const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
 
@@ -184,24 +196,24 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       if (!stopped) cancelWatch = schedule(watchTick, WATCH_POLL_MS)
     })
   }
-  const issueTick = (): void => {
+  const runnerTick = (): void => {
     if (stopped) return
-    issuePoll = checkIssueDrains(options.agentName, agentRoot, { connect: options.connectGithub ?? connectGithub, send: options.sendWake ?? sendWake(client), now: now() }).then(ms => {
-      if (!stopped) cancelIssues = schedule(issueTick, ms)
+    runnerPoll = checkWakeRunners(options.agentName, agentRoot, { run: options.runCommand ?? runCommand, send: options.sendWake ?? sendWake(client), now: now() }, due).then(ms => {
+      if (!stopped) cancelRunners = schedule(runnerTick, ms)
     })
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_start", message: "app-sessions sense started", meta: { agent: options.agentName } })
   snapshotTick()
   watchTick()
-  issueTick()
+  runnerTick()
   return {
     stop: () => {
       stopped = true
       cancelSnapshot()
       cancelWatch?.()
-      cancelIssues?.()
+      cancelRunners?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, issuePoll, waitingPoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, runnerPoll, waitingPoll]).then(() => undefined),
   }
 }

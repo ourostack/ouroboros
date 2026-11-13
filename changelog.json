@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1116",
+      "changes": [
+        "The issue-drain poller moved to Desk, and the app-sessions sense now only runs commands and delivers their wakes. Add a `wakeRunners` entry to `senses.app-sessions` in agent.json (`name`, `command` as an argv array, optional `everySeconds` of 10 or more, default 300, and optional `session`): the sense runs the command on that cadence, sends each wake it prints to its session, and runs the wake's `done` command to report delivery. `ouro status` lists each runner and the command's own status lines. `issueDrains` and `issuePollMinutes` are retired: a config that still has them shows a notice and is otherwise ignored, so move the drains to Desk's drain config (same fields, same state shape, so seen markers carry over) before updating. See docs/app-sessions-sense.md."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1115",
       "changes": [
         "An issue drain can list `ignoredLabels` (for example `agent:drain`): adding or removing one of those labels no longer wakes the drain. Labels starting with `drain:` stay ignored as before, and any other label still wakes it."

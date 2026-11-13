@@ -49,31 +49,23 @@ export interface AgentSenseConfig {
   notify?: ShepherdNoticePolicy
   checkInMinutes?: number
   /**
-   * app-sessions only: Copilot app sessions that drain a GitHub repository's issues. The sense polls each repository
-   * (no model turn) and messages the session when an issue is new or changed.
+   * app-sessions only: commands the sense runs on a cadence and delivers the wakes of to Copilot app sessions. The
+   * command decides what is worth a wake; the sense only delivers (see `WakeRunnerConfig`).
    */
-  issueDrains?: IssueDrainConfig[]
-  /** app-sessions only: minutes between issue polls (default 5). */
-  issuePollMinutes?: number
+  wakeRunners?: WakeRunnerConfig[]
+  /** app-sessions only: set when `agent.json` still carries the retired `issueDrains` list, which Desk polls now and this sense ignores. */
+  retiredIssueDrains?: true
 }
 
-export interface IssueDrainConfig {
-  /** `owner/name` on github.com. */
-  repo: string
-  /** The Copilot app session (full id) that drains the repository. */
-  session: string
-  /** The signed-in GitHub login to poll as (`gh auth token --user`); omitted, the CLI's active account. */
-  account?: string
-  /**
-   * Trailer keys (`Active-at`, `Waiting-for`) whose `Key: value` lines in an issue body are plan data the lanes rewrite
-   * on a schedule. A body edit that changes only those lines does not wake the drain.
-   */
-  ignoredBodyTrailers?: string[]
-  /**
-   * Label names (`agent:drain`) the drain's lanes add or remove as part of their own work. Adding or removing one does
-   * not wake the drain. Labels starting with `drain:` are always ignored, with or without this list.
-   */
-  ignoredLabels?: string[]
+export interface WakeRunnerConfig {
+  /** Names the runner in `ouro status` and its state. Unique within the agent. */
+  name: string
+  /** The program and its arguments, run with no shell. It prints the wakes as JSON. */
+  command: string[]
+  /** Seconds between runs (10 or more; default 300). */
+  everySeconds?: number
+  /** The session (full id) that receives a wake that names none. */
+  session?: string
 }
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
@@ -277,42 +269,34 @@ export function hasStaleWorkbenchBundleEntry(rawSenses: unknown, rawMcpServers: 
   return !(isPlainRecord(rawWorkbench) && rawWorkbench.enabled === false)
 }
 
-export function normalizeIssueDrains(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "issueDrains" | "issuePollMinutes"> {
+export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains"> {
   function fail(what: string): never {
-    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid issue drains", meta: { path: configFile } })
+    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid wake runners", meta: { path: configFile } })
     throw new Error(`agent.json at ${configFile}: senses.app-sessions.${what}.`)
   }
-  const { issueDrains, issuePollMinutes } = rawSense
-  const result: Pick<AgentSenseConfig, "issueDrains" | "issuePollMinutes"> = {}
-  if (issueDrains !== undefined) {
-    if (!Array.isArray(issueDrains)) fail("issueDrains must be an array")
-    const seen = new Set<string>()
-    result.issueDrains = (issueDrains as unknown[]).map((entry, index) => {
+  const { wakeRunners, issueDrains } = rawSense
+  const result: Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains"> = {}
+  if (issueDrains !== undefined) result.retiredIssueDrains = true
+  if (wakeRunners !== undefined) {
+    if (!Array.isArray(wakeRunners)) fail("wakeRunners must be an array")
+    const names = new Set<string>()
+    result.wakeRunners = (wakeRunners as unknown[]).map((entry, index) => {
       const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
-      const { repo, session, account, ignoredBodyTrailers, ignoredLabels } = item
-      if (typeof repo !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(`issueDrains[${index}].repo must be "owner/name"`)
-      if (typeof session !== "string" || !session.trim()) fail(`issueDrains[${index}].session must be a Copilot app session id`)
-      if (account !== undefined && (typeof account !== "string" || !account.trim())) fail(`issueDrains[${index}].account must be a GitHub login`)
-      if (ignoredBodyTrailers !== undefined && (!Array.isArray(ignoredBodyTrailers) || ignoredBodyTrailers.some(key => typeof key !== "string" || !/^[\w][\w -]*$/.test(key.trim())))) {
-        fail(`issueDrains[${index}].ignoredBodyTrailers must be an array of trailer keys such as "Active-at"`)
-      }
-      if (ignoredLabels !== undefined && (!Array.isArray(ignoredLabels) || ignoredLabels.some(name => typeof name !== "string" || !name.trim()))) {
-        fail(`issueDrains[${index}].ignoredLabels must be an array of label names such as "agent:drain"`)
-      }
-      if (seen.has(repo as string)) fail(`issueDrains[${index}].repo ${repo as string} is listed twice`)
-      seen.add(repo as string)
+      const { name, command, everySeconds, session } = item
+      if (typeof name !== "string" || !name.trim()) fail(`wakeRunners[${index}].name must be a non-empty name`)
+      if (!Array.isArray(command) || command.length === 0 || command.some(part => typeof part !== "string" || !part)) fail(`wakeRunners[${index}].command must be a non-empty array of strings`)
+      if (everySeconds !== undefined && (typeof everySeconds !== "number" || !Number.isInteger(everySeconds) || everySeconds < 10)) fail(`wakeRunners[${index}].everySeconds must be a whole number of seconds, 10 or more`)
+      if (session !== undefined && (typeof session !== "string" || !session.trim())) fail(`wakeRunners[${index}].session must be a Copilot app session id`)
+      const key = (name as string).trim()
+      if (names.has(key)) fail(`wakeRunners[${index}].name ${key} is listed twice`)
+      names.add(key)
       return {
-        repo: repo as string,
-        session: (session as string).trim(),
-        ...(account !== undefined ? { account: (account as string).trim() } : {}),
-        ...(ignoredBodyTrailers !== undefined ? { ignoredBodyTrailers: (ignoredBodyTrailers as string[]).map(key => key.trim()) } : {}),
-        ...(ignoredLabels !== undefined ? { ignoredLabels: (ignoredLabels as string[]).map(name => name.trim()) } : {}),
+        name: key,
+        command: command as string[],
+        ...(everySeconds !== undefined ? { everySeconds: everySeconds as number } : {}),
+        ...(session !== undefined ? { session: (session as string).trim() } : {}),
       }
     })
-  }
-  if (issuePollMinutes !== undefined) {
-    if (typeof issuePollMinutes !== "number" || !Number.isFinite(issuePollMinutes) || issuePollMinutes < 1) fail("issuePollMinutes must be a number of at least 1")
-    result.issuePollMinutes = issuePollMinutes
   }
   return result
 }
@@ -410,7 +394,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
       continue
     }
     if (senseName === "app-sessions") {
-      defaults[senseName] = { enabled, ...normalizeIssueDrains(rawSense as Record<string, unknown>, configFile) }
+      defaults[senseName] = { enabled, ...normalizeWakeRunners(rawSense as Record<string, unknown>, configFile) }
       continue
     }
     defaults[senseName] = { enabled }

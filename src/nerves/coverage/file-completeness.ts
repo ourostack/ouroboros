@@ -100,9 +100,6 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
   "heart/mailbox/mailbox-types",
-  // Issue-drain status reader: pure state-file read and line rendering for `ouro status`. The poller
-  // (issue-drains.ts) owns observability via senses.issue_drain_poll and friends.
-  "senses/app-sessions/issue-drain-state",
   // Waiting-prompt status reader: pure line rendering for `ouro status`. The notifier
   // (waiting-prompts.ts) owns observability via senses.app_sessions_waiting_notice and friends.
   "senses/app-sessions/waiting-status",

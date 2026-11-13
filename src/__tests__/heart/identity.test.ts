@@ -271,32 +271,31 @@ describe("loadAgentConfig", () => {
     expect(() => normalizeSenses({ shepherd: { enabled: true, checkInMinutes: value } }, "/test/agent.json")).toThrow("checkInMinutes")
   })
 
-  it("reads the app-sessions issue drains and their cadence", async () => {
+  it("reads the app-sessions wake runners, and notes a retired issueDrains list", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
-    const drains = [{ repo: "ourostack/desk", session: " 58fbd57e " }, { repo: "gim-home/CIT", session: "48a0f0ab", account: " arimendelow_microsoft ", ignoredBodyTrailers: [" Active-at ", "Waiting-for"], ignoredLabels: [" agent:drain "] }]
-    expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: drains, issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({
+    const runners = [{ name: " drains ", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: " 58fbd57e " }, { name: "other", command: ["x"] }]
+    expect(normalizeSenses({ "app-sessions": { enabled: true, wakeRunners: runners } }, "/test/agent.json")["app-sessions"]).toEqual({
       enabled: true,
-      issueDrains: [{ repo: "ourostack/desk", session: "58fbd57e" }, { repo: "gim-home/CIT", session: "48a0f0ab", account: "arimendelow_microsoft", ignoredBodyTrailers: ["Active-at", "Waiting-for"], ignoredLabels: ["agent:drain"] }],
-      issuePollMinutes: 2,
+      wakeRunners: [{ name: "drains", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: "58fbd57e" }, { name: "other", command: ["x"] }],
     })
     expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
+    expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: [{ repo: "a/b", session: "s" }], issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true, retiredIssueDrains: true })
   })
 
   it.each([
-    [{ issueDrains: "x" }, "issueDrains must be an array"],
-    [{ issueDrains: [null] }, "issueDrains[0].repo"],
-    [{ issueDrains: [{ repo: "no-slash", session: "s" }] }, "issueDrains[0].repo"],
-    [{ issueDrains: [{ repo: "a/b", session: " " }] }, "issueDrains[0].session"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", account: 3 }] }, "issueDrains[0].account"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: "Active-at" }] }, "issueDrains[0].ignoredBodyTrailers"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: ["Active-at:"] }] }, "issueDrains[0].ignoredBodyTrailers"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredBodyTrailers: [3] }] }, "issueDrains[0].ignoredBodyTrailers"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredLabels: "agent:drain" }] }, "issueDrains[0].ignoredLabels"],
-    [{ issueDrains: [{ repo: "a/b", session: "s", ignoredLabels: [" "] }] }, "issueDrains[0].ignoredLabels"],
-    [{ issueDrains: [{ repo: "a/b", session: "s" }, { repo: "a/b", session: "t" }] }, "listed twice"],
-    [{ issuePollMinutes: 0 }, "issuePollMinutes"],
-    [{ issuePollMinutes: "5" }, "issuePollMinutes"],
-  ])("rejects invalid issue drain config instead of dropping it: %j", async (extra, message) => {
+    [{ wakeRunners: "x" }, "wakeRunners must be an array"],
+    [{ wakeRunners: [null] }, "wakeRunners[0].name"],
+    [{ wakeRunners: [{ name: " ", command: ["x"] }] }, "wakeRunners[0].name"],
+    [{ wakeRunners: [{ name: "a", command: [] }] }, "wakeRunners[0].command"],
+    [{ wakeRunners: [{ name: "a", command: "node x" }] }, "wakeRunners[0].command"],
+    [{ wakeRunners: [{ name: "a", command: ["x", ""] }] }, "wakeRunners[0].command"],
+    [{ wakeRunners: [{ name: "a", command: [3] }] }, "wakeRunners[0].command"],
+    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: 9 }] }, "wakeRunners[0].everySeconds"],
+    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: 30.5 }] }, "wakeRunners[0].everySeconds"],
+    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: "60" }] }, "wakeRunners[0].everySeconds"],
+    [{ wakeRunners: [{ name: "a", command: ["x"], session: " " }] }, "wakeRunners[0].session"],
+    [{ wakeRunners: [{ name: "a", command: ["x"] }, { name: " a ", command: ["y"] }] }, "listed twice"],
+  ])("rejects invalid wake runner config instead of dropping it: %j", async (extra, message) => {
     const { normalizeSenses } = await import("../../heart/identity")
     expect(() => normalizeSenses({ "app-sessions": { enabled: true, ...extra } }, "/test/agent.json")).toThrow(message)
   })

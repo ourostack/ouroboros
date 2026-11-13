@@ -3,7 +3,7 @@ import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeIssueDrains, type AgentSensesConfig, type IssueDrainConfig, type SenseName } from "../identity"
+import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeWakeRunners, type AgentSensesConfig, type SenseName, type WakeRunnerConfig } from "../identity"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -18,7 +18,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
-import { drainStatusLines, readDrainStates } from "../../senses/app-sessions/issue-drain-state"
+import { readWakeRunnerStates, wakeRunnerStatusLines } from "../../senses/app-sessions/wake-runner"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { waitingStatusLines } from "../../senses/app-sessions/waiting-status"
 import { DaemonProcessManager } from "./process-manager"
@@ -187,10 +187,10 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
       if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
         defaults[sense] = { enabled, hostUsername: hostUsername.trim() }
       }
-      // Issue drains the config rejects stay unset here; the sense itself reports the error when it polls.
+      // Wake runners the config rejects stay unset here; the sense itself reports the error when it runs them.
       if (sense === "app-sessions") {
         try {
-          defaults[sense] = { enabled, ...normalizeIssueDrains(rawSense as Record<string, unknown>, agentJsonPath) }
+          defaults[sense] = { enabled, ...normalizeWakeRunners(rawSense as Record<string, unknown>, agentJsonPath) }
         } catch {
           defaults[sense] = { enabled }
         }
@@ -205,9 +205,13 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
   return { senses: defaults, workbenchHasStaleBundleEntry }
 }
 
-/** The app-sessions row's `ouro status` lines: sessions waiting on the owner, then each issue drain. */
-function appSessionsLines(agentRoot: string, drains: IssueDrainConfig[] | undefined, now: number): { lines?: string[] } {
-  const lines = [...waitingStatusLines(readSnapshot(agentRoot), now), ...(drains?.length ? drainStatusLines(drains, readDrainStates(agentRoot), now) : [])]
+/** The app-sessions row's `ouro status` lines: sessions waiting on the owner, then each wake runner. */
+function appSessionsLines(agentRoot: string, config: { wakeRunners?: WakeRunnerConfig[]; retiredIssueDrains?: true }, now: number): { lines?: string[] } {
+  const lines = [
+    ...waitingStatusLines(readSnapshot(agentRoot), now),
+    ...(config.retiredIssueDrains ? ["issueDrains in agent.json is retired and no longer polled: Desk polls drains now, so move them to Desk's drain config and add a wakeRunners entry (docs/app-sessions-sense.md)"] : []),
+    ...(config.wakeRunners?.length ? wakeRunnerStatusLines(config.wakeRunners, readWakeRunnerStates(agentRoot), now) : []),
+  ]
   return lines.length ? { lines } : {}
 }
 
@@ -1265,7 +1269,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           : entry.sense === "workbench"
             ? WORKBENCH_RUNTIME_INJECTION_DETAIL
             : "not enabled in agent.json",
-        ...(entry.enabled && entry.sense === "app-sessions" ? appSessionsLines(path.join(this.bundlesRoot, `${agent}.ouro`), context.senses["app-sessions"].issueDrains, Date.now()) : {}),
+        ...(entry.enabled && entry.sense === "app-sessions" ? appSessionsLines(path.join(this.bundlesRoot, `${agent}.ouro`), context.senses["app-sessions"], Date.now()) : {}),
         ...(entry.sense === "bluebubbles" && blueBubblesConfigured ? {
           proofMethod: blueBubblesRuntimeFacts.proofMethod,
           lastProofAt: blueBubblesRuntimeFacts.lastProofAt,

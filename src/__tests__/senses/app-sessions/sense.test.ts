@@ -10,11 +10,11 @@ vi.mock("../../../heart/daemon/socket-client", () => wake)
 import { getAgentRoot } from "../../../heart/identity"
 import { getPrivateRuntimePendingDir } from "../../../mind/pending"
 import {
-  APP_SESSIONS_WAKE_TRIGGER, checkIssueDrains, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
-  startAppSessionsSense, WATCH_POLL_MS,
+  APP_SESSIONS_WAKE_TRIGGER, checkWakeRunners, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
+  startAppSessionsSense, WAKE_RUNNER_IDLE_MS, WATCH_POLL_MS,
 } from "../../../senses/app-sessions/sense"
-import { ISSUE_POLL_MS } from "../../../senses/app-sessions/issue-drains"
 import { appSessionsStateDir, readSnapshot, readWatches, watchSession } from "../../../senses/app-sessions/store"
+import { readWakeRunnerStates } from "../../../senses/app-sessions/wake-runner"
 
 const ID = "11111111-aaaa-bbbb-cccc-000000000001"
 const NOW = Date.parse("2026-11-10T03:00:00Z")
@@ -281,16 +281,16 @@ describe("the sense", () => {
     expect(readSnapshot(agentRoot)).toMatchObject({ counts: { idle: 1 } })
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(1)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(1)
-    expect(scheduler.live(ISSUE_POLL_MS)).toHaveLength(1)
+    expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(1)
     scheduler.fire(SNAPSHOT_MS)
     scheduler.fire(WATCH_POLL_MS)
-    scheduler.fire(ISSUE_POLL_MS)
+    scheduler.fire(WAKE_RUNNER_IDLE_MS)
     await sense.done()
     expect(scheduler.tasks).toHaveLength(6)
     sense.stop()
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(0)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(0)
-    expect(scheduler.live(ISSUE_POLL_MS)).toHaveLength(0)
+    expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(0)
     // A tick that fires after the stop does nothing.
     scheduler.tasks[0].fn()
     scheduler.tasks[1].fn()
@@ -299,31 +299,36 @@ describe("the sense", () => {
     expect(scheduler.tasks).toHaveLength(6)
   })
 
-  it("polls the configured issue drains every five minutes, or at the configured cadence, with no model turn", async () => {
+  it("runs each configured wake runner on its own cadence, only when due, with no model turn", async () => {
     const config = (appSessions: unknown) => fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
       version: 2, enabled: true,
       humanFacing: { provider: "anthropic", model: "test" }, agentFacing: { provider: "anthropic", model: "test" },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       senses: { "app-sessions": appSessions },
     }))
-    const drain = { repo: "ourostack/desk", session: ID }
-    const openIssues = vi.fn(async () => [{ number: 1, title: "A", updated_at: "u" }])
-    const deps = { connect: vi.fn(async () => ({ login: "x", openIssues, comments: async () => [] })), send: vi.fn(async () => ({ ok: true, error: null })), now: NOW }
-    config({ enabled: true, issueDrains: [drain], issuePollMinutes: 2 })
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(120_000)
-    expect(openIssues).toHaveBeenCalledTimes(1)
-    config({ enabled: true, issueDrains: [drain] })
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(ISSUE_POLL_MS)
-    expect(openIssues).toHaveBeenCalledTimes(2)
-    config({ enabled: false, issueDrains: [drain] })
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(ISSUE_POLL_MS)
+    const run = vi.fn(async () => ({ ok: true, stdout: JSON.stringify({ wakes: [] }), error: null }))
+    const deps = (now: number) => ({ run, send: vi.fn(async () => ({ ok: true, error: null })), now })
+    const due = new Map<string, number>()
+    const fast = { name: "fast", command: ["a"], everySeconds: 30 }
+    const slow = { name: "slow", command: ["b"] }
+    config({ enabled: true, wakeRunners: [fast, slow] })
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW), due)).toBe(30_000)
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 30_000), due)).toBe(30_000)
+    expect(run.mock.calls.map(call => call[0])).toEqual([["a"], ["b"], ["a"]])
+    expect(Object.keys(readWakeRunnerStates(agentRoot))).toEqual(["fast", "slow"])
+    config({ enabled: true, wakeRunners: [slow] })
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 40_000), due)).toBe(260_000)
+    expect([...due.keys()]).toEqual(["slow"])
+    config({ enabled: false, wakeRunners: [fast] })
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 50_000), due)).toBe(WAKE_RUNNER_IDLE_MS)
     config({ enabled: true })
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(ISSUE_POLL_MS)
-    expect(openIssues).toHaveBeenCalledTimes(2)
-    config({ enabled: true, issueDrains: "nope" })
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(ISSUE_POLL_MS)
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 50_000), due)).toBe(WAKE_RUNNER_IDLE_MS)
+    expect(run).toHaveBeenCalledTimes(3)
+    config({ enabled: true, wakeRunners: "nope" })
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
     fs.rmSync(path.join(agentRoot, "agent.json"))
-    expect(await checkIssueDrains("slugger", agentRoot, deps)).toBe(ISSUE_POLL_MS)
+    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
   })
 
   it("does not reschedule a watch pass that finishes after the stop, and survives a failing pass", async () => {

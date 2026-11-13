@@ -96,32 +96,41 @@ Each delivered burst carries the observation time, current sidebar identity/stat
 timestamps. Renames trigger a notice even without a finished reply; after delivery the watch adopts the current
 name. If the sidebar cannot be read, reply attribution is explicitly unverified.
 
-## Issue drains
+## Wake runners
 
-A drain is a Copilot app session that works one GitHub repository's issues. The sense wakes it when an issue is new or changed, so the drain spends no model turns on idle checks. List the drains in `agent.json`:
+The sense can run a command on a cadence and deliver the wakes it prints to Copilot app sessions, so a session spends no model turns watching for work. The sense knows nothing about what the command watches. How a team organizes and watches its work (for example, a drain session that works one repository's issues) belongs to Desk: its `drains.js poll` command lists each configured repository's issues, records what changed and prints the wakes. See Desk's issue-drains documentation for its config, state and filters.
+
+List the runners in `agent.json`:
 
 ```json
-{ "senses": { "app-sessions": { "enabled": true, "issuePollMinutes": 5, "issueDrains": [
-  { "repo": "ourostack/desk", "session": "58fbd57e-e371-4169-b013-2f413ab4a046", "account": "arimendelow" },
-  { "repo": "gim-home/CIT", "session": "48a0f0ab-56ad-406d-8831-5352815be337", "account": "arimendelow_microsoft" }
+{ "senses": { "app-sessions": { "enabled": true, "wakeRunners": [
+  { "name": "issue drains", "command": ["/usr/local/bin/node", "<desk>/plugins/desk/mcp/scripts/drains.js", "poll"], "everySeconds": 300 }
 ] } } }
 ```
 
-`account` is a login the GitHub CLI is signed in to (`gh auth token --user`); without it the CLI's active account polls. `issuePollMinutes` defaults to 5.
+`command` is the program and its arguments, run with no shell. `everySeconds` is 10 or more and defaults to 300. `session` is optional: the session that receives a wake that names none. Each run has a two-minute limit.
 
-`ignoredBodyTrailers` is optional per drain: a list of trailer keys, such as `["Active-at", "Waiting-for", "Waiting-until"]`, for `Key: value` lines that lanes rewrite in an issue body on a schedule (plan data, not news). Lines that start with one of those keys (case-insensitive) are left out of the body digest, so an edit that changes only them does not wake the drain. Any other body edit still does. Adding or changing the list never wakes the drain by itself: issues recorded under the old list are compared again from their next change.
+The command prints one JSON value on stdout:
 
-`ignoredLabels` is optional per drain: a list of label names, such as `["agent:drain"]`, that the drain's lanes add or remove as part of their own work. Adding or removing one (names compare case-insensitively, exactly) does not wake the drain; any other label still does. Labels that start with `drain:` are always ignored, with or without this list.
+```json
+{ "wakes": [{ "session": "<session id>", "message": "New or changed issues in owner/name: #12 Title. Drain them.", "done": ["/usr/local/bin/node", ".../drains.js", "ack", "--repo", "owner/name", "--wake", "…"] }],
+  "status": ["issue drain owner/name -> 58fbd57e: polled just now, 7 open, 0 waiting, last wake 12m ago (1 issue)"] }
+```
 
-- **Poll.** Every cycle lists each repository's open issues (pull requests excluded) over the REST API. The first successful poll only records what is already open.
-- **Dedupe.** `updated_at` only says that something changed, and the drain's own label edits and status comment move it too. For each repository and issue the poll keeps the revision it last recorded: `updated_at`, a digest of the title and body, and, once the issue closes, when it left the open list. An issue with a new `updated_at` wakes the drain only if someone other than the drain changed it since: it is new to the drain, its title or body was edited, a comment other than the drain's status comment was created or edited after the recorded revision, or it was reopened or got a label outside the `drain:` namespace. Any other change is recorded and ignored. The same revision never wakes the drain twice.
-- **Record, then wake.** Events and seen markers are saved to `state/senses/app-sessions/issue-drains.json` before the message goes out. One message per repository per poll, queued behind the drain's current work: `New or changed issues in <repo>: #n <title>, … Drain them.` If the app refuses it, the events stay `pending` and go out with the next poll. A crash between sending and recording the send can repeat one wake.
-- **The drain's own edits.** The drain's status comment carries `<!-- ouro-drain-status -->`. A comment counts as the drain's when it has the marker and the polling account wrote it; its creation and every edit are skipped, whichever other changes land beside it. A comment by the same account without the marker, or a marked comment by someone else, still wakes the drain. Changes to labels that start with `drain:` (`drain: triaged`, `drain: in progress`) and to the drain's `ignoredLabels` are skipped; closes, assignments and unexplained timestamp bumps do not wake it either.
-- **Closed issues.** The poll lists open issues, so a closed issue never wakes the drain, and a waiting event for an issue that has since closed is dropped. The issue's record is kept for 30 days: one that comes back unchanged is not new, and one that was reopened wakes the drain once.
-- **Failures.** A missing token, an HTTP error or a network error is recorded as the drain's last error, with every marker and pending event left alone and nobody woken. The next poll retries.
-- **Status.** `ouro status` lists each drain under the app-sessions row: last poll, open issues, events waiting, last wake and last error. The state file is the single source for it.
+- **Deliver.** Each `message` is sent to its `session` (else the runner's), queued behind that session's current work.
+- **Report.** `done` is the argv that reports a wake's delivery. It runs after a successful send, and with `--error <reason>` added after a failed one, so the command can keep the wake pending and send it again with its next run. A run that dies between sending and reporting can repeat one wake.
+- **Failures.** A non-zero exit, a timeout, output that is not this JSON or a failed delivery is recorded as the runner's last error. Nothing else happens: the command owns what is pending.
+- **Status.** `ouro status` lists each runner under the app-sessions row (last run, wakes delivered, last error), then the command's own `status` lines. State lives in `state/senses/app-sessions/wake-runners.json`.
 
-The poller runs inside the app-sessions sense process, so it lives and dies with that sense: `ouro up` restarts it and it resumes from the state file.
+The runner lives and dies with the sense: `ouro up` restarts it. Anything else that can run a command on a schedule, such as a launchd job, can run the same command and deliver its wakes.
+
+### Moving from `issueDrains`
+
+Earlier versions polled drains here from `senses.app-sessions.issueDrains` with `issuePollMinutes`, keeping seen markers in `state/senses/app-sessions/issue-drains.json`. That poller is gone. A config that still has `issueDrains` shows a notice in `ouro status` and is otherwise ignored. To move it:
+
+1. Copy the `issueDrains` array to Desk's drain config as `drains`; the fields are the same.
+2. Copy `issue-drains.json` to Desk's `state.json`; the shape is the same, so the seen markers carry over and nothing wakes again.
+3. Replace `issueDrains` and `issuePollMinutes` with a `wakeRunners` entry as above, then run `ouro up`.
 
 ## How it talks to the app
 
