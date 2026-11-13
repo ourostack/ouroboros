@@ -3,7 +3,8 @@ import * as path from "node:path"
 import type { WakeRunnerConfig } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { sendToAppSession, type AppSessionsOptions } from "./client"
-import { appSessionsStateDir, readJson, writeJson } from "./store"
+import { writeJson } from "./store"
+import { readWakeRunnerStates, wakeRunnerStateFile, type WakeRunnerState } from "./wake-runner-state"
 
 /**
  * Wake runners: a command the agent runs on a cadence and delivers the wakes of to Copilot app sessions. The agent knows
@@ -26,18 +27,6 @@ export interface WakeOutput { wakes: Wake[]; status: string[] }
 export interface CommandResult { ok: boolean; stdout: string; error: string | null }
 export type RunCommand = (argv: string[], timeoutMs: number) => Promise<CommandResult>
 export type SendWake = (session: string, message: string) => Promise<{ ok: boolean; error: string | null }>
-
-export interface WakeRunnerState {
-  lastRunAt?: string
-  lastWakes?: number
-  lastDelivered?: number
-  lastError?: string
-  /** The command's own status lines from its last good run. */
-  status?: string[]
-}
-
-export const wakeRunnerStateFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "wake-runners.json")
-export const readWakeRunnerStates = (agentRoot: string): Record<string, WakeRunnerState> => readJson<Record<string, WakeRunnerState>>(wakeRunnerStateFile(agentRoot), {})
 
 /** The command's output as wakes and status lines, or the reason it is not one. */
 export function parseWakeOutput(stdout: string): WakeOutput {
@@ -122,19 +111,4 @@ export async function runWakeRunners(agentRoot: string, runners: WakeRunnerConfi
   const states: Record<string, WakeRunnerState> = Object.fromEntries(runners.map(runner => [runner.name, stored[runner.name] ?? {}]))
   for (const runner of runners) if (!only || only.has(runner.name)) states[runner.name] = await runWakeRunner(runner, deps)
   writeJson(wakeRunnerStateFile(agentRoot), states)
-}
-
-function ago(iso: string, now: number): string {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000))
-  return minutes < 1 ? "just now" : minutes < 90 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`
-}
-
-/** One `ouro status` line per runner (last run, wakes delivered, last error), then the lines its command reported. */
-export function wakeRunnerStatusLines(runners: WakeRunnerConfig[], states: Record<string, WakeRunnerState>, now: number): string[] {
-  return runners.flatMap(runner => {
-    const state = states[runner.name]
-    if (!state?.lastRunAt) return [`wake runner ${runner.name}: not run yet`]
-    const delivered = state.lastWakes === undefined ? "" : `, ${state.lastDelivered}/${state.lastWakes} wake${state.lastWakes === 1 ? "" : "s"} delivered`
-    return [`wake runner ${runner.name}: ran ${ago(state.lastRunAt, now)}${delivered}${state.lastError ? `, last error: ${state.lastError}` : ""}`, ...(state.status ?? [])]
-  })
 }

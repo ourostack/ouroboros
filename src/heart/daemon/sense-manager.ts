@@ -18,7 +18,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
-import { readWakeRunnerStates, wakeRunnerStatusLines } from "../../senses/app-sessions/wake-runner"
+import { readWakeRunnerStates, wakeRunnerStatusLines } from "../../senses/app-sessions/wake-runner-state"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { waitingStatusLines } from "../../senses/app-sessions/waiting-status"
 import { DaemonProcessManager } from "./process-manager"

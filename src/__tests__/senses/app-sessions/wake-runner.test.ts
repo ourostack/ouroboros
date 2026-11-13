@@ -7,10 +7,8 @@ const client = vi.hoisted(() => ({ sendToAppSession: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
 import { emitNervesEvent } from "../../../nerves/runtime"
-import {
-  parseWakeOutput, readWakeRunnerStates, runCommand, runWakeRunner, runWakeRunners, sendWake, wakeRunnerStatusLines,
-  type CommandResult, type WakeRunnerState,
-} from "../../../senses/app-sessions/wake-runner"
+import { parseWakeOutput, runCommand, runWakeRunner, runWakeRunners, sendWake, type CommandResult } from "../../../senses/app-sessions/wake-runner"
+import { readWakeRunnerStates, wakeRunnerStatusLines, type WakeRunnerState } from "../../../senses/app-sessions/wake-runner-state"
 
 const RUNNER = { name: "drains", command: ["/bin/drains", "poll"], session: "58fbd57e-e371-4169-b013-2f413ab4a046" }
 const NOW = Date.parse("2026-11-13T06:00:00Z")

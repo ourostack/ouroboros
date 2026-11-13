@@ -14,7 +14,7 @@ import {
   startAppSessionsSense, WAKE_RUNNER_IDLE_MS, WATCH_POLL_MS,
 } from "../../../senses/app-sessions/sense"
 import { appSessionsStateDir, readSnapshot, readWatches, watchSession } from "../../../senses/app-sessions/store"
-import { readWakeRunnerStates } from "../../../senses/app-sessions/wake-runner"
+import { readWakeRunnerStates } from "../../../senses/app-sessions/wake-runner-state"
 
 const ID = "11111111-aaaa-bbbb-cccc-000000000001"
 const NOW = Date.parse("2026-11-10T03:00:00Z")
