@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1112",
+      "changes": [
+        "Bundle sync can fetch and push again on a Mac whose git (the Copilot app's bundled git) cannot find its https helper: the daemon points git at the helper beside it instead of failing every sync with \"'remote-https' is not a git command\"."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1111",
       "changes": [
         "The app-sessions sense tells the owner once, with no model turn, when a Copilot app session has waited more than two minutes on a permission prompt only they can answer, naming the session and what it waits on; ouro status lists each waiting session."

@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { spawnSync } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
@@ -79,6 +80,39 @@ export function portableGitEnv(root: string, exists: (filePath: string) => boole
   return env
 }
 
+const HTTPS_HELPER = "git-remote-https"
+
+export interface GitHelperPathDeps {
+  /** git's own exec path, as `git --exec-path` reports it. */
+  execPath?: (gitBinary: string, env: NodeJS.ProcessEnv) => string | null
+  exists?: (filePath: string) => boolean
+}
+
+function defaultGitExecPath(gitBinary: string, env: NodeJS.ProcessEnv): string | null {
+  const childEnv: NodeJS.ProcessEnv = { ...env }
+  delete childEnv.GIT_EXEC_PATH
+  const run = spawnSync(gitBinary, ["--exec-path"], { env: childEnv, encoding: "utf8" })
+  return run.status === 0 ? run.stdout.trim() : null
+}
+
+/**
+ * Point GIT_EXEC_PATH at the libexec beside `gitBinary` when git cannot find
+ * its https helper where it looks. The Copilot app's bundled git on a Mac is
+ * relocated: its own exec path is `//libexec/git-core`, so a process started
+ * without the app's GIT_EXEC_PATH (the Ouro daemon) fails every fetch and push
+ * with "'remote-https' is not a git command". Returns true when it set the path.
+ */
+export function pinGitHelperPath(gitBinary: string, env: NodeJS.ProcessEnv, deps: GitHelperPathDeps = {}): boolean {
+  if (env.GIT_EXEC_PATH !== undefined) return false
+  const exists = deps.exists ?? fs.existsSync
+  const libexec = path.join(path.dirname(path.dirname(gitBinary)), "libexec", "git-core")
+  if (!exists(path.join(libexec, HTTPS_HELPER))) return false
+  const ownExecPath = (deps.execPath ?? defaultGitExecPath)(gitBinary, env)
+  if (ownExecPath && exists(path.join(ownExecPath, HTTPS_HELPER))) return false
+  env.GIT_EXEC_PATH = libexec
+  return true
+}
+
 export type PortableGitActivation =
   | { status: "absent" }
   | { status: "system"; git: string }
@@ -100,11 +134,18 @@ export function activatePortableGit(options: PortableGitActivationOptions = {}):
   const env = options.env ?? process.env
   const isExecutable = options.isExecutable ?? isExecutableFile
   const binary = portableGitBinary(options.homeDir)
-  if (!isExecutable(binary)) return { status: "absent" }
+  if (!isExecutable(binary)) {
+    const hostGit = findGitOnPath(env.PATH, isExecutable)
+    if (hostGit) pinGitHelperPath(hostGit, env)
+    return { status: "absent" }
+  }
   const binDir = path.dirname(binary)
   const systemGit = findGitOnPath(env.PATH, isExecutable)
   if (systemGit === binary) return { status: "activated", binDir }
-  if (systemGit) return { status: "system", git: systemGit }
+  if (systemGit) {
+    pinGitHelperPath(systemGit, env)
+    return { status: "system", git: systemGit }
+  }
   env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir
   for (const [key, value] of Object.entries(portableGitEnv(path.dirname(binDir)))) {
     if (env[key] === undefined) env[key] = value

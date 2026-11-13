@@ -10,6 +10,7 @@ import {
   PORTABLE_GIT_ASSETS,
   activatePortableGit,
   findGitOnPath,
+  pinGitHelperPath,
   portableGitAsset,
   portableGitAssetUrl,
   portableGitBinary,
@@ -154,5 +155,91 @@ describe("activatePortableGit", () => {
     expect(activatePortableGit({ isExecutable })).toEqual({ status: "absent" })
     expect(isExecutable).toHaveBeenCalledWith(portableGitBinary())
     expect(process.env.PATH).toBe(before)
+  })
+})
+
+describe("pinGitHelperPath", () => {
+  const gitBinary = "/cache/github-copilot-git/bin/git"
+  const libexec = "/cache/github-copilot-git/libexec/git-core"
+  const helper = path.join(libexec, "git-remote-https")
+
+  it("points GIT_EXEC_PATH at the libexec beside git when git cannot find its https helper", () => {
+    const env: NodeJS.ProcessEnv = {}
+    const exists = (filePath: string) => filePath === helper
+    expect(pinGitHelperPath(gitBinary, env, { exists, execPath: () => "//libexec/git-core" })).toBe(true)
+    expect(env.GIT_EXEC_PATH).toBe(libexec)
+  })
+
+  it("leaves the environment alone when git already finds its helper", () => {
+    const env: NodeJS.ProcessEnv = {}
+    const exists = (filePath: string) => filePath === helper
+    expect(pinGitHelperPath(gitBinary, env, { exists, execPath: () => libexec })).toBe(false)
+    expect(env.GIT_EXEC_PATH).toBeUndefined()
+  })
+
+  it("keeps a GIT_EXEC_PATH the host already set", () => {
+    const env: NodeJS.ProcessEnv = { GIT_EXEC_PATH: "/elsewhere" }
+    expect(pinGitHelperPath(gitBinary, env, { exists: () => true, execPath: () => null })).toBe(false)
+    expect(env.GIT_EXEC_PATH).toBe("/elsewhere")
+  })
+
+  it("does nothing when there is no helper beside git to point at", () => {
+    const env: NodeJS.ProcessEnv = {}
+    expect(pinGitHelperPath(gitBinary, env, { exists: () => false, execPath: () => null })).toBe(false)
+    expect(env.GIT_EXEC_PATH).toBeUndefined()
+  })
+
+  it("asks git for its own exec path, and points at the helper beside it when that path has none", () => {
+    const home = tempHome()
+    const git = path.join(home, "bin", "git")
+    executable(git)
+    fs.writeFileSync(git, "#!/bin/sh\necho //libexec/git-core\n", { mode: 0o755 })
+    const beside = path.join(home, "libexec", "git-core")
+    fs.mkdirSync(beside, { recursive: true })
+    fs.writeFileSync(path.join(beside, "git-remote-https"), "")
+    const env: NodeJS.ProcessEnv = {}
+    expect(pinGitHelperPath(git, env)).toBe(true)
+    expect(env.GIT_EXEC_PATH).toBe(beside)
+  })
+
+  it("treats a git that cannot report its exec path as lacking the helper", () => {
+    const home = tempHome()
+    const git = path.join(home, "bin", "git")
+    executable(git)
+    fs.writeFileSync(git, "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    const beside = path.join(home, "libexec", "git-core")
+    fs.mkdirSync(beside, { recursive: true })
+    fs.writeFileSync(path.join(beside, "git-remote-https"), "")
+    const env: NodeJS.ProcessEnv = {}
+    expect(pinGitHelperPath(git, env)).toBe(true)
+    expect(env.GIT_EXEC_PATH).toBe(beside)
+  })
+
+  it("pins the helper path for the host's git when no portable git is installed", () => {
+    const home = tempHome()
+    const hostBin = path.join(home, "host", "bin")
+    executable(path.join(hostBin, "git"))
+    fs.writeFileSync(path.join(hostBin, "git"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    const beside = path.join(home, "host", "libexec", "git-core")
+    fs.mkdirSync(beside, { recursive: true })
+    fs.writeFileSync(path.join(beside, "git-remote-https"), "")
+    const env: NodeJS.ProcessEnv = { PATH: hostBin }
+    expect(activatePortableGit({ env, homeDir: path.join(home, "nobody") })).toEqual({ status: "absent" })
+    expect(env.GIT_EXEC_PATH).toBe(beside)
+  })
+
+  it("leaves the environment alone when git reports an exec path with its helper", () => {
+    const home = tempHome()
+    const git = path.join(home, "bin", "git")
+    const ownExecPath = path.join(home, "own-git-core")
+    executable(git)
+    fs.writeFileSync(git, `#!/bin/sh\necho ${ownExecPath}\n`, { mode: 0o755 })
+    fs.mkdirSync(ownExecPath, { recursive: true })
+    fs.writeFileSync(path.join(ownExecPath, "git-remote-https"), "")
+    fs.mkdirSync(path.join(home, "libexec", "git-core"), { recursive: true })
+    fs.writeFileSync(path.join(home, "libexec", "git-core", "git-remote-https"), "")
+    const env: NodeJS.ProcessEnv = {}
+    expect(pinGitHelperPath(git, env)).toBe(false)
+    expect(env.GIT_EXEC_PATH).toBeUndefined()
   })
 })
