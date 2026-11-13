@@ -108,7 +108,7 @@ List the runners in `agent.json`:
 ] } } }
 ```
 
-`command` is the program and its arguments, run with no shell. `everySeconds` is 10 or more and defaults to 300. `session` is optional: the session that receives a wake that names none. Each run has a two-minute limit.
+`command` is the program and its arguments, run with no shell. `everySeconds` is 10 or more and defaults to 300. `session` is optional: the session that receives a wake that names none. `delivery` is `"immediate"` (default) or `"enqueue"`. Each run has a two-minute limit.
 
 The command prints one JSON value on stdout:
 
@@ -117,7 +117,7 @@ The command prints one JSON value on stdout:
   "status": ["issue drain owner/name -> 58fbd57e: polled just now, 7 open, 0 waiting, last wake 12m ago (1 issue)"] }
 ```
 
-- **Deliver.** Each `message` is sent to its `session` (else the runner's), queued behind that session's current work.
+- **Deliver.** Each `message` is sent to its `session` (else the runner's) and the app admits it at that session's next turn boundary. A session that works for hours in one run never goes idle, so a message queued behind that run (`"enqueue"`) can wait for hours and arrive about issues that have since closed; choose `"enqueue"` only for a wake that must never interrupt.
 - **Report.** `done` is the argv that reports a wake's delivery. It runs after a successful send, and with `--error <reason>` added after a failed one, so the command can keep the wake pending and send it again with its next run. A run that dies between sending and reporting can repeat one wake.
 - **Failures.** A non-zero exit, a timeout, output that is not this JSON or a failed delivery is recorded as the runner's last error. Nothing else happens: the command owns what is pending.
 - **Status.** `ouro status` lists each runner under the app-sessions row (last run, wakes delivered, last error), then the command's own `status` lines. State lives in `state/senses/app-sessions/wake-runners.json`.

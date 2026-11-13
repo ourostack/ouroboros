@@ -273,10 +273,10 @@ describe("loadAgentConfig", () => {
 
   it("reads the app-sessions wake runners, and notes a retired issueDrains list", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
-    const runners = [{ name: " drains ", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: " 58fbd57e " }, { name: "other", command: ["x"] }]
+    const runners = [{ name: " drains ", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: " 58fbd57e ", delivery: "enqueue" }, { name: "other", command: ["x"] }]
     expect(normalizeSenses({ "app-sessions": { enabled: true, wakeRunners: runners } }, "/test/agent.json")["app-sessions"]).toEqual({
       enabled: true,
-      wakeRunners: [{ name: "drains", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: "58fbd57e" }, { name: "other", command: ["x"] }],
+      wakeRunners: [{ name: "drains", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: "58fbd57e", delivery: "enqueue" }, { name: "other", command: ["x"] }],
     })
     expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
     expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: [{ repo: "a/b", session: "s" }], issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true, retiredIssueDrains: true })
@@ -294,6 +294,7 @@ describe("loadAgentConfig", () => {
     [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: 30.5 }] }, "wakeRunners[0].everySeconds"],
     [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: "60" }] }, "wakeRunners[0].everySeconds"],
     [{ wakeRunners: [{ name: "a", command: ["x"], session: " " }] }, "wakeRunners[0].session"],
+    [{ wakeRunners: [{ name: "a", command: ["x"], delivery: "later" }] }, "wakeRunners[0].delivery"],
     [{ wakeRunners: [{ name: "a", command: ["x"] }, { name: " a ", command: ["y"] }] }, "listed twice"],
   ])("rejects invalid wake runner config instead of dropping it: %j", async (extra, message) => {
     const { normalizeSenses } = await import("../../heart/identity")

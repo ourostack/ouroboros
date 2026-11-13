@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import * as path from "node:path"
-import type { WakeRunnerConfig } from "../../heart/identity"
+import type { WakeDelivery, WakeRunnerConfig } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { sendToAppSession, type AppSessionsOptions } from "./client"
 import { writeJson } from "./store"
@@ -15,6 +15,10 @@ import { readWakeRunnerStates, wakeRunnerStateFile, type WakeRunnerState } from 
  * is sent to its session (`session` is optional when the runner names one). `done` is the argv that reports the wake's
  * delivery: it runs after a successful send, and with `--error <reason>` added after a failed one, so the command can keep
  * the wake pending until it lands. `status` lines show under the app-sessions row of `ouro status`.
+ *
+ * A wake is delivered "immediate" by default: the app admits it at the session's next turn boundary. A session that works for
+ * hours in one run never goes idle, so a message queued behind that run ("enqueue") waits until the run ends, however old the
+ * news in it. A runner can ask for "enqueue" when a wake should never interrupt.
  */
 export const WAKE_RUNNER_DEFAULT_SECONDS = 300
 export const WAKE_RUNNER_TIMEOUT_MS = 2 * 60_000
@@ -26,7 +30,7 @@ export interface Wake { session?: string; message: string; done?: string[] }
 export interface WakeOutput { wakes: Wake[]; status: string[] }
 export interface CommandResult { ok: boolean; stdout: string; error: string | null }
 export type RunCommand = (argv: string[], timeoutMs: number) => Promise<CommandResult>
-export type SendWake = (session: string, message: string) => Promise<{ ok: boolean; error: string | null }>
+export type SendWake = (session: string, message: string, delivery: WakeDelivery) => Promise<{ ok: boolean; error: string | null }>
 
 /** The command's output as wakes and status lines, or the reason it is not one. */
 export function parseWakeOutput(stdout: string): WakeOutput {
@@ -61,8 +65,8 @@ export const runCommand: RunCommand = (argv, timeoutMs) => new Promise(resolve =
   })
 })
 
-export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message) => {
-  const result = await sendToAppSession(session, message, { ...client, delivery: "enqueue" })
+export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message, delivery) => {
+  const result = await sendToAppSession(session, message, { ...client, delivery })
   return { ok: result.ok, error: result.error }
 }
 
@@ -84,7 +88,7 @@ export async function runWakeRunner(runner: WakeRunnerConfig, deps: { run: RunCo
   for (const wake of output.wakes) {
     const session = wake.session ?? runner.session
     const sent = session
-      ? await deps.send(session, wake.message).catch((error: Error) => ({ ok: false, error: error.message }))
+      ? await deps.send(session, wake.message, runner.delivery ?? "immediate").catch((error: Error) => ({ ok: false, error: error.message }))
       : { ok: false, error: "the wake names no session and the runner has none" }
     const reason = sent.ok ? null : sent.error ?? "the app refused the message"
     if (!reason) state.lastDelivered += 1

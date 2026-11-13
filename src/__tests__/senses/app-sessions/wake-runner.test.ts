@@ -94,6 +94,14 @@ describe("runWakeRunner", () => {
     expect(state).toEqual({ lastRunAt: new Date(NOW).toISOString(), lastWakes: 2, lastDelivered: 2, status: ["issue drain a/b -> other: polled just now"] })
   })
 
+  it("delivers a wake immediately unless the runner asks for it to wait, so a session that never goes idle still hears of new work", async () => {
+    const w = world({ wakes: [{ message: "one" }] })
+    await w.go()
+    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "immediate")
+    await runWakeRunner({ ...RUNNER, delivery: "enqueue" }, { run: w.run, send: w.send, now: NOW })
+    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "enqueue")
+  })
+
   it("delivers nothing and reports nothing when there are no wakes", async () => {
     const w = world({ wakes: [] })
     expect(await w.go()).toEqual({ lastRunAt: new Date(NOW).toISOString(), lastWakes: 0, lastDelivered: 0, status: [] })
@@ -161,10 +169,12 @@ describe("runWakeRunners", () => {
 })
 
 describe("sendWake", () => {
-  it("queues behind the session's current work", async () => {
+  it("sends with the delivery mode it is given", async () => {
     client.sendToAppSession.mockResolvedValue({ ok: false, error: "archived" })
-    expect(await sendWake({ stateDir: "/s" })("sid", "hi")).toEqual({ ok: false, error: "archived" })
-    expect(client.sendToAppSession).toHaveBeenCalledWith("sid", "hi", { stateDir: "/s", delivery: "enqueue" })
+    expect(await sendWake({ stateDir: "/s" })("sid", "hi", "immediate")).toEqual({ ok: false, error: "archived" })
+    expect(client.sendToAppSession).toHaveBeenCalledWith("sid", "hi", { stateDir: "/s", delivery: "immediate" })
+    await sendWake({ stateDir: "/s" })("sid", "hi", "enqueue")
+    expect(client.sendToAppSession).toHaveBeenLastCalledWith("sid", "hi", { stateDir: "/s", delivery: "enqueue" })
   })
 })
 
