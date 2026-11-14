@@ -178,7 +178,7 @@ export const appSessionsResumeTool: ToolDefinition = {
     type: "function",
     function: {
       name: "app_sessions_resume",
-      description: "Nudge a stuck or stopped Copilot app session to continue where it left off (the resume message the Mac's app keeper sends after a restart), with an optional note. Its next reply comes back to you.",
+      description: "Nudge a stuck or stopped Copilot app session to continue where it left off (the resume message Housesitter sends after a restart), with an optional note. Its next reply comes back to you.",
       parameters: {
         type: "object",
         properties: { session: sessionParam, note: { type: "string", description: "Anything to add to the resume message." } },
@@ -271,12 +271,12 @@ export const appSessionsRestartTool: ToolDefinition = {
     type: "function",
     function: {
       name: "app_sessions_restart",
-      description: "The Copilot app's courtesy restart, through this Mac's app keeper (it never restarts the app itself). status: the keeper's queue, panel, last restarts and resume state. enqueue: ask for a restart; the keeper restarts at once when nobody is at the Mac, otherwise shows the person a \"Restart now\" / \"Not now\" panel, and resumes every working session afterwards. Says so plainly when the keeper is not installed.",
+      description: "Restart the Copilot app and lose no session's work, through Housesitter on this Mac (it restarts the app from outside, as a launchd job). status: the restart in progress or the last one: state, step, start time, result, log. enqueue: start one now; every working session is asked to reach a safe point, the app is quit through its Quit menu (it waits while a person is using the Mac), relaunched, and every session that was working gets a resume message and is checked to have taken a turn. Starting one while another runs is refused. Says so plainly when Housesitter is not on this Mac.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["status", "enqueue"], description: "Default status." },
-          why: { type: "string", description: "enqueue: the reason, shown to the person in the panel." },
+          why: { type: "string", description: "enqueue: the reason; it completes \"restarted at 11:40 for …\" in the resume message each session gets." },
         },
         additionalProperties: false,
       },
@@ -285,12 +285,12 @@ export const appSessionsRestartTool: ToolDefinition = {
   handler: (args, ctx) => run("app_sessions_restart", ctx, async () => {
     if (text(args.action) !== "enqueue") return await restartStatus(clientOptions)
     const why = text(args.why)
-    if (!why) throw new Error("say why the app needs a restart; the person sees it in the panel")
+    if (!why) throw new Error("say why the app needs a restart; every session is told in its resume message")
     return await restartEnqueue(why, ctx?.agentName ?? "an agent", clientOptions)
   }),
   summaryKeys: ["action"],
   riskProfile: (args) => text(args.action) === "enqueue"
-    ? { mutates: "external_side_effect", risk: "high", reason: "queues a restart of the owner's Copilot app" }
+    ? { mutates: "external_side_effect", risk: "high", reason: "restarts the owner's Copilot app" }
     : { mutates: "none", risk: "low" },
 }
 

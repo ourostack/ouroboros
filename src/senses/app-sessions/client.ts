@@ -13,7 +13,7 @@ import { copilotAppUrl } from "../shepherd/copilot-app"
  * This Mac's GitHub Copilot app, read and written the way the app's own sidebar does it. The session list comes from
  * the app's database (`<stateDir>/data.db`, opened read-only), what a session said from its event log
  * (`<stateDir>/session-state/<id>/events.jsonl`), and every write is a request on the app's local WebSocket (port and
- * token in `<stateDir>/run/`). A courtesy app restart is asked of the Mac's app keeper, never done here.
+ * token in `<stateDir>/run/`). A restart of the app is asked of Housesitter (`housesitter restart-copilot`), never done here.
  *
  * This module is the per-machine client: it knows nothing about agents, tools or prompts, so the app-sessions sense,
  * its tools and the fleet sense all build on it.
@@ -29,10 +29,12 @@ export interface AppSessionsOptions {
   now?: () => number
   /** How long a send waits for the app's answer. Closing the socket before the app answers cancels the send. */
   sendWaitMs?: number
-  /** Runs the keeper and launchctl; tests replace it. */
+  /** Runs Housesitter; tests replace it. */
   runFile?: RunFile
-  /** The user id whose launch agents hold the keeper. */
-  uid?: number
+  /** Where to look for Housesitter's `bin/housesitter.mjs` (or an executable named housesitter), first match wins; tests replace it. */
+  housesitterPaths?: string[]
+  /** The home folder whose `code/housesitter` checkout is looked in, `os.homedir()` unless a test says otherwise. */
+  homeDir?: string
 }
 
 export type AppSessionState = "working" | "waiting" | "stuck" | "idle"
@@ -103,12 +105,13 @@ export interface SendResult {
 
 /** The most a send waits: a session whose runtime is not in memory loads first, often for more than 20 s. */
 export const SEND_WAIT_MS = 120_000
-export const KEEPER_LABEL = "com.arimendelow.copilot-app-keeper"
+/** Names the Housesitter command to run: the path of its `bin/housesitter.mjs`, or of an executable. */
+export const HOUSESITTER_ENV = "HOUSESITTER_BIN"
 const REQUEST_WAIT_MS = 30_000
 const ARCHIVE_WAIT_MS = 60_000
 const CHAT_ARCHIVE_WAIT_MS = 20_000
 const RENAME_WAIT_MS = 1_500
-const KEEPER_WAIT_MS = 20_000
+const HOUSESITTER_WAIT_MS = 30_000
 const STATUS_TAIL_BYTES = 512 * 1024
 const EVENT_CHUNK_BYTES = 256 * 1024
 const MAX_EVENT_BYTES = 8 * 1024 * 1024
@@ -753,7 +756,7 @@ export async function withdrawQueuedMessages(id: string, prefix: string, options
   return removed
 }
 
-/** The nudge the desk's keeper sends a session that stopped mid-work. */
+/** The nudge Housesitter sends a session that stopped mid-work. */
 export function resumePrompt(state: string, note?: string): string {
   return [
     `This session stopped while it was ${state}. Continue exactly where you left off. Anything that was in flight (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish.`,
@@ -893,7 +896,7 @@ export function appRunning(options: AppSessionsOptions = {}): boolean {
   }
 }
 
-// ---------- the app keeper (courtesy restarts) ----------
+// ---------- restarting the app (Housesitter) ----------
 
 export const realRunFile: RunFile = (file, args, timeoutMs) => new Promise((resolve) => {
   execFile(file, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -901,46 +904,47 @@ export const realRunFile: RunFile = (file, args, timeoutMs) => new Promise((reso
   })
 })
 
-export type KeeperResult<T> = { installed: false; message: string } | ({ installed: true } & T)
+export type HousesitterResult<T> = { installed: false; message: string } | ({ installed: true } & T)
 
-/** The keeper's launch agent: the node it runs under and its script, from `launchctl print`. */
-export async function findKeeper(options: AppSessionsOptions = {}): Promise<{ node: string; script: string } | null> {
-  const run = options.runFile ?? realRunFile
-  /* v8 ignore next -- tests always pass a uid; process.getuid exists on every platform the keeper runs on @preserve */
-  const uid = options.uid ?? process.getuid?.() ?? 0
-  const printed = await run("/bin/launchctl", ["print", `gui/${uid}/${KEEPER_LABEL}`], KEEPER_WAIT_MS)
-  if (printed.code !== 0) return null
-  const block = printed.stdout.match(/\barguments = \{([\s\S]*?)\n\s*\}/)
-  const args = block ? block[1].split("\n").map(line => line.trim()).filter(Boolean) : []
-  const script = args.find(arg => arg.endsWith("app-keeper.mjs"))
-  const node = printed.stdout.match(/\bprogram = (.+)/)?.[1]?.trim() ?? args[0]
-  return script && node ? { node, script } : null
+/** Housesitter's command on this Mac: `HOUSESITTER_BIN`, the checkout at `~/code/housesitter`, or `housesitter` on PATH. */
+export function findHousesitter(options: AppSessionsOptions = {}): { file: string; args: string[] } | null {
+  const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, "housesitter"))
+  const candidates = options.housesitterPaths ?? [process.env[HOUSESITTER_ENV] ?? "", path.join(options.homeDir ?? os.homedir(), "code", "housesitter", "bin", "housesitter.mjs"), ...onPath]
+  const found = candidates.find(candidate => candidate && fs.existsSync(candidate))
+  if (!found) return null
+  return found.endsWith(".mjs") ? { file: process.execPath, args: [found] } : { file: found, args: [] }
 }
 
-const keeperMissing = (): { installed: false; message: string } => ({
+const housesitterMissing = (): { installed: false; message: string } => ({
   installed: false,
-  message: `The Copilot app keeper (${KEEPER_LABEL}) is not installed on this Mac, so nothing was queued and the app was not restarted. Install it with \`node app-keeper.mjs install\` from the desk's machine setup.`,
+  message: `Housesitter is not on this Mac, so the app was not restarted. Clone https://github.com/ourostack/housesitter to ~/code/housesitter, put \`housesitter\` on PATH, or set ${HOUSESITTER_ENV} to its bin/housesitter.mjs.`,
 })
 
-async function runKeeper(args: string[], options: AppSessionsOptions): Promise<KeeperResult<{ output: unknown }>> {
+async function runHousesitter(args: string[], options: AppSessionsOptions): Promise<HousesitterResult<{ output: Record<string, unknown> }>> {
   const run = options.runFile ?? realRunFile
-  const keeper = await findKeeper({ ...options, runFile: run })
-  if (!keeper) return keeperMissing()
-  const result = await run(keeper.node, [keeper.script, ...args], KEEPER_WAIT_MS)
-  if (result.code !== 0) throw new Error(`the app keeper failed: ${(result.stderr || result.stdout).trim().slice(0, 300)}`)
-  return { installed: true, output: JSON.parse(result.stdout) as unknown }
+  const command = findHousesitter(options)
+  if (!command) return housesitterMissing()
+  const result = await run(command.file, [...command.args, "restart-copilot", ...args, "--json"], HOUSESITTER_WAIT_MS)
+  let output: Record<string, unknown> | null = null
+  try { output = JSON.parse(result.stdout) as Record<string, unknown> } catch { /* not JSON: housesitter refused or failed */ }
+  // `--status` exits 1 for a failed run and `--detach` for a job launchd would not start; both still answer on stdout.
+  const answered = output !== null && ("state" in output || output.ok === false)
+  if (!output || (result.code !== 0 && !answered)) throw new Error(`housesitter failed: ${(result.stderr || result.stdout).trim().slice(0, 300)}`)
+  return { installed: true, output }
 }
 
-/** Queue a courtesy restart of the app: the keeper restarts now if nobody is at the Mac, else shows its "Restart now" / "Not now" panel. */
-export async function restartEnqueue(why: string, by: string, options: AppSessionsOptions = {}): Promise<KeeperResult<{ request: unknown }>> {
-  const result = await runKeeper(["enqueue", "--why", why, "--by", by], options)
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_restart_enqueued", message: "asked the app keeper for a courtesy restart", meta: { installed: result.installed, why } })
-  return result.installed ? { installed: true, request: result.output } : result
+/** Restart the app now, as a launchd job that outlives the app: Housesitter asks working sessions to reach a safe point, quits the app through its Quit menu (waiting while a person is using the Mac), relaunches it and resumes every session that was working. Read the outcome with {@link restartStatus}. */
+export async function restartEnqueue(why: string, by: string, options: AppSessionsOptions = {}): Promise<HousesitterResult<{ request: unknown }>> {
+  const result = await runHousesitter(["--resume", "--detach", "--why", `${why} (asked by ${by})`], options)
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_restart_enqueued", message: "asked housesitter to restart the app", meta: { installed: result.installed, why } })
+  if (!result.installed) return result
+  if (result.output.ok === false) throw new Error(`housesitter did not start the restart: ${String(result.output.error ?? "no reason given")}`)
+  return { installed: true, request: result.output }
 }
 
-/** The keeper's queue, panel, last restarts and resume state. */
-export async function restartStatus(options: AppSessionsOptions = {}): Promise<KeeperResult<{ status: unknown }>> {
-  const result = await runKeeper(["status", "--json"], options)
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_restart_status", message: "read the app keeper's restart status", meta: { installed: result.installed } })
+/** The restart in progress or the last one: state (running, done, failed, none), step, start time, result, log. */
+export async function restartStatus(options: AppSessionsOptions = {}): Promise<HousesitterResult<{ status: unknown }>> {
+  const result = await runHousesitter(["--status"], options)
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_restart_status", message: "read housesitter's restart status", meta: { installed: result.installed } })
   return result.installed ? { installed: true, status: result.output } : result
 }
