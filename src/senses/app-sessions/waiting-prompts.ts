@@ -6,7 +6,7 @@ import { appSessionsStateDir, readJson, readSnapshot, writeJson, type SenseSnaps
 import { ageLabel } from "./waiting-status"
 
 /**
- * A session frozen on a permission prompt looks idle from outside, and only the person can answer it in the app. The
+ * A session frozen on a permission prompt, or on a repository-trust card, looks idle from outside, and only the person can answer it in the app. The
  * snapshot already reads every session's history each minute, so noticing is deterministic and costs no model turn:
  * a prompt open for more than two minutes is told to the owner once, in one plain message, through the same proactive
  * path Shepherd's owner notices use. A prompt older than a day is shown in `ouro status` but never announced: it is
@@ -29,11 +29,15 @@ interface WaitingState {
 const stateFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "waiting-prompts.json")
 export const promptKey = (prompt: Pick<WaitingPrompt, "session" | "requestId">): string => `${prompt.session}:${prompt.requestId}`
 
-/** The open permission prompts in the sidebar. A prompt the app timed without an event time keeps the first time it was seen. */
+/** The open permission prompts and repository-trust decisions in the sidebar. One the app gave no event time keeps the first time it was seen. */
 export function waitingPromptsOf(agentRoot: string, rows: AppSessionRow[], now: number): WaitingPrompt[] {
   const before = new Map((readSnapshot(agentRoot)?.waitingPrompts ?? []).map(prompt => [promptKey(prompt), prompt.since]))
   const prompts: WaitingPrompt[] = []
   for (const row of rows) {
+    if (row.repositoryTrust) {
+      const requestId = row.repositoryTrust.decisionId
+      prompts.push({ session: row.id, name: row.name, requestId, what: `a repository trust decision for ${row.repositoryTrust.repo}`, since: before.get(promptKey({ session: row.id, requestId })) ?? now })
+    }
     if (!row.prompt) continue
     const stamped = Date.parse(row.prompt.at ?? "")
     const since = Number.isNaN(stamped) ? before.get(promptKey({ session: row.id, requestId: row.prompt.requestId })) ?? now : stamped

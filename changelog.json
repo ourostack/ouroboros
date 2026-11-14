@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1131",
+      "changes": [
+        "The app-sessions sense now notices a session blocked on the Copilot app's repository-trust card, from the notification claim the app records in its database, and tells the owner once per decision with the session name and repository. It shows as waiting in the sidebar picture and in `ouro status`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1130",
       "changes": [
         "Wake runners take back older wakes a newer one replaces: a wake can name a message prefix, and the session's own app queue is cleared of the user-side messages with that prefix before it is sent, so stale wakes no longer sit in the queue and arrive one per turn."

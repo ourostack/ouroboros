@@ -16,10 +16,11 @@ export interface WatchEntry {
   until: number
 }
 
-/** A session waiting on a permission prompt that only the person can answer in the app. */
+/** A session waiting on a permission prompt or repository-trust decision that only the person can answer in the app. */
 export interface WaitingPrompt {
   session: string
   name: string
+  /** The app's permission request id, or the repository-trust decision id. */
   requestId: string
   what: string
   /** When the prompt opened (epoch ms): the app's event time, else the first snapshot that saw it. */
