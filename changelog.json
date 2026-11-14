@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1118",
+      "changes": [
+        "Edits and reactions on iMessage, Telegram and Teams now reach the agent as turns, worded the same way everywhere; the agent decides whether to answer."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1117",
       "changes": [
         "Wakes from a wake runner are delivered immediately by default: the Copilot app puts the message into the session at its next turn boundary. They used to be queued behind the session's current run, and a drain that works for hours without going idle received news about new issues hours late, including about issues that had since closed. A runner entry can set `delivery` to `\"enqueue\"` to keep the old behavior."
