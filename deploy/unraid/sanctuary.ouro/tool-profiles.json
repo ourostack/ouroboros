@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 22,
+      "version": 23,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -160,7 +160,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 12,
+      "version": 13,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
