@@ -5,9 +5,14 @@
 //     Runs shard i/N of the vitest coverage suite with the blob reporter and
 //     nerves capture on. DIR gets blob/blob-i-N.json, files.json (the split)
 //     and capture/*.ndjson.
-//   merge --shards DIR --count N
+//   static
+//     Lint, the changelog gate, and the mailbox-ui typecheck and tests. CI runs
+//     it beside the shards, so none of it sits on the pull request's critical
+//     path after they finish.
+//   merge --shards DIR --count N [--static-checked]
 //     The rest of the gate, in the same order and with the same summary file:
-//     lint, changelog gate, mailbox-ui typecheck and tests, then
+//     lint, changelog gate, mailbox-ui typecheck and tests (unless
+//     --static-checked says the `static` command already passed them), then
 //     `vitest --merge-reports` with the real coverage thresholds, the nerves
 //     capture check and the nerves audit over every shard's capture.
 //
@@ -96,15 +101,7 @@ function fail(summaryPath, summary) {
   process.exit(1)
 }
 
-function merge(argv) {
-  const shardsDir = path.resolve(option(argv, "--shards"))
-  const count = Number(option(argv, "--count"))
-  mkdirSync(ROOT, { recursive: true })
-  const { runId, runDir } = startRun()
-  endRun() // Nothing in the merge job records nerves events.
-  const summaryPath = path.join(runDir, "coverage-gate-summary.json")
-  const nervesCoveragePath = path.join(runDir, "nerves-coverage.json")
-
+function staticChecks(summaryPath) {
   if (runNpm(["run", "lint"]) !== 0) {
     fail(summaryPath, {
       overall_status: "fail",
@@ -153,6 +150,29 @@ function merge(argv) {
       required_actions: [{ type: "ui-tests", target: "packages/mailbox-ui", reason: "npm run test:mailbox-ui failed" }],
     })
   }
+}
+
+// Lint, the changelog gate and the mailbox-ui checks, with the same failure summaries the merge step wrote when it ran them itself.
+function staticCommand() {
+  mkdirSync(ROOT, { recursive: true })
+  const { runDir } = startRun()
+  endRun()
+  staticChecks(path.join(runDir, "coverage-gate-summary.json"))
+  console.log("static checks: pass")
+}
+
+function merge(argv) {
+  const shardsDir = path.resolve(option(argv, "--shards"))
+  const count = Number(option(argv, "--count"))
+  mkdirSync(ROOT, { recursive: true })
+  const { runId, runDir } = startRun()
+  endRun() // Nothing in the merge job records nerves events.
+  const summaryPath = path.join(runDir, "coverage-gate-summary.json")
+  const nervesCoveragePath = path.join(runDir, "nerves-coverage.json")
+
+  if (!argv.includes("--static-checked")) staticChecks(summaryPath)
+  // The nerves audit builds the mailbox UI without installing it, so this job needs the packages whichever job ran the checks.
+  else runNpm(["install", "--prefix", "packages/mailbox-ui"])
 
   // Every test file must have run on exactly one shard, or the merged coverage
   // is not the suite's coverage.
@@ -271,9 +291,10 @@ function printCoverageTotals() {
 if (require.main === module) {
   const [command, ...argv] = process.argv.slice(2)
   if (command === "shard") shard(argv)
+  else if (command === "static") staticCommand()
   else if (command === "merge") merge(argv)
   else {
-    console.error("usage: coverage-gate-sharded.cjs shard --index i --count N --out DIR | merge --shards DIR --count N")
+    console.error("usage: coverage-gate-sharded.cjs shard --index i --count N --out DIR | static | merge --shards DIR --count N [--static-checked]")
     process.exit(2)
   }
 }
