@@ -3,11 +3,11 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import Database from "better-sqlite3"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import type WebSocket from "ws"
 
 import {
-  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
+  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV,
   listAppSessions, listSessionQueue, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
   readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, withdrawQueuedMessages, type RunFile,
 } from "../../../senses/app-sessions/client"
@@ -766,53 +766,97 @@ describe("opening and archiving", () => {
   })
 })
 
-describe("the app keeper", () => {
-  const printed = `gui/501/${KEEPER_LABEL} = {\n\tprogram = /opt/node/bin/node\n\targuments = {\n\t\t/opt/node/bin/node\n\t\t/Users/me/setup/app-keeper.mjs\n\t\trun\n\t}\n}`
-  function runner(answers: Record<string, { code: number; stdout: string; stderr?: string }>): RunFile & { calls: string[][] } {
+describe("restarting the app through housesitter", () => {
+  const bin = path.join(os.tmpdir(), "ouro-housesitter-test", "bin", "housesitter.mjs")
+  function runner(answer: { code: number; stdout: string; stderr?: string }): RunFile & { calls: string[][] } {
     const calls: string[][] = []
     const run = (async (file: string, args: string[]) => {
       calls.push([file, ...args])
-      const answer = answers[args[0] === "print" ? "print" : args[1]]
       return { code: answer.code, stdout: answer.stdout, stderr: answer.stderr ?? "" }
     }) as RunFile & { calls: string[][] }
     run.calls = calls
     return run
   }
+  const there = { housesitterPaths: [bin] }
+  beforeAll(() => { fs.mkdirSync(path.dirname(bin), { recursive: true }); fs.writeFileSync(bin, "") })
+  afterAll(() => { fs.rmSync(path.dirname(path.dirname(bin)), { recursive: true, force: true }) })
 
-  it("finds the keeper's node and script from its launch agent", async () => {
-    expect(await findKeeper({ uid: 501, runFile: runner({ print: { code: 0, stdout: printed } }) })).toEqual({ node: "/opt/node/bin/node", script: "/Users/me/setup/app-keeper.mjs" })
-    expect(await findKeeper({ uid: 501, runFile: runner({ print: { code: 0, stdout: printed.replace(/\tprogram = .*\n/, "") } }) })).toEqual({ node: "/opt/node/bin/node", script: "/Users/me/setup/app-keeper.mjs" })
-    expect(await findKeeper({ uid: 501, runFile: runner({ print: { code: 0, stdout: "state = running" } }) })).toBeNull()
-    expect(await findKeeper({ uid: 501, runFile: runner({ print: { code: 113, stdout: "" } }) })).toBeNull()
+  it("finds housesitter from the explicit paths, HOUSESITTER_BIN, the checkout or PATH, and runs a script with node", () => {
+    expect(findHousesitter(there)).toEqual({ file: process.execPath, args: [bin] })
+    expect(findHousesitter({ housesitterPaths: ["", "/nonexistent/housesitter", bin] })).toEqual({ file: process.execPath, args: [bin] })
+    const exe = path.join(path.dirname(bin), "housesitter")
+    fs.writeFileSync(exe, "")
+    expect(findHousesitter({ housesitterPaths: [exe] })).toEqual({ file: exe, args: [] })
+    expect(findHousesitter({ housesitterPaths: ["/nonexistent/housesitter"] })).toBeNull()
+    fs.rmSync(exe)
+    const home = path.join(path.dirname(path.dirname(bin)), "home")
+    const saved = { env: process.env[HOUSESITTER_ENV], path: process.env.PATH }
+    try {
+      process.env[HOUSESITTER_ENV] = bin
+      expect(findHousesitter()).toEqual({ file: process.execPath, args: [bin] })
+      delete process.env[HOUSESITTER_ENV]
+      expect(findHousesitter({ homeDir: home, housesitterPaths: undefined })).toBeNull()
+      fs.mkdirSync(path.join(home, "code", "housesitter", "bin"), { recursive: true })
+      fs.writeFileSync(path.join(home, "code", "housesitter", "bin", "housesitter.mjs"), "")
+      expect(findHousesitter({ homeDir: home })).toEqual({ file: process.execPath, args: [path.join(home, "code", "housesitter", "bin", "housesitter.mjs")] })
+      fs.rmSync(path.join(home, "code"), { recursive: true })
+      process.env.PATH = path.dirname(bin)
+      fs.writeFileSync(exe, "")
+      expect(findHousesitter({ homeDir: home })).toEqual({ file: exe, args: [] })
+      fs.rmSync(exe)
+      delete process.env.PATH
+      expect(findHousesitter({ homeDir: home })).toBeNull()
+    } finally {
+      if (saved.env === undefined) delete process.env[HOUSESITTER_ENV]; else process.env[HOUSESITTER_ENV] = saved.env
+      process.env.PATH = saved.path
+    }
   })
 
-  it("asks the keeper for its status and queues a courtesy restart", async () => {
-    const run = runner({ print: { code: 0, stdout: printed }, status: { code: 0, stdout: '{"keeper":{"loaded":true},"pending":[]}' }, enqueue: { code: 0, stdout: '{"ok":true,"id":"1-a","queued":1}' } })
-    expect(await restartStatus({ uid: 501, runFile: run })).toEqual({ installed: true, status: { keeper: { loaded: true }, pending: [] } })
-    expect(await restartEnqueue("pick up the new build", "slugger", { uid: 501, runFile: run })).toEqual({ installed: true, request: { ok: true, id: "1-a", queued: 1 } })
-    expect(run.calls).toContainEqual(["/opt/node/bin/node", "/Users/me/setup/app-keeper.mjs", "enqueue", "--why", "pick up the new build", "--by", "slugger"])
-    expect(run.calls).toContainEqual(["/bin/launchctl", "print", `gui/501/${KEEPER_LABEL}`])
+  it("runs the real command when no runner is given", async () => {
+    const script = path.join(path.dirname(bin), "fake-housesitter.mjs")
+    fs.writeFileSync(script, "process.stdout.write(JSON.stringify({ state: 'none', argv: process.argv.slice(2) }))")
+    expect(await restartStatus({ housesitterPaths: [script] })).toEqual({ installed: true, status: { state: "none", argv: ["restart-copilot", "--status", "--json"] } })
+    fs.rmSync(script)
   })
 
-  it("says plainly when the keeper is not installed, and nothing is queued", async () => {
-    const run = runner({ print: { code: 113, stdout: "" } })
-    const status = await restartStatus({ uid: 501, runFile: run })
-    expect(status).toEqual({ installed: false, message: expect.stringContaining("is not installed on this Mac") })
-    expect(await restartEnqueue("x", "y", { uid: 501, runFile: run })).toEqual(status)
-    expect(run.calls).toHaveLength(2)
+  it("starts a detached restart that resumes every working session, naming who asked", async () => {
+    const run = runner({ code: 0, stdout: '{"ok":true,"log":"/l","plist":"/p","error":""}' })
+    expect(await restartEnqueue("pick up the new build", "slugger", { ...there, runFile: run })).toEqual({ installed: true, request: { ok: true, log: "/l", plist: "/p", error: "" } })
+    expect(run.calls).toEqual([[process.execPath, bin, "restart-copilot", "--resume", "--detach", "--why", "pick up the new build (asked by slugger)", "--json"]])
   })
 
-  it("throws when the keeper itself fails", async () => {
-    await expect(restartStatus({ uid: 501, runFile: runner({ print: { code: 0, stdout: printed }, status: { code: 1, stdout: "", stderr: "boom\n" } }) })).rejects.toThrow("the app keeper failed: boom")
-    await expect(restartStatus({ uid: 501, runFile: runner({ print: { code: 0, stdout: printed }, status: { code: 1, stdout: "out" } }) })).rejects.toThrow("the app keeper failed: out")
+  it("reports a job launchd would not start", async () => {
+    await expect(restartEnqueue("x", "y", { ...there, runFile: runner({ code: 1, stdout: '{"ok":false,"error":"Bootstrap failed"}' }) })).rejects.toThrow("housesitter did not start the restart: Bootstrap failed")
+    await expect(restartEnqueue("x", "y", { ...there, runFile: runner({ code: 1, stdout: '{"ok":false}' }) })).rejects.toThrow("no reason given")
+  })
+
+  it("reads the restart's state, step and result, including a failed run that exits 1", async () => {
+    const running = '{"state":"running","step":"quit sent","started":"2026-11-14T19:49:26.576Z"}'
+    const run = runner({ code: 0, stdout: running })
+    expect(await restartStatus({ ...there, runFile: run })).toEqual({ installed: true, status: JSON.parse(running) })
+    expect(run.calls[0].slice(2)).toEqual(["restart-copilot", "--status", "--json"])
+    expect(await restartStatus({ ...there, runFile: runner({ code: 1, stdout: '{"state":"failed","step":"failed at quit"}' }) })).toEqual({ installed: true, status: { state: "failed", step: "failed at quit" } })
+  })
+
+  it("says plainly when housesitter is not on this Mac, and runs nothing", async () => {
+    const run = runner({ code: 0, stdout: "{}" })
+    const none = { housesitterPaths: ["/nonexistent/housesitter"], runFile: run }
+    const status = await restartStatus(none)
+    expect(status).toEqual({ installed: false, message: expect.stringContaining("Housesitter is not on this Mac") })
+    expect(await restartEnqueue("x", "y", none)).toEqual(status)
+    expect(run.calls).toHaveLength(0)
+  })
+
+  it("throws when housesitter refuses or fails", async () => {
+    await expect(restartStatus({ ...there, runFile: runner({ code: 2, stdout: "", stderr: "a restart is already running\n" }) })).rejects.toThrow("housesitter failed: a restart is already running")
+    await expect(restartStatus({ ...there, runFile: runner({ code: 2, stdout: "not json" }) })).rejects.toThrow("housesitter failed: not json")
+    await expect(restartStatus({ ...there, runFile: runner({ code: 2, stdout: '{"code":"action-unavailable"}' }) })).rejects.toThrow("housesitter failed")
   })
 
   it("runs commands for real, reporting failure as a non-zero code", async () => {
     expect(await realRunFile(process.execPath, ["-e", "process.stdout.write('ok')"], 10_000)).toEqual({ code: 0, stdout: "ok", stderr: "" })
     const failed = await realRunFile(process.execPath, ["-e", "process.stderr.write('bad'); process.exit(3)"], 10_000)
     expect(failed).toMatchObject({ code: 1, stderr: "bad" })
-    expect((await realRunFile("/nonexistent/launchctl", [], 1_000)).stderr).toContain("ENOENT")
-    expect(await findKeeper({ uid: 999_999 })).toBeNull()
-    expect(await restartStatus({ uid: 999_999 })).toMatchObject({ installed: false })
+    expect((await realRunFile("/nonexistent/housesitter", [], 1_000)).stderr).toContain("ENOENT")
   })
 })

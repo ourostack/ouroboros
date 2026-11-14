@@ -20,10 +20,10 @@ gains the `app_sessions_*` tools.
 | `app_sessions_list` `{ state? }` | Every sidebar session with its id, name, state (`working`, `waiting` for the person, `stuck`, `idle`), why, project and last activity, plus counts. |
 | `app_sessions_tail` `{ session, count? }` | The session's last visible user and assistant messages (default 6, at most 50), current name/state and local-history coverage. |
 | `app_sessions_send` `{ session, message, delivery?, watch? }` | Delivers a message the way the app's message box does (`send_message`, `immediate` or `enqueue`), and waits up to two minutes for the app to accept it. |
-| `app_sessions_resume` `{ session, note? }` | Sends the resume nudge the Mac's app keeper sends after a restart, to a stuck or stopped session. |
+| `app_sessions_resume` `{ session, note? }` | Sends the resume nudge Housesitter sends after a restart, to a stuck or stopped session. |
 | `app_sessions_new` `{ name?, prompt?, cwd?, agent?, model?, target? }` | Creates a general chat (for example a throwaway probe), with actual creation, initial-message acceptance and placement reported separately. `target: "workspace"` and project/workspace/parent requests are refused without creating anything. |
 | `app_sessions_archive` `{ session }` | Archives a session the agent opened with `app_sessions_new`. |
-| `app_sessions_restart` `{ action?: "status" \| "enqueue", why? }` | Reads the app keeper's restart status, or queues a courtesy restart through it. |
+| `app_sessions_restart` `{ action?: "status" \| "enqueue", why? }` | Reads the restart in progress or the last one (state, step, start, result), or starts one through Housesitter. |
 | `app_sessions_watch` `{ session, watch? }` | Starts or stops bringing a session's replies back to the agent. |
 
 A session is named by its id or a unique prefix of it (the first eight characters are enough). Every write is a nerves
@@ -62,10 +62,13 @@ the agent's probe inventory for inspection/cleanup. `watching` requires actual m
 socket before the app answers cancels the send. The tool always waits for the app's `session_message_sent` or
 `session_message_queued`.
 
-**Restarting is the keeper's job.** The harness never restarts the app. `enqueue` asks the Mac's app keeper
-(`com.arimendelow.copilot-app-keeper`, `app-keeper.mjs enqueue`): it restarts at once when nobody is at the Mac,
-otherwise shows the person a "Restart now" / "Not now" panel, and resumes every working session afterwards. Without
-the keeper the tool says it is not installed and queues nothing.
+**Restarting is Housesitter's job.** The harness never restarts the app itself. `enqueue` runs
+`housesitter restart-copilot --resume --detach` (found at `HOUSESITTER_BIN`, `~/code/housesitter/bin/housesitter.mjs`, or
+`housesitter` on PATH), a launchd job that outlives the app: working sessions are asked to reach a safe point, the app
+is quit through its Quit menu (waiting while a person is using the Mac), relaunched, and every session that was working
+gets a resume message and is checked to have taken a turn. `status` reads `housesitter restart-copilot --status`.
+Housesitter's resume watcher (`housesitter restart-copilot --install-keeper`) does the same resume after a crash or a
+login. Without Housesitter the tool says so and restarts nothing.
 
 ## Perception
 
@@ -149,7 +152,7 @@ senses (the fleet view) build on it:
 - every write as a request on the app's local WebSocket (`ws://127.0.0.1:<port>?token=<token>&observer=1`, port and
   token in `~/.copilot/run/`): `send_message`, `create_session`, `rename_session`, `archive_session`,
   `archive_workspace`;
-- the keeper through its launch agent (`launchctl print`, then `node app-keeper.mjs status --json` or `enqueue`).
+- Housesitter's CLI (`housesitter restart-copilot --status --json`, or `--resume --detach` to start a restart).
 
 Its exports: `listAppSessions`, `snapshot`, `tailAppSession`, `readAppSessionHistory`, `readNewAppEvents`, `sendToAppSession`, `resumeAppSession`, `openAppChat`,
 `archiveAppSession`, `restartEnqueue`, `restartStatus`, `appRunning`, and the event-log helpers the sense uses.

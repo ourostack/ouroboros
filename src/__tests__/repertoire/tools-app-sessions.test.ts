@@ -194,10 +194,10 @@ describe("app-sessions tools", () => {
     expect(client.archiveAppSession).toHaveBeenCalledTimes(2)
   })
 
-  it("reads restart status and queues a courtesy restart through the keeper", async () => {
-    client.restartStatus.mockResolvedValue({ installed: false, message: "The Copilot app keeper is not installed" })
+  it("reads restart status and starts a restart through housesitter", async () => {
+    client.restartStatus.mockResolvedValue({ installed: false, message: "Housesitter is not on this Mac" })
     client.restartEnqueue.mockResolvedValue({ installed: true, request: { ok: true, id: "1" } })
-    expect(await call(appSessionsRestartTool, {})).toEqual({ installed: false, message: "The Copilot app keeper is not installed" })
+    expect(await call(appSessionsRestartTool, {})).toEqual({ installed: false, message: "Housesitter is not on this Mac" })
     expect(await call(appSessionsRestartTool, { action: "enqueue" })).toEqual({ error: expect.stringContaining("say why") })
     expect(await call(appSessionsRestartTool, { action: "enqueue", why: "new build" })).toEqual({ installed: true, request: { ok: true, id: "1" } })
     expect(client.restartEnqueue).toHaveBeenLastCalledWith("new build", "slugger", {})
