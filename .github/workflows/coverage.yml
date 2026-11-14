@@ -52,17 +52,19 @@ jobs:
             node .github/scripts/ci-prepass.cjs
           fi
 
-  # The vitest coverage suite split across 6 runners (about 4 minutes of tests
-  # each; one runner took 26+). The split is by measured file duration, see
+  # The vitest coverage suite split across 12 runners (about 2 to 3 minutes of
+  # tests each, six runners took 4 to 5; one runner took 26+). A pull request
+  # waits for the slowest shard, and its whole run, publish included, has to fit
+  # in 10 minutes. The split is by measured file duration, see
   # .github/scripts/coverage-shards.cjs. Thresholds are checked only on the
-  # merged coverage, in the coverage job.
+  # merged coverage, in the coverage job. The shards start with the pre-pass
+  # instead of waiting for it: the coverage job still fails on a failed pre-pass.
   coverage-shard:
-    needs: prepass
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -79,7 +81,7 @@ jobs:
         run: npm ci
 
       - name: Run Coverage Shard
-        run: node .github/scripts/coverage-gate-sharded.cjs shard --index ${{ matrix.shard }} --count 6 --out .coverage-shard
+        run: node .github/scripts/coverage-gate-sharded.cjs shard --index ${{ matrix.shard }} --count 12 --out .coverage-shard
 
       - name: Upload Coverage Shard
         if: always()
@@ -133,7 +135,7 @@ jobs:
           path: .coverage-shards
 
       - name: Run Coverage Gate
-        run: node .github/scripts/coverage-gate-sharded.cjs merge --shards .coverage-shards --count 6
+        run: node .github/scripts/coverage-gate-sharded.cjs merge --shards .coverage-shards --count 12
 
       - name: Resolve Coverage Artifact Root
         if: always()
@@ -175,7 +177,10 @@ jobs:
       - name: Run Hermetic Integration Lane
         run: npm run test:integration
 
-  package-e2e:
+  # The package end-to-end lane is two jobs that run side by side, because one job
+  # took 5 to 7 minutes and a pull request waits for it. `package-e2e` below is the
+  # required check and stands for both.
+  package-e2e-npm:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -198,6 +203,24 @@ jobs:
           npm run test:e2e:package
           npm run test:e2e:ouro-bot-package
           npm run test:e2e:self-update
+
+  package-e2e-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
 
       - name: Build Packaged Unraid Image
         run: |
@@ -406,14 +429,33 @@ jobs:
           set -e
           test "$UNLABELED_CURRENT_STATUS" != 0
 
-  publish:
+  # The required `package-e2e` check. It runs even when a lane failed or was
+  # cancelled, so it reports a failure instead of being skipped (a skipped
+  # required check counts as passing).
+  package-e2e:
     needs:
-      - coverage
-      - integration
-      - package-e2e
+      - package-e2e-npm
+      - package-e2e-image
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both package end-to-end lanes
+        run: |
+          test "${{ needs.package-e2e-npm.result }}" = success
+          test "${{ needs.package-e2e-image.result }}" = success
+
+  # Publishes the moment a commit lands on main. It does not wait for this run's own
+  # test jobs: the pull request ran every one of them, and main requires them with
+  # "require branches to be up to date", so the commit on main is the tree they passed.
+  # The run's test jobs stay as the tripwire for anything that slips past that.
+  publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    outputs:
+      cli_tag: ${{ steps.cli-publish-tag.outputs.tag }}
+      wrapper_tag: ${{ steps.wrapper-publish-tag.outputs.tag }}
     permissions:
       contents: read
       id-token: write
@@ -543,17 +585,37 @@ jobs:
           cd packages/ouro.bot
           npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
 
+
+  # Waits out npm's registry propagation, then hands the exact published bytes to the
+  # GitHub release. It runs beside the container build, not before it, so the wait
+  # (up to ten minutes) holds up nothing but the GitHub release.
+  verify-npm:
+    needs:
+      - publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
       - name: Verify selected npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
-          CLI_TAG="${{ steps.cli-publish-tag.outputs.tag }}"
-          WRAPPER_TAG="${{ steps.wrapper-publish-tag.outputs.tag }}"
+          CLI_TAG="${{ needs.publish.outputs.cli_tag }}"
+          WRAPPER_TAG="${{ needs.publish.outputs.wrapper_tag }}"
 
           # npm's public read path can lag a successful publish by minutes — observed
           # at roughly four minutes for 0.1.0-alpha.821. A window shorter than that
-          # fails a release that actually succeeded, and because container-publish
-          # only runs when this workflow concludes success, a false failure here also
-          # silently skips the container image.
+          # fails a release that actually succeeded, and a false failure here also
+          # fails the GitHub release that follows.
           PROPAGATION_DEADLINE_SECONDS=600
 
           verify_tag() {
@@ -590,7 +652,7 @@ jobs:
       # of a published spec downloads the registry tarball and checks it against
       # the registry's integrity hash, so the GitHub release carries the same
       # package npm users install, never a rebuild. Non-blocking: a failure
-      # here only skips the GitHub release, never container-publish.
+      # here only skips the GitHub release.
       - name: Fetch the published @ouro.bot/cli tarball
         continue-on-error: true
         run: |
@@ -611,32 +673,16 @@ jobs:
       - name: Smoke published package binaries
         run: npm run release:smoke
 
-      # container-publish triggers on this workflow concluding success, so a failure
-      # anywhere after the package is on npm silently skips the container image and
-      # leaves npm and GHCR diverged with nothing saying so. Keep that gate — an
-      # image should only come from a commit that passed everything — but stop the
-      # skip being silent, and say exactly how to recover it.
-      - name: Warn when a published version will not get a container image
-        if: failure()
-        run: |
-          LOCAL=$(node -p "require('./package.json').version")
-          PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
-          if [ "$PUBLISHED" = "$LOCAL" ]; then
-            echo "::error::@ouro.bot/cli@${LOCAL} is published on npm, but this run is failing so container-publish will not fire and ghcr.io/ourostack/ouroboros-butler:${LOCAL} will NOT be built. Re-run the failed jobs on this run to produce the image; the publish steps are idempotent and skip an already-published version."
-          else
-            echo "::warning::This run is failing before @ouro.bot/cli@${LOCAL} was published, so no container image is expected."
-          fi
-
   # Attach the npm tarball that publish just released to a GitHub release so
   # `ouro self-update` can install it on networks that block
   # registry.npmjs.org or serve npm through a mirror that lags behind. The
   # updater trusts only releases and assets created by github-actions[bot]
   # under this repository's release download URL. Separate from publish so
   # the npm job keeps its read-only contents permission, and non-blocking so a
-  # release hiccup never stops container-publish.
+  # release hiccup never stops the container image.
   github-release:
     needs:
-      - publish
+      - verify-npm
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20

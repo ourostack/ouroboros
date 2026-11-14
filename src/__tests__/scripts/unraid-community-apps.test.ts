@@ -25,6 +25,7 @@ describe("Ouro Butler Community Apps release", () => {
     expect(concurrencyIndex).toBeLessThan(jobsIndex)
     expect(workflow).toContain("group: container-publish-${{ github.repository }}")
     expect(workflow).toContain("cancel-in-progress: false")
+    expect(workflow).toContain("queue: max")
   })
 
   it("publishes the required repository profile from canonical project metadata", () => {
@@ -105,7 +106,12 @@ describe("Ouro Butler Community Apps release", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
 
     expect(workflow).toContain("packages: write")
-    expect(workflow).toContain("linux/amd64,linux/arm64")
+    expect(workflow).toContain("platform: linux/amd64")
+    expect(workflow).toContain("platform: linux/arm64")
+    expect(workflow).toContain("runner: ubuntu-24.04-arm")
+    expect(workflow).toContain("docker buildx imagetools create")
+    expect(workflow).toContain("push-by-digest=true")
+    expect(workflow).not.toContain("setup-qemu-action")
     expect(workflow).toContain("ghcr.io/ourostack/ouroboros-butler")
     expect(workflow).toContain("deploy/unraid/Dockerfile")
     expect(workflow).toContain('scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE"')
