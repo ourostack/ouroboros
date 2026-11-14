@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1129",
       "changes": [
-        "New media tools: media_monitor turns Sonarr monitoring on or off for whole seasons or single episodes (and can search them), and media_watch_history reads a Jellyfin user's watched and half-watched items."
+        "New media tools: media_monitor turns Sonarr monitoring on or off for whole seasons or single episodes (and can search them), and media_watch_history reads a Jellyfin user's watched and half-watched items, newest first."
       ]
     },
     {

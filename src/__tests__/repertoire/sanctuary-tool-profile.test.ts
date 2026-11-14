@@ -35,7 +35,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(22)
+    expect(owner.version).toBe(23)
     expect(owner.toolNames).toHaveLength(82)
     expect(new Set(owner.toolNames).size).toBe(82)
     expect(owner.toolNames).toEqual(expect.arrayContaining([...CHAT_TOOLS, ...FILE_TOOLS]))
@@ -62,7 +62,7 @@ describe("Sanctuary active tool profile", () => {
     expect(names).toContain("send_message")
     expect(names).toEqual(expect.arrayContaining(SYNC_TOOLS))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(22)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(23)
     expect(packaged.profiles["sanctuary-household"].version).toBe(6)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -94,7 +94,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const peer = packaged.profiles["sanctuary-agent-peer"]
-    expect(peer.version).toBe(12)
+    expect(peer.version).toBe(13)
     expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container" && !SYNC_TOOLS.includes(name) && !OWNER_ONLY_HOME_TOOLS.includes(name)))
     expect(peer.contextScopes).toEqual(owner.contextScopes)
     expect(peer.effectScopes).toEqual(owner.effectScopes)

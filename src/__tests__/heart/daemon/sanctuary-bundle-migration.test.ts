@@ -219,7 +219,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "state/sessions/owner.json", "private history\n")
     const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
-    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(22)
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(23)
     expect(result.managedFilesUpdated).toBe(1)
     expect(fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")).toBe(ownedIdentity)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
