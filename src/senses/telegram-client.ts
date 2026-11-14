@@ -1885,6 +1885,8 @@ export interface TelegramTextSendOptions {
   signal?: AbortSignal
   onMessageDelivered?: (messageId: number, chunk: string) => void
   renderHtml?: (chunk: string) => string
+  /** Send the first chunk as a reply to this message. If Telegram refuses it, the chunk goes out without the reply. */
+  replyToMessageId?: number
 }
 
 export function escapeTelegramHtml(value: string): string {
@@ -1953,12 +1955,14 @@ export async function sendTelegramText(
     results.push(messageId as number)
     options.onMessageDelivered?.(messageId as number, chunk)
   }
-  for (const chunk of splitTelegramText(text)) {
+  for (const [index, chunk] of splitTelegramText(text).entries()) {
+    const replyTo = index === 0 && options.replyToMessageId ? { reply_parameters: { message_id: options.replyToMessageId } } : {}
     try {
       recordMessageId(await api.request("sendMessage", {
         chat_id: chatId,
         text: renderHtml(chunk),
         parse_mode: "HTML",
+        ...replyTo,
       }, options.signal), chunk)
     } catch (error) {
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error

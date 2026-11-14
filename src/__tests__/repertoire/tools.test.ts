@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as path from "path"
 import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
+import { chatActionsForTurn, chatToolDefinitions } from "../../repertoire/tools-chat"
 
 afterEach(shutdownMcpFixtures)
 
@@ -232,7 +233,8 @@ describe("execTool", () => {
       ["await_condition", { name: "wrong", condition: "wrong referent", cadence: "5m" }],
       ["let_go", { id: "wrong-obligation" }],
       ["restart_runtime", { reason: "wrong referent" }],
-      ["bluebubbles_set_reply_target", { target: "top_level" }],
+      ["set_reply_target", { target: "top_level" }],
+      ["react", { emoji: "❤️" }],
       ["surface", { content: "wrong referent" }],
       ["graph_mutate", { method: "POST", path: "/me/sendMail", body: "{}" }],
       ["ado_create_epic", { title: "wrong referent" }],
@@ -305,7 +307,7 @@ describe("execTool", () => {
       surface,
     ] = await Promise.all([
       import("../../repertoire/tools-base"),
-      import("../../repertoire/tools-bluebubbles"),
+      import("../../repertoire/tools-chat"),
       import("../../repertoire/tools-teams"),
       import("../../repertoire/ado-semantic"),
       import("../../repertoire/tools-github"),
@@ -315,7 +317,7 @@ describe("execTool", () => {
     ])
     const definitions = [
       ...toolsBase.baseToolDefinitions,
-      ...bluebubbles.bluebubblesToolDefinitions,
+      ...bluebubbles.chatToolDefinitions,
       ...teams.teamsToolDefinitions,
       ...adoSemantic.adoSemanticToolDefinitions,
       ...github.githubToolDefinitions,
@@ -363,7 +365,8 @@ describe("execTool", () => {
       ["let_go", ["durable_state_write"]],
       ["restart_runtime", ["external_side_effect"]],
       ["revive_sense", ["external_side_effect"]],
-      ["bluebubbles_set_reply_target", ["external_side_effect"]],
+      ["set_reply_target", ["external_side_effect"]],
+      ["react", ["external_side_effect"]],
       ["surface", ["durable_state_write", "external_side_effect"]],
       ["graph_mutate", ["external_side_effect"]],
       ["ado_mutate", ["external_side_effect"]],
@@ -2482,7 +2485,7 @@ describe("getToolsForChannel includes docs tools", () => {
     }
     const result = getToolsForChannel(bluebubblesCaps)
     const names = result.map((t: any) => t.function.name)
-    expect(names).toContain("bluebubbles_set_reply_target")
+    expect(names).toEqual(expect.arrayContaining(["set_reply_target", "react"]))
   })
 })
 
@@ -2523,9 +2526,10 @@ describe("summarizeArgs for docs tools", () => {
     expect(summarizeArgs("save_friend_note", { type: "tool_preference", key: "ado", content: "flat backlog" })).toBe("type=tool_preference key=ado content=flat backlog")
   })
 
-  it("returns target summary for bluebubbles_set_reply_target", () => {
-    expect(summarizeArgs("bluebubbles_set_reply_target", { target: "thread", threadOriginatorGuid: "THREAD-1" }))
-      .toBe("target=thread threadOriginatorGuid=THREAD-1")
+  it("returns target summary for set_reply_target and react", () => {
+    expect(summarizeArgs("set_reply_target", { target: "thread", message_id: "THREAD-1" }))
+      .toBe("target=thread message_id=THREAD-1")
+    expect(summarizeArgs("react", { emoji: "❤️" })).toBe("emoji=❤️")
   })
 
   it("returns the approved bridge summary fields for bridge_manage", () => {
@@ -2555,102 +2559,70 @@ describe("summarizeArgs for docs tools", () => {
   })
 })
 
-describe("bluebubbles reply target tool", () => {
-  it("returns a friendly message when reply targeting is unavailable", async () => {
+describe("chat action tools", () => {
+  async function run(name: string, args: Record<string, unknown>, chatActions?: Record<string, unknown>): Promise<string> {
     vi.resetModules()
     const { execTool } = await import("../../repertoire/tools")
-    const result = await execTool("bluebubbles_set_reply_target", { target: "top_level" }, { signin: async () => undefined })
-    expect(result).toBe("bluebubbles reply targeting is not available in this context.")
+    return execTool(name, args as Record<string, string>, { signin: async () => undefined, ...(chatActions ? { chatActions } : {}) } as never)
+  }
+
+  it("sets where the reply lands, or says why it can't", async () => {
+    const setReplyTarget = vi.fn().mockReturnValue("reply target set")
+    expect(await run("set_reply_target", { target: "top_level" })).toBe("this chat doesn't let me choose where a reply lands.")
+    expect(await run("set_reply_target", { target: "top_level" }, { setReplyTarget })).toBe("reply target set")
+    expect(await run("set_reply_target", { target: "current_lane" }, { setReplyTarget })).toBe("reply target set")
+    expect(await run("set_reply_target", { target: "thread", message_id: " M-1 " }, { setReplyTarget })).toBe("reply target set")
+    expect(setReplyTarget.mock.calls.map(([selection]) => selection)).toEqual([
+      { target: "top_level" }, { target: "current_lane" }, { target: "thread", messageId: "M-1" },
+    ])
+    expect(await run("set_reply_target", { target: "thread" }, { setReplyTarget })).toBe("reply target set")
+    expect(setReplyTarget).toHaveBeenLastCalledWith({ target: "thread" })
+    expect(await run("set_reply_target", { target: "sideways" }, { setReplyTarget })).toBe("target must be one of: current_lane, top_level, thread.")
+    expect(await run("set_reply_target", { target: 42 }, { setReplyTarget })).toBe("target must be one of: current_lane, top_level, thread.")
   })
 
-  it("updates the toolContext lane controller", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to top_level")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: "top_level" },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection },
-      },
-    )
-    expect(setSelection).toHaveBeenCalledWith({ target: "top_level" })
-    expect(result).toBe("bluebubbles reply target set to top_level")
+  it("reacts to the turn's message by default, or to the one named", async () => {
+    const react = vi.fn(async (emoji: string, id: string) => `reacted with ${emoji} to ${id}`)
+    const actions = chatActionsForTurn({ react }, "IN-1")
+    expect(await run("react", { emoji: "❤️" }, actions)).toBe("reacted with ❤️ to IN-1")
+    expect(await run("react", { emoji: "👍", message_id: "OTHER" }, actions)).toBe("reacted with 👍 to OTHER")
+    expect(await run("react", { emoji: "❤️" }, chatActionsForTurn({ react }, undefined))).toBe("there is no message to react to here; pass message_id.")
   })
 
-  it("supports selecting the current inbound lane explicitly", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to current_lane")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: "current_lane" },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection },
-      },
-    )
-    expect(setSelection).toHaveBeenCalledWith({ target: "current_lane" })
-    expect(result).toBe("bluebubbles reply target set to current_lane")
+  it("replies to the turn's message by default, or to the one named", () => {
+    const setReplyTarget = vi.fn(() => "reply target set")
+    const actions = chatActionsForTurn({ setReplyTarget }, "IN-1")
+    expect(actions.react).toBeUndefined()
+    expect(actions.setReplyTarget!({ target: "thread" })).toBe("reply target set")
+    expect(actions.setReplyTarget!({ target: "thread", messageId: "M-2" })).toBe("reply target set")
+    expect(actions.setReplyTarget!({ target: "top_level" })).toBe("reply target set")
+    expect(setReplyTarget.mock.calls.map(([selection]) => selection)).toEqual([
+      { target: "thread", messageId: "IN-1" }, { target: "thread", messageId: "M-2" }, { target: "top_level" },
+    ])
+    expect(chatActionsForTurn({ setReplyTarget }, undefined).setReplyTarget!({ target: "thread" })).toBe("there is no message to reply to here; pass message_id.")
+    expect(chatActionsForTurn({}, "IN-1")).toEqual({})
   })
 
-  it("requires threadOriginatorGuid when targeting a specific thread", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: "thread" },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection: vi.fn() },
-      },
-    )
-    expect(result).toBe("threadOriginatorGuid is required when target=thread.")
+  it("refuses to act in a chat on a turn that may not send, even when called directly", async () => {
+    const react = vi.fn(async () => "reacted")
+    const setReplyTarget = vi.fn(() => "reply target set")
+    for (const turn of [{ noSend: true }, { autonomousTurnKind: "await" }, { habitSession: {} }]) {
+      const ctx = { signin: async () => undefined, chatActions: { react, setReplyTarget }, ...turn } as any
+      const handler = (name: string) => chatToolDefinitions.find((definition) => definition.tool.function.name === name)!.handler
+      expect(await handler("react")({ emoji: "❤️" }, ctx)).toBe("I can't act in a chat on this turn.")
+      expect(await handler("set_reply_target")({ target: "top_level" }, ctx)).toBe("I can't act in a chat on this turn.")
+    }
+    expect(react).not.toHaveBeenCalled()
+    expect(setReplyTarget).not.toHaveBeenCalled()
   })
 
-  it("supports selecting a specific active thread", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const setSelection = vi.fn().mockReturnValue("bluebubbles reply target set to thread:THREAD-1")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: "thread", threadOriginatorGuid: "THREAD-1" },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection },
-      },
-    )
-    expect(setSelection).toHaveBeenCalledWith({ target: "thread", threadOriginatorGuid: "THREAD-1" })
-    expect(result).toBe("bluebubbles reply target set to thread:THREAD-1")
-  })
-
-  it("rejects unknown target values", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: "sideways" },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection: vi.fn() },
-      },
-    )
-    expect(result).toBe("target must be one of: current_lane, top_level, thread.")
-  })
-
-  it("rejects non-string target values", async () => {
-    vi.resetModules()
-    const { execTool } = await import("../../repertoire/tools")
-    const result = await execTool(
-      "bluebubbles_set_reply_target",
-      { target: 42 as unknown as string },
-      {
-        signin: async () => undefined,
-        bluebubblesReplyTarget: { setSelection: vi.fn() },
-      },
-    )
-    expect(result).toBe("target must be one of: current_lane, top_level, thread.")
+  it("says plainly when a reaction can't be made", async () => {
+    const react = vi.fn(async () => { throw new Error("REACTION_INVALID") })
+    expect(await run("react", { emoji: " " }, { react })).toBe("emoji is required.")
+    expect(await run("react", { emoji: "❤️" })).toBe("this chat doesn't take reactions from me.")
+    expect(await run("react", { emoji: "❤️" }, { react })).toBe("the reaction didn't go through: REACTION_INVALID")
+    const refusedWithoutError = vi.fn(async () => { throw "offline" })
+    expect(await run("react", { emoji: "❤️" }, { react: refusedWithoutError })).toBe("the reaction didn't go through: offline")
   })
 })
 

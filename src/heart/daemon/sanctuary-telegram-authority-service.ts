@@ -206,7 +206,7 @@ export class SanctuaryTelegramAuthorityService {
         if (!emptyParams(body)) throw new Error("Sanctuary Telegram getMe body is invalid")
       } else if (requestMethod === "sendMessage") {
         if (
-          !exactBody(body, ["chat_id", "text"], ["parse_mode", "reply_markup"])
+          !exactBody(body, ["chat_id", "text"], ["parse_mode", "reply_markup", "reply_parameters"])
         ) {
           throw new Error("Sanctuary Telegram send body is invalid")
         }
@@ -214,6 +214,9 @@ export class SanctuaryTelegramAuthorityService {
           !boundedText(body.text, 4_096)
           || (body.parse_mode !== undefined && body.parse_mode !== "HTML")
           || (body.reply_markup !== undefined && !isObject(body.reply_markup))
+          // A reply names only the message it answers, so it cannot carry content of its own.
+          || (body.reply_parameters !== undefined && !(isObject(body.reply_parameters) && exactKeys(body.reply_parameters, ["message_id"])
+            && Number.isSafeInteger(body.reply_parameters.message_id) && (body.reply_parameters.message_id as number) > 0))
         ) {
           throw new Error("Sanctuary Telegram send body is invalid")
         }
@@ -294,6 +297,22 @@ export class SanctuaryTelegramAuthorityService {
         const actionChatId = String(body.chat_id)
         if (actionChatId !== ownerChatId && !this.#gateway.isAuthorizedChat(actionChatId)) {
           throw new Error("Sanctuary Telegram chat action target is invalid")
+        }
+      } else if (requestMethod === "setMessageReaction") {
+        // A reaction is one emoji on a message in a chat the agent may already message; nothing else rides along.
+        if (!exactBody(body, ["chat_id", "message_id", "reaction"])) throw new Error("Sanctuary Telegram reaction is invalid")
+        const reaction = body.reaction
+        if (
+          !Number.isSafeInteger(body.message_id) || (body.message_id as number) <= 0
+          || !Array.isArray(reaction) || reaction.length !== 1
+          || !isObject(reaction[0]) || !exactKeys(reaction[0], ["type", "emoji"])
+          || reaction[0].type !== "emoji" || !boundedText(reaction[0].emoji, 16)
+        ) {
+          throw new Error("Sanctuary Telegram reaction is invalid")
+        }
+        const reactionChatId = String(body.chat_id)
+        if (reactionChatId !== ownerChatId && !this.#gateway.isAuthorizedChat(reactionChatId)) {
+          throw new Error("Sanctuary Telegram reaction target is invalid")
         }
       } else if (requestMethod === "getFile") {
         if (!exactBody(body, ["file_id"]) || !boundedText(body.file_id, 512)) {

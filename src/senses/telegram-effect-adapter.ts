@@ -16,7 +16,7 @@ export type TelegramEffectTarget =
   | { kind: "admission_gate"; admissionId: string; botId: string; userId: string; chatId: string }
 
 export type TelegramEffect =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; replyToMessageId?: number }
   | { kind: "admission_ack"; text: typeof FIXED_ADMISSION_ACKNOWLEDGEMENT }
   | { kind: "card"; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }
   | { kind: "edit"; messageId: number; text: string }
@@ -186,6 +186,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
       && /^[1-9][0-9]*$/u.test(target.userId) && /^[1-9][0-9]*$/u.test(target.chatId)
   const effectValid = effect?.kind === "text" || effect?.kind === "admission_ack"
     ? boundedText(effect.text, 150_000)
+      && (effect.kind !== "text" || effect.replyToMessageId === undefined || (Number.isSafeInteger(effect.replyToMessageId) && effect.replyToMessageId > 0))
     : effect?.kind === "card"
       ? boundedText(effect.text) && Array.isArray(effect.buttons) && effect.buttons.length > 0 && effect.buttons.length <= 20
         && effect.buttons.every((row) => Array.isArray(row) && row.length > 0 && row.length <= 8
@@ -439,7 +440,8 @@ async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
     const renderHtml = effect.kind === "text" && artifact.authorClass === "butler" ? renderTelegramButlerHtml : undefined
-    const ids = await sendTelegramText(api, chatId, part.text!, { ...(signal ? { signal } : {}), ...(renderHtml ? { renderHtml } : {}) })
+    const replyToMessageId = effect.kind === "text" && part.index === 0 ? effect.replyToMessageId : undefined
+    const ids = await sendTelegramText(api, chatId, part.text!, { ...(signal ? { signal } : {}), ...(renderHtml ? { renderHtml } : {}), ...(replyToMessageId ? { replyToMessageId } : {}) })
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]
   }

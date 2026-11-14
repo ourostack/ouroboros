@@ -56,13 +56,31 @@ export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
 }
 
-export type BlueBubblesReplyTargetSelection =
+/** Where the agent's reply lands: where the app would put it, in the main chat, or as a reply to one message. */
+export type ReplyTargetSelection =
   | { target: "current_lane" }
   | { target: "top_level" }
-  | { target: "thread"; threadOriginatorGuid: string }
+  | { target: "thread"; messageId: string }
 
-export interface BlueBubblesReplyTargetController {
-  setSelection: (selection: BlueBubblesReplyTargetSelection) => string;
+/** What the agent asks for; a thread reply without a message answers the message that started the turn. */
+export type ReplyTargetRequest =
+  | { target: "current_lane" }
+  | { target: "top_level" }
+  | { target: "thread"; messageId?: string }
+
+/**
+ * What the agent can do in the chat this turn came from. Each sense binds it per turn; a missing method means the app
+ * can't. A left-out message id means the message that started the turn.
+ */
+export interface ChatActions {
+  react?: (emoji: string, messageId?: string) => Promise<string>;
+  setReplyTarget?: (request: ReplyTargetRequest) => string;
+}
+
+/** A sense's own chat actions, which always name the message. */
+export interface SenseChatActions {
+  react?: (emoji: string, messageId: string) => Promise<string>;
+  setReplyTarget?: (selection: ReplyTargetSelection) => string;
 }
 
 export interface VoiceCallAudioRequest {
@@ -134,7 +152,7 @@ export interface ToolContext {
   };
   /** Authenticated adapter closure bound to this turn's current Teams conversation. */
   teamsSendImage?: (attachment: import("../senses/teams-image").TeamsImageAttachment, caption: string) => Promise<string>;
-  bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
+  chatActions?: ChatActions;
   currentSession?: BridgeSessionRef;
   /**
    * Set only by the private runtime for a turn that is ticking exactly one await. The inbound pipeline replaces

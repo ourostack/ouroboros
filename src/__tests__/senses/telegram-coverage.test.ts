@@ -681,7 +681,8 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.createTelegramApprovalRuntime).not.toHaveBeenCalled()
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     const turnOptions = mocks.runSenseTurn.mock.calls[0]![0]
-    expect(turnOptions).not.toHaveProperty("toolContext")
+    // Only the chat actions every Telegram turn gets; no Sanctuary runtime state.
+    expect(turnOptions.toolContext).toEqual({ chatActions: { react: expect.any(Function), setReplyTarget: expect.any(Function) } })
     expect(turnOptions).not.toHaveProperty("approvalCoordinatorFactory")
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", {
       renderHtml: expect.any(Function),
@@ -1084,7 +1085,8 @@ describe("Telegram sense coverage contracts", () => {
     createTelegramSenseApp({ agentName: "sanctuary", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-      toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" }, approvalCoordinatorFactory: f.runtime.coordinator,
+      toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro", chatActions: { react: expect.any(Function), setReplyTarget: expect.any(Function) } },
+      approvalCoordinatorFactory: f.runtime.coordinator,
     }))
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", {
       renderHtml: expect.any(Function),

@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
-import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
+import { CHAT_ACTION_CHANNELS, CHAT_ACTION_TOOL_NAMES, chatToolDefinitions } from "./tools-chat";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions } from "./tools-github";
 import { bundleToolDefinitions } from "./tools-bundle";
@@ -90,7 +90,7 @@ export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, To
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const additionalDefinitions: ToolDefinition[] = [...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...houseCareToolDefinitions, surfaceToolDefinition, ...shepherdToolDefinitions, ...appSessionsToolDefinitions];
+const additionalDefinitions: ToolDefinition[] = [...chatToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...houseCareToolDefinitions, surfaceToolDefinition, ...shepherdToolDefinitions, ...appSessionsToolDefinitions];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 export class ToolSelectionError extends Error {}
@@ -164,7 +164,7 @@ export function selectToolsForChannel(
         ...baseToolDefinitions.filter((definition) =>
           SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)
           || (ownerLike && SANCTUARY_OWNER_ADDITIONS.has(definition.tool.function.name))),
-        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []),
+        ...chatToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []),
         ...(owner ? bundleToolDefinitions.filter((definition) => SANCTUARY_OWNER_SYNC_TOOLS.has(definition.tool.function.name)) : []),
         ...(ownerLike ? mcp : []),
       ]
@@ -184,7 +184,7 @@ export function selectToolsForChannel(
       ...(shepherdToolsEnabled(context?.agentRoot ?? safeGetAgentRoot()) ? shepherdToolDefinitions : []),
       // The app-sessions tools exist only for an agent that turned the sense on in agent.json.
       ...(appSessionsToolsEnabled(context?.agentRoot ?? safeGetAgentRoot()) ? appSessionsToolDefinitions : []),
-      ...(capabilities?.channel === "bluebubbles" ? bluebubblesToolDefinitions : []),
+      ...chatToolDefinitions,
       ...(capabilities?.channel === "voice" ? voiceToolDefinitions : []),
       ...(localAudioToolGate({ ...context, context: _context }).ok ? [voiceLocalAudioToolDefinition] : []),
       ...integrations, ...mcp,
@@ -207,6 +207,9 @@ export function selectToolsForChannel(
   }
   ordinary = ordinary.filter((definition) =>
     (definition.tool.function.name !== "teams_send_image" || (!context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
+    // Reacting and choosing a reply target act in the chat the turn came from, so they need a chat sense and a turn that may send.
+    && (!CHAT_ACTION_TOOL_NAMES.has(definition.tool.function.name)
+      || (CHAT_ACTION_CHANNELS.has(capabilities?.channel ?? "") && !context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
     &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))

@@ -2836,6 +2836,21 @@ describe("Telegram HTML rendering and chunking", () => {
     expect(delivered).toHaveBeenCalledWith(8, raw)
   })
 
+  it("replies to a message on the first chunk only, and drops the reply if Telegram refuses it", async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async (_method: string, body: Record<string, unknown>) => {
+        calls.push(body)
+        if (calls.length === 1) throw new TelegramApiError("message to be replied not found", { status: 400 })
+        return { message_id: calls.length }
+      }),
+    }
+    await sendTelegramText(api, "42", `${"a".repeat(4_000)}\n\n${"b".repeat(100)}`, { replyToMessageId: 9 })
+    expect(calls.length).toBeGreaterThan(2)
+    expect(calls.map((body) => body.reply_parameters)).toEqual([{ message_id: 9 }, ...calls.slice(1).map(() => undefined)])
+  })
+
   it("refuses to receipt a sendMessage result without one canonical message id", async () => {
     const api: TelegramBotApi = { request: vi.fn(async () => ({ ok: true })), stop: vi.fn() }
     await expect(sendTelegramText(api, "42", "hello")).rejects.toThrow("message_id")

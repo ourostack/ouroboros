@@ -56,9 +56,20 @@ export interface BlueBubblesEditMessageParams {
   partIndex?: number
 }
 
+/** The six iMessage tapbacks the BlueBubbles server can send. */
+export type BlueBubblesTapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question"
+
+export interface BlueBubblesReactParams {
+  chat: BlueBubblesChatRef
+  messageGuid: string
+  reaction: BlueBubblesTapback
+}
+
 export interface BlueBubblesClient {
   sendText(params: BlueBubblesSendTextParams): Promise<BlueBubblesSendTextResult>
   editMessage(params: BlueBubblesEditMessageParams): Promise<void>
+  /** Add a tapback to a message; needs the BlueBubbles private API. */
+  react?(params: BlueBubblesReactParams): Promise<void>
   setTyping(chat: BlueBubblesChatRef, typing: boolean, signal?: AbortSignal): Promise<void>
   markChatRead(chat: BlueBubblesChatRef, signal?: AbortSignal): Promise<void>
   checkHealth(): Promise<void>
@@ -527,6 +538,23 @@ export function createBlueBubblesClient(
       })
 
       return { messageGuid, chatGuid: resolvedChatGuid }
+    },
+
+    async react(params: BlueBubblesReactParams): Promise<void> {
+      await assertHostAccount()
+      const chatGuid = await resolveChatGuid(params.chat, config, channelConfig)
+      if (!chatGuid) throw new Error("BlueBubbles could not find this chat.")
+      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/react", config.password)
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatGuid, selectedMessageGuid: params.messageGuid, reaction: params.reaction, partIndex: 0 }),
+        signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
+      })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles reaction failed (${response.status}): ${errorText || "unknown"}`)
+      }
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {

@@ -2,7 +2,7 @@
   "version": 2,
   "profiles": {
     "sanctuary-owner": {
-      "version": 20,
+      "version": 21,
       "contextScopes": [
         "household.status",
         "household.policy",
@@ -85,7 +85,9 @@
         "media_manual_import",
         "media_quality_profile",
         "media_release_profile",
-        "media_fill_missing"
+        "media_fill_missing",
+        "react",
+        "set_reply_target"
       ],
       "effectScopes": [
         "telegram.proactive",
@@ -94,7 +96,7 @@
       ]
     },
     "sanctuary-household": {
-      "version": 5,
+      "version": 6,
       "contextScopes": [
         "household.status",
         "own_requests"
@@ -115,7 +117,9 @@
         "unraid_check_services",
         "unraid_restart_container",
         "settle",
-        "speak"
+        "speak",
+        "react",
+        "set_reply_target"
       ],
       "effectScopes": [
         "telegram.request_return"
@@ -153,7 +157,7 @@
       ]
     },
     "sanctuary-agent-peer": {
-      "version": 10,
+      "version": 11,
       "toolNames": [
         "external_event_disposition",
         "query_active_work",
@@ -224,7 +228,9 @@
         "media_manual_import",
         "media_quality_profile",
         "media_release_profile",
-        "media_fill_missing"
+        "media_fill_missing",
+        "react",
+        "set_reply_target"
       ],
       "contextScopes": [
         "household.status",

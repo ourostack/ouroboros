@@ -148,6 +148,28 @@ describe("Telegram text-terminal delivery causality", () => {
     return loadSessionEnvelopeFile(path.join(harness.agentRoot, "state", "sessions", friendId, "telegram", sessionFiles[0]!))!
   }
 
+  it("sends the owner's reply as a reply to the message the agent chose", async () => {
+    harness.runAgent.mockImplementationOnce(async (messages: any[], callbacks: any, _channel: string, _signal: AbortSignal | undefined, options: any) => {
+      expect(options.toolContext.chatActions.setReplyTarget({ target: "thread", messageId: "1002" })).toBe("my reply will answer message 1002")
+      callbacks.onModelStart()
+      callbacks.onTextChunk("Yes.")
+      messages.push({ role: "assistant", content: "Yes." })
+      return { outcome: "settled", usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } }
+    })
+    const nerves = vi.spyOn(nervesRuntime, "emitNervesEvent")
+    const apiRequest = vi.fn(async () => ({ message_id: 4244 }))
+    const { app, onMessage } = createAuthorizedApp(apiRequest)
+    try {
+      await onMessage({ updateId: 3001, messageId: "1002", userId, chatId, text: "hello there" })
+      expect(nerves.mock.calls.find(([event]) => event.event === "senses.telegram_turn_error")?.[0]).toBeUndefined()
+      expect(apiRequest.mock.calls.filter(([method]) => method === "sendMessage")).toEqual([
+        ["sendMessage", expect.objectContaining({ chat_id: chatId, text: "Yes.", reply_parameters: { message_id: 1002 } }), undefined],
+      ])
+    } finally {
+      await app.stop()
+    }
+  })
+
   it("A003 runs a rejected attempt through real core before one catalog receipt and one visible terminal", async () => {
     const prior: any[] = [{ role: "system", content: "System" }]
     for (let index = 0; index < 12; index++) prior.push({ role: "user", content: `Old question ${index}` }, { role: "assistant", content: OLD_ANSWER })
