@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1122",
+      "changes": [
+        "Telegram shows the agent typing on every connection, not only through the Butler's authority service; Telegram and Teams refresh their working signal through one shared loop."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1121",
       "changes": [
         "The agent can react to a message and choose which message its reply answers, with the same react and set_reply_target tools on iMessage and Telegram."
