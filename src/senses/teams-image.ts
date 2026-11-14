@@ -74,6 +74,19 @@ export async function prepareTeamsImage(input: {
   }
 }
 
+/** Binds the shared send_file action to this Teams conversation: Teams takes PNG and JPEG images inline. */
+export function teamsImageFileSender(
+  send: (attachment: TeamsImageAttachment, caption: string) => Promise<string>,
+  agentName: string,
+  agentRoot: string,
+): (filePath: string, caption: string) => Promise<string> {
+  return async (filePath, caption) => {
+    const attachment = await prepareTeamsImage({ path: filePath, agentName, agentRoot })
+    const activityId = await send(attachment, caption)
+    return `sent the image; Teams accepted it (activity ${activityId})`
+  }
+}
+
 export function createTeamsImageSender(
   send: (message: TeamsImageMessage) => Promise<unknown>,
   replyToId?: string,

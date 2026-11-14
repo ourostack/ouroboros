@@ -38,6 +38,31 @@ export interface TelegramBotApi {
   stop(): void
 }
 
+/** The largest file the agent uploads to Telegram; the Bot API takes photos up to 10 MB. */
+export const MAX_TELEGRAM_UPLOAD_BYTES = 10_000_000
+
+/** A file in a Bot API request body; a body that carries one is sent as multipart/form-data. */
+export interface TelegramInputFile {
+  kind: "telegram_input_file"
+  name: string
+  contentType: string
+  bytes: Buffer
+}
+
+export function isTelegramInputFile(value: unknown): value is TelegramInputFile {
+  return typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "telegram_input_file"
+}
+
+function telegramRequestInit(body: Record<string, unknown>): { headers?: Record<string, string>; body: string | FormData } {
+  if (!Object.values(body).some(isTelegramInputFile)) return { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+  const form = new FormData()
+  for (const [key, value] of Object.entries(body)) {
+    if (isTelegramInputFile(value)) form.append(key, new Blob([new Uint8Array(value.bytes)], { type: value.contentType }), value.name)
+    else form.append(key, typeof value === "string" ? value : JSON.stringify(value))
+  }
+  return { body: form }
+}
+
 export interface TelegramBotApiOptions {
   token: string
   fetch?: TelegramFetch
@@ -2031,8 +2056,7 @@ export function createTelegramBotApi(options: TelegramBotApiOptions): TelegramBo
           try {
             const response = await fetchImpl(`${baseUrl}/${method}`, {
               method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(body),
+              ...telegramRequestInit(body),
               signal: requestSignal,
             })
             const envelope = parseEnvelope<T>(await response.text(), response.status, options.token)

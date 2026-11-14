@@ -48,6 +48,7 @@ import {
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
 import { reactInBlueBubbles } from "./reactions"
+import { sendFileInBlueBubbles } from "./send-file"
 import { chatActionsForTurn } from "../../repertoire/tools-chat"
 import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
@@ -2291,6 +2292,7 @@ async function handleBlueBubblesNormalizedEvent(
               chatActions: chatActionsForTurn({
                 setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
                 react: (emoji: string, messageId: string) => reactInBlueBubbles(client, event.chat, emoji, messageId),
+                sendFile: (filePath: string, caption: string) => sendFileInBlueBubbles(client, event.chat, filePath, caption),
               }, event.messageGuid),
             },
           })

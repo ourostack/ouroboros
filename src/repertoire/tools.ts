@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
-import { CHAT_ACTION_CHANNELS, CHAT_ACTION_TOOL_NAMES, chatToolDefinitions } from "./tools-chat";
+import { CHAT_ACTION_TOOL_CHANNELS, chatToolDefinitions } from "./tools-chat";
 import { adoSemanticToolDefinitions } from "./ado-semantic";
 import { githubToolDefinitions } from "./tools-github";
 import { bundleToolDefinitions } from "./tools-bundle";
@@ -172,7 +172,7 @@ export function selectToolsForChannel(
   } else {
     const available = new Set(capabilities?.availableIntegrations ?? [])
     const integrations = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions]
-      .filter((definition) => available.size > 0 || definition.tool.function.name === "teams_send_image")
+      .filter(() => available.size > 0)
       .filter((definition) => definition.integration ? available.has(definition.integration) : capabilities?.channel === "teams")
       .map((definition) => {
         const preference = definition.integration ? toolPreferences?.[definition.integration] : undefined
@@ -206,10 +206,9 @@ export function selectToolsForChannel(
     }
   }
   ordinary = ordinary.filter((definition) =>
-    (definition.tool.function.name !== "teams_send_image" || (!context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
-    // Reacting and choosing a reply target act in the chat the turn came from, so they need a chat sense and a turn that may send.
-    && (!CHAT_ACTION_TOOL_NAMES.has(definition.tool.function.name)
-      || (CHAT_ACTION_CHANNELS.has(capabilities?.channel ?? "") && !context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
+    // Chat actions act in the chat the turn came from, so they need a sense that binds them and a turn that may send.
+    (!CHAT_ACTION_TOOL_CHANNELS.has(definition.tool.function.name)
+      || (CHAT_ACTION_TOOL_CHANNELS.get(definition.tool.function.name)!.has(capabilities?.channel ?? "") && !context?.noSend && !context?.habitSession && !context?.autonomousTurnKind))
     &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))

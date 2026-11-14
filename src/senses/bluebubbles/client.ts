@@ -59,6 +59,11 @@ export interface BlueBubblesEditMessageParams {
 /** The six iMessage tapbacks the BlueBubbles server can send. */
 export type BlueBubblesTapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question"
 
+export interface BlueBubblesSendAttachmentParams {
+  chat: BlueBubblesChatRef
+  file: { name: string; contentType: string; bytes: Buffer }
+}
+
 export interface BlueBubblesReactParams {
   chat: BlueBubblesChatRef
   messageGuid: string
@@ -70,6 +75,7 @@ export interface BlueBubblesClient {
   editMessage(params: BlueBubblesEditMessageParams): Promise<void>
   /** Add a tapback to a message; needs the BlueBubbles private API. */
   react?(params: BlueBubblesReactParams): Promise<void>
+  sendAttachment?(params: BlueBubblesSendAttachmentParams): Promise<void>
   setTyping(chat: BlueBubblesChatRef, typing: boolean, signal?: AbortSignal): Promise<void>
   markChatRead(chat: BlueBubblesChatRef, signal?: AbortSignal): Promise<void>
   checkHealth(): Promise<void>
@@ -554,6 +560,24 @@ export function createBlueBubblesClient(
       if (!response.ok) {
         const errorText = await response.text().catch(() => "")
         throw new Error(`BlueBubbles reaction failed (${response.status}): ${errorText || "unknown"}`)
+      }
+    },
+
+    async sendAttachment(params: BlueBubblesSendAttachmentParams): Promise<void> {
+      await assertHostAccount()
+      const chatGuid = await resolveChatGuid(params.chat, config, channelConfig)
+      if (!chatGuid) throw new Error("BlueBubbles could not find this chat.")
+      const form = new FormData()
+      form.append("chatGuid", chatGuid)
+      form.append("tempGuid", randomUUID())
+      form.append("name", params.file.name)
+      form.append("attachment", new Blob([new Uint8Array(params.file.bytes)], { type: params.file.contentType }), params.file.name)
+      const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/attachment", config.password)
+      // An upload takes longer than a text send; give it a minute on top of the usual timeout.
+      const response = await fetch(url, { method: "POST", body: form, signal: AbortSignal.timeout(channelConfig.requestTimeoutMs + 60_000) })
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "")
+        throw new Error(`BlueBubbles attachment failed (${response.status}): ${errorText || "unknown"}`)
       }
     },
 

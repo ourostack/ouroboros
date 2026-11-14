@@ -1,7 +1,10 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ChatActions, ReplyTargetSelection } from "../repertoire/tools-base"
 import { chatActionsForTurn } from "../repertoire/tools-chat"
-import type { TelegramBotApi } from "./telegram-client"
+import { MAX_TELEGRAM_UPLOAD_BYTES, type TelegramBotApi } from "./telegram-client"
+import { readChatFile } from "./chat-file"
+
+const TELEGRAM_PHOTO_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp"])
 
 /** One turn's Telegram chat actions, plus the reply target the turn's sends should use. */
 export interface TelegramTurnChatActions {
@@ -20,6 +23,7 @@ function telegramMessageId(value: string): number | undefined {
  */
 export function createTelegramChatActions(api: TelegramBotApi, chatId: string, inboundMessageId?: string): TelegramTurnChatActions {
   let selection: ReplyTargetSelection = { target: "current_lane" }
+  const replyToMessageId = (): number | undefined => selection.target === "thread" ? telegramMessageId(selection.messageId) : undefined
   return {
     actions: chatActionsForTurn({
       react: async (emoji, messageId) => {
@@ -34,7 +38,22 @@ export function createTelegramChatActions(api: TelegramBotApi, chatId: string, i
         selection = next
         return next.target === "thread" ? `my reply will answer message ${next.messageId}` : "my reply will post plainly in the chat"
       },
+      // Photos show inline; anything else arrives as a document. The file follows the reply target, like text does.
+      sendFile: async (filePath, caption) => {
+        const text = caption.trim()
+        if (text.length > 1_024) throw new Error("a Telegram caption can be up to 1,024 characters")
+        const file = await readChatFile(filePath, MAX_TELEGRAM_UPLOAD_BYTES)
+        const field = TELEGRAM_PHOTO_TYPES.has(file.contentType) ? "photo" : "document"
+        const replyTo = replyToMessageId()
+        await api.request(field === "photo" ? "sendPhoto" : "sendDocument", {
+          chat_id: chatId,
+          [field]: { kind: "telegram_input_file", ...file },
+          ...(text ? { caption: text } : {}),
+          ...(replyTo ? { reply_parameters: { message_id: replyTo } } : {}),
+        })
+        return `sent ${file.name}`
+      },
     }, inboundMessageId),
-    replyToMessageId: () => selection.target === "thread" ? telegramMessageId(selection.messageId) : undefined,
+    replyToMessageId,
   }
 }

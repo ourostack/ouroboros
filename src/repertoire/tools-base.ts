@@ -75,12 +75,15 @@ export type ReplyTargetRequest =
 export interface ChatActions {
   react?: (emoji: string, messageId?: string) => Promise<string>;
   setReplyTarget?: (request: ReplyTargetRequest) => string;
+  /** Sends a local file into this chat; resolves to what the agent should hear about it, and throws if it didn't go. */
+  sendFile?: (path: string, caption: string) => Promise<string>;
 }
 
 /** A sense's own chat actions, which always name the message. */
 export interface SenseChatActions {
   react?: (emoji: string, messageId: string) => Promise<string>;
   setReplyTarget?: (selection: ReplyTargetSelection) => string;
+  sendFile?: ChatActions["sendFile"];
 }
 
 export interface VoiceCallAudioRequest {
@@ -150,8 +153,6 @@ export interface ToolContext {
     id: string;
     conversations: unknown;
   };
-  /** Authenticated adapter closure bound to this turn's current Teams conversation. */
-  teamsSendImage?: (attachment: import("../senses/teams-image").TeamsImageAttachment, caption: string) => Promise<string>;
   chatActions?: ChatActions;
   currentSession?: BridgeSessionRef;
   /**

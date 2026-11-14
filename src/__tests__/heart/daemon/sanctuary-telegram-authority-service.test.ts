@@ -1120,6 +1120,46 @@ describe("Sanctuary Telegram authority service", () => {
     }
   })
 
+  it("rebuilds a file the agent sends and uploads it only into chats the agent may message", async () => {
+    const keys = generateKeyPairSync("ed25519")
+    let nonce = 0
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(root(), {
+      targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42", keyId: "issuer-1",
+      publicKeyDigest: sanctuaryAuthorityPublicKeyDigest(keys.privateKey), privateKey: keys.privateKey,
+      now: () => "2026-09-20T22:30:00.000Z", nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    })
+    const api = { request: vi.fn(async (method: string) => ({ method, message_id: 5 })), stop: vi.fn() }
+    const service = new SanctuaryTelegramAuthorityService({ api, gateway })
+    const upload = (method: string, body: Record<string, unknown>) => service.dispatch("telegram.request", { method, body })
+    const file = { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bodyBase64: Buffer.from("%PDF").toString("base64") }
+
+    await expect(upload("sendDocument", { chat_id: "42", document: file, caption: "menu", reply_parameters: { message_id: 7 } })).resolves.toMatchObject({ method: "sendDocument" })
+    expect(api.request).toHaveBeenLastCalledWith("sendDocument", {
+      chat_id: "42", caption: "menu", reply_parameters: { message_id: 7 },
+      document: { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") },
+    }, expect.any(AbortSignal))
+    await expect(upload("sendPhoto", { chat_id: "42", photo: { ...file, name: "a.jpg", contentType: "image/jpeg" } })).resolves.toMatchObject({ method: "sendPhoto" })
+    await expect(upload("sendPhoto", { chat_id: "84", photo: file })).rejects.toThrow(/send target is invalid/u)
+    for (const body of [
+      { chat_id: "42", document: file, parse_mode: "HTML" },
+      { chat_id: "42", photo: file },
+      { chat_id: "42", document: file, caption: "" },
+      { chat_id: "42", document: file, caption: "x".repeat(1_025) },
+      { chat_id: "42", document: file, reply_parameters: { message_id: 0 } },
+    ]) await expect(upload("sendDocument", body)).rejects.toThrow(/file send body is invalid/u)
+    for (const document of [
+      "attach://menu.pdf",
+      { ...file, kind: "url" },
+      { ...file, extra: 1 },
+      { ...file, name: "" },
+      { ...file, contentType: 7 },
+      { ...file, bodyBase64: 7 },
+      { ...file, bodyBase64: "" },
+      { ...file, bodyBase64: "not base64!" },
+      { ...file, bodyBase64: Buffer.alloc(10_000_001).toString("base64") },
+    ]) await expect(upload("sendDocument", { chat_id: "42", document })).rejects.toThrow(/file upload is invalid/u)
+  })
+
   describe("getUpdates session reclaim (D-030)", () => {
     const reclaimApi = (getUpdates: () => Promise<unknown>) => {
       const request = vi.fn(async (method: string) => (method === "getUpdates" ? getUpdates() : { method }))

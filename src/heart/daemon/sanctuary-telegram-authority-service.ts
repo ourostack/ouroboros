@@ -2,8 +2,8 @@ import * as fs from "node:fs"
 import * as net from "node:net"
 import * as path from "node:path"
 
-import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-client"
-import { TELEGRAM_ALLOWED_UPDATES, TelegramApiError } from "../../senses/telegram-client"
+import type { TelegramBotApi, TelegramInputFile, TelegramUpdate } from "../../senses/telegram-client"
+import { MAX_TELEGRAM_UPLOAD_BYTES, TELEGRAM_ALLOWED_UPDATES, TelegramApiError } from "../../senses/telegram-client"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
 import { authorityArtifactDigest } from "./sanctuary-authority-codec"
@@ -16,7 +16,8 @@ import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "./sanctu
 import type { SignedAuthorityPayload } from "./sanctuary-authority-codec"
 
 const PROTOCOL_VERSION = 1
-const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024
+// Room for one file upload (MAX_TELEGRAM_UPLOAD_BYTES, base64) plus its envelope.
+const DEFAULT_MAX_REQUEST_BYTES = 14 * 1024 * 1024
 const DEFAULT_CONNECTION_TIMEOUT_MS = 65_000
 const MAX_TELEGRAM_ATTACHMENT_BYTES = 20_000_000
 const SAFE_TELEGRAM_FILE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}$/u
@@ -44,6 +45,23 @@ function exactBody(value: unknown, required: readonly string[], optional: readon
 
 function boundedText(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
+}
+
+// A reply names only the message it answers, so it cannot carry content of its own.
+function validReplyParameters(value: unknown): boolean {
+  return value === undefined || (isObject(value) && exactKeys(value, ["message_id"])
+    && Number.isSafeInteger(value.message_id) && (value.message_id as number) > 0)
+}
+
+/** Rebuilds a file the agent sent as base64; anything else is refused. */
+function decodeUpload(value: unknown): TelegramInputFile | null {
+  if (
+    !isObject(value) || !exactKeys(value, ["kind", "name", "contentType", "bodyBase64"]) || value.kind !== "telegram_input_file"
+    || !boundedText(value.name, 256) || !boundedText(value.contentType, 256) || typeof value.bodyBase64 !== "string"
+  ) return null
+  const bytes = Buffer.from(value.bodyBase64, "base64")
+  if (bytes.length === 0 || bytes.length > MAX_TELEGRAM_UPLOAD_BYTES || bytes.toString("base64") !== value.bodyBase64) return null
+  return { kind: "telegram_input_file", name: value.name, contentType: value.contentType, bytes }
 }
 
 // After a gateway restart, Telegram keeps the previous getUpdates long-poll
@@ -85,7 +103,7 @@ export class SanctuaryTelegramAuthorityService {
     pollReclaimDelayMs?: number
   }) {
     this.#api = {
-      request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" ? 60_000 : 15_000)),
+      request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" || method === "sendPhoto" || method === "sendDocument" ? 60_000 : 15_000)),
     }
     this.#gateway = options.gateway
     this.#hostAuthority = options.hostAuthority
@@ -202,6 +220,7 @@ export class SanctuaryTelegramAuthorityService {
       const requestMethod = params.method
       const body = params.body
       const ownerChatId = this.#gateway.identity().ownerChatId
+      let upload: Record<string, unknown> | undefined
       if (requestMethod === "getMe") {
         if (!emptyParams(body)) throw new Error("Sanctuary Telegram getMe body is invalid")
       } else if (requestMethod === "sendMessage") {
@@ -214,9 +233,7 @@ export class SanctuaryTelegramAuthorityService {
           !boundedText(body.text, 4_096)
           || (body.parse_mode !== undefined && body.parse_mode !== "HTML")
           || (body.reply_markup !== undefined && !isObject(body.reply_markup))
-          // A reply names only the message it answers, so it cannot carry content of its own.
-          || (body.reply_parameters !== undefined && !(isObject(body.reply_parameters) && exactKeys(body.reply_parameters, ["message_id"])
-            && Number.isSafeInteger(body.reply_parameters.message_id) && (body.reply_parameters.message_id as number) > 0))
+          || !validReplyParameters(body.reply_parameters)
         ) {
           throw new Error("Sanctuary Telegram send body is invalid")
         }
@@ -298,6 +315,20 @@ export class SanctuaryTelegramAuthorityService {
         if (actionChatId !== ownerChatId && !this.#gateway.isAuthorizedChat(actionChatId)) {
           throw new Error("Sanctuary Telegram chat action target is invalid")
         }
+      } else if (requestMethod === "sendPhoto" || requestMethod === "sendDocument") {
+        const field = requestMethod === "sendPhoto" ? "photo" : "document"
+        if (
+          !exactBody(body, ["chat_id", field], ["caption", "reply_parameters"])
+          || (body.caption !== undefined && !boundedText(body.caption, 1_024))
+          || !validReplyParameters(body.reply_parameters)
+        ) {
+          throw new Error("Sanctuary Telegram file send body is invalid")
+        }
+        const file = decodeUpload(body[field])
+        if (!file) throw new Error("Sanctuary Telegram file upload is invalid")
+        const chatId = String(body.chat_id)
+        if (chatId !== ownerChatId && !this.#gateway.isAuthorizedChat(chatId)) throw new Error("Sanctuary Telegram send target is invalid")
+        upload = { ...body, [field]: file }
       } else if (requestMethod === "setMessageReaction") {
         // A reaction is one emoji on a message in a chat the agent may already message; nothing else rides along.
         if (!exactBody(body, ["chat_id", "message_id", "reaction"])) throw new Error("Sanctuary Telegram reaction is invalid")
@@ -324,7 +355,7 @@ export class SanctuaryTelegramAuthorityService {
       } else {
         throw new Error("Sanctuary Telegram request method is not available")
       }
-      const result = await this.#api.request(requestMethod, body as Record<string, unknown>)
+      const result = await this.#api.request(requestMethod, upload ?? body as Record<string, unknown>)
       if (requestMethod === "getFile") {
         if (
           !isObject(result)

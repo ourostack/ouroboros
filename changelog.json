@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1126",
+      "changes": [
+        "The agent can send a file from its machine into the chat with one send_file tool on iMessage, Telegram and Teams; it replaces teams_send_image."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1125",
       "changes": [
         "Wake runners hold a wake while the last one sent to the same session has not reached it, so the app's own queue never fills with hours-old wakes that arrive one per turn; the command offers the news again on its next run."

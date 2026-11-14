@@ -3131,6 +3131,39 @@ describe("BlueBubbles client", () => {
     })
   })
 
+  describe("sendAttachment", () => {
+    const config = { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" }
+    const channel = { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 }
+    const file = { name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") }
+
+    it("uploads the file into the chat as one attachment", async () => {
+      global.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      await createBlueBubblesClient(config, channel).sendAttachment!({ chat: dmChat, file })
+      const [url, init] = (global.fetch as any).mock.calls[0]
+      expect(String(url)).toContain("/api/v1/message/attachment")
+      const form = init.body as FormData
+      expect(form.get("chatGuid")).toBe(dmChat.chatGuid)
+      expect(form.get("name")).toBe("menu.pdf")
+      expect(typeof form.get("tempGuid")).toBe("string")
+      const attachment = form.get("attachment") as File
+      expect(attachment.name).toBe("menu.pdf")
+      expect(attachment.type).toBe("application/pdf")
+      expect(Buffer.from(await attachment.arrayBuffer()).toString()).toBe("%PDF")
+    })
+
+    it("says when the server refuses or the chat can't be found", async () => {
+      global.fetch = vi.fn(async () => new Response("too big", { status: 413 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel)
+      await expect(client.sendAttachment!({ chat: dmChat, file })).rejects.toThrow("BlueBubbles attachment failed (413): too big")
+      global.fetch = vi.fn(async () => ({ ok: false, status: 500, text: async () => { throw new Error("gone") } })) as unknown as typeof fetch
+      await expect(client.sendAttachment!({ chat: dmChat, file })).rejects.toThrow("BlueBubbles attachment failed (500): unknown")
+      await expect(client.sendAttachment!({ chat: { ...dmChat, chatGuid: undefined, chatIdentifier: "" }, file }))
+        .rejects.toThrow("BlueBubbles could not find this chat.")
+    })
+  })
+
   describe("getRepliedMessage", () => {
     it.each([
       { kind: "the agent's own message", data: { text: " want it on your PocketBook? ", isFromMe: true }, want: { text: "want it on your PocketBook?", fromMe: true } },

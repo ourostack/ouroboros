@@ -367,11 +367,11 @@ describe("execTool", () => {
       ["revive_sense", ["external_side_effect"]],
       ["set_reply_target", ["external_side_effect"]],
       ["react", ["external_side_effect"]],
+      ["send_file", ["external_side_effect"]],
       ["surface", ["durable_state_write", "external_side_effect"]],
       ["graph_mutate", ["external_side_effect"]],
       ["ado_mutate", ["external_side_effect"]],
       ["teams_send_message", ["external_side_effect"]],
-      ["teams_send_image", ["external_side_effect"]],
       ["ado_create_epic", ["external_side_effect"]],
       ["ado_create_issue", ["external_side_effect"]],
       ["ado_move_items", ["external_side_effect"]],
@@ -1093,7 +1093,7 @@ describe("ToolDefinition type and registry", () => {
       expect(def.tool.function.name).toBeDefined()
       expect(typeof def.handler).toBe("function")
       // All teams tools have an integration, except teams_send_message (uses botApi, not OAuth)
-      if (def.tool.function.name !== "teams_send_message" && def.tool.function.name !== "teams_send_image") {
+      if (def.tool.function.name !== "teams_send_message") {
         expect(def.integration).toBeDefined()
         expect(["ado", "graph"]).toContain(def.integration)
       }
@@ -2601,6 +2601,20 @@ describe("chat action tools", () => {
     ])
     expect(chatActionsForTurn({ setReplyTarget }, undefined).setReplyTarget!({ target: "thread" })).toBe("there is no message to reply to here; pass message_id.")
     expect(chatActionsForTurn({}, "IN-1")).toEqual({})
+  })
+
+  it("sends a file through the chat's own action and lets a failure surface as a failure", async () => {
+    const handler = chatToolDefinitions.find((definition) => definition.tool.function.name === "send_file")!.handler
+    const sendFile = vi.fn(async (filePath: string, caption: string) => `sent ${filePath} (${caption})`)
+    const ctx = (extra: Record<string, unknown> = {}) => ({ signin: async () => undefined, chatActions: { sendFile }, ...extra }) as any
+    expect(await handler({ path: " /tmp/menu.pdf ", caption: "menu" }, ctx())).toBe("sent /tmp/menu.pdf (menu)")
+    expect(await handler({ path: "/tmp/menu.pdf", caption: 7 } as any, ctx())).toBe("sent /tmp/menu.pdf ()")
+    await expect(handler({ path: "menu.pdf" }, ctx())).rejects.toThrow("path must be an absolute path to a file.")
+    await expect(handler({ path: "/tmp/menu.pdf" }, { signin: async () => undefined } as any)).rejects.toThrow("this chat doesn't take files from me.")
+    await expect(handler({ path: "/tmp/menu.pdf" }, ctx({ noSend: true }))).rejects.toThrow("I can't act in a chat on this turn.")
+    sendFile.mockRejectedValueOnce(new Error("too big"))
+    await expect(handler({ path: "/tmp/menu.pdf" }, ctx())).rejects.toThrow("too big")
+    expect(sendFile).toHaveBeenCalledTimes(3)
   })
 
   it("refuses to act in a chat on a turn that may not send, even when called directly", async () => {
