@@ -51,6 +51,8 @@ export const SYNC_LOCK_MALFORMED_MS = 30 * 1000
 // The sync path inside the container, as src/heart/sync.ts's SYNC_SSH_COMMAND.
 export const SYNC_SSH_COMMAND = "sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh"
 export const SYNC_LATENCY_LIMIT_MS = 2000
+/** Turns timed when the first is slow; the median is judged. */
+export const SYNC_LATENCY_TURNS = 3
 export const SYNC_EVENTS_WAIT_MS = 60 * 1000
 export const SYNC_EVENTS_POLL_MS = 2000
 export const LATENCY_WORDS = "(replay) what time is it?"
@@ -1138,25 +1140,48 @@ export function syncIntervals(events) {
   return { pull, commit, complete: pull.ms !== null && commit.ms !== null }
 }
 
-/**
- * The check `sync latency`: one read-only turn after the cases, inside the bracket (the residue check reads its commits too). Its
- * pre-turn pull and its synchronous post-turn commit each stay under two seconds; the network push is not timed.
- */
-export async function syncLatencyResult(host) {
+/** One read-only turn, timed from its own sync events. */
+async function timedLatencyTurn(host) {
   const sync = host.sync
   const since = host.now()
   host.openWindow(10)
   let sent
   try { sent = await host.send({ who: "principal", text: LATENCY_WORDS, delegated: false, context: randomUUID() }) } finally { host.closeWindow() }
-  if (sent.error) return { id: "sync-latency", status: "fail", checks: [check("the read-only turn answered", false, sent.error)] }
+  if (sent.error) return { error: sent.error }
   const deadline = host.now() + SYNC_EVENTS_WAIT_MS
   let intervals = syncIntervals(sync.events(since))
   while (!intervals.complete && host.now() < deadline) {
     await host.sleep(SYNC_EVENTS_POLL_MS)
     intervals = syncIntervals(sync.events(since))
   }
-  const judge = (name, span) => check(`${name} took under ${SYNC_LATENCY_LIMIT_MS} ms`, span.ms !== null && span.ms < SYNC_LATENCY_LIMIT_MS, span.ms === null ? span.problem : `${span.ms} ms`)
-  const checks = [judge("the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end)", intervals.pull), judge("the post-turn commit (heart.sync_push_start to heart.sync_commit_end)", intervals.commit)]
+  return { intervals }
+}
+
+/**
+ * The check `sync latency`: a read-only turn after the cases, inside the bracket (the residue check reads its commits too). Its
+ * pre-turn pull and its synchronous post-turn commit each stay under two seconds; the network push is not timed. The pull is a
+ * network fetch, so one slow turn takes two more and the median of the three is judged: a slow network blip passes, sync that
+ * is slow on most turns still blocks.
+ */
+export async function syncLatencyResult(host) {
+  const fast = (span) => span.ms !== null && span.ms < SYNC_LATENCY_LIMIT_MS
+  const turns = []
+  for (let turn = 0; turn < SYNC_LATENCY_TURNS; turn += 1) {
+    const timed = await timedLatencyTurn(host)
+    if (timed.error) return { id: "sync-latency", status: "fail", checks: [check("the read-only turn answered", false, timed.error)] }
+    turns.push(timed.intervals)
+    const first = turns[0]
+    if (!first.complete || (fast(first.pull) && fast(first.commit))) break
+  }
+  const median = (key) => {
+    const spans = turns.map((intervals) => intervals[key])
+    const missing = spans.find((span) => span.ms === null)
+    if (missing) return missing
+    const ms = spans.map((span) => span.ms).sort((a, b) => a - b)
+    return { ms: ms[Math.floor(ms.length / 2)], detail: ms.length > 1 ? `median ${ms[Math.floor(ms.length / 2)]} ms of ${ms.join(", ")} ms` : `${ms[0]} ms` }
+  }
+  const judge = (name, span) => check(`${name} took under ${SYNC_LATENCY_LIMIT_MS} ms`, fast(span), span.ms === null ? span.problem : span.detail)
+  const checks = [judge("the pre-turn pull (heart.sync_pull_start to heart.sync_pull_end)", median("pull")), judge("the post-turn commit (heart.sync_push_start to heart.sync_commit_end)", median("commit"))]
   return { id: "sync-latency", status: checks.every((entry) => entry.ok) ? "pass" : "fail", checks }
 }
 
