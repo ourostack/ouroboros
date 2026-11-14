@@ -1276,7 +1276,7 @@ describe("runAgent tool loop guard", () => {
   it.each([
     ["incomplete", '{"answer":"partial', "incomplete_settle_arguments"],
     ["invalid", String.raw`{"answer":"partial\x"}`, "invalid_settle_arguments"],
-  ])("fails ordinary %s settle finalization without another provider turn", async (_label, argumentsText, errorCode) => {
+  ])("hands an ordinary %s settle finalization back to the agent, which settles again", async (_label, argumentsText, errorCode) => {
     mockCreate
       .mockReturnValueOnce(makeStream([
         makeChunk(undefined, [{
@@ -1288,8 +1288,8 @@ describe("runAgent tool loop guard", () => {
       .mockReturnValueOnce(makeStream([
         makeChunk(undefined, [{
           index: 0,
-          id: "call_forbidden_retry",
-          function: { name: "settle", arguments: '{"answer":"must not run"}' },
+          id: "call_corrected",
+          function: { name: "settle", arguments: '{"answer":"corrected"}' },
         }]),
       ]))
 
@@ -1305,16 +1305,15 @@ describe("runAgent tool loop guard", () => {
       { toolChoiceRequired: true, skipKeptNotes: true },
     )
 
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onTextChunk).not.toHaveBeenCalled()
-    expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: errorCode },
-    })
-    expect(callbacks.onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: errorCode }),
-      "terminal",
-    )
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    // The second request answers the rejected settle with the parse error.
+    expect(mockCreate.mock.calls[1]![0].messages).toContainEqual(expect.objectContaining({
+      role: "tool", tool_call_id: "call_invalid_finalization", content: expect.stringContaining(errorCode),
+    }))
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith("corrected")
+    expect(callbacks.onTextChunk).not.toHaveBeenCalledWith(expect.stringContaining("partial"))
+    expect(result).toMatchObject({ outcome: "settled" })
+    expect(callbacks.onError).not.toHaveBeenCalledWith(expect.anything(), "terminal")
   })
 
   it("does not retry a provider turn when final-only callback commit throws", async () => {
