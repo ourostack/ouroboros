@@ -31,7 +31,7 @@ event; none is gated beyond the harness's usual trust rule (the tools are family
 
 **Stuck** means the app does not say the session is running, but its own history (`events.jsonl`) shows its agent loop
 stopped mid-turn, or between turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`,
-plan approval or permission request is open.
+plan approval, permission request or repository-trust decision is open.
 
 **History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
 the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
@@ -74,15 +74,20 @@ The sense process does three things:
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
-- The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
+- The same snapshot lists the sessions waiting on a **permission prompt** or a **repository-trust decision**, which only the person can answer in the app
   and which freezes the session (and one that created it) while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
   BlueBubbles): the session's name, what it waits on, and that only the owner can answer it. A prompt is never told
   twice (`waiting-prompts.json` keeps the told ones until the prompt is answered), a prompt older than a day is
   shown but not announced, and a notice that could not reach the owner is retried each minute. `ouro status` lists
   each as `waiting on you: 1a2b3c4d (Babysitter) for 5 min: run a shell command`. The prompt comes from the open
-  `permission.requested` event in the session's own history, the same source that makes the session `waiting`. The app's
-  repository-trust prompt leaves no such local record, so it is not detected here.
+  `permission.requested` event in the session's own history, the same source that makes the session `waiting`.
+  A repository-trust wait reads `waiting on you: 1a2b3c4d (AX essay) for 5 min: a repository trust decision for
+  owner/name` and is told once per decision. It comes from the app's database: when a session that another session
+  created reaches the trust card, the app records a `repository_trust` row in `creator_notification_claims` whose
+  watermark is the decision id (`repository_trust:<project>:<host>:<revision>`). The row stays after the person decides,
+  so it counts as open only while `project_host_trust` has no grant for that project and host and
+  `project_trust_revisions` has no newer revision. A session that nothing coordinates leaves no row and is not seen.
 - Every ten seconds it reads the new part of each **watched** session's history. Sending to a session (or resuming it,
   or opening it with a first message) watches it for a day after the last write. When a watched session finishes a
   reply (an assistant message that asks for no tools), the reply is queued for the agent's private runtime and the

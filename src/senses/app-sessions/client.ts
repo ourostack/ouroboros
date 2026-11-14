@@ -59,6 +59,16 @@ export interface AppSessionRow {
   lastActivity: string | null
   /** The oldest permission request still open, whatever else the session waits on. */
   prompt?: PermissionPrompt
+  /** The repository-trust decision the session is blocked on, which only the person can make. */
+  repositoryTrust?: RepositoryTrustWait
+}
+
+/** An undecided repository-trust card, from the app's database. */
+export interface RepositoryTrustWait {
+  /** The app's id for the decision (`repository_trust:<project>:<host>:<revision>`); a new decision has a new id. */
+  decisionId: string
+  /** The repository the person is asked to trust, as `owner/name` when the app knows it. */
+  repo: string
 }
 
 /** A permission request the person has not answered yet, from the session's own history. */
@@ -191,6 +201,48 @@ function databaseRows(stateDir: string): DbRow[] {
       return columns.length ? query.replace("SELECT ", `SELECT ${columns.join(", ")}, `) : query
     }
     return [...db.prepare(withHierarchy(workspaces, "workspaces", "w")).all() as DbRow[], ...db.prepare(withHierarchy(CHAT_ROWS, "sessions", "s")).all() as DbRow[]]
+  })
+}
+
+function hasTable(db: Database.Database, table: string): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined
+}
+
+interface TrustClaimRow {
+  watermark: string
+  session_id: string
+  project: string | null
+  owner: string | null
+  repo: string | null
+  trusted: number
+  current: number | null
+}
+
+/**
+ * The sessions blocked on a repository-trust card. When a session that another session created reaches the card, the app
+ * records a `repository_trust` notification claim for it, with the decision id as the watermark, and the claim stays after
+ * the person decides. So a claim is an open wait only while the project has no trust grant for the session's host and no
+ * newer trust revision. A session nobody coordinates leaves no claim and is not seen here.
+ */
+function repositoryTrustWaits(stateDir: string): Map<string, RepositoryTrustWait> {
+  return withDatabase(stateDir, (db) => {
+    const waits = new Map<string, RepositoryTrustWait & { revision: number }>()
+    if (!["creator_notification_claims", "project_host_trust", "project_trust_revisions", "workspaces", "projects"].every(table => hasTable(db, table))) return waits
+    const named = hasColumn(db, "projects", "github_owner") && hasColumn(db, "projects", "github_repo")
+    const revision = hasColumn(db, "project_trust_revisions", "local_revision") ? "max(r.revision, r.local_revision)" : "r.revision"
+    const claims = db.prepare(`
+      SELECT c.watermark, w.session_id, p.name AS project, ${named ? "p.github_owner AS owner, p.github_repo AS repo" : "NULL AS owner, NULL AS repo"},
+        EXISTS (SELECT 1 FROM project_host_trust h WHERE h.project_id = w.project_id AND h.host_id = coalesce(w.host_id, 'local')) AS trusted,
+        (SELECT ${revision} FROM project_trust_revisions r WHERE r.project_id = w.project_id) AS current
+      FROM creator_notification_claims c JOIN workspaces w ON w.id = c.workspace_id LEFT JOIN projects p ON p.id = w.project_id
+      WHERE c.kind = 'repository_trust' AND w.session_id IS NOT NULL`).all() as TrustClaimRow[]
+    for (const claim of claims) {
+      const decided = Number(/:(\d+)$/.exec(claim.watermark)?.[1])
+      if (claim.trusted || Number.isNaN(decided) || (claim.current ?? 0) > decided) continue
+      if ((waits.get(claim.session_id)?.revision ?? -1) >= decided) continue
+      waits.set(claim.session_id, { decisionId: claim.watermark, repo: claim.owner && claim.repo ? `${claim.owner}/${claim.repo}` : claim.project ?? "this repository", revision: decided })
+    }
+    return new Map([...waits].map(([session, { decisionId, repo }]) => [session, { decisionId, repo }]))
   })
 }
 
@@ -383,12 +435,14 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
   const now = (options.now ?? Date.now)()
   const seen = new Set<string>()
   const rows: AppSessionRow[] = []
+  const trusts = repositoryTrustWaits(stateDir)
   for (const row of databaseRows(stateDir)) {
     if (seen.has(row.id) || !SESSION_ID.test(row.id)) continue
     seen.add(row.id)
     const facts = cachedTailFacts(stateDir, row.id)
     const isRunning = row.is_running === 1
-    const { state, detail } = classify(isRunning, facts, now)
+    const repositoryTrust = trusts.get(row.id)
+    const { state, detail } = repositoryTrust ? { state: "waiting" as const, detail: "waiting for a repository trust decision" } : classify(isRunning, facts, now)
     rows.push({
       id: row.id,
       name: row.name || row.title || (row.workspace_id ? "(unnamed)" : "(unnamed chat)"),
@@ -409,6 +463,7 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
       updatedAt: row.updated_at,
       lastActivity: facts.lastActivity ?? row.updated_at,
       ...(facts.prompt ? { prompt: facts.prompt } : {}),
+      ...(repositoryTrust ? { repositoryTrust } : {}),
     })
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_listed", message: "listed the Copilot app's sessions", meta: { sessions: rows.length } })

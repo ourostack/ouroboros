@@ -270,6 +270,70 @@ describe("listing the sidebar", () => {
     expect(rows.find(row => row.id === WS)).not.toHaveProperty("prompt")
   })
 
+  describe("repository-trust waits", () => {
+    const DECISION = "repository_trust:p1:local:0"
+    function trustTables(options: { named?: boolean; localRevision?: boolean } = {}): Database.Database {
+      const handle = db()
+      handle.exec(`
+        CREATE TABLE creator_notification_claims (workspace_id TEXT, lifecycle_generation INTEGER, coordination_generation INTEGER, kind TEXT, watermark TEXT);
+        CREATE TABLE project_host_trust (project_id TEXT, host_id TEXT, trusted_config_sha256 TEXT);
+        CREATE TABLE project_trust_revisions (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL${options.localRevision === false ? "" : ", local_revision INTEGER NOT NULL DEFAULT 0"});
+      `)
+      if (options.named !== false) handle.exec("ALTER TABLE projects ADD COLUMN github_owner TEXT; ALTER TABLE projects ADD COLUMN github_repo TEXT; UPDATE projects SET github_owner = 'ourostack', github_repo = 'ouroboros-website'")
+      return handle
+    }
+    const claim = (handle: Database.Database, watermark = DECISION, workspace = "w1", kind = "repository_trust") =>
+      handle.prepare("INSERT INTO creator_notification_claims VALUES (?, 1, 1, ?, ?)").run(workspace, kind, watermark)
+
+    it("marks a session waiting while its trust decision is open, and names the repository", () => {
+      const handle = trustTables()
+      claim(handle)
+      claim(handle, "repository_trust:p1:local:garbled", "w1")
+      claim(handle, "idle-watermark", "w1", "idle")
+      handle.close()
+      expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({
+        state: "waiting", detail: "waiting for a repository trust decision", repositoryTrust: { decisionId: DECISION, repo: "ourostack/ouroboros-website" },
+      })
+      expect(listAppSessions(options()).find(row => row.id === STUCK)).not.toHaveProperty("repositoryTrust")
+    })
+
+    it("stops waiting once the project trusts the host or its trust revision moves on", () => {
+      const handle = trustTables()
+      claim(handle)
+      handle.prepare("INSERT INTO project_trust_revisions (project_id, revision, local_revision) VALUES ('p1', 0, 0)").run()
+      expect(listAppSessions(options()).find(row => row.id === WS)).toHaveProperty("repositoryTrust")
+      handle.prepare("UPDATE project_trust_revisions SET local_revision = 1").run()
+      expect(listAppSessions(options()).find(row => row.id === WS)).not.toHaveProperty("repositoryTrust")
+      handle.prepare("UPDATE project_trust_revisions SET local_revision = 0").run()
+      handle.prepare("INSERT INTO project_host_trust VALUES ('p1', 'local', 'abc')").run()
+      expect(listAppSessions(options()).find(row => row.id === WS)).not.toHaveProperty("repositoryTrust")
+      handle.close()
+    })
+
+    it("keeps the newest open decision", () => {
+      const handle = trustTables()
+      claim(handle, "repository_trust:p1:local:2")
+      claim(handle, "repository_trust:p1:local:1")
+      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.decisionId).toBe("repository_trust:p1:local:2")
+      handle.close()
+    })
+
+    it("reads an older app's database with no repository name or local revision", () => {
+      const handle = trustTables({ named: false, localRevision: false })
+      claim(handle)
+      handle.prepare("INSERT INTO project_trust_revisions (project_id, revision) VALUES ('p1', 0)").run()
+      handle.prepare("UPDATE workspaces SET project_id = 'missing' WHERE id = 'w1'").run()
+      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.repo).toBe("this repository")
+      handle.prepare("UPDATE workspaces SET project_id = 'p1' WHERE id = 'w1'").run()
+      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.repo).toBe("personal-desk")
+      handle.close()
+    })
+
+    it("sees no trust waits in a database without the trust tables", () => {
+      expect(listAppSessions(options()).every(row => !("repositoryTrust" in row))).toBe(true)
+    })
+  })
+
   it("skips archived, session-less, duplicate and malformed rows, and names what has no name", () => {
     addSession({ id: "44444444-aaaa", title: null, type: "agent", location: "cloud" })
     addSession({ id: "bad id", type: "general_chat" })

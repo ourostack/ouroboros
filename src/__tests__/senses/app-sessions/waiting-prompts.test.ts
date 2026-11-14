@@ -48,6 +48,31 @@ describe("finding the open prompts", () => {
   })
 })
 
+describe("repository-trust decisions", () => {
+  const trustRow = (): AppSessionRow => ({ ...row("s1", "AX essay", undefined), kind: "workspace", detail: "waiting for a repository trust decision", repositoryTrust: { decisionId: "repository_trust:p1:local:0", repo: "ourostack/ouroboros-website" } })
+
+  it("counts an open decision as a waiting prompt keyed by the decision, first seen when the app gives no time", () => {
+    expect(waitingPromptsOf(agentRoot, [trustRow()], NOW)).toEqual([
+      { session: "s1", name: "AX essay", requestId: "repository_trust:p1:local:0", what: "a repository trust decision for ourostack/ouroboros-website", since: NOW },
+    ])
+    writeSnapshot(agentRoot, picture([prompt({ session: "s1", requestId: "repository_trust:p1:local:0", since: NOW - 600_000 })]))
+    expect(waitingPromptsOf(agentRoot, [trustRow()], NOW)[0]!.since).toBe(NOW - 600_000)
+  })
+
+  it("lists it beside a permission prompt of the same session", () => {
+    expect(waitingPromptsOf(agentRoot, [{ ...trustRow(), prompt: { requestId: "r1", what: "open a web address", at: null } }], NOW).map(p => p.requestId)).toEqual(["repository_trust:p1:local:0", "r1"])
+  })
+
+  it("tells the owner once with the session name and repository, and again only for a new decision", async () => {
+    const notify = vi.fn(async () => "sent" as const)
+    const open = (decision: string) => picture(waitingPromptsOf(agentRoot, [{ ...trustRow(), repositoryTrust: { decisionId: decision, repo: "ourostack/ouroboros-website" } }], NOW - 300_000))
+    expect(await noticeWaitingPrompts(agentRoot, open("repository_trust:p1:local:0"), { notify, now: NOW })).toBe(1)
+    expect(notify).toHaveBeenCalledWith(`"AX essay" waits on a repository trust decision for ourostack/ouroboros-website, for 5 min. Only you can answer it, in the Copilot app: open that session and approve or decline.`, ["s1:repository_trust:p1:local:0"])
+    expect(await noticeWaitingPrompts(agentRoot, open("repository_trust:p1:local:0"), { notify, now: NOW + 60_000 })).toBe(0)
+    expect(await noticeWaitingPrompts(agentRoot, open("repository_trust:p1:local:1"), { notify, now: NOW + 120_000 })).toBe(1)
+  })
+})
+
 describe("telling the owner", () => {
   it("is quiet when nothing waits", async () => {
     const notify = vi.fn<NotifyOwner>()
