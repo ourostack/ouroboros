@@ -1710,7 +1710,9 @@ export async function runAgent(
   };
   const queueRequiredCorrection = (assistant: OpenAI.ChatCompletionAssistantMessageParam, message: string, limitContext: string): void => {
     if (budgetExhausted()) throw new Error(`provider iteration limit exhausted at response ${stepBudget} ${limitContext}`)
-    rejectAttempt(assistant, [{ role: "user", content: message }])
+    // A rejected tool call (settle, a terminal tool) is answered by its own tool result, so the agent reads why and corrects course.
+    if (assistant.tool_calls?.length) rejectToolBatch(assistant, assistant.tool_calls.map(() => message))
+    else rejectAttempt(assistant, [{ role: "user", content: message }])
   }
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
@@ -1917,6 +1919,9 @@ export async function runAgent(
             messages: [...canonicalBudget.messages, ...rejectedAttempt, ...nextAttemptControls],
           }).messages]
         : [...canonicalBudget.messages]
+      // Whatever path built this request, every tool call reaches the provider with a result: a gap the runtime left must
+      // never 400 the turn and leave the agent unable to answer.
+      repairOrphanedToolCalls(attemptMessages)
       if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget") providerRuntime.resetTurnState(attemptMessages)
       const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
@@ -2037,19 +2042,6 @@ export async function runAgent(
       const streamCallbackBuffer = turnCallbackBufferRef.current;
       turnCallbackBufferRef.current = null;
 
-      if (result.settleFinalization && !result.settleFinalization.ok) {
-        // A completed settle payload is terminal provider output, not a prompt
-        // for another model turn. Retractable callbacks have already cleared;
-        // core-owned callback buffers must be discarded before surfacing the exact
-        // parser failure through the ordinary terminal-error path.
-        streamCallbackBuffer?.discard();
-        finishTerminalProviderError(
-          new Error(result.settleFinalization.errorCode),
-          "unknown",
-        );
-        continue;
-      }
-
       // Track usage from the latest API call
       if (result.usage) lastUsage = result.usage;
 
@@ -2103,6 +2095,13 @@ export async function runAgent(
         "type" in item && (item.type === "thinking" || item.type === "redacted_thinking"));
       if (thinkingItems.length > 0) {
         (msg as unknown as Record<string, unknown>)._thinking_blocks = thinkingItems;
+      }
+      if (result.settleFinalization && !result.settleFinalization.ok) {
+        // An unparseable settle is the agent's own output: nothing reached anyone, so the agent reads why and settles again.
+        // Retractable callbacks have already cleared; core-owned callback buffers are discarded with the attempt.
+        streamCallbackBuffer?.discard();
+        queueRequiredCorrection(msg, `settle was not delivered: its arguments did not parse (${result.settleFinalization.errorCode}). Call settle again with valid JSON arguments.`, "after an unparseable settle");
+        continue;
       }
       const settlingNow = result.toolCalls.length === 1 && (result.toolCalls[0].name === "settle" || result.toolCalls[0].name === "rest")
       if (stepReportIteration === null && result.toolCalls.length > 0 && !settlingNow && budgetExhausted()) {

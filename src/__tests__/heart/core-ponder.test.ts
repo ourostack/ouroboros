@@ -1047,7 +1047,7 @@ describe("ponder packets in runAgent", () => {
     expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
   })
 
-  it("fails malformed private-return settle payloads without a provider retry", async () => {
+  it("hands a malformed private-return settle back to the agent, which settles again", async () => {
     mockCreate.mockReturnValueOnce(makeStream(settleRawChunks("{}")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("Which MCP session should receive the private return?")))
 
@@ -1064,18 +1064,11 @@ describe("ponder packets in runAgent", () => {
       },
     )
 
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(callbacks.onToolEnd).not.toHaveBeenCalled()
-    expect(callbacks.onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "invalid_settle_arguments" }),
-      "terminal",
-    )
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    expect(callbacks.onError).not.toHaveBeenCalledWith(expect.anything(), "terminal")
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
-    expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
-    })
-    expect(result.completion).toBeUndefined()
+    expect(result.outcome).toBe("settled")
   })
 
   it("does not create a self-return obligation for private-runtime ponder packets", async () => {

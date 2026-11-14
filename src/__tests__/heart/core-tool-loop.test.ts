@@ -2580,11 +2580,15 @@ describe("runAgent tool loop guard", () => {
       expect(result.outcome).toBe("settled")
       expect(callerViews[1]).toEqual([human])
       expect(callerViews[2]).toEqual([human])
-      expect(views[1]?.filter((message) => message.role === "user").map((message) => message.content)).toEqual([correction, correction])
+      // A rejected settle is answered by its own tool result; a rejected text reply by a user note.
+      const controls = (view: ChatCompletionMessageParam[] | undefined) => (view ?? [])
+        .filter((message) => message.role === "user" || (message.role === "tool" && message.tool_call_id.startsWith("rejected")))
+        .map((message) => message.content)
+      expect(controls(views[1])).toEqual([correction, correction])
       expect(JSON.stringify(views[1])).toContain("draft-one")
       expect(JSON.stringify(views[2])).toContain("draft-two")
       expect(JSON.stringify(views[2])).not.toContain("draft-one")
-      expect(views[2]?.filter((message) => message.role === "user").map((message) => message.content)).toEqual([correction, secondCorrection])
+      expect(controls(views[2])).toEqual([correction, secondCorrection])
       expect(views[3]).toEqual(callerViews[3])
       expect(JSON.stringify([messages, captured.mock.calls, persisted])).not.toMatch(/draft-one|draft-two|newly returned/)
       expect(messages.filter((message) => message.role === "user")).toEqual([human])
@@ -2612,7 +2616,9 @@ describe("runAgent tool loop guard", () => {
         requiredToolCalls: { names: ["probe"], retryMessage: "Read before answering." },
       })
       expect(callerViews[1]).toEqual([{ role: "user", content: "read it" }])
-      expect(views[1]?.at(-1)).toEqual({ role: "user", content: "Read before answering. Missing required tool calls: probe." })
+      expect(views[1]?.at(-1)).toEqual(kind === "text"
+        ? { role: "user", content: "Read before answering. Missing required tool calls: probe." }
+        : { role: "tool", tool_call_id: "bad", content: "Read before answering. Missing required tool calls: probe." })
       expect(JSON.stringify(views[1])).toContain("unsupported draft")
       expect(views[2]).toEqual(callerViews[2])
       expect(JSON.stringify([messages, capture.mock.calls])).not.toMatch(/unsupported draft|Missing required tool calls/)
@@ -2781,7 +2787,8 @@ describe("runAgent tool loop guard", () => {
       const result = await runAgent(messages, makeCallbacks({ onToolResult: (current) => persisted.push(structuredClone(current)) }), undefined, controller.signal, {
         tools: [probeTool], providerRuntimeOverride: runtime, execTool: vi.fn(async () => "verified execution receipt"), captureGeneratedMessages: capture,
       })
-      expect(result.outcome).toBe(kind === "terminal-error" ? "errored" : kind === "abort" ? "aborted" : "settled")
+      // An unparseable settle is handed back to the agent, which settles on the next call.
+      expect(result.outcome).toBe(kind === "abort" ? "aborted" : "settled")
       expect(persisted).toHaveLength(1)
       const generated = capture.mock.calls[0]![0] as ChatCompletionMessageParam[]
       expect(generated.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" }])

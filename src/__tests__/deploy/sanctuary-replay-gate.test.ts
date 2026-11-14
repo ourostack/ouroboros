@@ -359,7 +359,7 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
   })
 
   it("learns-into-tacit: writes the house rule into psyche/TACIT.md and leaves the identity files alone", () => {
-    const wrote = "a write_file or edit_file call wrote psyche/TACIT.md"
+    const wrote = "a tool call wrote psyche/TACIT.md (write_file, edit_file or a shell write)"
     const learned = "TACIT gained the subtitle rule during the case (it mentions subtitles now, and did not before or has new text)"
     const identity = "the identity files (SOUL, IDENTITY, LORE, ASPIRATIONS) are unchanged"
     expect(byId("learns-into-tacit").words).toBe("a standing rule for this whole house, not just me: anything not in english gets english subtitles. remember that as how this house works.")
@@ -370,6 +370,16 @@ describe("psyche conversation cases (work-sourced, psyche-change-request, learns
     expect(names(readback({}))).toEqual([])
     expect(names(readback({ trace: [tool("write_file", { path: "/home/ouro/AgentBundles/sanctuary.ouro/psyche/TACIT.md", content: "x" })] }))).toEqual([])
     expect(names(readback({ trace: [] }))).toEqual([wrote])
+    // He may append with the shell: how he writes it is his call.
+    for (const command of [
+      "cd /home/ouro/AgentBundles/sanctuary.ouro/psyche && printf '\\nrule\\n' >> TACIT.md",
+      "echo rule >> psyche/TACIT.md", "echo rule | tee -a \"psyche/TACIT.md\"", "sed -i 's/a/b/' psyche/TACIT.md",
+    ]) expect(names(readback({ trace: [tool("shell", { command })] }))).toEqual([])
+    for (const command of ["tail -c 600 psyche/TACIT.md", "cat TACIT.md > /tmp/copy", "grep subtitle TACIT.md"]) {
+      expect(names(readback({ trace: [tool("shell", { command })] }))).toEqual([wrote])
+    }
+    expect(names(readback({ trace: [tool("shell", { cmd: "echo x >> TACIT.md" })] }))).toEqual([wrote])
+    expect(names(readback({ trace: [{ name: "shell", args: "not json >> TACIT.md", result: "" }] }))).toEqual([wrote])
     expect(names(readback({ trace: [tool("write_file", { path: "psyche/SOUL.md", content: "x" })] }))).toEqual([wrote])
     expect(names(readback({ trace: [tool("write_file", { path: "notpsyche/TACIT.md", content: "x" })] }))).toEqual([wrote])
     expect(names(readback({ trace: [tool("read_file", { path: "psyche/TACIT.md" })] }))).toEqual([wrote])
