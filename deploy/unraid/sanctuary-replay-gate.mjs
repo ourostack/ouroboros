@@ -352,6 +352,9 @@ const filedWithClaudeCode = (trace) => trace.some((entry) => entry.name === "rep
 /** The path a write_file or edit_file call names, or "" when its arguments are not JSON with a string path. */
 const filePathOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.path === "string" ? parsed.path : "" } catch { return "" } }
 const WROTE_TACIT = /(?:^|\/)psyche\/TACIT\.md$/
+/** A shell command that writes TACIT.md: a redirect, tee, or sed -i onto it. How he writes it is his call; the file is checked separately. */
+const SHELL_WROTE_TACIT = /(?:>>?|\btee\b(?:\s+-a)?)\s*["']?(?:\S*\/)?TACIT\.md\b|\bsed\s+-i\S*\s[^|;&]*TACIT\.md\b/
+const commandOf = (args) => { try { const parsed = JSON.parse(String(args ?? "")); return typeof parsed?.command === "string" ? parsed.command : "" } catch { return "" } }
 // Scoped to media-ask-no-hedge (REPLY_HEDGE_TERMS is pinned by the no-hedge psyche work): a refusal of the torrent, never a
 // plain "no torrent needed", which is right for a title already in the library. Each torrent pattern stays in one sentence.
 const TORRENT_DEFLECTIONS = [
@@ -571,13 +574,14 @@ export const CASES = [
     sender: "principal",
     delegated: false,
     readback: ({ trace, before, after }) => {
-      const writes = trace.filter((entry) => /^(write_file|edit_file)$/.test(entry.name) && WROTE_TACIT.test(filePathOf(entry.args)))
+      const writes = trace.filter((entry) => (/^(write_file|edit_file)$/.test(entry.name) && WROTE_TACIT.test(filePathOf(entry.args)))
+        || (entry.name === "shell" && SHELL_WROTE_TACIT.test(commandOf(entry.args))))
       // A refused write leaves TACIT as it was, so a TACIT that already mentioned subtitles must also have changed.
       const was = before.tacit?.text ?? null
       const now = after.tacit?.text ?? ""
       const learned = /subtitle/i.test(now) && (!/subtitle/i.test(was ?? "") || was !== now)
       return [
-        check("a write_file or edit_file call wrote psyche/TACIT.md", writes.length > 0, `${trace.length} tool calls`),
+        check("a tool call wrote psyche/TACIT.md (write_file, edit_file or a shell write)", writes.length > 0, `${trace.length} tool calls`),
         check("TACIT gained the subtitle rule during the case (it mentions subtitles now, and did not before or has new text)", learned),
         check("the identity files (SOUL, IDENTITY, LORE, ASPIRATIONS) are unchanged", before.identitySha !== null && before.identitySha === after.identitySha),
       ]

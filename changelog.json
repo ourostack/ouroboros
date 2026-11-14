@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1133",
+      "changes": [
+        "My errors come back to me: a rejected or unparseable settle is answered with why, and I correct course instead of the turn failing; my house notes count however I write them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1132",
       "changes": [
         "app_sessions_restart now restarts the Copilot app through Housesitter (`housesitter restart-copilot --resume --detach`) and reads its state, step and result from `--status`, instead of the old per-Mac keeper. It finds Housesitter at HOUSESITTER_BIN, ~/code/housesitter or on PATH, and says so when it is missing."

@@ -8122,7 +8122,7 @@ describe("tool_choice required and settle", () => {
     expect(deliveredMsg.content).toBe("(delivered)")
   })
 
-  it("settle with empty object arg: fails terminal without a provider retry", async () => {
+  it("settle with empty object arg: hands the parse error back and accepts the next settle", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8154,13 +8154,15 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["got it"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
@@ -8255,7 +8257,7 @@ describe("tool_choice required and settle", () => {
     // config cleanup handled by resetConfigCache in beforeEach
   })
 
-  it("Azure: truncated settle fails terminal without another Responses request", async () => {
+  it("Azure: truncated settle hands the parse error back and accepts the next settle", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
@@ -8295,17 +8297,19 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await core.runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockResponsesCreate.mock.calls[1]![0])).toContain("incomplete_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["complete"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "incomplete_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with invalid JSON arguments: clears noise and fails without retry", async () => {
+  it("settle with invalid JSON arguments: clears noise and hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8338,17 +8342,19 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["valid now"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with valid JSON null: clears noise and fails without retry", async () => {
+  it("settle with valid JSON null: clears noise and hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8381,17 +8387,19 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["proper answer"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with invalid JSON and no content: fails terminal without retry", async () => {
+  it("settle with invalid JSON and no content: hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8423,17 +8431,19 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["recovered"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with valid non-object JSON: fails terminal without retry", async () => {
+  it("settle with valid non-object JSON: hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8465,17 +8475,17 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    expect(textChunks).toEqual(["recovered from scalar"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with valid JSON, no answer field, and no content: fails terminal without retry", async () => {
+  it("settle with valid JSON, no answer field, and no content: hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8507,13 +8517,15 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["proper"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
@@ -8633,7 +8645,7 @@ describe("tool_choice required and settle", () => {
 
   // -- Unit 14b: settle answer extraction tests --
 
-  it("settle with JSON string argument: rejects the non-object provider payload", async () => {
+  it("settle that never parses: answered each time until the step budget ends the turn", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -8657,16 +8669,14 @@ describe("tool_choice required and settle", () => {
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     expect(textChunks).toEqual([])
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    const toolResults = messages.filter((m: any) => m.role === "tool")
-    expect(toolResults).toEqual([])
-    expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
-    })
+    expect(mockCreate.mock.calls.length).toBeGreaterThan(1)
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    expect(messages.filter((m: any) => m.role === "tool")).toEqual([])
+    expect(result.outcome).toBe("errored")
+    expect(result.error?.message).toMatch(/iteration limit exhausted/)
   })
 
-  it("settle with truncated JSON: fails terminal without continuing the loop", async () => {
+  it("settle with truncated JSON: hands the parse error back and continues the loop", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8702,18 +8712,21 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
-    expect(errors).toEqual(["incomplete_settle_arguments"])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("incomplete_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["complete response"])
+    // Nothing failed the turn: the agent read the error and settled.
+    expect(errors).toEqual([])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "incomplete_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle with wrong-shape JSON (no answer field): fails terminal without retry", async () => {
+  it("settle with wrong-shape JSON (no answer field): hands the parse error back", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8747,17 +8760,19 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
+    expect(callCount).toBe(2)
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
-    expect(textChunks).toEqual([])
+    // Only the accepted settle persists; the rejected one was answered, on the next request, by a tool result naming the error.
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["correct answer"])
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("settle invalid then valid response: never starts the forbidden second turn", async () => {
+  it("settle invalid then valid response: the agent reads the error and settles", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8791,17 +8806,18 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
-    expect(textChunks).toEqual([])
+    expect(callCount).toBe(2)
+    // Only the accepted answer reaches the friend.
+    expect(textChunks).toEqual(["success after retry"])
     const toolMsgs = messages.filter((m: any) => m.role === "tool")
-    expect(toolMsgs).toEqual([])
+    expect(toolMsgs.map((m: any) => m.content)).toEqual(["(delivered)"])
+    expect(JSON.stringify(mockCreate.mock.calls[1]![0])).toContain("invalid_settle_arguments")
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "invalid_settle_arguments" },
+      outcome: "settled",
     })
   })
 
-  it("failed settle clears streamed noise without starting a second turn", async () => {
+  it("failed settle clears streamed noise before the agent settles again", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
@@ -8837,14 +8853,12 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     const result = await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    expect(callCount).toBe(1)
-    // Detection clears ordinary streamed noise; failed finalization retracts
-    // the partial answer. No second-turn clear occurs.
-    expect(clearCount).toBe(2)
-    expect(textChunks).toEqual([])
+    expect(callCount).toBe(2)
+    // Each attempt's streamed noise is cleared; only the accepted answer remains.
+    expect(clearCount).toBeGreaterThanOrEqual(2)
+    expect(textChunks.join("")).not.toContain("noise")
     expect(result).toMatchObject({
-      outcome: "errored",
-      error: { message: "incomplete_settle_arguments" },
+      outcome: "settled",
     })
   })
 })
