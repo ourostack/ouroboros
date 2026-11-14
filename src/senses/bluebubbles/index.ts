@@ -48,6 +48,7 @@ import {
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
 import { reactInBlueBubbles } from "./reactions"
+import { chatActionsForTurn } from "../../repertoire/tools-chat"
 import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
@@ -2287,11 +2288,10 @@ async function handleBlueBubblesNormalizedEvent(
               ...safeToolContext,
               ...mcpOwner,
               summarize,
-              chatActions: {
-                inboundMessageId: event.messageGuid,
+              chatActions: chatActionsForTurn({
                 setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
                 react: (emoji: string, messageId: string) => reactInBlueBubbles(client, event.chat, emoji, messageId),
-              },
+              }, event.messageGuid),
             },
           })
           if (generatedMessages.length > 0) {

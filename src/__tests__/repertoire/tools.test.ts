@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as path from "path"
 import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
+import { chatActionsForTurn, chatToolDefinitions } from "../../repertoire/tools-chat"
 
 afterEach(shutdownMcpFixtures)
 
@@ -2574,27 +2575,54 @@ describe("chat action tools", () => {
     expect(setReplyTarget.mock.calls.map(([selection]) => selection)).toEqual([
       { target: "top_level" }, { target: "current_lane" }, { target: "thread", messageId: "M-1" },
     ])
-    expect(await run("set_reply_target", { target: "thread" }, { setReplyTarget })).toBe("there is no message to reply to here; pass message_id.")
-    expect(await run("set_reply_target", { target: "thread" }, { setReplyTarget, inboundMessageId: "IN-1" })).toBe("reply target set")
-    expect(setReplyTarget).toHaveBeenLastCalledWith({ target: "thread", messageId: "IN-1" })
+    expect(await run("set_reply_target", { target: "thread" }, { setReplyTarget })).toBe("reply target set")
+    expect(setReplyTarget).toHaveBeenLastCalledWith({ target: "thread" })
     expect(await run("set_reply_target", { target: "sideways" }, { setReplyTarget })).toBe("target must be one of: current_lane, top_level, thread.")
     expect(await run("set_reply_target", { target: 42 }, { setReplyTarget })).toBe("target must be one of: current_lane, top_level, thread.")
   })
 
   it("reacts to the turn's message by default, or to the one named", async () => {
     const react = vi.fn(async (emoji: string, id: string) => `reacted with ${emoji} to ${id}`)
-    expect(await run("react", { emoji: "❤️" }, { react, inboundMessageId: "IN-1" })).toBe("reacted with ❤️ to IN-1")
-    expect(await run("react", { emoji: "👍", message_id: "OTHER" }, { react, inboundMessageId: "IN-1" })).toBe("reacted with 👍 to OTHER")
+    const actions = chatActionsForTurn({ react }, "IN-1")
+    expect(await run("react", { emoji: "❤️" }, actions)).toBe("reacted with ❤️ to IN-1")
+    expect(await run("react", { emoji: "👍", message_id: "OTHER" }, actions)).toBe("reacted with 👍 to OTHER")
+    expect(await run("react", { emoji: "❤️" }, chatActionsForTurn({ react }, undefined))).toBe("there is no message to react to here; pass message_id.")
+  })
+
+  it("replies to the turn's message by default, or to the one named", () => {
+    const setReplyTarget = vi.fn(() => "reply target set")
+    const actions = chatActionsForTurn({ setReplyTarget }, "IN-1")
+    expect(actions.react).toBeUndefined()
+    expect(actions.setReplyTarget!({ target: "thread" })).toBe("reply target set")
+    expect(actions.setReplyTarget!({ target: "thread", messageId: "M-2" })).toBe("reply target set")
+    expect(actions.setReplyTarget!({ target: "top_level" })).toBe("reply target set")
+    expect(setReplyTarget.mock.calls.map(([selection]) => selection)).toEqual([
+      { target: "thread", messageId: "IN-1" }, { target: "thread", messageId: "M-2" }, { target: "top_level" },
+    ])
+    expect(chatActionsForTurn({ setReplyTarget }, undefined).setReplyTarget!({ target: "thread" })).toBe("there is no message to reply to here; pass message_id.")
+    expect(chatActionsForTurn({}, "IN-1")).toEqual({})
+  })
+
+  it("refuses to act in a chat on a turn that may not send, even when called directly", async () => {
+    const react = vi.fn(async () => "reacted")
+    const setReplyTarget = vi.fn(() => "reply target set")
+    for (const turn of [{ noSend: true }, { autonomousTurnKind: "await" }, { habitSession: {} }]) {
+      const ctx = { signin: async () => undefined, chatActions: { react, setReplyTarget }, ...turn } as any
+      const handler = (name: string) => chatToolDefinitions.find((definition) => definition.tool.function.name === name)!.handler
+      expect(await handler("react")({ emoji: "❤️" }, ctx)).toBe("I can't act in a chat on this turn.")
+      expect(await handler("set_reply_target")({ target: "top_level" }, ctx)).toBe("I can't act in a chat on this turn.")
+    }
+    expect(react).not.toHaveBeenCalled()
+    expect(setReplyTarget).not.toHaveBeenCalled()
   })
 
   it("says plainly when a reaction can't be made", async () => {
     const react = vi.fn(async () => { throw new Error("REACTION_INVALID") })
     expect(await run("react", { emoji: " " }, { react })).toBe("emoji is required.")
     expect(await run("react", { emoji: "❤️" })).toBe("this chat doesn't take reactions from me.")
-    expect(await run("react", { emoji: "❤️" }, { react })).toBe("there is no message to react to here; pass message_id.")
-    expect(await run("react", { emoji: "❤️" }, { react, inboundMessageId: "IN-1" })).toBe("the reaction didn't go through: REACTION_INVALID")
+    expect(await run("react", { emoji: "❤️" }, { react })).toBe("the reaction didn't go through: REACTION_INVALID")
     const refusedWithoutError = vi.fn(async () => { throw "offline" })
-    expect(await run("react", { emoji: "❤️" }, { react: refusedWithoutError, inboundMessageId: "IN-1" })).toBe("the reaction didn't go through: offline")
+    expect(await run("react", { emoji: "❤️" }, { react: refusedWithoutError })).toBe("the reaction didn't go through: offline")
   })
 })
 

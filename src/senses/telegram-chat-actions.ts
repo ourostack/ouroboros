@@ -1,4 +1,5 @@
 import type { ChatActions, ReplyTargetSelection } from "../repertoire/tools-base"
+import { chatActionsForTurn } from "../repertoire/tools-chat"
 import type { TelegramBotApi } from "./telegram-client"
 
 /** One turn's Telegram chat actions, plus the reply target the turn's sends should use. */
@@ -19,8 +20,7 @@ function telegramMessageId(value: string): number | undefined {
 export function createTelegramChatActions(api: TelegramBotApi, chatId: string, inboundMessageId?: string): TelegramTurnChatActions {
   let selection: ReplyTargetSelection = { target: "current_lane" }
   return {
-    actions: {
-      ...(inboundMessageId ? { inboundMessageId } : {}),
+    actions: chatActionsForTurn({
       react: async (emoji, messageId) => {
         const id = telegramMessageId(messageId)
         if (id === undefined) return `${messageId} is not a Telegram message id.`
@@ -32,7 +32,7 @@ export function createTelegramChatActions(api: TelegramBotApi, chatId: string, i
         selection = next
         return next.target === "thread" ? `my reply will answer message ${next.messageId}` : "my reply will post plainly in the chat"
       },
-    },
+    }, inboundMessageId),
     replyToMessageId: () => selection.target === "thread" ? telegramMessageId(selection.messageId) : undefined,
   }
 }

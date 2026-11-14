@@ -11322,7 +11322,6 @@ describe("BlueBubbles sense runtime", () => {
     expect(capturedOptions).not.toBeNull()
     expect(capturedOptions.toolContext).toBeDefined()
     expect(typeof capturedOptions.toolContext.chatActions?.setReplyTarget).toBe("function")
-    expect(capturedOptions.toolContext.chatActions.inboundMessageId).toBe(dmTopLevelPayload.data.guid)
     await expect(capturedOptions.toolContext.chatActions.react("🎉", "m1")).resolves.toContain("isn't one of them")
     expect(capturedOptions.toolContext.codingFeedback).toBeUndefined()
     expect(typeof capturedOptions.toolContext.summarize).toBe("function")
