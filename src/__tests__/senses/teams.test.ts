@@ -5446,6 +5446,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
   })
 
   it("startTeamsApp binds text and image senders to the authenticated activity", async () => {
+    const capturePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "teams-capture-")), "capture.png")
+    fs.writeFileSync(capturePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"))
     vi.resetModules()
 
     let capturedHandler: ((args: any) => Promise<void>) | null = null
@@ -5467,9 +5469,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       // Simulate onKick -- in buffered mode this should call sendMessage
       if (callbacks.onKick) callbacks.onKick()
       callbacks.onTextChunk("answer")
-      await options.toolContext.teamsSendImage({
-        contentType: "image/png", contentUrl: "data:image/png;base64,aW1hZ2U=", name: "capture.png",
-      }, "requested capture")
+      await options.toolContext.chatActions.sendFile(capturePath, "requested capture")
       return { usage: undefined }
     })
     vi.doMock("../../heart/core", () => ({
@@ -6884,7 +6884,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     expect(input.runAgentOptions?.toolContext?.adoToken).toBe("a-token")
     expect(input.runAgentOptions?.toolContext?.githubToken).toBe("gh-token")
     expect(typeof input.runAgentOptions?.toolContext?.signin).toBe("function")
-    expect(input.runAgentOptions?.toolContext?.teamsSendImage).toBe(teamsSendImage)
+    expect(typeof input.runAgentOptions?.toolContext?.chatActions?.sendFile).toBe("function")
   })
 
   it("passes traceId in runAgentOptions", async () => {

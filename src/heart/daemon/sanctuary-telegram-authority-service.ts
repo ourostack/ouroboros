@@ -103,7 +103,7 @@ export class SanctuaryTelegramAuthorityService {
     pollReclaimDelayMs?: number
   }) {
     this.#api = {
-      request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" ? 60_000 : 15_000)),
+      request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" || method === "sendPhoto" || method === "sendDocument" ? 60_000 : 15_000)),
     }
     this.#gateway = options.gateway
     this.#hostAuthority = options.hostAuthority

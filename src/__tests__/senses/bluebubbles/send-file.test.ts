@@ -28,7 +28,7 @@ describe("sendFileInBlueBubbles", () => {
     expect(sendText).not.toHaveBeenCalled()
   })
 
-  it("says when this connection can't send files", async () => {
-    expect(await sendFileInBlueBubbles({} as BlueBubblesClient, chat, "/nowhere", "")).toBe("this iMessage connection can't send files.")
+  it("fails when this connection can't send files", async () => {
+    await expect(sendFileInBlueBubbles({} as BlueBubblesClient, chat, "/nowhere", "")).rejects.toThrow("this iMessage connection can't send files.")
   })
 })

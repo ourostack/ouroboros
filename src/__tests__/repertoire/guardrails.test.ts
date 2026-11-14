@@ -1808,6 +1808,18 @@ describe("the sync key is closed to the read-only file tools; git in the bundle 
     expect(guardInvocation("ls", { path: "psyche" }, ctx)).toEqual({ allowed: true })
   })
 
+  it("send_file is read-guarded like read_file for the sync key's directory, and needs family trust", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const { __testHooks } = await import("../../heart/sync")
+    const ctx = { readPaths: new Set<string>(), agentRoot: bundle, trustLevel: "family" as const }
+    fs.mkdirSync(path.join(bundle, "keys-here"))
+    __testHooks.syncSecretDir = path.join(bundle, "keys-here")
+    expect(guardInvocation("send_file", { path: path.join(bundle, "keys-here") }, ctx)).toEqual({ allowed: false, reason: "that path is protected — i can't read it." })
+    expect(guardInvocation("send_file", { path: path.join(bundle, "psyche", "photo.jpg") }, ctx)).toEqual({ allowed: true })
+    expect(guardInvocation("send_file", { path: path.join(bundle, "psyche", "photo.jpg") }, { ...ctx, trustLevel: "friend" }))
+      .toEqual({ allowed: false, reason: "sending files from this machine requires family trust." })
+  })
+
   it("lets edit_file and write_file work on the agent's own files without a read first", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     fs.mkdirSync(path.join(bundle, "notes"))

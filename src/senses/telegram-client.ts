@@ -57,7 +57,7 @@ function telegramRequestInit(body: Record<string, unknown>): { headers?: Record<
   if (!Object.values(body).some(isTelegramInputFile)) return { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
   const form = new FormData()
   for (const [key, value] of Object.entries(body)) {
-    if (isTelegramInputFile(value)) form.append(key, new Blob([value.bytes], { type: value.contentType }), value.name)
+    if (isTelegramInputFile(value)) form.append(key, new Blob([new Uint8Array(value.bytes)], { type: value.contentType }), value.name)
     else form.append(key, typeof value === "string" ? value : JSON.stringify(value))
   }
   return { body: form }

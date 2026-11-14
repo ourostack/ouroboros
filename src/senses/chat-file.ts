@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
+import { emitNervesEvent } from "../nerves/runtime"
 
 // The file a chat sense sends for the shared send_file tool. Each app takes files differently, but they all start here.
 
@@ -39,9 +40,7 @@ export async function readChatFile(filePath: string, maxBytes: number): Promise<
   if (!stat.isFile()) throw new Error(`${filePath} is not a file`)
   if (stat.size === 0) throw new Error(`${filePath} is empty`)
   if (stat.size > maxBytes) throw new Error(`${path.basename(filePath)} is ${megabytes(stat.size)}; this chat takes files up to ${megabytes(maxBytes)}`)
-  return {
-    name: path.basename(filePath),
-    contentType: CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream",
-    bytes: await fs.readFile(filePath),
-  }
+  const contentType = CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream"
+  emitNervesEvent({ component: "senses", event: "senses.chat_file_read", message: "read a file to send into a chat", meta: { contentType, bytes: stat.size } })
+  return { name: path.basename(filePath), contentType, bytes: await fs.readFile(filePath) }
 }

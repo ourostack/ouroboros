@@ -2,8 +2,8 @@ import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ChatActions, ReplyTargetRequest, SenseChatActions, ToolContext, ToolDefinition } from "./tools-base"
 
-// Every chat app lets you react to a message and reply to a specific one. These tools are the same on every
-// sense; each sense binds `ctx.chatActions` to its own app, and a missing action means the app can't do it.
+// Every chat app lets you react to a message, reply to a specific one and send a file. These tools are the same on
+// every sense; each sense binds `ctx.chatActions` to its own app, and a missing action means the app can't do it.
 
 const MESSAGING_APPS: ReadonlySet<string> = new Set(["bluebubbles", "telegram"])
 /**
@@ -21,8 +21,9 @@ export const CHAT_ACTION_TOOL_CHANNELS: ReadonlyMap<string, ReadonlySet<string>>
  * inside these closures, so it never sits in the tool context as data.
  */
 export function chatActionsForTurn(actions: SenseChatActions, inboundMessageId: string | undefined): ChatActions {
-  const { react, setReplyTarget } = actions
+  const { react, setReplyTarget, sendFile } = actions
   return {
+    ...(sendFile ? { sendFile } : {}),
     ...(react ? {
       react: async (emoji: string, messageId?: string) => {
         const id = messageId ?? inboundMessageId

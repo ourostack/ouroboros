@@ -1,3 +1,6 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { createTelegramChatActions } from "../../senses/telegram-chat-actions"
@@ -21,5 +24,29 @@ describe("createTelegramChatActions", () => {
     expect(chat.replyToMessageId()).toBe(40)
     expect(chat.actions.setReplyTarget!({ target: "top_level" })).toBe("my reply will post plainly in the chat")
     expect(chat.replyToMessageId()).toBeUndefined()
+  })
+
+  it("sends a photo inline and any other file as a document, following the reply target", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-send-file-"))
+    const photo = path.join(dir, "dinner.jpg")
+    const menu = path.join(dir, "menu.pdf")
+    fs.writeFileSync(photo, "jpg")
+    fs.writeFileSync(menu, "%PDF")
+    const request = vi.fn(async () => ({ message_id: 5 }))
+    const chat = createTelegramChatActions({ request, stop: vi.fn() }, "77", "12")
+
+    expect(await chat.actions.sendFile!(photo, "  tonight  ")).toBe("sent dinner.jpg")
+    expect(request).toHaveBeenLastCalledWith("sendPhoto", {
+      chat_id: "77", caption: "tonight",
+      photo: { kind: "telegram_input_file", name: "dinner.jpg", contentType: "image/jpeg", bytes: Buffer.from("jpg") },
+    })
+    chat.actions.setReplyTarget!({ target: "thread" })
+    expect(await chat.actions.sendFile!(menu, "")).toBe("sent menu.pdf")
+    expect(request).toHaveBeenLastCalledWith("sendDocument", {
+      chat_id: "77", reply_parameters: { message_id: 12 },
+      document: { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") },
+    })
+    await expect(chat.actions.sendFile!(menu, "x".repeat(1_025))).rejects.toThrow("a Telegram caption can be up to 1,024 characters")
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

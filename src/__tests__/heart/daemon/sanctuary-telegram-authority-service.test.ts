@@ -1137,7 +1137,7 @@ describe("Sanctuary Telegram authority service", () => {
     expect(api.request).toHaveBeenLastCalledWith("sendDocument", {
       chat_id: "42", caption: "menu", reply_parameters: { message_id: 7 },
       document: { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") },
-    })
+    }, expect.any(AbortSignal))
     await expect(upload("sendPhoto", { chat_id: "42", photo: { ...file, name: "a.jpg", contentType: "image/jpeg" } })).resolves.toMatchObject({ method: "sendPhoto" })
     await expect(upload("sendPhoto", { chat_id: "84", photo: file })).rejects.toThrow(/send target is invalid/u)
     for (const body of [

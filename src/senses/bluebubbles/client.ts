@@ -571,7 +571,7 @@ export function createBlueBubblesClient(
       form.append("chatGuid", chatGuid)
       form.append("tempGuid", randomUUID())
       form.append("name", params.file.name)
-      form.append("attachment", new Blob([params.file.bytes], { type: params.file.contentType }), params.file.name)
+      form.append("attachment", new Blob([new Uint8Array(params.file.bytes)], { type: params.file.contentType }), params.file.name)
       const url = buildBlueBubblesApiUrl(config.serverUrl, "/api/v1/message/attachment", config.password)
       // An upload takes longer than a text send; give it a minute on top of the usual timeout.
       const response = await fetch(url, { method: "POST", body: form, signal: AbortSignal.timeout(channelConfig.requestTimeoutMs + 60_000) })

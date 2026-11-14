@@ -19,4 +19,10 @@ describe("chat action tools on the menu", () => {
     expect(names("telegram", { autonomousTurnKind: "proactive" })).not.toContain("set_reply_target")
     expect(names("bluebubbles", { habitSession: { toolPolicy: { outwardMessagingAllowed: true, grantedTools: [] } } })).not.toContain("react")
   })
+
+  it("offer send_file on every sense that takes files: iMessage, Telegram and Teams", () => {
+    for (const channel of ["bluebubbles", "telegram", "teams"]) expect(names(channel)).toContain("send_file")
+    for (const channel of ["cli", "inner"]) expect(names(channel)).not.toContain("send_file")
+    expect(names("telegram", { noSend: true })).not.toContain("send_file")
+  })
 })
