@@ -57,7 +57,7 @@ describe("guardMcpArgs", () => {
   })
 
   it("refuses a replay identity every media write tool that has no dry run, and lets others call them", () => {
-    expect([...REPLAY_REFUSED_WRITE_TOOLS].sort()).toEqual(["media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_manual_import", "media_release_grab", "media_request", "media_search_now"])
+    expect([...REPLAY_REFUSED_WRITE_TOOLS].sort()).toEqual(["media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_manual_import", "media_monitor", "media_release_grab", "media_request", "media_search_now"])
     for (const toolName of ["media_request", "media_search_now", "media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_release_grab"]) {
       expect(guardMcpArgs({ toolName, declaresDryRun: false, args: {}, ctx: ctxFor("replay-1", "sanctuary-owner") }), toolName).toMatchObject({ rejected: expect.stringContaining("no dry run") })
       // The owner never sees this refusal, so it must not become a hedge in the rehearsed reply.
