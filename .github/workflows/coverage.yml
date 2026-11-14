@@ -52,8 +52,8 @@ jobs:
             node .github/scripts/ci-prepass.cjs
           fi
 
-  # The vitest coverage suite split across 12 runners (about 2 to 3 minutes of
-  # tests each, six runners took 4 to 5; one runner took 26+). A pull request
+  # The vitest coverage suite split across 16 runners (about 2 to 3 minutes of
+  # tests each, six runners took 4 to 5 and twelve about 3.5; one runner took 26+). A pull request
   # waits for the slowest shard, and its whole run, publish included, has to fit
   # in 10 minutes. The split is by measured file duration, see
   # .github/scripts/coverage-shards.cjs. Thresholds are checked only on the
@@ -64,7 +64,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -81,7 +81,7 @@ jobs:
         run: npm ci
 
       - name: Run Coverage Shard
-        run: node .github/scripts/coverage-gate-sharded.cjs shard --index ${{ matrix.shard }} --count 12 --out .coverage-shard
+        run: node .github/scripts/coverage-gate-sharded.cjs shard --index ${{ matrix.shard }} --count 16 --out .coverage-shard
 
       - name: Upload Coverage Shard
         if: always()
@@ -94,12 +94,37 @@ jobs:
           retention-days: 3
           overwrite: true
 
-  # The required `coverage` check and the gate itself: lint, changelog,
-  # mailbox-ui, then the shards' merged coverage against the real thresholds
-  # and the nerves audit over every shard's capture.
+  # Lint, the changelog gate and the mailbox-ui checks, beside the shards instead
+  # of after them. The `coverage` check needs this job and fails when it failed,
+  # so all of it still gates; it just no longer adds to the time after the shards.
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Lint, changelog gate and mailbox-ui checks
+        run: node .github/scripts/coverage-gate-sharded.cjs static
+
+  # The required `coverage` check and the gate itself: the shards' merged
+  # coverage against the real thresholds and the nerves audit over every
+  # shard's capture, once the pre-pass and the static checks have passed.
   coverage:
     needs:
       - prepass
+      - static-checks
       - coverage-shard
     # Runs even when prepass or a shard fails, so the required `coverage` check
     # reports a failure instead of being skipped (a skipped required check
@@ -109,9 +134,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Stop when the pre-pass or a shard failed
-        if: needs.prepass.result != 'success' || needs.coverage-shard.result != 'success'
+        if: needs.prepass.result != 'success' || needs.static-checks.result != 'success' || needs.coverage-shard.result != 'success'
         run: |
-          echo "::error::prepass ${{ needs.prepass.result }}, coverage-shard ${{ needs.coverage-shard.result }}; see the first failed job"
+          echo "::error::prepass ${{ needs.prepass.result }}, static-checks ${{ needs.static-checks.result }}, coverage-shard ${{ needs.coverage-shard.result }}; see the first failed job"
           exit 1
 
       - name: Checkout
@@ -135,7 +160,7 @@ jobs:
           path: .coverage-shards
 
       - name: Run Coverage Gate
-        run: node .github/scripts/coverage-gate-sharded.cjs merge --shards .coverage-shards --count 12
+        run: node .github/scripts/coverage-gate-sharded.cjs merge --shards .coverage-shards --count 16 --static-checked
 
       - name: Resolve Coverage Artifact Root
         if: always()

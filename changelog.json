@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1121",
       "changes": [
-        "The agent can react to a message and choose which message its reply answers, with the same react and set_reply_target tools on iMessage and Telegram."
+        "The agent can react to a message and choose which message its reply answers, with the same react and set_reply_target tools on iMessage and Telegram.",
+        "Lint, the changelog gate and the mailbox-ui checks now run beside the coverage shards instead of after them, and the coverage tests run on 16 shards, so a pull request's checks finish about a minute and a half sooner."
       ]
     },
     {
