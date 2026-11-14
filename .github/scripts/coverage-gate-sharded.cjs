@@ -171,6 +171,8 @@ function merge(argv) {
   const nervesCoveragePath = path.join(runDir, "nerves-coverage.json")
 
   if (!argv.includes("--static-checked")) staticChecks(summaryPath)
+  // The nerves audit builds the mailbox UI without installing it, so this job needs the packages whichever job ran the checks.
+  else runNpm(["install", "--prefix", "packages/mailbox-ui"])
 
   // Every test file must have run on exactly one shard, or the merged coverage
   // is not the suite's coverage.
