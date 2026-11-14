@@ -545,7 +545,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
         archived: null,
         alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null,
         advancedExternalEvents: [],
-        note: `Not sent yet (${why}). The await stays open and I retry the send on its next check. I can also tell ${existing.filed_for_friend_id ?? "them"} myself on ${existing.filed_from ?? "their channel"}, then cancel_await "${name}".`,
+        note: `Not sent yet (${why}). The await stays open and I retry the send on its next check. I can also tell ${existing.filed_for_friend_id} myself on ${existing.filed_from}, then cancel_await "${name}".`,
       })
     }
   }
