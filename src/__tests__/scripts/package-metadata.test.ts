@@ -65,7 +65,8 @@ describe("package metadata", () => {
   it("gates publish on both packed artifact E2E suites", () => {
     expect(packageJson.scripts["test:e2e:ouro-bot-package"]).toBe("node scripts/ouro-bot-package-e2e.cjs")
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
-    const packageJob = workflow.slice(workflow.indexOf("  package-e2e:"), workflow.indexOf("  publish:"))
+    const packageJob = workflow.slice(workflow.indexOf("  package-e2e-npm:"), workflow.indexOf("  publish:"))
+    expect(packageJob).toContain("  package-e2e:\n    needs:\n      - package-e2e-npm\n      - package-e2e-image\n")
     expect(packageJob).toContain("npm run test:e2e:package")
     expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
     expect(packageJson.scripts["test:e2e:self-update"]).toBe("node scripts/self-update-package-e2e.cjs")
