@@ -109,6 +109,7 @@ import {
 } from "./telegram-effect-adapter"
 import { createTelegramChatActions } from "./telegram-chat-actions"
 import { writeFileAtomicSync } from "../heart/atomic-file"
+import { whileRepeating } from "./repeat-while"
 
 interface FullVisibilityProgress { fallback?: () => string | undefined }
 
@@ -765,12 +766,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     transportPrivateValues,
   )
   const api = authorityTransport?.api ?? options.api ?? createTelegramBotApi({ token: botToken! })
-  // Only the root authority transport admits sendChatAction, so presence is offered
-  // exactly where it is actually supported rather than attempted everywhere.
   const proactiveRepetitionGuard = createProactiveRepetitionGuard()
-  const sendTypingIndicator = authorityTransport
-    ? async (chatId: string): Promise<void> => { await api.request("sendChatAction", { chat_id: chatId, action: "typing" }) }
-    : undefined
+  const sendTypingIndicator = async (chatId: string): Promise<void> => { await api.request("sendChatAction", { chat_id: chatId, action: "typing" }) }
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(agentRoot, "state", "senses", "telegram", "offset.json"),
   )
@@ -1799,9 +1796,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     // Presence is deliberately separate from delivery: a transport that cannot do
     // it degrades to silence instead of failing, and message-delivery assertions
     // stay about messages.
-    await (sendTypingIndicator
-      ? withTelegramTypingIndicator(() => sendTypingIndicator(message.chatId), () => onMessageBody(message))
-      : onMessageBody(message))
+    await withTelegramTypingIndicator(() => sendTypingIndicator(message.chatId), () => onMessageBody(message))
   })
 
   const onUnknownMessage = admissionController && options.admission ? async (message: Parameters<NonNullable<TelegramLongPollOptions["onUnknownMessage"]>>[0]): Promise<void> => {
@@ -2440,14 +2435,7 @@ export async function withTelegramTypingIndicator<T>(
   run: () => Promise<T>,
   intervalMs = 4_000,
 ): Promise<T> {
-  const tick = (): void => { void Promise.resolve().then(send).catch(() => undefined) }
-  tick()
-  const timer = setInterval(tick, intervalMs)
-  try {
-    return await run()
-  } finally {
-    clearInterval(timer)
-  }
+  return whileRepeating(send, intervalMs, run)
 }
 
 export async function sendTelegramAwaitFollowUp(agentName: string, request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> {
