@@ -514,6 +514,7 @@ describe("tools-awaiting", () => {
       mockDeliverAwaitAlert.mockRejectedValueOnce(failure)
       const result = parse(await resolveAwaitDef.handler({ name: `request_${typeof failure}`, verdict: "yes", observation: "ready" }, undefined) as string)
       expect(result).toMatchObject({ verdict: "yes", archived: null, alert: null, advancedExternalEvents: [] })
+      expect(result.note).toBe(`Not sent yet (the send failed). The await stays open and I retry the send on its next check. I can also tell sibling myself on telegram, then cancel_await "request_${typeof failure}".`)
       expect(fs.existsSync(path.join(agentRoot, "awaiting", `request_${typeof failure}.md`))).toBe(true)
     })
 

@@ -539,7 +539,14 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
       emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
     }
     if (alert?.delivery?.status !== "delivered_now") {
-      return JSON.stringify({ verdict: "yes", archived: null, alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null, advancedExternalEvents: [] })
+      const why = alert?.delivery?.detail ?? alert?.skipped ?? "the send failed"
+      return JSON.stringify({
+        verdict: "yes",
+        archived: null,
+        alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null,
+        advancedExternalEvents: [],
+        note: `Not sent yet (${why}). The await stays open and I retry the send on its next check. I can also tell ${existing.filed_for_friend_id ?? "them"} myself on ${existing.filed_from ?? "their channel"}, then cancel_await "${name}".`,
+      })
     }
   }
 
