@@ -5448,6 +5448,11 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
   it("startTeamsApp binds text and image senders to the authenticated activity", async () => {
     const capturePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "teams-capture-")), "capture.png")
     fs.writeFileSync(capturePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"))
+    // Normalizing uses macOS image tools; this test is about where the image goes, so the image passes through as is.
+    vi.doMock("../../heart/attachments/image-normalize", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../heart/attachments/image-normalize")>(),
+      normalizeImageForVision: vi.fn(async () => ({ path: capturePath, mimeType: "image/png" })),
+    }))
     vi.resetModules()
 
     let capturedHandler: ((args: any) => Promise<void>) | null = null
