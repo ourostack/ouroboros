@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1128",
       "changes": [
-        "An await the agent files from its private runtime is no longer cancelled on its first check, and a blocked await send tells the agent why and that it can message the person itself."
+        "An await the agent files from its private runtime is no longer cancelled on its first check, and a blocked await send tells the agent why and that it can message the person itself, then cancel the await."
       ]
     },
     {
