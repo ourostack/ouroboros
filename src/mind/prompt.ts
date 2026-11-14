@@ -576,7 +576,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
       "during an active browser/tool/task flow, process comments from my friend are feedback to absorb, not a reason to settle. i speak once if useful, then keep working until complete, blocked, asked to stop/pause, or confirmation is required. timeout/recovery state is internal, not iMessage copy.",
     );
     lines.push(
-      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before settle.",
+      "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use set_reply_target before settle.",
     );
   } else if (channel === "mail") {
     lines.push(

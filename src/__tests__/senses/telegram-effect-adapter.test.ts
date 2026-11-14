@@ -484,6 +484,20 @@ describe("Telegram effect adapter", () => {
     expect(api.request.mock.calls.map(([method]) => method)).toEqual(["sendMessage", "editMessageText", "answerCallbackQuery"])
   })
 
+  it("sends a text effect as a reply to the message it names, and refuses a stored reply id that isn't one", async () => {
+    const store = journal()
+    const api = { request: vi.fn(async () => ({ message_id: 78 })) }
+    const reply = prepareTelegramEffect(store, { idempotencyKey: "reply:1", target, authorClass: "butler", effect: { kind: "text", text: "yes", replyToMessageId: 40 }, authorization })
+    await executeTelegramEffect(store, reply.id, api, () => authorization)
+    expect(api.request.mock.calls[0]).toEqual(["sendMessage", expect.objectContaining({ reply_parameters: { message_id: 40 } }), undefined])
+
+    const filePath = path.join((store as unknown as { root: string }).root, `${reply.id}.json`)
+    const corrupt = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    corrupt.effect.replyToMessageId = -1
+    fs.writeFileSync(filePath, JSON.stringify(corrupt), { mode: 0o600 })
+    expect(() => store.read(reply.id)).toThrow("invalid")
+  })
+
   it("handles malformed card responses, edit retry classifications, expired authorization, and cancellation", async () => {
     const store = journal()
     const card = prepareTelegramEffect(store, { idempotencyKey: "card:no-id", target, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })

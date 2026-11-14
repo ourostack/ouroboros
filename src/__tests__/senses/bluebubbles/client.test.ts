@@ -3106,6 +3106,31 @@ describe("BlueBubbles client", () => {
     ).rejects.toThrow("BlueBubbles send failed (500): unknown")
   })
 
+  describe("react", () => {
+    const config = { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" }
+    const channel = { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 }
+
+    it("sends one tapback to the chosen message", async () => {
+      global.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      await createBlueBubblesClient(config, channel).react!({ chat: dmChat, messageGuid: "msg-1", reaction: "love" })
+      const [url, init] = (global.fetch as any).mock.calls[0]
+      expect(String(url)).toContain("/api/v1/message/react")
+      expect(JSON.parse(init.body)).toEqual({ chatGuid: dmChat.chatGuid, selectedMessageGuid: "msg-1", reaction: "love", partIndex: 0 })
+    })
+
+    it("says when the server refuses or the chat can't be found", async () => {
+      global.fetch = vi.fn(async () => new Response("private api off", { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel)
+      await expect(client.react!({ chat: dmChat, messageGuid: "msg-1", reaction: "like" })).rejects.toThrow("BlueBubbles reaction failed (500): private api off")
+      global.fetch = vi.fn(async () => ({ ok: false, status: 500, text: async () => { throw new Error("gone") } })) as unknown as typeof fetch
+      await expect(client.react!({ chat: dmChat, messageGuid: "msg-1", reaction: "like" })).rejects.toThrow("BlueBubbles reaction failed (500): unknown")
+      await expect(client.react!({ chat: { ...dmChat, chatGuid: undefined, chatIdentifier: "" }, messageGuid: "msg-1", reaction: "like" }))
+        .rejects.toThrow("BlueBubbles could not find this chat.")
+    })
+  })
+
   describe("getRepliedMessage", () => {
     it.each([
       { kind: "the agent's own message", data: { text: " want it on your PocketBook? ", isFromMe: true }, want: { text: "want it on your PocketBook?", fromMe: true } },

@@ -35,7 +35,7 @@ import {
 } from "../../heart/orientation-frame"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
-import type { BlueBubblesReplyTargetSelection, ToolContext } from "../../repertoire/tools-base"
+import type { ReplyTargetSelection, ToolContext } from "../../repertoire/tools-base"
 import {
   BlueBubblesIgnoredEventError,
   describeBlueBubblesReaction,
@@ -47,6 +47,7 @@ import {
   type BlueBubblesNormalizedMessage,
 } from "./model"
 import { BlueBubblesSendError, createBlueBubblesClient, type BlueBubblesClient, type BlueBubblesRepliedMessage } from "./client"
+import { reactInBlueBubbles } from "./reactions"
 import { BlueBubblesHostAccountError, verifyBlueBubblesServerAccount } from "./host-account-verifier"
 import { createBlueBubblesWebhookReconciler } from "./webhook-registration"
 import {
@@ -425,7 +426,7 @@ interface RuntimeDeps {
 
 export interface BlueBubblesReplyTargetController {
   getReplyToMessageGuid(): string | undefined
-  setSelection(selection: BlueBubblesReplyTargetSelection): string
+  setSelection(selection: ReplyTargetSelection): string
 }
 
 export interface ProactiveBlueBubblesSessionSendParams {
@@ -790,7 +791,7 @@ function buildBlueBubblesOrientationSource(
     ...(repairNotice ? { repairNotice } : {}),
     ...(summaries.length > 0 ? { recentLanes: summaries } : {}),
     ...(hasThreadRoute
-      ? { routingHint: "use bluebubbles_set_reply_target to choose current_lane, top_level, or a listed thread before sending BlueBubbles-specific replies." }
+      ? { routingHint: "use set_reply_target to choose current_lane, top_level, or a listed thread before sending BlueBubbles-specific replies." }
       : {}),
   }
 }
@@ -1010,7 +1011,7 @@ async function buildBlueBubblesContextMessages(input: {
 
 function createReplyTargetController(event: CanonicalBlueBubblesDirectionObservedMessage): BlueBubblesReplyTargetController {
   const defaultTargetLabel = event.threadOriginatorGuid?.trim() ? "current_lane" : "top_level"
-  let selection: BlueBubblesReplyTargetSelection =
+  let selection: ReplyTargetSelection =
     event.threadOriginatorGuid?.trim()
       ? { target: "current_lane" }
       : { target: "top_level" }
@@ -1018,16 +1019,16 @@ function createReplyTargetController(event: CanonicalBlueBubblesDirectionObserve
   return {
     getReplyToMessageGuid(): string | undefined {
       if (selection.target === "top_level") return undefined
-      if (selection.target === "thread") return selection.threadOriginatorGuid.trim()
+      if (selection.target === "thread") return selection.messageId.trim()
       return event.threadOriginatorGuid?.trim() ? event.messageGuid : undefined
     },
-    setSelection(next: BlueBubblesReplyTargetSelection): string {
+    setSelection(next: ReplyTargetSelection): string {
       selection = next
       if (next.target === "top_level") {
         return "bluebubbles reply target override: top_level"
       }
       if (next.target === "thread") {
-        return `bluebubbles reply target override: thread:${next.threadOriginatorGuid}`
+        return `bluebubbles reply target override: thread:${next.messageId}`
       }
       return `bluebubbles reply target: using default for this turn (${defaultTargetLabel})`
     },
@@ -2286,8 +2287,10 @@ async function handleBlueBubblesNormalizedEvent(
               ...safeToolContext,
               ...mcpOwner,
               summarize,
-              bluebubblesReplyTarget: {
-                setSelection: (selection: BlueBubblesReplyTargetSelection) => replyTarget.setSelection(selection),
+              chatActions: {
+                inboundMessageId: event.messageGuid,
+                setReplyTarget: (selection: ReplyTargetSelection) => replyTarget.setSelection(selection),
+                react: (emoji: string, messageId: string) => reactInBlueBubbles(client, event.chat, emoji, messageId),
               },
             },
           })

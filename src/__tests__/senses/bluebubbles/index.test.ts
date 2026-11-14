@@ -1438,7 +1438,7 @@ describe("BlueBubbles sense runtime", () => {
   it("lets the turn widen a threaded inbound reply back to top-level", async () => {
     let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({ target: "top_level" })
+      selectionMessage = options.toolContext.chatActions.setReplyTarget({ target: "top_level" })
       callbacks.onModelStart()
       callbacks.onTextChunk("got it")
       return {
@@ -1484,7 +1484,7 @@ describe("BlueBubbles sense runtime", () => {
       { key: "top_level", label: "top_level", snippet: "recent top-level topic" },
       { key: "thread:THREAD-OLD", label: "thread:THREAD-OLD", snippet: "old thread topic" },
     ])
-    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("bluebubbles_set_reply_target")
+    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("use set_reply_target")
   })
 
   it("extracts recent active lanes from multimodal trunk history too", async () => {
@@ -1515,7 +1515,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(firstRunAgentOptions().orientationFrame.source.recentLanes).toEqual([
       { key: "thread:THREAD-MEDIA", label: "thread:THREAD-MEDIA", snippet: "media thread topic" },
     ])
-    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("bluebubbles_set_reply_target")
+    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("use set_reply_target")
   })
 
   it("skips nested recent-lane metadata when summarizing historical top-level text", async () => {
@@ -1525,7 +1525,7 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[recent active lanes]\n- thread:THREAD-OLDER: older thread topic\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual top-level body",
+            "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]\n[recent active lanes]\n- thread:THREAD-OLDER: older thread topic\n[routing control: use set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual top-level body",
         },
       ],
     })
@@ -1546,7 +1546,7 @@ describe("BlueBubbles sense runtime", () => {
         {
           role: "user",
           content:
-            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-META | default outbound target for this turn: current_lane]\n[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual threaded body",
+            "[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: THREAD-META | default outbound target for this turn: current_lane]\n[routing control: use set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]\nactual threaded body",
         },
       ],
     })
@@ -1558,7 +1558,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(firstRunAgentOptions().orientationFrame.source.recentLanes).toEqual([
       { key: "thread:THREAD-META", label: "thread:THREAD-META", snippet: "actual threaded body" },
     ])
-    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("bluebubbles_set_reply_target")
+    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("use set_reply_target")
   })
 
   it("ignores empty or irrelevant historical user entries and falls back when a lane has no body text", async () => {
@@ -1611,13 +1611,13 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(lastUserMessageContent()).toBe("threaded reply")
     expect(firstRunAgentOptions().orientationFrame.source.recentLanes).toBeUndefined()
-    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("bluebubbles_set_reply_target")
+    expect(firstRunAgentOptions().orientationFrame.source.routingHint).toContain("use set_reply_target")
   })
 
   it("lets the turn explicitly stay in the current inbound lane", async () => {
     let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
+      selectionMessage = options.toolContext.chatActions.setReplyTarget({ target: "current_lane" })
       callbacks.onModelStart()
       callbacks.onTextChunk("staying here")
       return {
@@ -1639,7 +1639,7 @@ describe("BlueBubbles sense runtime", () => {
 
   it("treats current_lane on a top-level inbound turn as top-level", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      options.toolContext.bluebubblesReplyTarget.setSelection({ target: "current_lane" })
+      options.toolContext.chatActions.setReplyTarget({ target: "current_lane" })
       callbacks.onModelStart()
       callbacks.onTextChunk("still top-level")
       return {
@@ -1727,9 +1727,9 @@ describe("BlueBubbles sense runtime", () => {
     })
     let selectionMessage = ""
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
-      selectionMessage = options.toolContext.bluebubblesReplyTarget.setSelection({
+      selectionMessage = options.toolContext.chatActions.setReplyTarget({
         target: "thread",
-        threadOriginatorGuid: "THREAD-OLD",
+        messageId: "THREAD-OLD",
       })
       expect(options.toolContext.codingFeedback).toBeUndefined()
       callbacks.onModelStart()
@@ -11321,7 +11321,9 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(capturedOptions).not.toBeNull()
     expect(capturedOptions.toolContext).toBeDefined()
-    expect(typeof capturedOptions.toolContext.bluebubblesReplyTarget?.setSelection).toBe("function")
+    expect(typeof capturedOptions.toolContext.chatActions?.setReplyTarget).toBe("function")
+    expect(capturedOptions.toolContext.chatActions.inboundMessageId).toBe(dmTopLevelPayload.data.guid)
+    await expect(capturedOptions.toolContext.chatActions.react("🎉", "m1")).resolves.toContain("isn't one of them")
     expect(capturedOptions.toolContext.codingFeedback).toBeUndefined()
     expect(typeof capturedOptions.toolContext.summarize).toBe("function")
     expect(typeof capturedOptions.toolContext.signin).toBe("function")
@@ -11352,7 +11354,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(options.toolContext.codingFeedback).toBeUndefined()
     expect(typeof options.toolContext.signin).toBe("function")
     expect(typeof options.toolContext.summarize).toBe("function")
-    expect(typeof options.toolContext.bluebubblesReplyTarget?.setSelection).toBe("function")
+    expect(typeof options.toolContext.chatActions?.setReplyTarget).toBe("function")
   })
 
   it("persists the exact inbound user event before inference and commits generated state only after accepted delivery", async () => {

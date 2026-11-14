@@ -20,7 +20,7 @@ describe("containsInternalMetaMarkers", () => {
   it("blocks pipeline section markers", () => {
     expect(containsInternalMetaMarkers("[conversation scope: existing chat trunk]")).toBe(true)
     expect(containsInternalMetaMarkers("[recent active lanes]")).toBe(true)
-    expect(containsInternalMetaMarkers("[routing control: use bluebubbles_set_reply_target]")).toBe(true)
+    expect(containsInternalMetaMarkers("[routing control: use set_reply_target]")).toBe(true)
   })
 
   it("blocks reasoning <think> tags", () => {

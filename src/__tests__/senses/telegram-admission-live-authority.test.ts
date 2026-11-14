@@ -136,6 +136,7 @@ describe("Telegram admission live authority", () => {
     let receivedAuthorization: unknown
     pipeline.runAgent.mockImplementationOnce(async (_messages, callbacks, _channel, _signal, options) => {
       receivedAuthorization = options.toolContext.relationshipAuthorization
+      options.toolContext.chatActions.setReplyTarget({ target: "thread", messageId: "1" })
       callbacks.onModelStart()
       pipeline.toolCount += 1
       callbacks.onToolStart("observed_tool", {})
@@ -153,7 +154,7 @@ describe("Telegram admission live authority", () => {
       actor: { friendId: "sibling", trustLevel: "friend", sessionEventId: positiveIngress.id },
     })
     expect(requests.filter((request) => request.method === "sendMessage")).toEqual([
-      expect.objectContaining({ body: expect.objectContaining({ chat_id: "888", text: "Happy to help." }) }),
+      expect.objectContaining({ body: expect.objectContaining({ chat_id: "888", text: "Happy to help.", reply_parameters: { message_id: 1 } }) }),
     ])
     expect({ provider: pipeline.runAgent.mock.calls.length, tools: pipeline.toolCount, deliveries: deliveryCount, effects: effectCount }).toEqual({ provider: 1, tools: 1, deliveries: 1, effects: 1 })
 

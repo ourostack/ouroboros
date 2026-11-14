@@ -56,13 +56,18 @@ export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
 }
 
-export type BlueBubblesReplyTargetSelection =
+/** Where the agent's reply lands: where the app would put it, in the main chat, or as a reply to one message. */
+export type ReplyTargetSelection =
   | { target: "current_lane" }
   | { target: "top_level" }
-  | { target: "thread"; threadOriginatorGuid: string }
+  | { target: "thread"; messageId: string }
 
-export interface BlueBubblesReplyTargetController {
-  setSelection: (selection: BlueBubblesReplyTargetSelection) => string;
+/** What the agent can do in the chat this turn came from. Each sense binds it per turn; a missing method means the app can't. */
+export interface ChatActions {
+  /** The id of the message that started this turn, when the app gave one. */
+  inboundMessageId?: string;
+  react?: (emoji: string, messageId: string) => Promise<string>;
+  setReplyTarget?: (selection: ReplyTargetSelection) => string;
 }
 
 export interface VoiceCallAudioRequest {
@@ -134,7 +139,7 @@ export interface ToolContext {
   };
   /** Authenticated adapter closure bound to this turn's current Teams conversation. */
   teamsSendImage?: (attachment: import("../senses/teams-image").TeamsImageAttachment, caption: string) => Promise<string>;
-  bluebubblesReplyTarget?: BlueBubblesReplyTargetController;
+  chatActions?: ChatActions;
   currentSession?: BridgeSessionRef;
   /**
    * Set only by the private runtime for a turn that is ticking exactly one await. The inbound pipeline replaces

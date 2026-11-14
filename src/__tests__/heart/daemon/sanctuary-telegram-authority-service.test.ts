@@ -1086,6 +1086,40 @@ describe("Sanctuary Telegram authority service", () => {
   })
 
 
+  it("admits one emoji reaction and a plain reply-to in chats the agent may message, and nothing more", async () => {
+    const keys = generateKeyPairSync("ed25519")
+    let nonce = 0
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(root(), {
+      targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42", keyId: "issuer-1",
+      publicKeyDigest: sanctuaryAuthorityPublicKeyDigest(keys.privateKey), privateKey: keys.privateKey,
+      now: () => "2026-09-20T22:30:00.000Z", nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    })
+    const api = { request: vi.fn(async (method: string) => ({ method, message_id: 5 })), stop: vi.fn() }
+    const service = new SanctuaryTelegramAuthorityService({ api, gateway })
+    const react = (body: Record<string, unknown>) => service.dispatch("telegram.request", { method: "setMessageReaction", body })
+    const heart = [{ type: "emoji", emoji: "❤️" }]
+
+    await expect(react({ chat_id: "42", message_id: 7, reaction: heart })).resolves.toMatchObject({ method: "setMessageReaction" })
+    await expect(react({ chat_id: "84", message_id: 7, reaction: heart })).rejects.toThrow(/reaction target is invalid/u)
+    for (const body of [
+      { chat_id: "42", message_id: 7, reaction: heart, is_big: true },
+      { chat_id: "42", message_id: 0, reaction: heart },
+      { chat_id: "42", message_id: 7, reaction: [] },
+      { chat_id: "42", message_id: 7, reaction: [...heart, ...heart] },
+      { chat_id: "42", message_id: 7, reaction: ["❤️"] },
+      { chat_id: "42", message_id: 7, reaction: [{ type: "custom_emoji", custom_emoji_id: "1" }] },
+      { chat_id: "42", message_id: 7, reaction: [{ type: "emoji", emoji: "❤️", extra: 1 }] },
+      { chat_id: "42", message_id: 7, reaction: [{ type: "paid", emoji: "❤️" }] },
+      { chat_id: "42", message_id: 7, reaction: [{ type: "emoji", emoji: "x".repeat(17) }] },
+    ]) await expect(react(body)).rejects.toThrow(/reaction is invalid/u)
+
+    const send = (body: Record<string, unknown>) => service.dispatch("telegram.request", { method: "sendMessage", body })
+    await expect(send({ chat_id: "42", text: "yes", reply_parameters: { message_id: 7 } })).resolves.toMatchObject({ method: "sendMessage" })
+    for (const reply_parameters of [{ message_id: 0 }, { message_id: 7, quote: "smuggled" }, { message_id: "7" }, [7]]) {
+      await expect(send({ chat_id: "42", text: "yes", reply_parameters })).rejects.toThrow(/send body is invalid/u)
+    }
+  })
+
   describe("getUpdates session reclaim (D-030)", () => {
     const reclaimApi = (getUpdates: () => Promise<unknown>) => {
       const request = vi.fn(async (method: string) => (method === "getUpdates" ? getUpdates() : { method }))

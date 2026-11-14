@@ -107,6 +107,7 @@ import {
   type TelegramEffectAuthorizationInput,
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
+import { createTelegramChatActions } from "./telegram-chat-actions"
 import { writeFileAtomicSync } from "../heart/atomic-file"
 
 interface FullVisibilityProgress { fallback?: () => string | undefined }
@@ -1154,13 +1155,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     signal?: AbortSignal,
     onMessageDelivered?: (messageId: number, chunk: string) => void,
     exactDownloadCreditQuestion = false,
+    replyToMessageId?: number,
   ): Promise<TelegramEffectArtifact> => {
     const presentedText = presentSanctuaryDownloadCreditReply(options.agentName, exactDownloadCreditQuestion, text)
     return executeAuthorizedEffect({
       idempotencyKey,
       target: configuredOwnerTarget(),
       authorClass: "butler",
-      effect: { kind: "text", text: presentedText },
+      effect: { kind: "text", text: presentedText, ...(replyToMessageId ? { replyToMessageId } : {}) },
       ...(signal ? { signal } : {}),
       ...(onMessageDelivered ? { onMessageDelivered } : {}),
     })
@@ -1386,10 +1388,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     attachmentIds?: readonly string[]
     userId: string
     chatId: string
+    /** The Telegram message that started this turn, when there is one to react or reply to. */
+    messageId?: string
     orientation?: TelegramNewlyAdmittedOrientation
   }): Promise<void> => {
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
     const effects: TelegramEffectArtifact[] = []
+    const chat = createTelegramChatActions(api, input.chatId, input.messageId)
     let ordinal = 0
     const deliver = async (text: string, terminalReturn = false): Promise<void> => {
       const obligation = terminalReturn ? findPendingObligationForRequest(agentRoot, {
@@ -1400,7 +1405,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         idempotencyKey: `relationship-turn:${input.requestId}:delivery:${ordinal++}`,
         target: { kind: "approved_relationship", friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.requestId },
         authorClass: "butler",
-        effect: { kind: "text", text },
+        effect: { kind: "text", text, ...(chat.replyToMessageId() ? { replyToMessageId: chat.replyToMessageId() } : {}) },
         ...(obligation?.returnReadyAt ? { obligationReturnId: obligation.id } : {}),
       }))
     }
@@ -1429,7 +1434,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [input.reference] },
       precommittedIngress: { eventId: input.eventId, reference: input.reference },
       ...(orientationFrame ? { orientationFrame } : {}),
-      toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
+      toolContext: { ...(toolContext ?? {}), chatActions: chat.actions, attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
         sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text, fullVisibilityProgress: fullVisibility.progress }),
       emptyResponseFallback: fullVisibility.emptyResponseFallback,
@@ -1624,6 +1629,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           })
         : null
       const fullVisibility = createFullVisibilityProgress()
+      const chat = createTelegramChatActions(api, message.chatId, message.messageId)
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -1647,13 +1653,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             if (groundingIntentTool) {
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
-              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
+              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion, chat.replyToMessageId()))
             }
           },
         },
-        ...(toolContext || options.resolveRelationshipAuthorization ? {
-          toolContext: { ...(toolContext ?? {}), ...(options.resolveRelationshipAuthorization ? { attachmentIds: hydrated.attachmentIds } : {}) },
-        } : {}),
+        toolContext: { ...(toolContext ?? {}), chatActions: chat.actions, ...(options.resolveRelationshipAuthorization ? { attachmentIds: hydrated.attachmentIds } : {}) },
         ...(options.resolveRelationshipAuthorization ? {
           prepareRunAgentOptions: prepareRelationshipRunAgentOptions({
             friendId: currentFriendId,
@@ -1827,7 +1831,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const sessionPath = getSenseSessionPath(options.agentName, approved.friendId, "telegram", sessionKey, agentRoot)
     const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: hydrated.text, reference, attachmentIds: hydrated.attachmentIds } })
     await dispatchResolvedRelationshipTurn({ friendId: approved.friendId, sessionKey, requestId: reference, eventId: receipt.eventId,
-      reference, text: hydrated.text, attachmentIds: hydrated.attachmentIds, userId: message.userId, chatId: message.chatId })
+      reference, text: hydrated.text, attachmentIds: hydrated.attachmentIds, userId: message.userId, chatId: message.chatId, messageId: String(message.messageId) })
   } : undefined
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
