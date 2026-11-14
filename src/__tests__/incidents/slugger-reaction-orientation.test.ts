@@ -43,6 +43,16 @@ vi.mock("../../heart/identity", async () => {
   }
 })
 
+// A reaction is a turn now, and a turn reads this machine's BlueBubbles settings; the replay supplies synthetic ones.
+vi.mock("../../heart/config", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/config")>("../../heart/config")
+  return {
+    ...actual,
+    getBlueBubblesConfig: () => ({ serverUrl: "http://bluebubbles.invalid", password: "synthetic", accountId: "default", ownHandles: [] }),
+    getBlueBubblesChannelConfig: () => ({ port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 }),
+  }
+})
+
 interface IncidentFixture {
   schemaVersion: number
   actor: { displayName: string; handle: string }
@@ -290,9 +300,9 @@ it("replays the minimized reaction/orientation incident without duplicate work o
     })
     expect.soft(invokeTransport, "transport is never called after cancellation").not.toHaveBeenCalled()
 
-    const runAgent = vi.fn()
-    const loadSession = vi.fn()
-    const sessionPath = vi.fn()
+    const runAgent = vi.fn(async () => ({ usage: undefined }))
+    const loadSession = vi.fn(() => null)
+    const sessionPath = vi.fn(() => path.join(incidentRuntime.agentRoot, "state", "sessions", "incident-reaction.json"))
     const deferPostTurnPersist = vi.fn()
     const repairEvent = vi.fn(async (event: unknown) => event)
     const sendText = vi.fn()
@@ -305,24 +315,25 @@ it("replays the minimized reaction/orientation incident without duplicate work o
       setTyping,
       markChatRead,
     }
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
-    let reactionResults: Awaited<ReturnType<typeof handleBlueBubblesEvent>>[]
-    try {
-      reactionResults = []
+    const reactionResults: Awaited<ReturnType<typeof handleBlueBubblesEvent>>[] = []
+    {
       for (const payload of fixture.reactionDeliveries) {
         reactionResults.push(await handleBlueBubblesEvent(payload, {
           getAgentName: () => "synthetic-incident-agent",
           createClient: () => client as never,
           recordMutation: vi.fn(),
+          getOwnHandles: () => [],
+          buildSystem: async () => "synthetic system prompt",
+          postTurnTrim: (messages) => messages,
+          postTurnPersist: vi.fn(),
+          accumulateFriendTokens: vi.fn(),
+          verifyHostAccount: async () => undefined,
           runAgent,
           loadSession,
           sessionPath,
           deferPostTurnPersist,
         }))
       }
-      expect.soft(timeoutSpy, "capture-only reaction creates no watchdog timer").not.toHaveBeenCalled()
-    } finally {
-      timeoutSpy.mockRestore()
     }
 
     const normalizedReaction = normalizeBlueBubblesEvent(fixture.reactionDeliveries[0])
@@ -364,26 +375,23 @@ it("replays the minimized reaction/orientation incident without duplicate work o
       })?.keyHash
     })).size, "new/new/updated aliases share one semantic identity").toBe(1)
     expect.soft(reactionResults.map((result) => result.reason), "duplicates do not re-enter work").toEqual([
-      "mutation_state_only",
+      "no_visible_reply",
       "already_processed",
       "already_processed",
     ])
     expect.soft(handledFiles, "one custom reaction handled receipt exists").toHaveLength(1)
-    expect.soft(handled, "custom reaction is capture-only").toMatchObject({
+    expect.soft(handled, "the reaction was seen once, as a turn").toMatchObject({
       schemaVersion: 1,
       canonicalKey: reactionIdentity?.canonicalKey,
       keyHash: reactionIdentity?.keyHash,
-      outcome: "capture_only_custom",
+      outcome: "message_observed",
       detailCode: null,
     })
-    expect.soft(runAgent, "reaction starts no model or tool loop").not.toHaveBeenCalled()
-    expect.soft(loadSession, "reaction loads no session").not.toHaveBeenCalled()
-    expect.soft(sessionPath, "reaction creates no session path").not.toHaveBeenCalled()
-    expect.soft(deferPostTurnPersist, "reaction persists no session").not.toHaveBeenCalled()
-    expect.soft(repairEvent, "capture-only reaction does not enter repair/runtime work").not.toHaveBeenCalled()
-    expect.soft(sendText, "reaction sends no response").not.toHaveBeenCalled()
-    expect.soft(setTyping, "reaction emits no watchdog/status activity").not.toHaveBeenCalled()
-    expect.soft(markChatRead, "reaction emits no read-status activity").not.toHaveBeenCalled()
+    // The agent sees the reaction once, as a turn it may let pass; the two duplicate deliveries start nothing.
+    expect.soft(runAgent, "three deliveries of one reaction run one turn").toHaveBeenCalledTimes(1)
+    expect.soft(runAgent.mock.calls[0]?.[4], "the turn knows it is a reaction").toEqual(expect.objectContaining({ isReactionSignal: true }))
+    expect.soft(repairEvent, "a chat-routed reaction is not repaired").not.toHaveBeenCalled()
+    expect.soft(sendText, "a turn that chose silence sends nothing").not.toHaveBeenCalled()
     expect.soft(
       snapshotBlueBubblesActiveTurns("synthetic-incident-agent"),
       "reaction leaves no active turn",
