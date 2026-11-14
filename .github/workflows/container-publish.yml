@@ -1,28 +1,47 @@
 name: publish-container
 
+# Builds each architecture on its own native runner at the same moment npm publishes, then joins the two
+# images under the version and commit tags. Emulating arm64 took 20 to 30 minutes; a native runner takes
+# a few. The commit on main is the tree the pull request's required checks passed (main requires branches
+# to be up to date), and this run does not wait for the run that tests it again.
 on:
-  workflow_run:
-    workflows:
-      - coverage-gate
-    types:
-      - completed
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 concurrency:
   group: container-publish-${{ github.repository }}
   cancel-in-progress: false
+  # Every merge keeps its own run, so a busy hour never drops a version's image.
+  queue: max
+
+env:
+  IMAGE: ghcr.io/ourostack/ouroboros-butler
 
 jobs:
-  publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
-    runs-on: ubuntu-latest
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Checkout verified commit
+      - name: Checkout the commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -35,12 +54,9 @@ jobs:
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           {
             echo "PACKAGE_VERSION=$PACKAGE_VERSION"
-            echo "VERSION_IMAGE=ghcr.io/ourostack/ouroboros-butler:$PACKAGE_VERSION"
-            echo "SHA_IMAGE=ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}"
+            echo "VERSION_IMAGE=$IMAGE:$PACKAGE_VERSION"
+            echo "SHA_IMAGE=$IMAGE:sha-${{ github.sha }}"
           } >> "$GITHUB_ENV"
-
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -67,19 +83,94 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build and publish immutable architectures
+      # Pushed by digest, with no tag: the join job below tags both architectures together, so nothing
+      # carries a version or commit tag until both exist.
+      - name: Build and push this architecture by digest
         if: steps.release-gate.outputs.publish == 'true'
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/unraid/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
-          tags: |
-            ghcr.io/ourostack/ouroboros-butler:${{ env.PACKAGE_VERSION }}
-            ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}
+          cache-from: type=gha,scope=butler-${{ matrix.arch }}
+          cache-to: type=gha,scope=butler-${{ matrix.arch }},mode=max
+
+      - name: Keep the digest for the join job
+        if: steps.release-gate.outputs.publish == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - name: Upload the digest
+        if: steps.release-gate.outputs.publish == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout the commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Resolve immutable image references
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          {
+            echo "PACKAGE_VERSION=$PACKAGE_VERSION"
+            echo "VERSION_IMAGE=$IMAGE:$PACKAGE_VERSION"
+            echo "SHA_IMAGE=$IMAGE:sha-${{ github.sha }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate immutable references before tagging
+        id: release-gate
+        run: |
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          PUBLISH=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')
+          test "$PUBLISH" = "true" || test "$PUBLISH" = "false"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - name: Download both architectures' digests
+        if: steps.release-gate.outputs.publish == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Tag one image for linux/amd64 and linux/arm64
+        if: steps.release-gate.outputs.publish == 'true'
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          test "$(ls | wc -l)" = 2
+          docker buildx imagetools create -t "$VERSION_IMAGE" -t "$SHA_IMAGE" $(printf "$IMAGE@sha256:%s " *)
 
       - name: Verify exact immutable references
         if: steps.release-gate.outputs.publish == 'true'
