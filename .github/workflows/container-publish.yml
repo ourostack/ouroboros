@@ -20,8 +20,39 @@ env:
   IMAGE: ghcr.io/ourostack/ouroboros-butler
 
 jobs:
+  # A merge that does not bump the version publishes nothing: its image tag would already exist.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - name: Checkout the commit and its parent
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+
+      - name: Decide whether this commit releases a version
+        id: plan
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          before=$(git show HEAD^:package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+          after=$(node -p "require('./package.json').version")
+          if [ "$before" = "$after" ]; then
+            echo "Version $after is unchanged, so this commit publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: build (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -117,7 +148,10 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: build
+    needs:
+      - plan
+      - build
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
