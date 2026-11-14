@@ -2,7 +2,7 @@ import { createHash, type KeyLike } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { authorityArtifactDigest, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "../heart/daemon/sanctuary-telegram-authority-gateway"
-import { TELEGRAM_ALLOWED_UPDATES, telegramUpdateMessageCoordinates, type TelegramAuthorityTransportMetadata, type TelegramBotApi, type TelegramUpdate } from "./telegram-client"
+import { TELEGRAM_ALLOWED_UPDATES, isTelegramInputFile, telegramUpdateMessageCoordinates, type TelegramAuthorityTransportMetadata, type TelegramBotApi, type TelegramUpdate } from "./telegram-client"
 import { createRootHostApprovalPort, type RootHostApprovalPort } from "./root-host-approval-port"
 
 export interface SanctuaryTelegramAuthorityProtocolClient {
@@ -163,7 +163,10 @@ export function createSanctuaryTelegramAuthorityTransport(
       if (method !== "getUpdates") {
         return await client.request("telegram.request", {
           method,
-          body,
+          // A file crosses to the root as base64; the root rebuilds it and sends the upload itself.
+          body: Object.fromEntries(Object.entries(body).map(([key, value]) => [key, isTelegramInputFile(value)
+            ? { kind: value.kind, name: value.name, contentType: value.contentType, bodyBase64: value.bytes.toString("base64") }
+            : value])),
           ...(currentObservation ? {
             observation: {
               updateId: currentObservation.payload.updateId,

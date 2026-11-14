@@ -1603,6 +1603,22 @@ describe("Telegram Bot API HTTP core", () => {
     })
   })
 
+  it("sends a body that carries a file as multipart form data", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ ok: true, result: { message_id: 9 } }))
+    const api = createTelegramBotApi({ token, fetch })
+    const document = { kind: "telegram_input_file" as const, name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") }
+
+    await expect(api.request("sendDocument", { chat_id: "42", document, reply_parameters: { message_id: 7 } })).resolves.toEqual({ message_id: 9 })
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`https://api.telegram.org/bot${token}/sendDocument`)
+    expect(init.headers).toBeUndefined()
+    const form = init.body as FormData
+    expect(form.get("chat_id")).toBe("42")
+    expect(form.get("reply_parameters")).toBe(JSON.stringify({ message_id: 7 }))
+    const sent = form.get("document") as File
+    expect([sent.name, sent.type, Buffer.from(await sent.arrayBuffer()).toString()]).toEqual(["menu.pdf", "application/pdf", "%PDF"])
+  })
+
   it.each([
     ["Bot API error", jsonResponse({ ok: false, error_code: 400, description: `bad ${token}` }, 400)],
     ["HTTP failure", new Response("gateway failure", { status: 502 })],

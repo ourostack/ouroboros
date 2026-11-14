@@ -1157,8 +1157,8 @@ function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
 }
 
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
-  if (toolName === "teams_send_image" && context.trustLevel !== "family") {
-    return deny("sending local images in Teams requires family trust.")
+  if (toolName === "send_file" && context.trustLevel !== "family") {
+    return deny("sending files from this machine requires family trust.")
   }
   const cacheSyncResult = mailCacheSyncShellGuardrail(toolName, args, context)
   if (!cacheSyncResult.allowed) return cacheSyncResult
@@ -1254,6 +1254,8 @@ export function guardInvocation(
 
   // Read-only tools skip the structural and trust guardrails; only the sync key's directory is closed to them.
   if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args, context.agentRoot) ? deny(REASONS.unreadablePath) : allow
+  // send_file reads the file it sends, so the sync key's directory is closed to it the same way.
+  if (toolName === "send_file" && syncSecretReadRefused("read_file", args, context.agentRoot)) return deny(REASONS.unreadablePath)
 
   // Layer 1: structural guardrails (always on)
   const structuralResult = checkStructuralGuardrails(toolName, args, context)

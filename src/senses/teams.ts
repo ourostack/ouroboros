@@ -39,7 +39,7 @@ import { admitSessionActivity, SessionTransactionError, SessionTurnBusyError, wi
 const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
-import { createTeamsImageSender } from "./teams-image"
+import { createTeamsImageSender, teamsImageFileSender, type TeamsImageAttachment } from "./teams-image"
 import { repeatEvery } from "./repeat-while"
 import { FeedbackReplyRefusal, resolveFeedbackReply } from "./shepherd/feedback-reply"
 
@@ -845,7 +845,7 @@ export interface TeamsMessageContext {
   githubConnectionName?: string
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
-  teamsSendImage?: ToolContext["teamsSendImage"]
+  teamsSendImage?: (attachment: TeamsImageAttachment, caption: string) => Promise<string>
 }
 
 const OAUTH_SERVICE_LABELS: Record<string, string> = { graph: "Microsoft Graph", ado: "Azure DevOps", github: "GitHub" }
@@ -1030,7 +1030,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     summarize: createSummarize("human"),
     tenantId: teamsContext.tenantId,
     botApi: teamsContext.botApi,
-    teamsSendImage: teamsContext.teamsSendImage,
+    ...(teamsContext.teamsSendImage ? { chatActions: { sendFile: teamsImageFileSender(teamsContext.teamsSendImage, agentName, owner.agentRoot) } } : {}),
   } : {}) }
 
   let currentText = text

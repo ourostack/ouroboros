@@ -22,6 +22,8 @@ const HOUSE_CARE_TOOLS = ["house_sweep", "house_digest_send"]
 const SYNC_TOOLS = ["bundle_push", "bundle_pull_rebase"]
 // Reacting and choosing a reply target: shared chat tools added to the owner, household and agent-peer profiles in v21, v6 and v11.
 const CHAT_TOOLS = ["react", "set_reply_target"]
+// Sending a file reads it from this machine, so it is for the owner and agent peers only: owner v22, agent-peer v12.
+const FILE_TOOLS = ["send_file"]
 // Added to the owner in v19 with the home tools; the agent peer gets fetch_url alone.
 const OWNER_ONLY_HOME_TOOLS = ["ls", "note", "diary_write"]
 const withoutMediaMcp = (names: string[]) => names.filter((name) => !SANCTUARY_MEDIA_MCP_TOOLS.includes(name as typeof SANCTUARY_MEDIA_MCP_TOOLS[number]))
@@ -33,17 +35,18 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(21)
-    expect(owner.toolNames).toHaveLength(79)
-    expect(new Set(owner.toolNames).size).toBe(79)
-    expect(owner.toolNames).toEqual(expect.arrayContaining(CHAT_TOOLS))
+    expect(owner.version).toBe(22)
+    expect(owner.toolNames).toHaveLength(80)
+    expect(new Set(owner.toolNames).size).toBe(80)
+    expect(owner.toolNames).toEqual(expect.arrayContaining([...CHAT_TOOLS, ...FILE_TOOLS]))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...HOUSE_CARE_TOOLS, ...SYNC_TOOLS]))
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
-    expect(digest({ ...owner, version: 7, toolNames: withoutMediaMcp(owner.toolNames).filter((name: string) => name !== "sanctuary_host_execute" && name !== "report_failure" && !HOUSE_CARE_TOOLS.includes(name) && !SYNC_TOOLS.includes(name) && !SANCTUARY_OWNER_ADDITIONS.includes(name) && !CHAT_TOOLS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
+    expect(digest({ ...owner, version: 7, toolNames: withoutMediaMcp(owner.toolNames).filter((name: string) => name !== "sanctuary_host_execute" && name !== "report_failure" && !HOUSE_CARE_TOOLS.includes(name) && !SYNC_TOOLS.includes(name) && !SANCTUARY_OWNER_ADDITIONS.includes(name) && !CHAT_TOOLS.includes(name) && !FILE_TOOLS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
     const household = packaged.profiles["sanctuary-household"]
     expect(household.toolNames).toEqual(expect.arrayContaining(CHAT_TOOLS))
+    expect(household.toolNames).not.toContain("send_file")
     expect(digest({ ...household, version: 5, toolNames: household.toolNames.filter((name: string) => !CHAT_TOOLS.includes(name)) })).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
     expect(digest(packaged.profiles["sanctuary-event"])).toBe("84f54acd06d07c42c01bf0da29697c7ad07004df35d3d582cd367476c4404b56")
   })
@@ -59,7 +62,7 @@ describe("Sanctuary active tool profile", () => {
     expect(names).toContain("send_message")
     expect(names).toEqual(expect.arrayContaining(SYNC_TOOLS))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(21)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(22)
     expect(packaged.profiles["sanctuary-household"].version).toBe(6)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -91,7 +94,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const peer = packaged.profiles["sanctuary-agent-peer"]
-    expect(peer.version).toBe(11)
+    expect(peer.version).toBe(12)
     expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container" && !SYNC_TOOLS.includes(name) && !OWNER_ONLY_HOME_TOOLS.includes(name)))
     expect(peer.contextScopes).toEqual(owner.contextScopes)
     expect(peer.effectScopes).toEqual(owner.effectScopes)

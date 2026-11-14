@@ -5,10 +5,16 @@ import type { ChatActions, ReplyTargetRequest, SenseChatActions, ToolContext, To
 // Every chat app lets you react to a message and reply to a specific one. These tools are the same on every
 // sense; each sense binds `ctx.chatActions` to its own app, and a missing action means the app can't do it.
 
-/** Tools that act in the chat the turn came from; offered only on chat senses and only when the turn may send. */
-export const CHAT_ACTION_TOOL_NAMES: ReadonlySet<string> = new Set(["react", "set_reply_target"])
-/** Senses whose turns bind `chatActions`. */
-export const CHAT_ACTION_CHANNELS: ReadonlySet<string> = new Set(["bluebubbles", "telegram"])
+const MESSAGING_APPS: ReadonlySet<string> = new Set(["bluebubbles", "telegram"])
+/**
+ * Tools that act in the chat the turn came from, and the senses whose turns bind them. They are offered only there,
+ * and only when the turn may send. Teams can't add reactions and already replies to the activity, but it takes files.
+ */
+export const CHAT_ACTION_TOOL_CHANNELS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["react", MESSAGING_APPS],
+  ["set_reply_target", MESSAGING_APPS],
+  ["send_file", new Set([...MESSAGING_APPS, "teams"])],
+])
 
 /**
  * Binds a sense's chat actions to the turn: a left-out message id means the message that started it. The id stays
@@ -118,5 +124,35 @@ export const chatToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["target", "message_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "changes where the reply in the current chat lands" },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "send_file",
+        description:
+          "send a file from this machine into this chat, with an optional caption. images show inline; other files arrive as documents where the app takes them.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "absolute path to the file." },
+            caption: { type: "string", description: "optional text sent with the file." },
+          },
+          required: ["path"],
+        },
+      },
+    } satisfies OpenAI.ChatCompletionFunctionTool,
+    // A file that didn't go through throws, so the turn records the send as failed rather than done.
+    handler: async (args, ctx) => {
+      const refusal = offTurnRefusal(ctx)
+      if (refusal) throw new Error(refusal)
+      const filePath = argText(args.path)
+      if (!filePath.startsWith("/")) throw new Error("path must be an absolute path to a file.")
+      const actions = ctx?.chatActions
+      if (!actions?.sendFile) throw new Error("this chat doesn't take files from me.")
+      return actions.sendFile(filePath, typeof args.caption === "string" ? args.caption : "")
+    },
+    summaryKeys: ["path"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends a local file into the current chat" },
   },
 ]

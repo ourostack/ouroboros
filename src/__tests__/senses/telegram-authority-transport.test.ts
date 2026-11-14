@@ -151,6 +151,14 @@ describe("Sanctuary Telegram authority transport", () => {
     expect(f.transport.metadataForUpdate(update)).toBeNull()
     await f.transport.api.request("getMe", {})
     expect(f.request).toHaveBeenLastCalledWith("telegram.request", { method: "getMe", body: {} })
+    // A file crosses to the root as base64.
+    await f.transport.api.request("sendDocument", {
+      chat_id: "42", document: { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") },
+    })
+    expect(f.request).toHaveBeenLastCalledWith("telegram.request", {
+      method: "sendDocument",
+      body: { chat_id: "42", document: { kind: "telegram_input_file", name: "menu.pdf", contentType: "application/pdf", bodyBase64: Buffer.from("%PDF").toString("base64") } },
+    })
   })
 
   it("accepts signed non-owner messages and owner callbacks with exact immutable metadata", async () => {

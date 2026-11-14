@@ -4,10 +4,10 @@ import * as path from "node:path"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import type { ToolContext } from "../../repertoire/tools-base"
-import { teamsToolDefinitions } from "../../repertoire/tools-teams"
+import { chatToolDefinitions } from "../../repertoire/tools-chat"
 import { selectToolsForChannel, executeTool } from "../../repertoire/tools"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
-import { createTeamsImageSender, prepareTeamsImage } from "../../senses/teams-image"
+import { createTeamsImageSender, prepareTeamsImage, teamsImageFileSender } from "../../senses/teams-image"
 import * as nerves from "../../nerves/runtime"
 
 vi.mock("../../heart/attachments/image-normalize", () => ({
@@ -37,7 +37,7 @@ async function fixture() {
       friend: { id: "owner", name: "Owner", trustLevel: "family", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, createdAt: "", updatedAt: "", schemaVersion: 1 },
       channel: getChannelCapabilities("teams"),
     },
-    teamsSendImage: createTeamsImageSender(send, "inbound-message"),
+    chatActions: { sendFile: teamsImageFileSender(createTeamsImageSender(send, "inbound-message"), "image-test", root) },
   }
   return { root, source, send, context }
 }
@@ -49,23 +49,23 @@ afterAll(async () => {
   await Promise.all(roots.map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
-describe("teams_send_image", () => {
-  it("is available in Teams without OAuth, but not on other channels or no-send turns", () => {
+describe("send_file on Teams", () => {
+  it("is offered in Teams without OAuth, but not on channels that can't take files or on no-send turns", () => {
     const names = (channel: string, noSend?: true) => selectToolsForChannel(
       { ...getChannelCapabilities(channel), availableIntegrations: [] },
       undefined, undefined, undefined, undefined, undefined, { noSend },
     ).ordinary.map(({ tool }) => tool.function.name)
-    expect(names("teams")).toContain("teams_send_image")
+    expect(names("teams")).toContain("send_file")
     expect(names("teams")).not.toContain("teams_send_message")
-    expect(names("cli")).not.toContain("teams_send_image")
-    expect(names("teams", true)).not.toContain("teams_send_image")
+    expect(names("teams")).not.toContain("react")
+    expect(names("cli")).not.toContain("send_file")
+    expect(names("teams", true)).not.toContain("send_file")
   })
 
   it("sends actual local bytes only to the bound conversation and returns an honest receipt", async () => {
     const { source, send, context } = await fixture()
-    const outcome = await executeTool("teams_send_image", { path: source, caption: "requested screenshot" }, context)
-    expect(outcome).toMatchObject({ kind: "handler_succeeded", text: expect.stringContaining("teams-activity-123") })
-    expect(outcome.text).toContain("rendering is not verified")
+    const outcome = await executeTool("send_file", { path: source, caption: "requested screenshot" }, context)
+    expect(outcome).toMatchObject({ kind: "handler_succeeded", text: "sent the image; Teams accepted it (activity teams-activity-123)" })
     expect(normalizeImageForVision).toHaveBeenCalledWith(expect.objectContaining({ maxEdge: 1024, maxVlmBytes: 56 * 1024 }))
     expect(send).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith(expect.objectContaining({
@@ -73,15 +73,15 @@ describe("teams_send_image", () => {
       attachments: [{ contentType: "image/png", contentUrl: `data:image/png;base64,${png.toString("base64")}`, name: "private-screenshot.png" }],
     }))
     expect(JSON.stringify(send.mock.calls)).not.toContain(path.dirname(source))
-    const tool = teamsToolDefinitions.find(({ tool }) => tool.function.name === "teams_send_image")!
+    const tool = chatToolDefinitions.find(({ tool }) => tool.function.name === "send_file")!
     expect(tool.tool.function.parameters?.properties).not.toHaveProperty("user_id")
     expect(tool.riskProfile).toMatchObject({ mutates: "external_side_effect", risk: "high" })
   })
 
-  it.each(["stranger", "acquaintance", "friend", undefined] as const)("blocks local image disclosure without family trust (%s)", async (trustLevel) => {
+  it.each(["stranger", "acquaintance", "friend", undefined] as const)("blocks local file disclosure without family trust (%s)", async (trustLevel) => {
     const { source, send, context } = await fixture()
     context.context!.friend.trustLevel = trustLevel
-    const outcome = await executeTool("teams_send_image", { path: source }, context)
+    const outcome = await executeTool("send_file", { path: source }, context)
     expect(outcome.kind).toBe("rejected_before_handler")
     expect(send).not.toHaveBeenCalled()
     expect(normalizeImageForVision).not.toHaveBeenCalled()
@@ -89,7 +89,7 @@ describe("teams_send_image", () => {
 
   it("honors no-send even if called outside selection", async () => {
     const { source, send, context } = await fixture()
-    const outcome = await executeTool("teams_send_image", { path: source }, { ...context, noSend: true })
+    const outcome = await executeTool("send_file", { path: source }, { ...context, noSend: true })
     expect(outcome.kind).not.toBe("handler_succeeded")
     expect(send).not.toHaveBeenCalled()
   })
@@ -102,23 +102,25 @@ describe("teams_send_image", () => {
     }
     else context.autonomousTurnKind = "await"
     expect(selectToolsForChannel(getChannelCapabilities("teams"), undefined, undefined, undefined, undefined, undefined, context)
-      .ordinary.map(({ tool }) => tool.function.name)).not.toContain("teams_send_image")
-    expect((await executeTool("teams_send_image", { path: source }, context)).kind).not.toBe("handler_succeeded")
+      .ordinary.map(({ tool }) => tool.function.name)).not.toContain("send_file")
+    expect((await executeTool("send_file", { path: source }, context)).kind).not.toBe("handler_succeeded")
     expect(send).not.toHaveBeenCalled()
     expect(normalizeImageForVision).not.toHaveBeenCalled()
   })
 
-  it("fails without an authenticated current-conversation sender", async () => {
+  it("fails without a sender bound to the current conversation", async () => {
     const { source, context } = await fixture()
-    delete context.teamsSendImage
-    expect((await executeTool("teams_send_image", { path: source }, context)).kind).not.toBe("handler_succeeded")
+    delete context.chatActions
+    const outcome = await executeTool("send_file", { path: source }, context)
+    expect(outcome.kind).not.toBe("handler_succeeded")
+    expect(outcome.text).toContain("this chat doesn't take files from me.")
     expect(normalizeImageForVision).not.toHaveBeenCalled()
   })
 
   it("rejects disguised non-image files before normalization or sending", async () => {
     const { source, send, context } = await fixture()
     await fs.writeFile(source, "private non-image content")
-    const outcome = await executeTool("teams_send_image", { path: source }, context)
+    const outcome = await executeTool("send_file", { path: source }, context)
     expect(outcome.kind).not.toBe("handler_succeeded")
     expect(normalizeImageForVision).not.toHaveBeenCalled()
     expect(send).not.toHaveBeenCalled()
@@ -129,14 +131,14 @@ describe("teams_send_image", () => {
     const normalized = `${source}.normalized.png`
     await fs.writeFile(normalized, Buffer.concat([png, Buffer.alloc(56 * 1024)]))
     vi.mocked(normalizeImageForVision).mockResolvedValue({ path: normalized, mimeType: "image/png", byteCount: 1 })
-    expect((await executeTool("teams_send_image", { path: source }, context)).kind).not.toBe("handler_succeeded")
+    expect((await executeTool("send_file", { path: source }, context)).kind).not.toBe("handler_succeeded")
     expect(send).not.toHaveBeenCalled()
   })
 
   it("does not report success or retry when Teams rejects the attachment", async () => {
     const { source, send, context } = await fixture()
     send.mockRejectedValue(new Error("MessageSizeTooBig"))
-    const outcome = await executeTool("teams_send_image", { path: source }, context)
+    const outcome = await executeTool("send_file", { path: source }, context)
     expect(outcome.kind).not.toBe("handler_succeeded")
     expect(outcome.text).toContain("MessageSizeTooBig")
     expect(send).toHaveBeenCalledOnce()
@@ -145,7 +147,7 @@ describe("teams_send_image", () => {
   it("reports unknown delivery when the sender gives no activity receipt", async () => {
     const { source, send, context } = await fixture()
     send.mockResolvedValue(undefined)
-    const outcome = await executeTool("teams_send_image", { path: source }, context)
+    const outcome = await executeTool("send_file", { path: source }, context)
     expect(outcome.kind).not.toBe("handler_succeeded")
     expect(outcome.text).toContain("delivery is unknown")
     expect(send).toHaveBeenCalledOnce()
@@ -154,37 +156,20 @@ describe("teams_send_image", () => {
   it("binds relationship authorization before touching private image bytes", async () => {
     const { source, send, context } = await fixture()
     context.relationshipAuthorization = {
-      profileId: "image-owner", authorizedContextScopes: [], advertisedToolNames: ["teams_send_image"],
+      profileId: "image-owner", authorizedContextScopes: [], advertisedToolNames: ["send_file"],
       authorizeTool: async () => ({ allowed: false, reason: "relationship revoked" }),
     }
-    const outcome = await executeTool("teams_send_image", { path: source }, context)
+    const outcome = await executeTool("send_file", { path: source }, context)
     expect(outcome.kind).toBe("rejected_before_handler")
     expect(send).not.toHaveBeenCalled()
     expect(normalizeImageForVision).not.toHaveBeenCalled()
   })
 
-  it.each(["agentName", "agentRoot"] as const)("requires explicit %s even with a sender", async (field) => {
+  it("refuses overlong captions before sending", async () => {
     const { source, context, send } = await fixture()
-    delete context[field]
-    expect((await executeTool("teams_send_image", { path: source }, context)).kind).not.toBe("handler_succeeded")
-    expect(send).not.toHaveBeenCalled()
-  })
-
-  it("guards channel and trust even when the handler is called directly", async () => {
-    const { source, context, send } = await fixture()
-    const handler = teamsToolDefinitions.find(({ tool }) => tool.function.name === "teams_send_image")!.handler
-    await expect(handler({ path: source })).rejects.toThrow("family-trusted")
-    context.context!.channel = getChannelCapabilities("cli")
-    await expect(handler({ path: source }, context)).rejects.toThrow("family-trusted")
-    expect(send).not.toHaveBeenCalled()
-  })
-
-  it("rejects overlong captions both through schema and the direct handler", async () => {
-    const { source, context, send } = await fixture()
-    const args = { path: source, caption: "x".repeat(1025) }
-    expect((await executeTool("teams_send_image", args, context)).kind).not.toBe("handler_succeeded")
-    const handler = teamsToolDefinitions.find(({ tool }) => tool.function.name === "teams_send_image")!.handler
-    await expect(handler(args, context)).rejects.toThrow("caption exceeds")
+    const outcome = await executeTool("send_file", { path: source, caption: "x".repeat(1025) }, context)
+    expect(outcome.kind).not.toBe("handler_succeeded")
+    expect(outcome.text).toContain("caption exceeds")
     expect(send).not.toHaveBeenCalled()
   })
 })
