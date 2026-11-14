@@ -8,8 +8,8 @@ import type WebSocket from "ws"
 
 import {
   appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
-  listAppSessions, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
-  readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, type RunFile,
+  listAppSessions, listSessionQueue, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
+  readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, withdrawQueuedMessages, type RunFile,
 } from "../../../senses/app-sessions/client"
 
 type Frame = Record<string, unknown>
@@ -457,6 +457,37 @@ describe("the app's socket", () => {
   it("throws when the app is not running", () => {
     fs.rmSync(path.join(stateDir, "run"), { recursive: true })
     expect(() => exchange([], { waitMs: 10 }, options())).toThrow("the GitHub Copilot app is not running")
+  })
+})
+
+describe("a session's own queue", () => {
+  beforeEach(() => addSession({ id: WS, title: "Title" }))
+  const row = (id: string, text: string, source = "user", kind = "message") => ({ id, source, kind, display_text: text })
+
+  it("lists the queued messages, and nothing when the app has none or answers with something else", async () => {
+    app.on("get_session_queue", (frame, socket) => socket.push({ type: "command_result", request_id: frame.request_id, data: { items: [row("5", "one"), row("6", "steer", "user", "steering"), { id: 7 }, row("8", "agent says", "agent-x"), "junk"] } }))
+    expect(await listSessionQueue(WS, options())).toEqual([{ id: "5", source: "user", text: "one" }, { id: "8", source: "agent-x", text: "agent says" }])
+    app.on("get_session_queue", (frame, socket) => socket.push({ type: "command_result", request_id: frame.request_id, data: {} }))
+    expect(await listSessionQueue(WS, options())).toEqual([])
+    app.on("get_session_queue", (frame, socket) => socket.push({ type: "command_result", request_id: frame.request_id, error: "no such session" }))
+    expect(await listSessionQueue(WS, options())).toEqual([])
+    app.on("get_session_queue", (_frame, socket) => socket.push({ type: "socket_error", message: "reset" }))
+    expect(await listSessionQueue(WS, options())).toEqual([])
+  })
+
+  it("takes back only the user-side messages that start with the prefix, and counts the ones the app removed", async () => {
+    const queue = [row("5", "New or changed issues in a/b: #1. Drain them."), row("6", "New or changed issues in c/d: #2. Drain them."), row("7", "New or changed issues in a/b: #3. Drain them."), row("8", "New or changed issues in a/b: from an agent", "agent-x"), row("9", "New or changed issues in a/b: #9. Drain them.")]
+    app.on("get_session_queue", (frame, socket) => socket.push({ type: "command_result", request_id: frame.request_id, data: { items: queue } }))
+    app.on("remove_session_queue_item", (frame, socket) => socket.push({ type: "command_result", request_id: frame.request_id, ...(frame.id === "7" ? { error: "unknown queue item id", error_code: "item_not_found" } : { data: {} }) }))
+    expect(await withdrawQueuedMessages(WS, "New or changed issues in a/b:", options({ sendWaitMs: 2_000 }))).toBe(2)
+    expect(app.requests.filter(request => request.type === "remove_session_queue_item").map(request => request.id)).toEqual(["5", "7", "9"])
+    queue.splice(0, queue.length, { id: "11", kind: "message", source: "user", display_text: "New or changed issues in a/b: bare" })
+    expect(await withdrawQueuedMessages(WS, "New or changed issues in a/b:", options())).toBe(1)
+    app.on("remove_session_queue_item", (_frame, socket) => socket.push({ type: "socket_error", message: "reset" }))
+    queue.splice(0, queue.length, { id: "13", kind: "message", source: "user", display_text: "New or changed issues in a/b: x" })
+    expect(await withdrawQueuedMessages(WS, "New or changed issues in a/b:", options())).toBe(0)
+    queue.splice(0, queue.length, { id: "12", kind: "message" })
+    expect(await listSessionQueue(WS, options())).toEqual([{ id: "12", source: "", text: "" }])
   })
 })
 
