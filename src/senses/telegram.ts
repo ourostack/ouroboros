@@ -26,6 +26,7 @@ import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
+import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
@@ -1636,6 +1637,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         },
         userMessage: message.text,
         ingressRelations,
+        ...(message.interaction?.kind === "reaction" ? { isReactionSignal: true } : {}),
         ...(message.replyToText ? { replyingTo: { text: message.replyToText, ...(message.replyToAuthor ? { author: message.replyToAuthor } : {}) } } : {}),
         ...(ingressReceipt ? { precommittedIngress: ingressReceipt } : {}),
         turnMetricsObserver,
@@ -1763,8 +1765,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const onMessage = (message: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
-    const ownerDecision = !message.attachments?.length && !message.attachmentNotices?.length ? admissionController?.parseOwnerDecision({
+  // Telegram tells the bot which message was reacted to, not what it said. The journal knows the agent's own messages.
+  const nameReactionTarget = (message: TelegramInboundMessage): TelegramInboundMessage => {
+    const interaction = message.interaction
+    if (interaction?.kind !== "reaction" || !interaction.target.id) return message
+    const sent = resolveTelegramReply(getEffectJournal(), { messageId: Number(interaction.target.id), friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
+    if (!sent?.text) return message
+    const named: ChatInteraction = { ...interaction, target: { ...interaction.target, text: sent.text, fromAgent: true } }
+    return { ...message, interaction: named, text: renderChatInteraction(named) }
+  }
+
+  const onMessage = (inbound: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
+    const message = nameReactionTarget(inbound)
+    const ownerDecision = !message.interaction && !message.attachments?.length && !message.attachmentNotices?.length ? admissionController?.parseOwnerDecision({
       text: message.text,
       ...(message.replyToMessageId ? { replyToMessageId: Number(message.replyToMessageId) } : {}),
     }) : null

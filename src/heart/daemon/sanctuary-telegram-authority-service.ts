@@ -3,7 +3,7 @@ import * as net from "node:net"
 import * as path from "node:path"
 
 import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-client"
-import { TelegramApiError } from "../../senses/telegram-client"
+import { TELEGRAM_ALLOWED_UPDATES, TelegramApiError } from "../../senses/telegram-client"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
 import { authorityArtifactDigest } from "./sanctuary-authority-codec"
@@ -105,7 +105,7 @@ export class SanctuaryTelegramAuthorityService {
         return await this.#api.request<TelegramUpdate[]>("getUpdates", {
           offset: this.#gateway.cursor(),
           timeout: 50,
-          allowed_updates: ["message", "callback_query"],
+          allowed_updates: [...TELEGRAM_ALLOWED_UPDATES],
         })
       } catch (error) {
         const status = error instanceof TelegramApiError ? error.status : null

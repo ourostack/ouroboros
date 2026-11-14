@@ -2,7 +2,7 @@ import { createHash, type KeyLike } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { authorityArtifactDigest, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "../heart/daemon/sanctuary-telegram-authority-gateway"
-import type { TelegramAuthorityTransportMetadata, TelegramBotApi, TelegramUpdate } from "./telegram-client"
+import { TELEGRAM_ALLOWED_UPDATES, telegramUpdateMessageCoordinates, type TelegramAuthorityTransportMetadata, type TelegramBotApi, type TelegramUpdate } from "./telegram-client"
 import { createRootHostApprovalPort, type RootHostApprovalPort } from "./root-host-approval-port"
 
 export interface SanctuaryTelegramAuthorityProtocolClient {
@@ -40,9 +40,7 @@ function validPollBody(body: Record<string, unknown>): boolean {
     && (body.offset as number) >= 0
     && body.timeout === 50
     && Array.isArray(body.allowed_updates)
-    && body.allowed_updates.length === 2
-    && body.allowed_updates[0] === "message"
-    && body.allowed_updates[1] === "callback_query"
+    && body.allowed_updates.join(",") === TELEGRAM_ALLOWED_UPDATES.join(",")
 }
 
 function rawUpdateDigest(update: TelegramUpdate): string {
@@ -108,14 +106,14 @@ function verifyObservation(
     throw new Error("Sanctuary Telegram authority observation payload is invalid")
   }
   const callback = update.callback_query
-  const message = update.message
-  if ((!callback && !message) || (callback && message) || (callback && (!callback.message || !callback.from)) || (message && !message.from)) {
+  const message = telegramUpdateMessageCoordinates(update)
+  if ((!callback && !message) || (callback && message) || (callback && (!callback.message || !callback.from))) {
     throw new Error("Sanctuary Telegram authority observation update is unsupported")
   }
   const updateClass = callback ? "callback" : "message"
-  const userId = String(callback ? callback.from.id : message!.from!.id)
-  const chatId = String(callback ? callback.message!.chat.id : message!.chat.id)
-  const messageId = String(callback ? callback.message!.message_id : message!.message_id)
+  const userId = callback ? String(callback.from.id) : message!.userId
+  const chatId = callback ? String(callback.message!.chat.id) : message!.chatId
+  const messageId = callback ? String(callback.message!.message_id) : message!.messageId
   const callbackQueryId = callback ? callback.id : null
   if (
     payload.updateClass !== updateClass

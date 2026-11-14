@@ -918,7 +918,7 @@ export async function recordTelegramEffectsInSession(input: {
   return lease ? record(lease) : withSessionTurnLease(input.sessionPath, record)
 }
 
-export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
+export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null; text: string | null } | null {
   for (const artifact of store.list()) {
     if (artifact.target.kind !== "approved_relationship" || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
     const part = artifact.parts.find((candidate) => candidate.messageId === input.messageId && candidate.state === "session_recorded" && candidate.sessionEventId)
@@ -928,6 +928,7 @@ export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { 
       authorClass: artifact.authorClass,
       sessionEventId: part.sessionEventId,
       requestId: artifact.target.requestId ?? null,
+      text: part.text,
     }
   }
   return null

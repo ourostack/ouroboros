@@ -17,6 +17,7 @@ import { loadSession, deleteSession, postTurnTrim, deferPostTurnPersist } from "
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
+import { renderChatInteraction } from "../heart/chat-interaction"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
@@ -124,14 +125,27 @@ export function sanitizeFeedbackComment(comment: string): string {
   return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned
 }
 
-// Build synthetic message text from a Teams feedback reaction.
+// Teams names its reactions; the agent reads the emoji the person tapped.
+const TEAMS_REACTION_EMOJI: Record<string, string> = { like: "👍", dislike: "👎", heart: "❤️", laugh: "😆", surprised: "😮", sad: "😢", angry: "😠" }
+
+function teamsReaction(type: string, removed: boolean): string {
+  return renderChatInteraction({ kind: "reaction", label: TEAMS_REACTION_EMOJI[type] ?? type, removed, target: { fromAgent: true } })
+}
+
+// Build synthetic message text from a Teams feedback reaction (the thumbs on an AI-labeled reply).
 export function buildFeedbackSyntheticText(reaction: string, comment?: string): string {
-  const emoji = reaction === "like" ? "thumbs-up" : "thumbs-down"
-  if (comment) {
-    const sanitized = sanitizeFeedbackComment(comment)
-    return `[reacted with ${emoji} to your message: "${sanitized}"]`
-  }
-  return `[reacted with ${emoji} to your message]`
+  const said = comment ? ` and commented: "${sanitizeFeedbackComment(comment)}"` : ""
+  return `[${teamsReaction(reaction === "like" ? "like" : "dislike", false)}${said}]`
+}
+
+// Teams only tells a bot about reactions on the bot's own messages, so the target is always the agent's.
+export function buildReactionSyntheticText(added: ReadonlyArray<{ type: string }> | undefined, removed: ReadonlyArray<{ type: string }> | undefined): string | null {
+  const change = added?.[0] ? { type: added[0].type, removed: false } : removed?.[0] ? { type: removed[0].type, removed: true } : null
+  return change ? `[${teamsReaction(change.type, change.removed)}]` : null
+}
+
+export function buildEditSyntheticText(newText: string): string {
+  return `[${renderChatInteraction({ kind: "edit", newText, target: { fromAgent: false } })}]`
 }
 
 // Build a welcome Adaptive Card with prompt starters for new bot installs.
@@ -1339,22 +1353,12 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     return { status: 412 }
   }) as any)
 
-  // Handle Teams feedback reactions (thumbs up/down on AI-generated messages).
-  // SDK routes message/submitAction with actionName "feedback" to this event.
-  /* v8 ignore start -- Teams SDK invoke handler; requires live SDK context @preserve */
-  app.on("message.submit.feedback" as any, async (ctx: any) => {
+  // Edits, reactions and the thumbs feedback all reach the agent as a turn about an earlier message.
+  // A reaction runs with isReactionSignal: the agent sees it and decides whether to answer.
+  /* v8 ignore start -- Teams SDK activity handlers; require live SDK context @preserve */
+  const runInteractionTurn = async (ctx: any, syntheticText: string, isReactionSignal: boolean): Promise<void> => {
     const { stream, activity } = ctx
-    const reaction = activity.value?.actionValue?.reaction
-    const comment = activity.value?.actionValue?.feedback
     const convId = activity.conversation?.id || "unknown"
-
-    // Validate payload — graceful no-op for malformed invocations
-    if (activity.value?.actionName !== "feedback" || !reaction) {
-      return undefined
-    }
-
-    const syntheticText = buildFeedbackSyntheticText(reaction, comment)
-
     await coordinateTeamsTurn(convId, syntheticText, {
       aadObjectId: activity.from?.aadObjectId, userId: activity.from?.id,
       tenantId: activity.conversation?.tenantId, replyToId: activity.replyToId,
@@ -1372,12 +1376,33 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const ctxSend = async (t: string) => {
         await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
       }
-      await handleTeamsMessage(syntheticText, stream, convId, teamsContext, ctxSend, { isReactionSignal: true, suppressEmptyStreamMessage: true })
+      await handleTeamsMessage(syntheticText, stream, convId, teamsContext, ctxSend, isReactionSignal ? { isReactionSignal: true, suppressEmptyStreamMessage: true } : {})
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.feedback_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
     }
     })
+  }
+
+  // SDK routes message/submitAction with actionName "feedback" to this event.
+  app.on("message.submit.feedback" as any, async (ctx: any) => {
+    const reaction = ctx.activity.value?.actionValue?.reaction
+    // Validate payload — graceful no-op for malformed invocations
+    if (ctx.activity.value?.actionName !== "feedback" || !reaction) return undefined
+    await runInteractionTurn(ctx, buildFeedbackSyntheticText(reaction, ctx.activity.value?.actionValue?.feedback), true)
+    return undefined
+  })
+
+  app.on("messageReaction" as any, async (ctx: any) => {
+    const text = buildReactionSyntheticText(ctx.activity.reactionsAdded, ctx.activity.reactionsRemoved)
+    if (text) await runInteractionTurn(ctx, text, true)
+    return undefined
+  })
+
+  app.on("messageUpdate" as any, async (ctx: any) => {
+    // Teams also sends an update when a message is undeleted; only an edit carries new words.
+    if (ctx.activity.channelData?.eventType !== "editMessage" || !ctx.activity.text) return undefined
+    await runInteractionTurn(ctx, buildEditSyntheticText(ctx.activity.text), false)
     return undefined
   })
   /* v8 ignore stop */

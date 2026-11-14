@@ -24,7 +24,7 @@ it("proves two cold boots with absent pins, absent gateway, then root-only Teleg
   const pins = { schemaVersion: 1, ...identity, publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString() }
   const configPath = path.join(socketRoot, "resident.json")
   const options = { configPath, expectedUid: process.getuid!(), expectedGid: process.getgid!() }
-  const poll = { offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"] }
+  const poll = { offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"] }
   const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("resident direct Telegram is forbidden"))
   try {
     for (let cycle = 0; cycle < 2; cycle++) {

@@ -26,6 +26,11 @@ describe("renderChatInteraction", () => {
       .toBe("reacted with 🔥 to an unidentified message (the reaction carried no target message reference)")
   })
 
+  it("still says the target was the agent's when only that is known", () => {
+    expect(renderChatInteraction({ kind: "reaction", label: "👍", removed: false, target: { id: "7", fromAgent: true } }))
+      .toBe("reacted with 👍 to one of your messages (its text was not included)")
+  })
+
   it("shortens a long target to an excerpt", () => {
     const rendered = renderChatInteraction({ kind: "reaction", label: "👀", removed: false, target: { text: "x".repeat(200), fromAgent: true } })
     expect(rendered).toBe(`reacted with 👀 to your message: "${"x".repeat(77)}..."`)

@@ -35,6 +35,7 @@ function targetPhrase(target: ChatMessageRef, eventName: string): string {
     const owner = target.fromAgent === true ? "your" : target.fromAgent === false ? "their" : "a"
     return `${owner} message: "${excerpt(text)}"`
   }
+  if (target.fromAgent === true) return "one of your messages (its text was not included)"
   // Say plainly that the referent is missing, so the agent can ask instead of guessing what was meant.
   return target.id
     ? `an unidentified message (target ${target.id}; its text could not be resolved)`

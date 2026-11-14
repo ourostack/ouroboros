@@ -102,6 +102,19 @@ describe("Sanctuary root Telegram authority gateway state", () => {
     expect(fs.readFileSync(sanctuaryTelegramAuthorityStatePath(f.agentRoot), "utf8")).toBe(before)
   })
 
+  it("observes private edits and reactions as message updates about the changed message", () => {
+    const f = fixture()
+    const chat = { id: 42, type: "private" }
+    f.gateway.capture([
+      { update_id: 40, edited_message: { message_id: 140, from: { id: 42 }, chat, text: "edited" } },
+      { update_id: 41, message_reaction: { chat, message_id: 141, user: { id: 42 }, old_reaction: [], new_reaction: [{ type: "emoji", emoji: "❤️" }] } },
+      { update_id: 42, message_reaction: { chat: { id: -5, type: "group" }, message_id: 142, user: { id: 42 }, old_reaction: [], new_reaction: [] } },
+    ])
+    expect(f.gateway.poll()!.payload).toMatchObject({ updateId: 40, updateClass: "message", userId: "42", chatId: "42", messageId: "140" })
+    expect(f.gateway.record(41)).toMatchObject({ disposition: "dispatch" })
+    expect(f.gateway.record(42)).toMatchObject({ disposition: "ignored", settlement: "ignored" })
+  })
+
   it("durably captures and re-delivers one byte-identical signed owner observation", () => {
     const f = fixture()
     const update = message(10)

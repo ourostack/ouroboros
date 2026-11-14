@@ -220,7 +220,7 @@ describe("Sanctuary Telegram authority service", () => {
     expect(f.api.request).toHaveBeenCalledWith("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     }, expect.any(AbortSignal))
     expect(result).toMatchObject({
       update: message(10),

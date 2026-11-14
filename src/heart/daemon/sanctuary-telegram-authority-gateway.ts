@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-import type { TelegramUpdate } from "../../senses/telegram-client"
+import { telegramUpdateMessageCoordinates, type TelegramUpdate } from "../../senses/telegram-client"
 import {
   readSessionTransaction,
   withImmediateSessionTurnLease,
@@ -188,24 +188,9 @@ function updateCoordinates(update: TelegramUpdate): {
       callbackQueryId: callback.id,
     }
   }
-  const message = update.message
-  if (
-    message
-    && message.chat?.type === "private"
-    && message.from
-    && Number.isSafeInteger(message.from.id)
-    && Number.isSafeInteger(message.chat.id)
-    && Number.isSafeInteger(message.message_id)
-  ) {
-    return {
-      updateClass: "message",
-      userId: String(message.from.id),
-      chatId: String(message.chat.id),
-      messageId: String(message.message_id),
-      callbackQueryId: null,
-    }
-  }
-  return null
+  const message = telegramUpdateMessageCoordinates(update)
+  if (message?.chatType !== "private") return null
+  return { updateClass: "message", userId: message.userId, chatId: message.chatId, messageId: message.messageId, callbackQueryId: null }
 }
 
 function initialState(): SanctuaryTelegramAuthorityState {
