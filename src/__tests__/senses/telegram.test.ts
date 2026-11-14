@@ -26,6 +26,24 @@ function receiptDigest(purpose: string, value: string): string {
   return createHmac("sha256", RECEIPT_KEY).update(`${RECEIPT_DOMAIN}\0${purpose}\0${value}`).digest("hex")
 }
 
+/** Every handled turn shows "typing…"; that is presence, not delivery, so these tests count only what the turn sent. */
+function sent(request: unknown): unknown[][] {
+  return (request as ReturnType<typeof vi.fn>).mock.calls.filter(([method]) => method !== "sendChatAction")
+}
+
+/** A Telegram API whose sends answer in order (an Error rejects); typing always succeeds. */
+function deliveryApi(...answers: unknown[]): TelegramBotApi {
+  return {
+    request: vi.fn(async (method: string) => {
+      if (method === "sendChatAction") return true
+      const answer = answers.shift()
+      if (answer instanceof Error) throw answer
+      return answer
+    }) as TelegramBotApi["request"],
+    stop: vi.fn(),
+  }
+}
+
 function validTurnReceipt(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schemaVersion: "sanctuary-telegram-turn-receipt-v3",
@@ -587,7 +605,7 @@ describe("Telegram sense", () => {
     })
     await expect(onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "hello" }))
       .rejects.toThrow("scenario ownership drift")
-    expect(api.request).not.toHaveBeenCalled()
+    expect(sent(api.request)).toEqual([])
     await expect(app.stop()).rejects.toThrow("scenario ownership drift")
     fs.rmSync(root, { recursive: true, force: true })
   })
@@ -626,7 +644,7 @@ describe("Telegram sense", () => {
       marker = { scenarioHandleDigest: "a".repeat(64) }
       releaseTurn()
       await expect(turn).rejects.toThrow("acceptance audit verification failed")
-      expect(api.request).not.toHaveBeenCalled()
+      expect(sent(api.request)).toEqual([])
       expect(fs.existsSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH))).toBe(false)
     } finally {
       await app.stop()
@@ -1002,7 +1020,7 @@ describe("Telegram sense", () => {
     await f.getOnMessage()(inbound)
     await f.getOnMessage()(inbound)
 
-    expect(f.api.request).toHaveBeenCalledTimes(1)
+    expect(sent(f.api.request)).toHaveLength(1)
     const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
     const artifacts = fs.readdirSync(journalRoot).filter((name) => name.endsWith(".json"))
     expect(artifacts).toHaveLength(1)
@@ -1018,7 +1036,7 @@ describe("Telegram sense", () => {
   it("requires the real relationship authority before preparing and again before sending", async () => {
     const denied = fixture({ authorizeEffect: vi.fn(() => ({ allowed: false, reason: "revoked" })) })
     await expect(denied.getOnMessage()({ updateId: 911, messageId: "912", userId: "42", chatId: "42", text: "health?" })).rejects.toThrow("revoked")
-    expect(denied.api.request).not.toHaveBeenCalled()
+    expect(sent(denied.api.request)).toEqual([])
     expect(fs.existsSync(path.join(denied.agentRoot, "state", "telegram", "effects"))).toBe(false)
 
     const phases: string[] = []
@@ -1089,7 +1107,7 @@ describe("Telegram sense", () => {
 
     await f.getOnMessage()({ updateId: 915, messageId: "916", userId: "42", chatId: "42", text: "recover it" })
 
-    expect(f.api.request).toHaveBeenCalledOnce()
+    expect(sent(f.api.request)).toHaveLength(1)
     const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
     expect(envelope.events).toHaveLength(1)
     expect(envelope.events[0]).toMatchObject({ id: "evt-000001", role: "assistant", content: "Recovered canonical answer." })
@@ -1235,7 +1253,7 @@ describe("Telegram sense", () => {
       },
     })
     await duplicate.getOnMessage()({ updateId: 22, messageId: "23", userId: "42", chatId: "42", text: "what's up?" })
-    expect(duplicate.api.request).toHaveBeenCalledOnce()
+    expect(sent(duplicate.api.request)).toHaveLength(1)
     expect(duplicate.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "I couldn't complete that turn. The failure was recorded; please try again.", parse_mode: "HTML" }, undefined)
     expect(JSON.parse(fs.readFileSync(receiptPath(duplicateRoot), "utf8"))).toMatchObject({ status: "error", deliveryCount: 1 })
     fs.rmSync(duplicateRoot, { recursive: true, force: true })
@@ -1269,7 +1287,7 @@ describe("Telegram sense", () => {
 
   it("records partial chunk delivery as an error without sending a duplicate fallback", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-partial-receipt-"))
-    const api: TelegramBotApi = { request: vi.fn().mockResolvedValueOnce({ message_id: 71 }).mockRejectedValueOnce(new Error("second chunk failed")), stop: vi.fn() }
+    const api = deliveryApi({ message_id: 71 }, new Error("second chunk failed"))
     const long = "x".repeat(7_000)
     const runTurn = vi.fn(async (options: any) => {
       options.turnMetricsObserver.providerInvocationCount += 1
@@ -1281,7 +1299,7 @@ describe("Telegram sense", () => {
 
     await f.getOnMessage()({ updateId: 11, messageId: "12", userId: "42", chatId: "42", text: "long" })
 
-    expect(api.request).toHaveBeenCalledTimes(2)
+    expect(sent(api.request)).toHaveLength(2)
     const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
     expect(receipt).toMatchObject({ status: "error", errorCategory: "Error", deliveryCount: 1, providerInvocationCount: 1, toolInvocationCount: 1 })
     expect(receipt.deliveries).toHaveLength(1)
@@ -1292,7 +1310,7 @@ describe("Telegram sense", () => {
     fs.writeFileSync(rootFile, "blocked")
     const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "c".repeat(64) }), acceptanceReceiptRoot: rootFile })
     await f.getOnMessage()({ updateId: 13, messageId: "14", userId: "42", chatId: "42", text: "status" })
-    expect(f.api.request).toHaveBeenCalledTimes(1)
+    expect(sent(f.api.request)).toHaveLength(1)
   })
 
   it.each([
@@ -1323,7 +1341,7 @@ describe("Telegram sense", () => {
     await f.getOnMessage()({ updateId: 20, messageId: "21", userId: "42", chatId: "42", text: "status" })
 
     expect(fs.readFileSync(receiptPath(root), "utf8")).toBe(before)
-    expect(f.api.request).toHaveBeenCalledOnce()
+    expect(sent(f.api.request)).toHaveLength(1)
   })
 
   it("validates a newly generated receipt before creating the ledger", async () => {
@@ -1336,7 +1354,7 @@ describe("Telegram sense", () => {
     await f.getOnMessage()({ updateId: 21, messageId: "22", userId: "42", chatId: "42", text: "status" })
 
     expect(fs.existsSync(receiptPath(root))).toBe(false)
-    expect(f.api.request).toHaveBeenCalledOnce()
+    expect(sent(f.api.request)).toHaveLength(1)
   })
 
   it("rejects ledgers above both the row-count and aggregate-byte read bounds", async () => {
@@ -1428,7 +1446,7 @@ describe("Telegram sense", () => {
 
     await f.getOnMessage()({ updateId: 30, messageId: "31", userId: "42", chatId: "42", text: "large" })
 
-    expect(api.request).toHaveBeenCalledTimes(100)
+    expect(sent(api.request)).toHaveLength(100)
     expect(fs.existsSync(receiptPath(root))).toBe(false)
   })
 
@@ -1541,7 +1559,7 @@ describe("Telegram sense", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-ordered-chunks-"))
     const text = "x".repeat(7_000)
     const chunks = splitTelegramText(text)
-    const api: TelegramBotApi = { request: vi.fn().mockResolvedValueOnce({ message_id: 71 }).mockResolvedValueOnce({ message_id: 72 }), stop: vi.fn() }
+    const api = deliveryApi({ message_id: 71 }, { message_id: 72 })
     const runTurn = vi.fn(async (options: any) => {
       await options.deliverySink.onDelivery({ kind: "settle", text })
       return { response: text, ponderDeferred: false, deliveries: [{ kind: "settle", text }], deliveryFailures: [], providerInvocationCount: 1, toolInvocationCount: 0 }

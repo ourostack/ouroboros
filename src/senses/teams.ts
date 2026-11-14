@@ -40,6 +40,7 @@ const teamsFailoverStates = new Map<string, FailoverState>()
 import { drainDeferredReturns, drainPending, getPendingDir } from "../mind/pending"
 import { classifySteeringFollowUpEffect, type SteeringFollowUpEffect } from "./continuity"
 import { createTeamsImageSender } from "./teams-image"
+import { repeatEvery } from "./repeat-while"
 import { FeedbackReplyRefusal, resolveFeedbackReply } from "./shepherd/feedback-reply"
 
 // Stream interface matching IStreamer from @microsoft/teams.apps
@@ -226,19 +227,19 @@ export function createTeamsCallbacks(
   let lastPhrase = ""
   let flushTimer: NodeJS.Timeout | null = null
   const flushInterval = options?.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS
-  let keepaliveTimer: NodeJS.Timeout | null = null
+  let stopKeepalive: (() => void) | null = null
   let toolsRunning = 0
   let toolStatus = ""
   const keepaliveInterval = options?.typingKeepaliveMs ?? TYPING_KEEPALIVE_MS
 
   function startTypingKeepalive(): void {
-    if (keepaliveTimer) return
-    keepaliveTimer = setInterval(() => safeUpdate(toolStatus || "working..."), keepaliveInterval)
+    if (stopKeepalive) return
+    stopKeepalive = repeatEvery(() => safeUpdate(toolStatus || "working..."), keepaliveInterval)
   }
 
   function stopTypingKeepalive(): void {
     toolsRunning = 0
-    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null }
+    if (stopKeepalive) { stopKeepalive(); stopKeepalive = null }
   }
 
   // The SDK merges every chunk's entities into the final message, and Teams rejects a final
