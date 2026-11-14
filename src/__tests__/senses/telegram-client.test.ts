@@ -20,6 +20,7 @@ import {
   classifyTelegramPersistedApprovalState,
   createTelegramLongPoll,
   createTelegramApprovalTransport as createRawTelegramApprovalTransport,
+  telegramUpdateMessageCoordinates,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
@@ -2070,7 +2071,7 @@ describe("Telegram durable authorized long poll", () => {
     const poll = createTelegramLongPoll({ api, expectedUserId: "10", expectedChatId: "10", offsetStore: store, onMessage })
 
     await expect(poll.pollOnce()).resolves.toBe(7)
-    expect(request).toHaveBeenCalledWith("getUpdates", { offset: 5, timeout: 50, allowed_updates: ["message", "callback_query"] }, expect.any(AbortSignal))
+    expect(request).toHaveBeenCalledWith("getUpdates", { offset: 5, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"] }, expect.any(AbortSignal))
     expect(onMessage).toHaveBeenCalledTimes(1)
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello", replyToMessageId: "44" }))
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextUpdateId: 7 })
@@ -2085,6 +2086,57 @@ describe("Telegram durable authorized long poll", () => {
     })
     await restarted.pollOnce()
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
+  })
+
+  it("hands the owner's edits and reactions to the agent and drops everything else about them", async () => {
+    const onMessage = vi.fn(async () => undefined)
+    const chat = { id: 10, type: "private" }
+    const reaction = (update_id: number, old_reaction: object[], new_reaction: object[], user = { id: 10 }) =>
+      ({ update_id, message_reaction: { chat, message_id: 44, user, date: 1, old_reaction, new_reaction } })
+    const request = vi.fn(async () => [
+      { update_id: 1, edited_message: { message_id: 3, from: { id: 10 }, chat, text: "7:30 instead" } },
+      reaction(2, [], [{ type: "emoji", emoji: "❤️" }]),
+      reaction(3, [{ type: "emoji", emoji: "❤️" }], []),
+      reaction(4, [], [{ type: "custom_emoji", custom_emoji_id: "c1" }]),
+      reaction(5, [], [{ type: "paid" }]),
+      reaction(6, [{ type: "emoji", emoji: "👍" }], [{ type: "emoji", emoji: "👍" }]),
+      reaction(7, [], [{ type: "emoji", emoji: "🔥" }], { id: 99 }),
+      { update_id: 8, edited_message: { message_id: 4, from: { id: 10 }, chat, caption: "new caption" } },
+      reaction(9, [], [{ type: "sticker" }]),
+      { update_id: 10, edited_message: { message_id: 5, from: { id: 10 }, chat, photo: [{ file_id: "p" }] } },
+    ])
+    const poll = createTelegramLongPoll({
+      api: { request, stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: new FileTelegramOffsetStore(join(makeTempDirectory("ouro-telegram-interactions-"), "offset.json")),
+      onMessage,
+    })
+
+    await poll.pollOnce()
+
+    const seen = onMessage.mock.calls.map(([message]: any[]) => [message.updateId, message.text, message.interaction?.kind, message.replyToMessageId])
+    expect(seen).toEqual([
+      [1, 'edited their message to: "7:30 instead"', "edit", undefined],
+      [2, "reacted with ❤️ to an unidentified message (target 44; its text could not be resolved)", "reaction", "44"],
+      [3, "removed their ❤️ reaction from an unidentified message (target 44; its text could not be resolved)", "reaction", "44"],
+      [4, "reacted with a custom emoji to an unidentified message (target 44; its text could not be resolved)", "reaction", "44"],
+      [5, "reacted with a paid star to an unidentified message (target 44; its text could not be resolved)", "reaction", "44"],
+      [8, 'edited their message to: "new caption"', "edit", undefined],
+      [9, "reacted with sticker to an unidentified message (target 44; its text could not be resolved)", "reaction", "44"],
+      [10, "edited their message (the new text could not be read)", "edit", undefined],
+    ])
+  })
+
+  it("reads the person, chat and message an update is about, or nothing", () => {
+    const chat = { id: 10, type: "private" }
+    expect(telegramUpdateMessageCoordinates({ update_id: 1, message: { message_id: 2, from: { id: 10 }, chat } }))
+      .toEqual({ userId: "10", chatId: "10", chatType: "private", messageId: "2" })
+    expect(telegramUpdateMessageCoordinates({ update_id: 1, message_reaction: { chat, message_id: 5, user: { id: 10 }, old_reaction: [], new_reaction: [] } }))
+      .toEqual({ userId: "10", chatId: "10", chatType: "private", messageId: "5" })
+    expect(telegramUpdateMessageCoordinates({ update_id: 1, message_reaction: { chat, message_id: 5, old_reaction: [], new_reaction: [] } })).toBeNull()
+    expect(telegramUpdateMessageCoordinates({ update_id: 1, message: { message_id: 2, chat } })).toBeNull()
+    expect(telegramUpdateMessageCoordinates({ update_id: 1 })).toBeNull()
   })
 
   it.each([

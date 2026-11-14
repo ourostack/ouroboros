@@ -110,7 +110,7 @@ describe("Sanctuary Telegram authority transport", () => {
     } as TelegramTransportObservationV1)
     const f = fixture()
     f.request.mockResolvedValueOnce({ observation: artifact, update: projected } as never)
-    await expect(f.transport.api.request("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"] })).resolves.toEqual([projected])
+    await expect(f.transport.api.request("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"] })).resolves.toEqual([projected])
     expect(f.transport.metadataForUpdate(projected)).toMatchObject({ rawUpdateDigest: digestUpdate(raw), deliveryUpdateDigest: digestUpdate(projected) })
     expect(() => f.transport.metadataForUpdate(raw)).toThrow(/changed after verification/u)
     await expect(f.transport.settleTransport(projected, "completed")).resolves.toBeUndefined()
@@ -121,7 +121,7 @@ describe("Sanctuary Telegram authority transport", () => {
     await expect(f.transport.api.request("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })).resolves.toEqual([update])
     const metadata = f.transport.metadataForUpdate(update)
     expect(metadata).toMatchObject({
@@ -178,7 +178,7 @@ describe("Sanctuary Telegram authority transport", () => {
         close: vi.fn(),
       }, verification)
       await expect(transport.api.request("getUpdates", {
-        offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+        offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
       })).resolves.toEqual([telegramUpdate])
       expect(transport.metadataForUpdate(telegramUpdate)).toMatchObject({
         updateId: telegramUpdate.update_id,
@@ -213,7 +213,7 @@ describe("Sanctuary Telegram authority transport", () => {
         close: vi.fn(),
       }, verification)
       await expect(transport.api.request("getUpdates", {
-        offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+        offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
       })).rejects.toThrow(/invalid|changed/u)
     }
     const wrongKeyTransport = createSanctuaryTelegramAuthorityTransport({
@@ -221,7 +221,7 @@ describe("Sanctuary Telegram authority transport", () => {
       close: vi.fn(),
     }, { ...verification, publicKey: otherKeys.publicKey })
     await expect(wrongKeyTransport.api.request("getUpdates", {
-      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })).rejects.toThrow(/invalid/u)
 
     const unsupportedUpdate = { update_id: 14 }
@@ -239,14 +239,14 @@ describe("Sanctuary Telegram authority transport", () => {
       close: vi.fn(),
     }, verification)
     await expect(unsupportedTransport.api.request("getUpdates", {
-      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })).rejects.toThrow(/unsupported/u)
   })
 
   it("retains a newer current observation when an older captured update settles", async () => {
     const f = fixture()
     await f.transport.api.request("getUpdates", {
-      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })
     const update11 = { ...update, update_id: 11 }
     const observation11 = signObservation({
@@ -256,7 +256,7 @@ describe("Sanctuary Telegram authority transport", () => {
     })
     f.request.mockResolvedValueOnce({ observation: observation11, update: update11 })
     await f.transport.api.request("getUpdates", {
-      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })
     await f.transport.settleTransport(update, "completed")
     await f.transport.api.request("getMe", {})
@@ -275,7 +275,7 @@ describe("Sanctuary Telegram authority transport", () => {
     await f.transport.api.request("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })
     await expect(f.transport.api.request("sendMessage", { chat_id: "42", text: "hello" })).resolves.toEqual({ message_id: 71 })
     expect(f.request).toHaveBeenCalledWith("telegram.request", {
@@ -304,7 +304,7 @@ describe("Sanctuary Telegram authority transport", () => {
     await expect(f.transport.api.request("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })).resolves.toEqual([])
     await expect(f.transport.settleTransport(update, "completed")).rejects.toThrow(/observation/u)
     await expect(f.transport.api.request("getUpdates", {})).rejects.toThrow(/poll/u)
@@ -331,7 +331,7 @@ describe("Sanctuary Telegram authority transport", () => {
       await expect(transport.api.request("getUpdates", {
         offset: 0,
         timeout: 50,
-        allowed_updates: ["message", "callback_query"],
+        allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
       })).rejects.toThrow(/response/u)
     }
 
@@ -339,7 +339,7 @@ describe("Sanctuary Telegram authority transport", () => {
     await f.transport.api.request("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })
     f.request.mockResolvedValueOnce({
       observation: signObservation({ ...observation.payload, nonce: "e".repeat(43) }),
@@ -348,7 +348,7 @@ describe("Sanctuary Telegram authority transport", () => {
     await expect(f.transport.api.request("getUpdates", {
       offset: 0,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"],
     })).rejects.toThrow(/changed/u)
   })
 

@@ -1848,6 +1848,17 @@ describe("runSenseTurn", () => {
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.orientationFrame).toBe(orientationFrame)
   })
 
+  it("tells the agent loop when the turn is a reaction, and only then", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const base = { agentName: "test-agent", channel: "mcp" as const, sessionKey: "session-123", friendId: "friend-1", userMessage: "reacted with ❤️" }
+
+    await runSenseTurn({ ...base, isReactionSignal: true })
+    await runSenseTurn(base)
+
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.isReactionSignal).toBe(true)
+    expect(mockHandleInboundTurn.mock.calls[1][0].runAgentOptions).not.toHaveProperty("isReactionSignal")
+  })
+
   it("passes transport tool context through to the agent turn", async () => {
     const voiceCall = { requestEnd: vi.fn() }
     const { runSenseTurn } = await import("../../senses/shared-turn")

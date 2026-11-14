@@ -2,6 +2,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { readFileSync } from "node:fs"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { writeFileAtomicSync } from "../heart/atomic-file"
+import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
 
 type TelegramFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -77,9 +78,48 @@ export class FileTelegramOffsetStore implements TelegramOffsetStore {
   }
 }
 
+/** Every update kind the bot asks Telegram for. The authority service, its transport check and the direct poller share it. */
+export const TELEGRAM_ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const
+
+export interface TelegramReactionType {
+  type: string
+  emoji?: string
+  custom_emoji_id?: string
+}
+
 export interface TelegramUpdate {
   update_id: number
-  message?: {
+  message?: TelegramMessage
+  /** The person changed the text of a message they sent earlier. */
+  edited_message?: TelegramMessage
+  /** The person changed their reactions on a message in a chat with the bot. */
+  message_reaction?: {
+    chat: { id: number; type: string }
+    message_id: number
+    user?: { id: number }
+    old_reaction: TelegramReactionType[]
+    new_reaction: TelegramReactionType[]
+  }
+  callback_query?: {
+    id: string
+    from: { id: number }
+    data?: string
+    message?: { message_id: number; chat: { id: number } }
+  }
+}
+
+/** The person, chat and message an update is about: a message, an edit of one, or a reaction to one. */
+export function telegramUpdateMessageCoordinates(update: TelegramUpdate): { userId: string; chatId: string; chatType: string; messageId: string } | null {
+  const message = update.message ?? update.edited_message
+  const reaction = update.message_reaction
+  const userId = message ? message.from?.id : reaction?.user?.id
+  const chat = message?.chat ?? reaction?.chat
+  const messageId = message ? message.message_id : reaction?.message_id
+  if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(chat?.id) || !Number.isSafeInteger(messageId)) return null
+  return { userId: String(userId), chatId: String(chat!.id), chatType: chat!.type, messageId: String(messageId) }
+}
+
+export interface TelegramMessage {
     message_id: number
     from?: { id: number; first_name?: string; last_name?: string; username?: string }
     chat: { id: number; type: string }
@@ -97,13 +137,6 @@ export interface TelegramUpdate {
     reply_to_message?: { message_id: number; text?: string; caption?: string; from?: { id: number; is_bot?: boolean } }
     /** The part of the replied-to message the person highlighted, when they quoted only part of it. */
     quote?: { text?: string }
-  }
-  callback_query?: {
-    id: string
-    from: { id: number }
-    data?: string
-    message?: { message_id: number; chat: { id: number } }
-  }
 }
 
 export interface TelegramInboundMessage {
@@ -119,6 +152,8 @@ export interface TelegramInboundMessage {
   replyToText?: string
   /** Who wrote the replied-to message: the bot (the agent), the person replying, or someone else. */
   replyToAuthor?: "agent" | "person" | "other"
+  /** An edit or reaction to an earlier message. The sense names its target and renders `text` from it before the turn. */
+  interaction?: ChatInteraction
   authority?: TelegramAuthorityTransportMetadata
 }
 
@@ -247,7 +282,7 @@ function updateReceipt(update: TelegramUpdate): TelegramUpdateReceipt {
   return {
     digest: `tgu_${createHash("sha256").update(`${TELEGRAM_UPDATE_DIGEST_DOMAIN}\0${JSON.stringify(update)}`, "utf8").digest("base64url")}`,
     sequenceDigest: `tgs_${createHash("sha256").update(`${TELEGRAM_UPDATE_SEQUENCE_DOMAIN}\0${update.update_id}`, "utf8").digest("base64url")}`,
-    updateClass: update.callback_query ? "callback" : update.message ? "message" : "other",
+    updateClass: update.callback_query ? "callback" : telegramUpdateMessageCoordinates(update) ? "message" : "other",
   }
 }
 
@@ -699,11 +734,34 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     return { ...(quoted ? { replyToText: quoted.trim() } : {}), ...(author ? { replyToAuthor: author } : {}) }
   }
 
+  const reactionChange = (reaction: NonNullable<TelegramUpdate["message_reaction"]>): { label: string; removed: boolean } | null => {
+    const key = (entry: TelegramReactionType): string => `${entry.type}:${entry.emoji ?? entry.custom_emoji_id ?? ""}`
+    const label = (entry: TelegramReactionType): string => entry.emoji ?? (entry.type === "custom_emoji" ? "a custom emoji" : entry.type === "paid" ? "a paid star" : entry.type)
+    const oldKeys = new Set(reaction.old_reaction.map(key))
+    const newKeys = new Set(reaction.new_reaction.map(key))
+    const added = reaction.new_reaction.find((entry) => !oldKeys.has(key(entry)))
+    if (added) return { label: label(added), removed: false }
+    const removed = reaction.old_reaction.find((entry) => !newKeys.has(key(entry)))
+    return removed ? { label: label(removed), removed: true } : null
+  }
+
   const authorizedMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramInboundMessage | null => {
-    const message = update.message
-    const userId = message?.from ? String(message.from.id) : ""
-    const chatId = message ? String(message.chat.id) : ""
-    if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId) return null
+    const coordinates = telegramUpdateMessageCoordinates(update)
+    if (!coordinates || coordinates.chatType !== "private" || coordinates.userId !== options.expectedUserId || coordinates.chatId !== options.expectedChatId) return null
+    const { userId, chatId, messageId } = coordinates
+    const base = { updateId: update.update_id, messageId, userId, chatId, ...(authority ? { authority } : {}) }
+    if (update.message_reaction) {
+      const change = reactionChange(update.message_reaction)
+      if (!change) return null
+      const interaction: ChatInteraction = { kind: "reaction", ...change, target: { id: messageId } }
+      return { ...base, text: renderChatInteraction(interaction), interaction, replyToMessageId: messageId }
+    }
+    if (update.edited_message) {
+      const newText = update.edited_message.text ?? update.edited_message.caption ?? ""
+      const interaction: ChatInteraction = { kind: "edit", newText, target: { id: messageId, fromAgent: false } }
+      return { ...base, text: renderChatInteraction(interaction), interaction }
+    }
+    const message = update.message!
     const attachments = inboundAttachments(message)
     const attachmentCount = rawAttachmentCount(message)
     const attachmentNotices = attachmentCount > attachments.length
@@ -712,17 +770,13 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const text = message.text ?? message.caption ?? ""
     if (typeof text !== "string" || (!text && attachmentCount === 0)) return null
     return {
-      updateId: update.update_id,
-      messageId: String(message.message_id),
-      userId,
-      chatId,
+      ...base,
       text,
       attachments,
       ...(attachmentNotices.length ? { attachmentNotices } : {}),
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
         ? { replyToMessageId: String(message.reply_to_message!.message_id), ...repliedTo(message, userId) }
         : {}),
-      ...(authority ? { authority } : {}),
     }
   }
 
@@ -807,7 +861,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
       timeout: 50,
-      allowed_updates: ["message", "callback_query"],
+      allowed_updates: [...TELEGRAM_ALLOWED_UPDATES],
     }, requestSignal)
     if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
     for (const update of updates) {

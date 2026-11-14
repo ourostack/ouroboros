@@ -1360,7 +1360,7 @@ describe("BlueBubbles sense runtime", () => {
     })
   })
 
-  it("keeps ordinary group edits capture-only without repair or orientation inference", async () => {
+  it("shows a group edit to the agent as a turn without re-fetching it", async () => {
     mocks.repairEvent.mockRejectedValueOnce(new Error("must not repair a GUID-routed edit"))
     const bluebubbles = await import("../../../senses/bluebubbles")
 
@@ -1375,14 +1375,10 @@ describe("BlueBubbles sense runtime", () => {
       },
     })
 
-    expect(result).toEqual(expect.objectContaining({
-      handled: true,
-      notifiedAgent: false,
-      reason: "mutation_state_only",
-    }))
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
     expect(mocks.repairEvent).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(mocks.resolveContext).not.toHaveBeenCalled()
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(firstRunAgentMessages())).toContain("edited their message to: \\\"please end the edited report\\\"")
   })
 
   it("a deferred record is in the session before the friend's next message", async () => {
@@ -1921,19 +1917,14 @@ describe("BlueBubbles sense runtime", () => {
     expect(sentTexts).not.toContain("codex coding-001 completed: hi")
   })
 
-  it("never attaches coding feedback or transport work to an edit", async () => {
+  it("shows an edit to the agent as an ordinary turn, not a reaction signal", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
 
-    expect(result).toEqual(expect.objectContaining({
-      handled: true,
-      notifiedAgent: false,
-      reason: "mutation_state_only",
-    }))
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(mocks.sendText).not.toHaveBeenCalled()
-    expect(mocks.setTyping).not.toHaveBeenCalled()
-    expect(mocks.markChatRead).not.toHaveBeenCalled()
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(firstRunAgentOptions()).not.toHaveProperty("isReactionSignal")
+    expect(JSON.stringify(firstRunAgentMessages())).toContain("edited their message")
   })
 
   it("keeps a long silent turn text-transport quiet until the final reply", async () => {
@@ -2197,23 +2188,6 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("settles edits immediately without creating a timeout-prone turn", async () => {
-    vi.useFakeTimers()
-    const bluebubbles = await import("../../../senses/bluebubbles")
-
-    await expect(bluebubbles.handleBlueBubblesEvent(editPayload)).resolves.toEqual(
-      expect.objectContaining({
-        handled: true,
-        notifiedAgent: false,
-        reason: "mutation_state_only",
-      }),
-    )
-    await vi.advanceTimersByTimeAsync(600_000)
-    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(mocks.sendText).not.toHaveBeenCalled()
-  })
-
   it("commits an accepted final send that resolves after the timeout latch fires", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
@@ -2450,32 +2424,26 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("returns explicit capture-only handling for edits and read-only state changes", async () => {
+  it("returns explicit capture-only handling for read-only state changes", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const runtimeDeps = {
       getAgentName: () => "testagent",
       recordMutation: mocks.recordMutation,
     } as any
 
-    const editResult = await bluebubbles.handleBlueBubblesEvent(editPayload, runtimeDeps)
     const readResult = await bluebubbles.handleBlueBubblesEvent(readPayload, runtimeDeps)
 
-    expect(editResult).toEqual(expect.objectContaining({
-      handled: true,
-      notifiedAgent: false,
-      reason: "mutation_state_only",
-    }))
     expect(readResult).toEqual(expect.objectContaining({
       handled: true,
       notifiedAgent: false,
       reason: "mutation_state_only",
     }))
-    expect(mocks.recordMutation).toHaveBeenCalledTimes(2)
+    expect(mocks.recordMutation).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.markChatRead).not.toHaveBeenCalled()
   })
 
-  it("keeps edit, unsend, and delivery mutations capture-only", async () => {
+  it("keeps unsend and delivery mutations capture-only", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const runtimeDeps = {
       getAgentName: () => "testagent",
@@ -2483,7 +2451,6 @@ describe("BlueBubbles sense runtime", () => {
     } as any
 
     const results = await Promise.all([
-      bluebubbles.handleBlueBubblesEvent(editPayload, runtimeDeps),
       bluebubbles.handleBlueBubblesEvent(unsendPayload, runtimeDeps),
       bluebubbles.handleBlueBubblesEvent(deliveryPayload, runtimeDeps),
     ])
@@ -2495,7 +2462,7 @@ describe("BlueBubbles sense runtime", () => {
         reason: "mutation_state_only",
       }))
     }
-    expect(mocks.recordMutation).toHaveBeenCalledTimes(3)
+    expect(mocks.recordMutation).toHaveBeenCalledTimes(2)
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
     expect(mocks.markChatRead).not.toHaveBeenCalled()
@@ -3543,26 +3510,6 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
   })
 
-  it("keeps group edits capture-only without friend resolution", async () => {
-    const bluebubbles = await import("../../../senses/bluebubbles")
-    const result = await bluebubbles.handleBlueBubblesEvent({
-      ...editPayload,
-      data: {
-        ...editPayload.data,
-        handle: { address: "casey@example.test", service: "iMessage" },
-        chats: groupReactionPayload.data.chats,
-      },
-    })
-
-    expect(result).toEqual(expect.objectContaining({
-      handled: true,
-      notifiedAgent: false,
-      reason: "mutation_state_only",
-    }))
-    expect(mocks.resolveContext).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-  })
-
   it("appends explicit repair-failure fallback to the agent-visible inbound text", async () => {
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "message",
@@ -4595,13 +4542,13 @@ describe("BlueBubbles sense runtime", () => {
     ])
     expect(leases.size).toBe(1)
     expect(mocks.repairEvent).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
       expect.objectContaining({
         ...capturedIdentity,
-        outcome: "capture_only_positive",
+        outcome: "message_completed",
       }),
     )
   })
@@ -7160,7 +7107,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("handles edit captures without trust-gate or message-inbound work", async () => {
+  it("settles an edit capture as a completed turn", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -7168,23 +7115,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const result = await bluebubbles.handleBlueBubblesEvent(editPayload)
 
-    expect(result).toEqual(expect.objectContaining({
-      handled: true,
-      notifiedAgent: false,
-      kind: "mutation",
-      reason: "mutation_state_only",
-    }))
-    const { hasRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
-    expect(hasRecordedBlueBubblesInbound(
-      "testagent",
-      "chat:any;-;owner@example.test",
-      "4A4F2A85-21AD-4AC6-98A8-34B8F4D07AA9",
-    )).toBe(false)
-    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
-      expect.objectContaining({ outcome: "edit_capture_only" }),
+      expect.objectContaining({ outcome: "message_completed" }),
     )
   })
 
@@ -7419,7 +7354,34 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("settles an older capture-only mutation when a newer same-chat turn already owns the lane", async () => {
+  it("keeps an older unsend capture-only when a newer same-chat turn already owns the lane", async () => {
+    const firstClaim = createDeferred<void>()
+    const defaultAcquire = mocks.acquireSemanticClaim.getMockImplementation()!
+    mocks.acquireSemanticClaim.mockImplementationOnce(async (...args: any[]) => {
+      await firstClaim.promise
+      return defaultAcquire(...args)
+    })
+    const olderUnsend = { ...unsendPayload, data: { ...unsendPayload.data, guid: "STALE-UNSEND" } }
+    const newerMessage = {
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "NEWER-AFTER-UNSEND", text: "newer after unsend" },
+    }
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const first = bluebubbles.handleBlueBubblesEvent(olderUnsend)
+    await waitFor(() => mocks.acquireSemanticClaim.mock.calls.length === 1)
+    const secondResult = await bluebubbles.handleBlueBubblesEvent(newerMessage)
+    firstClaim.resolve()
+
+    expect(await first).toEqual(expect.objectContaining({ reason: "mutation_state_only", notifiedAgent: false }))
+    expect(secondResult).toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ outcome: "unsend_capture_only" }),
+    )
+  })
+
+  it("settles an older edit as superseded when a newer same-chat turn already owns the lane", async () => {
     const firstClaim = createDeferred<void>()
     const defaultAcquire = mocks.acquireSemanticClaim.getMockImplementation()!
     mocks.acquireSemanticClaim.mockImplementationOnce(async (...args: any[]) => {
@@ -7443,17 +7405,17 @@ describe("BlueBubbles sense runtime", () => {
     const firstResult = await first
 
     expect(firstResult).toEqual(expect.objectContaining({
-      reason: "mutation_state_only",
+      reason: "superseded",
       notifiedAgent: false,
     }))
     expect(secondResult).toEqual(expect.objectContaining({ notifiedAgent: true }))
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
-      expect.objectContaining({ outcome: "edit_capture_only" }),
+      expect.objectContaining({ outcome: "message_observed" }),
     )
   })
 
-  it("lets an arriving reaction supersede an in-flight message without treating the reaction as a prompt", async () => {
+  it("lets an arriving reaction supersede an in-flight message and hands the reaction to the agent", async () => {
     const releaseMessageModel = createDeferred<void>()
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
@@ -7493,26 +7455,15 @@ describe("BlueBubbles sense runtime", () => {
     releaseMessageModel.resolve()
     const [reactionResult, messageResult] = await Promise.all([reactionHandling, messageHandling])
 
-    expect(reactionResult).toEqual(expect.objectContaining({
-      kind: "mutation",
-      notifiedAgent: false,
-      reason: "mutation_state_only",
-    }))
     expect(messageResult).toEqual(expect.objectContaining({
       kind: "message",
       notifiedAgent: false,
       reason: "superseded",
     }))
-    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
-    expect(mocks.sendText).not.toHaveBeenCalled()
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "capture_only_positive" }),
-    )
-
-    releaseMessageModel.resolve()
-    await flushAsyncWork()
-    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(reactionResult).toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+    expect(mocks.runAgent.mock.calls[1]?.[4]).toEqual(expect.objectContaining({ isReactionSignal: true }))
+    expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).not.toContain("stale answer to the message")
   })
 
   it("settles an older message as superseded when a newer same-chat turn already owns the lane", async () => {
@@ -7942,6 +7893,36 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
+  it("recovers seeded same-chat messages listed out of order without the newer turn waiting on the older", async () => {
+    const capturedAt = "2026-08-13T10:00:00.000Z"
+    const observationEpoch = "2026-08-13T09:59:59.000Z/44444444-4444-4444-8444-444444444444"
+    const older = {
+      ...await makeStoredSemanticCapture({
+        ...dmTopLevelPayload,
+        data: { ...dmTopLevelPayload.data, guid: "SEEDED-OLDER-MESSAGE", text: "first thought" },
+      }, { capturedAt }),
+      observationEpoch,
+      observationOrdinal: 7,
+    }
+    const newer = {
+      ...await makeStoredSemanticCapture({
+        ...dmTopLevelPayload,
+        data: { ...dmTopLevelPayload.data, guid: "SEEDED-NEWER-MESSAGE", text: "second thought" },
+      }, { capturedAt }),
+      observationEpoch,
+      observationOrdinal: 8,
+    }
+    mocks.listPendingSemanticCaptures.mockReturnValue([newer, older])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    expect(bluebubbles.seedBlueBubblesStartupSemanticObservations()).toBe(2)
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 1, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(firstRunAgentMessages())).toContain("second thought")
+  }, 20_000)
+
   it("restores same-millisecond message then reaction order from durable observation ordinals", async () => {
     const capturedAt = "2026-08-13T10:00:00.000Z"
     const observationEpoch = "2026-08-13T09:59:59.000Z/33333333-3333-4333-8333-333333333333"
@@ -7976,15 +7957,17 @@ describe("BlueBubbles sense runtime", () => {
     expect(bluebubbles.seedBlueBubblesStartupSemanticObservations()).toBe(2)
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 0, skipped: 2, failed: 0 })
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(mocks.sendText).not.toHaveBeenCalled()
+    // The later reaction owns the lane: it gets the turn, and the earlier message settles as superseded.
+    expect(result).toEqual({ recovered: 1, skipped: 1, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(firstRunAgentOptions()).toEqual(expect.objectContaining({ isReactionSignal: true }))
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
-      expect.objectContaining({
-        keyHash: reaction.keyHash,
-        outcome: expect.stringMatching(/^capture_only_/),
-      }),
+      expect.objectContaining({ keyHash: message.keyHash, outcome: "message_observed" }),
+    )
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: reaction.keyHash, outcome: "message_completed" }),
     )
   })
 
@@ -14495,7 +14478,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
     )
   })
 
-  it("recovers feedback as capture-only without target or trust enrichment", async () => {
+  it("recovers a captured feedback reaction as a reaction turn", async () => {
     const capture = await makeStoredSemanticCapture({
       ...reactionPayload,
       data: {
@@ -14517,17 +14500,10 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
 
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
-    expect(mocks.getMessageText).not.toHaveBeenCalled()
-    expect(mocks.findByExternalId).not.toHaveBeenCalled()
-    expect(mocks.runAgent).not.toHaveBeenCalled()
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({
-        outcome: "capture_only_unknown",
-        detailCode: "capture_only_negative",
-      }),
-    )
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(firstRunAgentOptions()).toEqual(expect.objectContaining({ isReactionSignal: true }))
+    expect(JSON.stringify(firstRunAgentMessages())).toContain("disliked")
   })
 
   it("reconstructs every semantic event kind and nullable routing field before handling", async () => {
@@ -14621,15 +14597,15 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
 
     const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
 
-    expect(result).toEqual({ recovered: 0, skipped: 8, failed: 0 })
+    // A group edit with no chat GUID cannot be routed, exactly like a message in that state.
+    expect(result).toEqual({ recovered: 0, skipped: 7, failed: 1 })
     expect(mocks.writeSemanticHandled.mock.calls.map((call: unknown[]) => call[1].outcome).sort()).toEqual([
       "delivery_audit_only",
-      "edit_capture_only",
       "read_audit_only",
       "unsend_capture_only",
-      "edit_capture_only",
-      "capture_only_positive",
-      "capture_only_positive",
+      "message_observed",
+      "message_observed",
+      "message_observed",
       "message_observed",
     ].sort())
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -14816,6 +14792,17 @@ describe("BlueBubbles reaction capture-only policy", () => {
     })
   })
 
+  async function expectReactionTurn(raw: string, payload?: unknown): Promise<string> {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload ?? policyReactionPayload(raw), {})
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(firstRunAgentOptions()).toEqual(expect.objectContaining({ isReactionSignal: true }))
+    return JSON.stringify(firstRunAgentMessages())
+  }
+
   it.each([
     "-love", "3000",
     "-like", "3001",
@@ -14824,99 +14811,43 @@ describe("BlueBubbles reaction capture-only policy", () => {
     "-emphasize", "3004",
     "-question", "3005",
     "-custom", "3006",
-  ])("captures removal alias %s without starting runtime work", async (raw) => {
-    await expectCaptureOnly({ raw, outcome: "capture_only_removal" })
+  ])("lets the agent see removal alias %s and decide whether to answer", async (raw) => {
+    expect(await expectReactionTurn(raw)).toContain("removed their")
   })
 
   it.each([
-    "love", "2000",
-    "like", "2001",
-    "laugh", "2003",
-    "emphasize", "2004",
-  ])("captures positive alias %s without starting runtime work", async (raw) => {
-    await expectCaptureOnly({ raw, outcome: "capture_only_positive" })
+    ["love", "loved"], ["2000", "loved"],
+    ["like", "liked"], ["2001", "liked"],
+    ["dislike", "disliked"], ["2002", "disliked"],
+    ["laugh", "laughed at"], ["2003", "laughed at"],
+    ["emphasize", "emphasized"], ["2004", "emphasized"],
+    ["question", "questioned"], ["2005", "questioned"],
+    ["custom", "reacted with custom emoji to"], ["2006", "reacted with custom emoji to"],
+  ])("lets the agent see reaction alias %s as %s", async (raw, verb) => {
+    expect(await expectReactionTurn(raw)).toContain(verb)
   })
 
-  it.each(["custom", "2006"])(
-    "captures custom alias %s without exposing it to a model turn",
-    async (raw) => {
-      await expectCaptureOnly({ raw, outcome: "capture_only_custom" })
-      expect(mocks.writeSemanticCapture).toHaveBeenCalledWith(
-        "testagent",
-        expect.objectContaining({
-          event: expect.objectContaining({
-            canonicalValue: "custom",
-            rawTransportValue: raw,
-          }),
-        }),
-      )
-    },
-  )
+  it.each(["sticker", "4000"])("lets the agent see unknown alias %s by its raw label", async (raw) => {
+    expect(await expectReactionTurn(raw)).toContain(`reacted with ${raw}`)
+  })
 
-  it.each(["sticker", "4000"])(
-    "captures unknown alias %s without starting runtime work",
-    async (raw) => {
-      await expectCaptureOnly({ raw, outcome: "capture_only_unknown" })
-    },
-  )
-
-  it.each([
-    ["dislike", "capture_only_negative"],
-    ["2002", "capture_only_negative"],
-    ["question", "capture_only_question"],
-    ["2005", "capture_only_question"],
-  ] as const)(
-    "captures feedback alias %s under a rollback-readable outcome without target or trust enrichment",
-    async (raw, detailCode) => {
-      mocks.findByExternalId.mockRejectedValueOnce(new Error("must not be called"))
-      await expectCaptureOnly({
-        raw,
-        outcome: "capture_only_unknown",
-        detailCode,
-      })
-      expect(mocks.findByExternalId).not.toHaveBeenCalled()
-      expect(mocks.listAll).not.toHaveBeenCalled()
-    },
-  )
-
-  it("keeps a group reaction capture-only without promoting a trusted participant to actor", async () => {
+  it("lets the agent see a group reaction as a turn in that group", async () => {
     const payload = policyReactionPayload("question") as typeof reactionPayload
     const groupPayload = {
       ...payload,
       data: {
         ...payload.data,
-        guid: "POLICY-GROUP-PARTICIPANT-NOT-ACTOR",
-        handle: {
-          address: "untrusted-actor@example.com",
-          service: "iMessage",
-        },
+        guid: "POLICY-GROUP-REACTION",
         chats: [{
           guid: "any;+;synthetic-policy-group",
           style: 43,
           chatIdentifier: "synthetic-policy-group",
           displayName: "Synthetic Group",
-          participants: [
-            { address: "untrusted-actor@example.com" },
-            { address: "trusted-participant@example.com" },
-          ],
+          participants: [{ address: "casey@example.test" }, { address: "other@example.test" }],
         }],
       },
     }
-    mocks.listAll.mockResolvedValueOnce([{
-      ...defaultFriendContext.friend,
-      id: "trusted-participant",
-      trustLevel: "family",
-      externalIds: [{ provider: "imessage-handle", externalId: "trusted-participant@example.com" }],
-    }])
-
-    await expectCaptureOnly({
-      raw: "question",
-      payload: groupPayload,
-      outcome: "capture_only_unknown",
-      detailCode: "capture_only_question",
-    })
-    expect(mocks.findByExternalId).not.toHaveBeenCalled()
-    expect(mocks.listAll).not.toHaveBeenCalled()
+    expect(await expectReactionTurn("question", groupPayload)).toContain("questioned")
   })
 })
 

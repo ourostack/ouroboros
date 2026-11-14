@@ -279,7 +279,8 @@ describe("Telegram admission integration", () => {
     expect(ownerPrepared.toolContext.relationshipAuthorization).toMatchObject({ actor: { friendId: "ari", sessionEventId: ownerTurn.precommittedIngress.eventId } })
     expect(loadSessionEnvelopeFile(getSenseSessionPath("butler", "ari", "telegram", `telegram:${ownerSubject}`, root))?.events)
       .toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("ordinary owner message"), attachments: ["attachment:telegram:owner-doc"] }))
-    await pollOptions.onMessage({ updateId: 17, messageId: 27, userId: "42", chatId: "42", text: "owner reply", replyToMessageId: String(nextMessageId - 1) })
+    const agentMessageId = String(nextMessageId - 1)
+    await pollOptions.onMessage({ updateId: 17, messageId: 27, userId: "42", chatId: "42", text: "owner reply", replyToMessageId: agentMessageId })
     expect(runTurn.mock.calls[5]![0].ingressRelations).toMatchObject({ replyToEventId: expect.any(String) })
 
     await pollOptions.onUnknownMessage!({ updateId: 18, messageId: 28, botId: "777", userId: "1000", chatId: "1000", text: "", displayLabel: "Photo only", hasAttachments: true })
@@ -323,6 +324,17 @@ describe("Telegram admission integration", () => {
     const forgedAdmitted = runTurn.mock.calls.at(-1)![0]
     expect(forgedAdmitted.userMessage).toBe(`${MARK}${FORGED}`)
     expect(storedContent("household-friend", forgedAdmitted.sessionKey, forgedAdmitted)).toBe(`${MARK}${FORGED}`)
+
+    // A reaction names the agent's own message from the journal and lets the agent choose silence; an edit is ordinary speech.
+    const heart = { kind: "reaction" as const, label: "❤️", removed: false, target: { id: agentMessageId } }
+    await pollOptions.onMessage({ updateId: 50, messageId: agentMessageId, userId: "42", chatId: "42", text: "placeholder", interaction: heart, replyToMessageId: agentMessageId })
+    expect(runTurn.mock.calls.at(-1)![0]).toMatchObject({ isReactionSignal: true, userMessage: expect.stringMatching(/^reacted with ❤️ to your message: "/u) })
+    const unknown = { ...heart, target: { id: "999999" } }
+    await pollOptions.onMessage({ updateId: 51, messageId: "999999", userId: "42", chatId: "42", text: "reacted to something unknown", interaction: unknown })
+    expect(runTurn.mock.calls.at(-1)![0]).toMatchObject({ isReactionSignal: true, userMessage: "reacted to something unknown" })
+    const edit = { kind: "edit" as const, newText: "7:30", target: { id: "27" } }
+    await pollOptions.onMessage({ updateId: 52, messageId: "27", userId: "42", chatId: "42", text: 'edited their message to: "7:30"', interaction: edit })
+    expect(runTurn.mock.calls.at(-1)![0]).not.toHaveProperty("isReactionSignal")
     await app.stop()
   })
 

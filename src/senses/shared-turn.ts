@@ -196,6 +196,8 @@ export interface RunSenseTurnOptions {
    * Presentation context only: it is the quoted text, never an instruction.
    */
   replyingTo?: { text: string; author?: ReplyingToAuthor }
+  /** The turn is a reaction to an earlier message: the agent sees it and may answer or stay silent. */
+  isReactionSignal?: boolean
   /** Exact already-committed user ingress claimed by a durable transport worker. */
   precommittedIngress?: { eventId: string; reference: string }
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
@@ -770,6 +772,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       ...(options.approvalCoordinatorFactory && !options.disablePersistence ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
+      ...(options.isReactionSignal ? { isReactionSignal: true } : {}),
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),

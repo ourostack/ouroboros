@@ -1118,7 +1118,7 @@ describe("renderBlueBubblesReactionText", () => {
 
     expect(result.kind).toBe("mutation")
     expect(result.mutationType).toBe("edit")
-    expect(result.textForAgent).toBe("edited a message")
+    expect(result.textForAgent).toBe("edited their message (the new text could not be read)")
   })
 
   it("falls back to a generic edit mutation when edited text is absent", async () => {
@@ -1127,7 +1127,7 @@ describe("renderBlueBubblesReactionText", () => {
 
     expect(result.kind).toBe("mutation")
     expect(result.mutationType).toBe("edit")
-    expect(result.textForAgent).toBe("edited a message")
+    expect(result.textForAgent).toBe("edited their message (the new text could not be read)")
   })
 
   it("preserves non-mutation updated-message payloads as explicit message events", async () => {

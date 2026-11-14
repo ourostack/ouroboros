@@ -47,7 +47,7 @@ function fixture() {
   const close = vi.fn()
   const transport = createSanctuaryTelegramAuthorityTransport({ request, close }, pins)
   const port = transport.hostApproval!
-  const poll = async () => (await transport.api.request<TelegramUpdate[]>("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"] }))[0]!
+  const poll = async () => (await transport.api.request<TelegramUpdate[]>("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"] }))[0]!
   const proposal = (metadata: TelegramAuthorityTransportMetadata): HostProposalRequestV1 => ({
     targetHost: "sanctuary", targetResource: "host", command: { kind: "executable", executable: "/usr/bin/id", arguments: ["-u"] },
     workingDirectoryProfile: "host.root.v1", environmentProfile: "host.clean.v1", timeoutMs: 1_000, verification: null,
@@ -154,7 +154,7 @@ describe("root host approval port", () => {
     const mutable = { ...pins }
     const transport = createSanctuaryTelegramAuthorityTransport({ request: f.request, close: f.close }, mutable)
     mutable.expectedOwnerUserId = "84"
-    const update = await transport.api.request<TelegramUpdate[]>("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"] })
+    const update = await transport.api.request<TelegramUpdate[]>("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "edited_message", "message_reaction", "callback_query"] })
     await transport.hostApproval!.refresh()
     expect(transport.hostApproval!.acceptsObservation(transport.metadataForUpdate(update[0]!)!)).toBe(true)
   })

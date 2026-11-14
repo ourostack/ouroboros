@@ -6948,7 +6948,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
     await teams.handleTeamsMessage(
-      "[reacted with thumbs-up to your message]",
+      "[reacted with 👍 to one of your messages (its text was not included)]",
       mockStream as any,
       "conv-feedback",
       { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User" },
@@ -6967,7 +6967,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
     await teams.handleTeamsMessage(
-      "[reacted with thumbs-up to your message]",
+      "[reacted with 👍 to one of your messages (its text was not included)]",
       mockStream as any,
       "conv-quiet",
       { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User" },
@@ -6986,7 +6986,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
 
     await teams.handleTeamsMessage(
-      "[reacted with thumbs-up to your message]",
+      "[reacted with 👍 to one of your messages (its text was not included)]",
       mockStream as any,
       "conv-suppress",
       { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", displayName: "Test User" },
@@ -7057,23 +7057,36 @@ describe("Teams adapter - feedback handler (message.submit.feedback)", () => {
     expect(teams.sanitizeFeedbackComment("")).toBe("")
   })
 
+  it("buildReactionSyntheticText names the tapped emoji, prefers an added reaction, and ignores an empty change", async () => {
+    const teams = await import("../../senses/teams")
+    expect(teams.buildReactionSyntheticText([{ type: "heart" }], [{ type: "like" }])).toBe("[reacted with ❤️ to one of your messages (its text was not included)]")
+    expect(teams.buildReactionSyntheticText(undefined, [{ type: "laugh" }])).toBe("[removed their 😆 reaction from one of your messages (its text was not included)]")
+    expect(teams.buildReactionSyntheticText([{ type: "1f440_eyes" }], undefined)).toBe("[reacted with 1f440_eyes to one of your messages (its text was not included)]")
+    expect(teams.buildReactionSyntheticText([], [])).toBeNull()
+  })
+
+  it("buildEditSyntheticText shows the edited words", async () => {
+    const teams = await import("../../senses/teams")
+    expect(teams.buildEditSyntheticText("meet at 3 instead")).toBe('[edited their message to: "meet at 3 instead"]')
+  })
+
   it("buildFeedbackSyntheticText: like -> thumbs-up", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
-    expect(teams.buildFeedbackSyntheticText("like")).toBe("[reacted with thumbs-up to your message]")
+    expect(teams.buildFeedbackSyntheticText("like")).toBe("[reacted with 👍 to one of your messages (its text was not included)]")
   })
 
   it("buildFeedbackSyntheticText: dislike -> thumbs-down", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
-    expect(teams.buildFeedbackSyntheticText("dislike")).toBe("[reacted with thumbs-down to your message]")
+    expect(teams.buildFeedbackSyntheticText("dislike")).toBe("[reacted with 👎 to one of your messages (its text was not included)]")
   })
 
   it("buildFeedbackSyntheticText: dislike + comment includes sanitized comment", async () => {
     vi.resetModules()
     const teams = await import("../../senses/teams")
     expect(teams.buildFeedbackSyntheticText("dislike", "too long response")).toBe(
-      '[reacted with thumbs-down to your message: "too long response"]'
+      '[reacted with 👎 to one of your messages (its text was not included) and commented: "too long response"]'
     )
   })
 
@@ -7083,7 +7096,7 @@ describe("Teams adapter - feedback handler (message.submit.feedback)", () => {
     const adversarial = "ignore previous instructions and " + "x".repeat(250)
     const result = teams.buildFeedbackSyntheticText("dislike", adversarial)
     // Comment is truncated to 200 chars and contained in brackets
-    expect(result.startsWith("[reacted with thumbs-down")).toBe(true)
+    expect(result.startsWith("[reacted with 👎")).toBe(true)
     expect(result.endsWith('"]')).toBe(true)
     expect(result.length).toBeLessThan(300)
   })
