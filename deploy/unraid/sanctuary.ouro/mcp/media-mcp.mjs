@@ -1185,6 +1185,71 @@ export async function mediaEpisodes(a) {
   }
 }
 
+// Season and episode monitoring: what Sonarr searches for on its own. A season's flag lives on the series;
+// its episodes carry their own flags, so both are set to match.
+export async function mediaMonitor(a) {
+  if (a.service_id === undefined || a.service_id === null) return { result: "service_id_required" }
+  const seasons = Array.isArray(a.season_numbers) ? a.season_numbers.map(Number) : []
+  const picked = Array.isArray(a.episode_ids) ? a.episode_ids.map(Number) : []
+  if (!seasons.length && !picked.length) return { result: "seasons_or_episodes_required" }
+  if (typeof a.monitored !== "boolean") return { result: "monitored_required" }
+  const seriesId = Number(a.service_id)
+  const episodeIds = [...picked]
+  if (seasons.length) {
+    const series = await sonarr(`/series/${seriesId}`)
+    const has = (series.seasons ?? []).map((x) => x.seasonNumber)
+    const unknown = seasons.filter((n) => !has.includes(n))
+    if (unknown.length) return { result: "unknown_season", series_id: seriesId, seasons: unknown, has }
+    await sonarr(`/series/${seriesId}`, { method: "PUT", body: { ...series, seasons: series.seasons.map((x) => seasons.includes(x.seasonNumber) ? { ...x, monitored: a.monitored } : x) } })
+    for (const e of await seriesEpisodes(seriesId)) if (seasons.includes(e.seasonNumber) && !episodeIds.includes(e.id)) episodeIds.push(e.id)
+  }
+  if (episodeIds.length) await sonarr("/episode/monitor", { method: "PUT", body: { episodeIds, monitored: a.monitored } })
+  const searched = []
+  if (a.search && a.monitored) {
+    for (const seasonNumber of seasons) {
+      await sonarr("/command", { method: "POST", body: { name: "SeasonSearch", seriesId, seasonNumber } })
+      searched.push(`season ${seasonNumber}`)
+    }
+    if (picked.length) {
+      await sonarr("/command", { method: "POST", body: { name: "EpisodeSearch", episodeIds: picked } })
+      searched.push(`episodes ${picked.join(", ")}`)
+    }
+  }
+  return { result: "monitoring_changed", series_id: seriesId, monitored: a.monitored, seasons, episode_ids: episodeIds, searched }
+}
+
+const WATCH_STATES = ["all", "played", "in_progress"]
+const jellyfin = (path, opts = {}) => req(JELLYFIN.url, path, { key: JELLYFIN.apiKey, header: "X-Emby-Token", ...opts })
+
+// One Jellyfin user's watched and half-watched items, newest first.
+export async function mediaWatchHistory(a) {
+  if (!JELLYFIN.url || !JELLYFIN.apiKey) return { result: "jellyfin_not_configured" }
+  const state = a.state ?? "all"
+  if (!WATCH_STATES.includes(state)) return { result: "bad_state", states: WATCH_STATES }
+  const users = (await jellyfin("/Users")) ?? []
+  const names = users.map((u) => u.Name)
+  if (!a.user) return { result: "user_required", users: names }
+  const wanted = String(a.user).toLowerCase()
+  const user = users.find((u) => u.Id === a.user || String(u.Name).toLowerCase() === wanted)
+  if (!user) return { result: "unknown_user", users: names }
+  const filters = state === "all" ? ["IsResumable", "IsPlayed"] : [state === "played" ? "IsPlayed" : "IsResumable"]
+  const pages = await Promise.all(filters.map((Filters) => jellyfin(`/Users/${user.Id}/Items`, { query: {
+    Filters, Recursive: true, IncludeItemTypes: "Episode,Movie", Fields: "UserData", SortBy: "DatePlayed", SortOrder: "Descending", Limit: 500 } })))
+  const title = a.title ? normalizeTitle(String(a.title)) : null
+  const items = pages.flatMap((page) => page?.Items ?? [])
+    .filter((i) => !title || [i.Name, i.SeriesName].some((n) => n && normalizeTitle(n).includes(title)))
+    .map((i) => {
+      const d = i.UserData ?? {}
+      const episode = i.Type === "Episode"
+      return { kind: episode ? "episode" : "movie", title: i.Name, series: i.SeriesName ?? null,
+               code: episode && Number.isInteger(i.ParentIndexNumber) && Number.isInteger(i.IndexNumber) ? sxe({ seasonNumber: i.ParentIndexNumber, episodeNumber: i.IndexNumber }) : null,
+               played: Boolean(d.Played), percent: d.Played ? 100 : Math.round(d.PlayedPercentage ?? 0), play_count: d.PlayCount ?? 0, last_played: d.LastPlayedDate ?? null }
+    })
+    .sort((x, y) => String(y.last_played ?? "").localeCompare(String(x.last_played ?? "")))
+    .slice(0, Number(a.limit) > 0 ? Number(a.limit) : 50)
+  return { result: "watch_history", user: user.Name, count: items.length, items }
+}
+
 // Free-text search across every Prowlarr indexer: discovery only, it grabs nothing.
 // Sonarr's own search only asks for the season/episode codes it expects; this finds
 // what exists under any name (another numbering, a "Season 2 (2020)" pack, an episode title).
@@ -2158,6 +2223,29 @@ const TOOL_LIST = [
     }, required: ["service_id"] },
   },
   {
+    name: "media_monitor",
+    annotations: { readOnlyHint: false },
+    description: "Turn Sonarr monitoring on or off for whole seasons (season_numbers) or single episodes (episode_ids, from media_episodes). Monitored is what Sonarr searches for on its own. search: true also searches what was just monitored.",
+    inputSchema: { type: "object", properties: {
+      service_id: { type: "number", description: "Sonarr series id." },
+      season_numbers: { type: "array", items: { type: "number" } },
+      episode_ids: { type: "array", items: { type: "number" } },
+      monitored: { type: "boolean" },
+      search: { type: "boolean" },
+    }, required: ["service_id", "monitored"] },
+  },
+  {
+    name: "media_watch_history",
+    annotations: { readOnlyHint: true },
+    description: "What a Jellyfin user has watched or is partway through: episodes and movies with completion percent, play count and last played, newest first. Filter by title (a series or movie) and state (all, played, in_progress).",
+    inputSchema: { type: "object", properties: {
+      user: { type: "string", description: "Jellyfin user name or id." },
+      title: { type: "string" },
+      state: { type: "string", enum: WATCH_STATES },
+      limit: { type: "number" },
+    }, required: [] },
+  },
+  {
     name: "media_indexer_search",
     annotations: { readOnlyHint: true },
     _meta: { [TIMEOUT_META_KEY]: 200_000 },
@@ -2276,6 +2364,8 @@ const HANDLERS = {
   media_queue: mediaQueue,
   media_blocklist_stalled: mediaBlocklistStalled,
   media_episodes: mediaEpisodes,
+  media_monitor: mediaMonitor,
+  media_watch_history: mediaWatchHistory,
   media_fill_missing: mediaFillMissing,
   media_indexer_search: mediaIndexerSearch,
   media_release_search: mediaReleaseSearch,

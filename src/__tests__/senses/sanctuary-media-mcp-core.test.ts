@@ -753,7 +753,7 @@ describe("media MCP — read-only annotations", () => {
   it("marks exactly the inspection tools read-only, so an orientation hold still lets the Butler look", async () => {
     const mod: any = await import("../../../deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs")
     const readOnly = mod.TOOLS.filter((t: any) => t.annotations?.readOnlyHint === true).map((t: any) => t.name).sort()
-    expect(readOnly).toEqual(["media_chain_health", "media_episodes", "media_indexer_search", "media_release_search", "media_request_status", "media_search"])
+    expect(readOnly).toEqual(["media_chain_health", "media_episodes", "media_indexer_search", "media_release_search", "media_request_status", "media_search", "media_watch_history"])
   })
 })
 

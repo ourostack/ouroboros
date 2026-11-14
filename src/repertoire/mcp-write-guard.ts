@@ -15,7 +15,7 @@ import type { ToolContext } from "./tools-base"
 export const OWNER_ONLY_WRITE_TOOLS: ReadonlySet<string> = new Set(["media_quality_profile", "media_release_profile"])
 
 /** MCP tools that change the house and have no dry run: a replay identity may not call them at all. media_manual_import is a write only in `import` mode. */
-export const REPLAY_REFUSED_WRITE_TOOLS: ReadonlySet<string> = new Set(["media_request", "media_search_now", "media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_release_grab", "media_manual_import"])
+export const REPLAY_REFUSED_WRITE_TOOLS: ReadonlySet<string> = new Set(["media_request", "media_search_now", "media_blocklist", "media_blocklist_stalled", "media_fill_missing", "media_monitor", "media_release_grab", "media_manual_import"])
 
 export type GuardedMcpArgs = { args: Record<string, unknown>; rejected?: undefined } | { rejected: string }
 
