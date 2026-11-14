@@ -7,7 +7,7 @@ import { realSchedule } from "../shepherd/cmux"
 import { listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { readWatches, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
-import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, type RunCommand, type SendWake } from "./wake-runner"
+import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
 
 /**
  * The app-sessions perception loop. Every minute it snapshots the app's sessions (counts and stuck ids) into the
@@ -32,6 +32,7 @@ export interface AppSessionsSenseOptions {
   deliver?: Deliver
   runCommand?: RunCommand
   sendWake?: SendWake
+  wasDelivered?: WasDelivered
   /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
   notifyOwner?: NotifyOwner
 }
@@ -148,7 +149,7 @@ export const WAKE_RUNNER_IDLE_MS = 5 * 60_000
  * Run the wake runners in `agent.json` that are due and return the milliseconds until the next one is. `due` remembers each
  * runner's next run between calls. A bad config is logged and looked at again later.
  */
-export async function checkWakeRunners(agentName: string, agentRoot: string, deps: { run: RunCommand; send: SendWake; now: number }, due: Map<string, number> = new Map()): Promise<number> {
+export async function checkWakeRunners(agentName: string, agentRoot: string, deps: RunnerDeps, due: Map<string, number> = new Map()): Promise<number> {
   try {
     const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
     const runners = config?.enabled ? config.wakeRunners ?? [] : []
@@ -198,7 +199,7 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   }
   const runnerTick = (): void => {
     if (stopped) return
-    runnerPoll = checkWakeRunners(options.agentName, agentRoot, { run: options.runCommand ?? runCommand, send: options.sendWake ?? sendWake(client), now: now() }, due).then(ms => {
+    runnerPoll = checkWakeRunners(options.agentName, agentRoot, { run: options.runCommand ?? runCommand, send: options.sendWake ?? sendWake(client), delivered: options.wasDelivered ?? wasDelivered(client), now: now() }, due).then(ms => {
       if (!stopped) cancelRunners = schedule(runnerTick, ms)
     })
   }

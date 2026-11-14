@@ -5,6 +5,9 @@ import { appSessionsStateDir, readJson } from "./store"
 // What a wake runner leaves on disk and how `ouro status` shows it. Kept apart from the runner so the daemon can read it
 // without loading the app client and its WebSocket library.
 
+/** A wake the app accepted and the session's log did not show yet. */
+export interface OpenWake { at: string; message: string }
+
 export interface WakeRunnerState {
   lastRunAt?: string
   lastWakes?: number
@@ -12,6 +15,8 @@ export interface WakeRunnerState {
   lastError?: string
   /** The command's own status lines from its last good run. */
   status?: string[]
+  /** By session: the last wake sent that has not reached the session yet. */
+  open?: Record<string, OpenWake>
 }
 
 export const wakeRunnerStateFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "wake-runners.json")

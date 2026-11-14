@@ -307,7 +307,7 @@ describe("the sense", () => {
       senses: { "app-sessions": appSessions },
     }))
     const run = vi.fn(async () => ({ ok: true, stdout: JSON.stringify({ wakes: [] }), error: null }))
-    const deps = (now: number) => ({ run, send: vi.fn(async () => ({ ok: true, error: null })), now })
+    const deps = (now: number) => ({ run, send: vi.fn(async () => ({ ok: true, error: null })), delivered: () => false, now })
     const due = new Map<string, number>()
     const fast = { name: "fast", command: ["a"], everySeconds: 30 }
     const slow = { name: "slow", command: ["b"] }
