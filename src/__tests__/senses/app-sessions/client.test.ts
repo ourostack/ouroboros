@@ -8,7 +8,7 @@ import type WebSocket from "ws"
 
 import {
   appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findKeeper, KEEPER_LABEL,
-  listAppSessions, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
+  listAppSessions, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
   readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, type RunFile,
 } from "../../../senses/app-sessions/client"
 
@@ -212,6 +212,32 @@ describe("what a session's history says", () => {
     expect(classify(false, { ...facts, loopCut: true, lastActivity: null }, NOW).state).toBe("stuck")
     expect(classify(false, { ...facts, loopCut: true, lastActivity: iso(NOW - 10_000) }, NOW)).toMatchObject({ state: "working", detail: expect.stringContaining("starting up") })
     expect(classify(false, facts, NOW)).toEqual({ state: "idle", detail: "its turn ended" })
+  })
+})
+
+describe("whether a sent message reached the session", () => {
+  const SID = "58fbd57e-e371-4169-b013-2f413ab4a046"
+  const wake = "New or changed issues in a/b: #1038 Title.\n\nDrain them (the why)."
+  const sentAt = Date.parse(OLD)
+
+  it("finds a user message with the same text at or after the send, ignoring whitespace and its wrapper", () => {
+    writeEvents(SID, [
+      event("user.message", { content: "something else" }),
+      event("user.message", { content: `[app message]\n${wake.replace("\n\n", "\n   ")} extra` }, { timestamp: "2026-11-10T02:30:00.000Z" }),
+    ])
+    expect(messageDelivered(SID, wake, sentAt, { stateDir })).toBe(true)
+  })
+
+  it("does not count an assistant echo, an older message, a missing log or an unrelated message", () => {
+    expect(messageDelivered(SID, wake, sentAt, { stateDir })).toBe(false)
+    writeEvents(SID, [
+      event("assistant.message", { content: wake }),
+      event("user.message", { content: wake }, { timestamp: "2026-11-10T01:00:00.000Z" }),
+      { type: "user.message", data: { content: wake } },
+      event("user.message", {}),
+      { type: "user.message", timestamp: OLD, data: "x" },
+    ])
+    expect(messageDelivered(SID, wake, sentAt, { stateDir })).toBe(false)
   })
 })
 

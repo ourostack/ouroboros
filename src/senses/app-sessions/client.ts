@@ -245,6 +245,22 @@ function tailEvents(stateDir: string, id: string, bytes: number): Frame[] {
   return parseEventLines(readEventLog(id, { stateDir, maxBytes: bytes }).text)
 }
 
+const DELIVERY_TAIL_BYTES = 4 * 1024 * 1024
+const DELIVERY_CLOCK_SLACK_MS = 60_000
+const squash = (text: string): string => text.replace(/\s+/g, " ").trim()
+
+/**
+ * Whether a message sent at `sinceMs` has reached the session: its log holds a user message that starts with the same
+ * text. A message the app accepted but still holds in its own queue is not in the log yet.
+ */
+export function messageDelivered(id: string, text: string, sinceMs: number, options: AppSessionsOptions = {}): boolean {
+  const probe = squash(text).slice(0, 160)
+  return parseEventLines(readEventLog(id, { ...options, maxBytes: DELIVERY_TAIL_BYTES }).text).some(event => {
+    const data = isRecord(event.data) ? event.data : {}
+    return event.type === "user.message" && Date.parse(str(event.timestamp) ?? "") >= sinceMs - DELIVERY_CLOCK_SLACK_MS && squash(str(data.content) ?? "").includes(probe)
+  })
+}
+
 export interface TailFacts {
   awaiting: "input" | "plan" | "permission" | null
   /** The agent loop stopped mid-turn, or between turns after asking for tools. */

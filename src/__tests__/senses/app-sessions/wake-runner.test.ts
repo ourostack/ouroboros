@@ -3,11 +3,11 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const client = vi.hoisted(() => ({ sendToAppSession: vi.fn() }))
+const client = vi.hoisted(() => ({ sendToAppSession: vi.fn(), messageDelivered: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
 import { emitNervesEvent } from "../../../nerves/runtime"
-import { parseWakeOutput, runCommand, runWakeRunner, runWakeRunners, sendWake, type CommandResult } from "../../../senses/app-sessions/wake-runner"
+import { parseWakeOutput, runCommand, runWakeRunner, runWakeRunners, sendWake, WAKE_HOLD_MS, wasDelivered, type CommandResult } from "../../../senses/app-sessions/wake-runner"
 import { readWakeRunnerStates, wakeRunnerStatusLines, type WakeRunnerState } from "../../../senses/app-sessions/wake-runner-state"
 
 const RUNNER = { name: "drains", command: ["/bin/drains", "poll"], session: "58fbd57e-e371-4169-b013-2f413ab4a046" }
@@ -37,7 +37,10 @@ function world(output: unknown, send: (session: string, message: string) => Prom
       return w.reportResult
     }),
     send: vi.fn(async (session: string, message: string) => { w.sent.push([session, message]); return send(session, message) }),
-    go: () => runWakeRunner(RUNNER, { run: w.run, send: w.send, now: NOW }),
+    /** Messages the fake session's log shows as delivered. */
+    delivered: new Set<string>(),
+    deps: (now = NOW) => ({ run: w.run, send: w.send, delivered: (_s: string, message: string) => w.delivered.has(message), now }),
+    go: (previous?: WakeRunnerState, now = NOW) => runWakeRunner(RUNNER, w.deps(now), previous),
   }
   return w
 }
@@ -91,15 +94,57 @@ describe("runWakeRunner", () => {
     const state = await w.go()
     expect(w.sent).toEqual([["other", "one"], [RUNNER.session, "two"]])
     expect(w.reports).toEqual([["/bin/drains", "ack", "1"], ["/bin/drains", "ack", "2"]])
-    expect(state).toEqual({ lastRunAt: new Date(NOW).toISOString(), lastWakes: 2, lastDelivered: 2, status: ["issue drain a/b -> other: polled just now"] })
+    expect(state).toEqual({
+      lastRunAt: new Date(NOW).toISOString(), lastWakes: 2, lastDelivered: 2, status: ["issue drain a/b -> other: polled just now"],
+      open: { other: { at: new Date(NOW).toISOString(), message: "one" }, [RUNNER.session]: { at: new Date(NOW).toISOString(), message: "two" } },
+    })
   })
 
   it("delivers a wake immediately unless the runner asks for it to wait, so a session that never goes idle still hears of new work", async () => {
     const w = world({ wakes: [{ message: "one" }] })
     await w.go()
     expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "immediate")
-    await runWakeRunner({ ...RUNNER, delivery: "enqueue" }, { run: w.run, send: w.send, now: NOW })
+    await runWakeRunner({ ...RUNNER, delivery: "enqueue" }, w.deps())
     expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "enqueue")
+  })
+
+  it("holds a new wake while the last one sent to the session has not reached it, so queued news never stacks up in the app", async () => {
+    const w = world({ wakes: [{ message: "first", done: ["/bin/drains", "ack", "1"] }] })
+    const first = await w.go()
+    w.output = printed({ wakes: [{ message: "second", done: ["/bin/drains", "ack", "2"] }] })
+    const second = await w.go(first, NOW + 300_000)
+    expect(w.sent).toEqual([[RUNNER.session, "first"]])
+    expect(w.reports[1]).toEqual(["/bin/drains", "ack", "2", "--error", "held: the wake sent 5 min ago has not reached the session yet"])
+    expect(second).toMatchObject({ lastDelivered: 0, open: { [RUNNER.session]: { message: "first" } }, lastError: expect.stringContaining("held:") })
+    // The first wake lands: the next run sends the current one, and records it as the one in flight.
+    w.delivered.add("first")
+    const third = await w.go(second, NOW + 600_000)
+    expect(w.sent).toEqual([[RUNNER.session, "first"], [RUNNER.session, "second"]])
+    expect(third.open).toEqual({ [RUNNER.session]: { at: new Date(NOW + 600_000).toISOString(), message: "second" } })
+    // Delivered and nothing new to say: nothing is held any more.
+    w.delivered.add("second")
+    w.output = printed({ wakes: [] })
+    expect((await w.go(third, NOW + 900_000)).open).toBeUndefined()
+  })
+
+  it("takes a wake that never shows up as lost after the hold, and holds each session on its own", async () => {
+    const w = world({ wakes: [{ message: "a", session: "s1" }] })
+    const first = await w.go()
+    w.output = printed({ wakes: [{ message: "b", session: "s1" }, { message: "c", session: "s2" }] })
+    const held = await w.go(first, NOW + 60_000)
+    expect(w.sent.map(([session]) => session)).toEqual(["s1", "s2"])
+    expect(held.open).toMatchObject({ s1: { message: "a" }, s2: { message: "c" } })
+    w.output = printed({ wakes: [{ message: "d", session: "s1" }] })
+    const later = await w.go(held, NOW + WAKE_HOLD_MS + 1000)
+    expect(w.sent.at(-1)).toEqual(["s1", "d"])
+    expect(later.open?.s1?.message).toBe("d")
+  })
+
+  it("keeps what is in flight when the command fails", async () => {
+    const w = world({ wakes: [{ message: "a" }] })
+    const first = await w.go()
+    w.output = { ok: false, stdout: "", error: "drains.js failed" }
+    expect((await w.go(first, NOW + 1000)).open).toEqual(first.open)
   })
 
   it("delivers nothing and reports nothing when there are no wakes", async () => {
@@ -123,7 +168,7 @@ describe("runWakeRunner", () => {
 
   it("fails a wake that names no session when the runner has none, without sending", async () => {
     const w = world({ wakes: [{ message: "a", done: ["/bin/drains", "ack", "a"] }] })
-    const state = await runWakeRunner({ name: "drains", command: RUNNER.command }, { run: w.run, send: w.send, now: NOW })
+    const state = await runWakeRunner({ name: "drains", command: RUNNER.command }, w.deps())
     expect(w.send).not.toHaveBeenCalled()
     expect(w.reports).toEqual([["/bin/drains", "ack", "a", "--error", "the wake names no session and the runner has none"]])
     expect(state.lastError).toContain("names no session")
@@ -152,7 +197,7 @@ describe("runWakeRunner", () => {
 describe("runWakeRunners", () => {
   it("saves each runner's state, runs only the due ones, and forgets runners no longer configured", async () => {
     const run = vi.fn(async () => printed({ wakes: [], status: ["ok"] }))
-    const deps = { run, send: async () => ({ ok: true, error: null }), now: NOW }
+    const deps = { run, send: async () => ({ ok: true, error: null }), delivered: () => false, now: NOW }
     const a = { name: "a", command: ["a"] }
     const b = { name: "b", command: ["b"] }
     await runWakeRunners(root, [a, b], deps)
@@ -175,6 +220,14 @@ describe("sendWake", () => {
     expect(client.sendToAppSession).toHaveBeenCalledWith("sid", "hi", { stateDir: "/s", delivery: "immediate" })
     await sendWake({ stateDir: "/s" })("sid", "hi", "enqueue")
     expect(client.sendToAppSession).toHaveBeenLastCalledWith("sid", "hi", { stateDir: "/s", delivery: "enqueue" })
+  })
+})
+
+describe("wasDelivered", () => {
+  it("asks the client whether the session's log shows the message", () => {
+    client.messageDelivered.mockReturnValue(true)
+    expect(wasDelivered({ stateDir: "/s" })("sid", "hi", 5)).toBe(true)
+    expect(client.messageDelivered).toHaveBeenCalledWith("sid", "hi", 5, { stateDir: "/s" })
   })
 })
 
