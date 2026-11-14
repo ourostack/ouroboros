@@ -2497,13 +2497,14 @@ describe("bundle sync around the run (M1c)", () => {
   const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_OPTIONAL_LOCKS=0", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro", "ls-remote", "origin", "refs/heads/main"]
 
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
-  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
+  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | [number, number][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
     const clock = { t: Date.now() }
     const tacitFile = path.join(repo.bundle, "psyche", "TACIT.md")
     const wroteTacit = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "edit_file", arguments: JSON.stringify({ path: "psyche/TACIT.md", old_string: "a", new_string: "b" }) } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
     const run = fakeHost({ clock, sessions: { "*": wroteTacit }, observations: [() => empty({ tacit: { text: fs.readFileSync(tacitFile, "utf8"), mode: 0o644 } })] })
     const seenDuringRun: string[] = []
     const seenAtLatency: boolean[] = []
+    let latencyTurn = 0
     const execCalls: string[][] = []
     const exec = opts.exec ?? containerExec(repo, execCalls, opts)
     Object.assign(run.host, {
@@ -2516,7 +2517,14 @@ describe("bundle sync around the run (M1c)", () => {
           // Sync runs again for this turn: the pause is gone.
           seenAtLatency.push(fs.existsSync(repo.marker))
           opts.latencyWrites?.()
-          if (opts.latency !== null) logTurn(repo.bundle, clock.t + 10, ...(opts.latency ?? [120, 80]))
+          if (opts.latency !== null) {
+            const latency = opts.latency ?? [120, 80]
+            // A list gives each latency turn its own timing; the clock moves on so a turn reads only its own events.
+            if (Array.isArray(latency[0])) {
+              logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number][])[latencyTurn++]!)
+              clock.t += 10_000
+            } else logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number]))
+          }
           return { text: "it's ten past nine" }
         }
         seenDuringRun.push(fs.existsSync(repo.marker) ? fs.readFileSync(repo.marker, "utf8") : "")
@@ -2916,15 +2924,31 @@ describe("bundle sync around the run (M1c)", () => {
     })
 
     it.each([
-      [[2500, 80] as [number, number], 0, "2500 ms"],
-      [[120, 2000] as [number, number], 1, "2000 ms"],
-    ])("fails a slow turn %j", async (latency, index, detail) => {
+      [[2500, 80] as [number, number], 0, "median 2500 ms of 2500, 2500, 2500 ms"],
+      [[120, 2000] as [number, number], 1, "median 2000 ms of 2000, 2000, 2000 ms"],
+      [[[2363, 80], [2100, 80], [1300, 80]] as [number, number][], 0, "median 2100 ms of 1300, 2100, 2363 ms"],
+    ])("fails sync that is slow on most turns %j", async (latency, index, detail) => {
       const repo = syncRepo()
       repo.cutover()
       const suite = await gate.runSuite(bracketHost(repo, { latency }).host, { cases: ["handoff-greeting"], log: () => undefined })
       const result = byResult(suite, "sync-latency")!
       expect(result.status).toBe("fail")
       expect(result.checks[index]).toMatchObject({ ok: false, detail })
+    }, 60_000)
+
+    it("passes a single slow pull when the next two turns are fast, and times only one turn when the first is fast", async () => {
+      const repo = syncRepo()
+      repo.cutover()
+      const blip = bracketHost(repo, { latency: [[2363, 80], [1300, 90], [1400, 70]] })
+      const suite = await gate.runSuite(blip.host, { cases: ["handoff-greeting"], log: () => undefined })
+      expect(byResult(suite, "sync-latency")).toMatchObject({ status: "pass", checks: [{ ok: true, detail: "median 1400 ms of 1300, 1400, 2363 ms" }, { ok: true, detail: "median 80 ms of 70, 80, 90 ms" }] })
+      expect(blip.log.filter((entry) => entry === "open:10")).toHaveLength(3)
+
+      const fastRepo = syncRepo()
+      fastRepo.cutover()
+      const fast = bracketHost(fastRepo)
+      expect(byResult(await gate.runSuite(fast.host, { cases: ["handoff-greeting"], log: () => undefined }), "sync-latency")).toMatchObject({ status: "pass", checks: [{ detail: "120 ms" }, { detail: "80 ms" }] })
+      expect(fast.log.filter((entry) => entry === "open:10")).toHaveLength(1)
     }, 60_000)
 
     it("fails when the turn logs no sync events within the wait, or the turn errors, and skips it when the window was refused", async () => {
