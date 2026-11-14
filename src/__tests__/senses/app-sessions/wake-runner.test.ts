@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const client = vi.hoisted(() => ({ sendToAppSession: vi.fn(), messageDelivered: vi.fn() }))
+const client = vi.hoisted(() => ({ sendToAppSession: vi.fn(), messageDelivered: vi.fn(), withdrawQueuedMessages: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
 import { emitNervesEvent } from "../../../nerves/runtime"
@@ -36,7 +36,8 @@ function world(output: unknown, send: (session: string, message: string) => Prom
       reports.push(argv)
       return w.reportResult
     }),
-    send: vi.fn(async (session: string, message: string) => { w.sent.push([session, message]); return send(session, message) }),
+    send: vi.fn(async (session: string, message: string, _delivery?: string, replaces?: string) => { w.sent.push([session, message]); if (replaces) w.replaced.push([session, replaces]); return send(session, message) }),
+    replaced: [] as Array<[string, string]>,
     /** Messages the fake session's log shows as delivered. */
     delivered: new Set<string>(),
     deps: (now = NOW) => ({ run: w.run, send: w.send, delivered: (_s: string, message: string) => w.delivered.has(message), now }),
@@ -65,6 +66,8 @@ describe("parseWakeOutput", () => {
     ['{"wakes":[{"message":" "}]}', "wakes[0] has no message"],
     ['{"wakes":[{"message":"m","session":" "}]}', "wakes[0].session"],
     ['{"wakes":[{"message":"m","session":3}]}', "wakes[0].session"],
+    ['{"wakes":[{"message":"m","replaces":" "}]}', "wakes[0].replaces"],
+    ['{"wakes":[{"message":"m","replaces":4}]}', "wakes[0].replaces"],
     ['{"wakes":[{"message":"m","done":[]}]}', "wakes[0].done"],
     ['{"wakes":[{"message":"m","done":"x"}]}', "wakes[0].done"],
     ['{"wakes":[{"message":"m","done":[1]}]}', "wakes[0].done"],
@@ -103,9 +106,9 @@ describe("runWakeRunner", () => {
   it("delivers a wake immediately unless the runner asks for it to wait, so a session that never goes idle still hears of new work", async () => {
     const w = world({ wakes: [{ message: "one" }] })
     await w.go()
-    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "immediate")
+    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "immediate", undefined)
     await runWakeRunner({ ...RUNNER, delivery: "enqueue" }, w.deps())
-    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "enqueue")
+    expect(w.send).toHaveBeenLastCalledWith(RUNNER.session, "one", "enqueue", undefined)
   })
 
   it("holds a new wake while the last one sent to the session has not reached it, so queued news never stacks up in the app", async () => {
@@ -125,6 +128,18 @@ describe("runWakeRunner", () => {
     w.delivered.add("second")
     w.output = printed({ wakes: [] })
     expect((await w.go(third, NOW + 900_000)).open).toBeUndefined()
+  })
+
+  it("sends a wake that names what it replaces instead of holding it, so a newer wake takes the older queued ones back", async () => {
+    const w = world({ wakes: [{ message: "first", replaces: "News in a/b:" }] })
+    const first = await w.go()
+    w.output = printed({ wakes: [{ message: "second", replaces: "News in a/b:", done: ["/bin/drains", "ack", "2"] }] })
+    const second = await w.go(first, NOW + 300_000)
+    expect(w.sent).toEqual([[RUNNER.session, "first"], [RUNNER.session, "second"]])
+    expect(w.replaced).toEqual([[RUNNER.session, "News in a/b:"], [RUNNER.session, "News in a/b:"]])
+    expect(w.reports).toEqual([["/bin/drains", "ack", "2"]])
+    expect(second).toMatchObject({ lastDelivered: 1, open: { [RUNNER.session]: { message: "second" } } })
+    expect(second.lastError).toBeUndefined()
   })
 
   it("takes a wake that never shows up as lost after the hold, and holds each session on its own", async () => {
@@ -220,6 +235,20 @@ describe("sendWake", () => {
     expect(client.sendToAppSession).toHaveBeenCalledWith("sid", "hi", { stateDir: "/s", delivery: "immediate" })
     await sendWake({ stateDir: "/s" })("sid", "hi", "enqueue")
     expect(client.sendToAppSession).toHaveBeenLastCalledWith("sid", "hi", { stateDir: "/s", delivery: "enqueue" })
+  })
+})
+
+describe("sendWake with a prefix to replace", () => {
+  it("takes the session's queued messages with that prefix back before it sends, and still sends when that fails", async () => {
+    client.sendToAppSession.mockResolvedValue({ ok: true, error: null })
+    client.withdrawQueuedMessages.mockResolvedValue(3)
+    expect(await sendWake({ stateDir: "/s" })("sid", "new", "immediate", "News in a/b:")).toEqual({ ok: true, error: null })
+    expect(client.withdrawQueuedMessages).toHaveBeenCalledWith("sid", "News in a/b:", { stateDir: "/s" })
+    client.withdrawQueuedMessages.mockRejectedValue(new Error("socket closed"))
+    expect(await sendWake({ stateDir: "/s" })("sid", "new", "immediate", "News in a/b:")).toEqual({ ok: true, error: null })
+    client.withdrawQueuedMessages.mockClear()
+    await sendWake({ stateDir: "/s" })("sid", "new", "immediate")
+    expect(client.withdrawQueuedMessages).not.toHaveBeenCalled()
   })
 })
 

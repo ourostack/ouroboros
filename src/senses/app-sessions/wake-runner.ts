@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import * as path from "node:path"
 import type { WakeDelivery, WakeRunnerConfig } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { messageDelivered, sendToAppSession, type AppSessionsOptions } from "./client"
+import { messageDelivered, sendToAppSession, withdrawQueuedMessages, type AppSessionsOptions } from "./client"
 import { writeJson } from "./store"
 import { readWakeRunnerStates, wakeRunnerStateFile, type OpenWake, type WakeRunnerState } from "./wake-runner-state"
 
@@ -24,6 +24,10 @@ import { readWakeRunnerStates, wakeRunnerStateFile, type OpenWake, type WakeRunn
  * So a session gets one wake at a time: while the last wake sent to it has not shown up in its log, the next wake is held
  * and reported undelivered, and the command, which re-derives its state every run, offers it again. A wake still missing
  * after `WAKE_HOLD_MS` is taken as lost. Held wakes never pile up in the app as hours-old news.
+ *
+ * A wake may name `replaces`, a message prefix. Before it is sent, the messages the session still holds in the app's queue
+ * that start with it (and come from the user side, never another session's or an agent's) are taken back, so a newer wake
+ * replaces older undelivered ones instead of queueing behind them.
  */
 export const WAKE_RUNNER_DEFAULT_SECONDS = 300
 export const WAKE_RUNNER_TIMEOUT_MS = 2 * 60_000
@@ -32,11 +36,11 @@ const MAX_STATUS_LINES = 20
 const MAX_LINE = 300
 const MAX_OUTPUT = 10 * 1024 * 1024
 
-export interface Wake { session?: string; message: string; done?: string[] }
+export interface Wake { session?: string; message: string; done?: string[]; replaces?: string }
 export interface WakeOutput { wakes: Wake[]; status: string[] }
 export interface CommandResult { ok: boolean; stdout: string; error: string | null }
 export type RunCommand = (argv: string[], timeoutMs: number) => Promise<CommandResult>
-export type SendWake = (session: string, message: string, delivery: WakeDelivery) => Promise<{ ok: boolean; error: string | null }>
+export type SendWake = (session: string, message: string, delivery: WakeDelivery, replaces?: string) => Promise<{ ok: boolean; error: string | null }>
 export type WasDelivered = (session: string, message: string, sinceMs: number) => boolean
 export interface RunnerDeps { run: RunCommand; send: SendWake; delivered: WasDelivered; now: number }
 
@@ -55,7 +59,8 @@ export function parseWakeOutput(stdout: string): WakeOutput {
     if (typeof wake.message !== "string" || !wake.message.trim()) throw new Error(`wakes[${index}] has no message`)
     if (wake.session !== undefined && (typeof wake.session !== "string" || !wake.session.trim())) throw new Error(`wakes[${index}].session is not a session id`)
     if (wake.done !== undefined && (!Array.isArray(wake.done) || wake.done.length === 0 || wake.done.some(part => typeof part !== "string"))) throw new Error(`wakes[${index}].done is not an argv`)
-    return { message: wake.message, ...(wake.session !== undefined ? { session: wake.session as string } : {}), ...(wake.done !== undefined ? { done: wake.done as string[] } : {}) }
+    if (wake.replaces !== undefined && (typeof wake.replaces !== "string" || !wake.replaces.trim())) throw new Error(`wakes[${index}].replaces is not a message prefix`)
+    return { message: wake.message, ...(wake.session !== undefined ? { session: wake.session as string } : {}), ...(wake.done !== undefined ? { done: wake.done as string[] } : {}), ...(wake.replaces !== undefined ? { replaces: wake.replaces as string } : {}) }
   })
   // eslint-disable-next-line no-control-regex
   const clean = (line: string): string => line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, MAX_LINE)
@@ -75,7 +80,9 @@ export const runCommand: RunCommand = (argv, timeoutMs) => new Promise(resolve =
 
 export const wasDelivered = (client: AppSessionsOptions): WasDelivered => (session, message, sinceMs) => messageDelivered(session, message, sinceMs, client)
 
-export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message, delivery) => {
+export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message, delivery, replaces) => {
+  // The command re-derives its whole state each run, so a wake still queued in the session is stale news: take it back first.
+  if (replaces) await withdrawQueuedMessages(session, replaces, client).catch(() => 0)
   const result = await sendToAppSession(session, message, { ...client, delivery })
   return { ok: result.ok, error: result.error }
 }
@@ -99,12 +106,13 @@ export async function runWakeRunner(runner: WakeRunnerConfig, deps: RunnerDeps, 
   const problems: string[] = []
   for (const wake of output.wakes) {
     const session = wake.session ?? runner.session
-    const holding = session ? state.open?.[session] : undefined
+    // A wake that replaces older ones takes them back from the app's queue and goes out; only a wake that cannot is held behind the last one.
+    const holding = session && !wake.replaces ? state.open?.[session] : undefined
     const sent = !session
       ? { ok: false, error: "the wake names no session and the runner has none" }
       : holding
         ? { ok: false, error: `held: the wake sent ${ageLabel(deps.now - Date.parse(holding.at))} ago has not reached the session yet` }
-        : await deps.send(session, wake.message, runner.delivery ?? "immediate").catch((error: Error) => ({ ok: false, error: error.message }))
+        : await deps.send(session, wake.message, runner.delivery ?? "immediate", wake.replaces).catch((error: Error) => ({ ok: false, error: error.message }))
     if (session && sent.ok) (state.open ??= {})[session] = { at: new Date(deps.now).toISOString(), message: wake.message }
     const reason = sent.ok ? null : sent.error ?? "the app refused the message"
     if (!reason) state.lastDelivered += 1

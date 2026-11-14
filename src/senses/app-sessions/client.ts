@@ -661,6 +661,43 @@ export async function sendToAppSession(id: string, text: string, options: AppSes
   return result
 }
 
+/** A message waiting in a session's own queue, which the app releases one per turn boundary. */
+export interface QueuedMessage { id: string; source: string; text: string }
+
+/** The session's queued messages, oldest first. An empty list when the session has none or the app cannot say. */
+export async function listSessionQueue(id: string, options: AppSessionsOptions = {}): Promise<QueuedMessage[]> {
+  assertSessionId(id)
+  const requestId = randomUUID()
+  const got = await exchange(
+    [{ type: "get_session_queue", session_id: id, request_id: requestId }],
+    { keep: (frame) => frame.request_id === requestId || frame.type === "socket_error", done: (frame) => frame.request_id === requestId || frame.type === "socket_error", waitMs: options.sendWaitMs ?? SEND_WAIT_MS },
+    options,
+  )
+  const data = isRecord(got.at(-1)?.data) ? got.at(-1)!.data as Frame : {}
+  const items = Array.isArray(data.items) ? data.items : []
+  return items.filter(isRecord).flatMap(item => (str(item.id) && item.kind === "message" ? [{ id: str(item.id)!, source: str(item.source) ?? "", text: str(item.display_text) ?? "" }] : []))
+}
+
+/**
+ * Take back the messages of `source: "user"` (what the app's own box and Ouroboros send) that a session still holds in its
+ * queue and that start with `prefix`. Only those: another session's or an agent's messages stay. Returns how many it removed.
+ */
+export async function withdrawQueuedMessages(id: string, prefix: string, options: AppSessionsOptions = {}): Promise<number> {
+  const mine = (await listSessionQueue(id, options)).filter(item => item.source === "user" && item.text.startsWith(prefix))
+  let removed = 0
+  for (const item of mine) {
+    const requestId = randomUUID()
+    const got = await exchange(
+      [{ type: "remove_session_queue_item", session_id: id, id: item.id, request_id: requestId }],
+      { keep: (frame) => frame.request_id === requestId || frame.type === "socket_error", done: (frame) => frame.request_id === requestId || frame.type === "socket_error", waitMs: options.sendWaitMs ?? SEND_WAIT_MS },
+      options,
+    )
+    if (got.at(-1)?.request_id === requestId && !got.at(-1)?.error) removed += 1
+  }
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_queue_withdrawn", message: "took back queued messages a newer one replaces", meta: { session: id, found: mine.length, removed } })
+  return removed
+}
+
 /** The nudge the desk's keeper sends a session that stopped mid-work. */
 export function resumePrompt(state: string, note?: string): string {
   return [

@@ -113,11 +113,12 @@ List the runners in `agent.json`:
 The command prints one JSON value on stdout:
 
 ```json
-{ "wakes": [{ "session": "<session id>", "message": "New or changed issues in owner/name: #12 Title. Drain them.", "done": ["/usr/local/bin/node", ".../drains.js", "ack", "--repo", "owner/name", "--wake", "…"] }],
+{ "wakes": [{ "session": "<session id>", "message": "New or changed issues in owner/name: #12 Title. Drain them.", "replaces": "New or changed issues in owner/name:", "done": ["/usr/local/bin/node", ".../drains.js", "ack", "--repo", "owner/name", "--wake", "…"] }],
   "status": ["issue drain owner/name -> 58fbd57e: polled just now, 7 open, 0 waiting, last wake 12m ago (1 issue)"] }
 ```
 
 - **Deliver.** Each `message` is sent to its `session` (else the runner's) and the app admits it at that session's next turn boundary. A session that works for hours in one run never goes idle, so a message queued behind that run (`"enqueue"`) can wait for hours and arrive about issues that have since closed; choose `"enqueue"` only for a wake that must never interrupt.
+- **Replace.** A wake can name `replaces`, a message prefix (Desk's wakes name `New or changed issues in owner/name:`). Before the wake is sent, the messages the session still holds in the app's own queue that start with that prefix and come from the user side (`source: "user"`, never another session's or an agent's) are removed through the app's `get_session_queue` and `remove_session_queue_item`, so a newer wake replaces older undelivered ones instead of queueing behind them. A wake that replaces is sent, not held.
 - **One at a time.** The app keeps an accepted message in its own queue until the session reaches a turn boundary, and nothing can take it back. So a session has one wake in flight: while the last wake sent to it has not appeared in its event log, the next wake for it is held, reported with `--error "held: …"`, and offered again by the command's next run, which re-derives its state. After 30 minutes without appearing, a wake counts as lost. The runner's state keeps the wake in flight per session (`open`).
 - **Report.** `done` is the argv that reports a wake's delivery. It runs after a successful send, and with `--error <reason>` added after a failed one, so the command can keep the wake pending and send it again with its next run. A run that dies between sending and reporting can repeat one wake.
 - **Failures.** A non-zero exit, a timeout, output that is not this JSON or a failed delivery is recorded as the runner's last error. Nothing else happens: the command owns what is pending.
