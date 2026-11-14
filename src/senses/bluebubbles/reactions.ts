@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../../nerves/runtime"
 import type { BlueBubblesChatRef } from "./model"
 import type { BlueBubblesClient, BlueBubblesTapback } from "./client"
 
@@ -11,5 +12,6 @@ export async function reactInBlueBubbles(client: BlueBubblesClient, chat: BlueBu
   if (!reaction) return `iMessage reactions I can send are ❤️ 👍 👎 😂 ‼️ ❓; ${emoji} isn't one of them.`
   if (!client.react) return "this iMessage connection can't send reactions."
   await client.react({ chat, messageGuid, reaction })
+  emitNervesEvent({ component: "senses", event: "senses.bluebubbles_reaction_sent", message: "sent an iMessage reaction", meta: { reaction } })
   return `reacted with ${emoji}`
 }

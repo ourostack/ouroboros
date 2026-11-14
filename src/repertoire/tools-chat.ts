@@ -43,13 +43,8 @@ function argText(value: unknown): string {
 }
 
 function ended(tool: string, success: boolean, result: string): string {
-  emitNervesEvent({
-    level: success ? "info" : "warn",
-    component: "tools",
-    event: success ? "tool.end" : "tool.error",
-    message: `${tool} ${success ? "done" : "refused"}`,
-    meta: { tool, success },
-  })
+  if (success) emitNervesEvent({ component: "tools", event: "tool.end", message: `${tool} done`, meta: { tool, success } })
+  else emitNervesEvent({ level: "warn", component: "tools", event: "tool.error", message: `${tool} refused`, meta: { tool, success } })
   return result
 }
 

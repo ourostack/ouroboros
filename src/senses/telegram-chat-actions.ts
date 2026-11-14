@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import type { ChatActions, ReplyTargetSelection } from "../repertoire/tools-base"
 import { chatActionsForTurn } from "../repertoire/tools-chat"
 import type { TelegramBotApi } from "./telegram-client"
@@ -25,6 +26,7 @@ export function createTelegramChatActions(api: TelegramBotApi, chatId: string, i
         const id = telegramMessageId(messageId)
         if (id === undefined) return `${messageId} is not a Telegram message id.`
         await api.request("setMessageReaction", { chat_id: chatId, message_id: id, reaction: [{ type: "emoji", emoji }] })
+        emitNervesEvent({ component: "senses", event: "senses.telegram_reaction_sent", message: "sent a Telegram reaction", meta: {} })
         return `reacted with ${emoji}`
       },
       setReplyTarget: (next) => {
