@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1124",
+      "changes": [
+        "The slowest coverage test file, the synthetic approval end-to-end suite, is split into three files so the coverage shards finish together, which takes about two minutes off a pull request's checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1123",
       "changes": [
         "Lint, the changelog gate and the mailbox-ui checks now run beside the coverage shards instead of after them, and the coverage tests run on 16 shards, so a pull request's checks finish about a minute and a half sooner."
