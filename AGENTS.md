@@ -92,6 +92,13 @@ When working on the harness itself, `ouro dev` auto-builds from source, disables
 
 Hook events are fire-and-forget — they never block the dev tool. If the daemon isn't running, hooks exit silently.
 
+### Shipping Speed (Required)
+
+- From opening a pull request to npm and the container registry is under 10 minutes. A pull request waits for its slowest check, so keep every job under about 5 minutes: add coverage shards (`strategy.matrix.shard` and the two `--count` arguments in `coverage.yml` move together) or split a lane before accepting a wait.
+- Main requires `coverage`, `integration` and `package-e2e`, up to date with `main`, and merges on green with auto-merge. There is no merge queue.
+- A merge publishes at once. `publish` in `coverage.yml` does not wait for that run's own tests, because the pull request already passed them on the same tree; the run's tests stay as the tripwire. The wait for npm's registry is its own job (`verify-npm`), so it holds up nothing but the GitHub release.
+- The container image builds each architecture on its own native runner and joins them (`container-publish.yml`). Never emulate arm64 in a release path.
+
 ### Configuration Policy (Required)
 
 - This project avoids environment variables. Prefer explicit CLI arguments, committed config files, or in-repo defaults.

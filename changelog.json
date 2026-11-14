@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1120",
+      "changes": [
+        "The repository's agent instructions now state the shipping budget: a change goes from pull request to npm and the container registry in under 10 minutes, and the publish and the image build do not wait for a second run of the tests."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1119",
       "changes": [
         "A merge reaches npm and the container registry within minutes: the publish no longer waits for a second run of every test, the registry wait no longer holds up the container image, and the image builds each architecture on its own runner instead of emulating arm64."
