@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1128",
+      "changes": [
+        "An await the agent files from its private runtime is no longer cancelled on its first check, and a blocked await send tells the agent why and that it can message the person itself, then cancel the await."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1127",
       "changes": [
         "The replay gate no longer rolls back a release on one slow network fetch: a slow first sync timing takes two more read-only turns and judges the median."

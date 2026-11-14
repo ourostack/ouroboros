@@ -2398,6 +2398,23 @@ describe("private runtime", () => {
     expect(input.runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
   })
 
+  it("wakes an await the agent filed from its own private runtime instead of cancelling it", async () => {
+    const awaitingDir = path.join(agentRoot, "awaiting")
+    fs.mkdirSync(awaitingDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(awaitingDir, "inner-wait.md"),
+      "---\ncondition: season two is on the shelf\ncadence: 10m\nalert: inner\nstatus: pending\nfiled_from: inner\nfiled_for_friend_id: self\nfiled_from_key: dialog\nrequest_id: null\n---\n\nCheck the shelf.",
+      "utf8",
+    )
+
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "inner-wait", now: () => new Date("2026-03-06T12:00:00.000Z") })
+
+    expect(fs.existsSync(path.join(awaitingDir, "inner-wait.md"))).toBe(true)
+    const content = String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)
+    expect(content).toContain("await tick: inner-wait")
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
+  })
+
   it("does not hand an await tick the shared session's last assistant text as its checkpoint (one await's verdict must not become another's)", async () => {
     const awaitingDir = path.join(agentRoot, "awaiting")
     fs.mkdirSync(awaitingDir, { recursive: true })

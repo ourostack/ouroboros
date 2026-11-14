@@ -116,6 +116,8 @@ describe("a Telegram watch resolved on its own private tick (2026-10-28: the boo
     const result = parse(await resolveAwaitDef.handler({ name: NAME, verdict: "yes", observation: "the log is clean" }))
 
     expect(result).toMatchObject({ verdict: "yes", archived: null, alert: { status: "blocked" } })
+    expect(result.note).toMatch(/^Not sent yet \(.+\)\. The await stays open/u)
+    expect(result.note).toContain(`cancel_await "${NAME}"`)
     expect(fs.existsSync(path.join(agentRoot, "awaiting", `${NAME}.md`))).toBe(true)
   })
 })
