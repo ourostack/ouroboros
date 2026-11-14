@@ -177,7 +177,7 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
       if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is invalid")
       return { friendId: awaitFile.filed_for_friend_id, channel: "a2a", key: awaitFile.filed_from_key, requestId: null }
     }
-    // The agent's own awaits: filed from its inner session, the CLI, or with no session at all. No relationship to honour.
+    // The agent's own awaits: filed from its private runtime, the CLI, or with no session at all. No relationship to honour.
     const isSystemAwait = awaitFile.filed_from === "inner" || (awaitFile.filed_for_friend_id === null
       && awaitFile.filed_from_key === null
       && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli"))

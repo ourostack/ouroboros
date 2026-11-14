@@ -2398,7 +2398,7 @@ describe("private runtime", () => {
     expect(input.runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
   })
 
-  it("wakes an await the agent filed from its own inner session instead of cancelling it", async () => {
+  it("wakes an await the agent filed from its own private runtime instead of cancelling it", async () => {
     const awaitingDir = path.join(agentRoot, "awaiting")
     fs.mkdirSync(awaitingDir, { recursive: true })
     fs.writeFileSync(
