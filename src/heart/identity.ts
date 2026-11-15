@@ -645,7 +645,7 @@ function validateProviderFallback(raw: unknown, configFile: string): AgentFacing
       event: "config_identity.error",
       component: "config/identity",
       message: "agent config has invalid providerFallback",
-      meta: { path: configFile, providerFallback: raw ?? null },
+      meta: { path: configFile, providerFallback: raw },
     })
     throw new Error(
       `agent.json at ${configFile} providerFallback must be a list of { provider, model } with provider one of: ${VALID_PROVIDERS.join(", ")}.`,
