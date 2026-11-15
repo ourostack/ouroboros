@@ -3,7 +3,9 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const client = vi.hoisted(() => ({ sendToAppSession: vi.fn(), messageDelivered: vi.fn(), withdrawQueuedMessages: vi.fn() }))
+const iface = vi.hoisted(() => ({ deliverMessage: vi.fn() }))
+vi.mock("../../../senses/app-sessions/app-interface", () => iface)
+const client = vi.hoisted(() => ({ messageDelivered: vi.fn(), withdrawQueuedMessages: vi.fn() }))
 vi.mock("../../../senses/app-sessions/client", () => client)
 
 import { emitNervesEvent } from "../../../nerves/runtime"
@@ -230,17 +232,17 @@ describe("runWakeRunners", () => {
 
 describe("sendWake", () => {
   it("sends with the delivery mode it is given", async () => {
-    client.sendToAppSession.mockResolvedValue({ ok: false, error: "archived" })
+    iface.deliverMessage.mockResolvedValue({ ok: false, error: "archived" })
     expect(await sendWake({ stateDir: "/s" })("sid", "hi", "immediate")).toEqual({ ok: false, error: "archived" })
-    expect(client.sendToAppSession).toHaveBeenCalledWith("sid", "hi", { stateDir: "/s", delivery: "immediate" })
+    expect(iface.deliverMessage).toHaveBeenCalledWith("sid", "hi", "immediate", { stateDir: "/s" })
     await sendWake({ stateDir: "/s" })("sid", "hi", "enqueue")
-    expect(client.sendToAppSession).toHaveBeenLastCalledWith("sid", "hi", { stateDir: "/s", delivery: "enqueue" })
+    expect(iface.deliverMessage).toHaveBeenLastCalledWith("sid", "hi", "enqueue", { stateDir: "/s" })
   })
 })
 
 describe("sendWake with a prefix to replace", () => {
   it("takes the session's queued messages with that prefix back before it sends, and still sends when that fails", async () => {
-    client.sendToAppSession.mockResolvedValue({ ok: true, error: null })
+    iface.deliverMessage.mockResolvedValue({ ok: true, error: null })
     client.withdrawQueuedMessages.mockResolvedValue(3)
     expect(await sendWake({ stateDir: "/s" })("sid", "new", "immediate", "News in a/b:")).toEqual({ ok: true, error: null })
     expect(client.withdrawQueuedMessages).toHaveBeenCalledWith("sid", "News in a/b:", { stateDir: "/s" })

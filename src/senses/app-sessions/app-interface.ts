@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import * as os from "node:os"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { assertSessionId, eventLogSize, exchange, listAppSessions, SEND_WAIT_MS, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
+import { assertSessionId, eventLogSize, exchange, listAppSessions, SEND_WAIT_MS, type AppSessionRow, type AppSessionsOptions, type Frame, type PermissionPrompt } from "./client"
 import { addProbe, readPending, readProbes, removeProbe, watchSession, type PendingRequest } from "./store"
 
 /**
@@ -28,7 +28,7 @@ const isRecord = (value: unknown): value is Frame => !!value && typeof value ===
 const str = (value: unknown): string | null => (typeof value === "string" && value.length > 0 ? value : null)
 const compact = (value: Result): Result => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined))
 const appUrl = (id: string): string => `ghapp://sessions/${id}`
-const reasonOf = (frame: Frame | undefined, fallback: string): string => str(frame?.message) ?? str(frame?.reason) ?? str(frame?.detail) ?? str(frame?.type) ?? fallback
+const reasonOf = (frame: Frame): string => str(frame.error) ?? str(frame.message) ?? str(frame.reason) ?? str(frame.detail) ?? String(frame.type)
 
 /** Whether a sender wants a session's reply back, and for how long: once (the default), always, or never. */
 const notifyMode = (value: unknown): "once" | "always" | null => (value === "never" ? null : value === "always" ? "always" : "once")
@@ -37,12 +37,13 @@ interface Asked { ok: boolean; frame: Frame | null; error: string | null }
 
 /** One request and its answer: the frame `settle` calls "ok", or the reason it was refused, or that the app did not answer in time. */
 async function ask(frame: Frame, settle: (reply: Frame, requestId: string) => Verdict, waitMs: number, options: AppSessionsOptions): Promise<Asked> {
-  const requestId = randomUUID()
+  // An answer carries the id of the request it answers; every other request gets its own.
+  const requestId = str(frame.request_id) ?? randomUUID()
   const verdict = (reply: Frame): Verdict => (reply.type === "socket_error" || reply.type === "error" ? "fail" : settle(reply, requestId))
   const got = await exchange([{ ...frame, request_id: requestId }], { keep: reply => verdict(reply) !== "ignore", done: reply => /^(ok|fail)$/.test(verdict(reply)), waitMs }, options)
   const last = got.at(-1)
   if (last && verdict(last) === "ok") return { ok: true, frame: last, error: null }
-  return { ok: false, frame: last ?? null, error: last && verdict(last) === "fail" ? reasonOf(last, "the app refused it") : "the app did not answer in time" }
+  return { ok: false, frame: last ?? null, error: last && verdict(last) === "fail" ? reasonOf(last) : "the app did not answer in time" }
 }
 
 /** A session by its id, or a unique start of it (the first eight characters are enough). */
@@ -69,8 +70,7 @@ function item(row: AppSessionRow): Result {
 /** What an answer needs from a session blocked on something: the request's id and what it asks, or why the id is unknown. */
 function awaitingInput(row: AppSessionRow, pending: Record<string, PendingRequest>): Result | undefined {
   const request = pending[row.id]
-  if (row.repositoryTrust) return { kind: "repository_trust", repo: row.repositoryTrust.repo, note: "only the person can decide this, in the app" }
-  if (row.awaiting === "permission") return { kind: "permission", request_id: row.prompt?.requestId ?? null, what: row.prompt?.what, note: "answer it in the app; the app's own tools do not answer permissions either" }
+  if (row.awaiting === "permission") return { kind: "permission", request_id: (row.prompt as PermissionPrompt).requestId, what: (row.prompt as PermissionPrompt).what, note: "answer it in the app; the app's own tools do not answer permissions either" }
   if (row.awaiting === "input" || row.awaiting === "plan") {
     const kind = row.awaiting === "plan" ? "plan" : "user_input"
     if (request && (request.kind === "plan") === (kind === "plan")) {
@@ -87,7 +87,7 @@ function status(row: AppSessionRow, pending: Record<string, PendingRequest>): Re
     ...item(row), was_interrupted: row.wasInterrupted || null,
     activity: compact({ status: row.state === "working" ? "busy" : row.state, why: row.detail, last_activity: row.lastActivity }),
     awaiting_user_input: row.awaiting === "input", awaiting_plan_approval: row.awaiting === "plan", awaiting_permission: row.awaiting === "permission",
-    awaiting_repository_trust: !!row.repositoryTrust, awaiting_input: input,
+    awaiting_input: input,
   })
 }
 
@@ -105,7 +105,7 @@ export async function getSessionsStatus(agentRoot: string, state: string | undef
   return {
     summary: {
       total: rows.length, running: count(row => row.isRunning), busy: count(row => row.state === "working"), blocked: count(row => row.state === "waiting"), stuck: count(row => row.state === "stuck"),
-      awaiting_user_input: count(row => row.awaiting === "input"), awaiting_plan_approval: count(row => row.awaiting === "plan"), awaiting_repository_trust: count(row => !!row.repositoryTrust),
+      awaiting_user_input: count(row => row.awaiting === "input"), awaiting_plan_approval: count(row => row.awaiting === "plan"),
     },
     sessions: rows.filter(row => !state || row.state === state || (state === "busy" && row.state === "working")).map(row => status(row, pending)),
   }
@@ -247,9 +247,10 @@ export async function archiveSession(agentRoot: string, id: unknown, options: Ap
   const made = readProbes(agentRoot)
   if (!made[row.id]) throw new Error(`session ${row.id} was not created by this agent, so it will not archive it (yours: ${Object.keys(made).join(", ") || "none"})`)
   const archived = row.workspaceId
-    ? await ask({ type: "archive_workspace", workspace_id: row.workspaceId, delete_worktree: row.workspaceType === "worktree" }, (reply, requestId) => (reply.request_id === requestId && reply.type === "workspace_archived" ? "ok" : "ignore"), ARCHIVE_WAIT_MS, options)
-    : await ask({ type: "archive_session", session_id: row.id }, reply => (reply.type === "general_chat_sessions_changed" ? "ok" : "ignore"), ARCHIVE_WAIT_MS, options)
+    ? await ask({ type: "archive_workspace", workspace_id: row.workspaceId, delete_worktree: row.workspaceType === "worktree" }, (reply, requestId) => (reply.request_id === requestId ? (reply.type === "workspace_archived" ? "ok" : "fail") : "ignore"), ARCHIVE_WAIT_MS, options)
+    : await ask({ type: "archive_session", session_id: row.id }, (reply, requestId) => (reply.type === "general_chat_sessions_changed" ? "ok" : reply.request_id === requestId ? "fail" : "ignore"), ARCHIVE_WAIT_MS, options)
   if (archived.ok) removeProbe(agentRoot, row.id)
+  else emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_archive_refused", message: "the Copilot app did not archive a session", meta: { session: row.id, error: archived.error } })
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_archived", message: "asked the Copilot app to archive a session", meta: { session: row.id, ok: archived.ok } })
   return compact({ ok: archived.ok, session_id: row.id, error: archived.error })
 }

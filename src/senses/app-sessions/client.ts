@@ -3,11 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import type Database from "better-sqlite3"
-import { openDatabase } from "../../heart/sqlite"
 import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { copilotAppUrl } from "../shepherd/copilot-app"
 
 /**
  * This Mac's GitHub Copilot app, read and written the way the app's own sidebar does it. The session list comes from
@@ -66,16 +63,6 @@ export interface AppSessionRow {
   awaiting?: "input" | "plan" | "permission"
   /** The oldest permission request still open, whatever else the session waits on. */
   prompt?: PermissionPrompt
-  /** The repository-trust decision the session is blocked on, which only the person can make. */
-  repositoryTrust?: RepositoryTrustWait
-}
-
-/** An undecided repository-trust card, from the app's database. */
-export interface RepositoryTrustWait {
-  /** The app's id for the decision (`repository_trust:<project>:<host>:<revision>`); a new decision has a new id. */
-  decisionId: string
-  /** The repository the person is asked to trust, as `owner/name` when the app knows it. */
-  repo: string
 }
 
 /** A permission request the person has not answered yet, from the session's own history. */
@@ -128,6 +115,37 @@ export function defaultStateDir(): string {
   return path.join(os.homedir(), ".copilot")
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/**
+ * The app's current server address. Every app build (release, dev, PR) writes `ws.port` and
+ * `ws.token`; the release app also writes `ws.release.*`, so those win. The port file holds
+ * `<port>\n<pid>`, and a file whose app has exited is skipped.
+ */
+export function copilotAppUrl(stateDir: string, alive: (pid: number) => boolean = processAlive): string {
+  const run = path.join(stateDir, "run")
+  for (const prefix of ["ws.release", "ws"]) {
+    let port: string, pid: string | undefined, token: string
+    try {
+      ;[port, pid] = fs.readFileSync(path.join(run, `${prefix}.port`), "utf-8").split(/\r?\n/).map(line => line.trim()) as [string, string | undefined]
+      token = fs.readFileSync(path.join(run, `${prefix}.token`), "utf-8").split(/\r?\n/)[0]!.trim()
+    } catch {
+      continue
+    }
+    if (!/^\d+$/.test(port) || !token) continue
+    if (pid && /^\d+$/.test(pid) && !alive(Number(pid))) continue
+    return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}&observer=1`
+  }
+  throw new Error(`the GitHub Copilot app is not running (no live server files in ${run})`)
+}
+
 function stateDirOf(options: AppSessionsOptions): string {
   return options.stateDir ?? defaultStateDir()
 }
@@ -143,65 +161,6 @@ function str(value: unknown): string | null {
 export function assertSessionId(id: string): string {
   if (!SESSION_ID.test(id)) throw new Error(`'${id}' is not a Copilot app session id`)
   return id
-}
-
-// ---------- the app's database ----------
-
-function withDatabase<T>(stateDir: string, read: (db: Database.Database) => T): T {
-  const file = path.join(stateDir, "data.db")
-  if (!fs.existsSync(file)) throw new Error(`no GitHub Copilot app database at ${file}`)
-  const db = openDatabase(file, { readonly: true, fileMustExist: true, timeout: 3_000 })
-  try {
-    return read(db)
-  } finally {
-    db.close()
-  }
-}
-
-function hasColumn(db: Database.Database, table: string, column: string): boolean {
-  return (db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{ name: string }>).some(row => row.name === column)
-}
-
-function hasTable(db: Database.Database, table: string): boolean {
-  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined
-}
-
-interface TrustClaimRow {
-  watermark: string
-  session_id: string
-  project: string | null
-  owner: string | null
-  repo: string | null
-  trusted: number
-  current: number | null
-}
-
-/**
- * The sessions blocked on a repository-trust card. When a session that another session created reaches the card, the app
- * records a `repository_trust` notification claim for it, with the decision id as the watermark, and the claim stays after
- * the person decides. So a claim is an open wait only while the project has no trust grant for the session's host and no
- * newer trust revision. A session nobody coordinates leaves no claim and is not seen here.
- */
-function repositoryTrustWaits(stateDir: string): Map<string, RepositoryTrustWait> {
-  return withDatabase(stateDir, (db) => {
-    const waits = new Map<string, RepositoryTrustWait & { revision: number }>()
-    if (!["creator_notification_claims", "project_host_trust", "project_trust_revisions", "workspaces", "projects"].every(table => hasTable(db, table))) return waits
-    const named = hasColumn(db, "projects", "github_owner") && hasColumn(db, "projects", "github_repo")
-    const revision = hasColumn(db, "project_trust_revisions", "local_revision") ? "max(r.revision, r.local_revision)" : "r.revision"
-    const claims = db.prepare(`
-      SELECT c.watermark, w.session_id, p.name AS project, ${named ? "p.github_owner AS owner, p.github_repo AS repo" : "NULL AS owner, NULL AS repo"},
-        EXISTS (SELECT 1 FROM project_host_trust h WHERE h.project_id = w.project_id AND h.host_id = coalesce(w.host_id, 'local')) AS trusted,
-        (SELECT ${revision} FROM project_trust_revisions r WHERE r.project_id = w.project_id) AS current
-      FROM creator_notification_claims c JOIN workspaces w ON w.id = c.workspace_id LEFT JOIN projects p ON p.id = w.project_id
-      WHERE c.kind = 'repository_trust' AND w.session_id IS NOT NULL`).all() as TrustClaimRow[]
-    for (const claim of claims) {
-      const decided = Number(/:(\d+)$/.exec(claim.watermark)?.[1])
-      if (claim.trusted || Number.isNaN(decided) || (claim.current ?? 0) > decided) continue
-      if ((waits.get(claim.session_id)?.revision ?? -1) >= decided) continue
-      waits.set(claim.session_id, { decisionId: claim.watermark, repo: claim.owner && claim.repo ? `${claim.owner}/${claim.repo}` : claim.project ?? "this repository", revision: decided })
-    }
-    return new Map([...waits].map(([session, { decisionId, repo }]) => [session, { decisionId, repo }]))
-  })
 }
 
 // ---------- the session's event log ----------
@@ -408,18 +367,15 @@ export async function listAppSessions(options: AppSessionsOptions = {}): Promise
   const stateDir = stateDirOf(options)
   const now = (options.now ?? Date.now)()
   const { workspaces, chats } = await sidebarItems(options)
-  const trusts = repositoryTrustWaits(stateDir)
   const rows: AppSessionRow[] = []
   const add = (id: string | null, row: Omit<AppSessionRow, "id" | "state" | "detail" | "lastActivity">, isRunning: boolean): void => {
     if (!id || !SESSION_ID.test(id) || rows.some(known => known.id === id)) return
     const { facts, writtenAtMs } = cachedTailFacts(stateDir, id)
-    const repositoryTrust = trusts.get(id)
-    const { state, detail } = repositoryTrust ? { state: "waiting" as const, detail: "waiting for a repository trust decision" } : classify(isRunning, facts, now, writtenAtMs)
+    const { state, detail } = classify(isRunning, facts, now, writtenAtMs)
     rows.push({
       id, ...row, state, detail, lastActivity: facts.lastActivity ?? row.updatedAt,
       ...(facts.awaiting ? { awaiting: facts.awaiting } : {}),
       ...(facts.prompt ? { prompt: facts.prompt } : {}),
-      ...(repositoryTrust ? { repositoryTrust } : {}),
     })
   }
   for (const workspace of workspaces) {

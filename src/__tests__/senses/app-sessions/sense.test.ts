@@ -1,11 +1,30 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import Database from "better-sqlite3"
+import { EventEmitter } from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const wake = vi.hoisted(() => ({ requestPrivateWake: vi.fn() }))
 vi.mock("../../../heart/daemon/socket-client", () => wake)
+
+// The app's sidebar, served over a fake socket to every listing the sense makes.
+let sidebar: unknown[] = []
+vi.mock("../../../senses/app-sessions/client", async (importActual) => {
+  const actual = await importActual<typeof import("../../../senses/app-sessions/client")>()
+  const open = () => {
+    const socket = new EventEmitter() as EventEmitter & { send(line: string): void; close(): void; readyState: number }
+    socket.readyState = 1
+    socket.close = () => undefined
+    socket.send = (line: string) => {
+      const type = (JSON.parse(line) as { type: string }).type
+      const frame = type === "list_workspaces" ? { type: "workspace_list", workspaces: [] } : { type: "general_chat_sessions_list", sessions: sidebar }
+      setImmediate(() => socket.emit("message", Buffer.from(JSON.stringify(frame))))
+    }
+    setImmediate(() => { socket.emit("open"); socket.emit("message", Buffer.from(JSON.stringify({ type: "server_hello" }))) })
+    return socket
+  }
+  return { ...actual, listAppSessions: (options = {}) => actual.listAppSessions({ openSocket: open as never, ...options }) }
+})
 
 import { getAgentRoot } from "../../../heart/identity"
 import { getPrivateRuntimePendingDir } from "../../../mind/pending"
@@ -32,14 +51,10 @@ function appendEvents(events: unknown[], raw = ""): number {
 const assistant = (content: string, toolRequests?: unknown[]) => ({ type: "assistant.message", timestamp: "t", data: { content, ...(toolRequests ? { toolRequests } : {}) } })
 
 function makeDb(): void {
-  const db = new Database(path.join(stateDir, "data.db"))
-  db.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT);
-    CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, session_type TEXT, is_running INTEGER, was_interrupted INTEGER, updated_at TEXT, archived_at TEXT, execution_location TEXT);
-    CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT, workspace_type TEXT, name TEXT, session_id TEXT, archived_at TEXT, updated_at TEXT, host_id TEXT);
-    INSERT INTO sessions VALUES ('${ID}', 'Babysitter', 'general_chat', 0, 0, '2026-11-10T02:00:00Z', NULL, 'local');
-  `)
-  db.close()
+  fs.mkdirSync(path.join(stateDir, "run"), { recursive: true })
+  fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
+  fs.writeFileSync(path.join(stateDir, "run", "ws.token"), "tok\n")
+  sidebar = [{ id: ID, title: "Babysitter" }]
 }
 
 function manualScheduler() {
@@ -62,6 +77,7 @@ function manualScheduler() {
 }
 
 beforeEach(() => {
+  sidebar = []
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "app-sessions-sense-"))
   agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "app-sessions-agent-"))
   wake.requestPrivateWake.mockReset()
@@ -206,27 +222,27 @@ describe("the watch loop", () => {
 })
 
 describe("snapshots", () => {
-  it("records counts and stuck sessions", () => {
+  it("records counts and stuck sessions", async () => {
     makeDb()
     fs.mkdirSync(path.join(stateDir, "session-state", ID), { recursive: true })
     fs.writeFileSync(path.join(stateDir, "session-state", ID, "events.jsonl"), JSON.stringify({ type: "user.message", timestamp: "2026-11-10T02:00:00Z", data: {} }) + "\n")
-    const result = recordSnapshot(agentRoot, { stateDir }, NOW)
-    expect(result).toMatchObject({ appRunning: false, counts: { working: 0, idle: 0, waiting: 0, stuck: 1 }, stuck: [{ id: ID, name: "Babysitter" }] })
+    const result = await recordSnapshot(agentRoot, { stateDir }, NOW)
+    expect(result).toMatchObject({ appRunning: true, counts: { working: 0, idle: 0, waiting: 0, stuck: 1 }, stuck: [{ id: ID, name: "Babysitter" }] })
     expect(readSnapshot(agentRoot)).toEqual(result)
   })
 
-  it("records the error when the app cannot be read", () => {
-    expect(recordSnapshot(agentRoot, { stateDir }, NOW)).toMatchObject({ error: expect.stringContaining("no GitHub Copilot app database"), sessions: [], stuck: [] })
+  it("records the error when the app cannot be read", async () => {
+    expect(await recordSnapshot(agentRoot, { stateDir }, NOW)).toMatchObject({ error: expect.stringContaining("is not running"), sessions: [], stuck: [] })
   })
 })
 
 describe("a session waiting on a permission prompt", () => {
   const request = (requestId: string, timestamp: string) => ({ type: "permission.requested", timestamp, data: { requestId, permissionRequest: { kind: "extension-permission-access", extensionName: "plugin:desk:session-label", capabilities: ["register hooks"] } } })
 
-  it("is in the snapshot with its name, what it waits on and since when", () => {
+  it("is in the snapshot with its name, what it waits on and since when", async () => {
     makeDb()
     appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])
-    expect(recordSnapshot(agentRoot, { stateDir }, NOW)).toMatchObject({
+    expect(await recordSnapshot(agentRoot, { stateDir }, NOW)).toMatchObject({
       counts: { waiting: 1 },
       waitingPrompts: [{ session: ID, name: "Babysitter", requestId: "r1", what: "let the extension plugin:desk:session-label register hooks", since: Date.parse("2026-11-10T02:50:00.000Z") }],
     })
@@ -286,7 +302,7 @@ describe("the sense", () => {
     scheduler.fire(WATCH_POLL_MS)
     scheduler.fire(WAKE_RUNNER_IDLE_MS)
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(6)
+    expect(scheduler.tasks).toHaveLength(7)
     sense.stop()
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(0)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(0)
@@ -296,7 +312,7 @@ describe("the sense", () => {
     scheduler.tasks[1].fn()
     scheduler.tasks[2].fn()
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(6)
+    expect(scheduler.tasks).toHaveLength(7)
   })
 
   it("runs each configured wake runner on its own cadence, only when due, with no model turn", async () => {

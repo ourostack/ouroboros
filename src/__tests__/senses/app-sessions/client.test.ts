@@ -2,14 +2,13 @@ import { EventEmitter } from "node:events"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import Database from "better-sqlite3"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import type WebSocket from "ws"
 
 import {
-  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV, HUNG_MS,
-  listAppSessions, listSessionQueue, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
-  readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, withdrawQueuedMessages, type RunFile,
+  appRunning, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV, HUNG_MS,
+  listAppSessions, listSessionQueue, messageDelivered, messagesIn, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
+  readAppSessionHistory, readNewAppEvents, snapshot, tailAppSession, tailFacts, withdrawQueuedMessages, type RunFile,
 } from "../../../senses/app-sessions/client"
 
 type Frame = Record<string, unknown>
@@ -73,37 +72,6 @@ const iso = (ms: number) => new Date(ms).toISOString()
 let stateDir: string
 let app: FakeApp
 
-function db(): Database.Database {
-  return new Database(path.join(stateDir, "data.db"))
-}
-
-function makeDb(hostColumn = true): void {
-  const handle = db()
-  handle.exec(`
-    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-    CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, session_type TEXT NOT NULL DEFAULT 'project', is_running INTEGER NOT NULL DEFAULT 0,
-      was_interrupted INTEGER NOT NULL DEFAULT 0, updated_at TEXT, archived_at TEXT, execution_location TEXT NOT NULL DEFAULT 'local');
-    CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT, workspace_type TEXT, name TEXT, session_id TEXT, archived_at TEXT, updated_at TEXT${hostColumn ? ", host_id TEXT" : ""});
-  `)
-  handle.close()
-}
-
-function addSession(row: { id: string; title?: string | null; type?: string; running?: number; interrupted?: number; archived?: string | null; location?: string; updated?: string }): void {
-  const handle = db()
-  handle.prepare("INSERT INTO sessions (id, title, session_type, is_running, was_interrupted, updated_at, archived_at, execution_location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(row.id, row.title ?? null, row.type ?? "project", row.running ?? 0, row.interrupted ?? 0, row.updated ?? OLD, row.archived ?? null, row.location ?? "local")
-  handle.close()
-}
-
-function addWorkspace(row: { id: string; session: string | null; name?: string | null; type?: string; project?: string | null; archived?: string | null; host?: string | null }, hostColumn = true): void {
-  const handle = db()
-  if (hostColumn) handle.prepare("INSERT INTO workspaces (id, project_id, workspace_type, name, session_id, archived_at, updated_at, host_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(row.id, row.project ?? "p1", row.type ?? "branch", row.name ?? null, row.session, row.archived ?? null, OLD, row.host ?? null)
-  else handle.prepare("INSERT INTO workspaces (id, project_id, workspace_type, name, session_id, archived_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(row.id, row.project ?? "p1", row.type ?? "branch", row.name ?? null, row.session, row.archived ?? null, OLD)
-  handle.close()
-}
-
 function writeEvents(id: string, events: unknown[]): string {
   const dir = path.join(stateDir, "session-state", id)
   fs.mkdirSync(dir, { recursive: true })
@@ -121,10 +89,6 @@ beforeEach(() => {
   fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
   fs.writeFileSync(path.join(stateDir, "run", "ws.token"), "tok\n")
   app = new FakeApp()
-  makeDb()
-  const handle = db()
-  handle.prepare("INSERT INTO projects (id, name) VALUES ('p1', 'personal-desk')").run()
-  handle.close()
 })
 
 afterEach(() => {
@@ -250,167 +214,85 @@ describe("whether a sent message reached the session", () => {
 })
 
 describe("listing the sidebar", () => {
-  beforeEach(() => {
-    addSession({ id: WS, title: "Title", running: 1 })
-    addWorkspace({ id: "w1", session: WS, name: "Fix the thing" })
-    addSession({ id: CHAT, title: "A chat", type: "general_chat", interrupted: 1 })
-    addSession({ id: STUCK, title: null })
-    addWorkspace({ id: "w3", session: STUCK, name: null, project: "gone", host: "remote-host", type: "worktree" })
-    writeEvents(STUCK, [event("user.message", { content: "go" })])
-  })
+  const session = (id: string, extra: Frame = {}) => ({ sessionId: id, isRunning: false, ...extra })
+  const serve = (workspaces: Frame[], chats: Frame[]) => {
+    app.on("list_workspaces", (_, socket) => socket.push({ type: "workspace_list", workspaces }))
+    app.on("list_general_chat_sessions", (_, socket) => socket.push({ type: "general_chat_sessions_list", sessions: chats }))
+  }
+  const sidebar = () => serve(
+    [
+      { id: "w1", name: "Fix the thing", workspaceType: "branch", projectName: "personal-desk", projectId: "p1", branch: "main", checkoutBindings: [{ repoFullName: "a/b" }], session: session(WS, { isRunning: true }) },
+      { id: "w3", workspaceType: "worktree", hostId: "remote-host", session: session(STUCK, { title: "Title" }) },
+    ],
+    [{ id: CHAT, title: "A chat", wasInterrupted: true, coordinatingCreatorSessionId: WS, parentSessionId: WS, executionLocation: "cloud" }],
+  )
 
-  it("lists workspaces and chats with their state", () => {
-    const rows = listAppSessions(options())
+  it("lists workspaces and chats as the app lists them, with their state", async () => {
+    sidebar()
+    writeEvents(STUCK, [event("user.message", { content: "go" })])
+    const rows = await listAppSessions(options())
     expect(rows.map(row => [row.id, row.name, row.kind, row.state])).toEqual([
       [WS, "Fix the thing", "workspace", "working"],
-      [STUCK, "(unnamed)", "workspace", "stuck"],
+      [STUCK, "Title", "workspace", "stuck"],
       [CHAT, "A chat", "chat", "idle"],
     ])
-    expect(rows[0]).toMatchObject({ workspaceId: "w1", workspaceType: "branch", project: "personal-desk", isRunning: true, remote: false, lastActivity: OLD })
+    expect(rows[0]).toMatchObject({ workspaceId: "w1", workspaceType: "branch", project: "personal-desk", projectRepo: "a/b", isRunning: true, remote: false })
     expect(rows[1]).toMatchObject({ remote: true, project: null, lastActivity: OLD, workspaceType: "worktree" })
-    expect(rows[2]).toMatchObject({ wasInterrupted: true, workspaceId: null, kind: "chat" })
+    expect(rows[2]).toMatchObject({ wasInterrupted: true, workspaceId: null, remote: true, coordinatingCreatorSessionId: WS, parentSessionId: WS })
   })
 
-  it("carries a session's open permission prompt on its row", () => {
+  it("carries a session's open permission prompt on its row", async () => {
+    sidebar()
     writeEvents(CHAT, [event("permission.requested", { requestId: "r1", permissionRequest: { kind: "url" } })])
-    const rows = listAppSessions(options())
-    expect(rows.find(row => row.id === CHAT)).toMatchObject({ state: "waiting", prompt: { requestId: "r1", what: "open a web address", at: OLD } })
+    const rows = await listAppSessions(options())
+    expect(rows.find(row => row.id === CHAT)).toMatchObject({ state: "waiting", awaiting: "permission", prompt: { requestId: "r1", what: "open a web address", at: OLD } })
     expect(rows.find(row => row.id === WS)).not.toHaveProperty("prompt")
   })
 
-  describe("repository-trust waits", () => {
-    const DECISION = "repository_trust:p1:local:0"
-    function trustTables(options: { named?: boolean; localRevision?: boolean } = {}): Database.Database {
-      const handle = db()
-      handle.exec(`
-        CREATE TABLE creator_notification_claims (workspace_id TEXT, lifecycle_generation INTEGER, coordination_generation INTEGER, kind TEXT, watermark TEXT);
-        CREATE TABLE project_host_trust (project_id TEXT, host_id TEXT, trusted_config_sha256 TEXT);
-        CREATE TABLE project_trust_revisions (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL${options.localRevision === false ? "" : ", local_revision INTEGER NOT NULL DEFAULT 0"});
-      `)
-      if (options.named !== false) handle.exec("ALTER TABLE projects ADD COLUMN github_owner TEXT; ALTER TABLE projects ADD COLUMN github_repo TEXT; UPDATE projects SET github_owner = 'ourostack', github_repo = 'ouroboros-website'")
-      return handle
-    }
-    const claim = (handle: Database.Database, watermark = DECISION, workspace = "w1", kind = "repository_trust") =>
-      handle.prepare("INSERT INTO creator_notification_claims VALUES (?, 1, 1, ?, ?)").run(workspace, kind, watermark)
-
-    it("marks a session waiting while its trust decision is open, and names the repository", () => {
-      const handle = trustTables()
-      claim(handle)
-      claim(handle, "repository_trust:p1:local:garbled", "w1")
-      claim(handle, "idle-watermark", "w1", "idle")
-      handle.close()
-      expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({
-        state: "waiting", detail: "waiting for a repository trust decision", repositoryTrust: { decisionId: DECISION, repo: "ourostack/ouroboros-website" },
-      })
-      expect(listAppSessions(options()).find(row => row.id === STUCK)).not.toHaveProperty("repositoryTrust")
-    })
-
-    it("stops waiting once the project trusts the host or its trust revision moves on", () => {
-      const handle = trustTables()
-      claim(handle)
-      handle.prepare("INSERT INTO project_trust_revisions (project_id, revision, local_revision) VALUES ('p1', 0, 0)").run()
-      expect(listAppSessions(options()).find(row => row.id === WS)).toHaveProperty("repositoryTrust")
-      handle.prepare("UPDATE project_trust_revisions SET local_revision = 1").run()
-      expect(listAppSessions(options()).find(row => row.id === WS)).not.toHaveProperty("repositoryTrust")
-      handle.prepare("UPDATE project_trust_revisions SET local_revision = 0").run()
-      handle.prepare("INSERT INTO project_host_trust VALUES ('p1', 'local', 'abc')").run()
-      expect(listAppSessions(options()).find(row => row.id === WS)).not.toHaveProperty("repositoryTrust")
-      handle.close()
-    })
-
-    it("keeps the newest open decision", () => {
-      const handle = trustTables()
-      claim(handle, "repository_trust:p1:local:2")
-      claim(handle, "repository_trust:p1:local:1")
-      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.decisionId).toBe("repository_trust:p1:local:2")
-      handle.close()
-    })
-
-    it("reads an older app's database with no repository name or local revision", () => {
-      const handle = trustTables({ named: false, localRevision: false })
-      claim(handle)
-      handle.prepare("INSERT INTO project_trust_revisions (project_id, revision) VALUES ('p1', 0)").run()
-      handle.prepare("UPDATE workspaces SET project_id = 'missing' WHERE id = 'w1'").run()
-      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.repo).toBe("this repository")
-      handle.prepare("UPDATE workspaces SET project_id = 'p1' WHERE id = 'w1'").run()
-      expect(listAppSessions(options()).find(row => row.id === WS)!.repositoryTrust!.repo).toBe("personal-desk")
-      handle.close()
-    })
-
-    it("sees no trust waits in a database without the trust tables", () => {
-      expect(listAppSessions(options()).every(row => !("repositoryTrust" in row))).toBe(true)
-    })
+  it("skips archived, session-less, duplicate and malformed rows, and names what has no name", async () => {
+    serve(
+      [{ id: "w5" }, { id: "w6", archivedAt: OLD, session: session(WS) }, { id: "w7", activeSessionId: WS }, { id: "w8", session: session(WS) }, { id: "w9", session: session("bad id") }],
+      [{ id: CHAT }, { id: STUCK, archivedAt: OLD }, "x"] as Frame[],
+    )
+    const rows = await listAppSessions(options())
+    expect(rows.map(row => [row.id, row.name])).toEqual([[WS, "(unnamed)"], [CHAT, "(unnamed chat)"]])
   })
 
-  it("skips archived, session-less, duplicate and malformed rows, and names what has no name", () => {
-    addSession({ id: "44444444-aaaa", title: null, type: "agent", location: "cloud" })
-    addSession({ id: "bad id", type: "general_chat" })
-    addSession({ id: "55555555-aaaa", type: "general_chat", archived: OLD })
-    addWorkspace({ id: "w5", session: null })
-    addWorkspace({ id: "w6", session: WS, archived: OLD })
-    addWorkspace({ id: "w7", session: WS, name: "Again" })
-    const rows = listAppSessions(options())
-    expect(rows.map(row => row.id)).toEqual([WS, STUCK, CHAT, "44444444-aaaa"])
-    expect(rows[3]).toMatchObject({ name: "(unnamed chat)", remote: true })
-  })
-
-  it("reads a running session's log time, sub-agent writes included, to tell hung from working", () => {
+  it("reads a running session's log time, sub-agent writes included, to tell hung from working", async () => {
+    sidebar()
     const file = writeEvents(WS, [event("user.message"), event("assistant.turn_start")])
-    expect(listAppSessions(options()).find(row => row.id === WS)!.state).toBe("working")
+    expect((await listAppSessions(options())).find(row => row.id === WS)!.state).toBe("working")
     fs.utimesSync(file, new Date(NOW - HUNG_MS - 60_000), new Date(NOW - HUNG_MS - 60_000))
-    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ state: "stuck", detail: expect.stringContaining("has not grown for 31 min") })
+    expect((await listAppSessions(options())).find(row => row.id === WS)).toMatchObject({ state: "stuck", detail: expect.stringContaining("has not grown for 31 min") })
   })
 
-  it("re-reads a session's history only when it changed", () => {
-    expect(listAppSessions(options()).find(row => row.id === STUCK)!.state).toBe("stuck")
-    expect(listAppSessions(options()).find(row => row.id === STUCK)!.state).toBe("stuck")
+  it("re-reads a session's history only when it changed", async () => {
+    sidebar()
+    writeEvents(STUCK, [event("user.message")])
+    expect((await listAppSessions(options())).find(row => row.id === STUCK)!.state).toBe("stuck")
+    expect((await listAppSessions(options())).find(row => row.id === STUCK)!.state).toBe("stuck")
     writeEvents(STUCK, [event("user.message"), event("assistant.message", { content: "done" }), event("assistant.turn_end"), "{\"type\":\"assistant.turn_start\""])
-    expect(listAppSessions(options()).find(row => row.id === STUCK)!.state).toBe("idle")
+    expect((await listAppSessions(options())).find(row => row.id === STUCK)!.state).toBe("idle")
   })
 
-  it("reads an older app's database with no host column", () => {
-    fs.rmSync(path.join(stateDir, "data.db"))
-    makeDb(false)
-    addSession({ id: WS, title: "Old" })
-    addWorkspace({ id: "w1", session: WS, name: null }, false)
-    expect(listAppSessions({ stateDir })).toMatchObject([{ id: WS, name: "Old", remote: false, project: null }])
+  it("says why when the app does not list its sessions", async () => {
+    app.refuse = true
+    await expect(listAppSessions(options())).rejects.toThrow("ECONNREFUSED")
+    app.refuse = false
+    app.on("list_workspaces", (_, socket) => socket.push({ type: "socket_error" }))
+    await expect(listAppSessions(options())).rejects.toThrow("did not list its sessions")
   })
 
-  it("keeps project association, creator provenance and observable parent placement distinct", () => {
-    const handle = db()
-    handle.exec("ALTER TABLE workspaces ADD COLUMN creator_session_id TEXT; ALTER TABLE workspaces ADD COLUMN coordinating_creator_session_id TEXT")
-    handle.prepare("UPDATE workspaces SET creator_session_id = ?, coordinating_creator_session_id = ? WHERE session_id = ?").run(CHAT, CHAT, WS)
-    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ projectId: "p1", creatorSessionId: CHAT, coordinatingCreatorSessionId: CHAT, sidebarPlacement: "unknown" })
-    expect(listAppSessions(options()).find(row => row.id === CHAT)).not.toHaveProperty("parentSessionId")
-    handle.exec("ALTER TABLE workspaces ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN creator_session_id TEXT")
-    handle.prepare("UPDATE workspaces SET parent_session_id = ? WHERE session_id = ?").run(CHAT, WS)
-    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ parentSessionId: CHAT, sidebarPlacement: "unknown" })
-    expect(listAppSessions(options()).find(row => row.id === CHAT)).toMatchObject({ parentSessionId: null, creatorSessionId: null, sidebarPlacement: "unknown" })
-    expect(listAppSessions(options()).find(row => row.id === STUCK)).toMatchObject({ parentSessionId: null, sidebarPlacement: "unknown" })
-    handle.close()
-  })
-
-  it("throws plainly when the app has no database here", () => {
-    fs.rmSync(path.join(stateDir, "data.db"))
-    expect(() => listAppSessions({ stateDir })).toThrow("no GitHub Copilot app database")
-  })
-
-  it("snapshots counts and every session's id, name and state", () => {
-    expect(snapshot(options())).toEqual({
+  it("snapshots counts and every session's id, name and state, from the rows it is given or a fresh listing", async () => {
+    sidebar()
+    writeEvents(STUCK, [event("user.message")])
+    const want = {
       at: iso(NOW), appRunning: true,
       counts: { working: 1, idle: 1, waiting: 0, stuck: 1 },
-      sessions: [{ id: WS, name: "Fix the thing", state: "working" }, { id: STUCK, name: "(unnamed)", state: "stuck" }, { id: CHAT, name: "A chat", state: "idle" }],
-    })
-    expect(snapshot({ stateDir }).at).toMatch(/^\d{4}-/)
-  })
-
-  it("derives counts and sessions from one observed sidebar rather than reading a different revision", () => {
-    const rows = listAppSessions(options())
-    fs.rmSync(path.join(stateDir, "data.db"))
-    expect(snapshot(options(), rows)).toMatchObject({
-      counts: { working: 1, idle: 1, waiting: 0, stuck: 1 },
-      sessions: rows.map(({ id, name, state }) => ({ id, name, state })),
-    })
+      sessions: [{ id: WS, name: "Fix the thing", state: "working" }, { id: STUCK, name: "Title", state: "stuck" }, { id: CHAT, name: "A chat", state: "idle" }],
+    }
+    const rows = await listAppSessions(options())
+    expect(snapshot(options(), rows)).toEqual(want)
   })
 })
 
@@ -540,7 +422,6 @@ describe("the app's socket", () => {
 })
 
 describe("a session's own queue", () => {
-  beforeEach(() => addSession({ id: WS, title: "Title" }))
   const row = (id: string, text: string, source = "user", kind = "message") => ({ id, source, kind, display_text: text })
 
   it("lists the queued messages, and nothing when the app has none or answers with something else", async () => {
@@ -567,217 +448,6 @@ describe("a session's own queue", () => {
     expect(await withdrawQueuedMessages(WS, "New or changed issues in a/b:", options())).toBe(0)
     queue.splice(0, queue.length, { id: "12", kind: "message" })
     expect(await listSessionQueue(WS, options())).toEqual([{ id: "12", source: "", text: "" }])
-  })
-})
-
-describe("sending", () => {
-  beforeEach(() => {
-    addSession({ id: WS, title: "Title" })
-    addWorkspace({ id: "w1", session: WS, name: "Fix the thing" })
-  })
-
-  it("waits for the app's answer instead of closing early, which would cancel the send", async () => {
-    app.on("send_message", (frame, socket) => {
-      setTimeout(() => socket.push({ type: "session_message_sent", request_id: frame.request_id, message_id: "m1" }), 60)
-    })
-    const started = Date.now()
-    const result = await sendToAppSession(WS, "hello", options({ sendWaitMs: 5_000 }))
-    expect(result).toEqual({ ok: true, reply: "session_message_sent", messageId: "m1", error: null })
-    expect(app.sockets[0].closedAt! - started).toBeGreaterThanOrEqual(50)
-    expect(app.requests).toEqual([expect.objectContaining({ type: "send_message", session_id: WS, prompt: "hello", delivery_mode: "immediate" })])
-  })
-
-  it("counts a queued message as delivered, matched by session when the app drops the request id", async () => {
-    app.on("send_message", (_frame, socket) => {
-      socket.push({ type: "session_message_queued", request_id: "other" })
-      socket.push({ type: "session_message_queued", session_id: WS })
-    })
-    expect(await sendToAppSession(WS, "later", options({ delivery: "enqueue" }))).toEqual({ ok: true, reply: "session_message_queued", messageId: null, error: null })
-    expect(app.requests[0].delivery_mode).toBe("enqueue")
-  })
-
-  it("reports what the app said when it did not deliver", async () => {
-    app.on("send_message", (frame, socket) => socket.push({ type: "session_message_delivery_unknown", request_id: frame.request_id, detail: "runtime busy" }))
-    expect(await sendToAppSession(WS, "x", options())).toEqual({ ok: false, reply: "session_message_delivery_unknown", messageId: null, error: "runtime busy" })
-    app.on("send_message", (frame, socket) => socket.push({ type: "error", request_id: frame.request_id, message: "nope" }))
-    expect((await sendToAppSession(WS, "x", options())).error).toBe("nope")
-    app.on("send_message", (frame, socket) => socket.push({ type: "session_resume_failed", request_id: frame.request_id, reason: "evicted" }))
-    expect((await sendToAppSession(WS, "x", options())).error).toBe("evicted")
-    app.on("send_message", (frame, socket) => socket.push({ type: "error", request_id: frame.request_id }))
-    expect((await sendToAppSession(WS, "x", options())).error).toBe("error")
-    app.on("send_message", (frame, socket) => socket.push({ request_id: frame.request_id, type: "session_message_delivery_unknown", message_id: 5 }))
-    expect((await sendToAppSession(WS, "x", options())).error).toBe("session_message_delivery_unknown")
-  })
-
-  it("says so when the app does not answer in time, or the socket fails", async () => {
-    app.on("send_message", () => undefined)
-    expect(await sendToAppSession(WS, "x", options({ sendWaitMs: 20 }))).toEqual({ ok: false, reply: "no reply", messageId: null, error: "the app did not answer in time" })
-    app.refuse = true
-    expect(await sendToAppSession(WS, "x", options())).toMatchObject({ ok: false, reply: "socket_error", error: "ECONNREFUSED" })
-  })
-
-  it("refuses sessions that are not in this app or are archived", async () => {
-    expect(await sendToAppSession(CHAT, "x", options())).toMatchObject({ ok: false, reply: "not found", error: expect.stringContaining("no Copilot app session") })
-    addSession({ id: CHAT, archived: OLD })
-    expect(await sendToAppSession(CHAT, "x", options())).toMatchObject({ ok: false, reply: "archived" })
-    addSession({ id: STUCK })
-    addWorkspace({ id: "w3", session: STUCK, archived: OLD })
-    expect(await sendToAppSession(STUCK, "x", options())).toMatchObject({ ok: false, reply: "archived" })
-    expect(app.requests).toEqual([])
-  })
-
-  it("resumes with the keeper's nudge, naming where the loop stopped, plus a note", async () => {
-    app.on("send_message", (frame, socket) => socket.push({ type: "session_message_sent", request_id: frame.request_id }))
-    writeEvents(WS, [event("user.message", { content: "go" })])
-    const result = await resumeAppSession(WS, "  Check PR 12 first.  ", options())
-    expect(result).toMatchObject({ ok: true, stoppedWhile: "in the middle of a turn (last user.message)" })
-    expect(app.requests[0].prompt).toBe(resumePrompt("in the middle of a turn (last user.message)", "Check PR 12 first."))
-    expect(String(app.requests[0].prompt)).toContain("\n\nCheck PR 12 first.")
-    writeEvents(WS, [event("assistant.turn_end")])
-    expect(await resumeAppSession(WS, undefined, options())).toMatchObject({ stoppedWhile: "working" })
-    expect(resumePrompt("working", " ")).not.toContain("\n")
-  })
-})
-
-describe("opening and archiving", () => {
-  it("opens a named chat with a first message", async () => {
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: CHAT, type: "general_chat" })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-    })
-    app.on("send_message", (frame, socket) => socket.push({ type: "session_message_sent", request_id: frame.request_id }))
-    const result = await openAppChat({ name: "Probe", prompt: "Reply PROBE-OK", cwd: "/tmp/x", agent: "desk:worker", model: "m1" }, options())
-    expect(result).toMatchObject({ ok: true, created: true, sessionId: CHAT, sent: { ok: true, reply: "session_message_sent", messageId: null, error: null }, error: null, placement: { kind: "chat", verified: false, associationVerified: true, workspaceId: null, sidebarPlacement: "unknown" } })
-    expect(app.requests.map(frame => frame.type)).toEqual(["create_session", "rename_session", "send_message"])
-    expect(app.requests[0]).toMatchObject({ cwd: "/tmp/x", session_type: "general_chat", agent: "desk:worker", model: "m1" })
-    expect(app.requests[1]).toEqual({ type: "rename_session", session_id: CHAT, title: "Probe" })
-  })
-
-  it("does not claim creation success when the app's acknowledgement has no observable session", async () => {
-    app.on("create_session", (frame, socket) => socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT }))
-    const result = await openAppChat({}, options())
-    expect(result).toMatchObject({ ok: false, created: true, sessionId: CHAT, placement: { verified: false } })
-    expect(result.error).toContain("not observable")
-  })
-
-  it("keeps creation distinct from initial prompt delivery and verified chat placement", async () => {
-    const handle = db()
-    handle.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN creator_session_id TEXT; ALTER TABLE sessions ADD COLUMN coordinating_creator_session_id TEXT")
-    handle.close()
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: CHAT, title: "Probe", type: "general_chat" })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-    })
-
-    app.on("send_message", (frame, socket) => socket.push({ type: "error", request_id: frame.request_id, message: "rejected" }))
-    const result = await openAppChat({ prompt: "go" }, options())
-    expect(result).toMatchObject({ ok: false, created: true, sessionId: CHAT, sent: { ok: false }, placement: { kind: "chat", workspaceId: null, parentSessionId: null, creatorSessionId: null, coordinatingCreatorSessionId: null, sidebarPlacement: "unknown" } })
-  })
-
-  it("reports placement verification errors and unexpected workspace association without hiding created resources", async () => {
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: WS })
-      addWorkspace({ id: "created-workspace", session: WS })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: WS })
-    })
-    expect(await openAppChat({ name: "Probe", prompt: "go" }, options())).toMatchObject({ ok: false, created: true, placement: { kind: "workspace", verified: false, associationVerified: true }, error: expect.stringContaining("unexpected workspace") })
-    expect(app.requests.map(frame => frame.type)).toEqual(["create_session"])
-    app.on("create_session", (frame, socket) => {
-      fs.rmSync(path.join(stateDir, "data.db"))
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-    })
-    expect(await openAppChat({}, options())).toMatchObject({ ok: false, created: true, placement: { verified: false }, error: expect.stringContaining("could not be verified") })
-  })
-
-  it("retains the created session when a rename or initial-send operation throws", async () => {
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: CHAT, type: "general_chat" })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-      fs.rmSync(path.join(stateDir, "run", "ws.port"))
-    })
-    expect(await openAppChat({ name: "Probe" }, options())).toMatchObject({ ok: false, created: true, sessionId: CHAT, error: expect.stringContaining("not running") })
-    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
-    app.on("create_session", (frame, socket) => {
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-      fs.rmSync(path.join(stateDir, "data.db"))
-    })
-    expect(await openAppChat({ prompt: "go" }, options())).toMatchObject({ ok: false, created: true, sessionId: CHAT, error: expect.stringContaining("database") })
-  })
-
-  it("retains creation custody when the session disappears after rename", async () => {
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: CHAT, type: "general_chat" })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-    })
-    app.on("rename_session", (_frame, socket) => {
-      const handle = db()
-      handle.prepare("DELETE FROM sessions WHERE id = ?").run(CHAT)
-      handle.close()
-      socket.close()
-    })
-    expect(await openAppChat({ name: "Probe", prompt: "go" }, options())).toMatchObject({
-      ok: false, created: true, sessionId: CHAT, sent: null, error: expect.stringContaining("no longer observable after rename"),
-    })
-    expect(app.requests.map(frame => frame.type)).toEqual(["create_session", "rename_session"])
-  })
-  it("opens a bare chat in the home folder", async () => {
-    app.on("create_session", (frame, socket) => {
-      addSession({ id: CHAT, type: "general_chat" })
-      socket.push({ type: "session_created", request_id: frame.request_id, session_id: CHAT })
-    })
-    expect(await openAppChat({}, options())).toMatchObject({ ok: true, created: true, sessionId: CHAT, sent: null, error: null })
-    expect(app.requests).toEqual([expect.objectContaining({ type: "create_session", cwd: os.homedir() })])
-    expect(app.requests[0]).not.toHaveProperty("agent")
-  })
-
-  it("reports a chat the app would not create", async () => {
-    app.on("create_session", (frame, socket) => socket.push({ type: "error", request_id: frame.request_id, message: "missing field `cwd`" }))
-    expect(await openAppChat({ name: "x" }, options())).toEqual({ ok: false, sessionId: null, sent: null, error: "missing field `cwd`" })
-    app.on("create_session", () => undefined)
-    // No answer at all within the wait: the exchange ends with the server hello only.
-    app.sockets.length = 0
-    const pending = openAppChat({}, options())
-    await new Promise(resolve => setTimeout(resolve, 5))
-    app.sockets[0].close()
-    expect(await pending).toEqual({ ok: false, sessionId: null, sent: null, error: "the app did not create a session in time" })
-  })
-
-  it("archives a workspace session through its workspace, deleting a worktree", async () => {
-    addSession({ id: WS })
-    addWorkspace({ id: "w1", session: WS, type: "worktree" })
-    app.on("archive_workspace", (frame, socket) => socket.push({ type: "workspace_archived", request_id: frame.request_id }))
-    expect(await archiveAppSession(WS, options())).toEqual({ ok: true, reply: "workspace_archived", error: null })
-    expect(app.requests[0]).toMatchObject({ type: "archive_workspace", workspace_id: "w1", delete_worktree: true })
-    app.on("archive_workspace", (frame, socket) => {
-      socket.push({ type: "noise" })
-      socket.push({ type: "error", request_id: frame.request_id, message: "busy" })
-    })
-    expect(await archiveAppSession(WS, options())).toEqual({ ok: false, reply: "error", error: "busy" })
-    app.on("archive_workspace", (_frame, socket) => socket.close())
-    expect(await archiveAppSession(WS, options())).toEqual({ ok: false, reply: "no reply", error: "the app did not archive it in time" })
-  })
-
-  it("archives a chat and checks the database says so", async () => {
-    addSession({ id: CHAT, type: "general_chat" })
-    app.on("archive_session", (_frame, socket) => {
-      const handle = db()
-      handle.prepare("UPDATE sessions SET archived_at = ? WHERE id = ?").run(OLD, CHAT)
-      handle.close()
-      socket.push({ type: "general_chat_sessions_changed" })
-    })
-    expect(await archiveAppSession(CHAT, options())).toEqual({ ok: true, reply: "archived", error: null })
-    addSession({ id: STUCK, type: "general_chat" })
-    app.on("archive_session", (frame, socket) => {
-      socket.push({ type: "noise" })
-      socket.push({ type: "error", request_id: frame.request_id, message: "no" })
-    })
-    expect(await archiveAppSession(STUCK, options())).toEqual({ ok: false, reply: "not archived", error: "no" })
-    app.on("archive_session", (_frame, socket) => socket.close())
-    expect((await archiveAppSession(STUCK, options())).error).toBe("the app did not archive it")
-  })
-
-  it("does not archive what is not in this app", async () => {
-    expect(await archiveAppSession(WS, options())).toEqual({ ok: false, reply: "not found", error: expect.stringContaining("no Copilot app session") })
   })
 })
 

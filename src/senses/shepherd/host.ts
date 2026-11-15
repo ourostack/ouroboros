@@ -2,7 +2,6 @@ import type { ShepherdConnection } from "../../heart/shepherd-config"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createCmuxClient } from "./client"
 import { createCmuxHost } from "./cmux"
-import { createCopilotAppHost } from "./copilot-app"
 import { createHerdrHost } from "./herdr"
 
 /**
@@ -114,7 +113,6 @@ export interface ShepherdHost {
 /** The host for this machine's connection. */
 export function createShepherdHost(connection: ShepherdConnection, options: { agentName: string; now?: () => number; schedule?: (fn: () => void, ms: number) => () => void }): ShepherdHost {
   emitNervesEvent({ component: "senses", event: "senses.shepherd_host_created", message: "opened the Shepherd terminal host", meta: { host: connection.host } })
-  if (connection.host === "copilot-app") return createCopilotAppHost(connection, { schedule: options.schedule, now: options.now })
   return connection.host === "herdr"
     ? createHerdrHost(connection, { schedule: options.schedule })
     : createCmuxHost(createCmuxClient(connection, { agentName: options.agentName }), { now: options.now, schedule: options.schedule })

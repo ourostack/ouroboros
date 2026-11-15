@@ -1,7 +1,7 @@
 import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
-import { copilotAppUrl } from "../shepherd/copilot-app"
+import { copilotAppUrl } from "./client"
 import { defaultStateDir, type Frame, type OpenSocket } from "./client"
 import { readPending, writePending, type PendingRequest } from "./store"
 

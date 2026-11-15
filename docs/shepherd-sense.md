@@ -456,20 +456,7 @@ Right before typing it finds the session again (refusing one that is gone) and r
 
 ## Turning it on
 
-Shepherd watches one host per machine, named in the agent's machine runtime vault item. The GitHub Copilot app wins over cmux and Herdr, and cmux wins over Herdr.
-
-**GitHub Copilot app.** Add a `copilotApp` record. The app rewrites its local server's port and token in `~/.copilot/run/` on every launch, so Shepherd reads them when it connects and stores no credential. `copilotApp.stateDir` overrides `~/.copilot`:
-
-```sh
-ouro vault config set --agent <agent> --scope machine --key copilotApp.stateDir --value "$HOME/.copilot"
-```
-
-Shepherd connects as an observer, so the app never routes a session's tool callbacks to it. It differs from the terminal hosts in four ways:
-
-- A return is `session.idle` (when the turn was not stopped by the human), a permission request no hook resolved, a question or plan request, or a terminal error. `assistant.turn_end` is not a return, because the app sends one after every model step.
-- The screen is the session's recent conversation, read from `session-state/<id>/events.jsonl`. A reply is a queued message, so it never touches your draft.
-- The app does not say which session is on screen. A session counts as yours while the app is frontmost and someone other than Shepherd messaged it in the last five minutes. A turn you stopped yourself is also yours.
-- There are no terminal keys. For an owner request, `y` or `1` approves the waiting permission once, `2` approves it for the session, `n` or `3` rejects it, and `ctrl-c` or `escape` stops the turn. The app has no status line, so Shepherd's status stays in its own records. Periodic check-ins are off, because the app cannot show that a session's composer is empty.
+Shepherd watches one host per machine, named in the agent's machine runtime vault item. cmux wins over Herdr. The GitHub Copilot app is not a Shepherd host: Ouroboros works with it through the app's own interface (see `docs/app-sessions-sense.md`).
 
 **Herdr.** Add a `herdr` record; Herdr's socket is same-user and needs no credential. `herdr.socketPath` overrides the default, `~/.config/herdr/herdr.sock`:
 
@@ -497,7 +484,6 @@ ouro vault config set --agent <agent> --scope machine --key herdr.socketPath --v
 - `src/senses/shepherd/host.ts`: the host adapter seam.
 - `src/senses/shepherd/cmux.ts` and `client.ts`: the cmux adapter and its socket client.
 - `src/senses/shepherd/herdr.ts`: the Herdr adapter and its socket client.
-- `src/senses/shepherd/copilot-app.ts`: the GitHub Copilot app adapter and its WebSocket client.
 - `src/senses/shepherd/judge.ts`: the judge and the reply safety rules.
 - `src/senses/shepherd/sense.ts`: the sense process (checks, answers, escalation); `src/senses/shepherd-entry.ts` is its daemon entry point.
 - `src/senses/shepherd/owner-notice.ts`: the owner notice (policy, wording, targets, coalescing, and the BlueBubbles and Teams sends).
