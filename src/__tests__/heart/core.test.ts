@@ -2388,8 +2388,9 @@ describe("runAgent", () => {
     await advanceProviderRetryTimers()
     await promise
 
-    expect(callCount).toBe(3)
-    expect(errors.filter((entry) => entry.severity === "transient")).toHaveLength(2)
+    // A refused request (400) gets one corrected call before the ordinary retries run out.
+    expect(callCount).toBe(4)
+    expect(errors.filter((entry) => entry.severity === "transient")).toHaveLength(3)
     const terminal = errors.filter((entry) => entry.severity === "terminal")
     expect(terminal).toHaveLength(1)
     expect(terminal[0].error.message).toBe("API rate limit")
@@ -3995,8 +3996,10 @@ describe("runAgent", () => {
     await advanceProviderRetryTimers()
     await promise
 
-    expect(callCount).toBe(3)
+    // A refused request (400) gets one corrected call before the ordinary retries.
+    expect(callCount).toBe(4)
     expect(errors.some((error) => error.message.includes("trimm"))).toBe(false)
+    expect(errors.filter((error) => error.message.includes("refused the request"))).toHaveLength(1)
     expect(errors[errors.length - 1].message).toBe("invalid request format")
     vi.useRealTimers()
   })
@@ -4552,8 +4555,10 @@ describe("runAgent", () => {
       await advanceProviderRetryTimers()
       await promise
 
-      expect(callCount).toBe(3)
-      expect(errors.filter((e) => e.severity === "transient")).toHaveLength(2)
+      // A refused request (400) gets one corrected call, with its own transient notice, before the ordinary retries.
+      const corrected = status === 400 ? 1 : 0
+      expect(callCount).toBe(3 + corrected)
+      expect(errors.filter((e) => e.severity === "transient")).toHaveLength(2 + corrected)
       const terminal = errors.filter((e) => e.severity === "terminal")
       expect(terminal.length).toBe(1)
     }

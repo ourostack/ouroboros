@@ -1338,6 +1338,27 @@ function isContextOverflow(err: unknown): boolean {
   return false;
 }
 
+// The provider refused the request itself (a 400 that is not a context overflow): something in what the runtime sent, not
+// an outage. The agent gets one corrected retry instead of the turn failing (a replayed reasoning signature, a gap in tool results).
+export function isRejectedRequest(err: unknown): boolean {
+  return err instanceof Error && (err as { status?: unknown }).status === 400 && !isContextOverflow(err)
+}
+
+// Reasoning blocks replayed from earlier turns are the agent's private scratch, and a provider may refuse their signatures.
+// The current turn's own blocks stay: the provider needs them to continue tool use within the turn.
+export function dropReplayedReasoning(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  keepFrom: number,
+): OpenAI.ChatCompletionMessageParam[] {
+  return messages.map((message, index) => {
+    if (index >= keepFrom || message.role !== "assistant") return message
+    const record = message as unknown as Record<string, unknown>
+    if (!("_thinking_blocks" in record) && !("_reasoning_items" in record)) return message
+    const { _thinking_blocks: _thinking, _reasoning_items: _reasoning, ...rest } = record
+    return rest as unknown as OpenAI.ChatCompletionMessageParam
+  })
+}
+
 const RETRY_LABELS: Record<ProviderErrorClassification, string> = {
   "auth-failure": "auth error",
   "usage-limit": "usage limit",
@@ -1573,6 +1594,8 @@ export async function runAgent(
   let done = false;
   let lastUsage: UsageData | undefined;
   let overflowRetried = false;
+  let rejectedRequestRetried = false;
+  let replayedReasoningDropped = false;
   let outcome: RunAgentOutcome = "settled";
   let completion: CompletionMetadata | undefined;
   let suspension: ApprovalSuspensionResult | undefined;
@@ -1922,7 +1945,9 @@ export async function runAgent(
       // Whatever path built this request, every tool call reaches the provider with a result: a gap the runtime left must
       // never 400 the turn and leave the agent unable to answer.
       repairOrphanedToolCalls(attemptMessages)
-      if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget") providerRuntime.resetTurnState(attemptMessages)
+      const currentTurnStart = (): number => currentUserMessage ? Math.max(0, attemptMessages.indexOf(currentUserMessage)) : 0
+      if (replayedReasoningDropped) attemptMessages = dropReplayedReasoning(attemptMessages, currentTurnStart())
+      if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget" || replayedReasoningDropped) providerRuntime.resetTurnState(attemptMessages)
       const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
@@ -1976,6 +2001,22 @@ export async function runAgent(
               : overflowMessages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
             providerRuntime.resetTurnState(attemptMessages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
+            return callProviderTurn()
+          }
+          if (isRejectedRequest(error) && !rejectedRequestRetried) {
+            // Never leave the agent unable to answer: correct what the runtime sent, tell the agent why, and let it carry on.
+            rejectedRequestRetried = true;
+            replayedReasoningDropped = true;
+            const detail = (error as Error).message
+            attemptMessages = dropReplayedReasoning(attemptMessages, currentTurnStart())
+            repairOrphanedToolCalls(attemptMessages)
+            attemptMessages = [...attemptMessages, {
+              role: "user",
+              content: `[runtime] The provider refused my last request (${detail}). The runtime dropped reasoning replayed from earlier turns and closed any tool call left without a result. I carry on with the turn from here.`,
+            }]
+            providerRuntime.resetTurnState(attemptMessages);
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.rejected_request_recovered", message: "provider refused the request; retrying once with corrected history", meta: { provider: providerRuntime.id, model: providerRuntime.model, detail: String(detail).slice(0, 300) } })
+            callbacks.onError(new Error("provider refused the request, correcting and retrying..."), "transient");
             return callProviderTurn()
           }
           throw error

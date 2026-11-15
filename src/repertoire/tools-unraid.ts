@@ -69,7 +69,7 @@ function exitCode(match: RegExpMatchArray): number | null {
 }
 
 export function normalizeDockerStatus(structuredState: unknown, status: unknown): {
-  state: "running" | "exited" | "restarting" | "unknown"
+  state: "running" | "exited" | "restarting" | "created" | "unknown"
   exitCode: number | null
   degraded: boolean
 } {
@@ -81,6 +81,8 @@ export function normalizeDockerStatus(structuredState: unknown, status: unknown)
     const code = exitCode(exited)
     return code === null ? { state: "unknown", exitCode: null, degraded: true } : { state: "exited", exitCode: code, degraded: false }
   }
+  // A container that was created but never started (Docker shows "Created") is stopped on purpose, not degraded.
+  if ((state === "CREATED" || state === "EXITED") && status === "Created") return { state: "created", exitCode: null, degraded: false }
   const restarting = status.match(RESTARTING)
   if ((state === "RUNNING" || state === "EXITED") && restarting) {
     const code = exitCode(restarting)
@@ -209,7 +211,7 @@ export function createUnraidReadTools(client: ReadClient) {
           .sort((a, b) => Number(b.usedBytes) - Number(a.usedBytes) || a.name.localeCompare(b.name))
           .slice(0, 10)
           .map((share) => ({ kind: "share" as const, name: share.name, usedBytes: share.usedBytes }))
-        let unmanic = { state: "unknown" as "running" | "exited" | "restarting" | "unknown", degraded: true }
+        let unmanic = { state: "unknown" as "running" | "exited" | "restarting" | "created" | "unknown", degraded: true }
         if (data.docker && typeof data.docker === "object" && !Array.isArray(data.docker)) {
           const matches = mapContainers(data).containers.filter((container) => container.name === "unmanic")
           if (matches.length === 1) unmanic = { state: matches[0]!.state, degraded: matches[0]!.degraded }

@@ -11,7 +11,7 @@ export const SANCTUARY_RESTART_MUTATION = `mutation SanctuaryRestart($id: Prefix
 type Container = {
   id: string
   name: string
-  state: "running" | "exited" | "restarting" | "unknown"
+  state: "running" | "exited" | "restarting" | "created" | "unknown"
   status: string
   degraded: boolean
 }

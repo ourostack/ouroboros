@@ -106,6 +106,10 @@ describe("Unraid typed read tools", () => {
     expect(normalizeDockerStatus("RUNNING", "Up About an hour")).toEqual({ state: "running", exitCode: null, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "Up About an hour (unhealthy)")).toEqual({ state: "running", exitCode: null, degraded: false })
     expect(normalizeDockerStatus("EXITED", "Exited (137) About an hour ago")).toEqual({ state: "exited", exitCode: 137, degraded: false })
+    // Never-started containers (Docker "Created") are stopped on purpose; 2026-11-15 four of them sat as false "degraded" incidents.
+    expect(normalizeDockerStatus("CREATED", "Created")).toEqual({ state: "created", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("EXITED", "Created")).toEqual({ state: "created", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("RUNNING", "Created")).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus("RUNNING", "Up About an minute")).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus("RUNNING", "up 2 hours")).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus("EXITED", "Exited (01) 1 hour ago")).toEqual({ state: "unknown", exitCode: null, degraded: true })
