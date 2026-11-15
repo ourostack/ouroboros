@@ -103,7 +103,7 @@ describe("media MCP: Jellyfin watch history", () => {
   beforeEach(async () => {
     routes = (method, url) => {
       if (method !== "GET") return undefined
-      if (url === "http://jellyfin/Users") return [{ Id: "u1", Name: "Ari" }, { Id: "u2", Name: "Rachel" }]
+      if (url === "http://jellyfin/Users") return [{ Id: "u1", Name: "Alex" }, { Id: "u2", Name: "Jordan" }]
       if (url.startsWith("http://jellyfin/Users/u1/Items?")) return { Items: url.includes("IsResumable") ? resumable : played }
       if (url.startsWith("http://jellyfin/Users/u2/Items?")) return { Items: [] }
       return undefined
@@ -112,7 +112,7 @@ describe("media MCP: Jellyfin watch history", () => {
   })
 
   it("lists a user's watched and half-watched items, newest first, with completion", async () => {
-    expect(await mod.mediaWatchHistory({ user: "ari" })).toEqual({ result: "watch_history", user: "Ari", count: 3, items: [
+    expect(await mod.mediaWatchHistory({ user: "alex" })).toEqual({ result: "watch_history", user: "Alex", count: 3, items: [
       { kind: "episode", title: "Second", series: "A Show", code: "S01E02", played: false, percent: 42, play_count: 0, last_played: "2026-11-02T20:00:00Z" },
       { kind: "episode", title: "Pilot", series: "A Show", code: "S01E01", played: true, percent: 100, play_count: 2, last_played: "2026-11-01T20:00:00Z" },
       { kind: "movie", title: "A Film", series: null, code: null, played: true, percent: 100, play_count: 1, last_played: "2026-10-30T20:00:00Z" },
@@ -124,19 +124,19 @@ describe("media MCP: Jellyfin watch history", () => {
 
   it("filters by state and title", async () => {
     expect((await mod.mediaWatchHistory({ user: "u1", state: "in_progress" })).items.map((i: any) => i.title)).toEqual(["Second"])
-    expect((await mod.mediaWatchHistory({ user: "Ari", state: "played", title: "a film" })).items.map((i: any) => i.title)).toEqual(["A Film"])
-    expect((await mod.mediaWatchHistory({ user: "Ari", title: "show", limit: 1 })).items.map((i: any) => i.title)).toEqual(["Second"])
+    expect((await mod.mediaWatchHistory({ user: "Alex", state: "played", title: "a film" })).items.map((i: any) => i.title)).toEqual(["A Film"])
+    expect((await mod.mediaWatchHistory({ user: "Alex", title: "show", limit: 1 })).items.map((i: any) => i.title)).toEqual(["Second"])
   })
 
   it("names the users when it cannot tell whose history to read", async () => {
-    expect(await mod.mediaWatchHistory({})).toEqual({ result: "user_required", users: ["Ari", "Rachel"] })
-    expect(await mod.mediaWatchHistory({ user: "nobody" })).toEqual({ result: "unknown_user", users: ["Ari", "Rachel"] })
-    expect(await mod.mediaWatchHistory({ user: "Rachel", state: "everything" })).toEqual({ result: "bad_state", states: ["all", "played", "in_progress"] })
+    expect(await mod.mediaWatchHistory({})).toEqual({ result: "user_required", users: ["Alex", "Jordan"] })
+    expect(await mod.mediaWatchHistory({ user: "nobody" })).toEqual({ result: "unknown_user", users: ["Alex", "Jordan"] })
+    expect(await mod.mediaWatchHistory({ user: "Jordan", state: "everything" })).toEqual({ result: "bad_state", states: ["all", "played", "in_progress"] })
   })
 
   it("says so when Jellyfin is not configured, and is registered read-only", async () => {
     mod = await load({})
-    expect(await mod.mediaWatchHistory({ user: "Ari" })).toEqual({ result: "jellyfin_not_configured" })
+    expect(await mod.mediaWatchHistory({ user: "Alex" })).toEqual({ result: "jellyfin_not_configured" })
     expect(mod.TOOLS.find((t: any) => t.name === "media_watch_history").annotations).toEqual({ readOnlyHint: true })
   })
 })

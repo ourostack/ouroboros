@@ -305,13 +305,13 @@ const phoneIdentifierPayload = {
     guid: "D18CF8C5-846D-4178-B5DE-0D54B4EE04A8",
     text: "hello there",
     handle: {
-      id: "+1 (973) 508-0289",
+      id: "+1 (555) 555-0123",
     },
     attachments: [],
     dateCreated: 1772949300000,
     chats: [
       {
-        identifier: "+1 (973) 508-0289",
+        identifier: "+1 (555) 555-0123",
       },
     ],
   },
@@ -1053,11 +1053,11 @@ describe("renderBlueBubblesReactionText", () => {
 
     expect(result.kind).toBe("message")
     expect(result.chat.chatGuid).toBeUndefined()
-    expect(result.chat.chatIdentifier).toBe("+1 (973) 508-0289")
-    expect(result.chat.sessionKey).toBe("chat_identifier:+1 (973) 508-0289")
-    expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "+1 (973) 508-0289" })
-    expect(result.sender.rawId).toBe("+1 (973) 508-0289")
-    expect(result.sender.externalId).toBe("+19735080289")
+    expect(result.chat.chatIdentifier).toBe("+1 (555) 555-0123")
+    expect(result.chat.sessionKey).toBe("chat_identifier:+1 (555) 555-0123")
+    expect(result.chat.sendTarget).toEqual({ kind: "chat_identifier", value: "+1 (555) 555-0123" })
+    expect(result.sender.rawId).toBe("+1 (555) 555-0123")
+    expect(result.sender.externalId).toBe("+15555550123")
     expect(result.sender.observed).toBe(true)
   })
 
