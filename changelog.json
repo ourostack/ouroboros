@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1136",
+      "changes": [
+        "The Butler can restart a container that has been up for about an hour: Docker's \"Up About an hour\" status no longer reads as unknown, which had made the Butler refuse restarts Ari approved.",
+        "Containers that were created but never started (deliberately switched off) no longer show as degraded, so they stop raising standing health incidents."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1135",
       "changes": [
         "When my provider refuses a request, I hear why and answer you myself instead of you getting a switch-provider message to deal with."
