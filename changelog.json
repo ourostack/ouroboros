@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1135",
       "changes": [
-        "When my provider refuses a request, I hear why and answer you myself instead of you getting a switch-provider message."
+        "When my provider refuses a request, I hear why and answer you myself instead of you getting a switch-provider message to deal with."
       ]
     },
     {
