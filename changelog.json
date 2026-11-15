@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1139",
       "changes": [
-        "Root can now play the owner in the live Butler chat for tests: a root-only driver on the Sanctuary host injects an owner message, reply, edit, reaction or button tap into the authority's own update path and returns what the Butler really sent. Test updates use ids far above Telegram's, so they never move the real cursor, and their button taps are answered locally. The authority logs what the bot sends only while a driver run has armed it."
+        "Root can now play the owner in the live Butler chat for tests: a root-only driver on the Sanctuary host injects an owner message, reply, edit, reaction or button tap into the authority's own update path and returns what the Butler really sent. Test updates use ids far above Telegram's, so they never move the real cursor, and their button taps are answered locally. The authority logs what the bot sends only while a driver run has armed it, and the driver records each run in its nerves log."
       ]
     },
     {
