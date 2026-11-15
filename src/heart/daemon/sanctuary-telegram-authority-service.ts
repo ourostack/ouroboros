@@ -3,9 +3,10 @@ import * as net from "node:net"
 import * as path from "node:path"
 
 import type { TelegramBotApi, TelegramInputFile, TelegramUpdate } from "../../senses/telegram-client"
-import { MAX_TELEGRAM_UPLOAD_BYTES, TELEGRAM_ALLOWED_UPDATES, TelegramApiError } from "../../senses/telegram-client"
+import { isTelegramTestId, MAX_TELEGRAM_UPLOAD_BYTES, TELEGRAM_ALLOWED_UPDATES, TelegramApiError } from "../../senses/telegram-client"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
+import { sanctuaryTelegramOutboundEntry } from "./sanctuary-telegram-test-driver"
 import { authorityArtifactDigest } from "./sanctuary-authority-codec"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
@@ -16,6 +17,12 @@ import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "./sanctu
 import type { SignedAuthorityPayload } from "./sanctuary-authority-codec"
 
 const PROTOCOL_VERSION = 1
+
+/** Where the authority records the bot's sends for the owner-turn test driver. */
+export interface SanctuaryTelegramTestLogSink {
+  armed(): boolean
+  append(entry: Record<string, unknown> & { kind: string }): unknown
+}
 // Room for one file upload (MAX_TELEGRAM_UPLOAD_BYTES, base64) plus its envelope.
 const DEFAULT_MAX_REQUEST_BYTES = 14 * 1024 * 1024
 const DEFAULT_CONNECTION_TIMEOUT_MS = 65_000
@@ -88,6 +95,7 @@ export class SanctuaryTelegramAuthorityService {
   readonly #hostExecutions = new Map<string, Promise<void>>()
   readonly #hostExecutionFailures = new Map<string, string>()
   readonly #hostMaintenanceFailures = new Map<string, string>()
+  readonly #testLog: SanctuaryTelegramTestLogSink | undefined
 
   constructor(options: {
     api: TelegramBotApi
@@ -101,6 +109,8 @@ export class SanctuaryTelegramAuthorityService {
     downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
     pollReclaimAttempts?: number
     pollReclaimDelayMs?: number
+    /** The owner-turn test driver's log; the bot's sends are recorded only while a driver run has armed it. */
+    testLog?: SanctuaryTelegramTestLogSink
   }) {
     this.#api = {
       request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" || method === "sendPhoto" || method === "sendDocument" ? 60_000 : 15_000)),
@@ -109,6 +119,7 @@ export class SanctuaryTelegramAuthorityService {
     this.#hostAuthority = options.hostAuthority
     this.#hostExecutor = options.hostExecutor
     this.#downloadFile = options.downloadFile
+    this.#testLog = options.testLog
     this.#pollReclaimAttempts = options.pollReclaimAttempts ?? AUTHORITY_POLL_RECLAIM_ATTEMPTS
     this.#pollReclaimDelayMs = options.pollReclaimDelayMs ?? AUTHORITY_POLL_RECLAIM_DELAY_MS
   }
@@ -138,6 +149,16 @@ export class SanctuaryTelegramAuthorityService {
         })
         await new Promise<void>((resolve) => setTimeout(resolve, this.#pollReclaimDelayMs))
       }
+    }
+  }
+
+  #recordTestOutbound(input: Parameters<typeof sanctuaryTelegramOutboundEntry>[0]): void {
+    if (!this.#testLog?.armed()) return
+    try {
+      this.#testLog.append(sanctuaryTelegramOutboundEntry(input))
+    } catch {
+      // The test log is a side record; a failure to write it never fails the bot's own send.
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_telegram_test_log_failed", message: "Sanctuary test driver log write failed", meta: { method: input.method } })
     }
   }
 
@@ -355,7 +376,28 @@ export class SanctuaryTelegramAuthorityService {
       } else {
         throw new Error("Sanctuary Telegram request method is not available")
       }
-      const result = await this.#api.request(requestMethod, upload ?? body as Record<string, unknown>)
+      const observationUpdateId = isObject(params.observation) && Number.isSafeInteger(params.observation.updateId)
+        ? params.observation.updateId as number
+        : undefined
+      // Telegram never saw a root-injected test tap or test message, so their callbacks are answered here and a
+      // reaction to, or a reply quoting, a test message would only be refused; the reply goes out plainly instead.
+      const testReplyTo = isObject(body.reply_parameters) && isTelegramTestId(body.reply_parameters.message_id)
+        ? body.reply_parameters.message_id
+        : undefined
+      if (
+        (requestMethod === "answerCallbackQuery" && this.#gateway.isTestCallbackQuery(body.callback_query_id as string))
+        || (requestMethod === "setMessageReaction" && isTelegramTestId(body.message_id))
+      ) {
+        this.#recordTestOutbound({ method: requestMethod, body, result: true, observationUpdateId, local: true })
+        return true
+      }
+      let sendBody = (upload ?? body) as Record<string, unknown>
+      if (testReplyTo !== undefined) {
+        const { reply_parameters: _dropped, ...plain } = sendBody
+        sendBody = plain
+      }
+      const result = await this.#api.request(requestMethod, sendBody)
+      this.#recordTestOutbound({ method: requestMethod, body: sendBody, result, observationUpdateId, replyToDropped: testReplyTo })
       if (requestMethod === "getFile") {
         if (
           !isObject(result)
@@ -386,6 +428,11 @@ export class SanctuaryTelegramAuthorityService {
         if (!isObject(sent) || !Number.isSafeInteger(sent.message_id) || (sent.message_id as number) <= 0) {
           throw new Error("Sanctuary host approval message result is invalid")
         }
+        this.#recordTestOutbound({
+          method: "host.approval",
+          body: { chat_id: this.#gateway.identity().ownerChatId, text: prepared.prompt, reply_markup: prepared.replyMarkup },
+          result: sent,
+        })
         const registration = this.#hostAuthority.commit({
           registrationId: prepared.registrationId,
           telegramMessageId: sent.message_id as number,

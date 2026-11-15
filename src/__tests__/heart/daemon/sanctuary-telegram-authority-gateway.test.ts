@@ -10,7 +10,7 @@ import {
   sanctuaryTelegramAuthorityStatePath,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { authorityArtifactDigest, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
-import type { TelegramUpdate } from "../../../senses/telegram-client"
+import { TELEGRAM_TEST_ID_FLOOR, type TelegramUpdate } from "../../../senses/telegram-client"
 
 const roots: string[] = []
 
@@ -164,6 +164,48 @@ describe("Sanctuary root Telegram authority gateway state", () => {
     expect(f.gateway.cursor()).toBe(21)
     expect(f.gateway.poll()!.payload).toMatchObject({ updateId: 21, ownerEligible: false })
     expect(new FileSanctuaryTelegramAuthorityGateway(f.agentRoot, f.configuration).cursor()).toBe(21)
+  })
+
+  it("records a root-injected owner test update without holding or moving the real cursor", () => {
+    const f = fixture()
+    f.gateway.capture([message(50)])
+    const real = f.gateway.poll()!
+    expect(f.gateway.nextTestUpdateId()).toBe(TELEGRAM_TEST_ID_FLOOR)
+    const testId = f.gateway.nextTestUpdateId()
+    const tap: TelegramUpdate = {
+      update_id: testId,
+      callback_query: { id: "ouro-test-tap-1", from: { id: 42 }, data: "approve", message: { message_id: 7, chat: { id: 42 } } },
+    }
+    const observation = f.gateway.injectTestUpdate(tap)
+    expect(observation.payload).toMatchObject({ updateId: testId, ownerEligible: true, updateClass: "callback" })
+    expect(f.gateway.record(testId)).toMatchObject({ disposition: "dispatch", settlement: "pending" })
+    expect(f.gateway.isTestCallbackQuery("ouro-test-tap-1")).toBe(true)
+    expect(f.gateway.isTestCallbackQuery("ouro-test-tap-2")).toBe(false)
+    expect(f.gateway.nextTestUpdateId()).toBe(testId + 1)
+    expect(() => f.gateway.injectTestUpdate(tap)).toThrow(/already exists/u)
+
+    // The real observation still comes first; the test one never blocks the cursor.
+    expect(f.gateway.poll()!.payload.updateId).toBe(50)
+    f.gateway.settle({ updateId: 50, observationDigest: authorityArtifactDigest(real.domain, real.payload), outcome: "completed" })
+    expect(f.gateway.cursor()).toBe(51)
+    const injected = f.gateway.poll()!
+    expect(injected.payload.updateId).toBe(testId)
+    f.gateway.capture([message(51)])
+    expect(f.gateway.poll()!.payload.updateId).toBe(51)
+    f.gateway.settle({ updateId: testId, observationDigest: authorityArtifactDigest(injected.domain, injected.payload), outcome: "completed" })
+    expect(f.gateway.cursor()).toBe(51)
+    expect(f.gateway.isTestCallbackQuery("ouro-test-tap-1")).toBe(true)
+  })
+
+  it("refuses test-range ids from Telegram and test updates that are not the owner's", () => {
+    const f = fixture()
+    expect(() => f.gateway.capture([message(TELEGRAM_TEST_ID_FLOOR)])).toThrow(/root test range/u)
+    expect(() => f.gateway.injectTestUpdate(message(60))).toThrow(/outside the root test range/u)
+    expect(() => f.gateway.injectTestUpdate({ update_id: -1 } as TelegramUpdate)).toThrow(/outside the root test range/u)
+    expect(() => f.gateway.injectTestUpdate(message(TELEGRAM_TEST_ID_FLOOR, 84))).toThrow(/owner's chat/u)
+    expect(() => f.gateway.injectTestUpdate(message(TELEGRAM_TEST_ID_FLOOR, 42, 84))).toThrow(/owner's chat/u)
+    expect(() => f.gateway.injectTestUpdate({ update_id: TELEGRAM_TEST_ID_FLOOR })).toThrow(/owner's chat/u)
+    expect(f.gateway.nextTestUpdateId()).toBe(TELEGRAM_TEST_ID_FLOOR)
   })
 
   it("auto-settles unsupported and missing-sender updates without granting authority or stalling", () => {
