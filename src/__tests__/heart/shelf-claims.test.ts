@@ -25,6 +25,11 @@ describe("shelfClaimError", () => {
     expect(withShelfDisclosure("Hot Tub Time Machine is on the shelf.", tools)).toBe("My lookup shows Hot Tub Time Machine isn't on the shelf.\n\nHot Tub Time Machine is on the shelf.")
   })
 
+  it("names a missing title once when the lookup lists it both as a result and as a candidate", () => {
+    const tools = [search({ items: [{ title: "Paddington 2", on_shelf: false }], lookup_candidates: [{ title: "Paddington 2" }] })]
+    expect(withShelfDisclosure("Paddington 2 is on the shelf.", tools)).toBe("My lookup shows Paddington 2 isn't on the shelf.\n\nPaddington 2 is on the shelf.")
+  })
+
   // 2026-10-11, Rach handoff turns 5 and 6: lists called "all on the shelf" / "shelf-ready" with no lookup that turn.
   it("rejects a shelf claim when no library lookup ran this turn", () => {
     for (const reply of ["the fall guy, bullet train, red one. all on the shelf.", "sonic 3, big hero 6. all shelf-ready.", "Baywatch is ready to play.", "We have it in our library."])

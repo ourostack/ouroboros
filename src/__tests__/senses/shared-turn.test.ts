@@ -3395,9 +3395,10 @@ describe("runSenseTurn", () => {
     })
 
     it.each([
-      { name: "absent completion", completionAnswer: undefined },
-      { name: "blank completion", completionAnswer: "   " },
-    ])("does not search backward for old text when completion is $name", async ({ completionAnswer }) => {
+      { name: "absent completion", completionAnswer: undefined, response: "(agent responded but response was empty)" },
+      // A blank settle is a deliberate silence: nothing goes out, not even the empty-response note.
+      { name: "blank completion", completionAnswer: "   ", response: "" },
+    ])("does not search backward for old text when completion is $name", async ({ completionAnswer, response }) => {
       const ordinary = makeToolCall("read-1", "sanctuary_search_media_catalog", {})
       const { delivered, result } = await runTerminalFixture({
         persistedEvents: [
@@ -3413,7 +3414,7 @@ describe("runSenseTurn", () => {
       })
 
       expect(delivered).toEqual([])
-      expect(result.response).toBe("(agent responded but response was empty)")
+      expect(result.response).toBe(response)
       expect(result.causalSessionEventIds).toBeUndefined()
     })
 
@@ -3996,6 +3997,58 @@ describe("runSenseTurn — only-reasoning recovery", () => {
     })
 
     expect(result.response).toContain("agent produced reasoning but no final answer")
+  })
+
+  const everyChannel = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "inner", "mcp", "telegram"] as const
+
+  it.each(everyChannel)("sends nothing on %s when the agent deliberately settles with an empty answer, as after a reaction", async (channel) => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      callbacks.onReasoningChunk("a heart on my last reply needs no answer")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "", intent: "complete" } } as InboundTurnResult
+    })
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({ agentName: "test-agent", channel, sessionKey: `session-quiet-${channel}`, friendId: "friend-1", userMessage: "reacted with a heart" })
+    expect(result.response).toBe("")
+    expect(result.deliveries ?? []).toHaveLength(0)
+  })
+
+  it("treats a whitespace-only settle answer as deliberate silence too", async () => {
+    mockHandleInboundTurn.mockImplementation(async () => ({ resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "  \n ", intent: "complete" } }) as InboundTurnResult)
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-quiet-space", friendId: "friend-1", userMessage: "ok" })
+    expect(result.response).toBe("")
+  })
+
+  it("still surfaces the diagnostic when the settle answer held only reasoning", async () => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      callbacks.onReasoningChunk("thinking")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "<think>thinking</think>", intent: "complete" } } as InboundTurnResult
+    })
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-think-answer", friendId: "friend-1", userMessage: "hi" })
+    expect(result.response).toContain("agent produced reasoning but no final answer")
+  })
+
+  it("still surfaces an empty blocked settle, because blocked must tell the person why", async () => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      callbacks.onReasoningChunk("stuck")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "blocked", completion: { answer: "", intent: "blocked" } } as InboundTurnResult
+    })
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-empty-blocked", friendId: "friend-1", userMessage: "do it" })
+    expect(result.response).toContain("agent produced reasoning but no final answer")
+  })
+
+  it("still surfaces a turn that failed with an error", async () => {
+    mockHandleInboundTurn.mockImplementation(async () => ({ resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "errored", failoverMessage: "the model provider failed; try again" }) as InboundTurnResult)
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-errored", friendId: "friend-1", userMessage: "hi" })
+    expect(result.response).toContain("the model provider failed")
   })
 
   it("strips think blocks from a normal settle response that happened to include reasoning", async () => {

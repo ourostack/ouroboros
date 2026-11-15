@@ -896,8 +896,12 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
   const finalDeliveryAttempt = finalDeliveryAttemptIndex === undefined ? undefined : deliveryAttempts[finalDeliveryAttemptIndex]
   const responseDeliveryFailure = finalDeliveryAttempt && !finalDeliveryAttempt.delivered ? deliveryFailures.at(-1) : undefined
   const responseCausalSessionEventId = finalDeliveryAttempt && !finalDeliveryAttempt.delivered ? finalCausalCoordinate?.eventId : undefined
+  // settle(answer: "", intent: "complete") is the agent choosing to say nothing, for example after a reaction.
+  // A settle whose answer held only <think> reasoning is not a choice, so it still gets the diagnostic below.
+  const deliberateSilence = turnResult.turnOutcome === "settled" && turnResult.completion?.intent === "complete"
+    && typeof turnResult.completion.answer === "string" && turnResult.completion.answer.trim().length === 0
   if (committedResponseText.length === 0) {
-    if (!expectsOutwardResponse) {
+    if (!expectsOutwardResponse || deliberateSilence) {
       finalResponse = ""
     } else {
       const emptyFallback = options.emptyResponseFallback?.()
@@ -916,7 +920,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
   // came through and nothing else, surface a clear diagnostic message
   // instead of a blank response so the operator knows what happened.
   finalResponse = stripThinkBlocks(finalResponse)
-  if (finalResponse.length === 0 && expectsOutwardResponse) {
+  if (finalResponse.length === 0 && expectsOutwardResponse && !deliberateSilence) {
     emitNervesEvent({
       level: "warn",
       component: "senses",
