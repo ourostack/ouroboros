@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1144",
       "changes": [
-        "Away from your Mac you can now see how things are going. The app-sessions sense builds a status digest with no model turn (sessions and their task cards' next steps, the Mac's health, the drains, what merged today), answers /status or \"how's it going?\" in Teams from it at no token cost, and tells you in plain text only what is ready for you, done, waiting on you, or still broken."
+        "Away from your Mac you can now see how things are going. The app-sessions sense builds a status digest with no model turn (sessions and their task cards' next steps, the Mac's health, the drains, what merged today), answers /status or \"how's it going?\" in Teams from it at no token cost, and tells you, in plain text, only what is ready for you, done, waiting on you, or still broken."
       ]
     },
     {
