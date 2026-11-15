@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1140",
       "changes": [
-        "When an agent opts in with providerFallback in agent.json, a turn whose provider fails with credit, auth, rate-limit, outage or network errors carries on with the next provider (the Butler goes from Claude to MiniMax) instead of asking anyone to switch."
+        "When an agent opts in with providerFallback in agent.json, a turn whose provider fails with credit, auth, rate-limit, outage or network errors carries on with the next provider (the Butler goes from Claude to MiniMax) instead of asking anyone to switch.",
+        "When an agent opts in with providerFallback in agent.json, a turn whose provider fails with credit, auth, rate-limit, outage or network errors carries on with the next provider (the Butler goes from Claude to MiniMax) instead of asking anyone to switch, and the owner hears once that a backup took over."
       ]
     },
     {
