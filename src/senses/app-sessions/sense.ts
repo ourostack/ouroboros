@@ -9,6 +9,7 @@ import { DIGEST_DEFAULT_SECONDS, readDigestState, writeDigest, writeDigestState 
 import { pushDue } from "./digest-push"
 import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { readWatches, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
+import { noticeOversizedSessions } from "./size-watch"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
 
@@ -208,6 +209,7 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let runnerPoll: Promise<unknown> = Promise.resolve()
   const due = new Map<string, number>()
   let waitingPoll: Promise<unknown> = Promise.resolve()
+  let sizePoll: Promise<unknown> = Promise.resolve()
   const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
   let cancelDigest: (() => void) | null = null
   let digestPoll: Promise<unknown> = Promise.resolve()
@@ -217,6 +219,9 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
     const taken = recordSnapshot(agentRoot, client, now())
     waitingPoll = waitingPoll.then(() => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
+    })
+    sizePoll = sizePoll.then(() => noticeOversizedSessions(agentRoot, listAppSessions({ ...client, now: () => now() }), { notify: notifyOwner, now: now(), client })).then(() => undefined).catch((error: Error) => {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_oversize_error", message: "could not check the sessions' history sizes", meta: { error: error.message } })
     })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
   }
@@ -254,6 +259,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       cancelDigest?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, digestPoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, sizePoll, digestPoll]).then(() => undefined),
   }
 }

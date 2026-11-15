@@ -260,6 +260,22 @@ describe("a session waiting on a permission prompt", () => {
     sense.stop()
   })
 
+  it("tells the owner about a session whose history is over the limit, and survives that notice failing", async () => {
+    makeDb()
+    appendEvents([assistant("hi")])
+    fs.truncateSync(path.join(stateDir, "session-state", ID, "events.jsonl"), 501 * 1024 * 1024)
+    const scheduler = manualScheduler()
+    const notifyOwner = vi.fn(async () => "sent" as const)
+    const sense = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: scheduler.schedule, deliver: async () => undefined, notifyOwner })
+    await sense.done()
+    expect(notifyOwner).toHaveBeenCalledWith(expect.stringContaining("hand-off"), [`oversize:${ID}`])
+    sense.stop()
+    fs.rmSync(path.join(agentRoot, "state"), { recursive: true, force: true })
+    const failing = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: manualScheduler().schedule, deliver: async () => undefined, notifyOwner: async () => { throw new Error("no bot") } })
+    await failing.done()
+    failing.stop()
+  })
+
   it("survives a notice that fails", async () => {
     makeDb()
     appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])
