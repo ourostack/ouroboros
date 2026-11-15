@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1143",
+      "changes": [
+        "After you approve a restart, the Butler now tells you it worked, instead of wrongly saying it couldn't finish.",
+        "If the Butler can't retry a change that failed earlier, it says so in plain words, with no internal tool names."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1142",
       "changes": [
         "When the Butler decides a message needs no reply, such as a heart reaction, it now stays quiet instead of sending an error note. A turn that really fails still tells you.",

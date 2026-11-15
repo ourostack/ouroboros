@@ -991,7 +991,10 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
 
   const effectsByCallId = new Map<string, HistoricalFailedEffect>()
   const failedEffects = new Map<string, HistoricalFailedEffect>()
-  for (let index = prior.index + 1; index < current.index; index += 1) {
+  // Scan through the end: an effect the approval runtime already ran after the current request (the owner tapped
+  // Approve) is resolved by its success. A failure after the current request never adds a new forced effect.
+  for (let index = prior.index + 1; index < messages.length; index += 1) {
+    if (index === current.index) continue
     const message = messages[index]
     if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
@@ -1006,7 +1009,7 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
     const effect = effectsByCallId.get(message.tool_call_id)
     if (!effect) continue
     if (toolResultIndicatesFailure(content)) {
-      failedEffects.set(effect.fingerprint, effect)
+      if (index < current.index) failedEffects.set(effect.fingerprint, effect)
     } else {
       failedEffects.delete(effect.fingerprint)
     }
@@ -2279,7 +2282,7 @@ export async function runAgent(
           callbacks.onClearText?.();
           const retryableHistoricalTools = [...forcedHistoricalToolNames]
           if (historicalToolFailureRetries >= NO_TOOL_CALL_MAX_RETRIES) {
-            const blockedAnswer = `I could not complete the unresolved ${retryableHistoricalTools.join(", ")} effect because the provider repeatedly returned no tool call. I did not treat the requested change as complete.`
+            const blockedAnswer = "I could not finish the change that failed earlier: I didn't manage to try it again this time, so it is not done."
             emitNervesEvent({
               level: "warn",
               component: "engine",

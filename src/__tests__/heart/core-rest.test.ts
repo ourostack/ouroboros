@@ -752,8 +752,50 @@ describe("rest tool in runAgent", () => {
 
     expect(mockCreate).toHaveBeenCalledTimes(3)
     expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
-    expect(callbacks.onTextChunk).toHaveBeenCalledWith(expect.stringContaining("could not complete the unresolved steward_policy_manage effect"))
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith(expect.stringContaining("I could not finish the change that failed earlier"))
     expect(result.completion?.answer).not.toContain("lane is healthy")
+    // People never see raw tool names, and Telegram would render their underscores as italics.
+    expect(result.completion?.answer).not.toContain("steward_policy_manage")
+    expect(result.completion?.answer).not.toContain("_")
+  })
+
+  const restartTool = { type: "function" as const, function: { name: "unraid_restart_container", description: "Restart one container", parameters: { type: "object", properties: { container: { type: "string" } }, required: ["container"] } } }
+  const restartRequest = "please restart flaresolverr"
+  const restartCall = (id: string) => ({ role: "assistant", tool_calls: [{ id, type: "function", function: { name: "unraid_restart_container", arguments: JSON.stringify({ container: "flaresolverr" }) } }] })
+  const earlierFailedRestart = [
+    { role: "user", content: restartRequest },
+    restartCall("call_old"),
+    { role: "tool", tool_call_id: "call_old", content: "error: restart approval authority is invalid" },
+    { role: "assistant", content: "I couldn't restart flaresolverr." },
+    { role: "user", content: restartRequest },
+  ]
+
+  it("treats an effect the approval runtime already ran in this turn as resolved, so the reply can report it", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("restarted flaresolverr. it's back up.")))
+    const callbacks = makeCallbacks()
+    const result = await runAgent([
+      ...earlierFailedRestart,
+      restartCall("call_approved"),
+      { role: "tool", tool_call_id: "call_approved", content: JSON.stringify({ ok: true, data: { container: { name: "flaresolverr" }, observedRestart: true } }) },
+    ] as any[], callbacks, "telegram", undefined, { tools: [restartTool], execTool: vi.fn() })
+
+    // Not narrowed to re-running the restart: settle is on offer, so the model can report the result.
+    expect(mockCreate.mock.calls[0]?.[0]?.tools.map((tool: any) => tool.function.name)).toContain("settle")
+    expect(result).toMatchObject({ outcome: "settled", completion: { answer: "restarted flaresolverr. it's back up." } })
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
+  it("still forces the effect when its run in this turn failed again", async () => {
+    for (let index = 0; index < 3; index += 1) mockCreate.mockReturnValueOnce(makeStream([makeChunk("it'll work later.", undefined)]))
+    const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
+    const result = await runAgent([
+      ...earlierFailedRestart,
+      restartCall("call_again"),
+      { role: "tool", tool_call_id: "call_again", content: "error: restart approval authority is invalid" },
+    ] as any[], callbacks, "telegram", undefined, { tools: [restartTool], execTool: vi.fn() })
+
+    expect(mockCreate.mock.calls[0]?.[0]?.tools.map((tool: any) => tool.function.name)).toEqual(["unraid_restart_container"])
+    expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
   })
 
   it("rejects a different mutation while forcing an unresolved historical effect", async () => {
