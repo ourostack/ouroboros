@@ -2,6 +2,7 @@
 import { createPrivateKey } from "node:crypto"
 import * as fs from "node:fs"
 
+import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramBotApi, type TelegramBotApi } from "../../senses/telegram-client"
 import { loadSanctuaryTelegramAuthorityConfig, readPrivateFile } from "./sanctuary-telegram-authority-entry"
 import { FileSanctuaryTelegramAuthorityGateway } from "./sanctuary-telegram-authority-gateway"
@@ -28,6 +29,7 @@ export async function runSanctuaryTelegramTestDriverCli(options: {
   if (!configPath) throw new Error(SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE)
   const rest = [...argv.slice(0, configIndex), ...argv.slice(configIndex + 2)]
   const expectedUid = options.expectedUid ?? 0
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_test_driver_started", message: "Sanctuary owner-turn test driver started", meta: {} })
   const config = loadSanctuaryTelegramAuthorityConfig(configPath, { expectedUid })
   const gateway = new FileSanctuaryTelegramAuthorityGateway(config.agentRoot, {
     targetHost: config.targetHost,
