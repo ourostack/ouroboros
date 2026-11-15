@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type WebSocket from "ws"
 
 import {
-  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV,
+  appRunning, archiveAppSession, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV, HUNG_MS,
   listAppSessions, listSessionQueue, messageDelivered, messagesIn, openAppChat, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
   readAppSessionHistory, readNewAppEvents, resumeAppSession, resumePrompt, sendToAppSession, snapshot, tailAppSession, tailFacts, withdrawQueuedMessages, type RunFile,
 } from "../../../senses/app-sessions/client"
@@ -213,6 +213,14 @@ describe("what a session's history says", () => {
     expect(classify(false, { ...facts, loopCut: true, lastActivity: iso(NOW - 10_000) }, NOW)).toMatchObject({ state: "working", detail: expect.stringContaining("starting up") })
     expect(classify(false, facts, NOW)).toEqual({ state: "idle", detail: "its turn ended" })
   })
+
+  it("calls a running session stuck once its history has not grown for half an hour", () => {
+    const facts = { awaiting: null, loopCut: false, detail: "its turn ended", lastActivity: OLD }
+    expect(classify(true, facts, NOW, NOW - HUNG_MS + 1).state).toBe("working")
+    expect(classify(true, facts, NOW, null).state).toBe("working")
+    expect(classify(true, facts, NOW, NOW - HUNG_MS)).toEqual({ state: "stuck", detail: "the app says it is running, but its history has not grown for 30 min" })
+    expect(classify(true, { ...facts, awaiting: "permission" }, NOW, NOW - 5 * HUNG_MS).state).toBe("waiting")
+  })
 })
 
 describe("whether a sent message reached the session", () => {
@@ -344,6 +352,13 @@ describe("listing the sidebar", () => {
     const rows = listAppSessions(options())
     expect(rows.map(row => row.id)).toEqual([WS, STUCK, CHAT, "44444444-aaaa"])
     expect(rows[3]).toMatchObject({ name: "(unnamed chat)", remote: true })
+  })
+
+  it("reads a running session's log time, sub-agent writes included, to tell hung from working", () => {
+    const file = writeEvents(WS, [event("user.message"), event("assistant.turn_start")])
+    expect(listAppSessions(options()).find(row => row.id === WS)!.state).toBe("working")
+    fs.utimesSync(file, new Date(NOW - HUNG_MS - 60_000), new Date(NOW - HUNG_MS - 60_000))
+    expect(listAppSessions(options()).find(row => row.id === WS)).toMatchObject({ state: "stuck", detail: expect.stringContaining("has not grown for 31 min") })
   })
 
   it("re-reads a session's history only when it changed", () => {
