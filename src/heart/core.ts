@@ -2007,7 +2007,7 @@ export async function runAgent(
             // Never leave the agent unable to answer: correct what the runtime sent, tell the agent why, and let it carry on.
             rejectedRequestRetried = true;
             replayedReasoningDropped = true;
-            const detail = extractProviderErrorDetails(error as Error).bodyExcerpt ?? (error as Error).message
+            const detail = (error as Error).message
             attemptMessages = dropReplayedReasoning(attemptMessages, currentTurnStart())
             repairOrphanedToolCalls(attemptMessages)
             attemptMessages = [...attemptMessages, {

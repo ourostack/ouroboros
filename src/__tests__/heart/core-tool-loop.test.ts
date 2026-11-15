@@ -2594,6 +2594,7 @@ describe("runAgent tool loop guard", () => {
     })
 
     it("corrects a refused request once; a provider that keeps refusing still ends the turn", async () => {
+      vi.useFakeTimers()
       const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "hello" }]
       const { runtime } = runtimeFor([], messages)
       const requests: ChatCompletionMessageParam[][] = []
@@ -2603,7 +2604,13 @@ describe("runAgent tool loop guard", () => {
       })
       const callbacks = makeCallbacks()
       const { runAgent } = await import("../../heart/core")
-      const result = await runAgent(messages, callbacks, undefined, undefined, { providerRuntimeOverride: runtime })
+      const promise = runAgent(messages, callbacks, undefined, undefined, { providerRuntimeOverride: runtime })
+      // Step through the ordinary provider retry delays.
+      await vi.advanceTimersByTimeAsync(2100)
+      await vi.advanceTimersByTimeAsync(4100)
+      await vi.advanceTimersByTimeAsync(100)
+      const result = await promise
+      vi.useRealTimers()
       expect(result.outcome).toBe("errored")
       expect(requests[0]?.some((message) => JSON.stringify(message.content).includes("[runtime]"))).toBe(false)
       expect(requests[1]?.filter((message) => JSON.stringify(message.content).includes("[runtime]"))).toHaveLength(1)
