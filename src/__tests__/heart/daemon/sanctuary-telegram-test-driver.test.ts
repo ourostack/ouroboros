@@ -192,7 +192,7 @@ describe("Sanctuary owner-turn test driver", () => {
     expect(log.armed()).toBe(true)
     clock = 5_000
     expect(log.armed()).toBe(false)
-    fs.writeFileSync(path.join(logRoot, "window.json"), "{\"until\":5}")
+    fs.writeFileSync(path.join(logRoot, "armed-until.json"), "{\"until\":5}")
     expect(log.armed()).toBe(false)
     expect(new FileSanctuaryTelegramTestLog(logRoot).armed()).toBe(false)
   })

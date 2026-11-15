@@ -43,7 +43,7 @@ export class FileSanctuaryTelegramTestLog {
   }
 
   get #windowPath(): string {
-    return path.join(this.#root, "window.json")
+    return path.join(this.#root, "armed-until.json")
   }
 
   armed(): boolean {
