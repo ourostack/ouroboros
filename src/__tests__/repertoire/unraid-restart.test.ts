@@ -66,6 +66,25 @@ describe("A006 S4 approval boundary failures", () => {
     expect(current.persistAttempt).not.toHaveBeenCalled()
   })
 
+  it("accepts an approval bound to a real Unraid container id, which is a 64-hex server and 64-hex container pair", async () => {
+    const current = fixture()
+    const id = `${"0ec77a90".repeat(8)}:${"ef44b8e0".repeat(8)}`
+    expect(Buffer.byteLength(id)).toBe(129)
+    current.listContainers.mockImplementation(async () => running(id, "flaresolverr"))
+    current.mutate.mockImplementation(async () => ({ docker: { restart: { id, names: ["/flaresolverr"] } } }))
+    const restart = createApprovedUnraidRestartExecutor(current.options)
+    const result = await restart({ container: "flaresolverr" }, { approval: { target: { id, name: "flaresolverr" }, reauthorize: current.reauthorize } })
+    expect(result).not.toMatchObject({ error: { message: "restart approval authority is invalid" } })
+    expect(current.mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it("still refuses an approval target id longer than any Unraid container id", async () => {
+    const current = fixture()
+    Reflect.set(current.execution, "approval", { target: { id: "x".repeat(257), name: "calibre-web" }, reauthorize: current.reauthorize })
+    await expect(current.run()).resolves.toMatchObject({ ok: false, error: { code: "invalid_response", message: "restart approval authority is invalid" } })
+    expect(current.mutate).not.toHaveBeenCalled()
+  })
+
   it("refuses simultaneous approval and standing authority before an attempt or credential read", async () => {
     const current = fixture()
     current.execution.routine = routineAuthority("unraid.restart:calibre-web", 2)

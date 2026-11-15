@@ -119,9 +119,13 @@ function exactTarget(result: ContainerListResult, name: string): Container | Ret
   return matches[0]!
 }
 
-function validArgument(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 128 && !value.includes("\uFFFD")
+function validArgument(value: unknown, maxBytes = 128): value is string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maxBytes && !value.includes("\uFFFD")
 }
+
+// Unraid names a container by its server and Docker ids, two 64-hex halves joined by a colon (129 bytes);
+// the container list already admits ids up to 256 bytes, so the approval check uses the same bound.
+const MAX_CONTAINER_ID_BYTES = 256
 
 async function currentRoutineAuthorization(authority: RoutineRestartAuthority): Promise<{ receiptId: string; profileVersion: number }> {
   let authorization: Awaited<ReturnType<RoutineRestartAuthority["reauthorize"]>>
@@ -162,7 +166,7 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
     const routine = execution?.routine
     const approvalInput = execution?.approval
     if (execution && Object.hasOwn(execution, "approval") && (!approvalInput || typeof approvalInput.reauthorize !== "function"
-      || !validArgument(approvalInput.target?.id) || approvalInput.target.id !== approvalInput.target.id.trim()
+      || !validArgument(approvalInput.target?.id, MAX_CONTAINER_ID_BYTES) || approvalInput.target.id !== approvalInput.target.id.trim()
       || approvalInput.target.name !== args.container)) return failure("invalid_response", "restart approval authority is invalid")
     const approvalAuthority = approvalInput && { target: { ...approvalInput.target }, reauthorize: approvalInput.reauthorize }
     if (approvalAuthority && routine) return failure("invalid_response", "restart has conflicting approval and routine authority")

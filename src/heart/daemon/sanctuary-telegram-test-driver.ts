@@ -182,6 +182,10 @@ export const SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE = `usage: sanctuary-telegram-t
   log   [--since <seq>]
 options for send/edit/react/tap: --wait <seconds> (default ${DEFAULT_WAIT_SECONDS}), --quiet <seconds> (default ${DEFAULT_QUIET_SECONDS}), --no-wait, --no-echo`
 
+function isBusyLease(error: unknown): boolean {
+  return error instanceof Error && (error as { retryable?: unknown }).retryable === true
+}
+
 export async function runSanctuaryTelegramTestDriver(argv: readonly string[], deps: SanctuaryTelegramTestDriverDependencies): Promise<unknown> {
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
@@ -197,7 +201,21 @@ export async function runSanctuaryTelegramTestDriver(argv: readonly string[], de
   const chat = { id: Number(deps.ownerChatId), type: "private" }
   const from = { id: owner, is_bot: false, first_name: "Owner (test)" }
   const date = Math.floor(now() / 1_000)
-  const updateId = deps.gateway.nextTestUpdateId()
+  const waitSeconds = flags.has("--wait") ? positiveInteger(flags.get("--wait"), "--wait") : DEFAULT_WAIT_SECONDS
+  const quietSeconds = flags.has("--quiet") ? positiveInteger(flags.get("--quiet"), "--quiet") : DEFAULT_QUIET_SECONDS
+  const startedAt = now()
+  const deadline = startedAt + waitSeconds * 1_000
+  // The resident holds the authority's state lease while it works a turn; wait for it rather than crash.
+  const whenFree = async <T>(operation: () => T): Promise<T> => {
+    for (;;) {
+      try { return operation() }
+      catch (error) {
+        if (!isBusyLease(error) || now() >= deadline) throw error
+        await sleep(1_000)
+      }
+    }
+  }
+  const updateId = await whenFree(() => deps.gateway.nextTestUpdateId())
   let update: TelegramUpdate
   let echo: string
   if (command === "send") {
@@ -233,13 +251,10 @@ export async function runSanctuaryTelegramTestDriver(argv: readonly string[], de
   } else {
     throw new Error(SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE)
   }
-  const waitSeconds = flags.has("--wait") ? positiveInteger(flags.get("--wait"), "--wait") : DEFAULT_WAIT_SECONDS
-  const quietSeconds = flags.has("--quiet") ? positiveInteger(flags.get("--quiet"), "--quiet") : DEFAULT_QUIET_SECONDS
-  const startedAt = now()
   deps.log.arm(startedAt + (waitSeconds * 1_000) + WINDOW_GRACE_MS)
   if (!switches.has("--no-echo") && deps.echo) await deps.echo(echo)
   const seq = deps.log.append({ kind: "injected", command, updateId, update })
-  deps.gateway.injectTestUpdate(update)
+  await whenFree(() => deps.gateway.injectTestUpdate(update))
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_test_driver_injected", message: "Sanctuary test driver injected an owner update", meta: { updateId, command } })
   const injected = { updateId, ...(command === "send" ? { messageId: updateId } : {}), seq }
   if (switches.has("--no-wait")) {
@@ -247,14 +262,14 @@ export async function runSanctuaryTelegramTestDriver(argv: readonly string[], de
     return injected
   }
   // Wait until the resident has settled the update and the bot has been quiet for a while, or the deadline passes.
-  const deadline = startedAt + waitSeconds * 1_000
   let settlement = "pending"
   let settledAt: number | undefined
   let lastReplyAt = startedAt
   let replies: SanctuaryTelegramTestLogEntry[] = []
   let timedOut = false
   for (;;) {
-    settlement = deps.gateway.record(updateId)?.settlement ?? "missing"
+    try { settlement = deps.gateway.record(updateId)?.settlement ?? "missing" }
+    catch (error) { if (!isBusyLease(error)) throw error }
     if (settlement !== "pending" && settledAt === undefined) settledAt = now()
     const current = deps.log.read().filter((entry) => entry.seq > seq && entry.kind === "outbound")
     if (current.length !== replies.length) lastReplyAt = now()
