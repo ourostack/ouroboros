@@ -18,7 +18,7 @@ const client = vi.hoisted(() => ({
 vi.mock("../../senses/app-sessions/client", () => client)
 
 import {
-  appSessionsArchiveTool, appSessionsListTool, appSessionsNewTool, appSessionsRestartTool, appSessionsResumeTool, appSessionsSendTool,
+  appSessionsArchiveTool, appSessionsDigestTool, appSessionsListTool, appSessionsNewTool, appSessionsRestartTool, appSessionsResumeTool, appSessionsSendTool,
   appSessionsTailTool, appSessionsToolDefinitions, appSessionsToolsEnabled, appSessionsWatchTool,
 } from "../../repertoire/tools-app-sessions"
 import { addProbe, readProbes, readWatches, watchSession } from "../../senses/app-sessions/store"
@@ -53,10 +53,21 @@ afterEach(() => {
   fs.rmSync(agentRoot, { recursive: true, force: true })
 })
 
+describe("the status digest tool", () => {
+  it("returns the last digest as the Teams text, and says how to get one when there is none", async () => {
+    expect(await call(appSessionsDigestTool, {})).toEqual({ error: expect.stringContaining("no status digest yet") })
+    const file = path.join(agentRoot, "state", "senses", "app-sessions", "digest.json")
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), appRunning: true, counts: { working: 2, idle: 1, waiting: 0, stuck: 0 }, sessions: [], needsOwner: [], machine: null, drains: null, merged: [], unread: [], tokens: 9 }))
+    expect(await call(appSessionsDigestTool, {})).toEqual({ digest: expect.stringContaining("**Sessions** 2 working") })
+    expect(appSessionsDigestTool.riskProfile?.({}, undefined as never)).toEqual({ mutates: "none", risk: "low" })
+  })
+})
+
 describe("app-sessions tools", () => {
   it("exist only for an agent that enabled the sense", () => {
     expect(appSessionsToolDefinitions.map(tool => tool.tool.function.name)).toEqual([
-      "app_sessions_list", "app_sessions_tail", "app_sessions_send", "app_sessions_resume", "app_sessions_new", "app_sessions_archive", "app_sessions_restart", "app_sessions_watch",
+      "app_sessions_list", "app_sessions_tail", "app_sessions_send", "app_sessions_resume", "app_sessions_new", "app_sessions_archive", "app_sessions_restart", "app_sessions_watch", "app_sessions_digest",
     ])
     expect(appSessionsToolsEnabled(undefined)).toBe(false)
     expect(appSessionsToolsEnabled(agentRoot)).toBe(false)

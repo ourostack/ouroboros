@@ -301,6 +301,31 @@ describe("loadAgentConfig", () => {
     expect(() => normalizeSenses({ "app-sessions": { enabled: true, ...extra } }, "/test/agent.json")).toThrow(message)
   })
 
+  it("reads the app-sessions status digest block", async () => {
+    const { normalizeSenses } = await import("../../heart/identity")
+    const digest = { everySeconds: 120, drains: ["node", "drains.js", "status"], deskRoots: ["~/desk"], mergedToday: [{ label: " work ", command: ["gh-runner", "work"] }] }
+    expect(normalizeSenses({ "app-sessions": { enabled: true, digest } }, "/test/agent.json")["app-sessions"]).toEqual({
+      enabled: true, digest: { ...digest, mergedToday: [{ label: "work", command: ["gh-runner", "work"] }] },
+    })
+    expect(normalizeSenses({ "app-sessions": { enabled: true, digest: {} } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true, digest: {} })
+  })
+
+  it.each([
+    [{ digest: "x" }, "digest must be an object"],
+    [{ digest: [] }, "digest must be an object"],
+    [{ digest: { everySeconds: 59 } }, "digest.everySeconds"],
+    [{ digest: { everySeconds: "300" } }, "digest.everySeconds"],
+    [{ digest: { drains: [] } }, "digest.drains"],
+    [{ digest: { deskRoots: ["ok", ""] } }, "digest.deskRoots"],
+    [{ digest: { mergedToday: "x" } }, "digest.mergedToday must be an array"],
+    [{ digest: { mergedToday: [null] } }, "digest.mergedToday[0].label"],
+    [{ digest: { mergedToday: [{ label: " ", command: ["x"] }] } }, "digest.mergedToday[0].label"],
+    [{ digest: { mergedToday: [{ label: "a", command: [] }] } }, "digest.mergedToday[0].command"],
+  ])("rejects an invalid digest block instead of dropping it: %j", async (extra, message) => {
+    const { normalizeSenses } = await import("../../heart/identity")
+    expect(() => normalizeSenses({ "app-sessions": { enabled: true, ...extra } }, "/test/agent.json")).toThrow(message)
+  })
+
   it("reads and parses agent.json schema", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
