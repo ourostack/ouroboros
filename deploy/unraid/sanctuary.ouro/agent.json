@@ -9,6 +9,12 @@
     "provider": "anthropic",
     "model": "claude-sonnet-5-5"
   },
+  "providerFallback": [
+    {
+      "provider": "minimax",
+      "model": "MiniMax-M3"
+    }
+  ],
   "context": {
     "maxTokens": 80000,
     "contextMargin": 20

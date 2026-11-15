@@ -63,6 +63,7 @@ describe("loadAgentConfig structural contract", () => {
     expect(config.provider).toBe(FULL_AGENT_JSON.provider)
     expect(config.humanFacing).toEqual(FULL_AGENT_JSON.humanFacing)
     expect(config.agentFacing).toEqual(FULL_AGENT_JSON.agentFacing)
+    expect(config.providerFallback).toEqual(FULL_AGENT_JSON.providerFallback)
     expect(config.context).toEqual(FULL_AGENT_JSON.context)
     expect(config.logging).toEqual(FULL_AGENT_JSON.logging)
     expect(config.senses).toEqual(FULL_AGENT_JSON.senses)

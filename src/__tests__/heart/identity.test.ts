@@ -623,6 +623,29 @@ describe("loadAgentConfig", () => {
     expect(config.humanFacing.provider).toBe("openai-codex")
   })
 
+  it("loads an opt-in providerFallback chain and rejects a malformed one", async () => {
+    const base = {
+      version: 2,
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-sonnet-5-5" },
+      phrases: { thinking: ["thinking"], tool: ["tool"], followup: ["followup"] },
+    }
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...base, providerFallback: [{ provider: "minimax", model: "MiniMax-M3", extra: 1 }] }))
+    resetIdentity()
+    expect(loadAgentConfig().providerFallback).toEqual([{ provider: "minimax", model: "MiniMax-M3" }])
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(base))
+    resetIdentity()
+    expect(loadAgentConfig().providerFallback).toBeUndefined()
+
+    for (const bad of [{ provider: "minimax" }, [{ provider: "nope", model: "m" }], [{ provider: "minimax" }], ["minimax"], [null]]) {
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...base, providerFallback: bad }))
+      resetIdentity()
+      expect(() => loadAgentConfig()).toThrow("providerFallback must be a list of { provider, model }")
+    }
+  })
+
   it("fills phrases when missing", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({

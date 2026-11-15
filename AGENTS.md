@@ -119,7 +119,7 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 - Repair guidance must include the actor: `agent-runnable`, `human-required`, or `human-choice`. Agents may run checks/refreshes, but browser login, MFA, provider dashboards, API-token creation, and secret entry are human-required.
 - SerpentGuide hatch bootstrap may use existing unlockable agent-vault credentials or prompt the human. It runs with selected credentials in memory and stores them in the hatchling vault. SerpentGuide must not have persistent provider credentials or a persistent credential vault.
 - Keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped runtime artifacts under `~/.ouro-cli/...`.
-- Runtime must fail fast with explicit guidance when the vault is locked, credentials are missing, or a selected provider/model fails its live check. Do not implement silent provider fallback behavior.
+- Runtime must fail fast with explicit guidance when the vault is locked, credentials are missing, or a selected provider/model fails its live check. Do not implement silent provider fallback behavior. The one automatic fallback is opt-in through `providerFallback` in `agent.json`, and it is logged and told to the owner (see `docs/auth-and-providers.md`, Automatic provider fallback).
 
 ### Git Discipline
 
