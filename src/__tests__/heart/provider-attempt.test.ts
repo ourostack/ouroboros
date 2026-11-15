@@ -295,4 +295,22 @@ describe("provider attempt runner", () => {
       }),
     }))
   })
+
+  it("stops retrying a classification the caller will not retry, such as spent credit with a backup ready", async () => {
+    emitTestEvent("provider attempt shouldRetry")
+    const run = vi.fn(async () => { throw errorWithStatus("Your credit balance is too low", 400) })
+    const sleep = vi.fn(async () => {})
+    const result = await runProviderAttempt({
+      operation: "turn",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      run,
+      classifyError: () => "usage-limit",
+      shouldRetry: (classification) => classification !== "usage-limit",
+      sleep,
+    })
+    expect(result.ok).toBe(false)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(sleep).not.toHaveBeenCalled()
+  })
 })

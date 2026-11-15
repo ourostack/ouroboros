@@ -31,6 +31,8 @@ export interface RunProviderAttemptInput<T> {
   model: string
   run: () => Promise<T>
   classifyError: (error: Error) => ProviderErrorClassification
+  /** False ends the attempts at once, e.g. spent credit when a fallback provider is ready. Defaults to retrying. */
+  shouldRetry?: (classification: ProviderErrorClassification) => boolean
   policy?: Partial<ProviderAttemptPolicy>
   sleep?: (delayMs: number) => Promise<void>
   onAttemptStart?: (attempt: number, maxAttempts: number) => void | Promise<void>
@@ -120,7 +122,7 @@ export async function runProviderAttempt<T>(input: RunProviderAttemptInput<T>): 
       if (caught instanceof ProviderAttemptAbortError) throw caught
       const error = toError(caught)
       const classification = classify(caught, input.classifyError)
-      const willRetry = isRetryable(error) && attempt < maxAttempts
+      const willRetry = isRetryable(error) && attempt < maxAttempts && (input.shouldRetry?.(classification) ?? true)
       const delayMs = willRetry ? delayForAttempt(policy, attempt) : undefined
       const record: ProviderAttemptRecord = {
         attempt,

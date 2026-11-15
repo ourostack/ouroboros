@@ -110,6 +110,11 @@ export interface AgentConfig {
   provider?: AgentProvider
   humanFacing: AgentFacingConfig
   agentFacing: AgentFacingConfig
+  /**
+   * Opt-in automatic provider fallback. When set, a turn whose provider fails with an error the agent cannot fix
+   * (credit, auth, throttle, outage, network) carries on with the other lane's model, then each entry here in order.
+   */
+  providerFallback?: AgentFacingConfig[]
   context?: {
     maxTokens?: number
     contextMargin?: number
@@ -629,6 +634,26 @@ function validateFacingConfig(
   return { provider: facing.provider, model: facing.model }
 }
 
+function validateProviderFallback(raw: unknown, configFile: string): AgentFacingConfig[] {
+  const entries = Array.isArray(raw) ? raw : null
+  const valid = entries?.every((entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+    && isValidProvider((entry as Record<string, unknown>).provider)
+    && typeof (entry as Record<string, unknown>).model === "string")
+  if (!entries || !valid) {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: "agent config has invalid providerFallback",
+      meta: { path: configFile, providerFallback: raw },
+    })
+    throw new Error(
+      `agent.json at ${configFile} providerFallback must be a list of { provider, model } with provider one of: ${VALID_PROVIDERS.join(", ")}.`,
+    )
+  }
+  return entries.map((entry) => ({ provider: (entry as AgentFacingConfig).provider, model: (entry as AgentFacingConfig).model }))
+}
+
 /**
  * Load and parse `<agentRoot>/agent.json`.
  * Reads the explicit owner's file fresh, or preserves the legacy ambient override when no owner is supplied.
@@ -749,6 +774,7 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
     enabled,
     humanFacing,
     agentFacing,
+    ...(parsed.providerFallback !== undefined ? { providerFallback: validateProviderFallback(parsed.providerFallback, configFile) } : {}),
     habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(owner === undefined ? getAgentName() : owner.agentName, parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],

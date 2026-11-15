@@ -78,6 +78,15 @@ import {
   type ProviderCredentialRecord,
 } from "./provider-credentials";
 import type { ProviderLane } from "./provider-lanes";
+import {
+  coolDownProviderEntry,
+  fallsBackOn,
+  firstReadyChainIndex,
+  nextReadyChainIndex,
+  noteProviderServed,
+  providerFallbackChain,
+  type ProviderChainEntry,
+} from "./provider-fallback";
 import { resolveHabitReturnRoute } from "./habits/habit-session";
 import {
   ProviderAttemptAbortError,
@@ -275,6 +284,23 @@ export async function getProviderRuntime(facing: Facing = "human", owner?: Runti
   }
   // The shared tool loop supplies approval continuation to every provider adapter.
   return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
+}
+
+/** A runtime for one entry of an agent's provider fallback chain, built fresh from its vault credentials. */
+async function getChainEntryRuntime(entry: ProviderChainEntry, owner?: RuntimeOwner): Promise<ProviderRuntime> {
+  const agentName = owner?.agentName ?? getAgentName();
+  const credential = await readProviderCredentialRecord(agentName, entry.provider);
+  if (!credential.ok) throw new Error(`${entry.provider} (${entry.model}) has no credentials for ${agentName}: ${credential.error}`);
+  const runtimeOwner = { agentName, agentRoot: owner?.agentRoot ?? getAgentRoot(agentName) };
+  const runtime = createProviderRegistry().resolve(entry.provider, entry.model, credential.record, runtimeOwner);
+  /* v8 ignore next -- defensive: the registry resolves every provider id @preserve */
+  if (!runtime) throw new Error(`${entry.provider} (${entry.model}) runtime could not be initialized.`);
+  return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
+}
+
+// Called after getProviderRuntime has loaded the same agent.json, so a bad config has already failed the turn.
+function resolveTurnFallbackChain(facing: Facing, owner?: RuntimeOwner): ProviderChainEntry[] {
+  return providerFallbackChain(loadAgentConfig(owner), providerLaneForFacing(facing));
 }
 
 /**
@@ -1447,7 +1473,60 @@ export async function runAgent(
   const owner = options?.toolContext?.agentName && options.toolContext.agentRoot
     ? { agentName: options.toolContext.agentName, agentRoot: options.toolContext.agentRoot }
     : undefined
-  let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing, owner);
+  // Automatic fallback (opt-in via agent.json providerFallback): start on the first chain entry not cooling down.
+  let providerRuntime: ProviderRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing, owner);
+  const fallbackChain = options?.providerRuntimeOverride ? [] : resolveTurnFallbackChain(facing, owner);
+  let chainIndex = 0;
+  const switchToChainEntry = async (from: number, firstCandidate: number | null, reason: { classification: ProviderErrorClassification; error: Error } | null): Promise<boolean> => {
+    for (let candidate = firstCandidate; candidate !== null; candidate = nextReadyChainIndex(fallbackChain, candidate)) {
+      try {
+        providerRuntime = await getChainEntryRuntime(fallbackChain[candidate], owner);
+        chainIndex = candidate;
+        emitNervesEvent({
+          level: "warn",
+          component: "engine",
+          event: "engine.provider_fallback",
+          message: reason ? "provider failed with an error the agent cannot fix; the turn carries on with the next provider" : "turn starts on a fallback provider while the primary cools down",
+          meta: {
+            lane: providerLaneForFacing(facing),
+            fromProvider: fallbackChain[from].provider,
+            fromModel: fallbackChain[from].model,
+            toProvider: fallbackChain[candidate].provider,
+            toModel: fallbackChain[candidate].model,
+            classification: reason?.classification ?? "cooling-down",
+            ...(reason ? { error: reason.error.message.slice(0, 200) } : {}),
+          },
+        });
+        return true;
+      } catch (error) {
+        coolDownProviderEntry(fallbackChain[candidate], "auth-failure", error instanceof Error ? error : /* v8 ignore next @preserve */ new Error(String(error)));
+        emitNervesEvent({
+          level: "warn",
+          component: "engine",
+          event: "engine.provider_fallback_unavailable",
+          message: "fallback provider could not be built; trying the next one",
+          meta: { provider: fallbackChain[candidate].provider, model: fallbackChain[candidate].model, error: error instanceof Error ? error.message : /* v8 ignore next @preserve */ String(error) },
+        });
+      }
+    }
+    return false;
+  };
+  if (fallbackChain.length > 0) {
+    const startIndex = firstReadyChainIndex(fallbackChain);
+    if (startIndex > 0) await switchToChainEntry(0, startIndex, null);
+  }
+  const rebuildCurrentRuntime = (): Promise<ProviderRuntime> => chainIndex === 0
+    ? getProviderRuntime(facing, owner)
+    : getChainEntryRuntime(fallbackChain[chainIndex], owner);
+  const fallBackAfterTerminalError = async (error: Error, classification: ProviderErrorClassification): Promise<boolean> => {
+    if (fallbackChain.length === 0 || !fallsBackOn(classification)) return false;
+    coolDownProviderEntry(fallbackChain[chainIndex], classification, error);
+    const from = chainIndex;
+    if (!await switchToChainEntry(from, nextReadyChainIndex(fallbackChain, from), { classification, error })) return false;
+    providerRuntime.resetTurnState(messages);
+    return true;
+  };
+  let servedByProvider = false;
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.hardDisableTools ? false : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
@@ -2003,7 +2082,8 @@ export async function runAgent(
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()
           }
-          if (isRejectedRequest(error) && !rejectedRequestRetried) {
+          // A 400 for spent credit is not a malformed request: correcting history cannot fix it.
+          if (isRejectedRequest(error) && !rejectedRequestRetried && providerRuntime.classifyError(error as Error) !== "usage-limit") {
             // Never leave the agent unable to answer: correct what the runtime sent, tell the agent why, and let it carry on.
             rejectedRequestRetried = true;
             replayedReasoningDropped = true;
@@ -2029,6 +2109,8 @@ export async function runAgent(
         model: providerRuntime.model,
         run: callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
+        // Spent credit will not come back in seconds: move straight to the next provider when one is ready.
+        shouldRetry: (classification) => classification !== "usage-limit" || nextReadyChainIndex(fallbackChain, chainIndex) === null,
         onRetry: async (record, maxAttempts) => {
           const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
@@ -2046,7 +2128,7 @@ export async function runAgent(
               providers: [record.provider],
             })
             _providerRuntimeFactories[facing] = null
-            providerRuntime = await getProviderRuntime(facing, owner)
+            providerRuntime = await rebuildCurrentRuntime()
             providerRuntime.resetTurnState(attemptMessages)
           } catch (refreshError) {
             emitNervesEvent({
@@ -2066,11 +2148,13 @@ export async function runAgent(
       });
 
       if (!attempt.ok) {
+        if (await fallBackAfterTerminalError(attempt.error, attempt.classification)) continue;
         finishTerminalProviderError(attempt.error, attempt.classification);
         continue;
       }
 
       const result = attempt.value;
+      servedByProvider = true;
       nextAttemptControls = [];
       providerIterations += 1
       if (stepReportIteration !== null) {
@@ -3182,6 +3266,21 @@ export async function runAgent(
     providerRuntime.resetTurnState(messages)
   }
   options?.captureGeneratedMessages?.(structuredClone(generatedMessages));
+  if (servedByProvider && !terminalError) {
+    const chain = fallbackChain.length > 0 ? fallbackChain : [{ provider: providerRuntime.id, model: providerRuntime.model }];
+    try {
+      noteProviderServed({
+        agentName: owner?.agentName ?? getAgentName(),
+        agentRoot: owner?.agentRoot ?? getAgentRoot(),
+        lane: providerLaneForFacing(facing),
+        chain,
+        index: fallbackChain.length > 0 ? chainIndex : 0,
+      });
+    /* v8 ignore next 3 -- defensive: attribution must never fail a turn that already answered @preserve */
+    } catch {
+      // The answer stands; attribution is best effort.
+    }
+  }
   emitNervesEvent({
     event: "engine.turn_end",
     trace_id: traceId,

@@ -11,7 +11,7 @@ The mental model is simple: an agent needs a password manager in the same way a 
 | Concept | Source Of Truth | Notes |
 | --- | --- | --- |
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
-| Provider/model selection | `~/AgentBundles/<agent>.ouro/agent.json` | Two lanes: `outward` and `inner`. Legacy `humanFacing`/`agentFacing` fields are compatibility aliases only. There is no silent fallback between lanes. |
+| Provider/model selection | `~/AgentBundles/<agent>.ouro/agent.json` | Two lanes: `outward` and `inner`. Legacy `humanFacing`/`agentFacing` fields are compatibility aliases only. There is no silent fallback between lanes; an agent can opt in to logged automatic fallback with `providerFallback` (see Automatic provider fallback). |
 | Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No shared machine credential pool. |
 | Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, ElevenLabs TTS, and similar credentials that should travel with the agent. |
 | Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config, Whisper.cpp CLI/model paths, and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
@@ -100,6 +100,22 @@ ouro use --agent <agent> --lane inner --provider <provider> --model <model>
 ```
 
 `ouro use` changes the provider/model choice in `agent.json`. It does not create or update credentials.
+
+### Automatic provider fallback
+
+An agent can opt in to automatic fallback by listing backup providers in `agent.json`:
+
+```json
+"providerFallback": [{ "provider": "minimax", "model": "MiniMax-M3" }]
+```
+
+With that set, each lane's chain is its own provider and model, then the other lane's, then each `providerFallback` entry in order. When a provider call fails with an error the agent cannot fix (auth failure, spent credit or a usage limit, a 429, an overload or outage, a network error) after the retry ladder below, the entry is benched and the same turn carries on with the next entry that is not benched and has credentials in the vault. Nobody is asked to switch. Spent credit is not retried on the same account first, and its 400 does not get the corrected-history retry. Unknown errors, such as a malformed request, do not fall back.
+
+Benches last until the provider's `Retry-After`, otherwise an hour for spent credit or a rejected key and five minutes for a throttle, an outage or the network. Credit and keys belong to the account, so those bench every model on that provider; throttles and outages bench one model. While the primary is benched, turns start on the first entry that is not; after the bench ends, the next turn tries the primary again and moves back by itself.
+
+This is not silent. Every switch is an `engine.provider_fallback` nerves event, every bench is `engine.provider_cooldown`, every answered turn records the provider that served it as `engine.provider_served`, and the move back is `engine.provider_fallback_recovered`. The owner gets one plain notice when a backup takes over (Telegram, or the private runtime queue when Telegram is absent), at most once a day. The friend-facing "switch to <provider>" text appears only when every entry in the chain failed.
+
+Without `providerFallback`, nothing falls back automatically.
 
 ## Credentials
 
