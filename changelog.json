@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1144",
+      "changes": [
+        "Away from your Mac, you can now see how things are going. The app-sessions sense builds a status digest with no model turn (sessions and their task cards' next steps, the Mac's health, the drains, what merged today), answers /status or \"how's it going?\" in Teams from it at no token cost, and tells you, in plain text, only what is ready for you, done, waiting on you, or still broken."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1143",
       "changes": [
         "After you approve a restart, the Butler now tells you it worked, instead of wrongly saying it couldn't finish.",

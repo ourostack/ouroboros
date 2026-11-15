@@ -14,6 +14,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath, getTeamsConfig, getTeamsChannelConfig } from "../heart/config"
 import { loadSession, deleteSession, postTurnTrim, deferPostTurnPersist } from "../mind/context"
+import { statusAnswer } from "./app-sessions/digest"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -976,6 +977,15 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   // Pre-resolve friend for session path + slash commands (pipeline will re-use the cached result)
   const resolvedContext = await resolver.resolve()
   const friendId = resolvedContext.friend.id
+
+  // The owner's "how's it going?" is answered from the status digest with no model turn.
+  if (resolvedContext.friend.trustLevel === "family") {
+    const status = statusAnswer(text, owner.agentRoot, Date.now())
+    if (status !== null) {
+      await stream.emit(status)
+      return
+    }
+  }
 
   // ── Teams adapter concerns: controller, callbacks, session path ──────────
   const controller = new AbortController()

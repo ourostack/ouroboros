@@ -5,6 +5,7 @@ import {
   archiveAppSession, eventLogSize, listAppSessions, openAppChat, restartEnqueue, restartStatus, resumeAppSession,
   readAppSessionHistory, sendToAppSession, snapshot, type AppSessionRow, type AppSessionState, type AppSessionsOptions,
 } from "../senses/app-sessions/client"
+import { readDigestText } from "../senses/app-sessions/digest"
 import { addProbe, readProbes, readWatches, removeProbe, unwatchSession, watchSession } from "../senses/app-sessions/store"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -294,6 +295,24 @@ export const appSessionsRestartTool: ToolDefinition = {
     : { mutates: "none", risk: "low" },
 }
 
+export const appSessionsDigestTool: ToolDefinition = {
+  tool: {
+    type: "function",
+    function: {
+      name: "app_sessions_digest",
+      description: "How everything is going, already worked out with no model: what needs the owner, what is broken, each working session with its card's next step, the Mac's health, the drains and what merged today. Answer \"how's it going?\" from it in a few lines of your own, leading with what needs the owner; never add facts it does not carry. It is at most a few minutes old and says so when older.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  handler: (_args, ctx) => run("app_sessions_digest", ctx, (agentRoot) => {
+    const digest = readDigestText(agentRoot, Date.now())
+    if (!digest) throw new Error("no status digest yet: it is built when agent.json gives the app-sessions sense a digest block")
+    return { digest }
+  }),
+  summaryKeys: [],
+  riskProfile: () => ({ mutates: "none", risk: "low" }),
+}
+
 export const appSessionsWatchTool: ToolDefinition = {
   tool: {
     type: "function",
@@ -319,5 +338,5 @@ export const appSessionsWatchTool: ToolDefinition = {
 }
 
 export const appSessionsToolDefinitions: ToolDefinition[] = [
-  appSessionsListTool, appSessionsTailTool, appSessionsSendTool, appSessionsResumeTool, appSessionsNewTool, appSessionsArchiveTool, appSessionsRestartTool, appSessionsWatchTool,
+  appSessionsListTool, appSessionsTailTool, appSessionsSendTool, appSessionsResumeTool, appSessionsNewTool, appSessionsArchiveTool, appSessionsRestartTool, appSessionsWatchTool, appSessionsDigestTool,
 ]
