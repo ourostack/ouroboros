@@ -11080,9 +11080,9 @@ describe("BlueBubbles sense runtime", () => {
         fromMe: false,
         sender: {
           provider: "imessage-handle" as const,
-          externalId: "+19735080289",
+          externalId: "+15555550123",
           rawId: "+1 (973) 508-0289",
-          displayName: "+19735080289",
+          displayName: "+15555550123",
           observed: true,
         },
         chat: {

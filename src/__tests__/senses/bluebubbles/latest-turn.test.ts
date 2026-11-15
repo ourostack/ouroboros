@@ -128,16 +128,16 @@ describe("BlueBubbles latest-turn registry", () => {
   it("uses one alias lane for equivalent phone and email identifier spellings", async () => {
     const phone = reserveObservation({
       chatGuid: "phone-chat-guid",
-      chatIdentifier: "+1 (973) 508-0289",
+      chatIdentifier: "+1 (555) 555-0123",
     })
     const phonePromotion = promote(phone, {
       chatGuid: "phone-chat-guid",
-      chatIdentifier: "+1 (973) 508-0289",
+      chatIdentifier: "+1 (555) 555-0123",
     })
     if (phonePromotion.status !== "promoted") throw new Error("expected phone promotion")
 
-    const compactPhone = reserveObservation({ chatIdentifier: "+19735080289" })
-    expect(compactPhone.hints).toEqual(["identifier:+19735080289"])
+    const compactPhone = reserveObservation({ chatIdentifier: "+15555550123" })
+    expect(compactPhone.hints).toEqual(["identifier:+15555550123"])
     let phoneAdmissionSettled = false
     const phoneAdmission = awaitDeliveryAdmission(phonePromotion.capability).then((value) => {
       phoneAdmissionSettled = true
@@ -146,7 +146,7 @@ describe("BlueBubbles latest-turn registry", () => {
     await Promise.resolve()
     expect(phoneAdmissionSettled).toBe(false)
 
-    const compactPromotion = promote(compactPhone, { chatIdentifier: "+19735080289" })
+    const compactPromotion = promote(compactPhone, { chatIdentifier: "+15555550123" })
     expect(compactPromotion.status).toBe("promoted")
     await expect(phoneAdmission).resolves.toBe(false)
 
