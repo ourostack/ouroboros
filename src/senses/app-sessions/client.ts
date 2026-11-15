@@ -118,6 +118,8 @@ const MAX_EVENT_BYTES = 8 * 1024 * 1024
 const MESSAGE_MAX_CHARS = 4_000
 /** A cut loop this fresh may just be a turn the database has not marked running yet. */
 const STUCK_GRACE_MS = 120_000
+/** A session the app says is running whose history, sub-agents included, has not grown for this long is hung. */
+export const HUNG_MS = 30 * 60_000
 const SESSION_ID = /^[A-Za-z0-9-]+$/
 const ASK_TOOLS = new Set(["ask_user", "ask_followup_question", "request_user_input"])
 const PLAN_TOOLS = new Set(["exit_plan_mode"])
@@ -401,29 +403,34 @@ export function tailFacts(events: Frame[]): TailFacts {
   return { awaiting, loopCut, detail, lastActivity, ...(prompt ? { prompt } : {}) }
 }
 
-const factsCache = new Map<string, { key: string; facts: TailFacts }>()
+const factsCache = new Map<string, { key: string; facts: TailFacts; writtenAtMs: number | null }>()
 
-/** The tail facts, re-read only when the log changed, so a periodic snapshot stays cheap. */
-function cachedTailFacts(stateDir: string, id: string): TailFacts {
+/** The tail facts and when the log was last written, re-read only when the log changed, so a periodic snapshot stays cheap. */
+function cachedTailFacts(stateDir: string, id: string): { facts: TailFacts; writtenAtMs: number | null } {
   const file = eventLogPath(id, { stateDir })
   let key = "missing"
+  let writtenAtMs: number | null = null
   try {
     const stat = fs.statSync(file)
     key = `${stat.size}:${stat.mtimeMs}`
+    writtenAtMs = stat.mtimeMs
   } catch {
     // No log yet: the facts of an empty history.
   }
   const cached = factsCache.get(file)
-  if (cached?.key === key) return cached.facts
-  const facts = tailFacts(tailEvents(stateDir, id, STATUS_TAIL_BYTES))
-  factsCache.set(file, { key, facts })
-  return facts
+  if (cached?.key === key) return cached
+  const entry = { key, facts: tailFacts(tailEvents(stateDir, id, STATUS_TAIL_BYTES)), writtenAtMs }
+  factsCache.set(file, entry)
+  return entry
 }
 
-export function classify(isRunning: boolean, facts: TailFacts, nowMs: number): { state: AppSessionState; detail: string } {
+export function classify(isRunning: boolean, facts: TailFacts, nowMs: number, writtenAtMs: number | null = null): { state: AppSessionState; detail: string } {
   if (facts.awaiting === "permission") return { state: "waiting", detail: "waiting for a permission answer" }
   if (facts.awaiting) return { state: "waiting", detail: `waiting for the person's ${facts.awaiting === "plan" ? "plan approval" : "answer"}` }
-  if (isRunning) return { state: "working", detail: "the app says it is running" }
+  if (isRunning) {
+    if (writtenAtMs !== null && nowMs - writtenAtMs >= HUNG_MS) return { state: "stuck", detail: `the app says it is running, but its history has not grown for ${Math.round((nowMs - writtenAtMs) / 60_000)} min` }
+    return { state: "working", detail: "the app says it is running" }
+  }
   if (facts.loopCut) {
     const at = Date.parse(facts.lastActivity ?? "")
     if (!Number.isNaN(at) && nowMs - at < STUCK_GRACE_MS) return { state: "working", detail: `starting up (${facts.detail})` }
@@ -442,10 +449,10 @@ export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow
   for (const row of databaseRows(stateDir)) {
     if (seen.has(row.id) || !SESSION_ID.test(row.id)) continue
     seen.add(row.id)
-    const facts = cachedTailFacts(stateDir, row.id)
+    const { facts, writtenAtMs } = cachedTailFacts(stateDir, row.id)
     const isRunning = row.is_running === 1
     const repositoryTrust = trusts.get(row.id)
-    const { state, detail } = repositoryTrust ? { state: "waiting" as const, detail: "waiting for a repository trust decision" } : classify(isRunning, facts, now)
+    const { state, detail } = repositoryTrust ? { state: "waiting" as const, detail: "waiting for a repository trust decision" } : classify(isRunning, facts, now, writtenAtMs)
     rows.push({
       id: row.id,
       name: row.name || row.title || (row.workspace_id ? "(unnamed)" : "(unnamed chat)"),
