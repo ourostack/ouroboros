@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { eventLogPath, type AppSessionsOptions } from "./client"
 
 /**
@@ -89,7 +90,7 @@ function scanBackwards(fd: number, size: number, maxBytes: number): { entry: Foc
  * Finds the task the session declared. A session not seen before is read backwards from its end until its newest
  * declaration; after that only what was added since is read, forwards, up to `maxBytes`.
  */
-export function scanFocus(id: string, entry: FocusEntry | undefined, maxBytes: number, options: AppSessionsOptions = {}): { entry: FocusEntry; bytes: number } {
+function scan(id: string, entry: FocusEntry | undefined, maxBytes: number, options: AppSessionsOptions = {}): { entry: FocusEntry; bytes: number } {
   let fd: number
   try {
     fd = fs.openSync(eventLogPath(id, options), "r")
@@ -122,6 +123,13 @@ export function scanFocus(id: string, entry: FocusEntry | undefined, maxBytes: n
   } finally {
     fs.closeSync(fd)
   }
+}
+
+/** `scan` with a record of how much history was read and whether a task was found, so the digest's cost is visible. */
+export function scanFocus(id: string, entry: FocusEntry | undefined, maxBytes: number, options: AppSessionsOptions = {}): { entry: FocusEntry; bytes: number } {
+  const scanned = scan(id, entry, maxBytes, options)
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_focus_scanned", message: "scanned a session's history for its declared task", meta: { bytes: scanned.bytes, first: entry === undefined, found: !!scanned.entry.track } })
+  return scanned
 }
 
 /** The card at `<root>/<track>/<slug>/task.md`, or archived beside it, in the first desk root that has it: its title, status and next step. */
