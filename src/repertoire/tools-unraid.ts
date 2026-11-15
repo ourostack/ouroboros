@@ -58,7 +58,7 @@ function display(value: unknown, maxBytes: number): { value: string; truncated: 
   return { value: `${prefix}...`, truncated: true }
 }
 
-const DURATION = "(?:Less than a second|About a (?:minute|hour|day|week|month|year)|(?:[1-9][0-9]*) (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?))"
+const DURATION = "(?:Less than a second|About a (?:minute|day|week|month|year)|About an hour|(?:[1-9][0-9]*) (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?))"
 const RUNNING = new RegExp(`^Up ${DURATION}(?: \\((?:healthy|unhealthy|health: starting)\\))?$`, "u")
 const EXITED = new RegExp(`^Exited \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")
 const RESTARTING = new RegExp(`^Restarting \\((0|[1-9][0-9]*)\\) ${DURATION} ago$`, "u")

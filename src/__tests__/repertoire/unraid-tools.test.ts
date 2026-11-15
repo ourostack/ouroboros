@@ -102,6 +102,11 @@ describe("Unraid typed read tools", () => {
     expect(normalizeDockerStatus("exited", "Restarting (7) About a week ago")).toEqual({ state: "restarting", exitCode: 7, degraded: false })
     expect(normalizeDockerStatus("EXITED", "Exited (255) 2 months ago")).toEqual({ state: "exited", exitCode: 255, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "Restarting (1) 3 days ago")).toEqual({ state: "restarting", exitCode: 1, degraded: false })
+    // Docker writes "About an hour" (go-units HumanDuration); 2026-11-14 a restart Ari approved was refused for it.
+    expect(normalizeDockerStatus("RUNNING", "Up About an hour")).toEqual({ state: "running", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("RUNNING", "Up About an hour (unhealthy)")).toEqual({ state: "running", exitCode: null, degraded: false })
+    expect(normalizeDockerStatus("EXITED", "Exited (137) About an hour ago")).toEqual({ state: "exited", exitCode: 137, degraded: false })
+    expect(normalizeDockerStatus("RUNNING", "Up About an minute")).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus("RUNNING", "up 2 hours")).toEqual({ state: "unknown", exitCode: null, degraded: true })
     expect(normalizeDockerStatus("EXITED", "Exited (01) 1 hour ago")).toEqual({ state: "unknown", exitCode: null, degraded: true })
   })
