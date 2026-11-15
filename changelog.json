@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1139",
+      "changes": [
+        "Root can now play the owner in the live Butler chat for tests: a root-only driver on the Sanctuary host injects an owner message, reply, edit, reaction or button tap into the authority's own update path and returns what the Butler really sent. Test updates use ids far above Telegram's, so they never move the real cursor, and their button taps are answered locally. The authority logs what the bot sends only while a driver run has armed it, and the driver records each run in its nerves log."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1138",
+      "changes": [
+        "Test data no longer carries a real phone number, family names or a real Telegram chat key; made-up values replace them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1137",
       "changes": [
         "The system prompt is about 6.6 KB smaller on the CLI (39.3 KB to 32.7 KB with the psyche): the desk section, git-sync walkthrough, peers framing, harness-docs and sense-legend text and the pre-implementation scrutiny prompts now say the same thing in fewer words, and the mail and voice sense rules that the tool descriptions already carry are gone."

@@ -106,6 +106,16 @@ export class FileTelegramOffsetStore implements TelegramOffsetStore {
 /** Every update kind the bot asks Telegram for. The authority service, its transport check and the direct poller share it. */
 export const TELEGRAM_ALLOWED_UPDATES = ["message", "edited_message", "message_reaction", "callback_query"] as const
 
+/**
+ * Update and message ids at or above this floor belong to owner turns the Sanctuary root injects for live tests.
+ * Telegram's own ids stay far below it, so a test id never collides with a real one or moves a real offset.
+ */
+export const TELEGRAM_TEST_ID_FLOOR = 2 ** 40
+
+export function isTelegramTestId(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= TELEGRAM_TEST_ID_FLOOR
+}
+
 export interface TelegramReactionType {
   type: string
   emoji?: string
@@ -892,7 +902,8 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     for (const update of updates) {
       if (!update || !Number.isSafeInteger(update.update_id) || (update.update_id < nextUpdateId && !options.settleTransport)) continue
       options.onBeforeDispatch?.()
-      const next = Math.max(nextUpdateId, update.update_id + 1)
+      // A root-injected test update sits far above Telegram's ids; it must never move the real offset.
+      const next = isTelegramTestId(update.update_id) ? nextUpdateId : Math.max(nextUpdateId, update.update_id + 1)
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       if (newlyCaptured) {

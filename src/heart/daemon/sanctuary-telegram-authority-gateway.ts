@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-import { telegramUpdateMessageCoordinates, type TelegramUpdate } from "../../senses/telegram-client"
+import { isTelegramTestId, TELEGRAM_TEST_ID_FLOOR, telegramUpdateMessageCoordinates, type TelegramUpdate } from "../../senses/telegram-client"
 import {
   readSessionTransaction,
   withImmediateSessionTurnLease,
@@ -362,75 +362,117 @@ export class FileSanctuaryTelegramAuthorityGateway {
         if (!validUpdate(update)) {
           throw new Error("Sanctuary Telegram authority update is invalid")
         }
-        const updateId = update.update_id
-        const digest = rawUpdateDigest(update)
-        const existing = state.records[String(updateId)]
-        if (existing) {
-          if (existing.rawUpdateDigest !== digest) {
-            throw new Error(`Sanctuary Telegram authority duplicate update ${updateId} changed`)
-          }
-          continue
+        if (isTelegramTestId(update.update_id)) {
+          throw new Error(`Sanctuary Telegram authority update ${update.update_id} is in the root test range`)
         }
-        if (updateId < state.cursor) {
-          throw new Error(`Sanctuary Telegram authority update ${updateId} is stale`)
-        }
-        const coordinates = updateCoordinates(update)
-        if (!coordinates) {
-          state.records[String(updateId)] = {
-            updateId,
-            rawUpdateDigest: digest,
-            rawUpdate: structuredClone(update),
-            disposition: "ignored",
-            settlement: "ignored",
-            observation: null,
-          }
-          changed = true
-          continue
-        }
-        const observedAt = this.#options.now()
-        if (!validTime(observedAt)) throw new Error("Sanctuary Telegram authority clock is invalid")
-        this.#pruneAuthorizedChats(state, observedAt)
-        const admitted = state.authorizedChats[`${coordinates.userId}:${coordinates.chatId}`]
-        if (admitted) admitted.lastObservedAt = observedAt
-        const nonce = this.#options.nonce()
-        if (!NONCE.test(nonce)) throw new Error("Sanctuary Telegram authority nonce is invalid")
-        if (Object.values(state.records).some((record) => record.observation?.payload.nonce === nonce)) {
-          throw new Error("Sanctuary Telegram authority nonce is already used")
-        }
-        const payload: TelegramTransportObservationV1 = {
-          targetHost: this.#options.targetHost,
-          botId: this.#options.botId,
-          updateId,
-          ...coordinates,
-          ownerEligible: coordinates.userId === this.#options.ownerUserId
-            && coordinates.chatId === this.#options.ownerChatId,
-          rawUpdateDigest: digest,
-          ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdateDigest: rawUpdateDigest(residentUpdate(update)) } : {}),
-          observedAt,
-          settlement: "pending",
-          nonce,
-          publicKeyDigest: this.#options.publicKeyDigest,
-        }
-        state.records[String(updateId)] = {
-          updateId,
-          rawUpdateDigest: digest,
-          rawUpdate: structuredClone(update),
-          disposition: "dispatch",
-          settlement: "pending",
-          observation: signAuthorityPayload({
-            domain: OBSERVATION_DOMAIN,
-            keyId: this.#options.keyId,
-            payload,
-            privateKey: this.#options.privateKey,
-          }),
-          ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdate: residentUpdate(update) } : {}),
-        }
-        changed = true
+        if (this.#captureOne(state, update)) changed = true
       }
       this.#advanceCursor(state)
       if (changed) this.#write(state, transaction.revision, lease)
       emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_capture_settled", message: "Sanctuary Telegram ingress capture settled", meta: { changed } })
     })
+  }
+
+  /**
+   * Records one owner update that the root injected for a live test, exactly as a real update from the owner would be
+   * recorded, so the resident receives and answers it through the ordinary poll. Its id sits in the test range above
+   * Telegram's own, so it never moves the real cursor; the record itself is the durable mark that it was test-injected.
+   */
+  injectTestUpdate(update: TelegramUpdate): SignedAuthorityPayload<TelegramTransportObservationV1> {
+    if (!validUpdate(update) || !isTelegramTestId(update.update_id)) {
+      throw new Error("Sanctuary Telegram test update id is outside the root test range")
+    }
+    const coordinates = updateCoordinates(update)
+    if (!coordinates || coordinates.userId !== this.#options.ownerUserId || coordinates.chatId !== this.#options.ownerChatId) {
+      throw new Error("Sanctuary Telegram test update must come from the owner's chat")
+    }
+    return withImmediateSessionTurnLease(this.#statePath, (lease) => {
+      const transaction = readSessionTransaction(this.#statePath, lease)
+      const state = transactionState(transaction)
+      if (state.records[String(update.update_id)]) throw new Error(`Sanctuary Telegram test update ${update.update_id} already exists`)
+      this.#captureOne(state, update)
+      this.#write(state, transaction.revision, lease)
+      emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_test_update_injected", message: "Sanctuary root injected a test owner update", meta: { updateId: update.update_id, updateClass: coordinates.updateClass } })
+      return (state.records[String(update.update_id)] as DispatchRecord).observation
+    })
+  }
+
+  /** The next free id in the root test range. */
+  nextTestUpdateId(): number {
+    return this.#read((state) => Object.values(state.records)
+      .reduce((next, record) => isTelegramTestId(record.updateId) ? Math.max(next, record.updateId + 1) : next, TELEGRAM_TEST_ID_FLOOR))
+  }
+
+  /** True when the callback query came from a root-injected test tap, which Telegram itself never saw. */
+  isTestCallbackQuery(callbackQueryId: string): boolean {
+    return this.#read((state) => Object.values(state.records).some((record) =>
+      isTelegramTestId(record.updateId) && record.rawUpdate.callback_query?.id === callbackQueryId))
+  }
+
+  #captureOne(state: SanctuaryTelegramAuthorityState, update: TelegramUpdate): boolean {
+    const updateId = update.update_id
+    const digest = rawUpdateDigest(update)
+    const existing = state.records[String(updateId)]
+    if (existing) {
+      if (existing.rawUpdateDigest !== digest) {
+        throw new Error(`Sanctuary Telegram authority duplicate update ${updateId} changed`)
+      }
+      return false
+    }
+    if (updateId < state.cursor) {
+      throw new Error(`Sanctuary Telegram authority update ${updateId} is stale`)
+    }
+    const coordinates = updateCoordinates(update)
+    if (!coordinates) {
+      state.records[String(updateId)] = {
+        updateId,
+        rawUpdateDigest: digest,
+        rawUpdate: structuredClone(update),
+        disposition: "ignored",
+        settlement: "ignored",
+        observation: null,
+      }
+      return true
+    }
+    const observedAt = this.#options.now()
+    if (!validTime(observedAt)) throw new Error("Sanctuary Telegram authority clock is invalid")
+    this.#pruneAuthorizedChats(state, observedAt)
+    const admitted = state.authorizedChats[`${coordinates.userId}:${coordinates.chatId}`]
+    if (admitted) admitted.lastObservedAt = observedAt
+    const nonce = this.#options.nonce()
+    if (!NONCE.test(nonce)) throw new Error("Sanctuary Telegram authority nonce is invalid")
+    if (Object.values(state.records).some((record) => record.observation?.payload.nonce === nonce)) {
+      throw new Error("Sanctuary Telegram authority nonce is already used")
+    }
+    const payload: TelegramTransportObservationV1 = {
+      targetHost: this.#options.targetHost,
+      botId: this.#options.botId,
+      updateId,
+      ...coordinates,
+      ownerEligible: coordinates.userId === this.#options.ownerUserId
+        && coordinates.chatId === this.#options.ownerChatId,
+      rawUpdateDigest: digest,
+      ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdateDigest: rawUpdateDigest(residentUpdate(update)) } : {}),
+      observedAt,
+      settlement: "pending",
+      nonce,
+      publicKeyDigest: this.#options.publicKeyDigest,
+    }
+    state.records[String(updateId)] = {
+      updateId,
+      rawUpdateDigest: digest,
+      rawUpdate: structuredClone(update),
+      disposition: "dispatch",
+      settlement: "pending",
+      observation: signAuthorityPayload({
+        domain: OBSERVATION_DOMAIN,
+        keyId: this.#options.keyId,
+        payload,
+        privateKey: this.#options.privateKey,
+      }),
+      ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdate: residentUpdate(update) } : {}),
+    }
+    return true
   }
 
   poll(): SignedAuthorityPayload<TelegramTransportObservationV1> | null {
@@ -647,8 +689,9 @@ export class FileSanctuaryTelegramAuthorityGateway {
   }
 
   #advanceCursor(state: SanctuaryTelegramAuthorityState): void {
+    // Root-injected test updates live above Telegram's ids and never hold or move the real cursor.
     const records = Object.values(state.records)
-      .filter((record) => record.updateId >= state.cursor)
+      .filter((record) => record.updateId >= state.cursor && !isTelegramTestId(record.updateId))
       .sort((left, right) => left.updateId - right.updateId)
     for (const record of records) {
       if (record.disposition === "dispatch" && record.settlement === "pending") break

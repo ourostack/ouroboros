@@ -26,7 +26,7 @@ const local = (username: string) => [{ provider: "local" as const, externalId: u
 describe("resolveOrdinaryOwner", () => {
   it("prefers the active family friend who is this machine's user", () => {
     const ari = friend("ari", { externalIds: local("ari") })
-    expect(resolveOrdinaryOwner([friend("rachel"), ari, friend("guest", { trustLevel: "friend" })], "ari")).toBe(ari)
+    expect(resolveOrdinaryOwner([friend("partner"), ari, friend("guest", { trustLevel: "friend" })], "ari")).toBe(ari)
   })
 
   it("falls back to the only active family friend", () => {

@@ -311,7 +311,7 @@ describe("canonicalizeTelegramSessionKey", () => {
 
     expect(canonicalizeTelegramSessionKey("telegram:777:42")).toBe("telegram:777:42")
     expect(canonicalizeTelegramSessionKey("telegram_777_42")).toBe("telegram:777:42")
-    expect(canonicalizeTelegramSessionKey("telegram_tg_XI30M0giLz_vjeKEmb5PFdDQ10efzHuTohrXz9TzzHI")).toBe("telegram:tg_XI30M0giLz_vjeKEmb5PFdDQ10efzHuTohrXz9TzzHI")
+    expect(canonicalizeTelegramSessionKey("telegram_tg_SyntheticTelegramKey_aaaaaaaaaaaaaaaaaaaaaa")).toBe("telegram:tg_SyntheticTelegramKey_aaaaaaaaaaaaaaaaaaaaaa")
     expect(canonicalizeTelegramSessionKey("telegram_not_numeric")).toBe("telegram_not_numeric")
     expect(canonicalizeTelegramSessionKey("chat_any")).toBe("chat_any")
   })
