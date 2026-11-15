@@ -24,7 +24,12 @@ interface Title { name: string; key: string }
 function titlesFrom(records: readonly TurnToolRecord[]): { onShelf: Title[]; offShelf: Title[] } {
   const onShelf: Title[] = []
   const offShelf: Title[] = []
-  const add = (list: Title[], title: unknown): void => { if (typeof title === "string" && normalize(title).trim().length >= MIN_TITLE_LENGTH) list.push({ name: title.trim(), key: normalize(title) }) }
+  // A lookup can name one title in several places (a result and a candidate); keep it once so the reply names it once.
+  const add = (list: Title[], title: unknown): void => {
+    if (typeof title !== "string" || normalize(title).trim().length < MIN_TITLE_LENGTH) return
+    const key = normalize(title)
+    if (!list.some((known) => known.key === key)) list.push({ name: title.trim(), key })
+  }
   for (const record of records) {
     if (!LIBRARY_LOOKUP_TOOLS.has(record.name)) continue
     let parsed: { items?: unknown; library_matches?: unknown; lookup_candidates?: unknown; data?: { items?: unknown } }
