@@ -2557,6 +2557,76 @@ describe("runAgent tool loop guard", () => {
       return { runtime, views, callerViews }
     }
 
+    it("answers a provider-refused request: drops replayed reasoning, tells the agent why, and the agent settles", async () => {
+      const history = { role: "assistant", content: "earlier", _thinking_blocks: [{ type: "thinking", thinking: "old", signature: "stale" }] } as unknown as ChatCompletionMessageParam
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "before" }, history, { role: "user", content: "what now?" }]
+      const fresh = { type: "thinking", thinking: "now", signature: "fresh" }
+      const { runtime, views } = runtimeFor([
+        { ...response("", [call("probe", "current-read")]), outputItems: [fresh] as never },
+        response("", [call("settle", "final", { answer: "here you go", intent: "complete" })]),
+      ], messages)
+      const stream = runtime.streamTurn
+      const refused: ChatCompletionMessageParam[][] = []
+      runtime.streamTurn = vi.fn(async (request) => {
+        if (refused.length === 0) {
+          refused.push(structuredClone(request.messages))
+          throw Object.assign(new Error("messages.1.content.0: Invalid signature in thinking block"), { status: 400 })
+        }
+        return stream(request)
+      })
+      const callbacks = makeCallbacks()
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, callbacks, undefined, undefined, { tools: [probeTool], providerRuntimeOverride: runtime, execTool: vi.fn(async () => "receipt") })
+      expect(result.outcome).toBe("settled")
+      const earlier = (view: ChatCompletionMessageParam[] | undefined) => view?.find((message) => message.role === "assistant" && message.content === "earlier") as Record<string, unknown> | undefined
+      expect(earlier(refused[0])?._thinking_blocks).toBeDefined()
+      // The corrected retry drops the replayed signature and tells the agent what happened.
+      expect(earlier(views[0])).toEqual({ role: "assistant", content: "earlier" })
+      expect(views[0]?.at(-1)).toEqual({ role: "user", content: expect.stringContaining("Invalid signature in thinking block") })
+      // Later requests in the turn keep dropping the replayed reasoning, but keep this turn's own.
+      expect(earlier(views[1])).toEqual({ role: "assistant", content: "earlier" })
+      expect(views[1]?.some((message) => (message as unknown as Record<string, unknown>)._thinking_blocks !== undefined && message !== views[1]?.[1])).toBe(true)
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("refused the request") }), "transient")
+      expect(callbacks.onError).not.toHaveBeenCalledWith(expect.anything(), "terminal")
+      // Caller history is untouched: the note and the dropped blocks live only in the request.
+      expect((messages[1] as unknown as Record<string, unknown>)._thinking_blocks).toBeDefined()
+      expect(JSON.stringify(messages)).not.toContain("[runtime]")
+    })
+
+    it("corrects a refused request once; a provider that keeps refusing still ends the turn", async () => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "hello" }]
+      const { runtime } = runtimeFor([], messages)
+      const requests: ChatCompletionMessageParam[][] = []
+      runtime.streamTurn = vi.fn(async (request) => {
+        requests.push(structuredClone(request.messages))
+        throw Object.assign(new Error("bad request"), { status: 400 })
+      })
+      const callbacks = makeCallbacks()
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, callbacks, undefined, undefined, { providerRuntimeOverride: runtime })
+      expect(result.outcome).toBe("errored")
+      expect(requests[0]?.some((message) => JSON.stringify(message.content).includes("[runtime]"))).toBe(false)
+      expect(requests[1]?.filter((message) => JSON.stringify(message.content).includes("[runtime]"))).toHaveLength(1)
+      expect(requests.every((request) => request.filter((message) => JSON.stringify(message.content).includes("[runtime]")).length <= 1)).toBe(true)
+    })
+
+    it("classifies refused requests and drops only earlier turns' reasoning", async () => {
+      const { isRejectedRequest, dropReplayedReasoning } = await import("../../heart/core")
+      expect(isRejectedRequest(Object.assign(new Error("bad"), { status: 400 }))).toBe(true)
+      expect(isRejectedRequest(Object.assign(new Error("context_length_exceeded"), { status: 400 }))).toBe(false)
+      expect(isRejectedRequest(Object.assign(new Error("down"), { status: 500 }))).toBe(false)
+      expect(isRejectedRequest({ status: 400 })).toBe(false)
+      const user = { role: "user", content: "u" } as ChatCompletionMessageParam
+      const plain = { role: "assistant", content: "plain" } as ChatCompletionMessageParam
+      const old = { role: "assistant", content: "old", _reasoning_items: [1], _thinking_blocks: [2] } as unknown as ChatCompletionMessageParam
+      const current = { role: "assistant", content: "current", _thinking_blocks: [3] } as unknown as ChatCompletionMessageParam
+      const result = dropReplayedReasoning([user, plain, old, current], 3)
+      expect(result[0]).toBe(user)
+      expect(result[1]).toBe(plain)
+      expect(result[2]).toEqual({ role: "assistant", content: "old" })
+      expect(result[3]).toBe(current)
+    })
+
     it.each(["text", "settle"] as const)("keeps %s rejections in one scratch block, consumes each correction, and preserves identical human text", async (kind) => {
       const correction = "Use current evidence."
       const secondCorrection = "Use the newly returned evidence."
