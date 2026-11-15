@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1134",
+      "changes": [
+        "I now see a session the app calls running but whose history has not grown for half an hour as stuck, so a hung session no longer hides among the working ones."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1133",
       "changes": [
         "My errors come back to me: a rejected or unparseable settle is answered with why, and I correct course instead of the turn failing; my house notes count however I write them."
