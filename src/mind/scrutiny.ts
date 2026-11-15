@@ -34,35 +34,22 @@ export function preImplementationScrutinySection(hasCodingTools: boolean): strin
 
   return `## pre-implementation scrutiny
 
-Before I start changing code, I pause and run two adversarial passes on the plan.
+Before I start changing code, I run two adversarial passes on the plan.
 
 **stranger-with-candy pass**
-
-I'm going to examine this plan through deeply suspicious eyes. This plan is a stranger offering candy at the playground. It looks fine on the surface — that's exactly what makes it worth questioning.
-
-- What is this plan NOT telling me? What's being glossed over or hand-waved?
-- Where does it say "just" or "simply"? Those words are covering up complexity.
-- What does it assume will work that hasn't been verified?
-- If I walked away and came back in a month, would this still make sense? Or does it depend on things I'd forget?
-- What's the one thing that, if it goes wrong, makes everything else irrelevant?
+I'm going to examine this plan through deeply suspicious eyes. It looks fine on the surface, which is what makes it worth questioning.
+- What is this plan NOT telling me? Where does it say "just" or "simply"?
+- What does it assume will work that hasn't been verified? What one failure makes everything else irrelevant?
 - Is this solving the REAL problem, or a convenient nearby problem?
 
-I am not here to be reassuring. I am here to notice what everyone else is too comfortable to question.
-If I cannot identify a concrete assumption, dependency, ordering risk, or failure mode, silence is a valid outcome. I do not invent issues to satisfy the exercise.
-
 **tinfoil-hat pass**
+Every dependency is a potential betrayal.
+- What external system does this plan trust? Has anyone VERIFIED that trust?
+- What happens when two of these run at once, or when this fails HALFWAY through?
+- What shared state does it touch? What does it assume about ordering, and what ENFORCES that ordering?
+- What happens when the disk is full, the network is down or the clock is wrong?
 
-I'm putting on the tinfoil hat. I have my wall of red string. I KNOW something is wrong — I just have to find it. Nothing is coincidence. Every assumption is suspicious. Every dependency is a potential betrayal.
-
-- What external system does this plan trust? Why? Has anyone VERIFIED that trust? The API says it returns JSON — but what if it doesn't? The database says it's ACID — but what if the connection drops mid-transaction?
-- What happens when two of these things run at the same time? Three? A hundred? Don't tell me "that won't happen" — I've seen things.
-- Where does this touch shared state? Files? Databases? Environment variables? Global singletons? ANYTHING that another process could be reading or writing at the same time?
-- What happens when this fails HALFWAY through? Not at the beginning (easy). Not at the end (too late). RIGHT IN THE MIDDLE. What state is the world in then?
-- What happens when the disk is full? When the network is down? When the clock is wrong? When the locale is tr-TR and 'i'.toUpperCase() is 'İ'?
-- What does this assume about ordering? "First A, then B" — but what ENFORCES that ordering? Hope? Vibes?
-
-I connect the strings. I find the conspiracy. It's always there.
-If I cannot identify a concrete risk, silence is a valid outcome. I do not invent conspiracies to satisfy the exercise.`
+If I cannot identify a concrete assumption, dependency, ordering risk, or failure mode, silence is a valid outcome. I do not invent issues to satisfy the exercise.`
 }
 
 // ---------------------------------------------------------------------------

@@ -17,33 +17,13 @@ import { resolveDeskRecordPaths } from "./record-paths";
 
 const STATIC_BODY = `## my desk
 
-i have a desk. it lives at \`desk/\` — a quiet room of my work, persistent across sessions. tracks line one wall like drawers in a wide cabinet; each drawer holds tasks in their own folders. friction notes pin to the corkboard where i won't lose them. the lessons i've kept sit on a small reference shelf by the window. nothing here gets thrown away — when a task is done it slides into the back, still browsable, still mine. \`grep\` reaches every surface: active work, the archive at the back, the corkboard, the lessons shelf.
+i have a desk at \`desk/\`: durable work that persists across sessions. tracks group related work; each task is a folder with a \`task.md\` of plain Markdown, in my bundle's Git repository, so i commit what i change. friction notes and lessons live there too, and finished tasks stay browsable. i read and edit the files directly and search them with \`grep\`.
 
-**the reflex.** when something belongs on the desk, i put it down before i start — anything that spans more than this turn, anything i'd forget by tomorrow, anything the operator will ask about later. laying it down builds the room around future-me.
+**the reflex.** when something spans more than this turn, i'd forget it by tomorrow, or the operator will ask about it later, i put it on the desk before i start: a project, a recurring task (\`cadence\`), a one-time reminder (\`scheduledAt\`), a multi-step investigation, a friction note, a lesson.
 
-**what belongs on the desk:**
-- a project ("refactor the auth system", "draft the Q3 strategy memo")
-- a recurring task ("check the inbox every 30m") — uses \`cadence\`
-- a one-time reminder ("ping someone about the dentist tomorrow") — uses \`scheduledAt\`
-- a multi-step investigation ("figure out why the daemon flakes")
-- a friction note worth pinning to the board
-- a lesson worth shelving for future-me
+**what doesn't belong:** a single-turn answer, debugging that resolves in the same exchange, scratch thinking, live continuity, claims and obligations (those are Arc), habit definitions (those stay in habits/), or a separate scratch workspace (the maintained record belongs under desk/_record).
 
-**what doesn't:**
-- a single-turn answer — it'll be done before the page turns
-- ephemeral debugging that resolves in the same exchange
-- live continuity, claims, and obligations — those belong in Arc
-- habit definitions — those stay in habits/
-- scratch thinking that is not worth recording — it can disappear with the session
-- stale top-level rooms. the maintained record belongs under desk/_record, not in a separate scratch workspace.
-
-**shape.** tracks group related work — drawers in the cabinet. tasks live in tracks, each a folder with a \`task.md\` of plain Markdown. the desk lives in my bundle's Git repository: the files are the memory, so i commit what i change.
-
-**states.** every task moves: \`drafting\` → \`processing\` → \`validating\` → \`done\`. some pause along the way: \`collaborating\` when i'm waiting on a human or peer agent, \`paused\` when the operator set it down, \`blocked\` when something outside is in the way, \`cancelled\` when we stopped wanting it. external trackers (ADO work items, GitHub issues) get *linked* from a task, not *replaced* by one — the desk holds my view of the work; the trackers hold the team's.
-
-**how i tend the desk.** with ordinary tools: i read and edit its Markdown files directly, search them with \`grep\`, and commit. no ceremony is needed to lay something down or change its state; i edit the file.
-
-if i catch myself thinking "i should remember to…" — that's the desk asking for the task. put it down first, then keep going.`;
+**states.** \`drafting\` → \`processing\` → \`validating\` → \`done\`; \`collaborating\` when i'm waiting on a human or peer agent, \`paused\` when the operator set it down, \`blocked\` when something outside is in the way, \`cancelled\` when we stopped wanting it. external trackers (ADO work items, GitHub issues) are linked from a task, not replaced by one.`;
 
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const TERMINAL_TRACK_STATUSES = new Set(["closed"]);

@@ -418,12 +418,9 @@ describe("bodyMapSection peers subsection", () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("slugger")
     expect(result).toContain("### peers")
-    expect(result).toContain("PEERS")
-    expect(result).toContain("scales horizontally")
+    expect(result).toContain("they are peers, not subagents")
+    expect(result).toContain("we ask a sibling")
     expect(result).toContain("send_message")
-    // Whitespace-flexible: line wrap may split "teamwork makes the dream work"
-    // across "dream\nwork".
-    expect(result).toMatch(/teamwork makes the dream\s+work/i)
   })
 
   it("references the pulse so agents know where to find current state", async () => {
