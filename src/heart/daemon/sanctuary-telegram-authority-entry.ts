@@ -18,6 +18,7 @@ import {
   SanctuaryTelegramAuthorityService,
   type SanctuaryTelegramAuthorityServer,
 } from "./sanctuary-telegram-authority-service"
+import { FileSanctuaryTelegramTestLog, sanctuaryTelegramTestLogRoot } from "./sanctuary-telegram-test-driver"
 
 const MAX_PRIVATE_FILE_BYTES = 64 * 1024
 const MAX_ATTACHMENT_BYTES = 20_000_000
@@ -105,7 +106,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
 }
 
-function readPrivateFile(filePath: string, expectedUid: number): string {
+export function readPrivateFile(filePath: string, expectedUid: number): string {
   if (!path.isAbsolute(filePath)) throw new Error("Sanctuary Telegram authority private path must be absolute")
   const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
@@ -443,6 +444,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       gateway,
       hostAuthority,
       hostExecutor,
+      testLog: new FileSanctuaryTelegramTestLog(sanctuaryTelegramTestLogRoot(config.agentRoot)),
       downloadFile: async (filePath) => readBoundedFileResponse(await fetchImpl(
         `https://api.telegram.org/file/bot${token}/${filePath}`,
         { signal: AbortSignal.timeout(30_000) },

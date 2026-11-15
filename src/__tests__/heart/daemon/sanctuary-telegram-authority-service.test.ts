@@ -20,7 +20,7 @@ import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../../..
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../../senses/telegram-effect-adapter"
 import { createLogger } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
-import { TelegramApiError } from "../../../senses/telegram-client"
+import { TelegramApiError, TELEGRAM_TEST_ID_FLOOR } from "../../../senses/telegram-client"
 import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-client"
 
 const roots: string[] = []
@@ -196,6 +196,58 @@ describe("Sanctuary Telegram authority service", () => {
     if (fault === "identity") vi.mocked(f.api.request).mockResolvedValueOnce({ id: 999 })
     if (fault === "null-identity") vi.mocked(f.api.request).mockResolvedValueOnce(null)
     await expect(f.service.dispatch("host.status", { registrationId: null })).rejects.toThrow()
+  })
+
+  it("answers root-injected test turns locally and records the bot's sends only while the test log is armed", async () => {
+    const f = fixture()
+    const entries: Array<Record<string, unknown>> = []
+    let armed = true
+    const testLog = { armed: () => armed, append: vi.fn((entry: Record<string, unknown>) => { entries.push(entry); return entries.length }) }
+    const service = new SanctuaryTelegramAuthorityService({ api: f.api, gateway: f.gateway, hostAuthority: f.hostAuthority, hostExecutor: f.hostExecutor, testLog })
+    const testId = f.gateway.nextTestUpdateId()
+    f.gateway.injectTestUpdate({
+      update_id: testId,
+      callback_query: { id: "ouro-test-tap", from: { id: 42 }, data: "approve", message: { message_id: 7, chat: { id: 42 } } },
+    })
+    const request = (method: string, body: Record<string, unknown>, observation?: Record<string, unknown>) =>
+      service.dispatch("telegram.request", { method, body, ...(observation ? { observation } : {}) })
+    vi.mocked(f.api.request).mockClear()
+
+    await expect(request("answerCallbackQuery", { callback_query_id: "ouro-test-tap", text: "Approved" }, { updateId: testId, observationDigest: "x" })).resolves.toBe(true)
+    await expect(request("setMessageReaction", { chat_id: "42", message_id: TELEGRAM_TEST_ID_FLOOR + 1, reaction: [{ type: "emoji", emoji: "👀" }] })).resolves.toBe(true)
+    expect(f.api.request).not.toHaveBeenCalled()
+
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 900 } as never)
+    await request("sendMessage", { chat_id: "42", text: "Restarting.", reply_parameters: { message_id: TELEGRAM_TEST_ID_FLOOR + 1 } }, { updateId: testId, observationDigest: "x" })
+    expect(f.api.request).toHaveBeenLastCalledWith("sendMessage", { chat_id: "42", text: "Restarting." }, expect.anything())
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 901 } as never)
+    await request("sendMessage", { chat_id: "42", text: "Real reply.", reply_parameters: { message_id: 55 } })
+    expect(f.api.request).toHaveBeenLastCalledWith("sendMessage", { chat_id: "42", text: "Real reply.", reply_parameters: { message_id: 55 } }, expect.anything())
+    vi.mocked(f.api.request).mockResolvedValueOnce(true as never)
+    await request("setMessageReaction", { chat_id: "42", message_id: 901, reaction: [{ type: "emoji", emoji: "❤️" }] })
+
+    expect(entries).toEqual([
+      { kind: "outbound", method: "answerCallbackQuery", observationUpdateId: testId, testObservation: true, text: "Approved", callbackQueryId: "ouro-test-tap", local: true },
+      { kind: "outbound", method: "setMessageReaction", chatId: "42", targetMessageId: TELEGRAM_TEST_ID_FLOOR + 1, reaction: [{ type: "emoji", emoji: "👀" }], local: true },
+      { kind: "outbound", method: "sendMessage", chatId: "42", observationUpdateId: testId, testObservation: true, text: "Restarting.", replyTo: TELEGRAM_TEST_ID_FLOOR + 1, replyToDropped: true, messageId: 900 },
+      { kind: "outbound", method: "sendMessage", chatId: "42", text: "Real reply.", replyTo: 55, messageId: 901 },
+      { kind: "outbound", method: "setMessageReaction", chatId: "42", targetMessageId: 901, reaction: [{ type: "emoji", emoji: "❤️" }] },
+    ])
+
+    const polled = await service.dispatch("telegram.poll", {}) as any
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 502 } as never)
+    await service.dispatch("host.approval", { proposal: hostProposal(authorityArtifactDigest(polled.observation.domain, polled.observation.payload)) })
+    expect(entries.at(-1)).toMatchObject({ kind: "outbound", method: "host.approval", chatId: "42", messageId: 502, replyMarkup: { inline_keyboard: expect.any(Array) } })
+
+    armed = false
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 903 } as never)
+    await request("sendMessage", { chat_id: "42", text: "Unwatched." })
+    expect(entries).toHaveLength(6)
+
+    armed = true
+    testLog.append.mockImplementationOnce(() => { throw new Error("disk full") })
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 904 } as never)
+    await expect(request("sendMessage", { chat_id: "42", text: "Still sent." })).resolves.toEqual({ message_id: 904 })
   })
 
   it("claims another owner's host callback without deciding or rejecting transport delivery", async () => {

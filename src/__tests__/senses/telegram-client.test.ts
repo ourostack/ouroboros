@@ -21,6 +21,8 @@ import {
   createTelegramLongPoll,
   createTelegramApprovalTransport as createRawTelegramApprovalTransport,
   telegramUpdateMessageCoordinates,
+  TELEGRAM_TEST_ID_FLOOR,
+  isTelegramTestId,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
@@ -1891,6 +1893,32 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).resolves.toBe(13)
     expect(settleTransport).toHaveBeenCalledWith(update, "completed")
     expect(offset).toBe(13)
+  })
+
+  it("dispatches a root-injected test update without moving the real offset", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-test-update-")
+    const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    let offset = 12
+    const update = { update_id: TELEGRAM_TEST_ID_FLOOR + 3, message: { message_id: TELEGRAM_TEST_ID_FLOOR + 3, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "[test] status" } }
+    const onMessage = vi.fn(async () => undefined)
+    const settleTransport = vi.fn(async () => undefined)
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => offset, save: (value) => { offset = value } },
+      inboxStore,
+      onMessage,
+      settleTransport,
+    })
+
+    await expect(poll.pollOnce()).resolves.toBe(12)
+    expect(onMessage).toHaveBeenCalledTimes(1)
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+    expect(offset).toBe(12)
+    expect(isTelegramTestId(update.update_id)).toBe(true)
+    expect(isTelegramTestId(258016663)).toBe(false)
+    expect(isTelegramTestId("1099511627776")).toBe(false)
   })
 
   it("settles an indeterminate gateway observation after quarantining a failed resident dispatch", async () => {
