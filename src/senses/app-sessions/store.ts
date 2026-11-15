@@ -10,6 +10,8 @@ import type { AppSessionsSnapshot } from "./client"
  */
 export interface WatchEntry {
   name: string | null
+  /** Watching ends after the first finished reply, not a day after the last message. */
+  once?: boolean
   /** Byte offset in the session's event log already seen. */
   offset: number
   /** Watching ends after this time (epoch ms) unless the agent writes to the session again. */
@@ -25,6 +27,21 @@ export interface WaitingPrompt {
   what: string
   /** When the prompt opened (epoch ms): the app's event time, else the first snapshot that saw it. */
   since: number
+}
+
+/**
+ * A question or plan approval a session is blocked on, as the app announced it. The app announces each one once, to the
+ * clients connected at that moment (a client that connects later is never told), so the sense records them as they come.
+ */
+export interface PendingRequest {
+  kind: "input" | "plan"
+  requestId: string
+  question?: string
+  choices?: string[]
+  allowFreeform?: boolean
+  summary?: string
+  actions?: string[]
+  at: string
 }
 
 export interface SenseSnapshot extends AppSessionsSnapshot {
@@ -60,6 +77,7 @@ export function writeJson(file: string, value: unknown): void {
 
 const watchFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "watch.json")
 const probesFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "probes.json")
+const pendingFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "pending.json")
 const snapshotFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "snapshot.json")
 
 export function readWatches(agentRoot: string): Record<string, WatchEntry> {
@@ -67,10 +85,10 @@ export function readWatches(agentRoot: string): Record<string, WatchEntry> {
 }
 
 /** Start (or extend) watching a session from `offset` in its event log. */
-export function watchSession(agentRoot: string, id: string, name: string | null, offset: number, now: number): WatchEntry {
+export function watchSession(agentRoot: string, id: string, name: string | null, offset: number, now: number, once = false): WatchEntry {
   const watches = readWatches(agentRoot)
   const current = watches[id]
-  const entry: WatchEntry = { name: name ?? current?.name ?? null, offset: current ? Math.min(current.offset, offset) : offset, until: now + WATCH_MS }
+  const entry: WatchEntry = { name: name ?? current?.name ?? null, offset: current ? Math.min(current.offset, offset) : offset, until: now + WATCH_MS, ...(once && (current?.once ?? true) ? { once: true } : {}) }
   watches[id] = entry
   writeJson(watchFile(agentRoot), watches)
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_watch", message: "watching a Copilot app session for replies", meta: { session: id } })
@@ -119,6 +137,15 @@ export function removeProbe(agentRoot: string, id: string): void {
   const probes = readProbes(agentRoot)
   delete probes[id]
   writeJson(probesFile(agentRoot), probes)
+}
+
+/** The open requests by session id. */
+export function readPending(agentRoot: string): Record<string, PendingRequest> {
+  return readJson<Record<string, PendingRequest>>(pendingFile(agentRoot), {})
+}
+
+export function writePending(agentRoot: string, pending: Record<string, PendingRequest>): void {
+  writeJson(pendingFile(agentRoot), pending)
 }
 
 export function writeSnapshot(agentRoot: string, snapshot: SenseSnapshot): void {

@@ -2,31 +2,23 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
-  archiveAppSession, eventLogSize, listAppSessions, openAppChat, restartEnqueue, restartStatus, resumeAppSession,
-  readAppSessionHistory, sendToAppSession, snapshot, type AppSessionRow, type AppSessionState, type AppSessionsOptions,
-} from "../senses/app-sessions/client"
-import { addProbe, readProbes, readWatches, removeProbe, unwatchSession, watchSession } from "../senses/app-sessions/store"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+  answerSessionInput, archiveSession, createSession, findSession, getSession, getSessionAutomation, getSessionsStatus, listSessionsAndChats, listWorkflows, navigateTo,
+  respondToSessionPlan, runWorkflow, saveSessionAutomation, sendSessionMessage,
+} from "../senses/app-sessions/app-interface"
+import { listAppSessions, readAppSessionHistory, restartEnqueue, restartStatus, type AppSessionsOptions } from "../senses/app-sessions/client"
+import { readWatches } from "../senses/app-sessions/store"
+import type { ToolContext, ToolDefinition, ToolRiskProfile } from "./tools-base"
 
 /**
- * The app-sessions tools: read and write this machine's GitHub Copilot app sessions. Every write is logged as a
- * nerves event; none is gated. A session the agent writes to is watched, so its next finished reply comes back to the
- * agent through the app-sessions sense.
+ * The app-sessions tools: what a coordinating session of the GitHub Copilot app can do with its client tools, under the
+ * app's own names and in its shapes (see `senses/app-sessions/app-interface.ts` for how each reaches the app, and which
+ * parts of the app are not reachable from outside it). Beside them, `app_sessions_tail` reads a session's transcript and
+ * `app_sessions_restart` restarts the app through Housesitter, which the app's own tools do not do. Every write is
+ * logged as a nerves event; none is gated beyond the harness's trust rule (family only).
  */
-const STATES: readonly AppSessionState[] = ["working", "waiting", "stuck", "idle"]
 
 /** This Mac's app, in `~/.copilot`. */
 const clientOptions: AppSessionsOptions = {}
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : ""
-}
-
-function flag(value: unknown, fallback: boolean): boolean {
-  if (value === true || value === "true") return true
-  if (value === false || value === "false") return false
-  return fallback
-}
 
 export function appSessionsToolsEnabled(agentRoot: string | undefined): boolean {
   if (!agentRoot) return false
@@ -38,286 +30,128 @@ export function appSessionsToolsEnabled(agentRoot: string | undefined): boolean 
   }
 }
 
-async function run(tool: string, ctx: ToolContext | undefined, body: (agentRoot: string) => Promise<Record<string, unknown>> | Record<string, unknown>): Promise<string> {
-  if (!ctx?.agentRoot) return JSON.stringify({ error: "the app-sessions tools need an agent runtime" })
-  try {
-    const result = await body(ctx.agentRoot)
-    emitNervesEvent({ component: "repertoire", event: "repertoire.app_sessions_tool", message: "ran an app-sessions tool", meta: { tool } })
-    return JSON.stringify(result)
-  } catch (error) {
-    emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.app_sessions_tool_error", message: "app-sessions tool call failed", meta: { tool, error: (error as Error).message } })
-    return JSON.stringify({ error: (error as Error).message })
+type Args = Record<string, unknown>
+
+const READ: ToolRiskProfile = { mutates: "none", risk: "low" }
+const write = (reason: string): ToolRiskProfile => ({ mutates: "external_side_effect", risk: "high", reason })
+
+function define(
+  name: string, description: string, properties: Record<string, unknown>, required: string[], risk: ToolRiskProfile,
+  body: (args: Args, agentRoot: string, ctx: ToolContext) => Promise<Record<string, unknown>>, summaryKeys: string[] = [],
+): ToolDefinition {
+  return {
+    tool: { type: "function", function: { name, description, parameters: { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false } } },
+    handler: async (args, ctx?: ToolContext) => {
+      if (!ctx?.agentRoot) return JSON.stringify({ error: "the app-sessions tools need an agent runtime" })
+      try {
+        const result = await body(args as Args, ctx.agentRoot, ctx)
+        emitNervesEvent({ component: "repertoire", event: "repertoire.app_sessions_tool", message: "ran an app-sessions tool", meta: { tool: name } })
+        return JSON.stringify(result)
+      } catch (error) {
+        emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.app_sessions_tool_error", message: "app-sessions tool call failed", meta: { tool: name, error: (error as Error).message } })
+        return JSON.stringify({ error: (error as Error).message })
+      }
+    },
+    summaryKeys,
+    riskProfile: risk,
   }
 }
 
-/** A full session id, or a unique prefix of one (the first 8 characters are enough). */
-function resolveSession(value: unknown): AppSessionRow {
-  const wanted = text(value)
-  if (!wanted) throw new Error("name a session: its id, or the start of it, from app_sessions_list")
-  const rows = listAppSessions(clientOptions)
-  const exact = rows.find(row => row.id === wanted)
-  if (exact) return exact
-  const matches = rows.filter(row => row.id.startsWith(wanted))
-  if (matches.length === 1) return matches[0]
-  if (matches.length > 1) throw new Error(`'${wanted}' matches ${matches.length} sessions; give more of the id`)
-  throw new Error(`no session '${wanted}' in this Mac's Copilot app sidebar (app_sessions_list shows them)`)
-}
+const session = { type: "string", description: "A session's id from list_sessions_and_chats; a unique start of it (the first 8 characters) works." }
+const notifyOnIdle = { type: "string", enum: ["once", "always", "never"], description: "Whether the session's finished replies come back to you as inbound messages: once (default, the next one), always (for a day), or never. The app does not report back to an outside client, so this is how replies reach you." }
 
-function watch(agentRoot: string, id: string, name: string | null, offset: number): void {
-  watchSession(agentRoot, id, name, offset, Date.now())
-}
+export const listSessionsAndChatsTool = define("list_sessions_and_chats", "Every open coding session and chat in this Mac's GitHub Copilot app: id, app_url, name, project, branch, who created and coordinates it. Read-only.", {}, [], READ, () => listSessionsAndChats(clientOptions))
 
-const sessionParam = { type: "string", description: "Session id from app_sessions_list (a unique prefix such as the first 8 characters works)." }
+export const getSessionsStatusTool = define(
+  "get_sessions_status", "What every session is doing now, with counts: busy, idle, stuck, blocked, and what each blocked one waits on. awaiting_input carries the request_id and the question that answer_session_input or respond_to_session_plan_v2 needs. Read-only.",
+  { state: { type: "string", enum: ["busy", "idle", "waiting", "stuck"], description: "Only sessions in this state." } }, [], READ,
+  (args, agentRoot) => getSessionsStatus(agentRoot, typeof args.state === "string" ? args.state : undefined, clientOptions), ["state"],
+)
 
-export const appSessionsListTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_list",
-      description: "Every session in this Mac's GitHub Copilot app sidebar: id, name, state, why, last activity, actual kind/workspaceId/projectId and known creator/parent ids. Project association is not sidebar nesting; sidebarPlacement is unknown when the local schema cannot prove it. Refresh before reporting where work lives. Read-only.",
-      parameters: {
-        type: "object",
-        properties: { state: { type: "string", enum: [...STATES], description: "Only sessions in this state." } },
-        additionalProperties: false,
+export const getSessionTool = define("get_session", "One session's details and what it is doing now, including what it waits on (awaiting_input). Read-only.", { session_id: session }, ["session_id"], READ, (args, agentRoot) => getSession(agentRoot, args.session_id, clientOptions), ["session_id"])
+
+export const sendSessionMessageTool = define(
+  "send_session_message", "Send a message into a session, as its message box does; waits up to 2 minutes for the app to accept it (a session that is not loaded loads first). The app takes it for the person's, so say who you are in it. immediate (default) is admitted at the session's next turn boundary; enqueue waits behind its work.",
+  { session_id: session, message: { type: "string", description: "What to send." }, delivery_mode: { type: "string", enum: ["immediate", "enqueue"] }, notify_on_idle: notifyOnIdle }, ["session_id", "message"],
+  write("sends a message into another agent session in the owner's Copilot app"), (args, agentRoot) => sendSessionMessage(agentRoot, args as never, clientOptions), ["session_id"],
+)
+
+export const createSessionTool = define(
+  "create_session", "Start a session. With project_id (a project's id or name): a project session in its own worktree (workspace_type branch uses the project's checkout instead), kicked off with kickoff.prompt and allow-all permissions unless kickoff.permission_mode says otherwise. Without it: a standalone chat. Waits for the session to exist (a worktree takes about two minutes). It has no coordinator: the app does not let an outside client be one. You may archive what you create.",
+  {
+    name: { type: "string", description: "Sidebar title." }, project_id: { type: "string", description: "The project's id or name." }, session_kind: { type: "string", enum: ["chat", "project"] },
+    workspace_type: { type: "string", enum: ["worktree", "branch"] }, branch_name: { type: "string", description: "Branch for a worktree; a fresh ouro-… name by default." },
+    kickoff: {
+      type: "object", description: "The first work.", additionalProperties: false,
+      properties: {
+        prompt: { type: "string" }, mode: { type: "string", enum: ["interactive", "plan", "autopilot"] }, model: { type: "string" }, agent: { type: "string", description: "Custom agent, for example desk:worker." },
+        reasoning_effort: { type: "string" }, permission_mode: { type: "string", description: "allow-all (default) or manual." },
       },
     },
-  },
-  handler: (args, ctx) => run("app_sessions_list", ctx, () => {
-    const state = text(args.state)
-    const rows = listAppSessions(clientOptions)
-    const picture = snapshot(clientOptions, rows)
+    notify_on_idle: notifyOnIdle,
+  }, [], write("opens a new agent session in the owner's Copilot app"), (args, agentRoot) => createSession(agentRoot, args, clientOptions), ["name"],
+)
+
+export const answerSessionInputTool = define(
+  "answer_session_input", "Answer the question a session asked with ask_user and is blocked on. get_session shows it (awaiting_input.question, choices). A choice or free text. A question asked while this agent was not connected has no request id and cannot be answered here.",
+  { session_id: session, answer: { type: "string" } }, ["session_id", "answer"], write("answers a question for the person in another agent session"), (args, agentRoot) => answerSessionInput(agentRoot, args as never, clientOptions), ["session_id"],
+)
+
+export const respondToSessionPlanTool = define(
+  "respond_to_session_plan_v2", "Approve or reject the plan a session paused on (awaiting_plan_approval). feedback is sent to the session as a message after the decision.",
+  { session_id: session, approved: { type: "boolean" }, selected_action: { type: "string", description: "One of awaiting_input.actions; the recommended one by default." }, feedback: { type: "string" } }, ["session_id", "approved"],
+  write("approves or rejects another agent session's plan for the person"), (args, agentRoot) => respondToSessionPlan(agentRoot, args as never, clientOptions), ["session_id"],
+)
+
+export const archiveSessionTool = define(
+  "archive_session", "Archive a session you created with create_session (a project session's worktree goes with it).", { session_id: session }, ["session_id"],
+  write("archives a session in the owner's Copilot app"), (args, agentRoot) => archiveSession(agentRoot, args.session_id, clientOptions), ["session_id"],
+)
+
+export const navigateToTool = define("navigate_to", "Show a session in the app's window, as following its app_url does.", { id: session }, ["id"], write("changes what the owner's Copilot app shows"), args => navigateTo(args.id, clientOptions), ["id"])
+
+export const saveSessionAutomationTool = define(
+  "save_session_automation", "Create or replace the automation that wakes a session on a schedule, or clear it. interval is once (run_at), minutes (every_minutes), daily or weekly (schedule_hour, schedule_minute, schedule_day), or cron (cron_expression, five fields, local time).",
+  {
+    session_id: session, prompt: { type: "string" }, interval: { type: "string", enum: ["once", "minutes", "daily", "weekly", "cron"] }, run_at: { type: "string" }, every_minutes: { type: "number" },
+    schedule_hour: { type: "number" }, schedule_minute: { type: "number" }, schedule_day: { type: "number" }, cron_expression: { type: "string" }, name: { type: "string" },
+    clear: { type: "boolean", description: "Remove the session's automation instead." },
+  }, ["session_id"], write("schedules wake-ups for an agent session in the owner's Copilot app"), args => saveSessionAutomation(args, clientOptions), ["session_id"],
+)
+
+export const getSessionAutomationTool = define("get_session_automation", "The automation attached to a session. Read-only.", { session_id: session }, ["session_id"], READ, args => getSessionAutomation(args.session_id, clientOptions), ["session_id"])
+
+export const listWorkflowsTool = define("list_workflows", "The app's automations (workflows), with their ids and schedules. Read-only.", {}, [], READ, () => listWorkflows(clientOptions))
+
+export const runWorkflowTool = define("run_workflow", "Run one of the app's automations now, in a new session.", { id: { type: "string", description: "From list_workflows." } }, ["id"], write("starts a session in the owner's Copilot app"), args => runWorkflow(args.id, clientOptions), ["id"])
+
+export const appSessionsTailTool = define(
+  "app_sessions_tail", "A session's last visible prompts and replies, oldest first, with its current name and state and how much of the local log was read. Re-read before reporting current progress: older messages are not live status. Read-only.",
+  { session_id: session, count: { type: "number", description: "How many messages, 1-50. Default 6." } }, ["session_id"], READ,
+  async (args, agentRoot) => {
+    const row = findSession(await listAppSessions(clientOptions), args.session_id)
+    const history = readAppSessionHistory(row.id, Math.min(50, Math.max(1, Math.trunc(Number(args.count) || 6))), clientOptions)
+    const watchedName = readWatches(agentRoot)[row.id]?.name
     return {
-      observedAt: picture.at,
-      appRunning: picture.appRunning,
-      counts: picture.counts,
-      sessions: rows.filter(row => !state || row.state === state).map(row => ({
-        id: row.id, name: row.name, state: row.state, why: row.detail, kind: row.kind, workspaceId: row.workspaceId,
-        project: row.project, projectId: row.projectId, sidebarPlacement: row.sidebarPlacement,
-        ...(row.parentSessionId !== undefined ? { parentSessionId: row.parentSessionId } : {}),
-        ...(row.creatorSessionId !== undefined ? { creatorSessionId: row.creatorSessionId } : {}),
-        ...(row.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: row.coordinatingCreatorSessionId } : {}),
-        lastActivity: row.lastActivity, ...(row.remote ? { remote: true } : {}),
-      })),
+      session_id: row.id, name: row.name, state: row.state, last_activity: row.lastActivity, ...history, ...(watchedName && watchedName !== row.name ? { renamed_from: watchedName } : {}),
+      coverage: history.missing ? "missing" : history.skippedEvents ? "incomplete" : row.remote ? "local-only" : "local", freshness: "point-in-time; re-read before reporting current progress",
     }
-  }),
-  summaryKeys: ["state"],
-  riskProfile: { mutates: "none", risk: "low" },
-}
+  }, ["session_id"],
+)
 
-export const appSessionsTailTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_tail",
-      description: "A Copilot app session's last visible prompts and replies, oldest first, with current name/state, observation time and local-log coverage. Re-read before reporting current progress: older messages and watched names are not live status. Remote history is only what this Mac has received. Read-only.",
-      parameters: {
-        type: "object",
-        properties: { session: sessionParam, count: { type: "number", description: "How many messages, 1-50. Default 6." } },
-        required: ["session"],
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_tail", ctx, (agentRoot) => {
-    const session = resolveSession(args.session)
-    const count = Math.min(50, Math.max(1, Math.trunc(Number(args.count) || 6)))
-    const history = readAppSessionHistory(session.id, count, clientOptions)
-    const watchedName = readWatches(agentRoot)[session.id]?.name
-    return {
-      session: session.id, name: session.name, state: session.state, lastActivity: session.lastActivity,
-      kind: session.kind, workspaceId: session.workspaceId, projectId: session.projectId, sidebarPlacement: session.sidebarPlacement,
-      ...(session.parentSessionId !== undefined ? { parentSessionId: session.parentSessionId } : {}),
-      ...(session.creatorSessionId !== undefined ? { creatorSessionId: session.creatorSessionId } : {}),
-      ...(session.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: session.coordinatingCreatorSessionId } : {}),
-      ...history,
-      ...(watchedName && watchedName !== session.name ? { renamedFrom: watchedName } : {}),
-      coverage: history.missing ? "missing" : history.skippedEvents ? "incomplete" : session.remote ? "local-only" : "local",
-      freshness: "point-in-time; re-read before reporting current progress",
-    }
-  }),
-  summaryKeys: ["session"],
-  riskProfile: { mutates: "none", risk: "low" },
-}
-
-export const appSessionsSendTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_send",
-      description: "Deliver a message into a Copilot app session, the same request the app's own message box sends. Waits (up to 2 minutes) for the app to accept it: a session that is not loaded loads first. Its next finished reply comes back to you as an inbound message unless watch is false.",
-      parameters: {
-        type: "object",
-        properties: {
-          session: sessionParam,
-          message: { type: "string", description: "What to send." },
-          delivery: { type: "string", enum: ["immediate", "enqueue"], description: "immediate (default) steers the session now; enqueue waits behind its current work." },
-          watch: { type: "boolean", description: "Bring the session's next reply back to you. Default true." },
-        },
-        required: ["session", "message"],
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_send", ctx, async (agentRoot) => {
-    const session = resolveSession(args.session)
-    const message = typeof args.message === "string" ? args.message : ""
-    if (!message.trim()) throw new Error("say what to send")
-    const offset = eventLogSize(session.id, clientOptions)
-    const delivery = text(args.delivery) === "enqueue" ? "enqueue" : "immediate"
-    const result = await sendToAppSession(session.id, message, { ...clientOptions, delivery })
-    const watching = result.ok && flag(args.watch, true)
-    if (watching) watch(agentRoot, session.id, session.name, offset)
-    return { session: session.id, name: session.name, ...result, watching }
-  }),
-  summaryKeys: ["session"],
-  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends a message into another agent session in the owner's Copilot app" },
-}
-
-export const appSessionsResumeTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_resume",
-      description: "Nudge a stuck or stopped Copilot app session to continue where it left off (the resume message Housesitter sends after a restart), with an optional note. Its next reply comes back to you.",
-      parameters: {
-        type: "object",
-        properties: { session: sessionParam, note: { type: "string", description: "Anything to add to the resume message." } },
-        required: ["session"],
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_resume", ctx, async (agentRoot) => {
-    const session = resolveSession(args.session)
-    const offset = eventLogSize(session.id, clientOptions)
-    const result = await resumeAppSession(session.id, text(args.note) || undefined, clientOptions)
-    if (result.ok) watch(agentRoot, session.id, session.name, offset)
-    return { session: session.id, name: session.name, ...result, watching: result.ok }
-  }),
-  summaryKeys: ["session"],
-  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "tells another agent session in the owner's Copilot app to continue" },
-}
-
-export const appSessionsNewTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_new",
-      description: "Create a standalone general chat, NOT a project/workspace session and NOT a child under an existing workspace. cwd and prompt text do not choose sidebar placement. Workspace/project/parent targets are unsupported and refused without creating anything. Returns actual kind/association and verified or unknown placement; do not claim workspace placement from a project id or delegated child. Initial message acceptance is separate from creation. You may archive any session this tool created.",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Sidebar title." },
-          prompt: { type: "string", description: "First message." },
-          cwd: { type: "string", description: "Working folder. Default: the home folder." },
-          agent: { type: "string", description: "Custom agent to run as, for example desk:worker." },
-          model: { type: "string", description: "Model id." },
-          target: { type: "string", enum: ["chat", "workspace"], description: "Default chat. workspace is unsupported and refused; use the app's native project-session creation instead." },
-          project: { type: "string", description: "Project placement is unsupported by this tool and refused." },
-          workspace: { type: "string", description: "Workspace placement is unsupported by this tool and refused." },
-          parent_session: { type: "string", description: "Parent/child placement is unsupported by this tool and refused." },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_new", ctx, async (agentRoot) => {
-    if ((text(args.target) && text(args.target) !== "chat") || args.project !== undefined || args.workspace !== undefined || args.parent_session !== undefined) {
-      throw new Error("app_sessions_new supports only a standalone chat; workspace/project/parent placement is unsupported. Nothing was created. Use the Copilot app's native project-session creation and verify its actual sidebar placement.")
-    }
-    const name = text(args.name)
-    const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined
-    const opened = await openAppChat({
-      ...(name ? { name } : {}), ...(prompt ? { prompt } : {}),
-      ...(text(args.cwd) ? { cwd: text(args.cwd) } : {}), ...(text(args.agent) ? { agent: text(args.agent) } : {}), ...(text(args.model) ? { model: text(args.model) } : {}),
-    }, clientOptions)
-    if (!opened.sessionId) return { ...opened }
-    addProbe(agentRoot, opened.sessionId, opened.placement?.name ?? (name || null), Date.now())
-    const watching = !!prompt && opened.sent?.ok === true
-    if (watching) watch(agentRoot, opened.sessionId, opened.placement?.name ?? (name || null), 0)
-    return { ...opened, watching }
-  }),
-  summaryKeys: ["name"],
-  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "opens a new agent session in the owner's Copilot app" },
-}
-
-export const appSessionsArchiveTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_archive",
-      description: "Archive a Copilot app session that you opened with app_sessions_new (its workspace goes too).",
-      parameters: { type: "object", properties: { session: sessionParam }, required: ["session"], additionalProperties: false },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_archive", ctx, async (agentRoot) => {
-    const id = text(args.session)
-    const probes = readProbes(agentRoot)
-    const match = Object.keys(probes).filter(probe => probe === id || (id.length > 0 && probe.startsWith(id)))
-    if (match.length !== 1) throw new Error(`'${id}' is not one session you opened with app_sessions_new (yours: ${Object.keys(probes).join(", ") || "none"})`)
-    const result = await archiveAppSession(match[0], clientOptions)
-    if (result.ok) {
-      removeProbe(agentRoot, match[0])
-      unwatchSession(agentRoot, match[0])
-    }
-    return { session: match[0], name: probes[match[0]].name, ...result }
-  }),
-  summaryKeys: ["session"],
-  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "archives a session in the owner's Copilot app" },
-}
-
-export const appSessionsRestartTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_restart",
-      description: "Restart the Copilot app and lose no session's work, through Housesitter on this Mac (it restarts the app from outside, as a launchd job). status: the restart in progress or the last one: state, step, start time, result, log. enqueue: start one now; every working session is asked to reach a safe point, the app is quit through its Quit menu (it waits while a person is using the Mac), relaunched, and every session that was working gets a resume message and is checked to have taken a turn. Starting one while another runs is refused. Says so plainly when Housesitter is not on this Mac.",
-      parameters: {
-        type: "object",
-        properties: {
-          action: { type: "string", enum: ["status", "enqueue"], description: "Default status." },
-          why: { type: "string", description: "enqueue: the reason; it completes \"restarted at 11:40 for …\" in the resume message each session gets." },
-        },
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_restart", ctx, async () => {
-    if (text(args.action) !== "enqueue") return await restartStatus(clientOptions)
-    const why = text(args.why)
+export const appSessionsRestartTool = define(
+  "app_sessions_restart", "Restart the Copilot app and lose no session's work, through Housesitter on this Mac (it restarts the app from outside, as a launchd job). status: the restart in progress or the last one: state, step, start time, result, log. enqueue: start one now; every working session is asked to reach a safe point, the app is quit through its Quit menu (it waits while a person is using the Mac), relaunched, and every session that was working gets a resume message and is checked to have taken a turn. Starting one while another runs is refused. Says so plainly when Housesitter is not on this Mac.",
+  { action: { type: "string", enum: ["status", "enqueue"], description: "Default status." }, why: { type: "string", description: "enqueue: the reason; it completes \"restarted at 11:40 for …\" in the resume message each session gets." } }, [],
+  { mutates: "external_side_effect", risk: "high", reason: "restarts the owner's Copilot app" },
+  async (args, _agentRoot, ctx) => {
+    if (args.action !== "enqueue") return await restartStatus(clientOptions) as unknown as Record<string, unknown>
+    const why = typeof args.why === "string" ? args.why.trim() : ""
     if (!why) throw new Error("say why the app needs a restart; every session is told in its resume message")
-    return await restartEnqueue(why, ctx?.agentName ?? "an agent", clientOptions)
-  }),
-  summaryKeys: ["action"],
-  riskProfile: (args) => text(args.action) === "enqueue"
-    ? { mutates: "external_side_effect", risk: "high", reason: "restarts the owner's Copilot app" }
-    : { mutates: "none", risk: "low" },
-}
-
-export const appSessionsWatchTool: ToolDefinition = {
-  tool: {
-    type: "function",
-    function: {
-      name: "app_sessions_watch",
-      description: "Start or stop bringing a Copilot app session's finished replies back to you as inbound messages (sending to a session starts it; it lasts a day after your last message).",
-      parameters: {
-        type: "object",
-        properties: { session: sessionParam, watch: { type: "boolean", description: "true to start (default), false to stop." } },
-        required: ["session"],
-        additionalProperties: false,
-      },
-    },
-  },
-  handler: (args, ctx) => run("app_sessions_watch", ctx, (agentRoot) => {
-    const session = resolveSession(args.session)
-    if (!flag(args.watch, true)) return { session: session.id, watching: false, wasWatching: unwatchSession(agentRoot, session.id) }
-    watch(agentRoot, session.id, session.name, eventLogSize(session.id, clientOptions))
-    return { session: session.id, name: session.name, watching: true }
-  }),
-  summaryKeys: ["session"],
-  riskProfile: { mutates: "durable_state_write", risk: "high", reason: "changes which app sessions' replies wake the agent" },
-}
+    return await restartEnqueue(why, ctx.agentName ?? "an agent", clientOptions) as unknown as Record<string, unknown>
+  }, ["action"],
+)
 
 export const appSessionsToolDefinitions: ToolDefinition[] = [
-  appSessionsListTool, appSessionsTailTool, appSessionsSendTool, appSessionsResumeTool, appSessionsNewTool, appSessionsArchiveTool, appSessionsRestartTool, appSessionsWatchTool,
+  listSessionsAndChatsTool, getSessionsStatusTool, getSessionTool, sendSessionMessageTool, createSessionTool, answerSessionInputTool, respondToSessionPlanTool, archiveSessionTool,
+  navigateToTool, saveSessionAutomationTool, getSessionAutomationTool, listWorkflowsTool, runWorkflowTool, appSessionsTailTool, appSessionsRestartTool,
 ]
