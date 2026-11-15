@@ -203,8 +203,8 @@ function sessionLine(session: DigestSession, now: number): string {
   return `- ${session.name}${bits.length ? ` — ${bits.join("; ")}` : ""}`
 }
 
-/** The digest as the short Teams message: a blank line between paragraphs, bullets where there are several. */
-export function renderDigest(digest: Digest, now: number): string {
+/** The digest as the short Teams message: a blank line between paragraphs, bullets where there are several. `plain` leaves out the bold marks, for a send that is plain text. */
+export function renderDigest(digest: Digest, now: number, plain = false): string {
   const at = Date.parse(digest.at)
   const blocks: string[] = [`**Ouroboros status** · ${clock(at)}`]
   if (digest.needsOwner.length) {
@@ -243,7 +243,8 @@ export function renderDigest(digest: Digest, now: number): string {
     blocks.push([`**Merged today** ${total}${digest.merged.length > 1 ? ` (${digest.merged.map(account => `${account.label} ${account.count}`).join(", ")})` : ""}`, ...prs].join("\n"))
   }
   if (digest.unread.length) blocks.push(`Not read: ${digest.unread.join("; ")}`)
-  return blocks.join("\n\n")
+  const text = blocks.join("\n\n")
+  return plain ? text.replace(/\*\*/g, "") : text
 }
 
 /** Builds the digest and writes it and the state beside the sense's snapshot; the sense calls this on its cadence. */

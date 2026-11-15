@@ -89,6 +89,7 @@ describe("buildDigest and renderDigest", () => {
     expect(text).toMatch(/^\*\*Ouroboros status\*\* · /)
     expect(digest.tokens).toBe(Math.ceil(text.length / 4))
     expect(text.split("\n\n").length).toBeGreaterThanOrEqual(4)
+    expect(renderDigest(digest, NOW, true)).toBe(text.replace(/\*\*/g, ""))
   })
 
   it("shows the drains and what merged today, and names a source it could not read", async () => {

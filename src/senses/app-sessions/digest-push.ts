@@ -50,11 +50,11 @@ export function conditions(digest: Digest, cards: Record<string, string>): PushI
   return items
 }
 
-/** One message with everything due, grouped by kind. */
+/** One plain-text message with everything due, grouped by kind: the owner notice path sends plain text, so no markdown. */
 export function pushMessage(items: PushItem[]): string {
   const blocks = ORDER.map(kind => {
     const own = items.filter(item => item.kind === kind)
-    return own.length ? [`**${HEADINGS[kind]}**`, ...own.map(item => `- ${item.text}`)].join("\n") : ""
+    return own.length ? [`${HEADINGS[kind]}:`, ...own.map(item => `- ${item.text}`)].join("\n") : ""
   }).filter(Boolean)
   return blocks.join("\n\n")
 }

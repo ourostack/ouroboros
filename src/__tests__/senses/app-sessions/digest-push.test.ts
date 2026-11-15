@@ -50,7 +50,7 @@ describe("pushMessage", () => {
       { key: "d", kind: "done", text: "Shipped", holdMs: 0 }, { key: "b", kind: "broken", text: "drain stale", holdMs: 0 },
       { key: "r", kind: "ready", text: "Reviewed", holdMs: 0 }, { key: "n", kind: "needs-you", text: "Asked", holdMs: 0 },
     ])
-    expect(text).toBe("**Waiting on you**\n- Asked\n\n**Ready for you**\n- Reviewed\n\n**Still broken**\n- drain stale\n\n**Done**\n- Shipped")
+    expect(text).toBe("Waiting on you:\n- Asked\n\nReady for you:\n- Reviewed\n\nStill broken:\n- drain stale\n\nDone:\n- Shipped")
   })
 })
 
@@ -62,7 +62,7 @@ describe("pushDue", () => {
     const notify = notifier()
     const st = state()
     const first = await pushDue(digest(ready()), st, NOW, notify)
-    expect(first.sent).toBe("**Ready for you**\n- Lane — ready for you: Reviewed")
+    expect(first.sent).toBe("Ready for you:\n- Lane — ready for you: Reviewed")
     expect(notify).toHaveBeenCalledWith(first.sent, ["ready:eng/r"])
     expect(st.lastPushAt).toBe(NOW)
     expect((await pushDue(digest(ready()), st, NOW + 40 * MIN, notify)).sent).toBeNull()
@@ -81,7 +81,7 @@ describe("pushDue", () => {
     expect(st.cards["eng/old"]).toBe("done")
     const moving = state({ cards: { "eng/k": "validating" } })
     const done = await pushDue(digest({ sessions: [session("a", "idle", { slug: "k", status: "done" })] }), moving, NOW, notify)
-    expect(done.sent).toBe("**Done**\n- Title k")
+    expect(done.sent).toBe("Done:\n- Title k")
     expect(moving.cards["eng/k"]).toBe("done")
   })
 
@@ -91,7 +91,7 @@ describe("pushDue", () => {
     expect((await pushDue(digest(stuck()), st, NOW, notify)).due).toBe(0)
     expect((await pushDue(digest(stuck()), st, NOW + HOLD_MS.stuck - 1, notify)).sent).toBeNull()
     const told = await pushDue(digest(stuck()), st, NOW + HOLD_MS.stuck, notify)
-    expect(told.sent).toBe("**Still broken**\n- Lane b is stuck: stuck detail")
+    expect(told.sent).toBe("Still broken:\n- Lane b is stuck: stuck detail")
     expect((await pushDue(digest(stuck()), st, NOW + 3 * HOLD_MS.stuck, notify)).sent).toBeNull()
     await pushDue(digest(), st, NOW + 4 * HOLD_MS.stuck, notify)
     expect(st.firstSeen).toEqual({})
