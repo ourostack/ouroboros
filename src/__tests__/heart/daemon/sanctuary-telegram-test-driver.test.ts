@@ -152,6 +152,39 @@ describe("Sanctuary owner-turn test driver", () => {
     } finally { stdout.mockRestore() }
   })
 
+  it("waits out the resident holding the authority lease instead of crashing", async () => {
+    const f = fixture()
+    const busy = () => Object.assign(new Error("session turn busy: telegram-state.json"), { retryable: true })
+    let idCalls = 0; let injectCalls = 0; let recordCalls = 0
+    const gateway = {
+      nextTestUpdateId: () => { idCalls += 1; if (idCalls < 3) throw busy(); return TELEGRAM_TEST_ID_FLOOR },
+      injectTestUpdate: (update: any) => { injectCalls += 1; if (injectCalls < 2) throw busy(); return f.gateway.injectTestUpdate(update) },
+      record: () => { recordCalls += 1; if (recordCalls < 4) throw busy(); return { settlement: "completed" } },
+    }
+    const transcript = await runSanctuaryTelegramTestDriver(["send", "--text", "[test] busy", "--quiet", "1", "--no-echo"], { ...f.deps, gateway }) as any
+    expect(transcript).toMatchObject({ updateId: TELEGRAM_TEST_ID_FLOOR, settlement: "completed", timedOut: false })
+    expect(f.log.read().filter((entry) => entry.kind === "injected")).toHaveLength(1)
+  })
+
+  it("still fails on an error that is not a busy lease", async () => {
+    const f = fixture()
+    const gateway = { ...f.gateway, nextTestUpdateId: () => { throw new Error("state is corrupt") }, injectTestUpdate: f.gateway.injectTestUpdate.bind(f.gateway), record: f.gateway.record.bind(f.gateway) }
+    await expect(runSanctuaryTelegramTestDriver(["send", "--text", "[test] x", "--no-echo"], { ...f.deps, gateway })).rejects.toThrow("state is corrupt")
+  })
+
+  it("still fails when reading the settlement hits an error that is not a busy lease", async () => {
+    const f = fixture()
+    const gateway = { ...f.gateway, nextTestUpdateId: f.gateway.nextTestUpdateId.bind(f.gateway), injectTestUpdate: f.gateway.injectTestUpdate.bind(f.gateway), record: () => { throw new Error("record unreadable") } }
+    await expect(runSanctuaryTelegramTestDriver(["send", "--text", "[test] x", "--no-echo"], { ...f.deps, gateway })).rejects.toThrow("record unreadable")
+  })
+
+  it("gives up on a lease that stays busy past the wait", async () => {
+    const f = fixture()
+    const busy = () => Object.assign(new Error("session turn busy: telegram-state.json"), { retryable: true })
+    const gateway = { ...f.gateway, nextTestUpdateId: () => { throw busy() }, injectTestUpdate: f.gateway.injectTestUpdate.bind(f.gateway), record: f.gateway.record.bind(f.gateway) }
+    await expect(runSanctuaryTelegramTestDriver(["send", "--text", "[test] x", "--wait", "5", "--no-echo"], { ...f.deps, gateway })).rejects.toThrow("session turn busy")
+  })
+
   it("prints the log, optionally from a sequence number", async () => {
     const f = fixture()
     await runSanctuaryTelegramTestDriver(["send", "--text", "[test] one", "--no-wait", "--no-echo"], f.deps)
