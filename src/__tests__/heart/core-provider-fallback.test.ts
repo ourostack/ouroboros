@@ -335,10 +335,10 @@ describe("automatic provider fallback within a turn", () => {
     expect(notices).toHaveLength(1)
   })
 
-  it("uses the inner lane's chain for inner turns", async () => {
+  it("uses the inner lane's own chain", async () => {
     setConfig([MINIMAX])
     mockAnthropicCreate.mockRejectedValue(CREDIT())
-    mockOpenAICreate.mockResolvedValue(openAIStream("inner backup"))
+    mockOpenAICreate.mockResolvedValue(openAIStream("private-lane backup"))
 
     const { result } = await runTurn("inner")
     expect(result.outcome).not.toBe("errored")
