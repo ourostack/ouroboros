@@ -1231,9 +1231,8 @@ describe("buildSystem", () => {
 
     expect(result).toContain("sense states:")
     expect(result).toContain("interactive = available when opened by the user")
-    expect(result).toContain("disabled = turned off in agent.json")
-    expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
-    expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
+    expect(result).toContain("needs_config = missing vault runtime/config values")
+    expect(result).toContain("not_attached = no local-machine attachment here")
     expect(result).toContain("Mail: needs_config")
     expect(result).toContain("I load the `sense-setup` skill and follow it instead of guessing.")
     expect(result).not.toContain("mail setup AX")

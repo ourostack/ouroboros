@@ -221,6 +221,6 @@ describe("note-keeping judgement heuristics — routing rules", () => {
     // record search. (The file-listing tool is `glob`, not `list_directory`.)
     expect(system).toContain("custom top-level folders")
     expect(system).toContain("`glob`")
-    expect(system).toContain("BEFORE using record search")
+    expect(system).toContain("before searching the Desk record")
   })
 })
