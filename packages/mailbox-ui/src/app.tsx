@@ -1,19 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react"
 import { fetchJson, subscribeToEvents, type ConnectionState } from "./api"
 import { buildHash, parseHash, buildSupervisionHash, parseSupervisionHash, type RouteState } from "./navigation"
-import { SidebarLayout } from "./catalyst/sidebar-layout"
-import {
-  Sidebar,
-  SidebarBody,
-  SidebarHeader,
-  SidebarItem,
-  SidebarLabel,
-  SidebarSection,
-  SidebarHeading,
-  SidebarFooter,
-} from "./catalyst/sidebar"
-import { Navbar, NavbarItem, NavbarSection, NavbarSpacer } from "./catalyst/navbar"
-import { Badge } from "./catalyst/badge"
+import { SidebarLayout } from "./components/ouro/sidebar/sidebar-layout"
+import { Sidebar } from "./components/ouro/sidebar/sidebar"
+import { Badge } from "./components/status-badge"
 import { AgentInspector } from "./components/agent-inspector"
 import { Supervision } from "./components/supervision"
 import type { MailboxAgentInnerView, MailboxAgentView, MailboxDeskPrefs, MailboxMachineView } from "./contracts"
@@ -199,38 +189,22 @@ export function App() {
 
   return (
     <SidebarLayout
-      navbar={
-        <Navbar>
-          <NavbarSpacer />
-          <NavbarSection>
-            <NavbarItem>
-              <Badge color={machine.overview.daemon.mode === "dev" ? "yellow" : "lime"}>
-                {machine.overview.daemon.mode}
-              </Badge>
-            </NavbarItem>
-          </NavbarSection>
-        </Navbar>
+      header={
+        <Badge color={machine.overview.daemon.mode === "dev" ? "yellow" : "lime"}>
+          {machine.overview.daemon.mode}
+        </Badge>
       }
       sidebar={
-        <Sidebar className="bg-ouro-deep">
-          <SidebarHeader className="border-ouro-moss/30">
-            <div className="flex items-center gap-3">
-              <div className="h-3 w-3 shrink-0 rounded-full bg-ouro-glow shadow-[0_0_16px_theme(--color-ouro-glow)]" />
-              <div className="min-w-0">
-                <p className="truncate font-display text-lg italic font-semibold text-ouro-bone">
-                  Ouro Mailbox
-                </p>
+        <Sidebar
+          label="Mailbox"
+          className="bg-ouro-deep"
+          header={
+            <div className="space-y-4 border-b border-ouro-moss/30 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="h-3 w-3 shrink-0 rounded-full bg-ouro-glow shadow-[0_0_16px_theme(--color-ouro-glow)]" />
+                <p className="truncate font-display text-lg italic font-semibold text-ouro-bone">Ouro Mailbox</p>
               </div>
-            </div>
-          </SidebarHeader>
-          <SidebarBody className="[&>[data-slot=section]+[data-slot=section]]:mt-4">
-            {/* Machine stats — compact row */}
-            <SidebarSection>
-              <SidebarHeading className="text-ouro-mist/60">Machine</SidebarHeading>
-              <SidebarItem current={supervisionRoute !== null} onClick={() => handleSupervision(null)}>
-                <SidebarLabel className="text-ouro-bone">Supervision</SidebarLabel>
-              </SidebarItem>
-              <div className="grid grid-cols-3 gap-1.5 px-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 {[
                   { v: t.liveTasks ?? 0, l: "Tasks", alert: (t.blockedTasks ?? 0) > 0 },
                   { v: t.openObligations ?? 0, l: "Oblig." },
@@ -244,57 +218,56 @@ export function App() {
                   </div>
                 ))}
               </div>
-            </SidebarSection>
-
-            {/* Agent list */}
-            <SidebarSection>
-              <SidebarHeading className="text-ouro-mist/60">Agents</SidebarHeading>
-              {machine.agents.map((agent) => (
-                <SidebarItem
-                  key={agent.agentName}
-                  current={supervisionRoute === null && agent.agentName === selectedAgent}
-                  onClick={() => handleSelectAgent(agent.agentName)}
-                >
-                  <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <SidebarLabel className="text-ouro-bone">{agent.agentName}</SidebarLabel>
-                      <p className="truncate text-xs text-ouro-shadow">
-                        {agent.tasks.liveCount}t · {agent.obligations.openCount}o · {agent.coding.activeCount}c
-                      </p>
-                    </div>
-                    <Badge color={attentionBadgeColor(agent.attention.level)}>
-                      {agent.attention.label}
-                    </Badge>
-                  </div>
-                </SidebarItem>
-              ))}
-            </SidebarSection>
-          </SidebarBody>
-          <SidebarFooter className="border-ouro-moss/30">
-            <div className="px-2 text-xs text-ouro-shadow">
-              <p className="font-mono">{machine.overview.runtime.version}</p>
-              <p className="mt-0.5">{machine.overview.daemon.mode} · {machine.overview.freshness.status}</p>
             </div>
-          </SidebarFooter>
-          {/* Agent status line — manual override or auto-derived */}
-          {supervisionRoute === null && selectedAgent && currentView && (
-            <div className="px-4 py-2 border-t border-ouro-moss/20">
-              <p className="text-xs italic text-ouro-shadow/70">
-                {(() => {
-                  const manualStatus = deskPrefs?.statusLine
-                  if (manualStatus) return manualStatus
-                  const inner: MailboxAgentInnerView = currentView.inner
-                  const status = inner.status
-                  if (status === "running" || inner.hasPending) return "thinking through something privately"
-                  const obCount = currentView.work.obligations.openCount
-                  if (obCount > 2) return "a few loose ends"
-                  if (obCount > 0) return "carrying something"
-                  return "steady"
-                })()}
-              </p>
+          }
+          sections={[
+            {
+              label: "Machine",
+              items: [
+                {
+                  label: "Supervision",
+                  href: buildSupervisionHash(null),
+                  current: supervisionRoute !== null,
+                  onClick: (event) => { event.preventDefault(); handleSupervision(null) },
+                },
+              ],
+            },
+            {
+              label: "Agents",
+              items: machine.agents.map((agent) => ({
+                label: agent.agentName,
+                href: buildHash({ agent: agent.agentName, tab: "overview", focus: undefined }),
+                current: supervisionRoute === null && agent.agentName === selectedAgent,
+                onClick: (event: MouseEvent<HTMLElement>) => { event.preventDefault(); handleSelectAgent(agent.agentName) },
+                badge: <Badge color={attentionBadgeColor(agent.attention.level)}>{agent.attention.label}</Badge>,
+              })),
+            },
+          ]}
+          footer={
+            <div className="space-y-2 border-t border-ouro-moss/20 pt-3 text-xs text-ouro-shadow">
+              <div className="px-2">
+                <p className="font-mono">{machine.overview.runtime.version}</p>
+                <p className="mt-0.5">{machine.overview.daemon.mode} · {machine.overview.freshness.status}</p>
+              </div>
+              {/* Agent status line — manual override or auto-derived */}
+              {supervisionRoute === null && selectedAgent && currentView && (
+                <p className="px-2 italic text-ouro-shadow/70">
+                  {(() => {
+                    const manualStatus = deskPrefs?.statusLine
+                    if (manualStatus) return manualStatus
+                    const inner: MailboxAgentInnerView = currentView.inner
+                    const status = inner.status
+                    if (status === "running" || inner.hasPending) return "thinking through something privately"
+                    const obCount = currentView.work.obligations.openCount
+                    if (obCount > 2) return "a few loose ends"
+                    if (obCount > 0) return "carrying something"
+                    return "steady"
+                  })()}
+                </p>
+              )}
             </div>
-          )}
-        </Sidebar>
+          }
+        />
       }
     >
       <div role="status" className="mb-4 text-xs text-ouro-mist">

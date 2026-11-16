@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { Badge } from "../../catalyst/badge"
+import { Badge } from "../status-badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"

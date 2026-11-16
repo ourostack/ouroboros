@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { fetchJson } from "../api"
-import { Badge } from "../catalyst/badge"
+import { Badge } from "./status-badge"
 import type { ShepherdSupervisionEvent, ShepherdSupervisionView } from "../contracts"
 import { shepherdInspectionCommand, shepherdRetirementCommand, SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../contracts"
 

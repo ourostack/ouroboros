@@ -1,0 +1,71 @@
+name: mailbox-ui-check
+
+# Ouro check on the Mailbox web app's build, served with made-up data from the app's test fixtures (scripts/check-server.ts).
+# It reports the layout, text, contrast and theme findings Ouro UI publishes and uploads the report as the ouro-check artifact.
+# The app's own tests run in static-checks (coverage.yml).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ouro-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/mailbox-ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/mailbox-ui/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npx vite build
+
+      - name: Start the app against made-up data
+        run: |
+          node --experimental-transform-types scripts/check-server.ts dist 6878 > "$RUNNER_TEMP/check-server.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:6878/api/machine" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/check-server.log"
+          exit 1
+
+      # Exit 3 means the check found gated findings: the report names them, and this run uploads it. The gate
+      # turns on once the palette and layout findings in the report are fixed. Exit 1 or 2 fails the job.
+      - name: Ouro check
+        run: |
+          set +e
+          node src/lib/ouro/check/check.ts http://127.0.0.1:6878/ --out ouro-check
+          code=$?
+          set -e
+          echo "Ouro check exit $code (3: gated findings, reported)"
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then exit "$code"; fi
+
+      - name: Upload the Ouro check report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ouro-check
+          path: packages/mailbox-ui/ouro-check/
+          if-no-files-found: warn
