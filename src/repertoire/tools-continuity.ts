@@ -12,31 +12,30 @@ import { readStewardPolicy } from "../heart/steward-policy";
 import { parseAwaitFile } from "../heart/awaiting/await-parser";
 
 const externalEventDispositionProperties = {
-  recordPath: { type: "string", description: "Exact receipt path from the external-event message" },
-  expectedGeneration: { type: "number", description: "Exact generation shown in the external-event turn" },
-  classifiedRevision: { type: "string", description: "Exact observation revision investigated in this turn" },
+  recordPath: { type: "string", description: "Receipt path from the external-event message" },
+  expectedGeneration: { type: "number", description: "Generation shown in the external-event turn" },
+  classifiedRevision: { type: "string", description: "Observation revision investigated this turn" },
   classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
-  stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version when one applies; otherwise use none. Any event may be closed with none." },
-  stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
-  stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
+  stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "current with the live policy key/version when one applies, else none" },
+  stewardPolicyKey: { type: "string" },
+  stewardPolicyVersion: { type: "number" },
   decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
-  reason: { type: "string", description: "Internal audit note for the decision; never shown to the owner" },
-  owner_message: { type: "string", description: "Required for ask or report: the exact short plain message the owner reads, as you would text a friend. No ids, leases, generations, revisions or receipts." },
-  nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"], description: "Use on_change unless you already called await_condition for this exact event and are supplying its awaitId" },
-  wakeAt: { type: "string", description: "ISO time required only when nextWake=at" },
-  awaitId: { type: "string", description: "Existing await_condition receipt required when nextWake=at; never invent one" },
-  careId: { type: "string", description: "Existing Care adopted for this incident, if any" },
+  reason: { type: "string", description: "Internal audit note; never shown to the owner" },
+  owner_message: { type: "string", description: "Required for ask or report: the short plain message the owner reads. No ids, leases, generations or receipts." },
+  nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"], description: "on_change unless you called await_condition for this event; then at, with its awaitId" },
+  wakeAt: { type: "string", description: "ISO time, only for nextWake=at" },
+  awaitId: { type: "string", description: "await_condition receipt, for nextWake=at" },
+  careId: { type: "string" },
   actionRefs: { type: "array", items: { type: "string" } },
   verificationRefs: { type: "array", items: { type: "string" } },
 };
 
-const externalEventDispositionRequired = ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"];
 const externalEventDispositionBatchSchema = {
   type: "array",
   minItems: 1,
   maxItems: 32,
-  description: "All exact leases from one coalesced external-event turn",
-  items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
+  description: "One disposition per lease of a coalesced external-event turn, each with the single-form fields",
+  items: { type: "object" },
 };
 
 // The owner reads owner_message verbatim, so internal bookkeeping words never reach them.
@@ -197,17 +196,13 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "external_event_disposition",
-        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends owner_message once for this receipt; reason stays internal. silent and act only record the disposition. In a batch, only the first ask or report sends a message and the later ones are recorded as covered by it, so write that first owner_message to cover every listed incident.",
+        description: "Classify the external event I just investigated. ask and report send owner_message (the only way to reach the owner); silent and act only record. In a batch only the first ask or report sends, covering the rest, so make its owner_message cover every incident.",
         parameters: {
           type: "object",
           properties: {
             ...externalEventDispositionProperties,
             batch: externalEventDispositionBatchSchema,
           },
-          oneOf: [
-            { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired },
-            { type: "object", properties: { batch: externalEventDispositionBatchSchema }, required: ["batch"] },
-          ],
           additionalProperties: false,
         },
       },
