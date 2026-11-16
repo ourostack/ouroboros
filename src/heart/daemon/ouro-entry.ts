@@ -23,7 +23,7 @@ const gate = gateCommandArgs(process.argv.slice(2))
 if (gate.kind === "refuse") {
   process.stderr.write(`${gate.message}\n`)
   process.exitCode = 1
-} else if (gate.kind === "preview") {
+} else if (gate.kind === "preview" || gate.kind === "help") {
   process.stdout.write(`${gate.text}\n`)
 } else {
   void runOuroCli(gate.args).catch((error) => {

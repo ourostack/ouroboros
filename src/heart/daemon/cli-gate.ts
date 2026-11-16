@@ -36,7 +36,11 @@ export const PARSER_FLAGS: readonly string[] = [
   "--verify", "--version", "--web", "--which", "--workbench-mcp", "--yes",
 ];
 
-export type GateResult = { kind: "pass"; args: string[] } | { kind: "refuse"; message: string } | { kind: "preview"; text: string };
+export type GateResult =
+  | { kind: "pass"; args: string[] }
+  | { kind: "refuse"; message: string }
+  | { kind: "preview"; text: string }
+  | { kind: "help"; text: string };
 
 interface CommandShape {
   declaration: CliCommandDeclaration;
@@ -119,6 +123,20 @@ export function gateCommandArgs(args: string[]): GateResult {
   const others = declaration.effect === "others";
   const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
   const rest = args.slice(words.length);
+
+  if (others && rest.includes("--help")) {
+    const text = [
+      "Usage:",
+      ...usageLinesFor(name),
+      "",
+      declaration.summary,
+      "",
+      "Flags:",
+      '  --why "<who asked you, and what they said>"   Needed: other people will see this.',
+      "  --dry-run                                   Say who will see it, and do nothing.",
+    ].join("\n");
+    return { kind: "help", text };
+  }
 
   for (let index = 0; index < rest.length; index++) {
     const token = rest[index]!;
