@@ -97,8 +97,11 @@ describe("buildDigest and renderDigest", () => {
     addArchiveLog(agentRoot, { id: "a", name: "Old coordinator", at: iso(60), reason: "handed-off" })
     addArchiveLog(agentRoot, { id: "b", name: "Asked for", at: iso(30), reason: "owner-asked" })
     addArchiveLog(agentRoot, { id: "c", name: "Last week", at: iso(60 * 24 * 7), reason: "handed-off" })
+    addArchiveLog(agentRoot, { id: "d", name: "ob home catch-up", at: iso(10), reason: "oversize-idle", note: "1.0 GB; last push `git push -q home/slugger-sticky`" })
+    addArchiveLog(agentRoot, { id: "e", name: "Surface manifest runner", at: iso(5), reason: "memory-pressure" })
     const text = renderDigest(await buildDigest(input([])), NOW)
     expect(text).toContain("**Archived** (reversible)\n- Old coordinator — handed off to a successor\n- Asked for — you asked")
+    expect(text).toContain("- ob home catch-up — over the size limit and idle 30 min after the hand-off ask (1.0 GB; last push `git push -q home/slugger-sticky`)\n- Surface manifest runner — over the size limit and idle while memory ran short")
     expect(text).not.toContain("Last week")
   })
 

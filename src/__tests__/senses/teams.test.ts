@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import type { ChannelCallbacks } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -100,6 +100,13 @@ afterEach(() => {
 
 // These suites start the app with no bot credentials, which only the developer mode allows.
 process.env.OURO_TEAMS_DEVTOOLS = "1"
+
+// Load the module graph once outside any timed test. Its cold transform (heart/core and the
+// whole tool registry) takes seconds under CI load; resetting keeps each test's import fresh.
+beforeAll(async () => {
+  await import("../../senses/teams")
+  vi.resetModules()
+})
 
 describe("Teams adapter - exports", () => {
   it("exports createTeamsCallbacks", async () => {

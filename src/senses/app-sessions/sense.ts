@@ -10,7 +10,7 @@ import { pushDue } from "./digest-push"
 import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { startPromptTracker } from "./prompts"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
-import { noticeOversizedSessions } from "./size-watch"
+import { noticeOversizedSessions, type Memory } from "./size-watch"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
 
@@ -40,6 +40,8 @@ export interface AppSessionsSenseOptions {
   wasDelivered?: WasDelivered
   /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
   notifyOwner?: NotifyOwner
+  /** Reads swap and free memory for the size watch; the machine's own by default. */
+  memory?: () => Memory
 }
 
 /** The replies the session finished since `entry.offset`, and the offset to continue from. */
@@ -221,7 +223,7 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
     waitingPoll = waitingPoll.then(() => recordSnapshot(agentRoot, client, now())).then(taken => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
     })
-    sizePoll = sizePoll.then(async () => noticeOversizedSessions(agentRoot, await listAppSessions({ ...client, now: () => now() }), { notify: notifyOwner, now: now(), client })).then(() => undefined).catch((error: Error) => {
+    sizePoll = sizePoll.then(async () => noticeOversizedSessions(agentRoot, await listAppSessions({ ...client, now: () => now() }), { notify: notifyOwner, now: now(), client, ...(options.memory ? { memory: options.memory } : {}) })).then(() => undefined).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_oversize_error", message: "could not check the sessions' history sizes", meta: { error: error.message } })
     })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
