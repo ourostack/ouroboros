@@ -1,4 +1,6 @@
 // The commands of the ouro CLI, declared once: the names `ouro help --json` lists and the X-ray's inventory reads.
+import { emitNervesEvent } from "../../nerves/runtime"
+
 // Each says who sees its effect: only the person ("private") or other people ("others"). A command moves onto the
 // Ouro AX kit's definitions one at a time; until then it is declared here and dispatched by cli-exec.
 
@@ -113,3 +115,28 @@ export const CLI_EXIT_CODES = [
   { code: 0, name: "ok", meaning: "The command did what it was asked." },
   { code: 1, name: "error", meaning: "The command failed or refused; the output says why and how to fix it." },
 ] as const;
+
+/** The help as data: every declared command with its effect, and the exit codes. */
+export function cliHelpJson(): string {
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.cli_help_json",
+    message: "printing ouro help as data",
+    meta: { commands: CLI_COMMANDS.length },
+  })
+  return JSON.stringify(
+    {
+      tool: "ouro",
+      commands: CLI_COMMANDS.map((command) => ({
+        name: command.name,
+        effect: command.effect,
+        summary: command.summary,
+        usage: [`ouro ${command.name}`],
+        ...(command.readOnly ? { readOnly: true } : {}),
+      })),
+      exitCodes: CLI_EXIT_CODES,
+    },
+    null,
+    2,
+  )
+}
