@@ -5,6 +5,7 @@ import {
   GITHUB_RELEASES_API,
   githubTarballName,
   installRelease,
+  lookupAsRegistryJson,
   lookupLatestRelease,
   NPMJS_REGISTRY,
   selfUpdateE2eOverrides,
@@ -175,5 +176,28 @@ describe("installRelease", () => {
     await expect(installRelease("0.1.0-alpha.896", { latestVersion: "0.1.0-alpha.896", answers: [] }, "/h", { execFile }))
       .rejects.toThrow("could not install 0.1.0-alpha.896 from any source (npm-registry: E404; npmjs: E404)")
     expect(execFile).toHaveBeenLastCalledWith("npm", ["install", "--prefix", "/h/versions/0.1.0-alpha.896", "@ouro.bot/cli@0.1.0-alpha.896", "--registry", NPMJS_REGISTRY], { timeoutMs: 600_000 })
+  })
+})
+
+describe("the update check when npm cannot be reached or lags", () => {
+  it("finds the GitHub release when npmjs is blocked and the configured feed is stuck on an old version", async () => {
+    const lookup = await lookupLatestRelease({
+      ...deps({ npmjs: new Error("ENOTCONN"), registry: "\"0.1.0-alpha.997\"", github: [githubRelease("0.1.0-alpha.1144")] }),
+      lookupTimeoutMs: 2_500,
+    })
+    expect(lookupAsRegistryJson(lookup)).toEqual({ "dist-tags": { latest: "0.1.0-alpha.1144" } })
+  })
+
+  it("uses the short lookup limit for every source", async () => {
+    const d = { ...deps({ npmjs: new Error("x"), github: [] }), lookupTimeoutMs: 2_500 }
+    await lookupLatestRelease(d)
+    expect(d.fetchJson).toHaveBeenCalledWith(`${NPMJS_REGISTRY}@ouro.bot%2fcli`, 2_500)
+    expect(d.fetchJson).toHaveBeenCalledWith(GITHUB_RELEASES_API, 2_500)
+    expect(d.execFile).toHaveBeenCalledWith("npm", expect.any(Array), { timeoutMs: 2_500 })
+  })
+
+  it("reports registry unavailable, with each source's reason, when nothing answers", async () => {
+    const lookup = await lookupLatestRelease(deps({ npmjs: new Error("ENOTCONN"), registry: new Error("npm down"), github: new Error("HTTP 403") }))
+    expect(() => lookupAsRegistryJson(lookup)).toThrow("registry unavailable (npmjs: ENOTCONN; npm-registry: npm down; github: HTTP 403)")
   })
 })
