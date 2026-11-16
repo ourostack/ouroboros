@@ -687,7 +687,7 @@ jobs:
           verify_tag "@ouro.bot/cli" "$LOCAL"
           verify_tag "ouro.bot" "$LOCAL"
 
-          echo "npm versions verified for ${LOCAL} (selected tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
+          echo "selected npm dist-tags verified by exact version ${LOCAL} (tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 
       # Hand the exact bytes npm now serves to the github-release job. `npm pack`
       # of a published spec downloads the registry tarball and checks it against
