@@ -45,6 +45,15 @@ describe("the tool set", () => {
     expect(tools.appSessionsToolsEnabled(agentRoot)).toBe(true)
   })
 
+  it("joins the tool selection only when the sense is on", async () => {
+    const { selectToolsForChannel } = await import("../../repertoire/tools")
+    const names = () => selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, { agentName: "ouroboros", agentRoot })
+      .ordinary.map((definition) => definition.tool.function.name).filter((name) => name === "app_sessions_tail")
+    expect(names()).toEqual([])
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({ senses: { "app-sessions": { enabled: true } } }))
+    expect(names()).toEqual(["app_sessions_tail"])
+  })
+
   it("needs an agent runtime, and reports a failure as an error result", async () => {
     expect(await call(tools.listWorkflowsTool, {}, null)).toEqual({ error: "the app-sessions tools need an agent runtime" })
     face.listWorkflows!.mockRejectedValueOnce(new Error("app is not running"))
