@@ -1,0 +1,105 @@
+name: ax-xray
+
+# The Ouro AX X-ray checks the ouro CLI the way an agent calls it, against a loopback mock with made-up data, and the
+# action claims check the declarations in actions/. Both write reports to artifacts named `xray` and `actions-xray`.
+# The X-ray runs here as a report, not a gate: the CLI does not conform yet (see the report), so --conformance waits.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MOCK_PORT: "4917"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build the CLI
+        run: npm run build
+
+      - name: Start the made-up-data mock
+        run: |
+          node .github/scripts/ax-mock.mjs "$MOCK_PORT" > "$RUNNER_TEMP/mock.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$MOCK_PORT/" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/mock.log"
+          exit 1
+
+      - name: Inventory from the CLI's registration
+        run: node .github/scripts/ax-inventory.mjs > inventory.json
+
+      # Exit 1 means a must claim does not hold yet: the report says which, and this run reports it without failing.
+      # Exit 2 (a refused or broken run) fails the job.
+      - name: Ouro AX X-ray
+        run: |
+          mkdir -p xray
+          set +e
+          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+            --cli "node dist/heart/daemon/ouro-entry.js" \
+            --inventory inventory.json \
+            --home "$RUNNER_TEMP/xray-home" \
+            --env "TOOL_URL=http://127.0.0.1:$MOCK_PORT/" \
+            --mock "http://127.0.0.1:$MOCK_PORT/ mock=ouroboros-ax-xray" \
+            --commit "$GITHUB_SHA" \
+            --json --md xray/xray.md > xray/report.json
+          code=$?
+          set -e
+          echo "X-ray exit $code (1: a must claim does not hold yet, reported)"
+          if [ "$code" -gt 1 ]; then exit "$code"; fi
+
+      - name: Upload the X-ray
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray
+          path: |
+            xray/
+            inventory.json
+          if-no-files-found: warn
+
+  actions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Action claims report
+        run: |
+          mkdir -p xray-actions
+          node tools/ouro-actions/ouro-actions.mts check actions/ouro.actions.mts actions/generated \
+            --report xray-actions/report.json --app "Ouroboros" --commit "$GITHUB_SHA"
+
+      - name: Upload the action claims report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: actions-xray
+          path: xray-actions/
+          if-no-files-found: warn
