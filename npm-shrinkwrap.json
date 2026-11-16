@@ -7,6 +7,9 @@
     "": {
       "name": "@ouro.bot/cli",
       "version": "0.1.0-alpha.1160",
+      "bundleDependencies": [
+        "@ouro.bot/friends"
+      ],
       "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
         "@ouro.bot/friends": "0.1.0-alpha.18",
@@ -1427,6 +1430,7 @@
       "version": "0.1.0-alpha.18",
       "resolved": "https://registry.npmjs.org/@ouro.bot/friends/-/friends-0.1.0-alpha.18.tgz",
       "integrity": "sha512-28DqPjiZ3kOVNBbFNGWqvfRO11xDn7V0ggaMUZvSx8pY9rHgnbMRzSc5NPtdjDTUpaYS28mRQCNqTgx+R5F8fQ==",
+      "inBundle": true,
       "license": "Apache-2.0",
       "dependencies": {
         "libsodium-wrappers": "0.8.4"
@@ -5761,12 +5765,14 @@
       "version": "0.8.4",
       "resolved": "https://registry.npmjs.org/libsodium/-/libsodium-0.8.4.tgz",
       "integrity": "sha512-lMcYaRi0zcs7tarATsQUYC7rstliIXZuoq0c6zXSgNtSNtdvBgkSegjWhpMJAXzKX3SUSwIp7+zEsob+j3LuRw==",
+      "inBundle": true,
       "license": "ISC"
     },
     "node_modules/libsodium-wrappers": {
       "version": "0.8.4",
       "resolved": "https://registry.npmjs.org/libsodium-wrappers/-/libsodium-wrappers-0.8.4.tgz",
       "integrity": "sha512-mu8aAWucZjTB5O/BtGXtW4e1agy7uHxNYG7zPthmmD1jU43LCDmSWZLN4JhflbdPXj3yDO4lxM1O9hLDgIOXDw==",
+      "inBundle": true,
       "license": "ISC",
       "dependencies": {
         "libsodium": "^0.8.0"
