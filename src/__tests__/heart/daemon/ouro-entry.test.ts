@@ -21,6 +21,47 @@ describe("ouro CLI entrypoint", () => {
     expect(runOuroCli).toHaveBeenCalledWith(["shepherd", "status", "--agent", "missing"])
   })
 
+  it("refuses a command other people see without --why, and runs nothing", async () => {
+    vi.resetModules()
+    const runOuroCli = vi.fn(async () => "ok")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "msg", "--to", "inbox-agent", "hello"])
+    const exitCode = process.exitCode
+    await import("../../../heart/daemon/ouro-entry")
+    await Promise.resolve()
+    expect(runOuroCli).not.toHaveBeenCalled()
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("needs --why"))
+    expect(process.exitCode).toBe(1)
+    process.exitCode = exitCode
+  })
+
+  it("previews a command other people see under --dry-run, and runs nothing", async () => {
+    vi.resetModules()
+    const runOuroCli = vi.fn(async () => "ok")
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+    vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "ouro-entry.js",
+      "msg",
+      "--to",
+      "inbox-agent",
+      "hello",
+      "--why",
+      "they asked",
+      "--dry-run",
+    ])
+    await import("../../../heart/daemon/ouro-entry")
+    await Promise.resolve()
+    expect(runOuroCli).not.toHaveBeenCalled()
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining("Other people will see this"))
+  })
+
   it("invokes runOuroCli with argv args and emits startup event", async () => {
     vi.resetModules()
 

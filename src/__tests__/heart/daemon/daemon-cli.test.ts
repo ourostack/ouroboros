@@ -3075,7 +3075,7 @@ describe("ouro CLI execution", () => {
 
     }
 
-    await runOuroCli(["msg", "--to", "slugger", "hi", "--why", "the test asked"], deps)
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
 
     expect(deps.sendCommand).toHaveBeenCalledWith(
       "/tmp/ouro-test.sock",
@@ -3137,7 +3137,7 @@ describe("ouro CLI execution", () => {
 
     }
 
-    await runOuroCli(["msg", "--to", "slugger", "hi", "--why", "the test asked"], deps)
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
 
     const sentCommands = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls.map(([, payload]) => payload)
     expect(sentCommands).toEqual([
@@ -3173,7 +3173,7 @@ describe("ouro CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
 
-    await runOuroCli(["msg", "--to", "slugger", "hi", "--why", "the test asked"], deps)
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
 
     const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
       .map(([, payload]) => payload)
@@ -3203,7 +3203,7 @@ describe("ouro CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
 
-    await runOuroCli(["msg", "--to", "slugger", "hi", "--why", "the test asked"], deps)
+    await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
 
     const privateWake = (deps.sendCommand as ReturnType<typeof vi.fn>).mock.calls
       .map(([, payload]) => payload)
@@ -3250,8 +3250,6 @@ describe("ouro CLI execution", () => {
       "feedback-1",
       "--evidence",
       "/tmp/feedback",
-      "--why",
-      "the test asked",
     ], deps)
 
     expect(result).toContain("queued external event")
@@ -3332,7 +3330,7 @@ describe("ouro CLI execution", () => {
 
     }
 
-    const result = await runOuroCli(["msg", "--to", "slugger", "hi", "--why", "the test asked"], deps)
+    const result = await runOuroCli(["msg", "--to", "slugger", "hi"], deps)
 
     expect(deps.fallbackPendingMessage).toHaveBeenCalledWith(expect.objectContaining({
       kind: "message.send",

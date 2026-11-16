@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1157",
       "changes": [
-        "The ouro CLI refuses an unknown flag and names the nearest real one. Commands other people see need --why, which is kept out of their words, and --dry-run says who will see them without doing it."
+        "The ouro CLI refuses an unknown flag and names the nearest real one, at its front door. Commands other people see need --why, which is kept out of their words, and --dry-run says who will see them without doing it."
       ]
     },
     {
