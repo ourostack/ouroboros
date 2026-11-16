@@ -59,6 +59,12 @@ describe("update state file", () => {
 describe("formatUpdateStatusLine", () => {
   const opts = { now: NOW, updaterInstalled: true }
 
+  it("says a recorded pin is cleared once the intent no longer pins", () => {
+    const pinned = state({ outcome: "pinned", detail: "pin honored until later" })
+    expect(formatUpdateStatusLine(pinned, { ...opts, pinCleared: true })).toBe("Updates: pin cleared; the next hourly check updates past 0.1.0-alpha.896 (last check 10m ago saw the pin)")
+    expect(formatUpdateStatusLine(pinned, opts)).toContain("pinned to")
+  })
+
   it("explains a missing record", () => {
     expect(formatUpdateStatusLine(null, opts)).toBe("Updates: no update check recorded yet; run `ouro self-update`")
     expect(formatUpdateStatusLine(null, { now: NOW, updaterInstalled: false }))
