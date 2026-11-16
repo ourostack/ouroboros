@@ -1,0 +1,94 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "ouro",
+  "tools": [
+    {
+      "name": "list_friends",
+      "title": "Friends",
+      "description": "List the friends this agent knows, with their ids and trust levels. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "listing": {
+            "type": "string",
+            "description": "One friend per line: id, name and trust level."
+          }
+        },
+        "required": [
+          "listing"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_habits",
+      "title": "Habits",
+      "description": "List the agent's habits, with their cadence. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "listing": {
+            "type": "string",
+            "description": "One habit per line: name and cadence."
+          }
+        },
+        "required": [
+          "listing"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_sessions",
+      "title": "Sessions",
+      "description": "List the agent's sessions, newest first. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "listing": {
+            "type": "string",
+            "description": "One session per line: id and when it last ran."
+          }
+        },
+        "required": [
+          "listing"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "refusals": {}
+}

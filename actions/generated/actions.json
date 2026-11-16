@@ -1,0 +1,55 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "ouro",
+  "tool": "ouro",
+  "actions": [
+    {
+      "id": "list_friends",
+      "consent": "read",
+      "label": "Friends",
+      "description": "List the friends this agent knows.",
+      "agent": "List the friends this agent knows, with their ids and trust levels. Read only.",
+      "input": {},
+      "output": {
+        "listing": {
+          "label": "Friends",
+          "description": "One friend per line: id, name and trust level.",
+          "kind": "string"
+        }
+      },
+      "cli": "friend list"
+    },
+    {
+      "id": "list_habits",
+      "consent": "read",
+      "label": "Habits",
+      "description": "List the habits this agent runs on a schedule.",
+      "agent": "List the agent's habits, with their cadence. Read only.",
+      "input": {},
+      "output": {
+        "listing": {
+          "label": "Habits",
+          "description": "One habit per line: name and cadence.",
+          "kind": "string"
+        }
+      },
+      "cli": "habit list"
+    },
+    {
+      "id": "list_sessions",
+      "consent": "read",
+      "label": "Sessions",
+      "description": "List the agent's sessions.",
+      "agent": "List the agent's sessions, newest first. Read only.",
+      "input": {},
+      "output": {
+        "listing": {
+          "label": "Sessions",
+          "description": "One session per line: id and when it last ran.",
+          "kind": "string"
+        }
+      },
+      "cli": "session list"
+    }
+  ]
+}
