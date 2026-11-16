@@ -19,31 +19,31 @@ describe("model-capabilities", () => {
     it.each(["claude-opus-5.5", "claude-sonnet-5.5", "claude-haiku-5.5"])("has a Copilot row for %s without a thinking format", async (id) => {
       emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, maxOutputTokens: 128000, vision: true })
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, maxOutputTokens: 128000, contextWindowTokens: 200000, vision: true })
     })
 
     it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"])("has a direct Anthropic row for %s with the anthropic thinking format", async (id) => {
       emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, thinkingFormat: "anthropic", maxOutputTokens: 128000, vision: true })
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, thinkingFormat: "anthropic", maxOutputTokens: 128000, contextWindowTokens: 200000, vision: true })
     })
 
     it.each(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-luna", "gpt-5.6-terra"])("has a GPT row for %s with phase support and effort none through max", async (id) => {
       emitTestEvent(`${id} registry entry`)
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: GPT_EFFORTS, phase: true, maxOutputTokens: 128000, vision: true })
+      expect(MODEL_CAPABILITIES[id]).toEqual({ reasoningEffort: GPT_EFFORTS, phase: true, maxOutputTokens: 128000, contextWindowTokens: 400000, vision: true })
     })
 
     it("has a gpt-6-astra row without the none effort", async () => {
       emitTestEvent("gpt-6-astra registry entry")
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      expect(MODEL_CAPABILITIES["gpt-6-astra"]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, phase: true, maxOutputTokens: 128000, vision: true })
+      expect(MODEL_CAPABILITIES["gpt-6-astra"]).toEqual({ reasoningEffort: CLAUDE_EFFORTS, phase: true, maxOutputTokens: 128000, contextWindowTokens: 400000, vision: true })
     })
 
     it("has a gpt-5.5 row topping out at xhigh", async () => {
       emitTestEvent("gpt-5.5 registry entry")
       const { MODEL_CAPABILITIES } = await import("../../heart/model-capabilities")
-      expect(MODEL_CAPABILITIES["gpt-5.5"]).toEqual({ reasoningEffort: ["none", "low", "medium", "high", "xhigh"], phase: true, maxOutputTokens: 128000, vision: true })
+      expect(MODEL_CAPABILITIES["gpt-5.5"]).toEqual({ reasoningEffort: ["none", "low", "medium", "high", "xhigh"], phase: true, maxOutputTokens: 128000, contextWindowTokens: 400000, vision: true })
     })
 
     it.each(["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4.6", "claude-sonnet-4.6", "gpt-5.4", "gpt-5.3-codex"])("no longer lists retired model %s", async (id) => {

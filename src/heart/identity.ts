@@ -187,6 +187,7 @@ export interface PluginConfig {
   version?: string
 }
 
+/** maxTokens is only the fallback for a model whose window is unknown; known models carry their own. */
 export const DEFAULT_AGENT_CONTEXT = {
   maxTokens: 80000,
   contextMargin: 20,
@@ -470,7 +471,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfigTempla
     enabled: true,
     humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
     agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
-    context: { ...DEFAULT_AGENT_CONTEXT },
+    context: { contextMargin: DEFAULT_AGENT_CONTEXT.contextMargin },
     habitPaidTurnsPerDay: DEFAULT_HABIT_PAID_TURNS_PER_DAY,
     senses: {
       cli: { ...DEFAULT_AGENT_SENSES.cli },

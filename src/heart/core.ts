@@ -1564,7 +1564,7 @@ export async function runAgent(
         requiredPromptEvidence: options.requiredPromptEvidence,
         provider: providerRuntime.id,
         model: providerRuntime.model,
-        contextWindowTokens: getContextConfig().maxTokens,
+        contextWindowTokens: getContextConfig(providerRuntime.model).maxTokens,
       });
     } catch (error) {
       const invalidEvidenceError = error instanceof Error ? error : new Error(String(error));
@@ -2011,7 +2011,7 @@ export async function runAgent(
         requiredPromptEvidence: options?.requiredPromptEvidence,
         provider: providerRuntime.id,
         model: providerRuntime.model,
-        contextWindowTokens: getContextConfig().maxTokens,
+        contextWindowTokens: getContextConfig(providerRuntime.model).maxTokens,
       }
       const canonicalBudget = applyPromptBudget({ ...budgetOptions, messages })
       const currentUserMessage = budgetOptions.requiredPromptEvidence?.currentUserMessage
@@ -2070,7 +2070,7 @@ export async function runAgent(
             const overflowMessages = attemptMessages.slice(0, protectedStart).map((message) => message.role === "assistant" ? { ...message } : message)
             stripLastToolCalls(overflowMessages);
             overflowMessages.push(...currentAttempt)
-            const { maxTokens, contextMargin } = getContextConfig();
+            const { maxTokens, contextMargin } = getContextConfig(providerRuntime.model);
             const trimmed = trimMessages(overflowMessages, maxTokens, contextMargin, maxTokens * 2);
             const requiredEvidence = options?.requiredPromptEvidence;
             const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
