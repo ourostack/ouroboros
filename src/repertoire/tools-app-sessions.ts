@@ -61,7 +61,7 @@ function define(
 const session = { type: "string", description: "A session's id from list_sessions_and_chats; a unique start of it (the first 8 characters) works." }
 const notifyOnIdle = { type: "string", enum: ["once", "always", "never"], description: "Whether the session's finished replies come back to you as inbound messages: once (default, the next one), always (for a day), or never. The app does not report back to an outside client, so this is how replies reach you." }
 
-export const listSessionsAndChatsTool = define("list_sessions_and_chats", "Every open coding session and chat in this Mac's GitHub Copilot app: id, app_url, name, project, branch, who created and coordinates it. Read-only.", {}, [], READ, () => listSessionsAndChats(clientOptions))
+export const listSessionsAndChatsTool = define("list_sessions_and_chats", "Every open coding session and chat in this Mac's GitHub Copilot app: id, app_url, name, project, branch, who created and coordinates it. Read-only.", {}, [], READ, (_args, agentRoot) => listSessionsAndChats(clientOptions, agentRoot))
 
 export const getSessionsStatusTool = define(
   "get_sessions_status", "What every session is doing now, with counts: busy, idle, stuck, blocked, and what each blocked one waits on. awaiting_input carries the request_id and the question that answer_session_input or respond_to_session_plan_v2 needs. Read-only.",

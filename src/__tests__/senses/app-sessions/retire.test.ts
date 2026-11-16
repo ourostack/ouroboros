@@ -179,6 +179,17 @@ describe("retiring a finished session", () => {
     expect(d.archive).not.toHaveBeenCalled()
   })
 
+  it("keeps a lane whose recorded coordinator was archived but which a listed successor or the session it reports to coordinates (84b913b0 -> 16caf80c)", async () => {
+    handedOff()
+    const d = deps()
+    expect(await retireSessions(agentRoot, [row(S, working), row(ORPHAN, { ...day, coordinatingCreatorSessionId: P })], d)).toEqual([])
+    const report = JSON.stringify({ type: "assistant.message", data: { toolRequests: [{ name: "send_session_message", arguments: { session_id: `w-${CHILD.slice(0, 4)}` } }] } })
+    fs.mkdirSync(path.join(stateDir, "session-state", ORPHAN), { recursive: true })
+    fs.writeFileSync(path.join(stateDir, "session-state", ORPHAN, "events.jsonl"), `${report}\n`)
+    expect(await retireSessions(agentRoot, [row(CHILD, working), row(ORPHAN, { ...day, coordinatingCreatorSessionId: GONE })], d)).toEqual([])
+    expect(d.archive).not.toHaveBeenCalled()
+  })
+
   it("treats a coordinator archived in the same pass as gone, and survives a failed archive", async () => {
     handedOff()
     const lane = row(ORPHAN, { ...day, coordinatingCreatorSessionId: P, detail: "" })

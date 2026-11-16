@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1162",
+      "changes": [
+        "Notices the owner did not ask for never talk over a conversation: the app-sessions pushes, the waiting-prompt notice and Shepherd's owner notices are held while a turn is running in one of the owner's sessions, while either side wrote in the last 10 minutes, or while their message has no answer (up to 30 minutes), and go out once it is quiet. The digest push now carries only what only the owner can act on (ready work, a session waiting on their answer), rechecked live before sending, in whole sentences with the session's link and no cut-off names; finished and broken things stay in /status. A session whose loop stopped is resumed by the sense itself (once per stop, three a day at most) and listed under Fixed by me. get_session and the session lists name who coordinates a lane now, following a hand-off's Succeeds: line or the lane's own reports when its recorded coordinator was archived; the size watch asks that coordinator, and a lane it still finds is never retired as finished."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1161",
       "changes": [
         "The Copilot app sense retires sessions whose job is over, with no model turn. A successor's first message carries the line `Succeeds: <predecessor session id>` (older kickoffs that open with \"the successor to\" or \"the successor of\" and a session id count too); once the successor has finished its first turn and the predecessor has been idle five minutes, the predecessor is archived, reversibly and keeping its worktree, whatever its size. An idle session whose coordinator is archived or gone, with no open pull request, no automation and no turn for a day, is archived the same way. Neither touches a session that is running, waiting on a person, stuck or remote, and a predecessor is held while sessions it coordinates still work, then its successor is told which ones it had. The status digest lists each archive. The size watch's hand-off ask now asks for the `Succeeds:` line, and `successorOf` in handoff.ts follows a chain of hand-offs to its live end."

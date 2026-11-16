@@ -5,8 +5,9 @@ import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pen
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
 import * as os from "node:os"
-import { DIGEST_DEFAULT_SECONDS, readDigestState, writeDigest, writeDigestState } from "./digest"
-import { pushDue } from "./digest-push"
+import { DIGEST_DEFAULT_SECONDS, expandHome, readDigestState, writeDigest, writeDigestState } from "./digest"
+import { resumeStuck, type SendResume } from "./stuck-resume"
+import { pushDue, stillDue } from "./digest-push"
 import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { startPromptTracker } from "./prompts"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
@@ -181,17 +182,20 @@ export const DIGEST_IDLE_MS = 2 * 60_000
  * Build the status digest if `agent.json` asks for one, and tell the owner what it judges worth telling. Returns the
  * milliseconds until the next one is due. A failure is logged and tried again next time.
  */
-export async function checkDigest(agentName: string, agentRoot: string, deps: { client: AppSessionsOptions; run: RunCommand; notify: NotifyOwner; now: number; home: string }): Promise<number> {
+export async function checkDigest(agentName: string, agentRoot: string, deps: { client: AppSessionsOptions; run: RunCommand; notify: NotifyOwner; now: number; home: string; resume?: SendResume }): Promise<number> {
   try {
     const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
     if (!config?.enabled || !config.digest) return DIGEST_IDLE_MS
-    const rows = await listAppSessions({ ...deps.client, now: () => deps.now })
+    const list = () => listAppSessions({ ...deps.client, now: () => deps.now })
+    const rows = await list()
     const state = readDigestState(agentRoot)
+    await resumeStuck(agentRoot, rows, state, deps.now, { client: deps.client, ...(deps.resume ? { send: deps.resume } : {}) })
     const digest = await writeDigest({
       agentRoot, config: config.digest, client: deps.client, run: deps.run, now: deps.now, home: deps.home, rows,
       appRunning: appRunning(deps.client), waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
     })
-    await pushDue(digest, state, deps.now, deps.notify)
+    const roots = (config.digest.deskRoots ?? []).map(folder => expandHome(folder, deps.home))
+    await pushDue(digest, state, deps.now, deps.notify, async items => stillDue(items, await list(), roots))
     writeDigestState(agentRoot, state)
     return (config.digest.everySeconds ?? DIGEST_DEFAULT_SECONDS) * 1000
   } catch (error) {

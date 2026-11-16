@@ -145,6 +145,15 @@ describe("asking for a hand-off, and again as a session grows", () => {
     expect(readOversize(agentRoot)[OURO_MD]).toMatchObject({ nudges: 3, nudgedBytes: Math.ceil(742_100_323 * 1.5) })
   })
 
+  it("asks the coordinator a lane now reports to when the one the app recorded handed off and was archived", async () => {
+    const report = JSON.stringify({ type: "assistant.message", data: { toolRequests: [{ name: "send_session_message", arguments: { session_id: "9fe74d72-successor-workspace" } }] } })
+    log(LABS, 600 * MB, `\n${report}\n`)
+    const d = deps()
+    const rows = [row(LABS, { coordinatingCreatorSessionId: "84b913b0-archived" }), row("16caf80c-successor", { workspaceId: "9fe74d72-successor-workspace" })]
+    await noticeOversizedSessions(agentRoot, rows, d)
+    expect(d.send).toHaveBeenNthCalledWith(1, "16caf80c-successor", expect.stringContaining("600 MB"))
+  })
+
   it("asks only the giant when its coordinator is a cold giant too, and the coordinator when the giant is cold", async () => {
     log("child", 600 * MB)
     log("cold-boss", 2 * GB)

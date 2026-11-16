@@ -85,7 +85,7 @@ export function ownerNotifier(agent: string, agentRoot: string, deps: {
   send?: NoticeSender
 } = {}): NotifyOwner {
   const resolveTargets = deps.resolveTargets ?? (() => resolveNoticeTargets(agentRoot, undefined, readEnabledReachChannels(agent, agentRoot)))
-  const send = deps.send ?? createNoticeSender(agentRoot, { origin: "proactive" })
+  const send = deps.send ?? createNoticeSender(agentRoot, { origin: "proactive", holdWhileTalking: true })
   return async (text, keys) => {
     const targets = await resolveTargets()
     if (targets.length === 0) {

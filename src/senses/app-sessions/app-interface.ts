@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import * as os from "node:os"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { assertSessionId, eventLogSize, exchange, listAppSessions, SEND_WAIT_MS, type AppSessionRow, type AppSessionsOptions, type Frame, type PermissionPrompt } from "./client"
+import { coordinatorOf, handoffSuccessors } from "./coordinator"
 import { isHandedOff } from "./handoff"
 import { addArchiveLog, addProbe, readPending, readProbes, removeProbe, watchSession, type ArchiveLogEntry, type PendingRequest } from "./store"
 
@@ -28,7 +29,8 @@ type Verdict = "ok" | "fail" | "wait" | "ignore"
 const isRecord = (value: unknown): value is Frame => !!value && typeof value === "object" && !Array.isArray(value)
 const str = (value: unknown): string | null => (typeof value === "string" && value.length > 0 ? value : null)
 const compact = (value: Result): Result => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined))
-const appUrl = (id: string): string => `ghapp://sessions/${id}`
+/** The link that opens a session in the app. */
+export const appUrl = (id: string): string => `ghapp://sessions/${id}`
 const reasonOf = (frame: Frame): string => str(frame.error) ?? str(frame.message) ?? str(frame.reason) ?? str(frame.detail) ?? String(frame.type)
 
 /** Whether a sender wants a session's reply back, and for how long: once (the default), always, or never. */
@@ -60,11 +62,22 @@ export function findSession(rows: AppSessionRow[], value: unknown): AppSessionRo
 
 const resolve = async (value: unknown, options: AppSessionsOptions): Promise<AppSessionRow> => findSession(await listAppSessions(options), value)
 
-function item(row: AppSessionRow): Result {
+/**
+ * Who coordinates the session now, beside the app's own field, which keeps naming a coordinator that handed off and
+ * was archived (see `coordinator.ts`). Say a lane has no coordinator only when `coordinator_gone` is true.
+ */
+function coordination(row: AppSessionRow, rows: AppSessionRow[], options: AppSessionsOptions, successors?: (id: string) => string | null): Result {
+  const found = coordinatorOf(row, rows, { client: options, ...(successors ? { successorOf: successors } : {}) })
+  if (!found) return {}
+  if ("gone" in found) return { coordinator_gone: true }
+  return { coordinator_session_id: found.id, coordinator_name: found.name, ...(found.via === "app" ? {} : { coordinator_found_by: found.via }) }
+}
+
+function item(row: AppSessionRow, rows: AppSessionRow[], options: AppSessionsOptions, successors?: (id: string) => string | null): Result {
   return compact({
     type: row.kind === "chat" ? "chat" : "session", id: row.id, app_url: appUrl(row.id), name: row.name, project_id: row.projectId, project_name: row.project, project_repo: row.projectRepo,
     branch: row.branch, path: row.path, created_at: row.createdAt, updated_at: row.updatedAt, creator_session_id: row.creatorSessionId,
-    coordinating_creator_session_id: row.coordinatingCreatorSessionId, parent_session_id: row.parentSessionId, is_running: row.isRunning, ...(row.remote ? { remote: true } : {}),
+    coordinating_creator_session_id: row.coordinatingCreatorSessionId, ...coordination(row, rows, options, successors), parent_session_id: row.parentSessionId, is_running: row.isRunning, ...(row.remote ? { remote: true } : {}),
   })
 }
 
@@ -82,10 +95,10 @@ function awaitingInput(row: AppSessionRow, pending: Record<string, PendingReques
   return undefined
 }
 
-function status(row: AppSessionRow, pending: Record<string, PendingRequest>): Result {
+function status(row: AppSessionRow, rows: AppSessionRow[], pending: Record<string, PendingRequest>, options: AppSessionsOptions, successors: (id: string) => string | null): Result {
   const input = awaitingInput(row, pending)
   return compact({
-    ...item(row), was_interrupted: row.wasInterrupted || null,
+    ...item(row, rows, options, successors), was_interrupted: row.wasInterrupted || null,
     activity: compact({ status: row.state === "working" ? "busy" : row.state, why: row.detail, last_activity: row.lastActivity }),
     awaiting_user_input: row.awaiting === "input", awaiting_plan_approval: row.awaiting === "plan", awaiting_permission: row.awaiting === "permission",
     awaiting_input: input,
@@ -94,26 +107,29 @@ function status(row: AppSessionRow, pending: Record<string, PendingRequest>): Re
 
 // ---------- reading ----------
 
-export async function listSessionsAndChats(options: AppSessionsOptions = {}): Promise<Result> {
+export async function listSessionsAndChats(options: AppSessionsOptions = {}, agentRoot?: string): Promise<Result> {
   const rows = await listAppSessions(options)
-  return { total: rows.length, items: rows.map(item) }
+  const successors = agentRoot ? handoffSuccessors(agentRoot, options) : undefined
+  return { total: rows.length, items: rows.map(row => item(row, rows, options, successors)) }
 }
 
 export async function getSessionsStatus(agentRoot: string, state: string | undefined, options: AppSessionsOptions = {}): Promise<Result> {
   const rows = await listAppSessions(options)
   const pending = readPending(agentRoot)
+  const successors = handoffSuccessors(agentRoot, options)
   const count = (keep: (row: AppSessionRow) => boolean): number => rows.filter(keep).length
   return {
     summary: {
       total: rows.length, running: count(row => row.isRunning), busy: count(row => row.state === "working"), blocked: count(row => row.state === "waiting"), stuck: count(row => row.state === "stuck"),
       awaiting_user_input: count(row => row.awaiting === "input"), awaiting_plan_approval: count(row => row.awaiting === "plan"),
     },
-    sessions: rows.filter(row => !state || row.state === state || (state === "busy" && row.state === "working")).map(row => status(row, pending)),
+    sessions: rows.filter(row => !state || row.state === state || (state === "busy" && row.state === "working")).map(row => status(row, rows, pending, options, successors)),
   }
 }
 
 export async function getSession(agentRoot: string, id: unknown, options: AppSessionsOptions = {}): Promise<Result> {
-  return status(await resolve(id, options), readPending(agentRoot))
+  const rows = await listAppSessions(options)
+  return status(findSession(rows, id), rows, readPending(agentRoot), options, handoffSuccessors(agentRoot, options))
 }
 
 // ---------- writing ----------
