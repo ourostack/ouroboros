@@ -207,6 +207,28 @@ describe("drainOutboundRecords", () => {
     expect(fs.readdirSync(path.join(deferredDir(), "applied")).sort()).toEqual(["a.json", "b.json"])
   })
 
+  it("replays 07:49 PT on 2026-11-16: a push sent while a turn held the session is kept, and drained under that turn's lease it carries the time it was sent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      const file = seedSession()
+      vi.setSystemTime(Date.parse("2026-11-16T15:49:20Z"))
+      const turn = await acquireSessionTurnLease(file)
+      vi.setSystemTime(Date.parse("2026-11-16T15:49:30.244Z"))
+      expect(record({ content: "Still broken: the tracker is stuck.", origin: "proactive", deliveryId: "shepherd:0749", originLabel: "a proactive message" })).toBe("deferred")
+      vi.setSystemTime(Date.parse("2026-11-16T15:49:49.834Z"))
+      appendSyntheticAssistantMessage(file, "I can't confirm either from the mini.", turn)
+      expect(drainOutboundRecords(agentRoot, "ari", "bluebubbles", KEY, turn)).toBe(1)
+      await turn.release()
+      const events = loadSessionEnvelopeFile(file)!.events
+      const pushed = events.find((event) => event.provenance.outbound?.deliveryId === "shepherd:0749")!
+      expect(pushed.content).toBe("[you sent this via a proactive message] Still broken: the tracker is stuck.")
+      expect(pushed.time).toMatchObject({ authoredAt: "2026-11-16T15:49:30.244Z", observedAt: "2026-11-16T15:49:30.244Z", recordedAt: "2026-11-16T15:49:49.834Z" })
+      expect(events.at(-1)!.id).toBe(pushed.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("drain skips applied/ and .tmp files and survives an unparseable record", () => {
     const file = seedSession()
     writeDeferred("half.json.tmp", "{")

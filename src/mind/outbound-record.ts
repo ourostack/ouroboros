@@ -13,7 +13,8 @@ import { currentSessionTurnLease, SessionTurnBusyError, withImmediateSessionTurn
  *
  * - `recorded`: appended to the session now.
  * - `deferred`: the session is mid-turn under another owner; the record waits in `state/outbound-records` and the
- *   owning sense drains it under its own lease before the friend's next message.
+ *   owning sense drains it under that same lease as soon as the turn ends (and again before the next one), stamped
+ *   with when it was sent, so nothing waits for the friend's next message or reads as sent later than it was.
  * - `skipped_current_session`: the current turn is running in that very session, and its tool call is already there.
  * - `failed`: logged as `mind.outbound_record_error`; the delivery itself is never undone.
  */
@@ -106,7 +107,7 @@ function drainUnderLease(agentRoot: string, friendId: string, channel: string, k
     if (!record) {
       recordError("skipped an unreadable deferred outbound record", { friendId, channel, file: name })
     } else if (appendSyntheticAssistantMessage(lease.sessionPath, recordedText(record), lease,
-      { outbound: { origin: record.origin, deliveryId: record.deliveryId }, createIfMissing: true })) {
+      { outbound: { origin: record.origin, deliveryId: record.deliveryId }, createIfMissing: true, sentAt: record.recordedAt })) {
       count += 1
     } else {
       recordError("could not append a deferred outbound record", { friendId, channel, file: name })

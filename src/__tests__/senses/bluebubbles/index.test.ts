@@ -1391,6 +1391,9 @@ describe("BlueBubbles sense runtime", () => {
     const loads = mocks.loadSession.mock.invocationCallOrder.slice(loadsBefore)
     expect(loads.length).toBeGreaterThan(0)
     expect(outbound.drain.mock.invocationCallOrder[0]!).toBeLessThan(Math.min(...loads))
+    // And again once the turn is over, so a message sent while it ran goes in now, not with the next one.
+    expect(outbound.drain).toHaveBeenCalledTimes(2)
+    expect(outbound.drain.mock.invocationCallOrder[1]!).toBeGreaterThan(Math.max(...loads))
   })
 
   it("detects obsolete sibling thread lanes without deleting them before loading the shared chat trunk", async () => {

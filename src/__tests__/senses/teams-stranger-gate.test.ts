@@ -294,7 +294,8 @@ describe("teams stranger gate integration (pipeline-based)", () => {
       { _withSessionTurnLease: async (_path: string, work: (held: any) => Promise<any>) => work(lease) } as any,
     )
     expect(mockDrainOutbound).toHaveBeenCalledWith(expect.any(String), expect.any(String), "teams", "conv-drain", lease)
-    expect(order).toEqual(["outbound:drain", "session:load"])
+    // Drained before the turn reads the session, and again when it ends, for what was sent while it ran.
+    expect(order).toEqual(["outbound:drain", "session:load", "outbound:drain"])
   })
 
   it("emits no thinking activity before a busy lease decision and returns a retryable notice", async () => {

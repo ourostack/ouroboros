@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1165",
+      "changes": [
+        "A message the agent sends into a conversation while one of its turns is running there (a proactive notice, a send_message, a Shepherd notice) now goes into that conversation's history as soon as the turn ends, under the turn's own lease, instead of waiting for the friend's next message or the agent's next send, and it carries the time it was really sent. On 2026-11-16 a 07:49 notice sent during a Teams turn was kept but only written in at 08:19, stamped 08:19."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1163",
       "changes": [
         "The Copilot app sense's succession record (successions.json) keeps only the sessions the sidebar lists, plus a successor that has left it while the session it succeeds is still listed, instead of every session ever seen (8,269 entries on the Mac mini), and reads no history of a session the app no longer lists. isHandedOff and handoffSuccessors read the record the sense refreshes each minute."
