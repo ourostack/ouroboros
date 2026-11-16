@@ -415,6 +415,22 @@ describe("the app's socket", () => {
     expect(await exchange([{ type: "x" }], { waitMs: 5_000 }, { stateDir })).toEqual([{ type: "socket_error", message: expect.any(String) }])
   })
 
+  it("ignores a port file that is not a port or has no token, and uses the real clock by default", async () => {
+    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), "abc\n")
+    expect(() => exchange([], { waitMs: 10 }, options())).toThrow("is not running")
+    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
+    fs.writeFileSync(path.join(stateDir, "run", "ws.token"), "\n")
+    expect(() => exchange([], { waitMs: 10 }, options())).toThrow("is not running")
+    fs.writeFileSync(path.join(stateDir, "run", "ws.token"), "tok\n")
+    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), "51234\n99999999\n")
+    expect(() => exchange([], { waitMs: 10 }, options())).toThrow("is not running")
+    fs.writeFileSync(path.join(stateDir, "run", "ws.port"), `51234\n${process.pid}\n`)
+    app.on("list_workspaces", (_, socket) => socket.push({ type: "workspace_list", workspaces: [] }))
+    app.on("list_general_chat_sessions", (_, socket) => socket.push({ type: "general_chat_sessions_list", sessions: [] }))
+    expect(await listAppSessions({ stateDir, openSocket: options().openSocket })).toEqual([])
+    expect(snapshot({ stateDir }, []).at).toMatch(/^20/)
+  })
+
   it("throws when the app is not running", () => {
     fs.rmSync(path.join(stateDir, "run"), { recursive: true })
     expect(() => exchange([], { waitMs: 10 }, options())).toThrow("the GitHub Copilot app is not running")

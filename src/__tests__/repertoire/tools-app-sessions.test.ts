@@ -84,6 +84,8 @@ describe("app_sessions_tail", () => {
       expect(await call(tools.appSessionsTailTool, { session_id: "abc1" })).toMatchObject({ coverage })
     }
     expect(client.readAppSessionHistory).toHaveBeenLastCalledWith("abc12345", 6, {})
+    watchSession(agentRoot, "abc12345", "Now", 0, Date.now())
+    expect(await call(tools.appSessionsTailTool, { session_id: "abc1" })).not.toHaveProperty("renamed_from")
   })
 })
 

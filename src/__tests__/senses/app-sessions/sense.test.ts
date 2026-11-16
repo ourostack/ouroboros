@@ -199,6 +199,17 @@ describe("the watch loop", () => {
     expect(deliver.mock.calls.at(-1)![0]).toContain("new")
   })
 
+  it("drops a one-reply watch only once the reply has come", async () => {
+    const start = appendEvents([assistant("before")])
+    watchSession(agentRoot, ID, "Babysitter", start, NOW, true)
+    const deliver = vi.fn(async () => undefined)
+    await checkWatches(agentRoot, deliver, { stateDir }, NOW)
+    expect(Object.keys(readWatches(agentRoot))).toEqual([ID])
+    appendEvents([assistant("answer")])
+    await checkWatches(agentRoot, deliver, { stateDir }, NOW)
+    expect(readWatches(agentRoot)).toEqual({})
+  })
+
   it("delivers each watched session's replies once, and keeps reading after a failed delivery", async () => {
     const start = appendEvents([assistant("before")])
     watchSession(agentRoot, ID, "Babysitter", start, NOW)
@@ -304,6 +315,16 @@ describe("a session waiting on a permission prompt", () => {
 })
 
 describe("the sense", () => {
+  it("tracks prompts through the client's own socket and state directory when it has them, and the app's defaults when it does not", async () => {
+    makeDb()
+    const open = vi.fn(() => { const socket = Object.assign(new EventEmitter(), { close: () => undefined }); setImmediate(() => socket.emit("error", new Error("down"))); return socket })
+    const withSocket = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { openSocket: open as never }, now: () => NOW, schedule: () => () => {}, deliver: vi.fn(async () => undefined) })
+    const withDir = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir, openSocket: open as never }, now: () => NOW, schedule: () => () => {}, deliver: vi.fn(async () => undefined) })
+    withSocket.stop()
+    withDir.stop()
+    await Promise.all([withSocket.done(), withDir.done()])
+  })
+
   it("snapshots every minute and checks watches every ten seconds until stopped", async () => {
     makeDb()
     const scheduler = manualScheduler()
@@ -327,10 +348,7 @@ describe("the sense", () => {
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(0)
     expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(0)
     // A tick that fires after the stop does nothing.
-    scheduler.tasks[0].fn()
-    scheduler.tasks[1].fn()
-    scheduler.tasks[2].fn()
-    scheduler.tasks[3].fn()
+    for (const task of [...scheduler.tasks]) task.fn()
     await sense.done()
     expect(scheduler.tasks).toHaveLength(9)
   })
