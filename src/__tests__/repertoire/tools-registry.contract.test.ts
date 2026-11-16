@@ -78,6 +78,7 @@ describe("tool registry contract", () => {
   });
 
   it("final tool list after H-section audit (H10 contract)", () => {
+    const mailNames = mailToolDefinitions.map((d) => d.tool.function.name);
     const names = baseToolDefinitions.map((d) => d.tool.function.name).slice().sort();
 
     // Removed in H1: git_commit, gh_cli, get_current_time, list_directory
@@ -267,7 +268,7 @@ describe("tool registry contract", () => {
     // Added in identity link codes: 1 family-only tool that issues a one-time link code
     expect(names).toContain("friend_link_code");
 
-    // Exact count: 122 tools
-    expect(names).toHaveLength(122);
+    // Exact count: 110 tools
+    expect(names).toHaveLength(110);
   });
 });
