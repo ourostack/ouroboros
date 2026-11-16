@@ -92,8 +92,8 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain('npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"')
     expect(workflow).not.toContain("--provenance")
     expect(workflow).not.toContain("npm dist-tag add")
-    expect(workflow).toContain('verify_tag "@ouro.bot/cli@${CLI_TAG}" "$LOCAL"')
-    expect(workflow).toContain('verify_tag "ouro.bot@${WRAPPER_TAG}" "$LOCAL"')
+    expect(workflow).toContain('verify_tag "@ouro.bot/cli" "$LOCAL"')
+    expect(workflow).toContain('verify_tag "ouro.bot" "$LOCAL"')
   })
 
   it("keeps npm trusted-publishing package repository metadata exact", () => {

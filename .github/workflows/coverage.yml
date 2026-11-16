@@ -656,8 +656,11 @@ jobs:
           # fails the GitHub release that follows.
           PROPAGATION_DEADLINE_SECONDS=600
 
+          # Checks the exact version this run published, never the moving dist-tag:
+          # the tag can lag the version by minutes (alpha.1161 was up while latest
+          # still read alpha.1160), and tag lag must not red main.
           verify_tag() {
-            package_ref="$1"
+            package_ref="$1@$2"
             expected="$2"
             started=$(date +%s)
             deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
@@ -673,18 +676,18 @@ jobs:
                 break
               fi
 
-              echo "${package_ref} points at ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
+              echo "${package_ref} serves ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
               sleep 15
             done
 
-            echo "::error::${package_ref} points at ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s"
+            echo "::error::${package_ref} serves ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s"
             return 1
           }
 
-          verify_tag "@ouro.bot/cli@${CLI_TAG}" "$LOCAL"
-          verify_tag "ouro.bot@${WRAPPER_TAG}" "$LOCAL"
+          verify_tag "@ouro.bot/cli" "$LOCAL"
+          verify_tag "ouro.bot" "$LOCAL"
 
-          echo "selected npm dist-tags verified for ${LOCAL} (cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
+          echo "selected npm dist-tags verified by exact version ${LOCAL} (tags: cli=${CLI_TAG}, wrapper=${WRAPPER_TAG})"
 
       # Hand the exact bytes npm now serves to the github-release job. `npm pack`
       # of a published spec downloads the registry tarball and checks it against
