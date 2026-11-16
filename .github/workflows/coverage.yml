@@ -21,6 +21,9 @@ jobs:
   prepass:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -51,6 +54,15 @@ jobs:
           else
             node .github/scripts/ci-prepass.cjs
           fi
+
+      # A pull request that fails the pre-pass fails the shards too, so stop the
+      # run now: the PR is red (a cancelled required check is not a pass) in a
+      # minute instead of after the shards. Never on main, where publish runs.
+      - name: Stop the run early on a failed pre-pass (PRs only)
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || true
 
   # The vitest coverage suite split across 16 runners (about 2 to 3 minutes of
   # tests each, six runners took 4 to 5 and twelve about 3.5; one runner took 26+). A pull request
