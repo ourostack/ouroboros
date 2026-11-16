@@ -305,6 +305,7 @@ describe("execTool", () => {
       bundle,
       voice,
       surface,
+      mail,
     ] = await Promise.all([
       import("../../repertoire/tools-base"),
       import("../../repertoire/tools-chat"),
@@ -314,9 +315,11 @@ describe("execTool", () => {
       import("../../repertoire/tools-bundle"),
       import("../../repertoire/tools-voice"),
       import("../../repertoire/tools-surface"),
+      import("../../repertoire/tools-mail"),
     ])
     const definitions = [
       ...toolsBase.baseToolDefinitions,
+      ...mail.mailToolDefinitions,
       ...bluebubbles.chatToolDefinitions,
       ...teams.teamsToolDefinitions,
       ...adoSemantic.adoSemanticToolDefinitions,

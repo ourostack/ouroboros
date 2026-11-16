@@ -1,3 +1,4 @@
+import { mailToolDefinitions } from "../../repertoire/tools-mail";
 import { describe, it, expect } from "vitest";
 import { baseToolDefinitions } from "../../repertoire/tools-base";
 
@@ -14,6 +15,7 @@ function getDuplicateCounts(values: string[]): Map<string, number> {
 describe("tool registry contract", () => {
   it("tool names are non-empty and unique", () => {
     const names = baseToolDefinitions.map((d) => d.tool.function.name);
+    const mailNames = mailToolDefinitions.map((d) => d.tool.function.name);
 
     const empty = names.filter((n) => typeof n !== "string" || n.trim().length === 0);
     expect(empty, `Tool names must be non-empty strings`).toEqual([]);
@@ -131,18 +133,18 @@ describe("tool registry contract", () => {
     expect(names).toContain("list_recent_attachments");
     expect(names).toContain("materialize_attachment");
     expect(names).toContain("describe_image");
-    expect(names).toContain("mail_recent");
-    expect(names).toContain("mail_search");
-    expect(names).toContain("mail_body");
-    expect(names).toContain("mail_thread");
-    expect(names).toContain("mail_screener");
-    expect(names).toContain("mail_decide");
-    expect(names).toContain("mail_status");
-    expect(names).toContain("mail_compose");
-    expect(names).toContain("mail_send");
-    expect(names).toContain("mail_outbox");
-    expect(names).toContain("mail_access_log");
-    expect(names).toContain("mail_index_refresh");
+    expect(mailNames).toContain("mail_recent");
+    expect(mailNames).toContain("mail_search");
+    expect(mailNames).toContain("mail_body");
+    expect(mailNames).toContain("mail_thread");
+    expect(mailNames).toContain("mail_screener");
+    expect(mailNames).toContain("mail_decide");
+    expect(mailNames).toContain("mail_status");
+    expect(mailNames).toContain("mail_compose");
+    expect(mailNames).toContain("mail_send");
+    expect(mailNames).toContain("mail_outbox");
+    expect(mailNames).toContain("mail_access_log");
+    expect(mailNames).toContain("mail_index_refresh");
     expect(names).toContain("claude");
     expect(names).toContain("coding_spawn");
     expect(names).toContain("coding_status");
@@ -214,7 +216,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("trip_calendar");
     expect(names).toContain("trip_new_id");
 
-    expect(names).toContain("mail_outbox");
+    expect(mailNames).toContain("mail_outbox");
     expect(names).toContain("friend_list");
     expect(names).toContain("await_condition");
     expect(names).toContain("resolve_await");

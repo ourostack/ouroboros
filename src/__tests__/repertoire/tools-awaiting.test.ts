@@ -308,7 +308,7 @@ describe("tools-awaiting", () => {
     it("exposes the verdict enum and says still pending is no", () => {
       const fn = resolveAwaitDef.tool.function as any
       expect(fn.parameters.properties.verdict.enum).toEqual(["yes", "no", "ask_owner"])
-      expect(fn.description).toContain("still pending")
+      expect(fn.description).toContain("not yet")
     })
 
     it("the managed house-care sweep can only ever be resolved 'no', and never cancelled", async () => {

@@ -4,51 +4,51 @@ export const ponderTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "ponder",
-    description: "create or revise a typed ponder packet so i don't lose the plot while i keep working. use this for harness friction, research, or reflection that should survive the current turn. if the user asked me to think privately and return later from an outward session, preserve literal return tokens and constraints in payload_json fields or success_criteria; the runtime records the latest user request as sourceRequest. then do not settle with the final private answer in the same outward turn; only acknowledge that the private pass is queued. in private runtime, ponder only preserves state; it does not create a new self-return obligation, so surface any existing held item instead of pondering a replacement. ponder does not end the turn by itself and may be followed by more tools before i settle or rest. Don't ponder trivial questions.",
+    description: "create or revise a ponder packet: harness friction, research, or reflection that should survive this turn. when asked to think privately and return later from an outward session, keep literal return tokens and constraints in payload_json or success_criteria, then only acknowledge that the private pass is queued. in private runtime it only preserves state; surface an existing held item instead of pondering a replacement. does not end the turn. not for trivial questions.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
           enum: ["create", "revise"],
-          description: "create a new packet or revise an existing drafting packet.",
+          description: "create, or revise a drafting packet",
         },
         kind: {
           type: "string",
           enum: ["harness_friction", "research", "reflection"],
-          description: "the packet kind. determines the SOP the private-runtime turn should follow.",
+          description: "packet kind",
         },
         packet_id: {
           type: "string",
-          description: "required for action=revise. the packet to revise in place.",
+          description: "for revise",
         },
         follows_packet_id: {
           type: "string",
-          description: "optional follow-up linkage when a new packet grows out of an earlier one.",
+          description: "earlier packet this follows from",
         },
         objective: {
           type: "string",
-          description: "the durable objective for this packet.",
+          description: "durable objective",
         },
         summary: {
           type: "string",
-          description: "brief factual summary of the work object or friction being preserved.",
+          description: "brief factual summary",
         },
         success_criteria: {
           type: "string",
-          description: "newline-delimited success criteria bullets.",
+          description: "newline-delimited bullets",
         },
         payload_json: {
           type: "string",
-          description: "JSON object string with packet-specific structured details. include exact markers, return wording fragments, or constraints the private-runtime pass must preserve; sourceRequest is owned by the runtime from the latest user request. use {} only when there are no such details.",
+          description: "JSON object: exact markers, return wording or constraints the private pass must keep ({} if none)",
         },
         thought: {
           type: "string",
-          description: "deprecated compatibility field. legacy thought text is normalized into a reflection packet.",
+          description: "deprecated: becomes a reflection packet",
         },
         say: {
           type: "string",
-          description: "deprecated compatibility field. retained for migration only; it no longer controls deferral or silence.",
+          description: "deprecated: no effect",
         },
       },
     },

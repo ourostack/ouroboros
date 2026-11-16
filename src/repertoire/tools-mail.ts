@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import path from "node:path"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "@ouro.bot/friends"
 import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailListFilters, type MailMessageIndexRecord, type MailroomStore } from "../mailroom/file-store"
@@ -1009,6 +1010,17 @@ async function renderMailStatus(input: {
     "recent imports:",
     ...renderRecentImportOperations(input.agentId),
   ].join("\n")
+}
+
+/** The mail tools exist only for an agent that turned the mail sense on in agent.json (`ouro connect mail` does). */
+export function mailToolsEnabled(agentRoot: string | undefined): boolean {
+  if (!agentRoot) return false
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot, "agent.json"), "utf-8")) as { senses?: { mail?: { enabled?: unknown } } }
+    return config.senses?.mail?.enabled === true
+  } catch {
+    return false
+  }
 }
 
 export const mailToolDefinitions: ToolDefinition[] = [

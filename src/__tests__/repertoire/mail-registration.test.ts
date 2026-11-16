@@ -1,10 +1,28 @@
 import { describe, expect, it } from "vitest"
 import { guardInvocation } from "../../repertoire/guardrails"
-import { baseToolDefinitions } from "../../repertoire/tools-base"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { mailToolDefinitions, mailToolsEnabled } from "../../repertoire/tools-mail"
+import { getToolsForChannel } from "../../repertoire/tools"
+import { getChannelCapabilities } from "@ouro.bot/friends"
 
 describe("mail tool registration and trust boundaries", () => {
-  it("registers Mailroom tools in the main agent tool repertoire", () => {
-    const toolNames = baseToolDefinitions.map((definition) => definition.tool.function.name)
+  it("offers the mail tools only to an agent that turned the mail sense on", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mail-gate-"))
+    const advertised = () => getToolsForChannel(getChannelCapabilities("cli"), undefined, undefined, undefined, undefined, undefined, { agentRoot: root } as any)
+      .some((tool) => tool.function.name === "mail_recent")
+    expect(mailToolsEnabled(undefined)).toBe(false)
+    expect(mailToolsEnabled(root)).toBe(false)
+    expect(advertised()).toBe(false)
+    fs.writeFileSync(path.join(root, "agent.json"), JSON.stringify({ senses: { mail: { enabled: true } } }))
+    expect(mailToolsEnabled(root)).toBe(true)
+    expect(advertised()).toBe(true)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("registers Mailroom tools in the mail tool set", () => {
+    const toolNames = mailToolDefinitions.map((definition) => definition.tool.function.name)
     expect(toolNames).toEqual(expect.arrayContaining([
       "mail_status",
       "mail_recent",

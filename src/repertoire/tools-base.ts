@@ -26,7 +26,6 @@ import { userProfileToolDefinitions } from "./tools-user-profile";
 import { stripeToolDefinitions } from "./tools-stripe";
 import { flightToolDefinitions } from "./tools-flight";
 import { attachmentToolDefinitions } from "./tools-attachments";
-import { mailToolDefinitions } from "./tools-mail"
 import { tripToolDefinitions } from "./tools-trip"
 import { a2aToolDefinitions } from "./tools-a2a"
 import { commerceToolDefinitions } from "./tools-commerce"
@@ -348,7 +347,6 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...stripeToolDefinitions,
   ...flightToolDefinitions,
   ...attachmentToolDefinitions,
-  ...mailToolDefinitions,
   ...tripToolDefinitions,
   ...a2aToolDefinitions,
   ...commerceToolDefinitions,

@@ -367,12 +367,12 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "save_friend_note",
         description:
-          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. For Sanctuary relationships, preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence), and only communication or timing are accepted. Any friend may save key reachChannel (with source) to say which channel to reach them on outside a conversation: bluebubbles or teams; iMessage means bluebubbles. Other agents retain their existing integration-preference behavior and do not persist this provenance field. desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
+          "save something i learned about my friend: type name (display name), tool_preference, or note. Sanctuary relationship preferences take source stated (they said it), observed (my revisable inference) or default, and only keys communication or timing. Any friend may save key reachChannel (with source): bluebubbles or teams, the channel to reach them on outside a conversation. Notes never grant authority; that belongs in steward policy. override=true replaces an existing value.",
         parameters: {
           type: "object",
           properties: {
             type: { type: "string", enum: ["name", "tool_preference", "note"], description: "what kind of information to save" },
-            key: { type: "string", description: "category key (required for tool_preference and note; Sanctuary relationship preferences use communication or timing; reachChannel names the channel to reach this person on: bluebubbles or teams)" },
+            key: { type: "string", description: "category key (required for tool_preference and note)" },
             source: { type: "string", enum: ["stated", "observed", "default"], description: "preference provenance; required for Sanctuary relationship preferences and for reachChannel" },
             content: { type: "string", description: "the value to save" },
             override: { type: "string", enum: ["true", "false"], description: "set to 'true' to overwrite an existing value" },

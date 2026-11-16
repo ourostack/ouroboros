@@ -99,7 +99,7 @@ describe("resolve_await ask_owner", () => {
     expect((fn.parameters as any).required).toEqual(["name", "verdict", "observation"])
     expect(fn.description).toMatch(/ask_owner/u)
     expect(fn.description).toMatch(/confirmed dead download/u)
-    expect(fn.description).toMatch(/ask_owner for "not yet"/u)
+    expect(fn.description).toMatch(/including not yet/u)
   })
 
   it("closes the await as asked_owner, recording the question and choices, and messages the owner once, keyed to this await instance", async () => {
