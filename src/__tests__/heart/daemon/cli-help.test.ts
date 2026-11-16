@@ -9,8 +9,9 @@ import {
   type CommandHelp,
   type CommandCategory,
 } from "../../../heart/daemon/cli-help"
-import { parseOuroCommand } from "../../../heart/daemon/cli-parse"
+import { parseOuroCommand, usage } from "../../../heart/daemon/cli-parse"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
+import { CLI_COMMANDS } from "../../../heart/daemon/cli-manifest"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
 // ── Unit 0a: Command metadata registry ──
@@ -504,6 +505,28 @@ describe("runOuroCli help execution", () => {
     expect(result).toContain("Lifecycle")
     expect(result).toContain("Chat")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
+  })
+
+  it("ouro help --json lists every declared command with who sees its effect, and the exit codes", async () => {
+    const result = await runOuroCli(["help", "--json"], makeDeps())
+    const help = JSON.parse(result) as {
+      commands: Array<{ name: string; effect: string }>
+      exitCodes: Array<{ code: number }>
+    }
+    expect(help.commands.map((command) => command.name)).toEqual(CLI_COMMANDS.map((command) => command.name))
+    expect(help.commands.every((command) => command.effect === "private" || command.effect === "others")).toBe(true)
+    expect(help.exitCodes.map((exit) => exit.code)).toEqual([0, 1])
+  })
+
+  it("every declared command is one the usage text lists", () => {
+    const lines = usage().split("\n")
+    for (const command of CLI_COMMANDS) {
+      const words = command.name.split(" ")
+      const last = words.pop()!
+      const prefix = `  ouro ${[...words, ""].join(" ")}`
+      const line = lines.find((text) => text.startsWith(prefix) && text.slice(prefix.length).split(/[\s[<(]/)[0]!.split("|").includes(last))
+      expect(line, command.name).toBeDefined()
+    }
   })
 
   it("ouro -h outputs grouped help", async () => {
