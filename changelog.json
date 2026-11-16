@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1160",
+      "changes": [
+        "npm run worktree:bootstrap reuses another checkout's node_modules when its installed versions match package-lock.json, cloning it offline in under a second on macOS, and explains which package the registry lacked when it has to fall back to npm install."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1159",
       "changes": [
         "The Copilot app size watch flags every local session whose history is over 500 MB, including ones the sidebar no longer lists, and keeps them flagged after they are archived. It asks a running giant and its coordinator again, with immediate delivery, each time the history grows by half. It archives a flagged session (reversibly, keeping its worktree) once it has been idle 30 minutes after its last ask, or at once, largest first, when swap passes 8 GB or free memory falls under 1 GB, and tells its coordinator where it left off. The status digest lists each archive."
