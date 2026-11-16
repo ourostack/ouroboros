@@ -46,13 +46,13 @@ async function ask(frame: Frame, settle: (reply: Frame, requestId: string) => Ve
   return { ok: false, frame: last ?? null, error: last && verdict(last) === "fail" ? reasonOf(last) : "the app did not answer in time" }
 }
 
-/** A session by its id, or a unique start of it (the first eight characters are enough). */
+/** A session by its id or its project-session (workspace) id, or a unique start of either; the first eight characters are enough. */
 export function findSession(rows: AppSessionRow[], value: unknown): AppSessionRow {
   const wanted = str(value)?.trim() ?? ""
   if (!wanted) throw new Error("name a session: its id, or the start of it, from list_sessions_and_chats")
-  const exact = rows.find(row => row.id === wanted)
+  const exact = rows.find(row => row.id === wanted) ?? rows.find(row => row.workspaceId === wanted)
   if (exact) return exact
-  const matches = rows.filter(row => row.id.startsWith(wanted))
+  const matches = rows.filter(row => row.id.startsWith(wanted) || row.workspaceId?.startsWith(wanted))
   if (matches.length === 1) return matches[0]!
   throw new Error(matches.length ? `'${wanted}' matches ${matches.length} sessions; give more of the id` : `no session '${wanted}' in the Copilot app (list_sessions_and_chats shows them)`)
 }

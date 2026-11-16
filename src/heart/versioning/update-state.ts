@@ -94,7 +94,7 @@ function formatAge(ms: number): string {
  */
 export function formatUpdateStatusLine(
   state: SelfUpdateState | null,
-  options: { now: number; updaterInstalled: boolean | null },
+  options: { now: number; updaterInstalled: boolean | null; pinCleared?: boolean },
 ): string {
   if (!state) {
     return options.updaterInstalled === false
@@ -114,6 +114,11 @@ export function formatUpdateStatusLine(
       line = `Updates: current at ${version} (checked ${age}${state.source ? ` via ${state.source}` : ""})`
       break
     case "pinned":
+      // The record is the last updater run; the intent is what the next run obeys.
+      if (options.pinCleared) {
+        line = `Updates: pin cleared; the next hourly check updates past ${version} (last check ${age} saw the pin)`
+        break
+      }
       line = `Updates: pinned to ${version} (checked ${age}; ${state.detail ?? "pin honored"})`
       break
     case "deferred":

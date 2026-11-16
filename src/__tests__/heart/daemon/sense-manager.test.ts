@@ -1648,7 +1648,7 @@ describe("daemon sense manager", () => {
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
-        listAgentSnapshots: () => [{ name: "ready:shepherd", status: "running" }],
+        listAgentSnapshots: () => [{ name: "ready:shepherd", status: "running" }, { name: "absent:shepherd", status: "stopped" }],
       },
     })
 

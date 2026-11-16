@@ -964,6 +964,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     readUpdateStatusLine: () => formatUpdateStatusLine(readUpdateState(), {
       now: Date.now(),
       updaterInstalled: isDefaultUpdaterAgentInstalled(),
+      pinCleared: defaultReadVersionIntent()?.mode !== "pinned",
     }),
     reExecFromNewVersion: (reArgs: string[]) => {
       const entry = path.join(getOuroCliHome(), "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
