@@ -7,12 +7,18 @@ const path = require("path")
 const { lastNonEmptyLine } = require("./release-smoke.cjs")
 const { validatePackageAssets } = require("./package-assets.cjs")
 
+// The release tarball carries its own first-party packages, so installing it
+// must not need the registry that serves @ouro.bot; point that scope at a dead
+// address to prove it. Third-party packages still come from the configured feed.
+const UNREACHABLE_FIRST_PARTY_REGISTRY = "--@ouro.bot:registry=http://127.0.0.1:9"
+
 function buildLocalInstallArgs(prefixDir, tarballPath) {
   return [
     "install",
     "--prefix",
     prefixDir,
     tarballPath,
+    UNREACHABLE_FIRST_PARTY_REGISTRY,
   ]
 }
 

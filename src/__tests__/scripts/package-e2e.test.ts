@@ -142,6 +142,7 @@ describe("package-e2e", () => {
       "--prefix",
       "/tmp/ouro-package-e2e-abcd",
       "/tmp/ouro-cli-0.1.0.tgz",
+      "--@ouro.bot:registry=http://127.0.0.1:9",
     ])
   })
 
@@ -304,5 +305,17 @@ describe("package-e2e", () => {
     expect(results).toHaveLength(5)
     expect(results[4].ok).toBe(false)
     expect(results[4].message).toContain("missing required package assets")
+  })
+})
+
+describe("first-party dependencies in the release tarball", () => {
+  it("bundles every @ouro.bot dependency so a release installs without the registry that serves that scope", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")) as {
+      dependencies: Record<string, string>
+      bundleDependencies?: string[]
+    }
+    const firstParty = Object.keys(pkg.dependencies).filter((name) => name.startsWith("@ouro.bot/"))
+    expect(firstParty.length).toBeGreaterThan(0)
+    expect(pkg.bundleDependencies).toEqual(expect.arrayContaining(firstParty))
   })
 })
