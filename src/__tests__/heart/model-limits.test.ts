@@ -42,4 +42,9 @@ describe("context window read from the provider", () => {
     expect(getLearnedContextWindow("m1")).toBeUndefined()
     expect(getLearnedContextWindow("m2")).toBeUndefined()
   })
+
+  it("falls back when the read throws a non-Error", async () => {
+    await learnContextWindow({ id: "github-copilot", model: "m3", fetchContextWindow: () => Promise.reject("offline") })
+    expect(getLearnedContextWindow("m3")).toBeUndefined()
+  })
 })
