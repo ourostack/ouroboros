@@ -274,7 +274,9 @@ describe("memory pressure", () => {
     expect(readMemory("darwin", () => { throw new Error("no sysctl") }).swapUsedBytes).toBe(0)
     expect(readMemory("darwin", () => "odd").swapUsedBytes).toBe(0)
     expect(readMemory().freeBytes).toBeGreaterThan(0)
+    // The default readers run on any machine; the one for the other platform fails and counts as no swap.
     expect(readMemory("linux").swapUsedBytes).toBeGreaterThanOrEqual(0)
+    expect(readMemory("darwin").swapUsedBytes).toBeGreaterThanOrEqual(0)
   })
 
   it("is short of memory past 8 GB of swap or under 1 GB free", () => {
