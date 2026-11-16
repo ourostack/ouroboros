@@ -28,10 +28,10 @@ describe("readMachine", () => {
     const status = {
       result: { restarted_at: "2026-11-15T17:18:44Z" },
       resumer: { at: "2026-11-15T21:10:41Z" },
-      recovery: { beat_age_s: 20, bad: null, watch: { sessions: { aaa: { title: "One", status: "ok" }, bbb: { title: "Two", status: "erroring" }, ccc: { status: "stuck busy" }, ddd: {} } } },
+      recovery: { beat_age_s: 20, bad: null, watch: { sessions: { aaa: { title: "One", status: "ok" }, bbb: { title: "Two", status: "erroring" }, ccc: { status: "stuck busy" }, ddd: {}, eee: { title: "Handed off", status: "gone" }, fff: { status: "archived" }, ggg: { status: "oversize" } } } },
     }
     expect(await readMachine(housesitter(JSON.stringify(status)))).toEqual({
-      installed: true, heartbeat: "ok", beatAgeS: 20, bad: null, restartedAt: "2026-11-15T17:18:44Z", resumedAt: "2026-11-15T21:10:41Z", watched: 4,
+      installed: true, heartbeat: "ok", beatAgeS: 20, bad: null, restartedAt: "2026-11-15T17:18:44Z", resumedAt: "2026-11-15T21:10:41Z", watched: 7,
       watchBad: [{ id: "bbb", title: "Two", status: "erroring" }, { id: "ccc", title: "ccc", status: "stuck busy" }],
     })
   })

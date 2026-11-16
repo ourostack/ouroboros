@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1151",
       "changes": [
-        "`ouro status` no longer reports a cleared rollback pin as still pinned: when the version intent is not pinned, the last updater record says the pin is cleared and the next hourly check updates past it."
+        "The status digest no longer lists health-watch sessions that are gone, archived or held back for size as broken. `ouro status` no longer reports a cleared rollback pin as still pinned: when the version intent is not pinned, the last updater record says the pin is cleared and the next hourly check updates past it."
       ]
     },
     {

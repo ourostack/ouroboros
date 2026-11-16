@@ -57,6 +57,9 @@ function text(value: unknown): string | null {
 }
 
 /** The machine's health, from `housesitter restart-copilot --status --json`. */
+/** Watch statuses of sessions that are retired or held back on purpose, not broken. */
+const WATCH_RETIRED = new Set(["gone", "archived", "oversize"])
+
 export async function readMachine(options: AppSessionsOptions): Promise<MachineFacts> {
   const empty: MachineFacts = { installed: false, heartbeat: "unknown", beatAgeS: null, bad: null, restartedAt: null, resumedAt: null, watched: 0, watchBad: [] }
   let result: Awaited<ReturnType<typeof restartStatus>>
@@ -73,7 +76,7 @@ export async function readMachine(options: AppSessionsOptions): Promise<MachineF
   const bad = text(recovery.bad)
   const watchBad = Object.entries(watch)
     .map(([id, entry]) => ({ id, title: text(record(entry).title) ?? id.slice(0, 8), status: text(record(entry).status) ?? "ok" }))
-    .filter(entry => entry.status !== "ok")
+    .filter(entry => entry.status !== "ok" && !WATCH_RETIRED.has(entry.status))
   return {
     installed: true,
     heartbeat: bad ? "bad" : beatAge === null ? "unknown" : beatAge > HEARTBEAT_STALE_S ? "stale" : "ok",
