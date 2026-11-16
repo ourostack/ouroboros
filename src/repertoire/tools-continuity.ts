@@ -58,12 +58,22 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
     : undefined;
   const expectedGeneration = Number(a.expectedGeneration);
   const classifiedRevision = String(a.classifiedRevision ?? "");
-  if (!turnEvent || turnEvent.recordPath !== recordPath || turnEvent.agent !== agentName
-    || turnEvent.generation !== expectedGeneration || turnEvent.observationRevision !== classifiedRevision
-    || record.generation !== expectedGeneration || record.observationRevision !== classifiedRevision
-    || record.executionState !== "running" || record.claimOwner !== turnEvent.claimOwner) {
-    throw new Error("External event disposition is not authorized for this exact turn lease");
-  }
+  // The lease authorizes the turn to classify THIS generation of THIS receipt. It does not have to
+  // still be held: the execution lease is short (30s) and a turn that reads evidence and reasons
+  // about it routinely outlives it, after which the daemon moves the receipt to retry_wait and
+  // clears the claim owner. That must not discard the agent's work, so authorization is checked
+  // against the stable identity the lease was minted with — agent, event id, generation and the
+  // observation revision handed to this turn — and each mismatch says which field was wrong.
+  // The receipt's own observationRevision is deliberately NOT compared: a newer observation can
+  // land on the receipt while this generation is still being worked, and the lease revision is
+  // the one the agent actually investigated.
+  if (!turnEvent) throw new Error("External event disposition is not authorized for this exact turn lease");
+  if (turnEvent.agent !== agentName || record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
+  if (turnEvent.eventId !== record.eventId) throw new Error("External event disposition event id does not match the turn lease");
+  if (turnEvent.generation !== expectedGeneration || record.generation !== expectedGeneration) throw new Error("External event disposition generation does not match the turn lease");
+  if (turnEvent.observationRevision !== classifiedRevision) throw new Error("External event disposition revision does not match the exact turn lease");
+  if (record.disposition != null) throw new Error("External event generation is already dispositioned");
+  if (record.executionState === "dead_letter") throw new Error("External event receipt is dead-lettered and cannot be dispositioned");
   const classification = String(a.classification);
   const decision = String(a.decision);
   const nextWake = String(a.nextWake);
@@ -155,7 +165,9 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
       }
       const handled = commitExternalEventDisposition(recordPath, {
         owner: turnEvent.claimOwner,
-        expectedVersion: record.version,
+        // No expectedVersion: the lease heartbeat advances the receipt version every few seconds,
+        // so the snapshot taken when the turn started is legitimately stale by commit time. The
+        // generation is the durable identity of what the agent investigated.
         expectedGeneration: record.generation,
         disposition: {
           classifiedRevision,

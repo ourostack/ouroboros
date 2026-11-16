@@ -1409,10 +1409,48 @@ function validateDisposition(disposition: ExternalEventDisposition): void {
   }
 }
 
-export function commitExternalEventDisposition(recordPath: string, input: CasInput & { owner: string; disposition: ExternalEventDisposition }): ExternalEventRecord {
+/**
+ * The canonical prefix of an execution lease for a receipt:
+ * `external-event:<agent>:<source>:<eventId>:generation:<N>:attempt:`.
+ *
+ * The attempt number is deliberately left off the comparison. A lease handed to a later attempt of
+ * the SAME generation must not block the turn that is still working on it, while a lease for
+ * another receipt or another generation must never be able to disposition this one. Comparing the
+ * prefix against the receipt's own identity avoids parsing the owner at all, so an event id that
+ * contains a colon cannot be misread.
+ */
+function leaseOwnerPrefix(record: ExternalEventRecord): string {
+  return `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:`
+}
+
+export function commitExternalEventDisposition(recordPath: string, input: { owner: string; expectedGeneration: number; expectedVersion?: number; disposition: ExternalEventDisposition; now?: () => string }): ExternalEventRecord {
   return withRecordLock(recordPath, () => {
     const record = readExternalEventRecord(recordPath)
-    assertClaim(record, input)
+    // The disposition records the agent's classification of the generation it investigated, so it
+    // has to survive the execution lease being released, expired, or handed to a later attempt of
+    // the same generation while that turn was still working. The generation check and the
+    // one-disposition-per-generation guard below are the safety net; a moved lease is not a reason
+    // to throw away work the agent already did.
+    if (record.generation !== input.expectedGeneration) throw new Error("External event CAS mismatch")
+    // The caller's snapshot can legitimately be stale: the lease heartbeat advances the record
+    // version every few seconds, so the version check is optional and only enforced when given.
+    if (input.expectedVersion !== undefined && record.version !== input.expectedVersion) throw new Error("External event CAS mismatch")
+    // The caller's lease must authorize THIS receipt at THIS generation. Two owner shapes are
+    // accepted, because the owner is an opaque claim token in the general API and a canonical
+    // execution lease in the daemon path:
+    //   1. The exact claim owner the receipt carries right now ("worker-a", "lease-1", ...).
+    //   2. A canonical lease for this receipt at this generation
+    //      (`external-event:<agent>:<source>:<eventId>:generation:<N>:attempt:<M>`), whose attempt
+    //      number is deliberately not compared: a lease handed to a later attempt of the same
+    //      generation is the same piece of work, and a turn routinely outlives its 30s lease.
+    // Anything else is refused — a foreign receipt, another generation, another agent, or a
+    // malformed owner. A released lease must not turn the owner check into a no-op, which is how
+    // an unrelated owner at a matching generation number used to be able to disposition a
+    // receipt it had no lease on.
+    const ownerPrefix = leaseOwnerPrefix(record)
+    const isCanonicalLease = input.owner.startsWith(ownerPrefix) && /^\d+$/u.test(input.owner.slice(ownerPrefix.length))
+    if (!isCanonicalLease && record.claimOwner !== input.owner) throw new Error("External event claim owner mismatch")
+    if (record.disposition != null) throw new Error("External event generation is already dispositioned")
     validateDisposition(input.disposition)
     if (input.disposition.nextWake.kind === "at" && (!input.disposition.awaitId || !Number.isFinite(Date.parse(input.disposition.nextWake.at)))) {
       throw new Error("External event time disposition requires an await receipt")

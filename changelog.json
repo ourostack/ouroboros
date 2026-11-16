@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1152",
+      "changes": [
+        "Let an agent land an external-event disposition it already investigated."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1151",
       "changes": [
         "`ouro status` no longer reports a cleared rollback pin as still pinned: when the version intent is not pinned, the last updater record says the pin is cleared and the next hourly check updates past it."
