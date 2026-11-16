@@ -1,7 +1,8 @@
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { plain } from "../shepherd/owner-notice"
-import { eventLogSize, sendToAppSession, type AppSessionRow, type AppSessionsOptions, type SendResult } from "./client"
+import { deliverMessage, type Asked } from "./app-interface"
+import { eventLogSize, type AppSessionRow, type AppSessionsOptions } from "./client"
 import { appSessionsStateDir, readJson, writeJson } from "./store"
 import type { NotifyOwner } from "./waiting-prompts"
 
@@ -39,14 +40,14 @@ export interface SizeWatchDeps {
   notify: NotifyOwner
   now: number
   size?: (id: string) => number
-  send?: (id: string, text: string) => Promise<SendResult>
+  send?: (id: string, text: string) => Promise<Asked>
   client?: AppSessionsOptions
 }
 
 /** Flag every over-limit session and nudge each once. Returns the number nudged (or owner-told) this run. */
 export async function noticeOversizedSessions(agentRoot: string, rows: AppSessionRow[], deps: SizeWatchDeps): Promise<number> {
   const size = deps.size ?? ((id: string) => eventLogSize(id, deps.client))
-  const send = deps.send ?? ((id: string, text: string) => sendToAppSession(id, text, { ...deps.client, delivery: "enqueue" }))
+  const send = deps.send ?? ((id: string, text: string) => deliverMessage(id, text, "enqueue", deps.client))
   const before = readOversize(agentRoot)
   const sizes = new Map(rows.filter(row => !row.remote).map(row => [row.id, size(row.id)]))
   const big = rows.filter(row => (sizes.get(row.id) ?? 0) > OVERSIZE_BYTES)
@@ -62,7 +63,7 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
     const parent = rows.find(other => other.id === row.coordinatingCreatorSessionId)
     const recipient = parent && !bigIds.has(parent.id) ? parent.id : row.isRunning ? row.id : null
     if (recipient) {
-      const sent = await send(recipient, handoffNudge(row.name, bytes)).catch((error: Error): SendResult => ({ ok: false, reply: "", messageId: null, error: error.message }))
+      const sent = await send(recipient, handoffNudge(row.name, bytes)).catch((error: Error): Asked => ({ ok: false, frame: null, error: error.message }))
       if (!sent.ok) continue
       entry.nudgedAt = new Date(deps.now).toISOString()
       entry.to = recipient

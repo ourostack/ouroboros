@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { AppSessionRow } from "../../../senses/app-sessions/client"
+import * as face from "../../../senses/app-sessions/app-interface"
 import * as client from "../../../senses/app-sessions/client"
 import { handoffNudge, neverResume, noticeOversizedSessions, OVERSIZE_BYTES, readOversize } from "../../../senses/app-sessions/size-watch"
 
@@ -15,7 +16,7 @@ const row = (id: string, over: Partial<AppSessionRow> = {}): AppSessionRow => ({
   id, name: id, kind: "workspace", workspaceId: null, workspaceType: null, project: null, projectId: null, sidebarPlacement: "unknown", state: "idle",
   detail: "", isRunning: true, wasInterrupted: false, remote: false, updatedAt: null, lastActivity: null, ...over,
 })
-const sendOk = () => vi.fn(async () => ({ ok: true, reply: "", messageId: "m", error: null }))
+const sendOk = () => vi.fn(async () => ({ ok: true, frame: null, error: null }))
 
 beforeEach(() => { agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "size-watch-")) })
 afterEach(() => { fs.rmSync(agentRoot, { recursive: true, force: true }); vi.restoreAllMocks() })
@@ -64,7 +65,7 @@ describe("oversized session history", () => {
 
   it("tries again when the owner could not be reached, or the send failed", async () => {
     const notify = vi.fn(async () => "pending" as const)
-    const send = vi.fn().mockResolvedValueOnce({ ok: false, reply: "", messageId: null, error: "x" }).mockRejectedValueOnce(new Error("down")).mockResolvedValue({ ok: true, reply: "", messageId: null, error: null })
+    const send = vi.fn().mockResolvedValueOnce({ ok: false, frame: null, error: "x" }).mockRejectedValueOnce(new Error("down")).mockResolvedValue({ ok: true, frame: null, error: null })
     const deps = { notify, now: NOW, size: () => 2 * GB, send }
     expect(await noticeOversizedSessions(agentRoot, [row("a")], deps)).toBe(0)
     expect(await noticeOversizedSessions(agentRoot, [row("a")], deps)).toBe(0)
@@ -84,10 +85,10 @@ describe("oversized session history", () => {
   })
 
   it("measures with the app's event log by default, and sends by default through the client", async () => {
-    const spy = vi.spyOn(client, "sendToAppSession").mockResolvedValue({ ok: true, reply: "", messageId: null, error: null })
+    const spy = vi.spyOn(face, "deliverMessage").mockResolvedValue({ ok: true, frame: null, error: null })
     vi.spyOn(client, "eventLogSize").mockReturnValue(3 * GB)
     expect(await noticeOversizedSessions(agentRoot, [row("a")], { notify: vi.fn(), now: NOW })).toBe(1)
-    expect(spy).toHaveBeenCalledWith("a", expect.any(String), expect.objectContaining({ delivery: "enqueue" }))
+    expect(spy).toHaveBeenCalledWith("a", expect.any(String), "enqueue", undefined)
   })
 
   it("words sizes in MB under a gigabyte", () => {

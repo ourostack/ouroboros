@@ -2,7 +2,8 @@ import { execFile } from "node:child_process"
 import * as path from "node:path"
 import type { WakeDelivery, WakeRunnerConfig } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { messageDelivered, sendToAppSession, withdrawQueuedMessages, type AppSessionsOptions } from "./client"
+import { deliverMessage } from "./app-interface"
+import { messageDelivered, withdrawQueuedMessages, type AppSessionsOptions } from "./client"
 import { writeJson } from "./store"
 import { readWakeRunnerStates, wakeRunnerStateFile, type OpenWake, type WakeRunnerState } from "./wake-runner-state"
 
@@ -83,7 +84,7 @@ export const wasDelivered = (client: AppSessionsOptions): WasDelivered => (sessi
 export const sendWake = (client: AppSessionsOptions): SendWake => async (session, message, delivery, replaces) => {
   // The command re-derives its whole state each run, so a wake still queued in the session is stale news: take it back first.
   if (replaces) await withdrawQueuedMessages(session, replaces, client).catch(() => 0)
-  const result = await sendToAppSession(session, message, { ...client, delivery })
+  const result = await deliverMessage(session, message, delivery, client)
   return { ok: result.ok, error: result.error }
 }
 
