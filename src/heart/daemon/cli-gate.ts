@@ -53,7 +53,7 @@ function usageLinesFor(name: string): string[] {
     .split("\n")
     .filter((line) => {
       if (!line.startsWith(`  ouro ${head}`)) return false;
-      const word = line.slice(`  ouro ${head}`.length).split(/[\s[<(]/)[0] ?? "";
+      const word = line.slice(`  ouro ${head}`.length).split(/[\s[<(]/)[0]!;
       return word.split("|").includes(last);
     });
 }
@@ -73,12 +73,11 @@ function shapeOf(declaration: CliCommandDeclaration): CommandShape {
 const SHAPES = CLI_COMMANDS.map(shapeOf);
 
 function nearestFlag(flag: string, known: string[]): string | null {
-  let best: { name: string; distance: number } | null = null;
-  for (const candidate of known) {
-    const distance = editDistance(flag, candidate);
-    if (distance <= 2 && (best === null || distance < best.distance)) best = { name: candidate, distance };
-  }
-  return best?.name ?? null;
+  const ranked = known
+    .map((name) => ({ name, distance: editDistance(flag, name) }))
+    .filter((candidate) => candidate.distance <= 2)
+    .sort((a, b) => a.distance - b.distance);
+  return ranked.length > 0 ? ranked[0]!.name : null;
 }
 
 function editDistance(a: string, b: string): number {
@@ -94,12 +93,10 @@ function editDistance(a: string, b: string): number {
 }
 
 function matchCommand(args: string[]): CommandShape | null {
-  let best: CommandShape | null = null;
-  for (const shape of SHAPES) {
-    const matches = shape.words.every((word, index) => args[index] === word);
-    if (matches && (best === null || shape.words.length > best.words.length)) best = shape;
-  }
-  return best;
+  const found = SHAPES.filter((shape) => shape.words.every((word, index) => args[index] === word)).sort(
+    (a, b) => b.words.length - a.words.length,
+  );
+  return found.length > 0 ? found[0]! : null;
 }
 
 function refuse(name: string, message: string): GateResult {

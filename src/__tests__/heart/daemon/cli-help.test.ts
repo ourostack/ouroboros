@@ -518,6 +518,11 @@ describe("runOuroCli help execution", () => {
     expect(help.exitCodes.map((exit) => exit.code)).toEqual([0, 1])
   })
 
+  it.each([["--help"], ["-h"]])("%s --json prints the same help as data", async (flag) => {
+    const result = await runOuroCli([flag, "--json"], makeDeps())
+    expect(JSON.parse(result)).toMatchObject({ tool: "ouro" })
+  })
+
   it("every declared command is one the usage text lists", () => {
     const lines = usage().split("\n")
     for (const command of CLI_COMMANDS) {

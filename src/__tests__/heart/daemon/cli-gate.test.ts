@@ -17,6 +17,11 @@ describe("the flag gate in front of the ouro CLI", () => {
     expect(result.kind === "refuse" && result.message).toContain("drop --zzzzzzzzzz; `ouro check --help` lists its flags")
   })
 
+  it("suggests the nearest of several real flags", () => {
+    const result = gateCommandArgs(["check", "--hom", "x"])
+    expect(result.kind === "refuse" && result.message).toContain("Fix: use --home.")
+  })
+
   it("passes flags the usage lists, including those on a second usage line", () => {
     expect(gateCommandArgs(["check", "--lane", "inner"])).toMatchObject({ kind: "pass" })
     expect(
