@@ -3,6 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
+import { learnContextWindow } from "./model-limits";
 import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
 import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
@@ -123,6 +124,8 @@ export interface ProviderRuntime {
   streamTurn(request: ProviderTurnRequest): Promise<TurnResult>;
   appendToolOutput(callId: string, output: string): void;
   resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void;
+  /** The provider's own report of this model's context window, when it has one. */
+  fetchContextWindow?(signal?: AbortSignal): Promise<number | undefined>;
   /** Minimal API call to verify credentials work. Throws on failure. */
   ping(signal?: AbortSignal): Promise<void>;
   classifyError(error: Error): ProviderErrorClassification;
@@ -282,6 +285,7 @@ export async function getProviderRuntime(facing: Facing = "human", owner?: Runti
     console.error(`\n[fatal] ${msg}\n`);
     throw new Error(msg);
   }
+  await learnContextWindow(runtime);
   // The shared tool loop supplies approval continuation to every provider adapter.
   return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
 }
@@ -295,6 +299,7 @@ async function getChainEntryRuntime(entry: ProviderChainEntry, owner?: RuntimeOw
   const runtime = createProviderRegistry().resolve(entry.provider, entry.model, credential.record, runtimeOwner);
   /* v8 ignore next -- defensive: the registry resolves every provider id @preserve */
   if (!runtime) throw new Error(`${entry.provider} (${entry.model}) runtime could not be initialized.`);
+  await learnContextWindow(runtime);
   return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
 }
 

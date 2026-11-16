@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1168",
+      "changes": [
+        "An agent's context window is read from the provider's own model listing (GitHub Copilot's capabilities.limits.max_context_window_tokens) once per model and cached. The built-in 200k/400k estimates apply only when that read fails, and the log says so (engine.context_window_fallback)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1167",
       "changes": [
         "An agent's context window now follows its model's real limit (200k for Claude, 400k for GPT) unless agent.json sets context.maxTokens to something other than the old 80000 default; new agents no longer get maxTokens written. scripts/measure-prompt.cjs counts the system prompt and tool schemas per channel, with no model calls."
