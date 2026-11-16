@@ -77,6 +77,12 @@ The sense process does three things:
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
+- Each minute the sense also stats every local session's `events.jsonl` (never reading it). One over 500 MB is flagged in `oversize.json`
+  (the never-resume list: `neverResume(agentRoot)`), because the app loads a whole history into memory whenever it resumes
+  that session, and a few multi-GB ones froze a Mac. Its coordinator, or the session itself when it is running and has no smaller
+  coordinator, is asked once to hand off to a fresh successor (checkpoint, the tail of the old log, then archive), and to
+  keep images out of chat, since inline images are nearly all of a history's size. A session that is not running and has no
+  smaller coordinator is never messaged, which would reload it; the owner is told once instead. No model turn is used.
 - The same snapshot lists the sessions waiting on a **permission prompt** or a **repository-trust decision**, which only the person can answer in the app
   and which freezes the session (and one that created it) while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
