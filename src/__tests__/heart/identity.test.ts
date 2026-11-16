@@ -218,7 +218,6 @@ describe("buildDefaultAgentTemplate", () => {
       humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
       agentFacing: { provider: "anthropic", model: "claude-opus-5-5" },
       context: {
-        maxTokens: 80000,
         contextMargin: 20,
       },
       habitPaidTurnsPerDay: 4,

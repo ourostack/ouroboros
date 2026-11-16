@@ -552,6 +552,41 @@ describe("getContextConfig", () => {
     expect(ctx.contextMargin).toBe(20)
   })
 
+  describe("context window follows the model", () => {
+    async function contextFor(context: Record<string, unknown> | undefined, model: string, argModel?: string) {
+      vi.mocked(identity.loadAgentConfig).mockReturnValue({
+        version: 2,
+        enabled: true,
+        humanFacing: { provider: "anthropic", model },
+        agentFacing: { provider: "anthropic", model },
+        context,
+      } as any)
+      const { getContextConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      return getContextConfig(argModel)
+    }
+
+    it("uses the configured model's real window when maxTokens is unset", async () => {
+      expect((await contextFor({ contextMargin: 20 }, "claude-opus-5-5")).maxTokens).toBe(200000)
+      expect((await contextFor(undefined, "gpt-6-sol")).maxTokens).toBe(400000)
+    })
+
+    it("treats the old hatch-time default as unset", async () => {
+      expect((await contextFor({ maxTokens: 80000, contextMargin: 20 }, "claude-opus-5-5")).maxTokens).toBe(200000)
+    })
+
+    it("lets an explicit maxTokens override the model", async () => {
+      expect((await contextFor({ maxTokens: 120000 }, "claude-opus-5-5")).maxTokens).toBe(120000)
+    })
+
+    it("sizes for the model passed in rather than the human-facing one", async () => {
+      expect((await contextFor(undefined, "claude-opus-5-5", "gpt-6-sol")).maxTokens).toBe(400000)
+    })
+
+    it("falls back to the default for a model with no known window", async () => {
+      expect((await contextFor(undefined, "some-unlisted-model")).maxTokens).toBe(80000)
+    })
+  })
 })
 
 describe("getOpenAIEmbeddingsApiKey", () => {

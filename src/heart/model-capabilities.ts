@@ -5,6 +5,8 @@ export interface ModelCapabilities {
   thinkingFormat?: "anthropic"
   phase?: boolean
   maxOutputTokens?: number
+  /** The model's real context window. Unset means unknown: the agent's context default applies. */
+  contextWindowTokens?: number
   /**
    * True when the model can consume OpenAI-style `image_url` content parts
    * natively. When false/undefined, the BlueBubbles sense falls back to a
@@ -26,88 +28,103 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapabilities> = {
   "claude-opus-5.5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "claude-sonnet-5.5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "claude-haiku-5.5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "claude-opus-5-5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     thinkingFormat: "anthropic",
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "claude-sonnet-5-5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     thinkingFormat: "anthropic",
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "claude-haiku-5-5": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     thinkingFormat: "anthropic",
     maxOutputTokens: 128000,
+    contextWindowTokens: 200000,
     vision: true,
   },
   "gpt-6.1-sol": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-6-sol": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-6-luna": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-6-astra": {
     reasoningEffort: ["low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-5.6-sol": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-5.6-sol-fast": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-5.6-luna": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-5.6-terra": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "gpt-5.5": {
     reasoningEffort: ["none", "low", "medium", "high", "xhigh"],
     phase: true,
     maxOutputTokens: 128000,
+    contextWindowTokens: 400000,
     vision: true,
   },
   "MiniMax-Text-01": {

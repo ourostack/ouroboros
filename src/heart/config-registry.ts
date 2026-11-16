@@ -149,9 +149,9 @@ const registryData: ConfigRegistryEntry[] = [
   {
     path: "context.maxTokens",
     tier: "self",
-    description: "Maximum context window size in tokens.",
+    description: "Override for the context window size in tokens. Unset, it follows the configured model's real window.",
     default: 80000,
-    effects: "Larger values allow more context but increase cost and latency. Must match model capability.",
+    effects: "Larger values allow more context but increase cost and latency. Must not exceed the model's window. 80000 applies only to a model whose window is unknown.",
     topics: ["context", "tokens", "notes", "performance"],
     validate: validateInteger(1000, 1000000),
   },

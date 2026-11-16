@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { getModelCapabilities } from "./model-capabilities"
 import {
   loadAgentConfig,
   getAgentRoot,
@@ -401,20 +402,24 @@ export function getTeamsSecondaryConfig(): TeamsConfig {
   return { ...config.teamsSecondary }
 }
 
-export function getContextConfig(): ContextConfig {
+/**
+ * The context window follows the model: an agent.json `context.maxTokens` that differs from the old hatch-time
+ * default is an explicit override; otherwise the model's real window applies, and the default only when it is unknown.
+ */
+export function getContextConfig(model?: string): ContextConfig {
   if (_testContextOverride) {
     return { ..._testContextOverride }
   }
   const defaults = DEFAULT_AGENT_CONTEXT
-  const agentContext = loadAgentConfig().context
-  if (!agentContext || typeof agentContext !== "object") {
-    return { ...defaults }
-  }
+  const agentConfig = loadAgentConfig()
+  const agentContext = agentConfig.context
+  const override = typeof agentContext?.maxTokens === "number" && agentContext.maxTokens !== defaults.maxTokens
+    ? agentContext.maxTokens
+    : undefined
+  const modelId = model ?? agentConfig.humanFacing?.model
   return {
-    maxTokens: typeof agentContext.maxTokens === "number" ? agentContext.maxTokens : defaults.maxTokens,
-    contextMargin: typeof agentContext.contextMargin === "number"
-      ? agentContext.contextMargin
-      : defaults.contextMargin,
+    maxTokens: override ?? (modelId ? getModelCapabilities(modelId).contextWindowTokens : undefined) ?? defaults.maxTokens,
+    contextMargin: typeof agentContext?.contextMargin === "number" ? agentContext.contextMargin : defaults.contextMargin,
   }
 }
 
