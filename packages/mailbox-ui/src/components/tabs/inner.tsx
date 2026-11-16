@@ -307,7 +307,7 @@ function HabitRunRow({ run }: { run: MailboxHabitRunSummary }) {
                   </div>
                   <p className="mt-0.5 font-mono text-[10px] text-ouro-shadow break-all">{route.recipient}</p>
                   {(route.friendId || route.channel || route.key) && [route.friendId, route.channel, route.key].filter(Boolean).join("/") !== route.recipient && (
-                    <p className="mt-0.5 font-mono text-[10px] text-ouro-shadow/70 break-all">
+                    <p className="mt-0.5 font-mono text-[10px] text-ouro-mist break-all">
                       {[route.friendId, route.channel, route.key].filter(Boolean).join("/")}
                     </p>
                   )}
@@ -590,7 +590,7 @@ function HabitCard({ h }: { h: MailboxHabitItem }) {
           <span className="text-ouro-gold">never fired — may be misconfigured</span>
         )}
       </div>
-      {h.bodyExcerpt && <p className="mt-1 text-xs text-ouro-shadow/70">{h.bodyExcerpt}</p>}
+      {h.bodyExcerpt && <p className="mt-1 text-xs text-ouro-mist">{h.bodyExcerpt}</p>}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 name: mailbox-ui-check
 
 # Ouro check on the Mailbox web app's build, served with made-up data from the app's test fixtures (scripts/check-server.ts).
-# It reports the layout, text, contrast and theme findings Ouro UI publishes and uploads the report as the ouro-check artifact.
+# It checks the layout, text, contrast and theme findings Ouro UI publishes, gates on them, and uploads the report as the ouro-check artifact.
 # The app's own tests run in static-checks (coverage.yml).
 
 on:
@@ -51,16 +51,9 @@ jobs:
           cat "$RUNNER_TEMP/check-server.log"
           exit 1
 
-      # Exit 3 means the check found gated findings: the report names them, and this run uploads it. The gate
-      # turns on once the palette and layout findings in the report are fixed. Exit 1 or 2 fails the job.
+      # Gated: any finding fails the job. The report is uploaded either way.
       - name: Ouro check
-        run: |
-          set +e
-          node src/lib/ouro/check/check.ts http://127.0.0.1:6878/ --out ouro-check
-          code=$?
-          set -e
-          echo "Ouro check exit $code (3: gated findings, reported)"
-          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then exit "$code"; fi
+        run: node src/lib/ouro/check/check.ts http://127.0.0.1:6878/ --out ouro-check
 
       - name: Upload the Ouro check report
         if: always()

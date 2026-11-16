@@ -197,9 +197,8 @@ export function App() {
       sidebar={
         <Sidebar
           label="Mailbox"
-          className="bg-ouro-deep"
           header={
-            <div className="space-y-4 border-b border-ouro-moss/30 pb-4">
+            <div className="space-y-3 border-b border-ouro-moss/30 pb-3">
               <div className="flex items-center gap-3">
                 <div className="h-3 w-3 shrink-0 rounded-full bg-ouro-glow shadow-[0_0_16px_theme(--color-ouro-glow)]" />
                 <p className="truncate font-display text-lg italic font-semibold text-ouro-bone">Ouro Mailbox</p>
@@ -251,7 +250,7 @@ export function App() {
               </div>
               {/* Agent status line — manual override or auto-derived */}
               {supervisionRoute === null && selectedAgent && currentView && (
-                <p className="px-2 italic text-ouro-shadow/70">
+                <p className="px-2 italic text-ouro-mist">
                   {(() => {
                     const manualStatus = deskPrefs?.statusLine
                     if (manualStatus) return manualStatus
@@ -270,7 +269,7 @@ export function App() {
         />
       }
     >
-      <div role="status" className="mb-4 text-xs text-ouro-mist">
+      <div role="status" className="mb-4 min-h-12 text-xs text-ouro-mist sm:min-h-8">
         {connection === "connected" ? "Live connection" : connection === "reconnecting"
           ? "Disconnected - reconnecting. Displayed snapshots may be stale."
           : "Connecting to live updates. Displayed snapshots may be stale."}
@@ -303,9 +302,15 @@ export function App() {
           onNavigate={setAgentRoute}
         />
       ) : (
-        <p role="status" className="py-12 text-ouro-mist">
-          {agentError ? `No snapshot available for ${selectedAgent}.` : `Loading ${selectedAgent}...`}
-        </p>
+        <div className="min-h-[60vh]">
+          <div className="flex min-h-[4.5rem] items-start border-b border-ouro-moss/30 pb-4">
+            {!agentError && <h1 className="font-display text-2xl italic font-semibold text-ouro-bone sm:text-3xl">{selectedAgent}</h1>}
+          </div>
+          <div className="mt-4 h-9 border-b border-ouro-moss/20" aria-hidden="true" />
+          <p role="status" className="mt-4 text-ouro-mist">
+            {agentError ? `No snapshot available for ${selectedAgent}.` : `Loading ${selectedAgent}...`}
+          </p>
+        </div>
       )}
     </SidebarLayout>
   )

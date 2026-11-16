@@ -211,6 +211,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Mail
       </div>
 
       {/* Orientation — resume handle and primary obligation */}
+      {orientation === null && <div aria-hidden="true" className="min-h-40" />}
       {orientation && (
         <div className="rounded-xl bg-ouro-moss/10 p-4 ring-1 ring-ouro-glow/8">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Orientation</p>
@@ -303,6 +304,7 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Mail
       )}
 
       {/* Continuity — presence, cares, episodes */}
+      {continuity === null && <div aria-hidden="true" className="min-h-40" />}
       {continuity && (
         <div className="grid gap-4 sm:grid-cols-3">
           {/* Self presence */}
