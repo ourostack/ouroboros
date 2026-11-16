@@ -91,6 +91,7 @@ jobs:
           mkdir -p xray-actions
           node tools/ouro-actions/ouro-actions.mts check actions/ouro.actions.mts actions/generated \
             --report xray-actions/report.json --app "Ouroboros" --commit "$GITHUB_SHA"
+          node -e "const s = require('./xray-actions/report.json').summary; if (!s) process.exit(1); if (s.mustHolding !== s.must) { console.error('Action claims: ' + s.mustHolding + ' of ' + s.must + ' must claims hold'); process.exit(1); }"
 
       - name: Upload the action claims report
         if: always()
