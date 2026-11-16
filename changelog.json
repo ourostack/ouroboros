@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1152",
+      "changes": [
+        "Releases no longer fail when npm lists a fresh version before it serves the version's tarball. The release check and the GitHub release step now wait, for up to about 20 minutes, for npm to serve that exact version's tarball, so each release still reaches npm and gets the GitHub release that hosts without npm access update from. 0.1.0-alpha.1151 hit this: npm still returned 404 for its tarball ten minutes after publishing it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1151",
       "changes": [
         "`ouro status` no longer reports a cleared rollback pin as still pinned: when the version intent is not pinned, the last updater record says the pin is cleared and the next hourly check updates past it."

@@ -54,7 +54,7 @@ describe("package metadata", () => {
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
     const publishJob = workflow.slice(workflow.indexOf("  publish:"), workflow.indexOf("  github-release:"))
     const releaseJob = workflow.slice(workflow.indexOf("  github-release:"))
-    expect(publishJob).toContain('npm pack "@ouro.bot/cli@${LOCAL}" --pack-destination release-tarball')
+    expect(publishJob).toContain("run: node scripts/release-smoke.cjs pack release-tarball")
     expect(publishJob).toContain("name: ouro-cli-published-tarball")
     expect(releaseJob).toContain("name: ouro-cli-published-tarball")
     expect(releaseJob).toContain("actions/attest-build-provenance@")

@@ -619,7 +619,8 @@ jobs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Room for the dist-tag wait (10 min) plus the tarball wait (about 21 min).
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -676,15 +677,14 @@ jobs:
       # Hand the exact bytes npm now serves to the github-release job. `npm pack`
       # of a published spec downloads the registry tarball and checks it against
       # the registry's integrity hash, so the GitHub release carries the same
-      # package npm users install, never a rebuild. Non-blocking: a failure
-      # here only skips the GitHub release.
+      # package npm users install, never a rebuild. npm lists a fresh version in
+      # its metadata before it serves the tarball (0.1.0-alpha.1151 still 404'd
+      # ten minutes after publish), so this waits, bounded, for that exact
+      # version's tarball. Non-blocking: a failure here only skips the GitHub
+      # release.
       - name: Fetch the published @ouro.bot/cli tarball
         continue-on-error: true
-        run: |
-          LOCAL=$(node -p "require('./package.json').version")
-          mkdir -p release-tarball
-          npm pack "@ouro.bot/cli@${LOCAL}" --pack-destination release-tarball
-          test -f "release-tarball/ouro.bot-cli-${LOCAL}.tgz"
+        run: node scripts/release-smoke.cjs pack release-tarball
 
       - name: Hand the published tarball to the GitHub release job
         continue-on-error: true
