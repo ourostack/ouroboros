@@ -4,7 +4,7 @@ import * as path from "node:path"
 export const SHEPHERD_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The Shepherd host kinds a machine can be connected to. */
-export type ShepherdHostName = "cmux" | "herdr" | "copilot-app"
+export type ShepherdHostName = "cmux" | "herdr"
 type ReadOptions = { agent: string; json?: boolean }
 type Administration = ReadOptions & { expectedRevision: number; requestId: string }
 export type ShepherdOperation =
@@ -57,7 +57,7 @@ export function parseShepherdOperation(args: string[]): ShepherdOperation {
   const common = { agent, ...(values.has("json") ? { json: true } : {}) }
   const host = (): ShepherdHostName => {
     const value = required("host")
-    return value === "cmux" || value === "herdr" || value === "copilot-app" ? value : fail()
+    return value === "cmux" || value === "herdr" ? value : fail()
   }
   if (operation === "status") return { kind: "shepherd.status", ...common }
   const id = (): string => {

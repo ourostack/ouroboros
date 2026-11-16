@@ -3,11 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import type Database from "better-sqlite3"
-import { openDatabase } from "../../heart/sqlite"
 import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { copilotAppUrl } from "../shepherd/copilot-app"
 
 /**
  * This Mac's GitHub Copilot app, read and written the way the app's own sidebar does it. The session list comes from
@@ -47,30 +44,25 @@ export interface AppSessionRow {
   workspaceType: string | null
   project: string | null
   projectId: string | null
-  parentSessionId?: string | null
-  creatorSessionId?: string | null
-  coordinatingCreatorSessionId?: string | null
-  sidebarPlacement: "unknown"
+  projectRepo: string | null
+  branch: string | null
+  path: string | null
+  parentSessionId: string | null
+  creatorSessionId: string | null
+  coordinatingCreatorSessionId: string | null
   state: AppSessionState
   /** What the session's own state rests on, in a few words. */
   detail: string
   isRunning: boolean
   wasInterrupted: boolean
   remote: boolean
+  createdAt: string | null
   updatedAt: string | null
   lastActivity: string | null
+  /** What the session's history says it waits on: a question, a plan approval or a permission. */
+  awaiting?: "input" | "plan" | "permission"
   /** The oldest permission request still open, whatever else the session waits on. */
   prompt?: PermissionPrompt
-  /** The repository-trust decision the session is blocked on, which only the person can make. */
-  repositoryTrust?: RepositoryTrustWait
-}
-
-/** An undecided repository-trust card, from the app's database. */
-export interface RepositoryTrustWait {
-  /** The app's id for the decision (`repository_trust:<project>:<host>:<revision>`); a new decision has a new id. */
-  decisionId: string
-  /** The repository the person is asked to trust, as `owner/name` when the app knows it. */
-  repo: string
 }
 
 /** A permission request the person has not answered yet, from the session's own history. */
@@ -96,21 +88,12 @@ export interface AppMessage {
   truncated?: boolean
 }
 
-export interface SendResult {
-  ok: boolean
-  reply: string
-  messageId: string | null
-  error: string | null
-}
 
 /** The most a send waits: a session whose runtime is not in memory loads first, often for more than 20 s. */
 export const SEND_WAIT_MS = 120_000
 /** Names the Housesitter command to run: the path of its `bin/housesitter.mjs`, or of an executable. */
 export const HOUSESITTER_ENV = "HOUSESITTER_BIN"
 const REQUEST_WAIT_MS = 30_000
-const ARCHIVE_WAIT_MS = 60_000
-const CHAT_ARCHIVE_WAIT_MS = 20_000
-const RENAME_WAIT_MS = 1_500
 const HOUSESITTER_WAIT_MS = 30_000
 const STATUS_TAIL_BYTES = 512 * 1024
 const EVENT_CHUNK_BYTES = 256 * 1024
@@ -132,6 +115,37 @@ export function defaultStateDir(): string {
   return path.join(os.homedir(), ".copilot")
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/**
+ * The app's current server address. Every app build (release, dev, PR) writes `ws.port` and
+ * `ws.token`; the release app also writes `ws.release.*`, so those win. The port file holds
+ * `<port>\n<pid>`, and a file whose app has exited is skipped.
+ */
+export function copilotAppUrl(stateDir: string, alive: (pid: number) => boolean = processAlive): string {
+  const run = path.join(stateDir, "run")
+  for (const prefix of ["ws.release", "ws"]) {
+    let port: string, pid: string | undefined, token: string
+    try {
+      ;[port, pid] = fs.readFileSync(path.join(run, `${prefix}.port`), "utf-8").split(/\r?\n/).map(line => line.trim()) as [string, string | undefined]
+      token = fs.readFileSync(path.join(run, `${prefix}.token`), "utf-8").split(/\r?\n/)[0]!.trim()
+    } catch {
+      continue
+    }
+    if (!/^\d+$/.test(port) || !token) continue
+    if (pid && /^\d+$/.test(pid) && !alive(Number(pid))) continue
+    return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}&observer=1`
+  }
+  throw new Error(`the GitHub Copilot app is not running (no live server files in ${run})`)
+}
+
 function stateDirOf(options: AppSessionsOptions): string {
   return options.stateDir ?? defaultStateDir()
 }
@@ -147,116 +161,6 @@ function str(value: unknown): string | null {
 export function assertSessionId(id: string): string {
   if (!SESSION_ID.test(id)) throw new Error(`'${id}' is not a Copilot app session id`)
   return id
-}
-
-// ---------- the app's database ----------
-
-function withDatabase<T>(stateDir: string, read: (db: Database.Database) => T): T {
-  const file = path.join(stateDir, "data.db")
-  if (!fs.existsSync(file)) throw new Error(`no GitHub Copilot app database at ${file}`)
-  const db = openDatabase(file, { readonly: true, fileMustExist: true, timeout: 3_000 })
-  try {
-    return read(db)
-  } finally {
-    db.close()
-  }
-}
-
-interface DbRow {
-  id: string
-  workspace_id: string | null
-  workspace_type: string | null
-  name: string | null
-  title: string | null
-  project: string | null
-  project_id: string | null
-  parent_session_id?: string | null
-  creator_session_id?: string | null
-  coordinating_creator_session_id?: string | null
-  is_running: number | null
-  was_interrupted: number | null
-  execution_location: string | null
-  host_id: string | null
-  updated_at: string | null
-}
-
-const WORKSPACE_ROWS = `
-SELECT w.session_id AS id, w.id AS workspace_id, w.workspace_type, w.name, s.title, p.name AS project, w.project_id,
-  s.is_running, s.was_interrupted, s.execution_location, w.host_id, coalesce(s.updated_at, w.updated_at) AS updated_at
-FROM workspaces w LEFT JOIN sessions s ON s.id = w.session_id LEFT JOIN projects p ON p.id = w.project_id
-WHERE w.archived_at IS NULL AND w.session_id IS NOT NULL`
-
-const CHAT_ROWS = `
-SELECT s.id, NULL AS workspace_id, NULL AS workspace_type, NULL AS name, s.title, NULL AS project, NULL AS project_id,
-  s.is_running, s.was_interrupted, s.execution_location, NULL AS host_id, s.updated_at
-FROM sessions s
-WHERE s.archived_at IS NULL AND s.session_type IN ('general_chat', 'agent')`
-
-function hasColumn(db: Database.Database, table: string, column: string): boolean {
-  return (db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{ name: string }>).some(row => row.name === column)
-}
-
-function databaseRows(stateDir: string): DbRow[] {
-  return withDatabase(stateDir, (db) => {
-    // Older app builds have no host_id on workspaces.
-    const workspaces = hasColumn(db, "workspaces", "host_id") ? WORKSPACE_ROWS : WORKSPACE_ROWS.replace("w.host_id", "NULL AS host_id")
-    const withHierarchy = (query: string, table: "workspaces" | "sessions", alias: "w" | "s") => {
-      const columns = ["parent_session_id", "creator_session_id", "coordinating_creator_session_id"]
-        .filter(column => hasColumn(db, table, column)).map(column => `${alias}.${column}`)
-      return columns.length ? query.replace("SELECT ", `SELECT ${columns.join(", ")}, `) : query
-    }
-    return [...db.prepare(withHierarchy(workspaces, "workspaces", "w")).all() as DbRow[], ...db.prepare(withHierarchy(CHAT_ROWS, "sessions", "s")).all() as DbRow[]]
-  })
-}
-
-function hasTable(db: Database.Database, table: string): boolean {
-  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined
-}
-
-interface TrustClaimRow {
-  watermark: string
-  session_id: string
-  project: string | null
-  owner: string | null
-  repo: string | null
-  trusted: number
-  current: number | null
-}
-
-/**
- * The sessions blocked on a repository-trust card. When a session that another session created reaches the card, the app
- * records a `repository_trust` notification claim for it, with the decision id as the watermark, and the claim stays after
- * the person decides. So a claim is an open wait only while the project has no trust grant for the session's host and no
- * newer trust revision. A session nobody coordinates leaves no claim and is not seen here.
- */
-function repositoryTrustWaits(stateDir: string): Map<string, RepositoryTrustWait> {
-  return withDatabase(stateDir, (db) => {
-    const waits = new Map<string, RepositoryTrustWait & { revision: number }>()
-    if (!["creator_notification_claims", "project_host_trust", "project_trust_revisions", "workspaces", "projects"].every(table => hasTable(db, table))) return waits
-    const named = hasColumn(db, "projects", "github_owner") && hasColumn(db, "projects", "github_repo")
-    const revision = hasColumn(db, "project_trust_revisions", "local_revision") ? "max(r.revision, r.local_revision)" : "r.revision"
-    const claims = db.prepare(`
-      SELECT c.watermark, w.session_id, p.name AS project, ${named ? "p.github_owner AS owner, p.github_repo AS repo" : "NULL AS owner, NULL AS repo"},
-        EXISTS (SELECT 1 FROM project_host_trust h WHERE h.project_id = w.project_id AND h.host_id = coalesce(w.host_id, 'local')) AS trusted,
-        (SELECT ${revision} FROM project_trust_revisions r WHERE r.project_id = w.project_id) AS current
-      FROM creator_notification_claims c JOIN workspaces w ON w.id = c.workspace_id LEFT JOIN projects p ON p.id = w.project_id
-      WHERE c.kind = 'repository_trust' AND w.session_id IS NOT NULL`).all() as TrustClaimRow[]
-    for (const claim of claims) {
-      const decided = Number(/:(\d+)$/.exec(claim.watermark)?.[1])
-      if (claim.trusted || Number.isNaN(decided) || (claim.current ?? 0) > decided) continue
-      if ((waits.get(claim.session_id)?.revision ?? -1) >= decided) continue
-      waits.set(claim.session_id, { decisionId: claim.watermark, repo: claim.owner && claim.repo ? `${claim.owner}/${claim.repo}` : claim.project ?? "this repository", revision: decided })
-    }
-    return new Map([...waits].map(([session, { decisionId, repo }]) => [session, { decisionId, repo }]))
-  })
-}
-
-interface SessionRecord { id: string; archived_at: string | null; workspace_id: string | null; workspace_type: string | null; workspace_archived_at: string | null }
-
-function sessionRecord(stateDir: string, id: string): SessionRecord | null {
-  return withDatabase(stateDir, (db) => (db.prepare(`
-    SELECT s.id, s.archived_at, w.id AS workspace_id, w.workspace_type, w.archived_at AS workspace_archived_at
-    FROM sessions s LEFT JOIN workspaces w ON w.session_id = s.id WHERE s.id = ?`).get(id) as SessionRecord | undefined) ?? null)
 }
 
 // ---------- the session's event log ----------
@@ -439,49 +343,69 @@ export function classify(isRunning: boolean, facts: TailFacts, nowMs: number, wr
   return { state: "idle", detail: facts.detail }
 }
 
+const arr = (value: unknown): Frame[] => (Array.isArray(value) ? value.filter(isRecord) : [])
+
+/** The sidebar as the app itself lists it: its workspace sessions and its chats, in one exchange. */
+async function sidebarItems(options: AppSessionsOptions): Promise<{ workspaces: Frame[]; chats: Frame[] }> {
+  const got = await exchange(
+    [{ type: "list_workspaces" }, { type: "list_general_chat_sessions" }],
+    {
+      keep: (frame) => /^(workspace_list|general_chat_sessions_list|socket_error)$/.test(String(frame.type)),
+      done: (_frame, all) => all.some(frame => frame.type === "workspace_list") && all.some(frame => frame.type === "general_chat_sessions_list") || all.some(frame => frame.type === "socket_error"),
+      waitMs: REQUEST_WAIT_MS,
+    },
+    options,
+  )
+  const workspaces = got.find(frame => frame.type === "workspace_list")
+  const chats = got.find(frame => frame.type === "general_chat_sessions_list")
+  if (!workspaces || !chats) throw new Error(str(got.find(frame => frame.type === "socket_error")?.message) ?? "the Copilot app did not list its sessions in time")
+  return { workspaces: arr(workspaces.workspaces), chats: arr(chats.sessions) }
+}
+
 /** Every session in this Mac's Copilot app sidebar, with what it is doing now. */
-export function listAppSessions(options: AppSessionsOptions = {}): AppSessionRow[] {
+export async function listAppSessions(options: AppSessionsOptions = {}): Promise<AppSessionRow[]> {
   const stateDir = stateDirOf(options)
   const now = (options.now ?? Date.now)()
-  const seen = new Set<string>()
+  const { workspaces, chats } = await sidebarItems(options)
   const rows: AppSessionRow[] = []
-  const trusts = repositoryTrustWaits(stateDir)
-  for (const row of databaseRows(stateDir)) {
-    if (seen.has(row.id) || !SESSION_ID.test(row.id)) continue
-    seen.add(row.id)
-    const { facts, writtenAtMs } = cachedTailFacts(stateDir, row.id)
-    const isRunning = row.is_running === 1
-    const repositoryTrust = trusts.get(row.id)
-    const { state, detail } = repositoryTrust ? { state: "waiting" as const, detail: "waiting for a repository trust decision" } : classify(isRunning, facts, now, writtenAtMs)
+  const add = (id: string | null, row: Omit<AppSessionRow, "id" | "state" | "detail" | "lastActivity">, isRunning: boolean): void => {
+    if (!id || !SESSION_ID.test(id) || rows.some(known => known.id === id)) return
+    const { facts, writtenAtMs } = cachedTailFacts(stateDir, id)
+    const { state, detail } = classify(isRunning, facts, now, writtenAtMs)
     rows.push({
-      id: row.id,
-      name: row.name || row.title || (row.workspace_id ? "(unnamed)" : "(unnamed chat)"),
-      kind: row.workspace_id ? "workspace" : "chat",
-      workspaceId: row.workspace_id,
-      workspaceType: row.workspace_type,
-      project: row.project,
-      projectId: row.project_id,
-      ...("parent_session_id" in row ? { parentSessionId: row.parent_session_id } : {}),
-      ...("creator_session_id" in row ? { creatorSessionId: row.creator_session_id } : {}),
-      ...("coordinating_creator_session_id" in row ? { coordinatingCreatorSessionId: row.coordinating_creator_session_id } : {}),
-      sidebarPlacement: "unknown",
-      state,
-      detail,
-      isRunning,
-      wasInterrupted: row.was_interrupted === 1,
-      remote: (!!row.host_id && row.host_id !== "local") || (!!row.execution_location && row.execution_location !== "local"),
-      updatedAt: row.updated_at,
-      lastActivity: facts.lastActivity ?? row.updated_at,
+      id, ...row, state, detail, lastActivity: facts.lastActivity ?? row.updatedAt,
+      ...(facts.awaiting ? { awaiting: facts.awaiting } : {}),
       ...(facts.prompt ? { prompt: facts.prompt } : {}),
-      ...(repositoryTrust ? { repositoryTrust } : {}),
     })
+  }
+  for (const workspace of workspaces) {
+    if (workspace.archivedAt) continue
+    const session = isRecord(workspace.session) ? workspace.session : {}
+    const binding = arr(workspace.checkoutBindings)[0]
+    add(str(session.sessionId) ?? str(workspace.activeSessionId), {
+      name: str(workspace.name) ?? str(session.title) ?? "(unnamed)", kind: "workspace", workspaceId: str(workspace.id), workspaceType: str(workspace.workspaceType),
+      project: str(workspace.projectName), projectId: str(workspace.projectId), projectRepo: str(binding?.repoFullName), branch: str(workspace.branch), path: str(workspace.displayPath),
+      creatorSessionId: str(workspace.creatorSessionId), coordinatingCreatorSessionId: str(workspace.coordinatingCreatorSessionId), parentSessionId: null,
+      isRunning: session.isRunning === true, wasInterrupted: session.wasInterrupted === true,
+      remote: (str(workspace.hostId) ?? "local") !== "local" || (str(session.executionLocation) ?? "local") !== "local",
+      createdAt: str(workspace.createdAt), updatedAt: str(session.updatedAt) ?? str(workspace.updatedAt),
+    }, session.isRunning === true)
+  }
+  for (const chat of chats) {
+    if (chat.archivedAt) continue
+    add(str(chat.id), {
+      name: str(chat.title) ?? "(unnamed chat)", kind: "chat", workspaceId: null, workspaceType: null, project: null, projectId: null, projectRepo: null, branch: null, path: null,
+      creatorSessionId: null, coordinatingCreatorSessionId: str(chat.coordinatingCreatorSessionId), parentSessionId: str(chat.parentSessionId),
+      isRunning: chat.isRunning === true, wasInterrupted: chat.wasInterrupted === true, remote: (str(chat.executionLocation) ?? "local") !== "local",
+      createdAt: str(chat.createdAt), updatedAt: str(chat.updatedAt),
+    }, chat.isRunning === true)
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_listed", message: "listed the Copilot app's sessions", meta: { sessions: rows.length } })
   return rows
 }
 
 /** Counts by state and every session's id, name and state: the cheap picture a sense or a fleet view carries. */
-export function snapshot(options: AppSessionsOptions = {}, rows: AppSessionRow[] = listAppSessions(options)): AppSessionsSnapshot {
+export function snapshot(options: AppSessionsOptions, rows: AppSessionRow[]): AppSessionsSnapshot {
   const counts: Record<AppSessionState, number> = { working: 0, idle: 0, waiting: 0, stuck: 0 }
   for (const row of rows) counts[row.state] += 1
   return {
@@ -644,7 +568,7 @@ export function eventLogSize(id: string, options: AppSessionsOptions = {}): numb
 // ---------- the app's socket ----------
 
 export interface ExchangeOptions {
-  done?: (frame: Frame) => boolean
+  done?: (frame: Frame, all: Frame[]) => boolean
   keep?: (frame: Frame) => boolean
   waitMs: number
 }
@@ -680,7 +604,7 @@ export function exchange(frames: Frame[], exchangeOptions: ExchangeOptions, opti
       }
       if (!isRecord(frame) || !keep(frame)) return
       got.push(frame)
-      if (done(frame)) finish()
+      if (done(frame, got)) finish()
     })
     socket.on("error", (error) => {
       got.push({ type: "socket_error", message: error.message })
@@ -690,41 +614,6 @@ export function exchange(frames: Frame[], exchangeOptions: ExchangeOptions, opti
   })
 }
 
-function lastError(got: Frame[], fallback: string): string {
-  const last = got.at(-1)
-  return String(str(last?.message) ?? str(last?.reason) ?? str(last?.detail) ?? str(last?.type) ?? fallback).slice(0, 300)
-}
-
-/**
- * Deliver a message into a session, as the sidebar's message box does. It always waits for the app's answer: a
- * session whose runtime is not loaded loads first, and closing the socket before the app answers cancels the send.
- */
-export async function sendToAppSession(id: string, text: string, options: AppSessionsOptions & { delivery?: "immediate" | "enqueue" } = {}): Promise<SendResult> {
-  assertSessionId(id)
-  const known = sessionRecord(stateDirOf(options), id)
-  if (!known) return { ok: false, reply: "not found", messageId: null, error: `no Copilot app session ${id} on this Mac` }
-  if (known.archived_at || known.workspace_archived_at) return { ok: false, reply: "archived", messageId: null, error: `session ${id} is archived` }
-  const requestId = randomUUID()
-  const got = await exchange(
-    [{ type: "send_message", session_id: id, prompt: text, delivery_mode: options.delivery ?? "immediate", request_id: requestId }],
-    {
-      keep: (frame) => frame.request_id === requestId || (frame.session_id === id && /message_(sent|queued|delivery)/.test(String(frame.type))) || frame.type === "socket_error",
-      done: (frame) => /^(session_message_sent|session_message_queued|session_message_delivery_unknown|session_resume_failed|error|socket_error)$/.test(String(frame.type)),
-      waitMs: options.sendWaitMs ?? SEND_WAIT_MS,
-    },
-    options,
-  )
-  const last = got.at(-1)
-  const ok = !!last && /^session_message_(sent|queued)$/.test(String(last.type))
-  const result: SendResult = {
-    ok,
-    reply: str(last?.type) ?? "no reply",
-    messageId: str(last?.message_id),
-    error: ok ? null : last ? lastError(got, "error") : "the app did not answer in time",
-  }
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_sent", message: "sent a message into a Copilot app session", meta: { session: id, chars: text.length, ok, reply: result.reply } })
-  return result
-}
 
 /** A message waiting in a session's own queue, which the app releases one per turn boundary. */
 export interface QueuedMessage { id: string; source: string; text: string }
@@ -761,136 +650,6 @@ export async function withdrawQueuedMessages(id: string, prefix: string, options
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_queue_withdrawn", message: "took back queued messages a newer one replaces", meta: { session: id, found: mine.length, removed } })
   return removed
-}
-
-/** The nudge Housesitter sends a session that stopped mid-work. */
-export function resumePrompt(state: string, note?: string): string {
-  return [
-    `This session stopped while it was ${state}. Continue exactly where you left off. Anything that was in flight (a shell command, a subagent, a send or a push) was interrupted: re-check its real state before relying on it, and redo it if it did not finish.`,
-    ...(note?.trim() ? ["", note.trim()] : []),
-  ].join("\n")
-}
-
-/** Send a resume nudge to a stuck or stopped session. */
-export async function resumeAppSession(id: string, note: string | undefined, options: AppSessionsOptions = {}): Promise<SendResult & { stoppedWhile: string }> {
-  assertSessionId(id)
-  const facts = tailFacts(tailEvents(stateDirOf(options), id, STATUS_TAIL_BYTES))
-  const stoppedWhile = facts.loopCut ? facts.detail.replace(/^mid-turn/, "in the middle of a turn") : "working"
-  const sent = await sendToAppSession(id, resumePrompt(stoppedWhile, note), options)
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_resumed", message: "sent a resume nudge to a Copilot app session", meta: { session: id, ok: sent.ok } })
-  return { ...sent, stoppedWhile }
-}
-
-export interface OpenChatResult {
-  ok: boolean
-  sessionId: string | null
-  sent: SendResult | null
-  error: string | null
-  created?: boolean
-  placement?: {
-    verified: boolean
-    associationVerified: boolean
-    kind?: AppSessionRow["kind"]
-    name?: string
-    workspaceId?: string | null
-    projectId?: string | null
-    parentSessionId?: string | null
-    creatorSessionId?: string | null
-    coordinatingCreatorSessionId?: string | null
-    sidebarPlacement: AppSessionRow["sidebarPlacement"]
-  }
-}
-
-/** A new chat session in the sidebar (`create_session`), named, with an optional first message. */
-export async function openAppChat(
-  request: { name?: string; prompt?: string; cwd?: string; agent?: string; model?: string },
-  options: AppSessionsOptions = {},
-): Promise<OpenChatResult> {
-  const requestId = randomUUID()
-  const got = await exchange(
-    [{ type: "create_session", cwd: request.cwd ?? os.homedir(), session_type: "general_chat", ...(request.model ? { model: request.model } : {}), ...(request.agent ? { agent: request.agent } : {}), request_id: requestId }],
-    {
-      keep: (frame) => frame.request_id === requestId || frame.type === "socket_error",
-      done: (frame) => /^(session_created|error|socket_error)$/.test(String(frame.type)),
-      waitMs: REQUEST_WAIT_MS,
-    },
-    options,
-  )
-  const made = got.find(frame => frame.type === "session_created" && str(frame.session_id))
-  if (!made) {
-    const error = got.length ? lastError(got, "error") : "the app did not create a session in time"
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_open_error", message: "the Copilot app did not create a session", meta: { error } })
-    return { ok: false, sessionId: null, sent: null, error }
-  }
-  const id = assertSessionId(made.session_id as string)
-  let sent: SendResult | null = null
-  let placement: NonNullable<OpenChatResult["placement"]> = { verified: false, associationVerified: false, sidebarPlacement: "unknown" }
-  let error: string | null = null
-  try {
-    const row = listAppSessions(options).find(session => session.id === id)
-    if (!row) error = "session created but not observable in the current sidebar; placement is unverified"
-    else {
-      placement = {
-        verified: false, associationVerified: true, kind: row.kind, name: row.name, workspaceId: row.workspaceId, projectId: row.projectId,
-        sidebarPlacement: row.sidebarPlacement,
-        ...(row.parentSessionId !== undefined ? { parentSessionId: row.parentSessionId } : {}),
-        ...(row.creatorSessionId !== undefined ? { creatorSessionId: row.creatorSessionId } : {}),
-        ...(row.coordinatingCreatorSessionId !== undefined ? { coordinatingCreatorSessionId: row.coordinatingCreatorSessionId } : {}),
-      }
-      if (row.kind !== "chat") error = "session created with unexpected workspace association; inspect its actual placement"
-      else {
-        if (request.name) {
-          await exchange([{ type: "rename_session", session_id: id, title: request.name }], { waitMs: RENAME_WAIT_MS }, options)
-          const renamed = listAppSessions(options).find(session => session.id === id)
-          if (!renamed) throw new Error("created session is no longer observable after rename")
-          placement.name = renamed.name
-        }
-        sent = request.prompt ? await sendToAppSession(id, request.prompt, options) : null
-        if (sent && !sent.ok) error = `session created but initial message was not accepted: ${sent.error}`
-      }
-    }
-  } catch (cause) {
-    error = `session created but follow-up or placement could not be verified: ${(cause as Error).message}`
-  }
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_opened", message: "created a Copilot app session and checked actual association", meta: { session: id, named: !!request.name, prompted: !!request.prompt, associationVerified: placement.associationVerified, error } })
-  return { ok: error === null, created: true, sessionId: id, sent, placement, error }
-}
-
-/** Archive one session: its workspace when it has one, else the chat itself. */
-export async function archiveAppSession(id: string, options: AppSessionsOptions = {}): Promise<{ ok: boolean; reply: string; error: string | null }> {
-  assertSessionId(id)
-  const stateDir = stateDirOf(options)
-  const known = sessionRecord(stateDir, id)
-  if (!known) return { ok: false, reply: "not found", error: `no Copilot app session ${id} on this Mac` }
-  const requestId = randomUUID()
-  let result: { ok: boolean; reply: string; error: string | null }
-  if (known.workspace_id) {
-    const got = await exchange(
-      [{ type: "archive_workspace", workspace_id: known.workspace_id, delete_worktree: known.workspace_type === "worktree", request_id: requestId }],
-      {
-        keep: (frame) => frame.request_id === requestId || frame.type === "socket_error",
-        done: (frame) => /^(workspace_archived|error|socket_error)$/.test(String(frame.type)),
-        waitMs: ARCHIVE_WAIT_MS,
-      },
-      options,
-    )
-    const ok = got.at(-1)?.type === "workspace_archived"
-    result = { ok, reply: str(got.at(-1)?.type) ?? "no reply", error: ok ? null : lastError(got, "the app did not archive it in time") }
-  } else {
-    const got = await exchange(
-      [{ type: "archive_session", session_id: id, request_id: requestId }],
-      {
-        keep: (frame) => frame.request_id === requestId || frame.type === "general_chat_sessions_changed" || frame.type === "socket_error",
-        done: (frame) => frame.type === "error" || frame.type === "socket_error" || frame.type === "general_chat_sessions_changed",
-        waitMs: CHAT_ARCHIVE_WAIT_MS,
-      },
-      options,
-    )
-    const archived = !!sessionRecord(stateDir, id)?.archived_at
-    result = { ok: archived, reply: archived ? "archived" : "not archived", error: archived ? null : lastError(got, "the app did not archive it") }
-  }
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_archived", message: "asked the Copilot app to archive a session", meta: { session: id, ok: result.ok, reply: result.reply } })
-  return result
 }
 
 /** Whether the app is up: its server files name a live process. */

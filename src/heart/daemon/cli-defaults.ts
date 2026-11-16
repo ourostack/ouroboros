@@ -224,28 +224,8 @@ function defaultReadRecentDaemonLogLines(lines = 10): string[] {
   return recentLines.slice(-lines).map((line) => formatLogLine(line))
 }
 
-/* v8 ignore start -- CLI npm registry fetch wrapper: integration code @preserve */
-async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => {
-    controller.abort()
-  }, timeoutMs)
-
-  try {
-    const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli", {
-      signal: controller.signal,
-    })
-    return res.json()
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
-    }
-    throw error
-  } finally {
-    clearTimeout(timeoutId)
-  }
-}
-/* v8 ignore stop */
+/** The last release lookup the update check made, so an install tries the same sources. */
+let lastReleaseLookup: import("../versioning/release-sources").ReleaseLookup | null = null
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -937,16 +917,28 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     },
     /* v8 ignore stop */
     /* v8 ignore start -- CLI version management defaults: integration code @preserve */
+    // Ask npmjs, the configured npm registry and the signed GitHub release, so a
+    // blocked or lagging registry cannot hide a published release.
     checkForCliUpdate: async () => {
       const { checkForUpdate } = await import("../versioning/update-checker")
+      const { lookupLatestRelease, lookupAsRegistryJson } = await import("../versioning/release-sources")
+      const { releaseSourceDeps } = await import("../versioning/self-update-defaults")
       return checkForUpdate(getPackageVersion(), {
-        fetchRegistryJson: () => defaultFetchCliRegistryJson(CLI_UPDATE_CHECK_TIMEOUT_MS),
+        fetchRegistryJson: async () => {
+          lastReleaseLookup = await lookupLatestRelease({ ...releaseSourceDeps, lookupTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS - 500 })
+          return lookupAsRegistryJson(lastReleaseLookup)
+        },
         distTag: CLI_UPDATE_DIST_TAG,
       })
     },
     readVersionIntent: () => defaultReadVersionIntent(),
     writeVersionIntent: (intent) => defaultWriteVersionIntent(intent),
-    installCliVersion: async (version: string) => { installVersion(version, {}) },
+    installCliVersion: async (version: string) => {
+      const { lookupLatestRelease, installRelease } = await import("../versioning/release-sources")
+      const { releaseSourceDeps } = await import("../versioning/self-update-defaults")
+      const lookup = lastReleaseLookup ?? await lookupLatestRelease(releaseSourceDeps)
+      await installRelease(version, lookup, getOuroCliHome(), releaseSourceDeps)
+    },
     validateCliVersionForActivation: (version: string) => validateInstalledVersionForActivation(version, {}),
     activateCliVersion: (version: string) => {
       activateVersion(version, {})

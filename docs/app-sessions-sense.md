@@ -15,23 +15,38 @@ gains the `app_sessions_*` tools.
 
 ## What the agent can do
 
+The tools are the ones a coordinating session of the app has, under the same names and in the same shapes.
+`src/senses/app-sessions/app-interface.ts` sends each as a request on the app's local WebSocket, as an observer client.
+
 | Tool | What it does |
 | --- | --- |
-| `app_sessions_list` `{ state? }` | Every sidebar session with its id, name, state (`working`, `waiting` for the person, `stuck`, `idle`), why, project and last activity, plus counts. |
-| `app_sessions_tail` `{ session, count? }` | The session's last visible user and assistant messages (default 6, at most 50), current name/state and local-history coverage. |
-| `app_sessions_send` `{ session, message, delivery?, watch? }` | Delivers a message the way the app's message box does (`send_message`, `immediate` or `enqueue`), and waits up to two minutes for the app to accept it. |
-| `app_sessions_resume` `{ session, note? }` | Sends the resume nudge Housesitter sends after a restart, to a stuck or stopped session. |
-| `app_sessions_new` `{ name?, prompt?, cwd?, agent?, model?, target? }` | Creates a general chat (for example a throwaway probe), with actual creation, initial-message acceptance and placement reported separately. `target: "workspace"` and project/workspace/parent requests are refused without creating anything. |
-| `app_sessions_archive` `{ session }` | Archives a session the agent opened with `app_sessions_new`. |
-| `app_sessions_restart` `{ action?: "status" \| "enqueue", why? }` | Reads the restart in progress or the last one (state, step, start, result), or starts one through Housesitter. |
-| `app_sessions_watch` `{ session, watch? }` | Starts or stops bringing a session's replies back to the agent. |
+| `list_sessions_and_chats` | Every open session and chat: id, app_url, name, project, branch, creator. |
+| `get_sessions_status` `{ state? }` | What every session is doing (`busy`, `idle`, `waiting`, `stuck`), with counts and what each blocked one waits on (`awaiting_input` with its `request_id`). |
+| `get_session` `{ session_id }` | One session's details and what it waits on. |
+| `send_session_message` `{ session_id, message, delivery_mode?, notify_on_idle? }` | Delivers a message the way the message box does (`immediate` or `enqueue`) and waits up to two minutes for the app to accept it. |
+| `create_session` `{ name?, project_id?, session_kind?, workspace_type?, branch_name?, kickoff?, notify_on_idle? }` | A chat, or with `project_id` a project session in its own worktree (or the project's checkout). The app does not run a kickoff for outside clients, so the first message and mode are sent explicitly. |
+| `answer_session_input` `{ session_id, answer }` | Answers an `ask_user` question the session is blocked on. |
+| `respond_to_session_plan_v2` `{ session_id, approved, selected_action?, feedback? }` | Approves or rejects a plan the session paused on. |
+| `archive_session` `{ session_id }` | Archives a session this agent created. |
+| `navigate_to` `{ id }` | Shows a session in the app's window. |
+| `save_session_automation`, `get_session_automation` | Schedule, read or clear a session's wake-up automation. |
+| `list_workflows`, `run_workflow` | The app's automations, and running one now. |
+| `app_sessions_tail` `{ session_id, count? }` | The session's last visible messages (default 6, at most 50), current name and state, and local-history coverage. |
+| `app_sessions_restart` `{ action?: "status" \| "enqueue", why? }` | Reads the restart in progress or the last one, or starts one through Housesitter. |
 
 A session is named by its id or a unique prefix of it (the first eight characters are enough). Every write is a nerves
 event; none is gated beyond the harness's usual trust rule (the tools are family-only, like Shepherd's).
 
+**What an outside client cannot do.** An observer client is anonymous: the app ignores creator and coordination fields,
+so a created session has no coordinator and nothing reports back (`notify_on_idle` makes this sense watch it instead).
+`publish_chat_update` and `relay_session_input` have no WebSocket form. A question or plan is announced once, only to
+clients connected at that moment, so the sense keeps a persistent listener (`prompts.ts`) that records them in
+`pending.json`; `answer_session_input` and `respond_to_session_plan_v2` need a recorded `request_id`. A session whose
+question was asked while the sense was down reports it in `get_session` but cannot be answered from here.
+
 **Stuck** means the app does not say the session is running, but its own history (`events.jsonl`) shows its agent loop
 stopped mid-turn, or between turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`,
-plan approval, permission request or repository-trust decision is open.
+plan approval or permission request is open.
 
 **History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
 the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
@@ -42,21 +57,9 @@ The result includes `observedAt`, `source: "local_event_log"`, requested/returne
 `coverage: "local-only"`: the harness cannot prove this Mac has received every remote event.
 
 **Observations are not live status.** Tail results include the current sidebar name, state and last activity.
-`renamedFrom` flags a difference from the watched name. Re-read `app_sessions_list` and `app_sessions_tail` before
+`renamedFrom` flags a difference from the watched name. Re-read `get_sessions_status` and `app_sessions_tail` before
 reporting current progress or promising an update; a historical reply does not establish what work a session owns
 now. A name change invalidates the old attribution, not necessarily the session itself.
-
-**Creation is not workspace placement.** This connector's `create_session` protocol creates `general_chat`.
-Neither `cwd`, a repository mentioned in the prompt, nor a task-like title selects a project or tree parent.
-Use native app project-session creation for workspace work. `app_sessions_new` reports `created`, `sessionId`,
-`sent`, and `placement`: actual observed kind, name, workspace/project ids, known parent/creator ids, and
-`sidebarPlacement`. Project association and creator provenance do not prove where a child appears in the sidebar.
-`associationVerified` confirms the observed kind/association, not tree placement. This connector has no authoritative
-sidebar hierarchy read, so `sidebarPlacement` stays `unknown` and `placement.verified` stays false, even when raw
-parent ids are available. Missing hierarchy columns mean unknown, not a fabricated null parent. If a create acknowledgement cannot be
-verified in the current sidebar, the result is `ok: false`, `created: true`, with unverified placement; do not create
-a duplicate blindly. A failed first message likewise is not overall success, but the created session remains in
-the agent's probe inventory for inspection/cleanup. `watching` requires actual message acceptance.
 
 **Sending waits.** A session whose runtime is not loaded loads first, often for more than 20 seconds, and closing the
 socket before the app answers cancels the send. The tool always waits for the app's `session_message_sent` or
@@ -77,20 +80,20 @@ The sense process does three things:
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
-- The same snapshot lists the sessions waiting on a **permission prompt** or a **repository-trust decision**, which only the person can answer in the app
-  and which freezes the session (and one that created it) while it is open. A prompt open for more than two minutes
+- Each minute the sense also stats every local session's `events.jsonl` (never reading it). One over 500 MB is flagged in `oversize.json`
+  (the never-resume list: `neverResume(agentRoot)`), because the app loads a whole history into memory whenever it resumes
+  that session, and a few multi-GB ones froze a Mac. Its coordinator, or the session itself when it is running and has no smaller
+  coordinator, is asked once to hand off to a fresh successor (checkpoint, the tail of the old log, then archive), and to
+  keep images out of chat, since inline images are nearly all of a history's size. A session that is not running and has no
+  smaller coordinator is never messaged, which would reload it; the owner is told once instead. No model turn is used.
+- The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
+  and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
   BlueBubbles): the session's name, what it waits on, and that only the owner can answer it. A prompt is never told
   twice (`waiting-prompts.json` keeps the told ones until the prompt is answered), a prompt older than a day is
   shown but not announced, and a notice that could not reach the owner is retried each minute. `ouro status` lists
   each as `waiting on you: 1a2b3c4d (Babysitter) for 5 min: run a shell command`. The prompt comes from the open
   `permission.requested` event in the session's own history, the same source that makes the session `waiting`.
-  A repository-trust wait reads `waiting on you: 1a2b3c4d (AX essay) for 5 min: a repository trust decision for
-  owner/name` and is told once per decision. It comes from the app's database: when a session that another session
-  created reaches the trust card, the app records a `repository_trust` row in `creator_notification_claims` whose
-  watermark is the decision id (`repository_trust:<project>:<host>:<revision>`). The row stays after the person decides,
-  so it counts as open only while `project_host_trust` has no grant for that project and host and
-  `project_trust_revisions` has no newer revision. A session that nothing coordinates leaves no row and is not seen.
 - Every ten seconds it reads the new part of each **watched** session's history. Sending to a session (or resuming it,
   or opening it with a first message) watches it for a day after the last write. When a watched session finishes a
   reply (an assistant message that asks for no tools), the reply is queued for the agent's private runtime and the
@@ -184,15 +187,9 @@ tokens, and a model-written answer costs the digest plus a few lines. Each build
 
 ## How it talks to the app
 
-`src/senses/app-sessions/client.ts` is the per-machine client, with no harness dependencies beyond logging, so other
-senses (the fleet view) build on it:
-
-- the sidebar from the app's database, `~/.copilot/data.db`, opened read-only;
-- what a session said from `~/.copilot/session-state/<id>/events.jsonl`;
-- every write as a request on the app's local WebSocket (`ws://127.0.0.1:<port>?token=<token>&observer=1`, port and
-  token in `~/.copilot/run/`): `send_message`, `create_session`, `rename_session`, `archive_session`,
-  `archive_workspace`;
-- Housesitter's CLI (`housesitter restart-copilot --status --json`, or `--resume --detach` to start a restart).
-
-Its exports: `listAppSessions`, `snapshot`, `tailAppSession`, `readAppSessionHistory`, `readNewAppEvents`, `sendToAppSession`, `resumeAppSession`, `openAppChat`,
-`archiveAppSession`, `restartEnqueue`, `restartStatus`, `appRunning`, and the event-log helpers the sense uses.
+`src/senses/app-sessions/app-interface.ts` is the thin client over the app's local WebSocket
+(`ws://127.0.0.1:<port>/?token=<token>&observer=1`, port and token in `~/.copilot/run/`); `prompts.ts` is the
+persistent listener that records questions and plans; `client.ts` holds the transport, the sidebar read
+(`list_workspaces` and `list_general_chat_sessions`), the event-log readers that classify working, stuck and waiting
+sessions (the socket reports only whether a session is running or was interrupted), and Housesitter's CLI
+(`housesitter restart-copilot --status --json`, or `--resume --detach` to start a restart).

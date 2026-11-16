@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1144",
+  "version": "0.1.0-alpha.1149",
   "engines": {
     "node": ">=22"
   },
@@ -57,6 +57,9 @@
     "release:smoke": "node scripts/release-smoke.cjs",
     "audit:nerves": "npm run build -- --skip-mailbox-ui-install && node dist/nerves/coverage/cli-main.js"
   },
+  "bundleDependencies": [
+    "@ouro.bot/friends"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@ouro.bot/friends": "0.1.0-alpha.18",
