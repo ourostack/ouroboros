@@ -1,7 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 const workerModulePath = "../../senses/private-runtime-worker"
 const runtimeModulePath = "../../senses/private-runtime"
+
+// Load the module graph once outside any timed test. Its cold transform (heart/core and the
+// whole tool registry) takes seconds under CI load; resetting keeps each test's import fresh.
+beforeAll(async () => {
+  await import(runtimeModulePath)
+  vi.resetModules()
+})
 
 describe("private-runtime worker", () => {
   afterEach(() => {
