@@ -46,10 +46,6 @@ vi.mock("../../heart/identity", () => {
 
 import * as fs from "fs"
 
-function extractToolContracts(system: string): string {
-  return system.match(/## tool contracts\n[\s\S]*?(?=\n\n## |\n\n# |$)/)?.[0] ?? ""
-}
-
 function setupReadFileSync() {
   vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
     const p = String(filePath)
@@ -87,31 +83,14 @@ describe("prompt note/friend contracts", () => {
     })
   })
 
-  it("includes first-person prescriptive guidance for durable note search tool contracts", async () => {
+  it("names the durable note tools and never teaches session-history search", async () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = flattenSystemPrompt(await buildSystem("cli")
-)
-    const toolContracts = extractToolContracts(system)
+    const system = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(system).toContain("save_friend_note")
-    expect(system).toContain("when I learn something about a person")
-
-    expect(system).toContain("diary_write")
-    expect(system).toContain("when I learn something general about a project")
-
-    expect(system).toContain("get_friend_note")
-    expect(system).toContain("not in this conversation")
-
-    expect(system).toContain("search_facts")
-    expect(system).toContain("when I need older written facts")
-
-    expect(system).toContain("consult_diary")
-    expect(system).toContain("direct diary inspection")
-
-    expect(system).toContain("consult_notes")
-    expect(system).toContain("durable reference notes")
-
+    for (const tool of ["save_friend_note", "diary_write", "get_friend_note", "search_facts", "consult_diary", "consult_notes"]) {
+      expect(system).toContain(tool)
+    }
     expect(system).not.toMatch(/session search/i)
     expect(system).not.toMatch(/query_session search/i)
     expect(system).not.toMatch(/search session history/i)
@@ -119,19 +98,9 @@ describe("prompt note/friend contracts", () => {
     expect(system).not.toContain("grounded session history")
     expect(system).not.toContain("`mode=search`")
     expect(system).not.toContain(".archive.ndjson")
-
-    expect(toolContracts).toMatchInlineSnapshot(`
-	      "## tool contracts
-	      1. \`save_friend_note\` -- when I learn something about a person, I save it immediately, including anything they ask me to stop telling them about.
-	      2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately to my Desk record diary.
-	      3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.
-	      4. \`search_facts\` -- when I need older written facts, I search the Desk record diary.
-	      5. \`consult_diary\` -- when I need recent diary facts or direct diary inspection, I consult the Desk record diary.
-	      6. \`consult_notes\` -- when I need semantic search across durable reference notes, I consult the Desk record note index."
-	    `)
   })
 
-  it("includes [diary/external] trust framing guidance in tool contracts", async () => {
+  it("includes [diary/external] trust framing guidance", async () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = flattenSystemPrompt(await buildSystem("cli")

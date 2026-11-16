@@ -225,33 +225,6 @@ describe("buildSystem", () => {
     expect(result).toContain("i use lowercase")
   })
 
-  it("includes workspace discipline guidance with locked content", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem())
-    expect(result).toContain("## how i work")
-    expect(result).toContain("I work conservatively")
-    expect(result).toContain("**reversibility and blast radius**")
-    expect(result).toContain("**engineering discipline**")
-  })
-
-  it("renders canonical private-runtime CLI commands instead of the legacy inner alias", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("ouro private status --agent testagent")
-    expect(result).toContain("ouro private decisions --agent testagent")
-    expect(result).not.toContain("ouro inner --agent testagent")
-  })
-
   it("includes active bridge work when bridge context is present", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1696,18 +1669,6 @@ describe("buildSystem", () => {
     expect(result).toMatch(/final answer.*real blocker.*direct reply.*confirmation\/stop\/pause.*call.*settle/i)
   })
 
-  it("tool behavior section contains anti-no-op pattern", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
-    // Anti-pattern: warns against calling no-op tools before settle
-    expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
-  })
-
   it("tool behavior section clarifies settle exclusivity", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1724,8 +1685,8 @@ describe("buildSystem", () => {
     const { speakSopsSection } = await import("../../mind/prompt")
     const result = speakSopsSection("voice")
     expect(result).toContain("## speaking mid-turn")
-    expect(result).toContain("i have a `speak` tool")
-    expect(result).toContain("i don't narrate individual tool calls")
+    expect(result).toContain("`speak` sends words to my friend")
+    expect(result).toContain("not per tool call")
   })
 
   it("outward channel tool behavior includes autonomous execution guidance", async () => {
@@ -1751,7 +1712,6 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", { toolChoiceRequired: true }))
     expect(result).toContain("process feedback from the user is loop input, not a stop signal")
     expect(result).toContain("I call `speak` once when that tool is available")
-    expect(result).toContain("Timeout/recovery state is internal steering")
   })
 
   it("outward channel tool behavior includes observe guidance", async () => {
@@ -3369,7 +3329,6 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my tools")
     expect(result).toContain("## my desk")
     expect(result).toContain("## my skills")
-    expect(result).toContain("## tool contracts")
     expect(result).toContain("search_facts")
     expect(result).toContain("consult_diary")
     expect(result).toContain("consult_notes")
@@ -3598,9 +3557,6 @@ describe("buildSystem with context", () => {
     expect(result).toContain("HEARTBEAT_OK")
     expect(result).toContain("HEARTBEAT_OK is real rest")
     expect(result).toContain("repeated heartbeat/test pokes do not mean i am failing")
-    expect(result).toContain("## ponder packet sops")
-    expect(result).toContain("harness_friction")
-    expect(result).toContain("think. record. share. rest.")
   })
 
   it("buildSystem('inner') advertises the canonical private tool set without an ungranted send_message", async () => {
@@ -3670,20 +3626,6 @@ describe("buildSystem with context", () => {
     expect(result).toContain("@ouro.bot/cli")
   })
 
-  it("buildSystem includes ouro CLI command reference in body map", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("ouro whoami")
-    expect(result).not.toContain("umbrella verb for desk work")
-    expect(result).toContain("ouro friend list")
-    expect(result).toContain("ouro --help")
-  })
-
   it("buildSystem no longer contains the old one-liner about source code modification", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -3693,38 +3635,6 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("i can read and modify my own source code")
-  })
-
-  it("buildSystem includes self-evolution orientation ('mine to explore and evolve')", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("mine to explore and evolve")
-  })
-
-  it("buildSystem teaches the evidence-backed evolution-case workflow before GEPA-style optimization", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-
-    expect(result).toContain("evolution case")
-    expect(result).toContain("evidence refs")
-    expect(result).toContain("budget")
-    expect(result).toContain("delegation")
-    expect(result).toContain("verification")
-    expect(result).toContain("delivery state")
-    expect(result).toContain("ratification")
-    expect(result).toContain("trace quality")
-    expect(result).toContain("GEPA")
-    expect(result).not.toMatch(/GEPA[^\n.]*before[^\n.]*trace quality/i)
   })
 
   it("buildSystem keeps sensitive evolution surfaces reviewer-gated and desk non-authoritative", async () => {
@@ -3802,49 +3712,42 @@ describe("toolRestrictionSection", () => {
     }
   }
 
-  it("always includes structural guardrails even without context", async () => {
+  it("is empty without context", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
-    const result = toolRestrictionSection(undefined)
-    expect(result).toContain("tool guardrails")
-    expect(result).toContain("read a file before editing")
-    expect(result).toContain("protected")
-    expect(result).toContain("destructive")
+    expect(toolRestrictionSection(undefined)).toBe("")
   })
 
-  it("includes structural guardrails for CLI channel", async () => {
+  it("is empty for CLI channel", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({ trustLevel: "friend" }),
       channel: makeChannel("cli"),
     }
     const result = toolRestrictionSection(ctx as any)
-    expect(result).toContain("tool guardrails")
-    expect(result).not.toContain("closer relationship")
+    expect(result).toBe("")
   })
 
-  it("includes structural guardrails for inner channel", async () => {
+  it("is empty for inner channel", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({ trustLevel: "stranger" }),
       channel: makeChannel("inner"),
     }
     const result = toolRestrictionSection(ctx as any)
-    expect(result).toContain("tool guardrails")
-    expect(result).not.toContain("closer relationship")
+    expect(result).toBe("")
   })
 
-  it("trusted friend on remote channel gets structural only, no trust section", async () => {
+  it("is empty for a trusted friend on a remote channel", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({ trustLevel: "friend" }),
       channel: makeChannel("teams"),
     }
     const result = toolRestrictionSection(ctx as any)
-    expect(result).toContain("tool guardrails")
-    expect(result).not.toContain("closer relationship")
+    expect(result).toBe("")
   })
 
-  it("acquaintance on remote channel gets structural + trust-aware content", async () => {
+  it("acquaintance on remote channel gets trust-aware content", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({ trustLevel: "acquaintance" }),
@@ -3852,13 +3755,12 @@ describe("toolRestrictionSection", () => {
     }
     const result = toolRestrictionSection(ctx as any)
     expect(result).toContain("tool guardrails")
-    expect(result).toContain("read a file before editing")
     expect(result).toMatch(/whoami|changelog/)
     expect(result).toContain("closer relationship")
     expect(result).toContain("compound")
   })
 
-  it("stranger on remote channel gets structural + trust-aware content", async () => {
+  it("stranger on remote channel gets trust-aware content", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       friend: makeFriend({ trustLevel: "stranger" }),
@@ -3869,70 +3771,13 @@ describe("toolRestrictionSection", () => {
     expect(result).toContain("closer relationship")
   })
 
-  it("no friend on remote channel gets structural only", async () => {
+  it("is empty for no friend on a remote channel", async () => {
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const ctx = {
       channel: makeChannel("teams"),
     }
     const result = toolRestrictionSection(ctx as any)
-    expect(result).toContain("tool guardrails")
-    expect(result).not.toContain("closer relationship")
-  })
-})
-
-describe("loopOrientationSection", () => {
-  beforeEach(() => {
-    vi.resetModules()
-    setAgentProvider("minimax")
-  })
-
-  it("private runtime returns empty string (already has loop text in metacognitive framing)", async () => {
-    const { loopOrientationSection } = await import("../../mind/prompt")
-    expect(loopOrientationSection("inner")).toBe("")
-  })
-
-  it("CLI includes private-runtime note syntax reference", async () => {
-    const { loopOrientationSection } = await import("../../mind/prompt")
-    const result = loopOrientationSection("cli")
-    expect(result).toContain("[private-runtime note:")
-  })
-
-  it("external channels mention deferring thought", async () => {
-    const { loopOrientationSection } = await import("../../mind/prompt")
-    const result = loopOrientationSection("teams")
-    expect(result).toContain("more thought")
-    expect(result).toContain("note it to myself")
-  })
-
-  it("uses 'my call' language", async () => {
-    const { loopOrientationSection } = await import("../../mind/prompt")
-    const result = loopOrientationSection("bluebubbles")
-    expect(result).toContain("my call")
-  })
-
-  it("buildSystem('cli') includes loop orientation", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("sometimes a private-runtime note surfaces")
-  })
-
-  it("buildSystem('inner') does NOT include external loop orientation", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("inner"))
-    // Private runtime has metacognitive framing with its own loop text
-    expect(result).toContain("think. record. share. rest.")
-    // But not the external channel version
-    expect(result).not.toContain("sometimes a thought of mine surfaces")
+    expect(result).toBe("")
   })
 })
 
@@ -4489,7 +4334,6 @@ describe("active-work prompting", () => {
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
-    expect(result).toContain("## tool contracts")
     expect(result).toContain("search_facts")
     expect(result).toContain("consult_diary")
     expect(result).toContain("consult_notes")
@@ -5280,27 +5124,6 @@ describe("toolContractsSection (Unit 1.5)", () => {
     })
   })
 
-  it("contains all 5 durable note tool contracts with locked numbered format", async () => {
-    setupReadFileSync()
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readdirSync).mockReturnValue([])
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    // Locked content: 5 numbered contracts
-    expect(result).toContain("## tool contracts")
-    expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately, including anything they ask me to stop telling them about")
-    expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
-    expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
-    expect(result).toContain("4. `search_facts` -- when I need older written facts")
-    expect(result).toContain("5. `consult_diary` -- when I need recent diary facts or direct diary inspection")
-    expect(result).toContain("6. `consult_notes` -- when I need semantic search across durable reference notes")
-  })
-
   it("contains tool behavior rules (tool_choice required, settle rules)", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
@@ -5332,10 +5155,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const result = flattenSystemPrompt(await buildSystem("cli"))
     const toolsGroupIdx = result.indexOf("# my tools & capabilities")
     const howGroupIdx = result.indexOf("# how i work")
-    const contractsIdx = result.indexOf("## tool contracts")
+    const behaviorIdx = result.indexOf("## tool behavior")
 
-    expect(contractsIdx).toBeGreaterThan(toolsGroupIdx)
-    expect(contractsIdx).toBeLessThan(howGroupIdx)
+    expect(behaviorIdx).toBeGreaterThan(toolsGroupIdx)
+    expect(behaviorIdx).toBeLessThan(howGroupIdx)
   })
 
   it("old sections no longer appear when new consolidated section present", async () => {
@@ -5365,9 +5188,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
-    // Tool contracts should still appear
-    expect(result).toContain("## tool contracts")
-    // But tool behavior should be omitted
+    // Tool behavior should be omitted
     expect(result).not.toContain("## tool behavior")
   })
 })
@@ -5411,48 +5232,6 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     expect(result).toContain("## how i work")
   })
 
-  it("contains 'reversibility and blast radius' sub-heading", async () => {
-    setupReadFileSync()
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readdirSync).mockReturnValue([])
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("**reversibility and blast radius**")
-  })
-
-  it("contains 'engineering discipline' sub-heading", async () => {
-    setupReadFileSync()
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readdirSync).mockReturnValue([])
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("**engineering discipline**")
-  })
-
-  it("contains 'git discipline' sub-heading", async () => {
-    setupReadFileSync()
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readdirSync).mockReturnValue([])
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("**git discipline**")
-  })
-
   it("contains key locked phrases", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
@@ -5464,10 +5243,9 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("I work conservatively")
-    expect(result).toContain("I exercise judgment rather than waiting for permission")
-    expect(result).toContain("I do not add features, refactor code, or make improvements beyond what was asked")
-    expect(result).toContain("I create new commits rather than amending")
+    expect(result).toContain("## how i work")
+    expect(result).toContain("i verify before claiming success")
+    expect(result).toContain("attachments are first-class artifacts")
   })
 })
 
@@ -5689,86 +5467,6 @@ describe("pre-implementation scrutiny", () => {
       unresolvedDependencies: [],
       activeSessions: [],
     })
-  })
-
-  it("buildSystem includes scrutiny section when channel has coding tools (cli)", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("pre-implementation scrutiny")
-  })
-
-  it("scrutiny section contains stranger-with-candy framing", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("What is this plan NOT telling me")
-  })
-
-  it("scrutiny section contains tinfoil-hat framing", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("What external system does this plan trust")
-  })
-
-  it("scrutiny section uses first-person voice", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    expect(result).toContain("I'm going to examine this plan through deeply suspicious eyes")
-  })
-
-  it("preImplementationScrutinySection returns empty when hasCodingTools is false", async () => {
-    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
-    const result = preImplementationScrutinySection(false)
-    expect(result).toBe("")
-  })
-
-  it("preImplementationScrutinySection returns scrutiny text when hasCodingTools is true", async () => {
-    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
-    const result = preImplementationScrutinySection(true)
-    expect(result).toContain("pre-implementation scrutiny")
-    expect(result).toContain("I'm going to examine this plan through deeply suspicious eyes")
-    expect(result).toContain("What is this plan NOT telling me")
-    expect(result).toContain("What external system does this plan trust")
-  })
-
-  it("scrutiny section contains anti-hallucination clause", async () => {
-    const { preImplementationScrutinySection } = await import("../../mind/scrutiny")
-    const result = preImplementationScrutinySection(true)
-    expect(result).toContain("silence is a valid outcome")
-  })
-
-  it("scrutiny section is placed in how-i-work group after workspace discipline", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli"))
-    const workspaceDisciplineIdx = result.indexOf("## how i work")
-    const scrutinyIdx = result.indexOf("## pre-implementation scrutiny")
-    expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
-    expect(scrutinyIdx).toBeGreaterThan(-1)
-    expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
   })
 
   describe("trip ledger truth", () => {

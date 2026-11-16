@@ -1,8 +1,7 @@
 import { emitNervesEvent } from "../nerves/runtime"
 
 /**
- * Scrutiny passes: adversarial review prompts injected into the agent's
- * system prompt and tool results during coding work.
+ * Scrutiny passes: adversarial review prompts appended to tool results during coding work.
  *
  * Two lenses:
  *   1. Stranger With Candy -- paranoid mom at a playground
@@ -11,46 +10,6 @@ import { emitNervesEvent } from "../nerves/runtime"
  * All prompts are FIRST PERSON voice. The agent adopts the scrutiny lens
  * as part of its own thinking, not as a separate persona.
  */
-
-// ---------------------------------------------------------------------------
-// Pre-implementation scrutiny (system prompt section)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns a system-prompt section with pre-implementation scrutiny prompts.
- * Only emits when the channel has coding tools (edit_file, write_file, shell).
- *
- * @param hasCodingTools - true if the channel's resolved tool set includes
- *   edit_file / write_file / shell / coding_spawn
- */
-export function preImplementationScrutinySection(hasCodingTools: boolean): string {
-  if (!hasCodingTools) return ""
-
-  emitNervesEvent({
-    component: "mind",
-    event: "mind.scrutiny.pre_implementation_emit",
-    message: "emitting pre-implementation scrutiny section",
-  })
-
-  return `## pre-implementation scrutiny
-
-Before I start changing code, I run two adversarial passes on the plan.
-
-**stranger-with-candy pass**
-I'm going to examine this plan through deeply suspicious eyes. It looks fine on the surface, which is what makes it worth questioning.
-- What is this plan NOT telling me? Where does it say "just" or "simply"?
-- What does it assume will work that hasn't been verified? What one failure makes everything else irrelevant?
-- Is this solving the REAL problem, or a convenient nearby problem?
-
-**tinfoil-hat pass**
-Every dependency is a potential betrayal.
-- What external system does this plan trust? Has anyone VERIFIED that trust?
-- What happens when two of these run at once, or when this fails HALFWAY through?
-- What shared state does it touch? What does it assume about ordering, and what ENFORCES that ordering?
-- What happens when the disk is full, the network is down or the clock is wrong?
-
-If I cannot identify a concrete assumption, dependency, ordering risk, or failure mode, silence is a valid outcome. I do not invent issues to satisfy the exercise.`
-}
 
 // ---------------------------------------------------------------------------
 // Post-implementation scrutiny (tool-result appendix)
