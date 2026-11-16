@@ -418,8 +418,7 @@ describe("bodyMapSection peers subsection", () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("slugger")
     expect(result).toContain("### peers")
-    expect(result).toContain("they are peers, not subagents")
-    expect(result).toContain("we ask a sibling")
+    expect(result).toContain("peers, not subagents")
     expect(result).toContain("send_message")
   })
 
@@ -438,7 +437,7 @@ describe("bodyMapSection peers subsection", () => {
     // as the agent's stable behavior, not a soft preference.
     expect(result).toContain("i talk first")
     // Whitespace-flexible: the prompt body wraps with newlines.
-    expect(result).toMatch(/only\s+open a sibling's bundle/i)
+    expect(result).toMatch(/open their bundle directly only when/i)
   })
 
   it("describes peers as full agents, not subagents", async () => {

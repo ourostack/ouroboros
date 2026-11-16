@@ -62,10 +62,10 @@ describe("prompt MCP serve awareness", () => {
     })
   })
 
-  it("bodyMapSection includes ouro mcp-serve command", async () => {
+  it("bodyMapSection points at ouro --help for the cli", async () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("testagent")
-    expect(result).toContain("ouro acp-serve --agent testagent")
+    expect(result).toContain("`ouro --help` lists it")
 
     emitNervesEvent({
       component: "mind",

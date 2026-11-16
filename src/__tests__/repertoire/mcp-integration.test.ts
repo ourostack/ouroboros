@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
 import { parseOuroCommand, runOuroCli, type OuroCliDeps } from "../../heart/daemon/daemon-cli"
-import { bodyMapSection } from "../../mind/prompt"
 import { OURO_CLI_TRUST_MANIFEST } from "../../repertoire/guardrails"
 
 function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -100,11 +99,4 @@ describe("MCP integration — full flow", () => {
     })
   })
 
-  describe("body map includes MCP CLI entries", () => {
-    it("bodyMapSection contains mcp commands", () => {
-      const body = bodyMapSection("testagent")
-      expect(body).toContain("ouro mcp list")
-      expect(body).toContain("ouro mcp call")
-    })
-  })
 })

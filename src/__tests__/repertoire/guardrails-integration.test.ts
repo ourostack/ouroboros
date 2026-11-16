@@ -135,7 +135,7 @@ describe("guardrails integration — full flow", () => {
     expect(result).toMatch(/trust/i)
   })
 
-  it("buildSystem for trusted context includes structural guardrails but not trust restrictions", async () => {
+  it("buildSystem for trusted context adds no restrictions text", async () => {
     vi.resetModules()
     const { toolRestrictionSection } = await import("../../mind/prompt")
     const result = toolRestrictionSection({
@@ -153,9 +153,7 @@ describe("guardrails integration — full flow", () => {
       },
       channel: getChannelCapabilities("teams"),
     })
-    expect(result).toContain("tool guardrails")
-    expect(result).toContain("read a file before editing")
-    expect(result).not.toContain("closer relationship")
+    expect(result).toBe("")
   })
 
   it("the guard sees who is asking and on which channel before a psyche write", async () => {

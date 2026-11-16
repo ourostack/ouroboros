@@ -106,21 +106,11 @@ describe("MCP system prompt — first-class tools (no mcpToolsSection)", () => {
     })
   })
 
-  describe("bodyMapSection MCP entries", () => {
-    it("includes ouro mcp list and ouro mcp call in body map", () => {
-      const result = bodyMapSection("testagent")
-      expect(result).toContain("ouro mcp list")
-      expect(result).toContain("ouro mcp call")
-    })
-  })
-
   describe("bodyMapSection auth entries", () => {
     it("includes provider auth and use guidance without deprecated switch commands", () => {
       const result = bodyMapSection("testagent")
       expect(result).toContain("ouro auth --agent testagent --provider")
-      expect(result).toContain("ouro auth verify --agent testagent")
-      expect(result).toContain("ouro use --agent testagent --lane outward --provider <provider> --model <model>")
-      expect(result).toContain("ouro use --agent testagent --lane inner --provider <provider> --model <model>")
+      expect(result).toContain("ouro use --agent testagent --lane <outward|inner> --provider <provider> --model <model>")
       expect(result).not.toContain("ouro auth switch --agent testagent --provider")
     })
   })
