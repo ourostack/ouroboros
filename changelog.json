@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1169",
+      "changes": [
+        "Tool schemas: one copy of external_event_disposition fields, shorter descriptions, mail tools only when the mail sense is enabled (about 4.5k fewer tokens per turn)"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1168",
       "changes": [
         "An agent's context window is read from the provider's own model listing (GitHub Copilot's capabilities.limits.max_context_window_tokens) once per model and cached. The built-in 200k/400k estimates apply only when that read fails, and the log says so (engine.context_window_fallback)."

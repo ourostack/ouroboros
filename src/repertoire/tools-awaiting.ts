@@ -824,14 +824,14 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "resolve_await",
-        description: "Resolve a pending await with a verdict. verdict='yes' archives and fires the alert. verdict='no' records the observation and continues polling; still pending is always 'no'. verdict='ask_owner' (with question and choices) closes the await and asks my owner to decide, exactly once: use it when the condition cannot be met without the owner deciding, for example a confirmed dead download. Never use ask_owner for \"not yet\" or a merely suspected problem; that is 'no'.",
+        description: "Resolve a pending await. yes: condition met; archives and fires the alert. no: anything else, including not yet or unable to tell; records the observation and polling continues. ask_owner (with question and choices): closes the await and asks my owner to decide, once; only when the condition cannot be met without their decision, for example a confirmed dead download.",
         parameters: {
           type: "object",
           properties: {
             name: { type: "string", description: "Await name (filename stem)." },
-            verdict: { type: "string", enum: ["yes", "no", "ask_owner"], description: "Exactly 'yes' if the condition is met. Exactly 'no' for anything else, including still pending, not yet, or unable to tell: send 'no' with an observation and polling continues. 'ask_owner' only when the condition cannot be met without the owner deciding; it needs question and choices." },
+            verdict: { type: "string", enum: ["yes", "no", "ask_owner"], description: "yes, no or ask_owner" },
             observation: { type: "string", description: "One-line summary of what I saw this tick." },
-            message: { type: "string", description: "Only for 'yes': what I tell whoever asked, written to them in plain words and sent as is. Say what I just checked and what it means for them." },
+            message: { type: "string", description: "Only for yes: what I tell whoever asked, in plain words, sent as is" },
             question: { type: "string", description: "Only for ask_owner: the decision I need from my owner, in plain words." },
             choices: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 4, description: "Only for ask_owner: 2 to 4 short options the owner can pick from." },
           },

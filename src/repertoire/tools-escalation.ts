@@ -17,7 +17,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "report_failure",
-      description: "File a failure report for the engineers who fix you. Use it when a tool you need is missing or a tool errors in a way you cannot work around, so the engineers can get the owner's request moving. When the owner asks for something you have no tool for yet (for example, setting a thermostat), file it right away. File it at once and ask him for nothing. Report the actual result: queued for authorized peers, or saved locally pending authorization, never claim delivery or a GitHub issue from a local save. A repeat retries the same pending report; the A2A server also retries when real escalation grants become available.",
+      description: "File a failure report for the engineers who fix you, when a tool you need is missing or errors in a way you cannot work around. File it at once and ask the owner for nothing. Report the actual result (queued, or saved locally pending authorization); never claim delivery or a GitHub issue from a local save. A repeat retries the same report.",
       parameters: {
         type: "object",
         properties: {

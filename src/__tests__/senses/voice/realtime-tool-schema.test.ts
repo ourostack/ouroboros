@@ -124,11 +124,11 @@ describe("realtimeToolsFromDefinitions", () => {
     expect(owner.ordinary.some(({ tool }) => tool.function.name === "external_event_disposition")).toBe(true)
   })
 
-  it("explains the oneOf branches of the real external_event_disposition tool in its description", () => {
+  it("folds the real external_event_disposition tool into a valid realtime tool", () => {
     const definition = continuityToolDefinitions.find(({ tool }) => tool.function.name === "external_event_disposition")!
     const [tool] = realtimeToolsFromDefinitions([definition.tool])
-    expect(tool!.description).toContain("Classify the exact external-event generation")
-    expect(tool!.description).toMatch(/Provide exactly one of: \(1\) .*recordPath.*\(all required\); \(2\) batch \(all required\)\./)
+    expect(tool!.description).toContain("Classify the external event")
+    assertRealtimeValid(tool!.parameters)
   })
 })
 

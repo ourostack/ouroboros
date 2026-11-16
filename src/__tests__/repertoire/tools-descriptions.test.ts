@@ -96,10 +96,10 @@ describe("Phase 2: tool description enrichment", () => {
   describe("Unit 2.5 - metacognitive + other tool descriptions", () => {
     it("ponder description contains usage guidance", () => {
       const desc = ponderTool.function.description ?? ""
-      expect(desc).toContain("Don't ponder trivial questions")
+      expect(desc).toContain("not for trivial questions")
       expect(desc).toContain("does not end the turn")
-      expect(desc).toContain("do not settle with the final private answer")
-      expect(desc).toContain("does not create a new self-return obligation")
+      expect(desc).toContain("only acknowledge that the private pass is queued")
+      expect(desc).toContain("only preserves state")
     })
 
     it("settle description contains substantive response guidance", () => {

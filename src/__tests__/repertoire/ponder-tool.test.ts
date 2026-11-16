@@ -48,7 +48,6 @@ describe("ponderTool definition", () => {
 
     expect(params.properties.thought).toBeDefined()
     expect(params.properties.say).toBeDefined()
-    expect(params.properties.say.description).toContain("migration")
   })
 
   it("does not have mode parameter", async () => {

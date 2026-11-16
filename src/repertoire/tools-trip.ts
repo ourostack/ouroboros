@@ -734,16 +734,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "trip_update_leg",
-        description: "Update specific fields of an existing leg in a trip. Pass tripId, legId, and a JSON object of field updates (e.g. {status:\"cancelled\", confirmationCode:\"PNR123\"}). Existing evidence is preserved unless explicitly overwritten. Use this instead of trip_upsert when you only need to change one leg without re-emitting the whole record. The leg's `kind` cannot be changed (changing kind means a new leg). Requires trip_update_leg_preview first and its previewToken.",
+        description: "Update fields of one existing leg without re-emitting the trip; evidence is kept unless overwritten. `kind` cannot change (that is a new leg). Needs trip_update_leg_preview first and its previewToken.",
         parameters: {
           type: "object",
           properties: {
             tripId: { type: "string", description: "Canonical trip id." },
             legId: { type: "string", description: "Leg id within the trip." },
-            updates: { type: "string", description: "JSON object of leg fields to update. Cannot include `legId` or `kind`. Common fields: status, confirmationCode, vendor, amount, checkInDate, checkOutDate, departureTime, arrivalTime, etc." },
-            updatedAt: { type: "string", description: "ISO timestamp for the update. Used both for the leg's updatedAt and the trip's updatedAt." },
-            updateReason: { type: "string", description: "One-line source or reason that makes this update correct. Required so semantic trip writes remain auditable." },
-            previewToken: { type: "string", description: "Required. Get it from trip_update_leg_preview after inspecting the diff." },
+            updates: { type: "string", description: "JSON object of leg fields to update (not legId or kind)" },
+            updatedAt: { type: "string", description: "ISO timestamp for the update" },
+            updateReason: { type: "string", description: "One-line source or reason for this update" },
+            previewToken: { type: "string", description: "From trip_update_leg_preview" },
           },
           required: ["tripId", "legId", "updates", "updatedAt", "updateReason", "previewToken"],
         },

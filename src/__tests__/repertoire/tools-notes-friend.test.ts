@@ -645,7 +645,6 @@ describe("notes/friend tools", () => {
       expect(REACH_CHANNELS).toEqual(["bluebubbles", "teams"])
       const fn = notesToolDefinitions.find((def) => def.tool.function.name === "save_friend_note")!.tool.function
       expect(fn.description).toContain("reachChannel")
-      expect(fn.description).toContain("iMessage means bluebubbles")
       expect(JSON.stringify(fn.parameters)).toContain("reachChannel")
     })
   })

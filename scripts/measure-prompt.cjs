@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic prompt-size measurement; no model calls. Builds the real system prompt for each channel against a
 // fixed throwaway agent bundle and prints estimated tokens (the harness's own chars/4 estimator) per section.
-// Usage: npm run build && node scripts/measure-prompt.cjs [--sections] [--json]
+// Usage: npm run build && node scripts/measure-prompt.cjs [--sections] [--tools] [--json]
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
@@ -54,6 +54,12 @@ async function main() {
     const system = await buildSystem(channel)
     const text = [system.stable, system.volatile].filter(Boolean).join("\n\n")
     const toolSchemas = tokens(JSON.stringify(getToolsForChannel(getChannelCapabilities(channel))))
+    if (args.includes("--tools") && channel === "cli") {
+      const perTool = getToolsForChannel(getChannelCapabilities(channel)).map((t) => ({ name: t.function.name, tokens: tokens(JSON.stringify(t)) }))
+      console.log("== tool schemas (cli) ==")
+      for (const t of perTool.sort((a, b) => b.tokens - a.tokens)) console.log(`${String(t.tokens).padStart(6)}  ${t.name}`)
+      console.log()
+    }
     report[channel] = { prompt: tokens(text), toolSchemas, perTurn: tokens(text) + toolSchemas, sections: sectionsOf(text) }
   }
   if (args.includes("--json")) {
