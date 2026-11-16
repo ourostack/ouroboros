@@ -41,4 +41,4 @@ jobs:
         run: npx vite build
 
       - name: Ouro check
-        run: node lib/ouro/check/check.ts dist
+        run: node src/lib/ouro/check/check.ts dist
