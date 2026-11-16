@@ -165,8 +165,10 @@ function runNpmInstall(root) {
   const [command, args] = npmCli && /\.c?js$/.test(npmCli)
     ? [process.execPath, [npmCli, "install", "--ignore-scripts"]]
     : [process.platform === "win32" ? "npm.cmd" : "npm", ["install", "--ignore-scripts"]]
+  // `npm run -s` passes loglevel=silent down, which would hide the error we diagnose.
+  const env = process.env.npm_config_loglevel === "silent" ? { ...process.env, npm_config_loglevel: "error" } : process.env
   return new Promise((resolve) => {
-    const child = childProcess.spawn(command, args, { cwd: root, stdio: ["inherit", "inherit", "pipe"], shell: process.platform === "win32" && command === "npm.cmd" })
+    const child = childProcess.spawn(command, args, { cwd: root, env, stdio: ["inherit", "inherit", "pipe"], shell: process.platform === "win32" && command === "npm.cmd" })
     let stderr = ""
     child.stderr.on("data", (chunk) => {
       stderr += chunk
