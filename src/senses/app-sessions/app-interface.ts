@@ -189,7 +189,14 @@ export async function createSession(
       ...(name ? { name } : {}), kickoff_permission_mode: str(kickoff.permission_mode) ?? "allow-all",
       ...(str(kickoff.model) ? { kickoff_model: str(kickoff.model) } : {}),
       ...(str(kickoff.agent) ? { kickoff_agent: str(kickoff.agent) } : {}), ...(str(kickoff.reasoning_effort) ? { kickoff_reasoning_effort: str(kickoff.reasoning_effort) } : {}),
-    }, (reply, id) => (reply.request_id === id ? (reply.type === "session_created" ? "ok" : reply.type === "workspace_created" || reply.type === "workspace_changed" ? "wait" : "fail") : reply.type === "session_creation_failed" ? "fail" : "ignore"), CREATE_WAIT_MS, options)
+    }, (reply, id) => (reply.request_id === id ? (reply.type === "workspace_created" ? "ok" : reply.type === "workspace_changed" ? "wait" : "fail") : reply.type === "session_creation_failed" ? "fail" : "ignore"), CREATE_WAIT_MS, options)
+    // The app opens the workspace's session only for its own window, so an outside client opens it.
+    if (created.ok) {
+      const workspace = isRecord(created.frame!.workspace) ? created.frame!.workspace : {}
+      const workspaceId = str(workspace.id)
+      const cwd = str(workspace.displayPath)
+      if (workspaceId && cwd) created = await ask({ type: "create_session", workspace_id: workspaceId, cwd }, (reply, id) => (reply.request_id === id ? (reply.type === "session_created" ? "ok" : "fail") : "ignore"), REQUEST_WAIT_MS, options)
+    }
   }
   const id = str(created.frame?.session_id)
   if (!created.ok || !id) return { ok: false, created: false, error: created.error ?? "the app did not name the session it made" }
