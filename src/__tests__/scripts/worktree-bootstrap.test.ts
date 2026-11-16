@@ -6,7 +6,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
 const scriptPath = path.resolve(__dirname, "../../../scripts/worktree-bootstrap.cjs")
-const { cloneTree, diagnoseNpmFailure, installedTreeMismatch } = require(scriptPath)
+const { cloneTree, diagnoseNpmFailure, installedTreeMismatch, reuseInstalledTree } = require(scriptPath)
 
 const tempDirs: string[] = []
 
@@ -23,7 +23,7 @@ function lockfile(version: string) {
         resolved: `https://registry.npmjs.org/left-pad/-/left-pad-${version}.tgz`,
         integrity: "sha512-AAAA",
       },
-      "node_modules/fsevents": { version: "2.3.3", optional: true },
+      "node_modules/@esbuild/aix-ppc64": { version: "0.25.0", optional: true, os: ["aix"], cpu: ["ppc64"] },
     },
   }
 }
@@ -54,7 +54,7 @@ function makeCheckouts(installedVersion: string) {
   fs.writeFileSync(path.join(main, ".gitignore"), "node_modules/\n")
   git(main, "init", "-q")
   git(main, "add", ".")
-  git(main, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "fixture")
+  git(main, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
   fs.mkdirSync(path.join(main, "node_modules", "left-pad"), { recursive: true })
   fs.writeFileSync(path.join(main, "node_modules", "left-pad", "package.json"), JSON.stringify({ name: "left-pad", version: installedVersion }))
   fs.writeFileSync(path.join(main, "node_modules", ".package-lock.json"), JSON.stringify(installedRecord(installedVersion)))
@@ -111,8 +111,16 @@ describe("worktree bootstrap", () => {
     expect(fs.existsSync(path.join(worktree, "node_modules", "left-pad"))).toBe(false)
   })
 
-  it("compares installed versions, ignoring mirror integrity and absent optional packages", () => {
-    expect(installedTreeMismatch(lockfile("1.3.0"), installedRecord("1.3.0"))).toBeNull()
+  it("compares installed versions, ignoring mirror integrity and optional packages this host cannot install", () => {
+    const linux = { os: "linux", cpu: "x64", libc: "glibc" }
+    expect(installedTreeMismatch(lockfile("1.3.0"), installedRecord("1.3.0"), linux)).toBeNull()
+    const withOptionalFeature = lockfile("1.3.0")
+    Object.assign(withOptionalFeature.packages, { "node_modules/stripe": { version: "18.0.0", optional: true } })
+    expect(installedTreeMismatch(withOptionalFeature, installedRecord("1.3.0"), linux)).toBe("node_modules/stripe@18.0.0 is missing")
+    const linuxOnly = lockfile("1.3.0")
+    Object.assign(linuxOnly.packages, { "node_modules/@esbuild/linux-x64": { version: "0.25.0", optional: true, os: ["linux"], cpu: ["x64"] } })
+    expect(installedTreeMismatch(linuxOnly, installedRecord("1.3.0"), linux)).toBe("node_modules/@esbuild/linux-x64@0.25.0 is missing")
+    expect(installedTreeMismatch(linuxOnly, installedRecord("1.3.0"), { os: "darwin", cpu: "arm64" })).toBeNull()
     expect(installedTreeMismatch(lockfile("1.3.0"), installedRecord("1.2.0"))).toBe(
       "node_modules/left-pad is 1.2.0, package-lock.json wants 1.3.0",
     )
@@ -147,6 +155,23 @@ describe("worktree bootstrap", () => {
 
     expect(fs.readlinkSync(path.join(base, "target", ".bin", "tool"))).toBe("../tool/cli.js")
     expect(fs.readFileSync(path.join(base, "target", ".bin", "tool"), "utf8")).toBe("cli")
+  })
+
+  it("clones a symlinked node_modules as a real directory, never as a shared link", () => {
+    const { main, worktree } = makeCheckouts("1.3.0")
+    fs.renameSync(path.join(main, "node_modules"), path.join(main, "installed"))
+    fs.symlinkSync(path.join(main, "installed"), path.join(main, "node_modules"))
+
+    const result = reuseInstalledTree({
+      root: worktree,
+      checkouts: [main, worktree],
+      clone: (source: string, target: string) => cloneTree(source, target, "linux"),
+      log: () => {},
+    })
+
+    expect(result.mode).toBe("reused")
+    expect(fs.lstatSync(path.join(worktree, "node_modules")).isSymbolicLink()).toBe(false)
+    expect(fs.existsSync(path.join(worktree, "node_modules", "left-pad", "package.json"))).toBe(true)
   })
 
   it("names scoped packages from mirror tarball URLs", () => {

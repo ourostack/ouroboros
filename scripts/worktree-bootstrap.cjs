@@ -32,8 +32,10 @@ function readJson(file) {
 }
 
 // npm records the installed tree in node_modules/.package-lock.json. Mirrors
-// rewrite `resolved` and `integrity`, so only versions are compared.
-function installedTreeMismatch(lock, installedRecord) {
+// rewrite `resolved` and `integrity`, so only versions are compared. A missing
+// optional package counts only when its os/cpu/libc rules out this host;
+// otherwise the tree lacks a real optional feature.
+function installedTreeMismatch(lock, installedRecord, host = currentHost()) {
   const wanted = lock?.packages
   const installed = installedRecord?.packages
   if (!wanted || !installed) return "no node_modules/.package-lock.json"
@@ -44,10 +46,29 @@ function installedTreeMismatch(lock, installedRecord) {
     }
   }
   for (const [key, entry] of Object.entries(wanted)) {
-    if (key === "" || installed[key] || entry.optional || entry.devOptional) continue
+    if (key === "" || installed[key]) continue
+    if ((entry.optional || entry.devOptional) && !installableOn(entry, host)) continue
     return `${key}@${entry.version} is missing`
   }
   return null
+}
+
+function currentHost() {
+  const libc = process.platform === "linux" ? (process.report?.getReport?.().header?.glibcVersionRuntime ? "glibc" : "musl") : undefined
+  return { os: process.platform, cpu: process.arch, libc }
+}
+
+// Same rules as npm-install-checks: "!x" excludes x; any positive entry must match.
+function allows(list, value) {
+  if (!list || value === undefined) return true
+  const items = [].concat(list)
+  if (items.includes(`!${value}`)) return false
+  const positives = items.filter((item) => !item.startsWith("!"))
+  return positives.length === 0 || positives.includes("any") || positives.includes(value)
+}
+
+function installableOn(entry, host) {
+  return allows(entry.os, host.os) && allows(entry.cpu, host.cpu) && allows(entry.libc, host.libc)
 }
 
 function listCheckouts(root) {
@@ -81,11 +102,11 @@ function cloneTree(source, target, platform = process.platform) {
   fs.cpSync(source, target, { recursive: true, verbatimSymlinks: true })
 }
 
-function sameDir(a, b) {
+function realDir(dir) {
   try {
-    return fs.realpathSync(a) === fs.realpathSync(b)
+    return fs.realpathSync(dir)
   } catch {
-    return false
+    return null
   }
 }
 
@@ -93,19 +114,28 @@ function reuseInstalledTree({ root, checkouts, clone = cloneTree, log = console.
   const lock = readJson(path.join(root, "package-lock.json"))
   if (!lock) return { mode: "install", reason: "no package-lock.json" }
   const target = path.join(root, "node_modules")
+  // Fixed name, gitignored, so an interrupted clone is cleaned up by the next run.
+  const staging = path.join(root, "node_modules.bootstrap")
+  fs.rmSync(staging, { recursive: true, force: true })
   if (!installedTreeMismatch(lock, readJson(path.join(target, ".package-lock.json")))) {
     log("worktree:bootstrap: node_modules already matches package-lock.json.")
     return { mode: "current" }
   }
+  const targetReal = realDir(target)
   for (const checkout of checkouts) {
-    if (sameDir(checkout, root)) continue
-    const source = path.join(checkout, "node_modules")
+    // Resolve symlinks so a checkout whose node_modules links elsewhere is cloned
+    // as a real directory, never as a shared link.
+    const source = realDir(path.join(checkout, "node_modules"))
+    if (!source || source === targetReal || realDir(checkout) === realDir(root)) continue
     if (installedTreeMismatch(lock, readJson(path.join(source, ".package-lock.json")))) continue
-    const staging = `${target}.bootstrap-${process.pid}`
-    fs.rmSync(staging, { recursive: true, force: true })
-    clone(source, staging)
-    fs.rmSync(target, { recursive: true, force: true })
-    fs.renameSync(staging, target)
+    try {
+      clone(source, staging)
+      fs.rmSync(target, { recursive: true, force: true })
+      fs.renameSync(staging, target)
+    } catch (error) {
+      fs.rmSync(staging, { recursive: true, force: true })
+      return { mode: "install", reason: `copying node_modules from ${checkout} failed (${error.message})` }
+    }
     log(`worktree:bootstrap: reused node_modules from ${checkout} (its installed tree matches package-lock.json; no network used).`)
     return { mode: "reused", source: checkout }
   }
@@ -206,9 +236,15 @@ async function bootstrap({
 }
 
 if (require.main === module) {
-  bootstrap().then((result) => {
-    process.exitCode = result.status
-  })
+  bootstrap().then(
+    (result) => {
+      process.exitCode = result.status
+    },
+    (error) => {
+      console.error(`worktree:bootstrap: ${error.stack ?? error}`)
+      process.exitCode = 1
+    },
+  )
 }
 
 module.exports = {
