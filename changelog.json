@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1163",
+      "changes": [
+        "The Copilot app sense's succession record (successions.json) keeps only the sessions the sidebar lists, plus a successor that has left it while the session it succeeds is still listed, instead of every session ever seen (8,269 entries on the Mac mini), and reads no history of a session the app no longer lists. isHandedOff and handoffSuccessors read the record the sense refreshes each minute."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1162",
       "changes": [
         "Notices the owner did not ask for never talk over a conversation: the app-sessions pushes, the waiting-prompt notice and Shepherd's owner notices are held while a turn is running in one of the owner's sessions, while either side wrote in the last 10 minutes, or while their message has no answer (up to 30 minutes), and go out once it is quiet. The digest push now carries only what only the owner can act on (ready work, a session waiting on their answer), rechecked live before sending, in whole sentences with the session's link and no cut-off names; finished and broken things stay in /status. A session whose loop stopped is resumed by the sense itself (once per stop, three a day at most) and listed under Fixed by me. get_session and the session lists name who coordinates a lane now, following a hand-off's Succeeds: line or the lane's own reports when its recorded coordinator was archived; the size watch asks that coordinator, and a lane it still finds is never retired as finished."

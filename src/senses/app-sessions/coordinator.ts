@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { readEventLog, type AppSessionRow, type AppSessionsOptions } from "./client"
-import { refreshSuccessions, successorOf } from "./handoff"
+import { readSuccessions, successorOf } from "./handoff"
 
 /**
  * Who coordinates a session now. The app records a coordinator once, when the session is made, and never lets another
@@ -26,10 +26,10 @@ export interface CoordinatorDeps {
   successorOf?: (id: string) => string | null
 }
 
-/** `successorOf` over the hand-offs `handoff.ts` knows, read once, the first time a pass needs one. */
-export function handoffSuccessors(agentRoot: string, client: AppSessionsOptions): (id: string) => string | null {
-  let successions: ReturnType<typeof refreshSuccessions> | null = null
-  return id => successorOf(id, (successions ??= refreshSuccessions(agentRoot, client)))
+/** `successorOf` over the hand-offs the sense last recorded (`handoff.ts` refreshes them each minute), read once, when first needed. */
+export function handoffSuccessors(agentRoot: string): (id: string) => string | null {
+  let successions: ReturnType<typeof readSuccessions> | null = null
+  return id => successorOf(id, (successions ??= readSuccessions(agentRoot)))
 }
 
 const listedAs = (rows: AppSessionRow[], id: string | null | undefined): AppSessionRow | undefined =>

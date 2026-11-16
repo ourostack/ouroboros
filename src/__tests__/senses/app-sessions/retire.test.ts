@@ -144,6 +144,7 @@ describe("retiring a handed-off session", () => {
   it("names a successor that has left the sidebar by its id, and tells it nothing", async () => {
     handedOff()
     const d = deps()
+    expect(await retireSessions(agentRoot, [row(P, working), row(S, working)], d)).toEqual([])
     expect(await retireSessions(agentRoot, [row(P, { automation: true }), row(CHILD, { coordinatingCreatorSessionId: P })], d)).toEqual([P])
     expect(d.archive).toHaveBeenCalledWith(expect.anything(), "handed-off", expect.stringMatching(/^succeeded by \(bbbbbbbb\); .*; its automation was removed with it$/))
     expect(d.send).not.toHaveBeenCalled()

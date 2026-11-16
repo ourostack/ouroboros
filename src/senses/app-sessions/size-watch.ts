@@ -176,7 +176,7 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
   const big = [...listed.values()].filter(row => next[row.id])
   // A coordinator that is itself a giant is only messaged while it runs, since a message would reload it.
   // The coordinator now, not the one the app recorded: that one may have handed off and been archived.
-  const successors = handoffSuccessors(agentRoot, client)
+  const successors = handoffSuccessors(agentRoot)
   const reachable = (lane: AppSessionRow): AppSessionRow | undefined => {
     const found = coordinatorOf(lane, rows.filter(row => !row.remote), { client, successorOf: successors })
     const row = found && "id" in found ? listed.get(found.id) : undefined

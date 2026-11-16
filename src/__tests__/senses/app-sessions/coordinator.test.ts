@@ -7,6 +7,7 @@ vi.mock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
 import type { AppSessionRow } from "../../../senses/app-sessions/client"
 import { coordinatorOf, handoffSuccessors, reportTargets } from "../../../senses/app-sessions/coordinator"
+import { refreshSuccessions } from "../../../senses/app-sessions/handoff"
 
 /**
  * The CIT Pages coordinator 84b913b0 handed off to 16caf80c (its project session 9fe74d72) at 16:20 PT on 2026-11-15
@@ -70,7 +71,8 @@ describe("coordinatorOf, replaying the CIT Pages hand-off", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "coordinator-agent-"))
     history(OLD, [JSON.stringify({ type: "user.message", data: { content: "Coordinate CIT Pages." } })])
     history(NEW, [JSON.stringify({ type: "user.message", timestamp: "2026-11-16T00:11:31Z", data: { content: `Succeeds: ${OLD}\n\nYou coordinate CIT Pages now.` } })])
-    const successors = handoffSuccessors(agentRoot, { stateDir })
+    refreshSuccessions(agentRoot, { stateDir }, [OLD, NEW])
+    const successors = handoffSuccessors(agentRoot)
     expect(successors(OLD)).toBe(NEW)
     expect(successors(TRACKER)).toBeNull()
     const rows = sidebar()

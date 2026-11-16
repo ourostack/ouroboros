@@ -46,7 +46,7 @@ export function childrenNote(predecessor: AppSessionRow, children: AppSessionRow
 export async function retireSessions(agentRoot: string, rows: AppSessionRow[], deps: RetireDeps): Promise<string[]> {
   const send = deps.send ?? ((id: string, text: string) => deliverMessage(id, text, "immediate", deps.client))
   const archive = deps.archive ?? (async (row: AppSessionRow, reason: ArchiveLogEntry["reason"], note: string) => (await archiveRow(agentRoot, row, reason, deps.client, { note, keepWorktree: true })).ok === true)
-  const successions = refreshSuccessions(agentRoot, deps.client, deps.now)
+  const successions = refreshSuccessions(agentRoot, deps.client, rows.map(row => row.id))
   const listed = new Map(rows.map(row => [row.id, row]))
   const childrenOf = (id: string): AppSessionRow[] => rows.filter(row => recordedCoordinator(row) === id)
   const busyChildren = (id: string, except: string | null): AppSessionRow[] => childrenOf(id).filter(child => child.id !== except && !(settled(child) || (child.remote && !child.isRunning)))
