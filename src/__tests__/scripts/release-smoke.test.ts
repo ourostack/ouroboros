@@ -7,6 +7,8 @@ const {
   buildNpmExecArgs,
   isNpmExecBinPath,
   lastNonEmptyLine,
+  packPublishedTarball,
+  PROPAGATION_BACKOFF_MS,
   runPublishedBinResolutionSmoke,
   runPublishedBinVersionSmoke,
   runReleaseSmokeSuite,
@@ -89,6 +91,13 @@ function makeNpmNetworkError(code: string): Error {
   Object.assign(error, {
     stderr: `npm error code ${code}\nnpm error network Invalid response body while trying to fetch https://registry.npmjs.org/ouro.bot: aborted\n`,
   })
+  return error
+}
+
+// Mirrors the exact error npm gave for 0.1.0-alpha.1151 while it still listed the version but 404'd its tarball.
+function makeNpm404(url: string): Error {
+  const error = new Error(`Command failed: npm exec\nnpm error code E404\nnpm error 404 Not Found - GET ${url} - Not found`)
+  Object.assign(error, { stderr: `npm error code E404\nnpm error 404 Not Found - GET ${url} - Not found\nnpm error 404\n` })
   return error
 }
 
@@ -222,10 +231,68 @@ describe("release-smoke", () => {
     expect(result.ok).toBe(true)
     expect(deps.sleepSync).toHaveBeenNthCalledWith(1, 10000)
     expect(deps.sleepSync).toHaveBeenNthCalledWith(2, 20000)
-    const never = makeDeps(Array.from({ length: 8 }, etarget))
+    const never = makeDeps(Array.from({ length: PROPAGATION_BACKOFF_MS.length + 2 }, etarget))
     expect(() => runPublishedBinVersionSmoke({ packageRef: "ouro.bot@0.1.0-alpha.327", binName: "ouro.bot", expectedVersion: "0.1.0-alpha.327" }, never.deps)).toThrow(/ETARGET/)
-    expect(never.deps.execFileSync).toHaveBeenCalledTimes(6)
-    expect(never.deps.sleepSync).toHaveBeenCalledTimes(5)
+    expect(never.deps.execFileSync).toHaveBeenCalledTimes(PROPAGATION_BACKOFF_MS.length + 1)
+    expect(never.deps.sleepSync).toHaveBeenCalledTimes(PROPAGATION_BACKOFF_MS.length)
+  })
+
+  it("waits out npm 404ing the exact tarball it just published, for up to about twenty minutes", () => {
+    const unserved = () => makeNpm404("https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.1151.tgz")
+    const { deps } = makeDeps([unserved(), unserved(), unserved(), "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro\n", "0.1.0-alpha.1151\n"])
+    const result = runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version: "0.1.0-alpha.1151" }, deps)
+    expect(result.ok).toBe(true)
+    expect(deps.sleepSync).toHaveBeenCalledTimes(3)
+    const budgetMs = PROPAGATION_BACKOFF_MS.reduce((sum: number, ms: number) => sum + ms, 0)
+    expect(budgetMs).toBeGreaterThanOrEqual(20 * 60 * 1000)
+    expect(budgetMs).toBeLessThanOrEqual(25 * 60 * 1000)
+
+    const wrapper = makeDeps([makeNpm404("https://registry.npmjs.org/ouro.bot/-/ouro.bot-0.1.0-alpha.1151.tgz"), "/x/node_modules/.bin/ouro.bot\n", "0.1.0-alpha.1151\n"])
+    expect(runPublishedBinVersionSmoke({ packageRef: "ouro.bot@0.1.0-alpha.1151", binName: "ouro.bot", expectedVersion: "0.1.0-alpha.1151" }, wrapper.deps).ok).toBe(true)
+    expect(wrapper.deps.sleepSync).toHaveBeenCalledTimes(1)
+  })
+
+  it("fails at once on a 404 that is not the exact tarball being smoked", () => {
+    for (const url of [
+      "https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.1150.tgz",
+      "https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.11510.tgz",
+      "https://registry.npmjs.org/@ouro.bot/other/-/other-0.1.0-alpha.1151.tgz",
+      "https://registry.npmjs.org/@ouro.bot%2fcli",
+    ]) {
+      const { deps } = makeDeps([makeNpm404(url), "/x/node_modules/.bin/ouro\n", "0.1.0-alpha.1151\n"])
+      expect(() => runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version: "0.1.0-alpha.1151" }, deps)).toThrow(/E404/)
+      expect(deps.sleepSync).not.toHaveBeenCalled()
+    }
+  })
+
+  it("packs the exact published tarball once npm serves it", () => {
+    const destination = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-pack-test-"))
+    try {
+      const { deps, calls } = makeDeps([makeNpm404("https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.1151.tgz"), "ouro.bot-cli-0.1.0-alpha.1151.tgz\n"])
+      const packDeps = {
+        ...deps,
+        existsSync: fs.existsSync,
+        mkdirSync: fs.mkdirSync,
+        execFileSync: vi.fn((command: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+          const output = deps.execFileSync(command, args, options)
+          fs.writeFileSync(path.join(destination, "ouro.bot-cli-0.1.0-alpha.1151.tgz"), "tarball")
+          return output
+        }),
+      }
+      expect(packPublishedTarball({ packageRef: "@ouro.bot/cli@0.1.0-alpha.1151", destination }, packDeps))
+        .toBe(path.join(destination, "ouro.bot-cli-0.1.0-alpha.1151.tgz"))
+      expect(calls.map((call) => call.args)).toEqual([
+        ["pack", "@ouro.bot/cli@0.1.0-alpha.1151", "--pack-destination", destination],
+        ["pack", "@ouro.bot/cli@0.1.0-alpha.1151", "--pack-destination", destination],
+      ])
+      expect(deps.sleepSync).toHaveBeenCalledTimes(1)
+
+      const missing = makeDeps(["ouro.bot-cli-0.1.0-alpha.1152.tgz\n"])
+      expect(() => packPublishedTarball({ packageRef: "@ouro.bot/cli@0.1.0-alpha.1152", destination }, { ...missing.deps, existsSync: fs.existsSync, mkdirSync: fs.mkdirSync }))
+        .toThrow(/did not write .*ouro\.bot-cli-0\.1\.0-alpha\.1152\.tgz/)
+    } finally {
+      fs.rmSync(destination, { recursive: true, force: true })
+    }
   })
 
   it("isolates every asset, resolution, version, and retry child from the operator home", () => {
