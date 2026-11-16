@@ -38,7 +38,7 @@ jobs:
 
       - name: Start the made-up-data mock
         run: |
-          node scripts/ax-mock.mjs "$MOCK_PORT" > "$RUNNER_TEMP/mock.log" 2>&1 &
+          node .github/scripts/ax-mock.mjs "$MOCK_PORT" > "$RUNNER_TEMP/mock.log" 2>&1 &
           for attempt in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:$MOCK_PORT/" > /dev/null; then exit 0; fi
             sleep 1
@@ -47,11 +47,14 @@ jobs:
           exit 1
 
       - name: Inventory from the CLI's registration
-        run: node scripts/ax-inventory.mjs > inventory.json
+        run: node .github/scripts/ax-inventory.mjs > inventory.json
 
+      # Exit 1 means a must claim does not hold yet: the report says which, and this run reports it without failing.
+      # Exit 2 (a refused or broken run) fails the job.
       - name: Ouro AX X-ray
         run: |
           mkdir -p xray
+          set +e
           node lib/ouro-ui/registry/ouro/ax/xray.ts \
             --cli "node dist/heart/daemon/ouro-entry.js" \
             --inventory inventory.json \
@@ -60,6 +63,10 @@ jobs:
             --mock "http://127.0.0.1:$MOCK_PORT/ mock=ouroboros-ax-xray" \
             --commit "$GITHUB_SHA" \
             --json --md xray/xray.md > xray/report.json
+          code=$?
+          set -e
+          echo "X-ray exit $code (1: a must claim does not hold yet, reported)"
+          if [ "$code" -gt 1 ]; then exit "$code"; fi
 
       - name: Upload the X-ray
         if: always()

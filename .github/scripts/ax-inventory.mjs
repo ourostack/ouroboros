@@ -3,7 +3,7 @@
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { usage } = require("../dist/heart/daemon/cli-parse.js");
+const { usage } = require("../../dist/heart/daemon/cli-parse.js");
 
 const names = new Set();
 for (const line of usage().split("\n")) {
