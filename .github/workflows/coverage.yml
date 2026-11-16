@@ -644,7 +644,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Verify the published npm versions
+      - name: Verify selected npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
           CLI_TAG="${{ needs.publish.outputs.cli_tag }}"
