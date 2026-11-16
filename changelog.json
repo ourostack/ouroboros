@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1149",
+      "changes": [
+        "Ouroboros now opens a new project session's conversation itself, because the app only does so for its own window."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1148",
       "changes": [
         "The release tarball now carries its own `@ouro.bot` packages, so a machine that can reach GitHub but not the registry that serves them can install a release with the third-party packages coming only from its configured npm feed."
