@@ -54,8 +54,7 @@ plan approval or permission request is open.
 hands off to a successor and is archived, `coordinating_creator_session_id` still names the archived one. `list_sessions_and_chats`,
 `get_session` and `get_sessions_status` add who coordinates it now (`coordinator_session_id`, `coordinator_name`): the recorded one while it is
 listed, else its listed successor, else the listed session the lane last sent a `send_session_message` to (`coordinator_found_by`). Only
-`coordinator_gone: true` means it has none (`coordinator.ts`, using `successorOf` from `handoff.ts`). The size watch asks that
-coordinator, not the recorded one, and a lane it still finds is never retired as finished.
+`coordinator_gone: true` means it has none (`coordinator.ts`, using `successorOf` from `handoff.ts`).
 
 **History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
 the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
@@ -84,38 +83,15 @@ login. Without Housesitter the tool says so and restarts nothing.
 
 ## Perception
 
-The sense process does three things:
+The sense process does these things:
 
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
-- Each minute the sense also stats every `events.jsonl` under `~/.copilot/session-state/` (never reading it), whether or not the sidebar
-  lists that session. One over 500 MB is flagged in `oversize.json` (the never-resume list: `neverResume(agentRoot)`), because the app
-  loads a whole history into memory whenever it resumes that session, and a few multi-GB ones froze a Mac. A flagged session stays
-  flagged after it is archived, until its history is under the limit again. For a session the sidebar lists, its coordinator and
-  the session itself while it is running are asked, with immediate delivery, to hand off to a fresh successor (checkpoint, the tail
-  of the old log, and a first message with the line `Succeeds: <its id>`, which retires it) and to keep images out of chat, since inline images are nearly all of a history's size. While it
-  keeps running they are asked again each time its history grows by half since the last ask. A session that is not running and
-  has no smaller coordinator is never messaged, which would reload it; the owner is told once instead. A flagged session that has
-  been idle for 30 minutes since its last ask is archived through the app (reversible, worktree kept) to free its runtime's memory,
-  and its coordinator is told where it left off: its workspace branch and the last `git push` and pull request near the end of its
-  log. When swap use is over 8 GB or free memory under 1 GB, every idle flagged session is archived at once, largest first. A
-  session waiting on a person is never archived. The status digest lists each archive with its size and where it left off. No
-  model turn is used.
-- Each minute it also **retires** sessions whose job is over, so the sidebar shows only live work. A session that hands its
-  job to a fresh successor says so in the successor's first message, on a line of its own within the first 16 KB:
-  `Succeeds: <predecessor session id>`. Kickoffs that open with "the successor to" or "the successor of" followed closely
-  by a session id (full or the first eight characters) count too. Once the successor has finished its first turn and the
-  predecessor has been idle five minutes, the predecessor is archived (reversibly, worktree kept), whatever its size. Two
-  sessions that claim to succeed each other are both left alone. An idle session whose coordinator is archived or gone,
-  with no open pull request, no automation or agent merge, and no turn for a day, is archived the same way. Neither rule
-  touches a session that is running, waiting on a person (question, plan or permission), stuck or remote. The app archives
-  a session without the sessions it coordinates, which keep running but can no longer report to it, so a predecessor is
-  held until those are idle, and then its successor is told which ones it had. Each history is read forward from its
-  start, at most 1 MB, until its first message, and then only until the successor's first turn
-  (`state/senses/app-sessions/successions.json`, which keeps only the sessions the sidebar lists, plus a successor that
-  has left it while the session it succeeds is still listed); `successorOf` in `handoff.ts` follows a chain of hand-offs to its live
-  end. The status digest lists each archive with its successor or last state and where it left off. No model turn is used.
+- Each minute the sense does not stat histories or retire sessions any more: those are Shepherd's, `shepherd watch` (the
+  size watch: a history over 500 MB is asked to hand off, and an idle one is archived) and `shepherd retire plan` (archives
+  handed-off and finished sessions). Shepherd keeps its own state, and this sense keeps the resume rule below, which skips
+  any session whose history is over 500 MB.
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
@@ -213,8 +189,8 @@ carries everything due, at most one per half hour, each item a whole sentence wi
 A restart never announces work that was already ready. Permission prompts and repository-trust cards keep their own notice (see Perception).
 
 **Fixing instead of asking.** A session whose loop stopped (not running, its last turn called tools and no next turn started) is resumed by the
-sense itself with one message to carry on, once per stop and at most three times a day; one asleep for over a day, on the never-resume list
-or remote is left alone (`stuck-resume.ts`). The digest shows each resume under **Fixed by me**; a session that stops again after its last
+sense itself with one message to carry on, once per stop and at most three times a day; one asleep for over a day, one whose
+history is over 500 MB or a remote one is left alone (`stuck-resume.ts`). The digest shows each resume under **Fixed by me**; a session that stops again after its last
 resume stays under **Broken**. The machine, the drains and the health watch have owners of their own and are not pushed.
 
 **Never over a conversation.** Every notice the owner did not ask for (these pushes, the waiting-prompt notice, Shepherd's owner notices) is

@@ -14,6 +14,8 @@ import { RESUME_TEXT, RESUMES_PER_DAY, resumeStuck } from "../../../senses/app-s
 const NOW = Date.parse("2026-11-16T15:49:28Z")
 const STOPPED = "2026-11-16T15:20:00.000Z"
 const TRACKER = "ad8f4be3-3a5a-4bc7-bb55-7821d8b5934c"
+const GIANT = "11111111-2222-4333-8444-555555555555"
+const SMALL = "66666666-7777-4888-8999-aaaaaaaaaaaa"
 let agentRoot: string
 
 const row = (id: string, over: Partial<AppSessionRow> = {}): AppSessionRow => ({
@@ -34,10 +36,10 @@ describe("resumeStuck", () => {
   it("resumes the stopped customer tracker itself, once per stop, and records it for the digest", async () => {
     const send = ok()
     const st = state()
-    expect(await resumeStuck(agentRoot, [row(TRACKER)], st, NOW, { send })).toBe(1)
+    expect(await resumeStuck([row(TRACKER)], st, NOW, { send })).toBe(1)
     expect(send).toHaveBeenCalledWith(TRACKER, RESUME_TEXT)
     expect(st.resumed![TRACKER]).toMatchObject({ name: "Ouro migration: customer tracker", lastActivity: STOPPED, ok: true })
-    expect(await resumeStuck(agentRoot, [row(TRACKER)], st, NOW + 5 * 60_000, { send })).toBe(0)
+    expect(await resumeStuck([row(TRACKER)], st, NOW + 5 * 60_000, { send })).toBe(0)
     expect(send).toHaveBeenCalledTimes(1)
   })
 
@@ -45,33 +47,35 @@ describe("resumeStuck", () => {
     const send = ok()
     const st = state()
     for (let stop = 0; stop < RESUMES_PER_DAY + 1; stop += 1) {
-      await resumeStuck(agentRoot, [row(TRACKER, { lastActivity: new Date(NOW + stop * 60_000).toISOString() })], st, NOW + stop * 60_000 + 1, { send })
+      await resumeStuck([row(TRACKER, { lastActivity: new Date(NOW + stop * 60_000).toISOString() })], st, NOW + stop * 60_000 + 1, { send })
     }
     expect(send).toHaveBeenCalledTimes(RESUMES_PER_DAY)
-    await resumeStuck(agentRoot, [row(TRACKER, { lastActivity: new Date(NOW + 25 * 3_600_000).toISOString() })], st, NOW + 25 * 3_600_000, { send })
+    await resumeStuck([row(TRACKER, { lastActivity: new Date(NOW + 25 * 3_600_000).toISOString() })], st, NOW + 25 * 3_600_000, { send })
     expect(send).toHaveBeenCalledTimes(RESUMES_PER_DAY + 1)
-    await resumeStuck(agentRoot, [], st, NOW + 50 * 3_600_000, { send })
+    await resumeStuck([], st, NOW + 50 * 3_600_000, { send })
     expect(st.resumed).toEqual({})
   })
 
   it("leaves alone a running, hung, remote, waiting, day-old, undated or too-big session", async () => {
-    const dir = path.join(agentRoot, "state", "senses", "app-sessions")
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { giant: { bytes: 1, name: "giant" } } }))
+    const giantLog = path.join(agentRoot, "session-state", GIANT, "events.jsonl")
+    fs.mkdirSync(path.dirname(giantLog), { recursive: true })
+    fs.writeFileSync(giantLog, "")
+    fs.truncateSync(giantLog, 501 * 1024 * 1024)
     const send = ok()
-    await resumeStuck(agentRoot, [
+    await resumeStuck([
       row("running", { isRunning: true }), row("idle", { state: "idle" }), row("remote", { remote: true }), row("asks", { awaiting: "input" }),
-      row("old", { lastActivity: "2026-11-15T00:00:00.000Z" }), row("undated", { lastActivity: null }), row("giant"),
-    ], state(), NOW, { send })
+      row("old", { lastActivity: "2026-11-15T00:00:00.000Z" }), row("undated", { lastActivity: null }), row(GIANT),
+    ], state(), NOW, { send, client: { stateDir: agentRoot } })
     expect(send).not.toHaveBeenCalled()
+    expect(await resumeStuck([row(SMALL)], state(), NOW, { send, client: { stateDir: agentRoot } })).toBe(1)
   })
 
   it("records a resume the app refused or that threw as not done, and sends through the app by default", async () => {
     const st = state()
-    await resumeStuck(agentRoot, [row(TRACKER)], st, NOW, { send: async () => { throw new Error("socket closed") } })
+    await resumeStuck([row(TRACKER)], st, NOW, { send: async () => { throw new Error("socket closed") } })
     expect(st.resumed![TRACKER]!.ok).toBe(false)
     const deliver = vi.spyOn(face, "deliverMessage").mockResolvedValue({ ok: true, frame: null, error: null })
-    expect(await resumeStuck(agentRoot, [row("b")], state(), NOW, { client: { stateDir: agentRoot } })).toBe(1)
+    expect(await resumeStuck([row("b")], state(), NOW, { client: { stateDir: agentRoot } })).toBe(1)
     expect(deliver).toHaveBeenCalledWith("b", RESUME_TEXT, "immediate", { stateDir: agentRoot })
   })
 })
