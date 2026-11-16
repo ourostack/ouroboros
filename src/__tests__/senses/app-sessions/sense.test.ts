@@ -303,6 +303,18 @@ describe("a session waiting on a permission prompt", () => {
     failing.stop()
   })
 
+  it("still checks history sizes when retiring sessions fails", async () => {
+    makeDb()
+    appendEvents([assistant("hi")])
+    fs.truncateSync(path.join(stateDir, "session-state", ID, "events.jsonl"), 501 * 1024 * 1024)
+    fs.mkdirSync(path.join(agentRoot, "state", "senses", "app-sessions", "successions.json"), { recursive: true })
+    const notifyOwner = vi.fn(async () => "sent" as const)
+    const sense = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: manualScheduler().schedule, deliver: async () => undefined, notifyOwner, memory: () => ({ swapUsedBytes: 0, freeBytes: 8 * 1024 ** 3 }) })
+    await sense.done()
+    expect(notifyOwner).toHaveBeenCalledWith(expect.stringContaining("hand-off"), [`oversize:${ID}`])
+    sense.stop()
+  })
+
   it("survives a notice that fails", async () => {
     makeDb()
     appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])

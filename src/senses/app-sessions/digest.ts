@@ -26,6 +26,7 @@ const NAME_MAX = 60
 const ARCHIVE_REASONS: Record<ArchiveLogEntry["reason"], string> = {
   "owner-asked": "you asked",
   "handed-off": "handed off to a successor",
+  finished: "finished: idle a day after its coordinator went",
   "oversize-idle": "over the size limit and idle 30 min after the hand-off ask",
   "memory-pressure": "over the size limit and idle while memory ran short",
 }

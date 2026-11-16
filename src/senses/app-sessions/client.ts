@@ -63,6 +63,10 @@ export interface AppSessionRow {
   awaiting?: "input" | "plan" | "permission"
   /** The oldest permission request still open, whatever else the session waits on. */
   prompt?: PermissionPrompt
+  /** A pull request the session opened that is neither merged nor closed. */
+  openPullRequest?: string
+  /** The session has a wake-up automation, or agent merge, that archiving would stop. */
+  automation?: true
 }
 
 /** A permission request the person has not answered yet, from the session's own history. */
@@ -368,7 +372,7 @@ export async function listAppSessions(options: AppSessionsOptions = {}): Promise
   const now = (options.now ?? Date.now)()
   const { workspaces, chats } = await sidebarItems(options)
   const rows: AppSessionRow[] = []
-  const add = (id: string | null, row: Omit<AppSessionRow, "id" | "state" | "detail" | "lastActivity">, isRunning: boolean): void => {
+  const add = (id: string | null, row: Omit<AppSessionRow, "id" | "state" | "detail" | "lastActivity" | "awaiting" | "prompt">, isRunning: boolean): void => {
     if (!id || !SESSION_ID.test(id) || rows.some(known => known.id === id)) return
     const { facts, writtenAtMs } = cachedTailFacts(stateDir, id)
     const { state, detail } = classify(isRunning, facts, now, writtenAtMs)
@@ -382,6 +386,7 @@ export async function listAppSessions(options: AppSessionsOptions = {}): Promise
     if (workspace.archivedAt) continue
     const session = isRecord(workspace.session) ? workspace.session : {}
     const binding = arr(workspace.checkoutBindings)[0]
+    const openPr = arr(workspace.repoContexts).map(context => isRecord(context.createdPullRequest) ? context.createdPullRequest : null).find(pr => pr && !/^(merged|closed)$/i.test(str(pr.state) ?? ""))
     add(str(session.sessionId) ?? str(workspace.activeSessionId), {
       name: str(workspace.name) ?? str(session.title) ?? "(unnamed)", kind: "workspace", workspaceId: str(workspace.id), workspaceType: str(workspace.workspaceType),
       project: str(workspace.projectName), projectId: str(workspace.projectId), projectRepo: str(binding?.repoFullName), branch: str(workspace.branch), path: str(workspace.displayPath),
@@ -389,6 +394,8 @@ export async function listAppSessions(options: AppSessionsOptions = {}): Promise
       isRunning: session.isRunning === true, wasInterrupted: session.wasInterrupted === true,
       remote: (str(workspace.hostId) ?? "local") !== "local" || (str(session.executionLocation) ?? "local") !== "local",
       createdAt: str(workspace.createdAt), updatedAt: str(session.updatedAt) ?? str(workspace.updatedAt),
+      ...(openPr ? { openPullRequest: str(openPr.htmlUrl) ?? `#${String(openPr.number)}` } : {}),
+      ...(session.sessionAutomation || workspace.agentMergeEnabled === true ? { automation: true as const } : {}),
     }, session.isRunning === true)
   }
   for (const chat of chats) {

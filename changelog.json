@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1161",
+      "changes": [
+        "The Copilot app sense retires sessions whose job is over, with no model turn. A successor's first message carries the line `Succeeds: <predecessor session id>` (older kickoffs that open with \"the successor to\" or \"the successor of\" and a session id count too); once the successor has finished its first turn and the predecessor has been idle five minutes, the predecessor is archived, reversibly and keeping its worktree, whatever its size. An idle session whose coordinator is archived or gone, with no open pull request, no automation and no turn for a day, is archived the same way. Neither touches a session that is running, waiting on a person, stuck or remote, and a predecessor is held while sessions it coordinates still work, then its successor is told which ones it had. The status digest lists each archive. The size watch's hand-off ask now asks for the `Succeeds:` line, and `successorOf` in handoff.ts follows a chain of hand-offs to its live end."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1160",
       "changes": [
         "npm run worktree:bootstrap reuses another checkout's node_modules when its installed versions match package-lock.json, cloning it offline in under a second on macOS, and explains which package the registry lacked when it has to fall back to npm install."

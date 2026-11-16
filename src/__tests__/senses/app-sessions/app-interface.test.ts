@@ -328,9 +328,9 @@ describe("archiving a session this agent did not create", () => {
     fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { [WS]: { bytes: 1, name: "Fix it" } } }))
   }
   const successor = (text: string): void => {
-    const dir = path.join(stateDir, "session-state", "99999999-successor")
+    const dir = path.join(stateDir, "session-state", "99999999-0000-4000-8000-000000000009")
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "events.jsonl"), text)
+    fs.writeFileSync(path.join(dir, "events.jsonl"), `${JSON.stringify({ type: "user.message", data: { content: text } })}\n`)
   }
 
   it("archives for the size watch keeping the worktree, and logs its note", async () => {
@@ -348,7 +348,7 @@ describe("archiving a session this agent did not create", () => {
   })
 
   it("archives an oversize session that a newer session names as handed off, and nothing else", async () => {
-    successor(`{"text":"Carry on from ${WS}: the successor of the retired coordinator"}\n`)
+    successor(`Succeeds: ${WS}\n\nCarry on as the retired coordinator.`)
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
     flag()
     app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
@@ -358,7 +358,8 @@ describe("archiving a session this agent did not create", () => {
 
   it("accepts a successor that names the session by its short id", async () => {
     flag()
-    successor(`{"text":"hand-off: carry on from ${WS.slice(0, 8)}"}\n`)
+    fs.mkdirSync(path.join(stateDir, "session-state", WS), { recursive: true })
+    successor(`You are the successor of ${WS.slice(0, 8)}, which handed off.`)
     app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
     expect(await archiveSession(agentRoot, WS, options())).toEqual({ ok: true, session_id: WS })
   })
@@ -381,7 +382,7 @@ describe("archiving a session this agent did not create", () => {
   it("refuses an oversize session that no newer session names, or that one only mentions", async () => {
     flag()
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
-    successor(`{"text":"unrelated work on ${WS}"}\n`)
+    successor(`Unrelated work on ${WS}.`)
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
     expect(readArchiveLog(agentRoot)).toEqual([])
   })

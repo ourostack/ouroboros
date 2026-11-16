@@ -55,9 +55,9 @@ export const neverResume = (agentRoot: string): string[] => Object.keys(readOver
 
 const mb = (bytes: number): string => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`
 
-export function handoffNudge(name: string, bytes: number, asked = 0, askedAtBytes?: number): string {
+export function handoffNudge(name: string, bytes: number, asked = 0, askedAtBytes?: number, id = "<its session id>"): string {
   const again = asked ? ` This is ask ${asked + 1}${askedAtBytes ? `: it was ${mb(askedAtBytes)} at the last one and is still growing` : ""}.` : ""
-  return `The session "${plain(name, 60)}" has a ${mb(bytes)} history, over the ${mb(OVERSIZE_BYTES)} limit: the app loads all of it into memory every time that session resumes, and a few like it froze this Mac.${again} Please hand it off now: write a checkpoint of its purpose and open work, start a fresh successor session that reads that checkpoint plus the tail of the old log, then archive the old one. This goes to the session and to its coordinator; the coordinator starts the successor when there is one. Once it has been idle for ${IDLE_ARCHIVE_MS / 60_000} minutes it is archived for you (reversibly) to free its memory. Keep images out of chat (save screenshots and art as files and link the path): inline images are nearly all of the size.`
+  return `The session "${plain(name, 60)}" has a ${mb(bytes)} history, over the ${mb(OVERSIZE_BYTES)} limit: the app loads all of it into memory every time that session resumes, and a few like it froze this Mac.${again} Please hand it off now: write a checkpoint of its purpose and open work, then start a fresh successor session whose first message begins with the line \`Succeeds: ${id}\` and has it read that checkpoint plus the tail of the old log. That line is how the old session is retired: it is archived for you (reversibly) once the successor has taken its first turn and the old one is idle, or in any case once it has been idle ${IDLE_ARCHIVE_MS / 60_000} minutes after this ask. This goes to the session and to its coordinator; the coordinator starts the successor when there is one. Keep images out of chat (save screenshots and art as files and link the path): inline images are nearly all of the size.`
 }
 
 export function archivedNote(name: string, id: string, bytes: number, where: string): string {
@@ -193,7 +193,7 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
     }
     // An entry from before asks were counted had one ask.
     const asked = entry.nudges ?? (entry.nudgedAt ? 1 : 0)
-    const text = handoffNudge(row.name, entry.bytes, asked, entry.nudgedBytes)
+    const text = handoffNudge(row.name, entry.bytes, asked, entry.nudgedBytes, row.id)
     const reached: string[] = []
     for (const id of to) if ((await send(id, text).catch(failed)).ok) reached.push(id)
     if (!reached.length) continue

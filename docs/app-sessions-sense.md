@@ -85,7 +85,7 @@ The sense process does three things:
   loads a whole history into memory whenever it resumes that session, and a few multi-GB ones froze a Mac. A flagged session stays
   flagged after it is archived, until its history is under the limit again. For a session the sidebar lists, its coordinator and
   the session itself while it is running are asked, with immediate delivery, to hand off to a fresh successor (checkpoint, the tail
-  of the old log, then archive) and to keep images out of chat, since inline images are nearly all of a history's size. While it
+  of the old log, and a first message with the line `Succeeds: <its id>`, which retires it) and to keep images out of chat, since inline images are nearly all of a history's size. While it
   keeps running they are asked again each time its history grows by half since the last ask. A session that is not running and
   has no smaller coordinator is never messaged, which would reload it; the owner is told once instead. A flagged session that has
   been idle for 30 minutes since its last ask is archived through the app (reversible, worktree kept) to free its runtime's memory,
@@ -93,6 +93,19 @@ The sense process does three things:
   log. When swap use is over 8 GB or free memory under 1 GB, every idle flagged session is archived at once, largest first. A
   session waiting on a person is never archived. The status digest lists each archive with its size and where it left off. No
   model turn is used.
+- Each minute it also **retires** sessions whose job is over, so the sidebar shows only live work. A session that hands its
+  job to a fresh successor says so in the successor's first message, on a line of its own within the first 16 KB:
+  `Succeeds: <predecessor session id>`. Kickoffs that open with "the successor to" or "the successor of" followed closely
+  by a session id (full or the first eight characters) count too. Once the successor has finished its first turn and the
+  predecessor has been idle five minutes, the predecessor is archived (reversibly, worktree kept), whatever its size. Two
+  sessions that claim to succeed each other are both left alone. An idle session whose coordinator is archived or gone,
+  with no open pull request, no automation or agent merge, and no turn for a day, is archived the same way. Neither rule
+  touches a session that is running, waiting on a person (question, plan or permission), stuck or remote. The app archives
+  a session without the sessions it coordinates, which keep running but can no longer report to it, so a predecessor is
+  held until those are idle, and then its successor is told which ones it had. Each history is read forward from its
+  start, at most 1 MB, until its first message, and then only until the successor's first turn
+  (`state/senses/app-sessions/successions.json`); `successorOf` in `handoff.ts` follows a chain of hand-offs to its live
+  end. The status digest lists each archive with its successor or last state and where it left off. No model turn is used.
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
