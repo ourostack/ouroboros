@@ -31,6 +31,14 @@ export function withCopilotVisionHeader(fetchImpl?: typeof fetch): typeof fetch 
   }
 }
 
+/** Pull one model's context window out of Copilot's /models listing (`capabilities.limits.max_context_window_tokens`). */
+export function contextWindowFromModels(models: readonly unknown[], modelId: string): number | undefined {
+  const entry = models.find((m) => (m as { id?: unknown } | null)?.id === modelId) as
+    { capabilities?: { limits?: { max_context_window_tokens?: unknown } } } | undefined
+  const tokens = entry?.capabilities?.limits?.max_context_window_tokens
+  return typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : undefined
+}
+
 export interface GithubCopilotRuntimeOwner {
   agentName: string;
   agentRoot: string;
@@ -142,6 +150,12 @@ export function createGithubCopilotProviderRuntime(
         }
       },
       /* v8 ignore stop */
+      /* v8 ignore start -- network read: the parsing is tested via contextWindowFromModels @preserve */
+      async fetchContextWindow(signal?: AbortSignal): Promise<number | undefined> {
+        const page = await callModel(this.client as OpenAI, (turnClient) => turnClient.models.list({ signal }))
+        return contextWindowFromModels(page.data, this.model)
+      },
+      /* v8 ignore stop */
       /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
       async ping(signal?: AbortSignal): Promise<void> {
         await callModel(this.client as OpenAI, (turnClient) => turnClient.chat.completions.create(
@@ -203,6 +217,12 @@ export function createGithubCopilotProviderRuntime(
       } catch (error) {
         throw error instanceof Error ? error : new Error(String(error));
       }
+    },
+    /* v8 ignore stop */
+    /* v8 ignore start -- network read: the parsing is tested via contextWindowFromModels @preserve */
+    async fetchContextWindow(signal?: AbortSignal): Promise<number | undefined> {
+      const page = await callModel(this.client as OpenAI, (turnClient) => turnClient.models.list({ signal }))
+      return contextWindowFromModels(page.data, this.model)
     },
     /* v8 ignore stop */
     /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
