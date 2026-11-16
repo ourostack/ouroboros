@@ -1,23 +1,9 @@
-// Writes the Ouro AX inventory of the ouro CLI from its own registration: the command words its usage lists.
-// Run after `npm run build`, so it reads the built CLI, never a copy of the list.
+// Writes the Ouro AX inventory of the ouro CLI: the command names its declarations list, the same names `help --json`
+// prints. Run after `npm run build`, so it reads the built declarations.
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { usage } = require("../../dist/heart/daemon/cli-parse.js");
+const { CLI_COMMANDS } = require("../../dist/heart/daemon/cli-manifest.js");
 
-const names = new Set();
-for (const line of usage().split("\n")) {
-  const match = /^ {2}ouro (.+)$/.exec(line);
-  if (!match) continue;
-  const words = [];
-  for (const token of match[1].split(/\s+/)) {
-    if (/^[[<(-]/.test(token)) break;
-    words.push(token);
-  }
-  if (words.length === 0) continue;
-  const last = words.pop();
-  const heads = last.includes("|") ? last.split("|") : [last];
-  for (const head of heads) names.add([...words, head].join(" "));
-}
-
-process.stdout.write(`${JSON.stringify({ cli: [...names].sort() }, null, 2)}\n`);
+const cli = [...new Set(CLI_COMMANDS.map((command) => command.name))].sort();
+process.stdout.write(`${JSON.stringify({ cli }, null, 2)}\n`);

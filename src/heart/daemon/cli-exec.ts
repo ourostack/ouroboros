@@ -154,6 +154,7 @@ import type {
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
+import { CLI_COMMANDS, CLI_EXIT_CODES } from "./cli-manifest"
 import {
   executePluginInstall,
   executePluginList,
@@ -7875,6 +7876,23 @@ async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): 
 // ── Main CLI execution ──
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
+  if (args.length === 2 && args[1] === "--json" && (args[0] === "help" || args[0] === "--help" || args[0] === "-h")) {
+    const help = {
+      tool: "ouro",
+      commands: CLI_COMMANDS.map((command) => ({
+        name: command.name,
+        effect: command.effect,
+        summary: command.summary,
+        usage: [`ouro ${command.name}`],
+        ...(command.readOnly ? { readOnly: true } : {}),
+      })),
+      exitCodes: CLI_EXIT_CODES,
+    }
+    const text = JSON.stringify(help, null, 2)
+    deps.writeStdout(text)
+    return text
+  }
+
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     const helpText = getGroupedHelp()
     const text = ttyBoardEnabled(deps)

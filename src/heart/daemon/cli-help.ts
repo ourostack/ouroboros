@@ -291,7 +291,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   "migrate-to-desk": {
     category: "Tasks",
-    description: "Migrate a legacy `tasks/` tree into the new `desk/` shape (copy semantics — source untouched).",
+    description: "Migrate a legacy task tree into the desk shape (copy semantics; the source is untouched).",
     usage: "ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
     example: "ouro migrate-to-desk --agent <agent> --dry-run",
   },
