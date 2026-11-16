@@ -67,7 +67,7 @@ In a fresh worktree, bootstrap the local dependencies before running checks:
 npm run worktree:bootstrap
 ```
 
-This runs `npm install --ignore-scripts` against the repo lockfile. Do not run direct `npx vitest` or `npx tsc` commands before this bootstrap; the repo `.npmrc` rejects new transient `npx` downloads, and Vitest config prints bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
+When another checkout of this repo (the main checkout first) already has a `node_modules` whose installed versions match this `package-lock.json`, it clones that tree (copy-on-write on macOS) with no network. Otherwise it runs `npm install --ignore-scripts` against the repo lockfile, and if npm fails it names the package the registry lacked and the next command to run. Do not run direct `npx vitest` or `npx tsc` commands before this bootstrap; the repo `.npmrc` rejects new transient `npx` downloads, and Vitest config prints bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
 
 For runtime code changes, keep these green:
 
