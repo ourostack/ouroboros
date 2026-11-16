@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1156",
       "changes": [
-        "The ouro CLI's help can be read as data: `ouro help --json` lists every command with who sees its effect, and the exit codes. The Ouro AX X-ray checks it in CI."
+        "The ouro CLI's help can be read as data: `ouro help --json` lists every command with who sees its effect, and the exit codes. The Ouro AX X-ray checks it in CI, and the help's event is recorded in the nerves log."
       ]
     },
     {
