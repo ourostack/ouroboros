@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { getLearnedContextWindow } from "./model-limits"
 import { getModelCapabilities } from "./model-capabilities"
 import {
   loadAgentConfig,
@@ -418,7 +419,7 @@ export function getContextConfig(model?: string): ContextConfig {
     : undefined
   const modelId = model ?? agentConfig.humanFacing?.model
   return {
-    maxTokens: override ?? (modelId ? getModelCapabilities(modelId).contextWindowTokens : undefined) ?? defaults.maxTokens,
+    maxTokens: override ?? (modelId ? getLearnedContextWindow(modelId) ?? getModelCapabilities(modelId).contextWindowTokens : undefined) ?? defaults.maxTokens,
     contextMargin: typeof agentContext?.contextMargin === "number" ? agentContext.contextMargin : defaults.contextMargin,
   }
 }

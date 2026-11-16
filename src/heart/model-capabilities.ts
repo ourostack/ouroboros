@@ -5,7 +5,7 @@ export interface ModelCapabilities {
   thinkingFormat?: "anthropic"
   phase?: boolean
   maxOutputTokens?: number
-  /** The model's real context window. Unset means unknown: the agent's context default applies. */
+  /** Fallback context window, used only when the provider cannot report the real one (see model-limits.ts). Unset: the agent default applies. */
   contextWindowTokens?: number
   /**
    * True when the model can consume OpenAI-style `image_url` content parts

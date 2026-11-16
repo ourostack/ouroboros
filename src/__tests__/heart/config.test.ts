@@ -571,6 +571,14 @@ describe("getContextConfig", () => {
       expect((await contextFor(undefined, "gpt-6-sol")).maxTokens).toBe(400000)
     })
 
+    it("prefers the window the provider reported over the built-in estimate", async () => {
+      const limits = await import("../../heart/model-limits")
+      await limits.learnContextWindow({ id: "github-copilot", model: "claude-opus-5-5", fetchContextWindow: async () => 1000000 })
+      expect((await contextFor(undefined, "claude-opus-5-5")).maxTokens).toBe(1000000)
+      limits.resetLearnedContextWindowsForTests()
+      expect((await contextFor(undefined, "claude-opus-5-5")).maxTokens).toBe(200000)
+    })
+
     it("treats the old hatch-time default as unset", async () => {
       expect((await contextFor({ maxTokens: 80000, contextMargin: 20 }, "claude-opus-5-5")).maxTokens).toBe(200000)
     })
