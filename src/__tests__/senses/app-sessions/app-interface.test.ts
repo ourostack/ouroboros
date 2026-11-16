@@ -10,6 +10,7 @@ import {
   navigateTo, respondToSessionPlan, runWorkflow, saveSessionAutomation, sendSessionMessage,
 } from "../../../senses/app-sessions/app-interface"
 import { listAppSessions } from "../../../senses/app-sessions/client"
+import { refreshSuccessions } from "../../../senses/app-sessions/handoff"
 import { addProbe, readArchiveLog, readProbes, readWatches, writePending, type PendingRequest } from "../../../senses/app-sessions/store"
 
 type Frame = Record<string, unknown>
@@ -350,6 +351,7 @@ describe("archiving a session this agent did not create", () => {
     const dir = path.join(stateDir, "session-state", "99999999-0000-4000-8000-000000000009")
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, "events.jsonl"), `${JSON.stringify({ type: "user.message", data: { content: text } })}\n`)
+    refreshSuccessions(agentRoot, { stateDir }, [WS, path.basename(dir)])
   }
 
   it("archives for the size watch keeping the worktree, and logs its note", async () => {

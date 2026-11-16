@@ -24,8 +24,6 @@ const FREE_TEXT_OPENING_CHARS = 2_000
 const FREE_TEXT_ID_WINDOW = 240
 /** How far into a history the first message is looked for, and the most read per pass while waiting for the first turn. */
 export const FIRST_MESSAGE_SCAN_BYTES = 1024 * 1024
-/** Histories untouched this long are not read for a first message (an old one cannot hand off a live session). */
-const RECENT_MS = 7 * 86_400_000
 
 export interface Succession {
   /** The session this one succeeds, or null when its first message names none. */
@@ -70,28 +68,28 @@ function historyIds(client: AppSessionsOptions): string[] {
   }
 }
 
-/** Read what is new in each recent history, as far as succession needs, and remember it. Returns every succession known. */
-export function refreshSuccessions(agentRoot: string, client: AppSessionsOptions, now: number = Date.now()): Successions {
+/**
+ * Read what is new in the history of each session the app lists, as far as succession needs, and remember only those,
+ * plus each pending succession: one whose successor has left the sidebar while the session it succeeds is still listed,
+ * so that session can still be retired. Anything else the app no longer lists drops out, and the record stays the size
+ * of the sidebar.
+ */
+export function refreshSuccessions(agentRoot: string, client: AppSessionsOptions, listed: Iterable<string>): Successions {
   const before = readSuccessions(agentRoot)
+  const live = new Set(listed)
   const ids = historyIds(client)
   const known = (value: string): string | null => {
     const matches = ids.filter(id => id.toLowerCase().startsWith(value))
     return matches.length === 1 ? matches[0]! : null
   }
   const next: Successions = {}
-  for (const id of ids) {
+  for (const [id, entry] of Object.entries(before)) if (!live.has(id) && entry.predecessor && live.has(entry.predecessor)) next[id] = entry
+  for (const id of live) {
     const was = before[id]
     if (was && !was.pending && (!was.predecessor || was.turned)) {
       next[id] = was
       continue
     }
-    let modified: number
-    try {
-      modified = fs.statSync(eventLogPath(id, client)).mtimeMs
-    } catch {
-      continue
-    }
-    if (!was && now - modified > RECENT_MS) continue
     const entry: Succession = was ? { ...was } : { predecessor: null, offset: 0, pending: true }
     let message: { text: string; at?: string } | null = null
     let turned = false
@@ -141,12 +139,12 @@ export function successorOf(id: string, successions: Successions): string | null
 
 /**
  * Whether an oversize session has been handed off: it is in the oversize list, and a newer session's first message
- * names it as the session it succeeds.
+ * names it as the session it succeeds, as the sense last recorded.
  */
-export function isHandedOff(agentRoot: string, row: Pick<AppSessionRow, "id">, options: AppSessionsOptions = {}): boolean {
+export function isHandedOff(agentRoot: string, row: Pick<AppSessionRow, "id">): boolean {
   const flagged = readJson<{ sessions?: Record<string, unknown> }>(path.join(appSessionsStateDir(agentRoot), "oversize.json"), {}).sessions ?? {}
   if (!flagged[row.id]) return false
-  const successor = successorOf(row.id, refreshSuccessions(agentRoot, options))
+  const successor = successorOf(row.id, readSuccessions(agentRoot))
   if (successor) emitNervesEvent({ component: "senses", event: "senses.app_sessions_handoff_found", message: "found the successor that a session was handed off to", meta: { session: row.id, successor } })
   return successor !== null
 }

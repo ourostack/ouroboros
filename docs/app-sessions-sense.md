@@ -111,7 +111,8 @@ The sense process does three things:
   a session without the sessions it coordinates, which keep running but can no longer report to it, so a predecessor is
   held until those are idle, and then its successor is told which ones it had. Each history is read forward from its
   start, at most 1 MB, until its first message, and then only until the successor's first turn
-  (`state/senses/app-sessions/successions.json`); `successorOf` in `handoff.ts` follows a chain of hand-offs to its live
+  (`state/senses/app-sessions/successions.json`, which keeps only the sessions the sidebar lists, plus a successor that
+  has left it while the session it succeeds is still listed); `successorOf` in `handoff.ts` follows a chain of hand-offs to its live
   end. The status digest lists each archive with its successor or last state and where it left off. No model turn is used.
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes

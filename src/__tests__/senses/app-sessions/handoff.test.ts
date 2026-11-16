@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { history, TODAYS_PAIRS } from "./successions-fixture"
 import { FIRST_MESSAGE_SCAN_BYTES, isHandedOff, namedPredecessor, readSuccessions, refreshSuccessions, successorOf } from "../../../senses/app-sessions/handoff"
 
-const NOW = Date.parse("2026-11-16T16:00:00Z")
 const A = "aaaaaaaa-0000-4000-8000-000000000001"
 const B = "bbbbbbbb-0000-4000-8000-000000000002"
 const C = "cccccccc-0000-4000-8000-000000000003"
 
 let agentRoot: string
+const refresh = (listed: string[]) => refreshSuccessions(agentRoot, { stateDir }, listed)
 let stateDir: string
 
 beforeEach(() => {
@@ -60,7 +60,8 @@ describe("following successions through the histories", () => {
       history(stateDir, predecessor, "Earlier work.", { turned: true })
       history(stateDir, successor, kickoff)
     }
-    let known = refreshSuccessions(agentRoot, { stateDir }, NOW)
+    const listed = TODAYS_PAIRS.flatMap(([predecessor, successor]) => [predecessor, successor])
+    let known = refresh(listed)
     for (const [predecessor, successor] of TODAYS_PAIRS) {
       expect(known[successor]).toMatchObject({ predecessor, marker: "free-text" })
       expect(known[successor]!.turned).toBeUndefined()
@@ -68,7 +69,7 @@ describe("following successions through the histories", () => {
     }
     const [, first, kickoff] = TODAYS_PAIRS[0]!
     history(stateDir, first, kickoff, { turned: true })
-    known = refreshSuccessions(agentRoot, { stateDir }, NOW)
+    known = refresh(listed)
     expect(known[first]).toMatchObject({ turned: true })
     expect(readSuccessions(agentRoot)[first]).toMatchObject({ turned: true })
   })
@@ -77,7 +78,7 @@ describe("following successions through the histories", () => {
     history(stateDir, A, "Original.")
     history(stateDir, B, `Succeeds: ${A}`, { at: "2026-11-16T10:00:00Z" })
     history(stateDir, C, `Succeeds: ${B}`, { at: "2026-11-16T12:00:00Z" })
-    const known = refreshSuccessions(agentRoot, { stateDir }, NOW)
+    const known = refresh([A, B, C])
     expect(successorOf(A, known)).toBe(C)
     expect(successorOf(C, known)).toBeNull()
     expect(successorOf(B, { [C]: { predecessor: B, offset: 0 }, [A]: { predecessor: B, offset: 0, at: "2026-11-16T13:00:00Z" } })).toBe(A)
@@ -98,30 +99,36 @@ describe("following successions through the histories", () => {
       { type: "user.message", data: { content: `Succeeds: ${A}` } },
       { type: "assistant.turn_end", agentId: "sub", data: {} },
     ].map(event => JSON.stringify(event)).join("\n") + "\n")
-    const known = refreshSuccessions(agentRoot, { stateDir }, NOW)
+    const known = refresh([A, twin, B, C, "dddddddd-0000-4000-8000-000000000004"])
     expect(known[B]).toMatchObject({ predecessor: null })
     expect(known[C]).toMatchObject({ predecessor: null })
     expect(known["dddddddd-0000-4000-8000-000000000004"]).toMatchObject({ predecessor: A })
     expect(known["dddddddd-0000-4000-8000-000000000004"]!.turned).toBeUndefined()
   })
 
-  it("waits for a first message still to come, gives up after the scan limit, and skips old or broken histories", () => {
+  it("waits for a first message still to come, and gives up after the scan limit", () => {
     history(stateDir, B, null)
-    expect(refreshSuccessions(agentRoot, { stateDir }, NOW)[B]).toMatchObject({ pending: true, predecessor: null })
+    expect(refresh([B])[B]).toMatchObject({ pending: true, predecessor: null })
     history(stateDir, B, `Succeeds: ${A}`)
     history(stateDir, A, "Original.")
-    expect(refreshSuccessions(agentRoot, { stateDir }, NOW)[B]).toMatchObject({ predecessor: A, marker: "structured" })
+    expect(refresh([A, B])[B]).toMatchObject({ predecessor: A, marker: "structured" })
     history(stateDir, C, null, { padBytes: FIRST_MESSAGE_SCAN_BYTES + 10_000 })
-    expect(refreshSuccessions(agentRoot, { stateDir }, NOW)[C]!.pending).toBeUndefined()
-    const old = "dddddddd-0000-4000-8000-000000000004"
-    history(stateDir, old, `Succeeds: ${A}`)
-    fs.utimesSync(path.join(stateDir, "session-state", old, "events.jsonl"), 1, 1)
-    fs.mkdirSync(path.join(stateDir, "session-state", "eeeeeeee-0000-4000-8000-000000000005"))
-    const known = refreshSuccessions(agentRoot, { stateDir }, NOW)
-    expect(known[old]).toBeUndefined()
-    expect(known["eeeeeeee-0000-4000-8000-000000000005"]).toBeUndefined()
+    expect(refresh([A, B, C])[C]!.pending).toBeUndefined()
     fs.rmSync(path.join(stateDir, "session-state"), { recursive: true })
-    expect(refreshSuccessions(agentRoot, { stateDir }, NOW)).toEqual({})
+    expect(refresh([A, B, C])).toMatchObject({ [A]: { predecessor: null }, [B]: { predecessor: A } })
+  })
+
+  it("keeps only the sessions the app lists and the successions still pending: an archived or vanished one drops out", () => {
+    history(stateDir, A, "Original.")
+    history(stateDir, B, `Succeeds: ${A}`, { turned: true })
+    history(stateDir, C, `Succeeds: ${B}`)
+    expect(Object.keys(refresh([A, B, C, A])).sort()).toEqual([A, B, C])
+    expect(Object.keys(refresh([A, C])).sort()).toEqual([A, B, C])
+    expect(refresh([A])).toMatchObject({ [B]: { predecessor: A } })
+    expect(Object.keys(refresh([C]))).toEqual([C])
+    expect(readSuccessions(agentRoot)[B]).toBeUndefined()
+    expect(refresh([])).toEqual({})
+    expect(readSuccessions(agentRoot)).toEqual({})
   })
 })
 
@@ -132,12 +139,15 @@ describe("whether an oversize session was handed off", () => {
     fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { [A]: { bytes: 1, name: "Giant" } } }))
   }
 
-  it("is true only for a flagged session that a later first message succeeds", () => {
+  it("is true only for a flagged session that a later first message succeeds, as the sense last recorded", () => {
     history(stateDir, A, "Original.")
     history(stateDir, B, `Succeeds: ${A}`)
-    expect(isHandedOff(agentRoot, { id: A }, { stateDir })).toBe(false)
     flag()
-    expect(isHandedOff(agentRoot, { id: A }, { stateDir })).toBe(true)
-    expect(isHandedOff(agentRoot, { id: B }, { stateDir })).toBe(false)
+    expect(isHandedOff(agentRoot, { id: A })).toBe(false)
+    refresh([A, B])
+    expect(isHandedOff(agentRoot, { id: A })).toBe(true)
+    expect(isHandedOff(agentRoot, { id: B })).toBe(false)
+    fs.rmSync(path.join(agentRoot, "state", "senses", "app-sessions", "oversize.json"))
+    expect(isHandedOff(agentRoot, { id: A })).toBe(false)
   })
 })

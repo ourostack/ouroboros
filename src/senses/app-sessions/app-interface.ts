@@ -109,14 +109,14 @@ function status(row: AppSessionRow, rows: AppSessionRow[], pending: Record<strin
 
 export async function listSessionsAndChats(options: AppSessionsOptions = {}, agentRoot?: string): Promise<Result> {
   const rows = await listAppSessions(options)
-  const successors = agentRoot ? handoffSuccessors(agentRoot, options) : undefined
+  const successors = agentRoot ? handoffSuccessors(agentRoot) : undefined
   return { total: rows.length, items: rows.map(row => item(row, rows, options, successors)) }
 }
 
 export async function getSessionsStatus(agentRoot: string, state: string | undefined, options: AppSessionsOptions = {}): Promise<Result> {
   const rows = await listAppSessions(options)
   const pending = readPending(agentRoot)
-  const successors = handoffSuccessors(agentRoot, options)
+  const successors = handoffSuccessors(agentRoot)
   const count = (keep: (row: AppSessionRow) => boolean): number => rows.filter(keep).length
   return {
     summary: {
@@ -129,7 +129,7 @@ export async function getSessionsStatus(agentRoot: string, state: string | undef
 
 export async function getSession(agentRoot: string, id: unknown, options: AppSessionsOptions = {}): Promise<Result> {
   const rows = await listAppSessions(options)
-  return status(findSession(rows, id), rows, readPending(agentRoot), options, handoffSuccessors(agentRoot, options))
+  return status(findSession(rows, id), rows, readPending(agentRoot), options, handoffSuccessors(agentRoot))
 }
 
 // ---------- writing ----------
@@ -271,7 +271,7 @@ export async function archiveSession(agentRoot: string, id: unknown, options: Ap
   const made = readProbes(agentRoot)
   let reason: ArchiveLogEntry["reason"] | null = null
   if (!made[row.id]) {
-    reason = ownerAsked ? "owner-asked" : isHandedOff(agentRoot, row, options) ? "handed-off" : null
+    reason = ownerAsked ? "owner-asked" : isHandedOff(agentRoot, row) ? "handed-off" : null
     if (!reason) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_archive_declined", message: "declined to archive a session this agent did not create", meta: { session: row.id } })
       throw new Error(`session ${row.id} was not created by this agent, so it will not archive it unless the owner asked for it or it is oversize and a newer session names it as handed off (yours: ${Object.keys(made).join(", ") || "none"})`)
