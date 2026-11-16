@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1158",
+      "changes": [
+        "The ouro CLI's help for a command other people see names --dry-run, which says who will see it without doing it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1157",
       "changes": [
         "The ouro CLI refuses an unknown flag and names the nearest real one, at its front door. Commands other people see need --why, which is kept out of their words, and --dry-run says who will see them without doing it. Its help reads the same under -h and --help."

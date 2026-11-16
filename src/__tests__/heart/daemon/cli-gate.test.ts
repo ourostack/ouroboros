@@ -54,6 +54,16 @@ describe("the flag gate in front of the ouro CLI", () => {
     expect(result.kind === "preview" && JSON.parse(result.text)).toMatchObject({ state: "preview", command: "msg", dryRun: true })
   })
 
+  it("prints a command other people see its help, with --dry-run", () => {
+    const result = gateCommandArgs(["dns", "apply", "--help"])
+    expect(result.kind).toBe("help")
+    expect(result.kind === "help" && result.text).toContain("--dry-run")
+  })
+
+  it("passes a command the person sees its help unchanged", () => {
+    expect(gateCommandArgs(["check", "--help"])).toMatchObject({ kind: "pass" })
+  })
+
   it("skips the value of a flag that takes one when it counts words", () => {
     expect(gateCommandArgs(["dns", "apply", "--binding", "dns.json", "--why", "they asked"])).toMatchObject({ kind: "pass" })
   })
