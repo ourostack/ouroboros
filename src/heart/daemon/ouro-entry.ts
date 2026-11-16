@@ -4,6 +4,7 @@ import { ouroCompileCacheDirectory } from "./compile-cache"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { redactCliArgs } from "./cli-arg-redaction"
 import { runOuroCli } from "./daemon-cli"
+import { gateCommandArgs } from "./cli-gate"
 import { configureDaemonRuntimeLogger } from "./runtime-logging"
 import { activatePortableGit } from "./portable-git"
 
@@ -18,15 +19,23 @@ emitNervesEvent({
   meta: { args: redactCliArgs(process.argv.slice(2)), compileCache: ouroCompileCacheDirectory },
 })
 
-void runOuroCli(process.argv.slice(2)).catch((error) => {
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`${message}\n`)
-  emitNervesEvent({
-    level: "error",
-    component: "daemon",
-    event: "daemon.cli_entry_error",
-    message: "ouro CLI entrypoint failed",
-    meta: { error: message },
+const gate = gateCommandArgs(process.argv.slice(2))
+if (gate.kind === "refuse") {
+  process.stderr.write(`${gate.message}\n`)
+  process.exitCode = 1
+} else if (gate.kind === "preview") {
+  process.stdout.write(`${gate.text}\n`)
+} else {
+  void runOuroCli(gate.args).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`${message}\n`)
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.cli_entry_error",
+      message: "ouro CLI entrypoint failed",
+      meta: { error: message },
+    })
+    process.exit(1)
   })
-  process.exit(1)
-})
+}
