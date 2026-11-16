@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -25,6 +25,13 @@ vi.mock("../../heart/daemon/socket-client", () => ({
   checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
   requestInnerWake: vi.fn().mockResolvedValue(null),
 }))
+
+// Load the module graph once outside any timed test. Its cold transform (heart/core and the
+// whole tool registry) takes seconds under CI load; resetting keeps each test's import fresh.
+beforeAll(async () => {
+  await import("../../senses/teams")
+  vi.resetModules()
+})
 
 describe("Teams tool callbacks via createToolActivityCallbacks", () => {
   beforeEach(() => {
@@ -137,7 +144,7 @@ describe("Teams createTeamsCallbacks - flushNow (speak tool)", () => {
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     expect(typeof (callbacks as any).flushNow).toBe("function")
-  }, 10_000)
+  })
 
   it("declares settle output as final-only because visible stream writes cannot retract", async () => {
     const teams = await import("../../senses/teams")

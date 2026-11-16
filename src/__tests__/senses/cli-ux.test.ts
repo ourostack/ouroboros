@@ -1,5 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { Readable, Writable } from "node:stream"
+
+// Load the module graph once outside any timed test. Its cold transform (heart/core and the
+// whole tool registry) takes seconds under CI load; resetting keeps each test's import fresh.
+beforeAll(async () => {
+  await import("../../senses/cli")
+  vi.resetModules()
+})
 
 describe("CLI UX - InputController", () => {
   let origStdinOn: typeof process.stdin.on
