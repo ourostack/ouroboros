@@ -1,0 +1,49 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "ouro",
+  "tools": [
+    {
+      "name": "list_friends",
+      "description": "List the friends this agent knows, with their ids and trust levels. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "consequentialHint": false
+      }
+    },
+    {
+      "name": "list_habits",
+      "description": "List the agent's habits, with their cadence. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "consequentialHint": false
+      }
+    },
+    {
+      "name": "list_sessions",
+      "description": "List the agent's sessions, newest first. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "consequentialHint": false
+      }
+    }
+  ],
+  "refusals": {}
+}

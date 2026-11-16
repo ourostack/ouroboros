@@ -1,0 +1,29 @@
+{
+  "generator": "ouro-actions 0.16.0",
+  "set": "ouro",
+  "tool": "ouro",
+  "commands": [
+    {
+      "name": "friend list",
+      "summary": "List the friends this agent knows, with their ids and trust levels. Read only.",
+      "effect": "private",
+      "readOnly": true,
+      "output": "{ listing }"
+    },
+    {
+      "name": "habit list",
+      "summary": "List the agent's habits, with their cadence. Read only.",
+      "effect": "private",
+      "readOnly": true,
+      "output": "{ listing }"
+    },
+    {
+      "name": "session list",
+      "summary": "List the agent's sessions, newest first. Read only.",
+      "effect": "private",
+      "readOnly": true,
+      "output": "{ listing }"
+    }
+  ],
+  "personOnly": {}
+}
