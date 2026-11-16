@@ -62,6 +62,17 @@ describe("package metadata", () => {
     expect(releaseJob).not.toContain("npm pack")
   })
 
+  it("verifies the exact published npm versions, not the moving dist-tags", () => {
+    const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
+    const start = workflow.indexOf("  verify-npm:")
+    const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
+    expect(verifyJob).toContain('verify_tag "@ouro.bot/cli" "$LOCAL"')
+    expect(verifyJob).toContain('verify_tag "ouro.bot" "$LOCAL"')
+    expect(verifyJob).toContain('package_ref="$1@$2"')
+    expect(verifyJob).not.toContain('verify_tag "@ouro.bot/cli@${CLI_TAG}"')
+    expect(verifyJob).not.toContain('verify_tag "ouro.bot@${WRAPPER_TAG}"')
+  })
+
   it("gates publish on both packed artifact E2E suites", () => {
     expect(packageJson.scripts["test:e2e:ouro-bot-package"]).toBe("node scripts/ouro-bot-package-e2e.cjs")
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
