@@ -173,8 +173,11 @@ export function appSessionsSenseStatus(enabled: boolean, agentRoot: string, now:
   return `ready (${snapshotSummary(readSnapshot(agentRoot), now)}; app_sessions_* tools read and write them)`
 }
 
-/** `oversize-idle` and `memory-pressure` are the size watch's own archives of an idle oversize session; `note` says where it left off. */
-export interface ArchiveLogEntry { id: string; name: string; at: string; reason: "handed-off" | "owner-asked" | "oversize-idle" | "memory-pressure"; note?: string }
+/**
+ * `oversize-idle` and `memory-pressure` are the size watch's own archives of an idle oversize session; `handed-off` is a
+ * session whose successor took over, and `finished` an idle session whose coordinator is gone. `note` says where it left off.
+ */
+export interface ArchiveLogEntry { id: string; name: string; at: string; reason: "handed-off" | "finished" | "owner-asked" | "oversize-idle" | "memory-pressure"; note?: string }
 const archiveLogFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "archive-log.json")
 
 export function readArchiveLog(agentRoot: string): ArchiveLogEntry[] {

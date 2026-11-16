@@ -249,6 +249,23 @@ describe("listing the sidebar", () => {
     expect(rows.find(row => row.id === WS)).not.toHaveProperty("prompt")
   })
 
+  it("carries an open pull request and an automation, which keep a session from being retired", async () => {
+    const merged = { createdPullRequest: { state: "merged", htmlUrl: "https://github.com/a/b/pull/1" } }
+    serve(
+      [
+        { id: "w1", repoContexts: [merged, { createdPullRequest: { state: "open", htmlUrl: "https://github.com/a/b/pull/2" } }], session: session(WS, { sessionAutomation: { id: "a1" } }) },
+        { id: "w3", repoContexts: [merged, { createdPullRequest: { number: 3 } }, "x"], agentMergeEnabled: true, session: session(STUCK) },
+        { id: "w4", repoContexts: [merged, { createdPullRequest: { state: "CLOSED" } }, {}], session: session(CHAT) },
+      ],
+      [],
+    )
+    const rows = await listAppSessions(options())
+    expect(rows[0]).toMatchObject({ openPullRequest: "https://github.com/a/b/pull/2", automation: true })
+    expect(rows[1]).toMatchObject({ openPullRequest: "#3", automation: true })
+    expect(rows[2]).not.toHaveProperty("openPullRequest")
+    expect(rows[2]).not.toHaveProperty("automation")
+  })
+
   it("skips archived, session-less, duplicate and malformed rows, and names what has no name", async () => {
     serve(
       [{ id: "w5" }, { id: "w6", archivedAt: OLD, session: session(WS) }, { id: "w7", activeSessionId: WS }, { id: "w8", session: session(WS) }, { id: "w9", session: session("bad id") }],
