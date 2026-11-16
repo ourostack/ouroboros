@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1157",
+      "changes": [
+        "The ouro CLI refuses an unknown flag and names the nearest real one. Commands other people see need --why, and --dry-run says who will see them without doing it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1156",
       "changes": [
         "The ouro CLI's help can be read as data: `ouro help --json` lists every command with who sees its effect, and the exit codes. The Ouro AX X-ray checks it in CI, and the help's event is recorded in the nerves log."

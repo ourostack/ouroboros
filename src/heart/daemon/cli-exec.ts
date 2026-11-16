@@ -155,6 +155,7 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import { cliHelpJson } from "./cli-manifest"
+import { gateCommandArgs } from "./cli-gate"
 import {
   executePluginInstall,
   executePluginList,
@@ -7905,6 +7906,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const text = formatVersionOutput()
     deps.writeStdout(text)
     return text
+  }
+
+  const gate = gateCommandArgs(args)
+  if (gate.kind === "refuse") throw new Error(gate.message)
+  if (gate.kind === "preview") {
+    deps.writeStdout(gate.text)
+    return gate.text
   }
 
   let parsedCommand: OuroCliCommand
