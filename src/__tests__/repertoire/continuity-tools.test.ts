@@ -764,16 +764,20 @@ describe("continuity tools", () => {
 
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith("/events/ouroboros/sanctuary-health/books.json", expect.objectContaining({
         owner: "lease-2",
-        expectedVersion: 4,
         expectedGeneration: 2,
         disposition: expect.objectContaining({ classifiedRevision: "rev-2", reason: "Expected while the library is sleeping.", nextWake: { kind: "on_change" } }),
       }))
+      // No expectedVersion: the turn's own lease heartbeat advances the receipt version every 10s,
+      // so the snapshot taken when the turn started is stale by commit time. The generation is the
+      // durable identity of what the agent investigated.
+      expect(mockCommitExternalEventDisposition.mock.calls[0]![1]).not.toHaveProperty("expectedVersion")
       expect(result).toContain("handled")
     })
 
     it("resumes its generation-scoped claim after a turn crash without waiting for the lease", async () => {
       mockReadExternalEventRecord.mockReturnValue({
         agent: "ouroboros",
+        eventId: "books",
         version: 7,
         generation: 3,
         observationRevision: "rev-3",
@@ -805,10 +809,117 @@ describe("continuity tools", () => {
         "/events/ouroboros/sanctuary-health/books.json",
         expect.objectContaining({
           owner: "agent-disposition:ouroboros:3",
-          expectedVersion: 7,
           expectedGeneration: 3,
         }),
       )
+      // The version snapshot is not asserted: the lease heartbeat advances it under the turn.
+      expect(mockCommitExternalEventDisposition.mock.calls[0]![1]).not.toHaveProperty("expectedVersion")
+    })
+
+    it("records the disposition after the lease expired and the receipt settled to retry_wait", async () => {
+      mockReadExternalEventRecord.mockReturnValue({
+        agent: "ouroboros",
+        eventId: "books",
+        source: "sanctuary-health",
+        version: 1747,
+        generation: 21,
+        // The receipt's own revision drifts as newer observations land on it; the lease revision is stable.
+        observationRevision: "rev-newer",
+        executionState: "retry_wait",
+        claimOwner: null,
+        disposition: null,
+      })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+
+      const tool = findTool("external_event_disposition")
+      await expect(tool.handler({
+        recordPath: "/events/ouroboros/sanctuary-health/books.json",
+        expectedGeneration: 21,
+        classifiedRevision: "rev-21",
+        classification: "resolved",
+        stewardPolicyKind: "none",
+        decision: "silent",
+        reason: "Fixed and verified.",
+        nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 21, observationRevision: "rev-21", claimOwner: "lease-21" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      } as any)).resolves.toContain("handled")
+
+      // No expectedVersion: the lease heartbeat advances the receipt version underneath the turn.
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(
+        "/events/ouroboros/sanctuary-health/books.json",
+        expect.objectContaining({ expectedGeneration: 21, owner: "lease-21" }),
+      )
+      expect(mockCommitExternalEventDisposition.mock.calls[0]![1]).not.toHaveProperty("expectedVersion")
+    })
+
+    it("rejects a disposition whose generation, revision, event id, or agent does not match the turn lease", async () => {
+      const tool = findTool("external_event_disposition")
+      const context = {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 21, observationRevision: "rev-21", claimOwner: "lease-21" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      }
+      const base = {
+        recordPath: "/events/ouroboros/sanctuary-health/books.json",
+        expectedGeneration: 21,
+        classifiedRevision: "rev-21",
+        classification: "resolved",
+        stewardPolicyKind: "none",
+        decision: "silent",
+        reason: "Fixed and verified.",
+        nextWake: "on_change",
+      }
+
+      // The generation moved on: the receipt is now a different generation than the one classified.
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", source: "sanctuary-health", version: 1481, generation: 22, observationRevision: "rev-21", executionState: "retry_wait", claimOwner: null, disposition: null })
+      expect(() => tool.handler(base, context as any)).toThrow(/generation/u)
+
+      // The revision classified is not the one the turn lease was handed.
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", source: "sanctuary-health", version: 1481, generation: 21, observationRevision: "rev-21", executionState: "retry_wait", claimOwner: null, disposition: null })
+      expect(() => tool.handler({ ...base, classifiedRevision: "rev-other" }, context as any)).toThrow(/revision/u)
+
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "sonarr", source: "sanctuary-health", version: 1481, generation: 21, observationRevision: "rev-21", executionState: "retry_wait", claimOwner: null, disposition: null })
+      expect(() => tool.handler(base, context as any)).toThrow(/event/u)
+
+      mockReadExternalEventRecord.mockReturnValue({ agent: "other-agent", eventId: "books", source: "sanctuary-health", version: 1481, generation: 21, observationRevision: "rev-21", executionState: "retry_wait", claimOwner: null, disposition: null })
+      expect(() => tool.handler(base, context as any)).toThrow(/current agent/u)
+
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+    })
+
+    it("rejects a second disposition on a generation that already carries one", async () => {
+      mockReadExternalEventRecord.mockReturnValue({
+        agent: "ouroboros",
+        eventId: "books",
+        source: "sanctuary-health",
+        version: 1482,
+        generation: 21,
+        observationRevision: "rev-21",
+        executionState: "handled",
+        claimOwner: null,
+        disposition: { decision: "silent", reason: "Already dispositioned." },
+      })
+
+      const tool = findTool("external_event_disposition")
+      expect(() => tool.handler({
+        recordPath: "/events/ouroboros/sanctuary-health/books.json",
+        expectedGeneration: 21,
+        classifiedRevision: "rev-21",
+        classification: "resolved",
+        stewardPolicyKind: "none",
+        decision: "silent",
+        reason: "Fixing it again.",
+        nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 21, observationRevision: "rev-21", claimOwner: "lease-21" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      } as any)).toThrow(/already dispositioned/u)
+
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
     })
 
     it("rejects records outside the current agent's canonical event root", async () => {

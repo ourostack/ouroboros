@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import {
   buildExternalEventMessage,
   claimExternalEvent,
+  commitExternalEventDisposition,
   externalEventRecordPath,
   getExternalEventRoot,
   recordExternalEvent,
@@ -27,6 +28,21 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+function disposition(classifiedRevision: string) {
+  return {
+    classifiedRevision,
+    classification: "expected" as const,
+    stewardPolicy: { kind: "none" as const },
+    decision: "silent" as const,
+    reason: "Expected while the library is sleeping.",
+    nextWake: { kind: "on_change" as const },
+    careId: null,
+    awaitId: null,
+    actionRefs: [],
+    verificationRefs: [],
+  }
+}
 
 describe("external event router", () => {
   it("resolves the daemon external-event root under an injected CLI home", () => {
@@ -243,5 +259,239 @@ describe("external event router", () => {
       error: "must not apply",
     })).toEqual({ settled: false, record: claimed })
     expect(readExternalEventRecord(claimed.recordPath)).toEqual(claimed)
+  })
+
+  it("records a disposition after the lease heartbeat moved the receipt version", () => {
+    const root = tempDir("ouro-external-event-disposition-heartbeat-")
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "betaFeedbackCrashSubmissionCreated",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T04:00:00.000Z" })
+    const owner = `external-event:slugger:app-store-connect:books:generation:${received.generation}:attempt:1`
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner,
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T04:00:01.000Z",
+    })
+    // The turn's own heartbeat advances the receipt version while the turn is still working.
+    const renewed = renewExternalEventClaim(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      now: () => "2026-09-02T04:00:02.000Z",
+    })
+    expect(renewed.version).toBeGreaterThan(claimed.version)
+
+    const handled = commitExternalEventDisposition(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T04:00:03.000Z",
+    })
+
+    expect(handled).toMatchObject({
+      executionState: "handled",
+      claimOwner: null,
+      disposition: { classifiedRevision: "revision-1", classification: "expected" },
+    })
+    expect(readExternalEventRecord(claimed.recordPath)).toEqual(handled)
+  })
+
+  it("records a disposition after the lease was released and the receipt settled to retry_wait", () => {
+    const root = tempDir("ouro-external-event-disposition-released-")
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "betaFeedbackCrashSubmissionCreated",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T05:00:00.000Z" })
+    const owner = `external-event:slugger:app-store-connect:books:generation:${received.generation}:attempt:1`
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner,
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T05:00:01.000Z",
+    })
+    const settled = settleExternalEventFailureIfOwned(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      error: "private turn failed",
+      now: () => "2026-09-02T05:00:02.000Z",
+    })
+    expect(settled.record).toMatchObject({ executionState: "retry_wait", claimOwner: null })
+
+    const handled = commitExternalEventDisposition(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T05:00:03.000Z",
+    })
+
+    expect(handled).toMatchObject({ executionState: "handled", disposition: { classifiedRevision: "revision-1" } })
+  })
+
+  it("accepts the exact claim owner the receipt carries, and refuses any other opaque owner", () => {
+    const root = tempDir("ouro-external-event-disposition-opaque-owner-")
+    const received = recordExternalEvent({
+      agent: "sanctuary",
+      source: "guard",
+      eventType: "health.observed",
+      eventId: "opaque-owner",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T08:00:00.000Z" })
+    // The general API treats the owner as an opaque claim token, not only a canonical lease.
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner: "worker-a",
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T08:00:01.000Z",
+    })
+    expect(claimed.claimOwner).toBe("worker-a")
+
+    // An owner that is not the current claim owner cannot disposition the receipt.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: "worker-b",
+      expectedVersion: claimed.version,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T08:00:02.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // The current claim owner can.
+    const handled = commitExternalEventDisposition(claimed.recordPath, {
+      owner: "worker-a",
+      expectedVersion: claimed.version,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T08:00:03.000Z",
+    })
+    expect(handled).toMatchObject({ executionState: "handled", disposition: { classifiedRevision: "revision-1" } })
+  })
+
+  it("refuses a malformed or foreign lease owner even after the lease was released", () => {
+    const root = tempDir("ouro-external-event-disposition-owner-")
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "betaFeedbackCrashSubmissionCreated",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T07:00:00.000Z" })
+    const owner = `external-event:slugger:app-store-connect:books:generation:${received.generation}:attempt:1`
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner,
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T07:00:01.000Z",
+    })
+    // The lease is released, so the receipt no longer names a claim owner at all. The turn's own
+    // lease is still the only thing that can authorize the disposition.
+    const settled = settleExternalEventFailureIfOwned(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      error: "private turn failed",
+      now: () => "2026-09-02T07:00:02.000Z",
+    })
+    expect(settled.record).toMatchObject({ executionState: "retry_wait", claimOwner: null })
+
+    // A malformed owner is refused rather than silently accepted.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: "external-event:slugger:app-store-connect:books:garbage",
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T07:00:03.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // A lease for a different receipt is refused.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: `external-event:slugger:app-store-connect:other-books:generation:${claimed.generation}:attempt:1`,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T07:00:04.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // A lease for another agent is refused.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: `external-event:other-agent:app-store-connect:books:generation:${claimed.generation}:attempt:1`,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T07:00:05.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // A lease for another generation is refused.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: `external-event:slugger:app-store-connect:books:generation:${claimed.generation + 1}:attempt:1`,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T07:00:06.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // The receipt is untouched by every refused attempt.
+    expect(readExternalEventRecord(claimed.recordPath)).toMatchObject({
+      executionState: "retry_wait",
+      claimOwner: null,
+      disposition: null,
+    })
+
+    // A later attempt of the SAME generation is the same piece of work, so it is accepted.
+    const handled = commitExternalEventDisposition(claimed.recordPath, {
+      owner: `external-event:slugger:app-store-connect:books:generation:${claimed.generation}:attempt:4`,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T07:00:07.000Z",
+    })
+    expect(handled).toMatchObject({ executionState: "handled", disposition: { classifiedRevision: "revision-1" } })
+  })
+
+  it("refuses a disposition for another generation, another lease, or an already-dispositioned receipt", () => {
+    const root = tempDir("ouro-external-event-disposition-refused-")
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "betaFeedbackCrashSubmissionCreated",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T06:00:00.000Z" })
+    const owner = `external-event:slugger:app-store-connect:books:generation:${received.generation}:attempt:1`
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner,
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T06:00:01.000Z",
+    })
+
+    // A different generation of the same receipt is a different piece of work.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation + 1,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T06:00:02.000Z",
+    })).toThrow(/CAS mismatch/u)
+
+    // A lease minted for another generation must not disposition this one.
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner: `external-event:slugger:app-store-connect:books:generation:${claimed.generation + 7}:attempt:1`,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T06:00:03.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // One disposition per generation.
+    commitExternalEventDisposition(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T06:00:04.000Z",
+    })
+    expect(() => commitExternalEventDisposition(claimed.recordPath, {
+      owner,
+      expectedGeneration: claimed.generation,
+      disposition: disposition("revision-1"),
+      now: () => "2026-09-02T06:00:05.000Z",
+    })).toThrow(/already dispositioned/u)
   })
 })
