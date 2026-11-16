@@ -28,8 +28,8 @@ body {
   @apply bg-ouro-void text-ouro-bone antialiased;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
+/* The palette follows the .dark class index.html sets on <html>, so the page is one scheme in every OS setting. */
+:root:not(.dark) {
     --color-ouro-void: #f4f7f2;
     --color-ouro-deep: #ffffff;
     --color-ouro-moss: #c8d9cc;
@@ -40,7 +40,6 @@ body {
     --color-ouro-shadow: #708373;
     --color-ouro-fang: #c44a33;
     --color-ouro-gold: #9a7a2e;
-  }
 }
 
 /* Scrollbar styling for the dark theme */

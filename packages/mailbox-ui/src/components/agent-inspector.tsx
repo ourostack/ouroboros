@@ -99,7 +99,7 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
     <NavigationContext.Provider value={navigate}>
       <div>
         {/* Agent header */}
-        <div className="flex flex-wrap items-start justify-between gap-3 pb-4 border-b border-ouro-moss/30">
+        <div className="flex min-h-[4.5rem] flex-wrap items-start justify-between gap-3 pb-4 border-b border-ouro-moss/30">
           <div className="min-w-0">
             <h1 className="font-display text-2xl italic font-semibold text-ouro-bone sm:text-3xl">
               {agentName}
