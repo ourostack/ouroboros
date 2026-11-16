@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1156",
+      "changes": [
+        "The ouro CLI's help can be read as data: `ouro help --json` lists every command with who sees its effect, and the exit codes. The Ouro AX X-ray checks it in CI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1155",
       "changes": [
         "The container image publish now survives a transient GHCR authorization denial. GHCR sometimes answers a valid token with a bare \"denied: denied\" and accepts the same push moments later; the arm64 push for 0.1.0-alpha.1154 hit it. Login, each architecture's push and the final tagging now get up to three attempts, 10 and 30 seconds apart, and only for that answer; a permission denial or any other failure still fails the first time."

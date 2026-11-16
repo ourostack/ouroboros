@@ -519,8 +519,14 @@ describe("runOuroCli help execution", () => {
   })
 
   it("every declared command is one the usage text lists", () => {
-    const text = usage()
-    for (const command of CLI_COMMANDS) expect(text).toContain(`ouro ${command.name}`)
+    const lines = usage().split("\n")
+    for (const command of CLI_COMMANDS) {
+      const words = command.name.split(" ")
+      const last = words.pop()!
+      const prefix = `  ouro ${[...words, ""].join(" ")}`
+      const line = lines.find((text) => text.startsWith(prefix) && text.slice(prefix.length).split(/[\s[<(]/)[0]!.split("|").includes(last))
+      expect(line, command.name).toBeDefined()
+    }
   })
 
   it("ouro -h outputs grouped help", async () => {
