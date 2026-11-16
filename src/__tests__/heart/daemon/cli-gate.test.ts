@@ -29,6 +29,10 @@ describe("the flag gate in front of the ouro CLI", () => {
     ).toMatchObject({ kind: "pass" })
   })
 
+  it("passes a command with two words, preferring the longer name", () => {
+    expect(gateCommandArgs(["auth", "verify", "--provider", "anthropic"])).toMatchObject({ kind: "pass" })
+  })
+
   it("passes a flag the parser reads even when no usage line lists it for that command", () => {
     expect(gateCommandArgs(["hatch", "--human", "--answers", "answers.json"])).toMatchObject({ kind: "pass" })
   })
