@@ -93,11 +93,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/ghcr-authorization-retry.sh bash -c 'printf "%s" "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
 
       - name: Gate immutable references before build
         id: release-gate
@@ -115,12 +113,15 @@ jobs:
           npm run build
 
       # Pushed by digest, with no tag: the join job below tags both architectures together, so nothing
-      # carries a version or commit tag until both exist.
+      # carries a version or commit tag until both exist. GHCR sometimes denies a valid token with a bare
+      # "denied: denied" that passes a moment later, so the push gets up to three attempts; any other
+      # failure stops at the first.
       - name: Build and push this architecture by digest
         if: steps.release-gate.outputs.publish == 'true'
-        id: build
+        id: build-1
+        continue-on-error: true
         uses: docker/build-push-action@v6
-        with:
+        with: &build-push-inputs
           context: .
           file: deploy/unraid/Dockerfile
           platforms: ${{ matrix.platform }}
@@ -130,11 +131,48 @@ jobs:
           cache-from: type=gha,scope=butler-${{ matrix.arch }}
           cache-to: type=gha,scope=butler-${{ matrix.arch }},mode=max
 
+      - name: Retry only a GHCR authorization denial (attempt 2 of 3)
+        if: steps.release-gate.outputs.publish == 'true' && steps.build-1.outcome == 'failure'
+        id: retry-2
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RETRY_DELAY: 10
+        run: &retry-denied-push |
+          docker buildx history inspect >"$RUNNER_TEMP/failed-build.txt" 2>&1 || true
+          cat "$RUNNER_TEMP/failed-build.txt"
+          if ! scripts/ghcr-authorization-retry.sh --is-denial "$RUNNER_TEMP/failed-build.txt"; then
+            echo "::error::The build failed for a reason other than a GHCR authorization denial; see the step above."
+            exit 1
+          fi
+          sleep "$RETRY_DELAY"
+          scripts/ghcr-authorization-retry.sh bash -c 'printf "%s" "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
+
+      - name: Build and push this architecture by digest (attempt 2 of 3)
+        if: steps.retry-2.outcome == 'success'
+        id: build-2
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with: *build-push-inputs
+
+      - name: Retry only a GHCR authorization denial (attempt 3 of 3)
+        if: steps.build-2.outcome == 'failure'
+        id: retry-3
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RETRY_DELAY: 30
+        run: *retry-denied-push
+
+      - name: Build and push this architecture by digest (attempt 3 of 3)
+        if: steps.retry-3.outcome == 'success'
+        id: build-3
+        uses: docker/build-push-action@v6
+        with: *build-push-inputs
+
       - name: Keep the digest for the join job
         if: steps.release-gate.outputs.publish == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
-          digest="${{ steps.build.outputs.digest }}"
+          digest="${{ steps.build-1.outputs.digest || steps.build-2.outputs.digest || steps.build-3.outputs.digest }}"
           test -n "$digest"
           touch "$RUNNER_TEMP/digests/${digest#sha256:}"
 
@@ -176,11 +214,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/ghcr-authorization-retry.sh bash -c 'printf "%s" "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin'
 
       - name: Gate immutable references before tagging
         id: release-gate
@@ -204,7 +240,7 @@ jobs:
         working-directory: ${{ runner.temp }}/digests
         run: |
           test "$(ls | wc -l)" = 2
-          docker buildx imagetools create -t "$VERSION_IMAGE" -t "$SHA_IMAGE" $(printf "$IMAGE@sha256:%s " *)
+          "$GITHUB_WORKSPACE/scripts/ghcr-authorization-retry.sh" docker buildx imagetools create -t "$VERSION_IMAGE" -t "$SHA_IMAGE" $(printf "$IMAGE@sha256:%s " *)
 
       - name: Verify exact immutable references
         if: steps.release-gate.outputs.publish == 'true'
