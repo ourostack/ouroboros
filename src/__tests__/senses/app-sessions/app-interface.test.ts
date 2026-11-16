@@ -113,6 +113,9 @@ describe("reading", () => {
     expect(() => findSession(rows, 5)).toThrow("name a session")
     expect(() => findSession(rows, "1111")).toThrow("matches 2 sessions")
     expect(() => findSession(rows, "9999")).toThrow("no session '9999'")
+    const withWorkspace = [{ id: WS, workspaceId: "9fe74d72-aaaa" }, { id: CHAT, workspaceId: null }] as never
+    expect(findSession(withWorkspace, "9fe74d72-aaaa").id).toBe(WS)
+    expect(findSession(withWorkspace, "9fe7").id).toBe(WS)
   })
 
   it("counts states and shows what a blocked session waits on, filtered by state", async () => {

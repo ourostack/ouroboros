@@ -1228,7 +1228,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         shepherd: {
           configured: context.facts.shepherd.configured,
           optional: context.facts.shepherd.optional,
-          ...(runtime.get(agent)?.shepherd ?? {}),
+          // A terminal host this machine never had is not a crashed sense, so a skipped start must not read as an error.
+          ...(context.facts.shepherd.optional && !context.facts.shepherd.configured ? {} : runtime.get(agent)?.shepherd ?? {}),
         },
         "app-sessions": {
           configured: context.facts["app-sessions"].configured,
