@@ -6,6 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { plain } from "../shepherd/owner-notice"
 import { archiveRow, deliverMessage, type Asked } from "./app-interface"
 import { eventLogPath, eventLogSize, type AppSessionRow, type AppSessionsOptions } from "./client"
+import { coordinatorOf, handoffSuccessors } from "./coordinator"
 import { appSessionsStateDir, readJson, writeJson, type ArchiveLogEntry } from "./store"
 import type { NotifyOwner } from "./waiting-prompts"
 
@@ -174,8 +175,11 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
   }
   const big = [...listed.values()].filter(row => next[row.id])
   // A coordinator that is itself a giant is only messaged while it runs, since a message would reload it.
-  const reachable = (id: string | null): AppSessionRow | undefined => {
-    const row = id ? listed.get(id) : undefined
+  // The coordinator now, not the one the app recorded: that one may have handed off and been archived.
+  const successors = handoffSuccessors(agentRoot, client)
+  const reachable = (lane: AppSessionRow): AppSessionRow | undefined => {
+    const found = coordinatorOf(lane, rows.filter(row => !row.remote), { client, successorOf: successors })
+    const row = found && "id" in found ? listed.get(found.id) : undefined
     return row && (row.isRunning || !next[row.id]) ? row : undefined
   }
 
@@ -185,7 +189,7 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
     const entry = next[row.id]!
     const due = row.isRunning ? entry.nudgedBytes === undefined || entry.bytes >= entry.nudgedBytes * RENUDGE_GROWTH : !entry.nudgedAt
     if (!due) continue
-    const boss = reachable(row.coordinatingCreatorSessionId)
+    const boss = reachable(row)
     const to = [...(boss && boss.id !== row.id ? [boss.id] : []), ...(row.isRunning ? [row.id] : [])]
     if (!to.length) {
       ownerRows.push(row)
@@ -228,7 +232,7 @@ export async function noticeOversizedSessions(agentRoot: string, rows: AppSessio
     if (!(await archive(row, reason, `${mb(entry.bytes)}; ${where}`).catch(() => false))) continue
     entry.archivedAt = at
     archived += 1
-    const boss = reachable(row.coordinatingCreatorSessionId)
+    const boss = reachable(row)
     if (boss && boss.id !== row.id) await send(boss.id, archivedNote(row.name, row.id, entry.bytes, where)).catch(failed)
     emitNervesEvent({ component: "senses", event: "senses.app_sessions_oversize_archived", message: "archived an idle Copilot app session whose history is over the limit", meta: { session: row.id, bytes: entry.bytes, reason } })
   }

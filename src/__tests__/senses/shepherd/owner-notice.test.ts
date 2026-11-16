@@ -405,6 +405,16 @@ describe("owner notice over Teams", () => {
     expect(botApi).toHaveBeenCalledTimes(2)
   })
 
+  it("holds a notice the owner did not ask for while they are mid-conversation, and sends it when they are not", async () => {
+    const botApi = vi.fn(async (config: TeamsConfig) => ({ id: config.clientId, conversations: {} }))
+    const target: NoticeTarget = { friendId: "f1", name: "Ari", channel: "teams", key: "conv-1", tenantId: "t1" }
+    const talking = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi, holdWhileTalking: () => "recent-message" })
+    expect(await talking(target, "Still broken", ["n1"])).toEqual({ delivered: false, reason: "owner_in_conversation" })
+    expect(mockSend).not.toHaveBeenCalled()
+    const quiet = createNoticeSender(root, { primary: () => bot("p", "t1"), secondary: () => bot("", ""), botApi, holdWhileTalking: true })
+    expect(await quiet(target, "Ready", ["n2"])).toEqual({ delivered: true })
+  })
+
   it("reports a missing Teams bot without trying to send", async () => {
     const send = createNoticeSender(root, { primary: () => bot("", ""), secondary: () => bot("", "") })
     expect(await send({ friendId: "f1", name: "Ari", channel: "teams", key: "k" }, "hi", ["n1"])).toEqual({ delivered: false, reason: "no_teams_bot" })

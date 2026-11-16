@@ -106,6 +106,25 @@ describe("reading", () => {
     expect(listed.items.find(row => row.id === NEW)).toMatchObject({ remote: true })
   })
 
+  it("names who coordinates a session now, even after the coordinator the app recorded handed off and was archived", async () => {
+    const SUCCESSOR_WS = "9fe74d72-2d96-472a-a016-47f5966614a2"
+    sidebar([
+      { id: SUCCESSOR_WS, name: "CIT Pages coordinator", workspaceType: "branch", session: { sessionId: NEW, isRunning: true } },
+      { id: "w1", name: "Customer tracker", workspaceType: "worktree", coordinatingCreatorSessionId: "84b913b0-eff7-44d0-a951-be5f3764b2a9", session: { sessionId: WS } },
+    ], [{ id: CHAT, title: "Orphan", coordinatingCreatorSessionId: "84b913b0-eff7-44d0-a951-be5f3764b2a9" }])
+    writeEvents(WS, [event("assistant.message", { toolRequests: [{ name: "send_session_message", arguments: { session_id: SUCCESSOR_WS, message: "status" } }] })])
+    expect(await getSession(agentRoot, WS, options())).toMatchObject({
+      coordinating_creator_session_id: "84b913b0-eff7-44d0-a951-be5f3764b2a9", coordinator_session_id: NEW, coordinator_name: "CIT Pages coordinator", coordinator_found_by: "reports",
+    })
+    const listed = await listSessionsAndChats(options(), agentRoot) as { items: Frame[] }
+    expect(listed.items.find(row => row.id === CHAT)).toMatchObject({ coordinator_gone: true })
+    expect(listed.items.find(row => row.id === NEW)).not.toHaveProperty("coordinator_session_id")
+    sidebar([{ id: "w1", name: "Lane", coordinatingCreatorSessionId: CHAT, session: { sessionId: WS } }], [{ id: CHAT, title: "Boss" }])
+    const status = await getSessionsStatus(agentRoot, undefined, options()) as { sessions: Frame[] }
+    expect(status.sessions.find(row => row.id === WS)).toMatchObject({ coordinator_session_id: CHAT, coordinator_name: "Boss" })
+    expect(status.sessions.find(row => row.id === WS)).not.toHaveProperty("coordinator_found_by")
+  })
+
   it("finds a session by id or a unique start of it, and says why not", () => {
     const rows = [{ id: WS }, { id: CHAT }, { id: "11111111-zzzz" }] as never
     expect(findSession(rows, WS).id).toBe(WS)

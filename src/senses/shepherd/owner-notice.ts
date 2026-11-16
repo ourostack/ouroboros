@@ -14,6 +14,7 @@ import type { HostSession } from "./host"
 import type { ReturnRecord, ShepherdActionBlockReason } from "./returns"
 import { claimPendingNotices, declareNoticeTargets, enqueueNotice, noticeDeliveryState, readNoticeOutbox, recordNoticeDelivery } from "./notice-outbox"
 import { importOptional } from "../../heart/optional-packages"
+import { ownerConversationHold, type ConversationHold } from "./conversation-hold"
 
 /**
  * The owner notice: after a judged return, the agent's owner hears what happened in one short plain message on their
@@ -287,9 +288,16 @@ export function createNoticeSender(agentRoot: string, deps: {
   /** How the saved message is labelled; a caller other than Shepherd names itself. */
   origin?: OutboundOrigin
   sendBlueBubbles?: (params: ProactiveBlueBubblesSessionSendParams, deps: { createClient: () => BlueBubblesClient; createFriendStore: () => FileFriendStore }) => Promise<ProactiveBlueBubblesSessionSendResult>
+  /**
+   * For a notice the owner did not ask for: while they are mid-conversation (`conversation-hold.ts`) it is not sent and
+   * stays pending (`owner_in_conversation`), so the caller sends it with the next one once the conversation is quiet.
+   */
+  holdWhileTalking?: boolean | ((friendId: string) => ConversationHold)
 } = {}): NoticeSender {
   const bots = new Map<string, Promise<TeamsBotApi>>()
+  const hold = deps.holdWhileTalking === true ? (friendId: string) => ownerConversationHold(agentRoot, friendId, Date.now()) : deps.holdWhileTalking || null
   return async (target, text, noticeIds) => {
+    if (hold?.(target.friendId)) return { delivered: false, reason: "owner_in_conversation" }
     const deliveryId = noticeDeliveryId(target.friendId, noticeIds)
     if (target.channel === "bluebubbles") {
       let client: BlueBubblesClient
@@ -355,7 +363,7 @@ export function createOwnerNotifier(options: OwnerNotifierOptions): OwnerNotifie
   const { agent, policy } = options
   const enabledChannels = options.enabledChannels ?? (() => readEnabledReachChannels(agent, options.agentRoot))
   const resolveTargets = options.resolveTargets ?? (() => resolveNoticeTargets(options.agentRoot, undefined, enabledChannels()))
-  const send = options.send ?? createNoticeSender(options.agentRoot)
+  const send = options.send ?? createNoticeSender(options.agentRoot, { holdWhileTalking: true })
   const retryWrites = new Map<string, ReturnRecord>()
   const recoveredNoticeIds = new Set<string>()
   const writes = new Set<Promise<string>>()

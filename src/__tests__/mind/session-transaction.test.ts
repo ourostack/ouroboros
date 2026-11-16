@@ -1326,3 +1326,19 @@ describe("cross-process session turn transaction contract", () => {
     await lease.release()
   })
 })
+
+describe("sessionTurnInFlight", () => {
+  it("is true only while a live process holds the session's turn, and false with no lock, no lease table or a dead holder", async () => {
+    const { acquireSessionTurnLease, sessionTurnInFlight } = await subject()
+    const sessionPath = makeSession()
+    expect(sessionTurnInFlight(sessionPath)).toBe(false)
+    const lease = await acquireSessionTurnLease(sessionPath, { ownerId: "turn", timeoutMs: 20, pollIntervalMs: 1 })
+    expect(sessionTurnInFlight(sessionPath)).toBe(true)
+    expect(sessionTurnInFlight(sessionPath, () => false)).toBe(false)
+    await lease.release()
+    expect(sessionTurnInFlight(sessionPath)).toBe(false)
+    const bare = makeSession()
+    fs.writeFileSync(`${bare}.turn.lock`, "")
+    expect(sessionTurnInFlight(bare)).toBe(false)
+  })
+})

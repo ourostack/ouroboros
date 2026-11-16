@@ -510,6 +510,26 @@ export function withImmediateSessionTurnLease<T>(
   }
 }
 
+/**
+ * Whether a turn is running in this session right now, in any process: its lease row is held by a live process. Read
+ * only, so a caller outside the turn (a proactive notice) can wait for the answer instead of talking over it.
+ */
+export function sessionTurnInFlight(sessionPath: string, isProcessAlive: (pid: number) => boolean = processAlive): boolean {
+  const lockPath = `${canonicalSessionPath(sessionPath)}.turn.lock`
+  if (!fs.existsSync(lockPath)) return false
+  let database: Database.Database | null = null
+  try {
+    database = openDatabase(lockPath, { readonly: true, fileMustExist: true })
+    const row = database.prepare("SELECT pid FROM session_turn_lease WHERE singleton = 1").get() as { pid: unknown } | undefined
+    return typeof row?.pid === "number" && isProcessAlive(row.pid)
+  } catch {
+    // No lease table yet, or the file is busy being created: nobody holds a turn we can see.
+    return false
+  } finally {
+    database?.close()
+  }
+}
+
 export function currentSessionTurnLease(sessionPath: string): SessionTurnLease | null {
   const lease = leaseContext.getStore()
   return lease && lease.sessionPath === canonicalSessionPath(sessionPath) ? lease : null

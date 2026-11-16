@@ -2,6 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { plain } from "../shepherd/owner-notice"
 import { archiveRow, deliverMessage, type Asked } from "./app-interface"
 import type { AppSessionRow, AppSessionsOptions } from "./client"
+import { coordinatorOf } from "./coordinator"
 import { refreshSuccessions, successorOf } from "./handoff"
 import { whereItLeftOff } from "./size-watch"
 import type { ArchiveLogEntry } from "./store"
@@ -33,7 +34,7 @@ export interface RetireDeps {
 
 const quietSince = (row: AppSessionRow): number => Math.max(Date.parse(row.lastActivity ?? "") || 0, Date.parse(row.updatedAt ?? "") || 0)
 const settled = (row: AppSessionRow): boolean => !row.isRunning && row.state === "idle" && !row.awaiting && !row.remote
-const coordinatorOf = (row: AppSessionRow): string | null => row.coordinatingCreatorSessionId ?? row.parentSessionId
+const recordedCoordinator = (row: AppSessionRow): string | null => row.coordinatingCreatorSessionId ?? row.parentSessionId
 const short = (id: string): string => id.slice(0, 8)
 
 export function childrenNote(predecessor: AppSessionRow, children: AppSessionRow[]): string {
@@ -47,7 +48,7 @@ export async function retireSessions(agentRoot: string, rows: AppSessionRow[], d
   const archive = deps.archive ?? (async (row: AppSessionRow, reason: ArchiveLogEntry["reason"], note: string) => (await archiveRow(agentRoot, row, reason, deps.client, { note, keepWorktree: true })).ok === true)
   const successions = refreshSuccessions(agentRoot, deps.client, deps.now)
   const listed = new Map(rows.map(row => [row.id, row]))
-  const childrenOf = (id: string): AppSessionRow[] => rows.filter(row => coordinatorOf(row) === id)
+  const childrenOf = (id: string): AppSessionRow[] => rows.filter(row => recordedCoordinator(row) === id)
   const busyChildren = (id: string, except: string | null): AppSessionRow[] => childrenOf(id).filter(child => child.id !== except && !(settled(child) || (child.remote && !child.isRunning)))
   const archived: string[] = []
 
@@ -74,8 +75,11 @@ export async function retireSessions(agentRoot: string, rows: AppSessionRow[], d
 
   for (const row of rows) {
     if (archived.includes(row.id) || !settled(row) || row.openPullRequest || row.automation) continue
-    const coordinator = coordinatorOf(row)
+    const coordinator = recordedCoordinator(row)
     if (!coordinator || (listed.has(coordinator) && !archived.includes(coordinator))) continue
+    // The recorded coordinator may have handed off: a lane that a live successor or the session it reports to still coordinates is not finished.
+    const live = coordinatorOf(row, rows, { client: deps.client, successorOf: id => successorOf(id, successions) })
+    if (live && "id" in live && !archived.includes(live.id)) continue
     if (deps.now - quietSince(row) < FINISHED_IDLE_MS || busyChildren(row.id, null).length) continue
     const note = `${row.detail || "idle"}; ${whereItLeftOff(row, deps.client)}`
     if (!(await archive(row, "finished", note).catch(() => false))) continue

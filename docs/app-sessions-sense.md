@@ -48,6 +48,13 @@ question was asked while the sense was down reports it in `get_session` but cann
 stopped mid-turn, or between turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`,
 plan approval or permission request is open.
 
+**Coordinator.** The app records a session's coordinator once and never lets another session take the field over, so after a coordinator
+hands off to a successor and is archived, `coordinating_creator_session_id` still names the archived one. `list_sessions_and_chats`,
+`get_session` and `get_sessions_status` add who coordinates it now (`coordinator_session_id`, `coordinator_name`): the recorded one while it is
+listed, else its listed successor, else the listed session the lane last sent a `send_session_message` to (`coordinator_found_by`). Only
+`coordinator_gone: true` means it has none (`coordinator.ts`, using `successorOf` from `handoff.ts`). The size watch asks that
+coordinator, not the recorded one, and a lane it still finds is never retired as finished.
+
 **History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
 the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
 snapshots do not consume the requested count. Messages over 4,000 characters carry `truncated: true`; malformed or
@@ -196,11 +203,21 @@ A source that cannot be read is named in the digest (`Not read: …`), never gue
 with **no model turn**: zero tokens, and the reply says how old the digest is when it is more than 15 minutes. It answers family only. Any other
 phrasing goes to the agent, which has `app_sessions_digest` and answers from it in a few lines.
 
-**Pushes.** Nothing is sent on a timer. The sense tells the owner, in one Teams message, only: work **ready for them** (a card that moved to
-`collaborating`), work that is **done**, a session **waiting on an answer** for 10 minutes, and something that **stays broken**: a session stuck 20
-minutes, the Mac watcher's heartbeat bad or stale for 10, a session failing the health watch, a drain not polling for 5, the app not running.
-A condition must last before it counts, is told once until it clears, and one message carries everything due, at most one per half hour. A restart
-never announces work that was already ready or done. Permission prompts and repository-trust cards keep their own notice (see Perception).
+**Pushes.** Nothing is sent on a timer, and only what only the owner can act on is pushed: work **ready for them** (a card that moved to
+`collaborating`) and a session **waiting on their answer** for 10 minutes. Finished work and broken things go in the digest, not in a push. A
+condition must last before it counts, is told once until it clears, is checked live again just before sending (`stillDue`), and one message
+carries everything due, at most one per half hour, each item a whole sentence with the link that opens the session (names are never cut short).
+A restart never announces work that was already ready. Permission prompts and repository-trust cards keep their own notice (see Perception).
+
+**Fixing instead of asking.** A session whose loop stopped (not running, its last turn called tools and no next turn started) is resumed by the
+sense itself with one message to carry on, once per stop and at most three times a day; one asleep for over a day, on the never-resume list
+or remote is left alone (`stuck-resume.ts`). The digest shows each resume under **Fixed by me**; a session that stops again after its last
+resume stays under **Broken**. The machine, the drains and the health watch have owners of their own and are not pushed.
+
+**Never over a conversation.** Every notice the owner did not ask for (these pushes, the waiting-prompt notice, Shepherd's owner notices) is
+held while the owner is mid-conversation with the agent on any channel: a turn is running in one of their sessions, they or the agent wrote in
+the last 10 minutes, or something they wrote has had no answer for up to half an hour (`conversation-hold.ts`). A held notice stays pending and
+goes with the next one once the conversation is quiet, so an answer is never preceded by a queued alert.
 
 **Cost.** The digest is a few hundred tokens of text (`tokens` in `digest.json`, a fourth of its characters); the `/status` answer costs no model
 tokens, and a model-written answer costs the digest plus a few lines. Each build and push is a nerves event carrying its size.

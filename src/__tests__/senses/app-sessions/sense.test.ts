@@ -425,6 +425,40 @@ describe("the sense", () => {
     expect(await checkDigest("slugger", agentRoot, deps)).toBe(DIGEST_IDLE_MS)
   })
 
+  it("replays 07:49 PT: resumes the stopped lane itself instead of telling the owner, and pushes only an answer they owe, checked live", async () => {
+    makeDb()
+    const TRACKER = "ad8f4be3-3a5a-4bc7-bb55-7821d8b5934c"
+    const ASKS = "22222222-aaaa-bbbb-cccc-000000000002"
+    const write = (id: string, events: unknown[]) => {
+      fs.mkdirSync(path.join(stateDir, "session-state", id), { recursive: true })
+      fs.writeFileSync(path.join(stateDir, "session-state", id, "events.jsonl"), events.map(event => JSON.stringify(event)).join("\n") + "\n")
+    }
+    const at = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString()
+    write(TRACKER, [{ type: "assistant.message", timestamp: at(30), data: { content: "", toolRequests: [{ name: "bash" }] } }, { type: "assistant.turn_end", timestamp: at(30) }])
+    write(ASKS, [{ type: "tool.execution_start", timestamp: at(1), data: { toolCallId: "t1", toolName: "ask_user" } }])
+    sidebar = [{ id: TRACKER, title: "Ouro migration: customer tracker" }, { id: ASKS, title: "Ask lane" }]
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
+      version: 2, enabled: true,
+      humanFacing: { provider: "anthropic", model: "test" }, agentFacing: { provider: "anthropic", model: "test" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      senses: { "app-sessions": { enabled: true, digest: { deskRoots: ["~/desk"] } } },
+    }))
+    const notify = vi.fn(async (_text: string, _keys: string[]) => "sent" as const)
+    const resume = vi.fn(async (_id: string, _text: string) => ({ ok: true, frame: null, error: null }))
+    const deps = (now: number) => ({ client: { stateDir, housesitterPaths: ["/nonexistent/housesitter"], homeDir: agentRoot }, run: vi.fn(), notify, now, home: agentRoot, resume })
+    await checkDigest("slugger", agentRoot, deps(NOW))
+    expect(resume).toHaveBeenCalledWith(TRACKER, expect.stringContaining("Carry on where you left off"))
+    expect(notify).not.toHaveBeenCalled()
+    const digest = fs.readFileSync(path.join(appSessionsStateDir(agentRoot), "digest.json"), "utf-8")
+    expect(JSON.parse(digest).fixed).toEqual([expect.objectContaining({ session: TRACKER, what: "resumed it: its loop had stopped" })])
+    await checkDigest("slugger", agentRoot, deps(NOW + 11 * 60_000))
+    expect(resume).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledTimes(1)
+    const [text] = notify.mock.calls[0]!
+    expect(text).toBe(`Waiting on you:\n- "Ask lane" is waiting for your answer. ghapp://sessions/${ASKS}`)
+    expect(text).not.toMatch(/Still broken|stuck|…/)
+  })
+
   it("does not reschedule a watch pass that finishes after the stop, and survives a failing pass", async () => {
     const scheduler = manualScheduler()
     fs.mkdirSync(path.join(appSessionsStateDir(agentRoot), "watch.json"), { recursive: true })
