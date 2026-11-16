@@ -31,6 +31,8 @@ export interface ReleaseSourceDeps {
   github?: GithubReleaseSource
   /** Ask and install from GitHub only (the package end-to-end test). */
   githubOnly?: boolean
+  /** Per-source lookup time limit; defaults to 15 s. `ouro up` passes a short one. */
+  lookupTimeoutMs?: number
 }
 
 /**
@@ -66,14 +68,14 @@ function message(error: unknown): string {
 }
 
 async function askNpmjs(deps: ReleaseSourceDeps): Promise<SourceAnswer> {
-  const body = await deps.fetchJson(`${NPMJS_REGISTRY}${CLI_PACKAGE.replace("/", "%2f")}`, LOOKUP_TIMEOUT_MS) as { "dist-tags"?: Record<string, unknown> }
+  const body = await deps.fetchJson(`${NPMJS_REGISTRY}${CLI_PACKAGE.replace("/", "%2f")}`, deps.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS) as { "dist-tags"?: Record<string, unknown> }
   const version = body?.["dist-tags"]?.latest
   if (typeof version !== "string") throw new Error("registry response has no latest dist-tag")
   return { source: "npmjs", version }
 }
 
 async function askConfiguredRegistry(deps: ReleaseSourceDeps): Promise<SourceAnswer> {
-  const stdout = await deps.execFile("npm", ["view", CLI_PACKAGE, "dist-tags.latest", "--json"], { timeoutMs: LOOKUP_TIMEOUT_MS })
+  const stdout = await deps.execFile("npm", ["view", CLI_PACKAGE, "dist-tags.latest", "--json"], { timeoutMs: deps.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS })
   const version = JSON.parse(stdout.trim()) as unknown
   if (typeof version !== "string") throw new Error("npm view returned no latest dist-tag")
   return { source: "npm-registry", version }
@@ -88,7 +90,7 @@ interface GithubRelease {
 
 async function askGithub(deps: ReleaseSourceDeps): Promise<SourceAnswer> {
   const github = deps.github ?? { apiUrl: GITHUB_RELEASES_API, downloadBase: GITHUB_DOWNLOAD_BASE }
-  const releases = await deps.fetchJson(github.apiUrl, LOOKUP_TIMEOUT_MS)
+  const releases = await deps.fetchJson(github.apiUrl, deps.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS)
   if (!Array.isArray(releases)) throw new Error("GitHub releases response is not a list")
   let best: SourceAnswer | null = null
   for (const release of releases as GithubRelease[]) {
@@ -109,6 +111,18 @@ async function askGithub(deps: ReleaseSourceDeps): Promise<SourceAnswer> {
   }
   if (!best) throw new Error(`no GitHub release published by ${GITHUB_RELEASE_PUBLISHER} carries an npm tarball`)
   return best
+}
+
+/**
+ * The update check reads a registry-shaped document. When no source answered,
+ * say so in words the `ouro up` phase summary maps to "registry unavailable".
+ */
+export function lookupAsRegistryJson(lookup: ReleaseLookup): { "dist-tags": { latest: string } } {
+  if (!lookup.latestVersion) {
+    const detail = lookup.answers.map((answer) => `${answer.source}: ${answer.error}`).join("; ")
+    throw new Error(`registry unavailable (${detail})`)
+  }
+  return { "dist-tags": { latest: lookup.latestVersion } }
 }
 
 export async function lookupLatestRelease(deps: ReleaseSourceDeps): Promise<ReleaseLookup> {

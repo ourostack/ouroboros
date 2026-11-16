@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1147",
+      "changes": [
+        "`ouro up` and `ouro up --latest` now find and install a new release from the GitHub release when npm is blocked on your network or its feed lags behind, instead of skipping the update with \"registry unavailable\". They ask npmjs, your configured npm feed and GitHub, and install from whichever serves the newest version, and say which sources failed when none answers."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1146",
       "changes": [
         "The app-sessions tools are now the GitHub Copilot app's own client tools (list_sessions_and_chats, get_sessions_status, get_session, send_session_message, create_session, answer_session_input, respond_to_session_plan_v2, archive_session, navigate_to, save_session_automation, get_session_automation, list_workflows, run_workflow), sent over the app's local WebSocket as the app's sessions do, so Ouroboros coordinates sessions the way a coordinating session does. The shepherd's Copilot-app host, the app's database and repository-trust reads, and the old app_sessions_list/send/new/resume/archive/watch tools are gone."
