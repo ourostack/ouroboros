@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1159",
+  "version": "0.1.0-alpha.1160",
   "engines": {
     "node": ">=22"
   },
@@ -33,7 +33,7 @@
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "voice:eval": "npm run build && node dist/senses/voice-realtime-eval-entry.js",
     "shepherd:judge-eval": "npm run build && node dist/senses/shepherd/judge-evaluation-entry.js",
-    "worktree:bootstrap": "npm install --ignore-scripts",
+    "worktree:bootstrap": "node scripts/worktree-bootstrap.cjs",
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",

@@ -7,7 +7,7 @@ describe("worktree bootstrap contract", () => {
     const packageJsonPath = path.resolve(process.cwd(), "package.json")
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"))
 
-    expect(packageJson.scripts["worktree:bootstrap"]).toBe("npm install --ignore-scripts")
+    expect(packageJson.scripts["worktree:bootstrap"]).toBe("node scripts/worktree-bootstrap.cjs")
   })
 
   it("rejects new npm exec installs by default", () => {
