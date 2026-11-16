@@ -105,8 +105,8 @@ export const respondToSessionPlanTool = define(
 )
 
 export const archiveSessionTool = define(
-  "archive_session", "Archive a session you created with create_session (a project session's worktree goes with it).", { session_id: session }, ["session_id"],
-  write("archives a session in the owner's Copilot app"), (args, agentRoot) => archiveSession(agentRoot, args.session_id, clientOptions), ["session_id"],
+  "archive_session", "Archive a session you created with create_session (a project session's worktree goes with it). A session you did not create is archived only when the owner asked for that session in this conversation (owner_asked: true) or when it is over the size limit and a newer session names it as handed off. Archiving can be undone, and each such archive is logged and shown in the next digest.", { session_id: session, owner_asked: { type: "boolean", description: "True only when the owner asked in this conversation for this session to be archived." } }, ["session_id"],
+  write("archives a session in the owner's Copilot app"), (args, agentRoot) => archiveSession(agentRoot, args.session_id, clientOptions, args.owner_asked === true), ["session_id"],
 )
 
 export const navigateToTool = define("navigate_to", "Show a session in the app's window, as following its app_url does.", { id: session }, ["id"], write("changes what the owner's Copilot app shows"), args => navigateTo(args.id, clientOptions), ["id"])

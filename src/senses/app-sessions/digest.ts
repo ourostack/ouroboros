@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { AppSessionRow, AppSessionsOptions } from "./client"
 import { FIRST_SCAN_BYTES, readCard, scanFocus, type CardFacts, type FocusEntry } from "./digest-cards"
 import { isFolder, mergedCacheFile, readDrains, readMachine, readMergedToday, sourceFailed, type DrainFacts, type MachineFacts, type MergedFacts } from "./digest-sources"
-import { appSessionsStateDir, readJson, writeJson, type WaitingPrompt } from "./store"
+import { appSessionsStateDir, readArchiveLog, readJson, writeJson, type WaitingPrompt } from "./store"
 import type { RunCommand } from "./wake-runner"
 
 /**
@@ -52,6 +52,8 @@ export interface Digest {
   machine: MachineFacts | null
   drains: DrainFacts | null
   merged: MergedFacts[]
+  /** Sessions archived in the last day that this agent did not create. */
+  archived?: Array<{ name: string; reason: string }>
   /** Sources that could not be read, one line each. */
   unread: string[]
   /** Estimated tokens in the Teams text (a fourth of its characters). */
@@ -176,6 +178,9 @@ export async function buildDigest(input: DigestInput): Promise<Digest> {
     if (facts.error) unread.push(sourceFailed(`merged today (${account.label})`, facts.error))
     merged.push(facts)
   }
+  const recentArchives = readArchiveLog(input.agentRoot)
+    .filter(entry => input.now - Date.parse(entry.at) < CARD_WINDOW_MS)
+    .map(entry => ({ name: cut(entry.name, NAME_MAX), reason: entry.reason === "owner-asked" ? "you asked" : "handed off to a successor" }))
   const digest: Digest = {
     at: new Date(input.now).toISOString(),
     appRunning: input.appRunning,
@@ -185,6 +190,7 @@ export async function buildDigest(input: DigestInput): Promise<Digest> {
     machine: machine.installed || machine.error ? machine : null,
     drains,
     merged,
+    ...(recentArchives.length ? { archived: recentArchives } : {}),
     unread,
     tokens: 0,
   }
@@ -242,6 +248,7 @@ export function renderDigest(digest: Digest, now: number, plain = false): string
     const prs = digest.merged.flatMap(account => account.prs).slice(0, 4).map(pr => `- ${pr.repo}#${pr.number} ${cut(pr.title, 70)}`)
     blocks.push([`**Merged today** ${total}${digest.merged.length > 1 ? ` (${digest.merged.map(account => `${account.label} ${account.count}`).join(", ")})` : ""}`, ...prs].join("\n"))
   }
+  if (digest.archived?.length) blocks.push(["**Archived** (reversible)", ...digest.archived.map(item => `- ${item.name} — ${item.reason}`)].join("\n"))
   if (digest.unread.length) blocks.push(`Not read: ${digest.unread.join("; ")}`)
   const text = blocks.join("\n\n")
   return plain ? text.replace(/\*\*/g, "") : text

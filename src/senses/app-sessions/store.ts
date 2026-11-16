@@ -172,3 +172,15 @@ export function appSessionsSenseStatus(enabled: boolean, agentRoot: string, now:
   if (!enabled) return "disabled"
   return `ready (${snapshotSummary(readSnapshot(agentRoot), now)}; app_sessions_* tools read and write them)`
 }
+
+export interface ArchiveLogEntry { id: string; name: string; at: string; reason: "handed-off" | "owner-asked" }
+const archiveLogFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "archive-log.json")
+
+export function readArchiveLog(agentRoot: string): ArchiveLogEntry[] {
+  return readJson<ArchiveLogEntry[]>(archiveLogFile(agentRoot), [])
+}
+
+/** Sessions archived that this agent did not create; the digest shows the recent ones. */
+export function addArchiveLog(agentRoot: string, entry: ArchiveLogEntry): void {
+  writeJson(archiveLogFile(agentRoot), [...readArchiveLog(agentRoot), entry].slice(-50))
+}
