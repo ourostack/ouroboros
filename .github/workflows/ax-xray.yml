@@ -61,6 +61,7 @@ jobs:
             --home "$RUNNER_TEMP/xray-home" \
             --env "TOOL_URL=http://127.0.0.1:$MOCK_PORT/" \
             --mock "http://127.0.0.1:$MOCK_PORT/ mock=ouroboros-ax-xray" \
+            --state "session list --json" \
             --commit "$GITHUB_SHA" \
             --json --md xray/xray.md > xray/report.json
           code=$?
