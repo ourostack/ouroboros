@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Badge } from "../catalyst/badge"
+import { Badge } from "./status-badge"
 import { buildHash, NavigationContext, type NavigateTarget, type RouteState, type TabId } from "../navigation"
 import { useKeyboardShortcuts } from "../hooks/use-keyboard"
 import { OverviewTab } from "./tabs/overview"

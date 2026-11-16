@@ -1,0 +1,44 @@
+name: mailbox-ui-check
+
+# Ouro check on the Mailbox web app's build: the layout, text, contrast, motion and theme checks Ouro UI
+# publishes, at the sizes the check runs at. The app's own tests run in static-checks (coverage.yml).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ouro-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/mailbox-ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/mailbox-ui/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build
+        run: npx vite build
+
+      - name: Ouro check
+        run: node lib/ouro/check/check.ts dist

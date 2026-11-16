@@ -1,11 +1,15 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
+import { fileURLToPath } from "node:url"
 
 const API_PORT = 6877
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
   server: {
     port: 6876,
     strictPort: true,

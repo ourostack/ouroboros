@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Badge } from "../../catalyst/badge"
+import { Badge } from "../status-badge"
 import { fetchJson, relTime } from "../../api"
 import type { MailboxNoteDecisionView, MailboxNotesView } from "../../contracts"
 
