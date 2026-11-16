@@ -1,5 +1,7 @@
 # App-sessions Sense
 
+> **Moving to [Shepherd](https://github.com/ourostack/shepherd).** The app's sessions are Shepherd's job, and this sense's duties move there one by one; Housesitter keeps the Mac and the app as a process. Add new app-session plumbing to Shepherd, not here.
+
 The app-sessions sense lets an agent read and write the GitHub Copilot app's sessions on the machine it runs on: the
 same sidebar the person sees. It is machine-scoped: every machine whose agent turns it on sees that machine's app, and
 nothing else.
