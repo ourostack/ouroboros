@@ -7914,6 +7914,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     deps.writeStdout(gate.text)
     return gate.text
   }
+  args = gate.args
 
   let parsedCommand: OuroCliCommand
   try {

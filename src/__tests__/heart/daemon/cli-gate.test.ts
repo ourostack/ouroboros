@@ -2,15 +2,14 @@ import { describe, expect, it } from "vitest"
 import { gateCommandArgs } from "../../../heart/daemon/cli-gate"
 
 describe("the flag gate in front of the ouro CLI", () => {
-  it("lets a command line the gate does not know pass to the dispatcher", () => {
-    expect(gateCommandArgs([])).toEqual({ kind: "pass" })
-    expect(gateCommandArgs(["no-such-command", "--anything"])).toEqual({ kind: "pass" })
+  it("lets a command line the gate does not know pass to the dispatcher, unchanged", () => {
+    expect(gateCommandArgs([])).toEqual({ kind: "pass", args: [] })
+    expect(gateCommandArgs(["no-such-command", "--anything"])).toEqual({ kind: "pass", args: ["no-such-command", "--anything"] })
   })
 
   it("refuses an unknown flag, naming the nearest real one", () => {
     const result = gateCommandArgs(["check", "--lan", "inner"])
-    expect(result).toMatchObject({ kind: "refuse" })
-    expect(result.kind === "refuse" && result.message).toContain("Unknown flag --lan for \"ouro check\". Fix: use --lane.")
+    expect(result.kind === "refuse" && result.message).toContain('Unknown flag --lan for "ouro check". Fix: use --lane.')
   })
 
   it("refuses an unknown flag with no near match, pointing at help", () => {
@@ -19,24 +18,20 @@ describe("the flag gate in front of the ouro CLI", () => {
   })
 
   it("passes flags the usage lists, including those on a second usage line", () => {
-    expect(gateCommandArgs(["check", "--lane", "inner"])).toEqual({ kind: "pass" })
+    expect(gateCommandArgs(["check", "--lane", "inner"])).toMatchObject({ kind: "pass" })
     expect(
       gateCommandArgs(["auth", "--agent", "inbox-agent", "--provider", "anthropic", "--api-key-file", "key.txt"]),
-    ).toEqual({ kind: "pass" })
+    ).toMatchObject({ kind: "pass" })
   })
 
-  it("refuses --dry-run on a command only the person sees", () => {
-    const result = gateCommandArgs(["check", "--lane", "inner", "--dry-run"])
-    expect(result.kind === "refuse" && result.message).toContain("Unknown flag --dry-run")
+  it("passes a flag the parser reads even when no usage line lists it for that command", () => {
+    expect(gateCommandArgs(["hatch", "--human", "--answers", "answers.json"])).toMatchObject({ kind: "pass" })
   })
 
-  it("requires --why on a command other people see", () => {
-    const result = gateCommandArgs(["msg", "--to", "inbox-agent", "hello"])
-    expect(result.kind === "refuse" && result.message).toContain("needs --why")
-  })
-
-  it("passes a command other people see once it has --why", () => {
-    expect(gateCommandArgs(["msg", "--to", "inbox-agent", "hello", "--why", "they asked"])).toEqual({ kind: "pass" })
+  it("requires --why on a command other people see, and removes it before the dispatcher reads the words", () => {
+    expect(gateCommandArgs(["msg", "--to", "inbox-agent", "hello"])).toMatchObject({ kind: "refuse" })
+    const result = gateCommandArgs(["msg", "--to", "inbox-agent", "hello", "--why", "they asked"])
+    expect(result).toEqual({ kind: "pass", args: ["msg", "--to", "inbox-agent", "hello"] })
   })
 
   it("previews a command other people see with --dry-run, and says nothing was sent", () => {
@@ -51,7 +46,7 @@ describe("the flag gate in front of the ouro CLI", () => {
   })
 
   it("skips the value of a flag that takes one when it counts words", () => {
-    expect(gateCommandArgs(["dns", "apply", "--binding", "dns.json", "--why", "they asked"])).toEqual({ kind: "pass" })
+    expect(gateCommandArgs(["dns", "apply", "--binding", "dns.json", "--why", "they asked"])).toMatchObject({ kind: "pass" })
   })
 
   it("refuses extra words after a command other people see whose usage takes none", () => {

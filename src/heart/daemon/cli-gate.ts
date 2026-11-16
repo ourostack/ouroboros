@@ -9,7 +9,34 @@ import { CLI_COMMANDS, type CliCommandDeclaration } from "./cli-manifest"
 const GLOBAL_FLAGS = ["--json", "--help", "--why", "--why-file", "--agent"];
 const GLOBAL_VALUE_FLAGS = ["--why", "--why-file", "--agent"];
 
-export type GateResult = { kind: "pass" } | { kind: "refuse"; message: string } | { kind: "preview"; text: string };
+// Every flag the CLI's parser and dispatcher read: the literals in cli-parse.ts, cli-exec.ts, cli-help.ts and
+// cli-defaults.ts. cli-gate-flags.test.ts fails when a literal is added or removed, so the gate never refuses a flag
+// the CLI reads.
+export const PARSER_FLAGS: readonly string[] = [
+  "--account", "--action", "--admission", "--agent", "--alert-file", "--allow-send", "--answers", "--api-key",
+  "--api-key-file", "--apply", "--args", "--await", "--backup", "--base-url", "--binding", "--cadence", "--card-url",
+  "--category", "--channel", "--clone", "--clone-path", "--component", "--context", "--cooldown-minutes",
+  "--credential-item", "--delegated", "--deployment", "--did", "--discover", "--dry-run", "--email", "--endpoint",
+  "--event", "--event-type", "--evidence", "--exit-code", "--expires", "--external-id", "--facing", "--file",
+  "--fixture", "--follow", "--force", "--foreground", "--format", "--friend", "--friend-id", "--from", "--full",
+  "--generate-unlock-secret", "--github-token", "--habit", "--help", "--home", "--host", "--host-stall-observed",
+  "--human", "--id", "--identity-file", "--idle-silence-ms", "--ids", "--init", "--initiative", "--input-file", "--into",
+  "--item", "--json", "--keep-versions", "--key", "--keys-dir", "--lane", "--last", "--latest", "--legacy",
+  "--legacy-root", "--level", "--limit", "--manifest", "--max-duration-ms", "--max-old-space-size", "--message-guid",
+  "--migration-path", "--min-mem-available-mb", "--mode", "--model", "--name", "--native", "--no-chat",
+  "--no-delegated-source", "--no-repair", "--no-send", "--no-wake", "--note", "--notify-session", "--oauth-token",
+  "--observe-only", "--occasion", "--oom-score-adj", "--operation-id", "--output", "--output-file", "--owner-alone",
+  "--owner-email", "--owner-name", "--participants", "--path", "--payload", "--persist", "--port", "--prefix", "--print",
+  "--priority", "--process", "--profile", "--provider", "--public-field", "--public-url", "--question", "--reason",
+  "--replay-output", "--repo-path", "--report", "--report-title", "--request-id", "--require-sense", "--reserve-mb",
+  "--role", "--root", "--rotate-missing-mail-keys", "--run-id", "--scope", "--secret-field", "--secret-file", "--server",
+  "--session", "--setup-token", "--silent-consent", "--since", "--socket", "--source", "--state", "--store", "--strict",
+  "--summary", "--surface", "--switch", "--task", "--template", "--text", "--title", "--to", "--tool", "--trigger",
+  "--trust", "--ttl-minutes", "--type", "--uid", "--unattended", "--upstream", "--username", "--value", "--value-file",
+  "--verify", "--version", "--web", "--which", "--workbench-mcp", "--yes",
+];
+
+export type GateResult = { kind: "pass"; args: string[] } | { kind: "refuse"; message: string } | { kind: "preview"; text: string };
 
 interface CommandShape {
   declaration: CliCommandDeclaration;
@@ -86,14 +113,14 @@ function refuse(name: string, message: string): GateResult {
   return { kind: "refuse", message };
 }
 
-/** Checks a command line against its declaration before the legacy dispatcher sees it. */
+/** Checks a command line against its declaration; a pass returns the words the legacy dispatcher should read. */
 export function gateCommandArgs(args: string[]): GateResult {
   const shape = matchCommand(args);
-  if (!shape) return { kind: "pass" };
+  if (!shape) return { kind: "pass", args };
   const { declaration, words, flags } = shape;
   const name = declaration.name;
   const others = declaration.effect === "others";
-  const known = [...GLOBAL_FLAGS, ...(others ? ["--dry-run"] : []), ...flags.keys()];
+  const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
   const rest = args.slice(words.length);
 
   for (let index = 0; index < rest.length; index++) {
@@ -139,5 +166,17 @@ export function gateCommandArgs(args: string[]): GateResult {
     }
   }
 
-  return { kind: "pass" };
+  return { kind: "pass", args: withoutWhy(args) };
+}
+
+function withoutWhy(args: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--why" || args[index] === "--why-file") {
+      index++;
+      continue;
+    }
+    out.push(args[index]!);
+  }
+  return out;
 }
