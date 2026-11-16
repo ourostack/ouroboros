@@ -21,7 +21,7 @@ npx ouro.bot@latest up   # install the ouro command and start the daemon
 
 - **You talk to it where you already are:** the terminal, Teams, iMessage, mail or a voice call.
 - **It remembers.** Notes, people and promises live in the agent's own bundle and vault, so tomorrow it knows what you agreed today.
-- **It does the work.** Real tools: files, shell, GitHub, Microsoft Graph, and coding agents it can hand work to. [Shepherd](https://ouroboros.bot/#shepherd) keeps those coding agents moving, and [Butler](https://ouroboros.bot/butler/) looks after a home server.
+- **It does the work.** Real tools: files, shell, GitHub, Microsoft Graph, and coding agents it can hand work to. [Shepherd](https://ouroboros.bot/shepherd/) keeps the flock (the coding agents in your terminals, and the GitHub Copilot app's sessions), [Housesitter](https://ouroboros.bot/housesitter/) keeps the house (the Mac they live on), and [Butler](https://ouroboros.bot/butler/) looks after a home server.
 - **Its errors go back to it, not to you.** If the model provider turns a request down or a tool call comes back broken, the agent hears what went wrong, fixes it and replies in the same turn. Only what needs a person, such as a sign-in, a usage limit or an outage, comes to you.
 
 `ouro.bot` is the bootstrap wrapper: `npx ouro.bot@latest` installs `@ouro.bot/cli`, which gives you the `ouro` command.

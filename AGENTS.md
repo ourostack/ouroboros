@@ -9,6 +9,10 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 
 **[Interfaces follow Ouro UI](https://github.com/ourostack/.github/blob/main/agents/interfaces-follow-ouro-ui.md).** Every screen a person uses is built from Ouro HX, every door an agent uses is declared once with `ouro-actions` and checked by the Ouro AX X-ray in CI, Ouro is taken from its release tags (never copied by hand) and kept within a day of them, and what Ouro lacks is fixed in Ouro first.
 
+## The Copilot app's sessions are Shepherd's
+
+**[Shepherd](https://github.com/ourostack/shepherd) keeps the flock: the GitHub Copilot app's sessions, as work. [Housesitter](https://github.com/ourostack/housesitter) keeps the house: the Mac and the app as a running process.** Ouroboros is an agent that uses them, not their home. Don't add another reader of the app's socket, `data.db` or session histories here: use Shepherd's, and contribute what it lacks to Shepherd. The app-sessions sense in `src/senses/app-sessions/` is moving there duty by duty, and Ouroboros's tools will call the `shepherd` CLI with `--json`.
+
 ## Constitutional Commitments
 
 - Keep the system truthful, testable, and reversible.
