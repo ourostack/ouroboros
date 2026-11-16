@@ -816,6 +816,77 @@ describe("continuity tools", () => {
       expect(mockCommitExternalEventDisposition.mock.calls[0]![1]).not.toHaveProperty("expectedVersion")
     })
 
+    it("refuses a lease whose receipt belongs to another agent", async () => {
+      const tool = findTool("external_event_disposition")
+      const recordPath = "/events/ouroboros/sanctuary-health/books.json"
+      // The receipt itself is this agent's, but the turn lease that claims it was minted for a
+      // different agent. The receipt-owner check alone would pass, so this is the lease-ownership
+      // guard: the lease may only dispose receipts for the agent it was issued to.
+      mockReadExternalEventRecord.mockReturnValue({
+        agent: "ouroboros",
+        eventId: "books",
+        source: "sanctuary-health",
+        version: 3,
+        generation: 2,
+        observationRevision: "rev-2",
+        executionState: "running",
+        claimOwner: "lease-2",
+        disposition: null,
+      })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+
+      expect(() => tool.handler({
+        recordPath,
+        expectedGeneration: "2",
+        classifiedRevision: "rev-2",
+        classification: "expected",
+        stewardPolicyKind: "none",
+        decision: "silent",
+        reason: "Expected while the library is sleeping.",
+        nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath, agent: "someone-else", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      } as any)).toThrow(/does not belong to the current agent/u)
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+    })
+
+    it("refuses to dispose a receipt the daemon already dead-lettered", async () => {
+      const tool = findTool("external_event_disposition")
+      const recordPath = "/events/ouroboros/sanctuary-health/books.json"
+      // A dead-lettered receipt is the daemon's final word on this generation. Disposing it would
+      // claim that an agent successfully classified work the daemon has already given up on.
+      mockReadExternalEventRecord.mockReturnValue({
+        agent: "ouroboros",
+        eventId: "books",
+        source: "sanctuary-health",
+        version: 9,
+        generation: 2,
+        observationRevision: "rev-2",
+        executionState: "dead_letter",
+        claimOwner: null,
+        disposition: null,
+      })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+
+      expect(() => tool.handler({
+        recordPath,
+        expectedGeneration: "2",
+        classifiedRevision: "rev-2",
+        classification: "expected",
+        stewardPolicyKind: "none",
+        decision: "silent",
+        reason: "Expected while the library is sleeping.",
+        nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath, agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      } as any)).toThrow(/dead-lettered and cannot be dispositioned/u)
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+    })
+
     it("records the disposition after the lease expired and the receipt settled to retry_wait", async () => {
       mockReadExternalEventRecord.mockReturnValue({
         agent: "ouroboros",

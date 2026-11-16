@@ -7,6 +7,7 @@ import {
   claimExternalEvent,
   commitExternalEventDisposition,
   externalEventRecordPath,
+  failExternalEventAttempt,
   getExternalEventRoot,
   recordExternalEvent,
   readExternalEventRecord,
@@ -493,5 +494,56 @@ describe("external event router", () => {
       disposition: disposition("revision-1"),
       now: () => "2026-09-02T06:00:05.000Z",
     })).toThrow(/already dispositioned/u)
+  })
+
+  it("refuses to fail an attempt that the caller does not hold the claim for", () => {
+    const root = tempDir("ouro-external-event-fail-attempt-claim-")
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "app-store-connect",
+      eventType: "betaFeedbackCrashSubmissionCreated",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T05:00:00.000Z" })
+    const owner = `external-event:slugger:app-store-connect:books:generation:${received.generation}:attempt:1`
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner,
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T05:00:01.000Z",
+    })
+
+    // A failure may only be recorded by the owner that holds the claim. Another owner — even at
+    // the right generation and version — must not be able to park the receipt or rewrite its
+    // attempt counter, or one worker could mask another worker's failure.
+    expect(() => failExternalEventAttempt(claimed.recordPath, {
+      owner: "external-event:slugger:app-store-connect:other-books:generation:1:attempt:1",
+      expectedVersion: claimed.version,
+      expectedGeneration: claimed.generation,
+      error: "must not apply",
+      now: () => "2026-09-02T05:00:02.000Z",
+    })).toThrow(/claim owner mismatch/u)
+
+    // The receipt is untouched by the refused failure.
+    expect(readExternalEventRecord(claimed.recordPath)).toEqual(claimed)
+
+    // The holder of the claim can record the failure.
+    const failed = failExternalEventAttempt(claimed.recordPath, {
+      owner,
+      expectedVersion: claimed.version,
+      expectedGeneration: claimed.generation,
+      error: "the turn died before it classified the generation",
+      now: () => "2026-09-02T05:00:03.000Z",
+    })
+    expect(failed).toMatchObject({ executionState: "retry_wait", claimOwner: null, attemptCount: 1 })
+
+    // A receipt that is no longer running cannot be failed again, even by the owner that held it.
+    expect(() => failExternalEventAttempt(claimed.recordPath, {
+      owner,
+      expectedVersion: failed.version,
+      expectedGeneration: failed.generation,
+      error: "must not apply either",
+      now: () => "2026-09-02T05:00:04.000Z",
+    })).toThrow(/claim owner mismatch/u)
   })
 })
