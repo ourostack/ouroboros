@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1167",
+      "changes": [
+        "An agent's context window now follows its model's real limit (200k for Claude, 400k for GPT) unless agent.json sets context.maxTokens to something other than the old 80000 default; new agents no longer get maxTokens written. scripts/measure-prompt.cjs counts the system prompt and tool schemas per channel, with no model calls."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1166",
       "changes": [
         "The always-on system prompt is about 2,000 tokens shorter on the cli channel (5,683 to 3,661). It no longer carries the full ouro command list, pre-implementation scrutiny, the tool contracts list, ponder packet SOPs, loop orientation, static tool guardrails or generic engineering and git discipline; note-keeping, speaking, peers and self-fix text is condensed."
