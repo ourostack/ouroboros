@@ -270,25 +270,29 @@ jobs:
         run: |
           verify_exact_attestations() {
             EXACT_IMAGE=$1
-            PROVENANCE=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .Provenance}}')
-            SBOM=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .SBOM}}')
-            printf '%s' "$PROVENANCE" | node -e '
+            # Node's readFileSync(0, "utf8") on a pipe overflows the heap on short reads
+            # (nodejs/node#66341, runner Node 24); read regular files instead.
+            ATTESTATIONS_DIR=$(mktemp -d)
+            docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .Provenance}}' > "$ATTESTATIONS_DIR/provenance.json"
+            docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .SBOM}}' > "$ATTESTATIONS_DIR/sbom.json"
+            node -e '
               const fs = require("node:fs");
-              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              const attestations = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
               for (const platform of ["linux/amd64", "linux/arm64"]) {
                 const slsa = attestations[platform]?.SLSA;
                 if (typeof slsa?.buildDefinition?.buildType !== "string" || slsa.buildDefinition.buildType.length === 0) process.exit(1);
                 if (typeof slsa?.runDetails?.builder?.id !== "string" || slsa.runDetails.builder.id.length === 0) process.exit(1);
                 if (!slsa?.runDetails?.metadata || typeof slsa.runDetails.metadata !== "object") process.exit(1);
               }
-            '
-            printf '%s' "$SBOM" | node -e '
+            ' "$ATTESTATIONS_DIR/provenance.json"
+            node -e '
               const fs = require("node:fs");
-              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              const attestations = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
               for (const platform of ["linux/amd64", "linux/arm64"]) {
                 if (attestations[platform]?.SPDX?.SPDXID !== "SPDXRef-DOCUMENT") process.exit(1);
               }
-            '
+            ' "$ATTESTATIONS_DIR/sbom.json"
+            rm -rf "$ATTESTATIONS_DIR"
           }
           EXACT_IMAGE="$VERSION_IMAGE@${{ steps.exact-references.outputs.digest }}"
           verify_exact_attestations "$EXACT_IMAGE"
