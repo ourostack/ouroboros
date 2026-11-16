@@ -1004,7 +1004,15 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
   const pendingDir = getPendingDir(agentName, friendId, "teams", conversationId)
-  const runWithLease = runtimeOverrides?._withSessionTurnLease ?? withSessionTurnLease
+  const withLease = runtimeOverrides?._withSessionTurnLease ?? withSessionTurnLease
+  // A message sent into this conversation while this turn held it waits outside the session; it goes in when the turn ends.
+  const runWithLease = <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>): Promise<T> => withLease(sessionPath, async lease => {
+    try {
+      return await work(lease)
+    } finally {
+      drainOutboundRecords(owner.agentRoot, friendId, "teams", conversationId, lease)
+    }
+  })
 
   try {
   await runWithLease(sessPath, async (sessionTurnLease) => {

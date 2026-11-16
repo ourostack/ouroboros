@@ -378,7 +378,7 @@ export function appendSyntheticAssistantMessage(
   filePath: string,
   content: string,
   lease?: SessionTurnLease,
-  options: { outbound?: SessionEventOutbound; createIfMissing?: boolean } = {},
+  options: { outbound?: SessionEventOutbound; createIfMissing?: boolean; sentAt?: string } = {},
 ): boolean {
   try {
     return withMutationLease(filePath, lease, (owned) => {
@@ -389,7 +389,7 @@ export function appendSyntheticAssistantMessage(
       if (!envelope) return false
       const deliveryId = options.outbound?.deliveryId
       if (deliveryId && envelope.events.some((event) => event.provenance.outbound?.deliveryId === deliveryId)) return true
-      const updated = appendSyntheticAssistantEvent(envelope, content, recordedAt, options.outbound)
+      const updated = appendSyntheticAssistantEvent(envelope, content, recordedAt, options.outbound, options.sentAt)
       writeSessionEnvelopeUnderLease(filePath, updated, owned)
       emitNervesEvent({
         component: "mind",

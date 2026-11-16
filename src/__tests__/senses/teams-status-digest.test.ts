@@ -175,6 +175,16 @@ describe("teams status answer", () => {
     expect(mockHandleInboundTurn).toHaveBeenCalled()
   })
 
+  it("puts a message sent while the turn ran into the session when the turn ends, under the same lease, before the next message", async () => {
+    mockResolve.mockReset().mockResolvedValue(friend("family"))
+    mockStatusAnswer.mockReturnValue(null)
+    mockDrainOutbound.mockClear()
+    await send("is it the latest build?")
+    expect(mockDrainOutbound).toHaveBeenCalledTimes(2)
+    expect(mockDrainOutbound.mock.calls[1]![4]).toBe(mockDrainOutbound.mock.calls[0]![4])
+    expect(mockDrainOutbound.mock.invocationCallOrder[1]!).toBeGreaterThan(mockHandleInboundTurn.mock.invocationCallOrder.at(-1)!)
+  })
+
   it("never answers anyone but family from the digest", async () => {
     mockResolve.mockReset().mockResolvedValue(friend("friend"))
     mockStatusAnswer.mockReturnValue("**Ouroboros status**")

@@ -1867,6 +1867,8 @@ export function appendSyntheticAssistantEvent(
   content: string,
   recordedAt: string,
   outbound?: SessionEventOutbound,
+  /** When the message was really sent, when that is earlier than now: a record that waited out another turn. */
+  sentAt?: string,
 ): SessionEnvelope {
   // Use nextEventSequence(events) instead of `events.length + 1` so any gap
   // (from pruning, archive replay, or self-heal dedup) cannot collide with
@@ -1881,6 +1883,7 @@ export function appendSyntheticAssistantEvent(
     null,
   )
   if (outbound) event.provenance = { ...event.provenance, outbound: { origin: outbound.origin, deliveryId: outbound.deliveryId } }
+  if (sentAt) event.time = { ...event.time, authoredAt: sentAt, observedAt: sentAt }
   const priorIds = projectedSessionEventIds(envelope)
   const updated: SessionEnvelope = {
     ...envelope,

@@ -1894,8 +1894,9 @@ async function handleBlueBubblesNormalizedEvent(
       const friendId = context.friend.id
       const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
       return await resolvedDeps.withSessionTurnLease(sessPath, async (sessionTurnLease) => {
-      // Messages sent into this chat while another turn held it wait outside the session; they go in first.
+      // Messages sent into this chat while another turn held it wait outside the session; they go in first, and again when this turn ends.
       drainOutboundRecords(getAgentRoot(), friendId, "bluebubbles", event.chat.sessionKey, sessionTurnLease)
+      try {
       try {
         findObsoleteBlueBubblesThreadSessions(sessPath)
       } catch (error) {
@@ -2527,6 +2528,9 @@ async function handleBlueBubblesNormalizedEvent(
       activeTurnId = null
       await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
     }
+      } finally {
+        drainOutboundRecords(getAgentRoot(), friendId, "bluebubbles", event.chat.sessionKey, sessionTurnLease)
+      }
     })
     })
   } finally {
