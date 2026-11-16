@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { AppSessionRow, AppSessionsOptions } from "./client"
 import { FIRST_SCAN_BYTES, readCard, scanFocus, type CardFacts, type FocusEntry } from "./digest-cards"
 import { isFolder, mergedCacheFile, readDrains, readMachine, readMergedToday, sourceFailed, type DrainFacts, type MachineFacts, type MergedFacts } from "./digest-sources"
-import { appSessionsStateDir, readArchiveLog, readJson, writeJson, type WaitingPrompt } from "./store"
+import { appSessionsStateDir, readArchiveLog, readJson, writeJson, type ArchiveLogEntry, type WaitingPrompt } from "./store"
 import type { RunCommand } from "./wake-runner"
 
 /**
@@ -23,6 +23,12 @@ export const SCAN_BUDGET_BYTES = 1024 * 1024 * 1024
 const INCREMENTAL_SCAN_BYTES = 4 * 1024 * 1024
 const WORKING_LISTED = 8
 const NAME_MAX = 60
+const ARCHIVE_REASONS: Record<ArchiveLogEntry["reason"], string> = {
+  "owner-asked": "you asked",
+  "handed-off": "handed off to a successor",
+  "oversize-idle": "over the size limit and idle 30 min after the hand-off ask",
+  "memory-pressure": "over the size limit and idle while memory ran short",
+}
 
 export interface DigestSession {
   id: string
@@ -180,7 +186,7 @@ export async function buildDigest(input: DigestInput): Promise<Digest> {
   }
   const recentArchives = readArchiveLog(input.agentRoot)
     .filter(entry => input.now - Date.parse(entry.at) < CARD_WINDOW_MS)
-    .map(entry => ({ name: cut(entry.name, NAME_MAX), reason: entry.reason === "owner-asked" ? "you asked" : "handed off to a successor" }))
+    .map(entry => ({ name: cut(entry.name, NAME_MAX), reason: `${ARCHIVE_REASONS[entry.reason]}${entry.note ? ` (${entry.note})` : ""}` }))
   const digest: Digest = {
     at: new Date(input.now).toISOString(),
     appRunning: input.appRunning,

@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type WebSocket from "ws"
 
 import {
-  answerSessionInput, archiveSession, createSession, deliverMessage, findSession, getSession, getSessionAutomation, getSessionsStatus, listSessionsAndChats, listWorkflows,
+  answerSessionInput, archiveRow, archiveSession, createSession, deliverMessage, findSession, getSession, getSessionAutomation, getSessionsStatus, listSessionsAndChats, listWorkflows,
   navigateTo, respondToSessionPlan, runWorkflow, saveSessionAutomation, sendSessionMessage,
 } from "../../../senses/app-sessions/app-interface"
+import { listAppSessions } from "../../../senses/app-sessions/client"
 import { addProbe, readArchiveLog, readProbes, readWatches, writePending, type PendingRequest } from "../../../senses/app-sessions/store"
 
 type Frame = Record<string, unknown>
@@ -331,6 +332,14 @@ describe("archiving a session this agent did not create", () => {
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, "events.jsonl"), text)
   }
+
+  it("archives for the size watch keeping the worktree, and logs its note", async () => {
+    const row = (await listAppSessions(options())).find(item => item.id === WS)!
+    app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
+    expect(await archiveRow(agentRoot, row, "oversize-idle", options(), { note: "1.0 GB; branch b", keepWorktree: true })).toEqual({ ok: true, session_id: WS })
+    expect(app.sent("archive_workspace")[0]).toMatchObject({ workspace_id: "w1", delete_worktree: false })
+    expect(readArchiveLog(agentRoot)).toMatchObject([{ id: WS, reason: "oversize-idle", note: "1.0 GB; branch b" }])
+  })
 
   it("archives and logs it when the owner asked for that session", async () => {
     app.reply("archive_workspace", () => ({ type: "workspace_archived" }))

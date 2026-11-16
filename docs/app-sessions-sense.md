@@ -80,12 +80,19 @@ The sense process does three things:
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
-- Each minute the sense also stats every local session's `events.jsonl` (never reading it). One over 500 MB is flagged in `oversize.json`
-  (the never-resume list: `neverResume(agentRoot)`), because the app loads a whole history into memory whenever it resumes
-  that session, and a few multi-GB ones froze a Mac. Its coordinator, or the session itself when it is running and has no smaller
-  coordinator, is asked once to hand off to a fresh successor (checkpoint, the tail of the old log, then archive), and to
-  keep images out of chat, since inline images are nearly all of a history's size. A session that is not running and has no
-  smaller coordinator is never messaged, which would reload it; the owner is told once instead. No model turn is used.
+- Each minute the sense also stats every `events.jsonl` under `~/.copilot/session-state/` (never reading it), whether or not the sidebar
+  lists that session. One over 500 MB is flagged in `oversize.json` (the never-resume list: `neverResume(agentRoot)`), because the app
+  loads a whole history into memory whenever it resumes that session, and a few multi-GB ones froze a Mac. A flagged session stays
+  flagged after it is archived, until its history is under the limit again. For a session the sidebar lists, its coordinator and
+  the session itself while it is running are asked, with immediate delivery, to hand off to a fresh successor (checkpoint, the tail
+  of the old log, then archive) and to keep images out of chat, since inline images are nearly all of a history's size. While it
+  keeps running they are asked again each time its history grows by half since the last ask. A session that is not running and
+  has no smaller coordinator is never messaged, which would reload it; the owner is told once instead. A flagged session that has
+  been idle for 30 minutes since its last ask is archived through the app (reversible, worktree kept) to free its runtime's memory,
+  and its coordinator is told where it left off: its workspace branch and the last `git push` and pull request near the end of its
+  log. When swap use is over 8 GB or free memory under 1 GB, every idle flagged session is archived at once, largest first. A
+  session waiting on a person is never archived. The status digest lists each archive with its size and where it left off. No
+  model turn is used.
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or

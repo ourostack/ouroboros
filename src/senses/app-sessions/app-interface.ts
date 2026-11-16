@@ -261,13 +261,21 @@ export async function archiveSession(agentRoot: string, id: unknown, options: Ap
       throw new Error(`session ${row.id} was not created by this agent, so it will not archive it unless the owner asked for it or it is oversize and a newer session names it as handed off (yours: ${Object.keys(made).join(", ") || "none"})`)
     }
   }
+  return archiveRow(agentRoot, row, reason, options)
+}
+
+/**
+ * Ask the app to archive a session the caller has already decided may go, and log it when `reason` is set. `keepWorktree`
+ * leaves a worktree on disk, so an archive nobody asked for in person loses no uncommitted work.
+ */
+export async function archiveRow(agentRoot: string, row: AppSessionRow, reason: ArchiveLogEntry["reason"] | null, options: AppSessionsOptions = {}, extra: { note?: string; keepWorktree?: boolean } = {}): Promise<Result> {
   const archived = row.workspaceId
-    ? await ask({ type: "archive_workspace", workspace_id: row.workspaceId, delete_worktree: row.workspaceType === "worktree" }, (reply, requestId) => (reply.request_id === requestId ? (reply.type === "workspace_archived" ? "ok" : "fail") : "ignore"), ARCHIVE_WAIT_MS, options)
+    ? await ask({ type: "archive_workspace", workspace_id: row.workspaceId, delete_worktree: row.workspaceType === "worktree" && !extra.keepWorktree }, (reply, requestId) => (reply.request_id === requestId ? (reply.type === "workspace_archived" ? "ok" : "fail") : "ignore"), ARCHIVE_WAIT_MS, options)
     : await ask({ type: "archive_session", session_id: row.id }, (reply, requestId) => (reply.type === "general_chat_sessions_changed" ? "ok" : reply.request_id === requestId ? "fail" : "ignore"), ARCHIVE_WAIT_MS, options)
   if (archived.ok) {
     removeProbe(agentRoot, row.id)
     if (reason) {
-      addArchiveLog(agentRoot, { id: row.id, name: row.name, at: new Date(options.now?.() ?? Date.now()).toISOString(), reason })
+      addArchiveLog(agentRoot, { id: row.id, name: row.name, at: new Date(options.now?.() ?? Date.now()).toISOString(), reason, ...(extra.note ? { note: extra.note } : {}) })
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_archived_not_created", message: "archived a session this agent did not create", meta: { session: row.id, reason } })
     }
   }

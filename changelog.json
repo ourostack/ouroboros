@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1159",
+      "changes": [
+        "The Copilot app size watch flags every local session whose history is over 500 MB, including ones the sidebar no longer lists, and keeps them flagged after they are archived. It asks a running giant and its coordinator again, with immediate delivery, each time the history grows by half. It archives a flagged session (reversibly, keeping its worktree) once it has been idle 30 minutes after its last ask, or at once, largest first, when swap passes 8 GB or free memory falls under 1 GB, and tells its coordinator where it left off. The status digest lists each archive."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1158",
       "changes": [
         "The ouro CLI's help for a command other people see names --dry-run, which says who will see it without doing it."
