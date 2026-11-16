@@ -9,7 +9,7 @@ import {
   answerSessionInput, archiveSession, createSession, deliverMessage, findSession, getSession, getSessionAutomation, getSessionsStatus, listSessionsAndChats, listWorkflows,
   navigateTo, respondToSessionPlan, runWorkflow, saveSessionAutomation, sendSessionMessage,
 } from "../../../senses/app-sessions/app-interface"
-import { addProbe, readProbes, readWatches, writePending, type PendingRequest } from "../../../senses/app-sessions/store"
+import { addProbe, readArchiveLog, readProbes, readWatches, writePending, type PendingRequest } from "../../../senses/app-sessions/store"
 
 type Frame = Record<string, unknown>
 
@@ -320,9 +320,67 @@ describe("answering", () => {
   })
 })
 
+describe("archiving a session this agent did not create", () => {
+  const flag = (): void => {
+    const dir = path.join(agentRoot, "state", "senses", "app-sessions")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { [WS]: { bytes: 1, name: "Fix it" } } }))
+  }
+  const successor = (text: string): void => {
+    const dir = path.join(stateDir, "session-state", "99999999-successor")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "events.jsonl"), text)
+  }
+
+  it("archives and logs it when the owner asked for that session", async () => {
+    app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
+    expect(await archiveSession(agentRoot, WS, options({ now: undefined }), true)).toEqual({ ok: true, session_id: WS })
+    expect(readArchiveLog(agentRoot)).toMatchObject([{ id: WS, name: "Fix it", reason: "owner-asked" }])
+  })
+
+  it("archives an oversize session that a newer session names as handed off, and nothing else", async () => {
+    successor(`{"text":"Carry on from ${WS}: the successor of the retired coordinator"}\n`)
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
+    flag()
+    app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
+    expect(await archiveSession(agentRoot, WS, options())).toEqual({ ok: true, session_id: WS })
+    expect(readArchiveLog(agentRoot)).toMatchObject([{ id: WS, reason: "handed-off" }])
+  })
+
+  it("accepts a successor that names the session by its short id", async () => {
+    flag()
+    successor(`{"text":"hand-off: carry on from ${WS.slice(0, 8)}"}\n`)
+    app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
+    expect(await archiveSession(agentRoot, WS, options())).toEqual({ ok: true, session_id: WS })
+  })
+
+  it("skips successors that are stale or unreadable, and a missing state directory", async () => {
+    flag()
+    const stale = path.join(stateDir, "session-state", "88888888-stale")
+    fs.mkdirSync(stale, { recursive: true })
+    fs.writeFileSync(path.join(stale, "events.jsonl"), `{"text":"successor of ${WS}"}\n`)
+    fs.utimesSync(path.join(stale, "events.jsonl"), 1, 1)
+    const self = path.join(stateDir, "session-state", WS)
+    fs.mkdirSync(self, { recursive: true })
+    fs.writeFileSync(path.join(self, "events.jsonl"), `{"text":"successor of ${WS}"}\n`)
+    fs.mkdirSync(path.join(stateDir, "session-state", "77777777-broken", "events.jsonl"), { recursive: true })
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
+    fs.rmSync(path.join(stateDir, "session-state"), { recursive: true })
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
+  })
+
+  it("refuses an oversize session that no newer session names, or that one only mentions", async () => {
+    flag()
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
+    successor(`{"text":"unrelated work on ${WS}"}\n`)
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
+    expect(readArchiveLog(agentRoot)).toEqual([])
+  })
+})
+
 describe("archiving and showing", () => {
   it("archives only what this agent created: a workspace with its worktree, or a chat", async () => {
-    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("was not created by this agent, so it will not archive it (yours: none)")
+    await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("was not created by this agent, so it will not archive it unless")
     addProbe(agentRoot, WS, null, 1)
     addProbe(agentRoot, CHAT, null, 1)
     await expect(archiveSession(agentRoot, "9999", options())).rejects.toThrow("no session")

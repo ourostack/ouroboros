@@ -8,6 +8,7 @@ import {
   renderDigest, statusAnswer, writeDigest, type DigestInput, type DigestState,
 } from "../../../senses/app-sessions/digest"
 import type { RunCommand } from "../../../senses/app-sessions/wake-runner"
+import { addArchiveLog } from "../../../senses/app-sessions/store"
 
 const NOW = Date.parse("2026-11-15T22:00:00Z")
 const iso = (minutesAgo: number): string => new Date(NOW - minutesAgo * 60_000).toISOString()
@@ -90,6 +91,15 @@ describe("buildDigest and renderDigest", () => {
     expect(digest.tokens).toBe(Math.ceil(text.length / 4))
     expect(text.split("\n\n").length).toBeGreaterThanOrEqual(4)
     expect(renderDigest(digest, NOW, true)).toBe(text.replace(/\*\*/g, ""))
+  })
+
+  it("lists sessions archived in the last day that this agent did not create, and not older ones", async () => {
+    addArchiveLog(agentRoot, { id: "a", name: "Old coordinator", at: iso(60), reason: "handed-off" })
+    addArchiveLog(agentRoot, { id: "b", name: "Asked for", at: iso(30), reason: "owner-asked" })
+    addArchiveLog(agentRoot, { id: "c", name: "Last week", at: iso(60 * 24 * 7), reason: "handed-off" })
+    const text = renderDigest(await buildDigest(input([])), NOW)
+    expect(text).toContain("**Archived** (reversible)\n- Old coordinator — handed off to a successor\n- Asked for — you asked")
+    expect(text).not.toContain("Last week")
   })
 
   it("shows the drains and what merged today, and names a source it could not read", async () => {

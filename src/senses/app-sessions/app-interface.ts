@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto"
 import * as os from "node:os"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { assertSessionId, eventLogSize, exchange, listAppSessions, SEND_WAIT_MS, type AppSessionRow, type AppSessionsOptions, type Frame, type PermissionPrompt } from "./client"
-import { addProbe, readPending, readProbes, removeProbe, watchSession, type PendingRequest } from "./store"
+import { isHandedOff } from "./handoff"
+import { addArchiveLog, addProbe, readPending, readProbes, removeProbe, watchSession, type ArchiveLogEntry, type PendingRequest } from "./store"
 
 /**
  * The GitHub Copilot app's own interface, used the way a coordinating session uses its client tools: the same twelve
@@ -249,14 +250,27 @@ export async function respondToSessionPlan(
 }
 
 /** Archive a session this agent created: its workspace when it has one (and the worktree with it), else the chat. */
-export async function archiveSession(agentRoot: string, id: unknown, options: AppSessionsOptions = {}): Promise<Result> {
+export async function archiveSession(agentRoot: string, id: unknown, options: AppSessionsOptions = {}, ownerAsked = false): Promise<Result> {
   const row = await resolve(id, options)
   const made = readProbes(agentRoot)
-  if (!made[row.id]) throw new Error(`session ${row.id} was not created by this agent, so it will not archive it (yours: ${Object.keys(made).join(", ") || "none"})`)
+  let reason: ArchiveLogEntry["reason"] | null = null
+  if (!made[row.id]) {
+    reason = ownerAsked ? "owner-asked" : isHandedOff(agentRoot, row, options) ? "handed-off" : null
+    if (!reason) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_archive_declined", message: "declined to archive a session this agent did not create", meta: { session: row.id } })
+      throw new Error(`session ${row.id} was not created by this agent, so it will not archive it unless the owner asked for it or it is oversize and a newer session names it as handed off (yours: ${Object.keys(made).join(", ") || "none"})`)
+    }
+  }
   const archived = row.workspaceId
     ? await ask({ type: "archive_workspace", workspace_id: row.workspaceId, delete_worktree: row.workspaceType === "worktree" }, (reply, requestId) => (reply.request_id === requestId ? (reply.type === "workspace_archived" ? "ok" : "fail") : "ignore"), ARCHIVE_WAIT_MS, options)
     : await ask({ type: "archive_session", session_id: row.id }, (reply, requestId) => (reply.type === "general_chat_sessions_changed" ? "ok" : reply.request_id === requestId ? "fail" : "ignore"), ARCHIVE_WAIT_MS, options)
-  if (archived.ok) removeProbe(agentRoot, row.id)
+  if (archived.ok) {
+    removeProbe(agentRoot, row.id)
+    if (reason) {
+      addArchiveLog(agentRoot, { id: row.id, name: row.name, at: new Date(options.now?.() ?? Date.now()).toISOString(), reason })
+      emitNervesEvent({ component: "senses", event: "senses.app_sessions_archived_not_created", message: "archived a session this agent did not create", meta: { session: row.id, reason } })
+    }
+  }
   else emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_archive_refused", message: "the Copilot app did not archive a session", meta: { session: row.id, error: archived.error } })
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_archived", message: "asked the Copilot app to archive a session", meta: { session: row.id, ok: archived.ok } })
   return compact({ ok: archived.ok, session_id: row.id, error: archived.error })
