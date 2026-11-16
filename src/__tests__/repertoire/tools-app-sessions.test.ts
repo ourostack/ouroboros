@@ -3,6 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const digest = vi.hoisted(() => ({ readDigestText: vi.fn() }))
+vi.mock("../../senses/app-sessions/digest", () => digest)
 const client = vi.hoisted(() => ({ listAppSessions: vi.fn(), readAppSessionHistory: vi.fn(), restartStatus: vi.fn(), restartEnqueue: vi.fn() }))
 const face = vi.hoisted(() => {
   const names = ["answerSessionInput", "archiveSession", "createSession", "getSession", "getSessionAutomation", "getSessionsStatus", "listSessionsAndChats", "listWorkflows", "navigateTo", "respondToSessionPlan", "runWorkflow", "saveSessionAutomation", "sendSessionMessage"]
@@ -32,7 +34,7 @@ describe("the tool set", () => {
   it("carries the app's own tool names, then the two this agent adds", () => {
     expect(tools.appSessionsToolDefinitions.map(tool => tool.tool.function.name)).toEqual([
       "list_sessions_and_chats", "get_sessions_status", "get_session", "send_session_message", "create_session", "answer_session_input", "respond_to_session_plan_v2",
-      "archive_session", "navigate_to", "save_session_automation", "get_session_automation", "list_workflows", "run_workflow", "app_sessions_tail", "app_sessions_restart",
+      "archive_session", "navigate_to", "save_session_automation", "get_session_automation", "list_workflows", "run_workflow", "app_sessions_tail", "app_sessions_restart", "app_sessions_digest",
     ])
   })
 
@@ -96,5 +98,14 @@ describe("app_sessions_restart", () => {
     await call(tools.appSessionsRestartTool, { action: "enqueue", why: "x" }, { agentRoot } as ToolContext)
     expect(client.restartEnqueue).toHaveBeenLastCalledWith("x", "an agent", {})
     await call(tools.appSessionsRestartTool, { action: "enqueue" })
+  })
+})
+
+describe("app_sessions_digest", () => {
+  it("returns the digest, or says there is none yet", async () => {
+    digest.readDigestText.mockReturnValueOnce("all well")
+    expect(await call(tools.appSessionsDigestTool)).toEqual({ digest: "all well" })
+    digest.readDigestText.mockReturnValueOnce(null)
+    expect(await call(tools.appSessionsDigestTool)).toMatchObject({ error: expect.stringContaining("no status digest") })
   })
 })

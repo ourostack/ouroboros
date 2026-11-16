@@ -80,6 +80,12 @@ The sense process does three things:
 - Every minute it snapshots the sidebar into `state/senses/app-sessions/snapshot.json`: counts by state and the stuck
   sessions. The prompt's sense list and `ouro status` show it, for example
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
+- Each minute the sense also stats every local session's `events.jsonl` (never reading it). One over 500 MB is flagged in `oversize.json`
+  (the never-resume list: `neverResume(agentRoot)`), because the app loads a whole history into memory whenever it resumes
+  that session, and a few multi-GB ones froze a Mac. Its coordinator, or the session itself when it is running and has no smaller
+  coordinator, is asked once to hand off to a fresh successor (checkpoint, the tail of the old log, then archive), and to
+  keep images out of chat, since inline images are nearly all of a history's size. A session that is not running and has no
+  smaller coordinator is never messaged, which would reload it; the owner is told once instead. No model turn is used.
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
@@ -138,6 +144,46 @@ Earlier versions polled drains here from `senses.app-sessions.issueDrains` with 
 1. Copy the `issueDrains` array to Desk's drain config as `drains`; the fields are the same.
 2. Copy `issue-drains.json` to Desk's `state.json`; the shape is the same, so the seen markers carry over and nothing wakes again.
 3. Replace `issueDrains` and `issuePollMinutes` with a `wakeRunners` entry as above, then run `ouro up`.
+
+## Status digest
+
+Away from the Mac, the owner can still see how things are going, at almost no token cost. When the sense's `agent.json` block has a
+`digest` object, the sense builds a **status digest** on a cadence with no model turn, keeps it in `state/senses/app-sessions/digest.json`,
+and tells the owner only what needs them.
+
+```json
+{ "senses": { "app-sessions": { "enabled": true, "digest": {
+  "everySeconds": 300,
+  "drains": ["/path/to/node", "/path/to/drains.js", "status"],
+  "deskRoots": ["~/desk", "~/team-desk/alias"],
+  "mergedToday": [{ "label": "personal", "command": ["/path/to/gh-runner", "personal"] }]
+} } } }
+```
+
+Every field is optional; without a `digest` block nothing runs. What it reads, all without a model:
+
+- **Sessions**: every session's state (working, waiting, stuck), its last turn and, for sessions active in the last day, the task card it
+  declared (the `task_focus` call in its own history, found by reading the log backwards once, then only what was added) with the card's
+  status and next step from `<deskRoot>/<track>/<slug>/task.md`.
+- **The Mac**: Housesitter's heartbeat, last restart and resume, and the health watch's sessions (`restart-copilot --status --json`).
+- **Drains**: `drains` is a command that prints `{ "status": ["…"] }` (the shape a wake runner prints); drains whose last good poll is old are named.
+- **Merged today**: `mergedToday` runs `command` plus `api …` for each account and counts the pull requests merged since local midnight.
+  An answer under four minutes old is reused, and the request is conditional when GitHub gives an ETag. Search has its own quota, apart from the drains'.
+
+A source that cannot be read is named in the digest (`Not read: …`), never guessed.
+
+**Asking.** In Teams, the owner's `/status`, or a message that is only "how's it going?" (and a few plain variants), is answered from the digest
+with **no model turn**: zero tokens, and the reply says how old the digest is when it is more than 15 minutes. It answers family only. Any other
+phrasing goes to the agent, which has `app_sessions_digest` and answers from it in a few lines.
+
+**Pushes.** Nothing is sent on a timer. The sense tells the owner, in one Teams message, only: work **ready for them** (a card that moved to
+`collaborating`), work that is **done**, a session **waiting on an answer** for 10 minutes, and something that **stays broken**: a session stuck 20
+minutes, the Mac watcher's heartbeat bad or stale for 10, a session failing the health watch, a drain not polling for 5, the app not running.
+A condition must last before it counts, is told once until it clears, and one message carries everything due, at most one per half hour. A restart
+never announces work that was already ready or done. Permission prompts and repository-trust cards keep their own notice (see Perception).
+
+**Cost.** The digest is a few hundred tokens of text (`tokens` in `digest.json`, a fourth of its characters); the `/status` answer costs no model
+tokens, and a model-written answer costs the digest plus a few lines. Each build and push is a nerves event carrying its size.
 
 ## How it talks to the app
 

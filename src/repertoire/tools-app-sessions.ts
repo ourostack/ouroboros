@@ -5,6 +5,7 @@ import {
   answerSessionInput, archiveSession, createSession, findSession, getSession, getSessionAutomation, getSessionsStatus, listSessionsAndChats, listWorkflows, navigateTo,
   respondToSessionPlan, runWorkflow, saveSessionAutomation, sendSessionMessage,
 } from "../senses/app-sessions/app-interface"
+import { readDigestText } from "../senses/app-sessions/digest"
 import { listAppSessions, readAppSessionHistory, restartEnqueue, restartStatus, type AppSessionsOptions } from "../senses/app-sessions/client"
 import { readWatches } from "../senses/app-sessions/store"
 import type { ToolContext, ToolDefinition, ToolRiskProfile } from "./tools-base"
@@ -151,7 +152,17 @@ export const appSessionsRestartTool = define(
   }, ["action"],
 )
 
+export const appSessionsDigestTool = define(
+  "app_sessions_digest", "How everything is going, already worked out with no model: what needs the owner, what is broken, each working session with its card's next step, the Mac's health, the drains and what merged today. Read-only.",
+  {}, [], READ,
+  async (_args, agentRoot) => {
+    const digest = readDigestText(agentRoot, Date.now())
+    if (!digest) throw new Error("no status digest yet: it is built when agent.json gives the app-sessions sense a digest block")
+    return { digest }
+  },
+)
+
 export const appSessionsToolDefinitions: ToolDefinition[] = [
   listSessionsAndChatsTool, getSessionsStatusTool, getSessionTool, sendSessionMessageTool, createSessionTool, answerSessionInputTool, respondToSessionPlanTool, archiveSessionTool,
-  navigateToTool, saveSessionAutomationTool, getSessionAutomationTool, listWorkflowsTool, runWorkflowTool, appSessionsTailTool, appSessionsRestartTool,
+  navigateToTool, saveSessionAutomationTool, getSessionAutomationTool, listWorkflowsTool, runWorkflowTool, appSessionsTailTool, appSessionsRestartTool, appSessionsDigestTool,
 ]

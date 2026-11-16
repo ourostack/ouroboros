@@ -423,7 +423,7 @@ const SHEPHERD_FAMILY_TOOLS = new Set(["shepherd_overview", "shepherd_read", "sh
 // The app-sessions tools read and write the owner's Copilot app sessions on this machine: family only, as Shepherd's.
 const APP_SESSIONS_FAMILY_TOOLS = new Set([
   "list_sessions_and_chats", "get_sessions_status", "get_session", "send_session_message", "create_session", "answer_session_input", "respond_to_session_plan_v2", "archive_session",
-  "navigate_to", "save_session_automation", "get_session_automation", "list_workflows", "run_workflow", "app_sessions_tail", "app_sessions_restart",
+  "navigate_to", "save_session_automation", "get_session_automation", "list_workflows", "run_workflow", "app_sessions_tail", "app_sessions_restart", "app_sessions_digest",
 ])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])

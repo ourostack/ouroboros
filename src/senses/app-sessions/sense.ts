@@ -4,9 +4,13 @@ import { getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
-import { listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
+import * as os from "node:os"
+import { DIGEST_DEFAULT_SECONDS, readDigestState, writeDigest, writeDigestState } from "./digest"
+import { pushDue } from "./digest-push"
+import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { startPromptTracker } from "./prompts"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
+import { noticeOversizedSessions } from "./size-watch"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
 
@@ -167,6 +171,32 @@ export async function checkWakeRunners(agentName: string, agentRoot: string, dep
   }
 }
 
+/** How long to wait before looking again when no digest is configured, so one added to `agent.json` starts within two minutes. */
+export const DIGEST_IDLE_MS = 2 * 60_000
+
+/**
+ * Build the status digest if `agent.json` asks for one, and tell the owner what it judges worth telling. Returns the
+ * milliseconds until the next one is due. A failure is logged and tried again next time.
+ */
+export async function checkDigest(agentName: string, agentRoot: string, deps: { client: AppSessionsOptions; run: RunCommand; notify: NotifyOwner; now: number; home: string }): Promise<number> {
+  try {
+    const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
+    if (!config?.enabled || !config.digest) return DIGEST_IDLE_MS
+    const rows = await listAppSessions({ ...deps.client, now: () => deps.now })
+    const state = readDigestState(agentRoot)
+    const digest = await writeDigest({
+      agentRoot, config: config.digest, client: deps.client, run: deps.run, now: deps.now, home: deps.home, rows,
+      appRunning: appRunning(deps.client), waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
+    })
+    await pushDue(digest, state, deps.now, deps.notify)
+    writeDigestState(agentRoot, state)
+    return (config.digest.everySeconds ?? DIGEST_DEFAULT_SECONDS) * 1000
+  } catch (error) {
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_digest_error", message: "could not build the status digest", meta: { error: (error as Error).message } })
+    return DIGEST_IDLE_MS
+  }
+}
+
 export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop: () => void; done: () => Promise<void> } {
   const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
   const now = options.now ?? Date.now
@@ -181,12 +211,18 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let runnerPoll: Promise<unknown> = Promise.resolve()
   const due = new Map<string, number>()
   let waitingPoll: Promise<unknown> = Promise.resolve()
+  let sizePoll: Promise<unknown> = Promise.resolve()
   const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
+  let cancelDigest: (() => void) | null = null
+  let digestPoll: Promise<unknown> = Promise.resolve()
 
   const snapshotTick = (): void => {
     if (stopped) return
     waitingPoll = waitingPoll.then(() => recordSnapshot(agentRoot, client, now())).then(taken => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
+    })
+    sizePoll = sizePoll.then(async () => noticeOversizedSessions(agentRoot, await listAppSessions({ ...client, now: () => now() }), { notify: notifyOwner, now: now(), client })).then(() => undefined).catch((error: Error) => {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_oversize_error", message: "could not check the sessions' history sizes", meta: { error: error.message } })
     })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
   }
@@ -204,11 +240,18 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       if (!stopped) cancelRunners = schedule(runnerTick, ms)
     })
   }
+  const digestTick = (): void => {
+    if (stopped) return
+    digestPoll = checkDigest(options.agentName, agentRoot, { client, run: options.runCommand ?? runCommand, notify: notifyOwner, now: now(), home: os.homedir() }).then(ms => {
+      if (!stopped) cancelDigest = schedule(digestTick, ms)
+    })
+  }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_start", message: "app-sessions sense started", meta: { agent: options.agentName } })
   const prompts = startPromptTracker({ agentRoot, ...(client.stateDir ? { stateDir: client.stateDir } : {}), ...(client.openSocket ? { openSocket: client.openSocket } : {}), schedule, now })
   snapshotTick()
   watchTick()
   runnerTick()
+  digestTick()
   return {
     stop: () => {
       stopped = true
@@ -216,8 +259,9 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       cancelWatch?.()
       cancelRunners?.()
       prompts.stop()
+      cancelDigest?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, runnerPoll, waitingPoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, sizePoll, digestPoll]).then(() => undefined),
   }
 }

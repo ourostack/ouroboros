@@ -53,6 +53,8 @@ export interface AgentSenseConfig {
    * command decides what is worth a wake; the sense only delivers (see `WakeRunnerConfig`).
    */
   wakeRunners?: WakeRunnerConfig[]
+  /** app-sessions only: the owner's status digest, built with no model turns (see `DigestConfig`). Absent means no digest. */
+  digest?: DigestConfig
   /** app-sessions only: set when `agent.json` still carries the retired `issueDrains` list, which Desk polls now and this sense ignores. */
   retiredIssueDrains?: true
 }
@@ -71,6 +73,22 @@ export interface WakeRunnerConfig {
 }
 
 export type WakeDelivery = "immediate" | "enqueue"
+
+/**
+ * The status digest the app-sessions sense builds with no model turns: every session's state, its card's next step, the
+ * machine's health, the drains and what merged today. It is kept in the bundle, answers the owner's "how's it going?"
+ * on Teams, and pushes only what needs the owner. Nothing runs unless this block exists.
+ */
+export interface DigestConfig {
+  /** Seconds between digests (60 or more; default 300). */
+  everySeconds?: number
+  /** A command that prints the drains' status as JSON, `{ "status": ["…"] }`, the shape a wake runner prints. */
+  drains?: string[]
+  /** Folders of task cards (`<track>/<slug>/task.md`) that a session's declared task is looked up in. */
+  deskRoots?: string[]
+  /** GitHub accounts whose pull requests merged today are counted. `command` is a gh runner for that account; the sense appends the `api` arguments. */
+  mergedToday?: Array<{ label: string; command: string[] }>
+}
 
 export type ShepherdNoticePolicy = "every" | "needs-me" | "off"
 export const SHEPHERD_NOTICE_POLICIES: readonly ShepherdNoticePolicy[] = ["every", "needs-me", "off"]
@@ -278,14 +296,44 @@ export function hasStaleWorkbenchBundleEntry(rawSenses: unknown, rawMcpServers: 
   return !(isPlainRecord(rawWorkbench) && rawWorkbench.enabled === false)
 }
 
-export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains"> {
+function normalizeDigest(raw: unknown, fail: (what: string) => never): DigestConfig {
+  if (!isPlainRecord(raw)) fail("digest must be an object")
+  const { everySeconds, drains, deskRoots, mergedToday } = raw
+  const argv = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.every(part => typeof part === "string" && part.length > 0)
+  const result: DigestConfig = {}
+  if (everySeconds !== undefined) {
+    if (typeof everySeconds !== "number" || !Number.isInteger(everySeconds) || everySeconds < 60) fail("digest.everySeconds must be a whole number of seconds, 60 or more")
+    result.everySeconds = everySeconds
+  }
+  if (drains !== undefined) {
+    if (!argv(drains)) fail("digest.drains must be a non-empty array of strings")
+    result.drains = drains
+  }
+  if (deskRoots !== undefined) {
+    if (!argv(deskRoots)) fail("digest.deskRoots must be a non-empty array of folders")
+    result.deskRoots = deskRoots
+  }
+  if (mergedToday !== undefined) {
+    if (!Array.isArray(mergedToday)) fail("digest.mergedToday must be an array")
+    result.mergedToday = (mergedToday as unknown[]).map((entry, index) => {
+      const item = isPlainRecord(entry) ? entry : {}
+      if (typeof item.label !== "string" || !item.label.trim()) fail(`digest.mergedToday[${index}].label must be a non-empty name`)
+      if (!argv(item.command)) fail(`digest.mergedToday[${index}].command must be a non-empty array of strings`)
+      return { label: (item.label as string).trim(), command: item.command as string[] }
+    })
+  }
+  return result
+}
+
+export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains" | "digest"> {
   function fail(what: string): never {
     emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid wake runners", meta: { path: configFile } })
     throw new Error(`agent.json at ${configFile}: senses.app-sessions.${what}.`)
   }
   const { wakeRunners, issueDrains } = rawSense
-  const result: Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains"> = {}
+  const result: Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains" | "digest"> = {}
   if (issueDrains !== undefined) result.retiredIssueDrains = true
+  if (rawSense.digest !== undefined) result.digest = normalizeDigest(rawSense.digest, fail)
   if (wakeRunners !== undefined) {
     if (!Array.isArray(wakeRunners)) fail("wakeRunners must be an array")
     const names = new Set<string>()

@@ -33,7 +33,7 @@ const reasonOf = (frame: Frame): string => str(frame.error) ?? str(frame.message
 /** Whether a sender wants a session's reply back, and for how long: once (the default), always, or never. */
 const notifyMode = (value: unknown): "once" | "always" | null => (value === "never" ? null : value === "always" ? "always" : "once")
 
-interface Asked { ok: boolean; frame: Frame | null; error: string | null }
+export interface Asked { ok: boolean; frame: Frame | null; error: string | null }
 
 /** One request and its answer: the frame `settle` calls "ok", or the reason it was refused, or that the app did not answer in time. */
 async function ask(frame: Frame, settle: (reply: Frame, requestId: string) => Verdict, waitMs: number, options: AppSessionsOptions): Promise<Asked> {

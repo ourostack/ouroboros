@@ -29,7 +29,7 @@ vi.mock("../../../senses/app-sessions/client", async (importActual) => {
 import { getAgentRoot } from "../../../heart/identity"
 import { getPrivateRuntimePendingDir } from "../../../mind/pending"
 import {
-  APP_SESSIONS_WAKE_TRIGGER, checkWakeRunners, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
+  APP_SESSIONS_WAKE_TRIGGER, checkDigest, checkWakeRunners, DIGEST_IDLE_MS, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
   startAppSessionsSense, WAKE_RUNNER_IDLE_MS, WATCH_POLL_MS,
 } from "../../../senses/app-sessions/sense"
 import { appSessionsStateDir, readSnapshot, readWatches, watchSession } from "../../../senses/app-sessions/store"
@@ -276,6 +276,22 @@ describe("a session waiting on a permission prompt", () => {
     sense.stop()
   })
 
+  it("tells the owner about a session whose history is over the limit, and survives that notice failing", async () => {
+    makeDb()
+    appendEvents([assistant("hi")])
+    fs.truncateSync(path.join(stateDir, "session-state", ID, "events.jsonl"), 501 * 1024 * 1024)
+    const scheduler = manualScheduler()
+    const notifyOwner = vi.fn(async () => "sent" as const)
+    const sense = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: scheduler.schedule, deliver: async () => undefined, notifyOwner })
+    await sense.done()
+    expect(notifyOwner).toHaveBeenCalledWith(expect.stringContaining("hand-off"), [`oversize:${ID}`])
+    sense.stop()
+    fs.rmSync(path.join(agentRoot, "state"), { recursive: true, force: true })
+    const failing = startAppSessionsSense({ agentName: "slugger", agentRoot, client: { stateDir }, now: () => NOW, schedule: manualScheduler().schedule, deliver: async () => undefined, notifyOwner: async () => { throw new Error("no bot") } })
+    await failing.done()
+    failing.stop()
+  })
+
   it("survives a notice that fails", async () => {
     makeDb()
     appendEvents([request("r1", "2026-11-10T02:50:00.000Z")])
@@ -298,12 +314,15 @@ describe("the sense", () => {
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(1)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(1)
     expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(1)
+    expect(scheduler.live(DIGEST_IDLE_MS)).toHaveLength(1)
     scheduler.fire(SNAPSHOT_MS)
     scheduler.fire(WATCH_POLL_MS)
     scheduler.fire(WAKE_RUNNER_IDLE_MS)
+    scheduler.fire(DIGEST_IDLE_MS)
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(7)
+    expect(scheduler.tasks).toHaveLength(9)
     sense.stop()
+    expect(scheduler.live(DIGEST_IDLE_MS)).toHaveLength(0)
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(0)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(0)
     expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(0)
@@ -311,8 +330,9 @@ describe("the sense", () => {
     scheduler.tasks[0].fn()
     scheduler.tasks[1].fn()
     scheduler.tasks[2].fn()
+    scheduler.tasks[3].fn()
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(7)
+    expect(scheduler.tasks).toHaveLength(9)
   })
 
   it("runs each configured wake runner on its own cadence, only when due, with no model turn", async () => {
@@ -345,6 +365,34 @@ describe("the sense", () => {
     expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
     fs.rmSync(path.join(agentRoot, "agent.json"))
     expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
+  })
+
+  it("builds the status digest on its cadence and tells the owner what is due, only when agent.json asks for one", async () => {
+    makeDb()
+    const writeConfig = (appSessions: unknown) => fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
+      version: 2, enabled: true,
+      humanFacing: { provider: "anthropic", model: "test" }, agentFacing: { provider: "anthropic", model: "test" },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      senses: { "app-sessions": appSessions },
+    }))
+    const notify = vi.fn(async () => "sent" as const)
+    const run = vi.fn(async () => ({ ok: true, stdout: "{}", error: null }))
+    const deps = { client: { stateDir, housesitterPaths: ["/nonexistent/housesitter"], homeDir: agentRoot }, run, notify, now: NOW, home: agentRoot }
+    writeConfig({ enabled: true })
+    expect(await checkDigest("slugger", agentRoot, deps)).toBe(DIGEST_IDLE_MS)
+    expect(fs.existsSync(path.join(appSessionsStateDir(agentRoot), "digest.json"))).toBe(false)
+    writeConfig({ enabled: true, digest: { everySeconds: 120, drains: ["drains", "status"] } })
+    expect(await checkDigest("slugger", agentRoot, deps)).toBe(120_000)
+    expect(run).toHaveBeenCalledWith(["drains", "status"], 60_000)
+    expect(JSON.parse(fs.readFileSync(path.join(appSessionsStateDir(agentRoot), "digest.json"), "utf-8"))).toMatchObject({ counts: { idle: 1 } })
+    expect(JSON.parse(fs.readFileSync(path.join(appSessionsStateDir(agentRoot), "digest-state.json"), "utf-8")).seeded).toBe(true)
+    expect(notify).not.toHaveBeenCalled()
+    writeConfig({ enabled: true, digest: {} })
+    expect(await checkDigest("slugger", agentRoot, deps)).toBe(300_000)
+    writeConfig({ enabled: false, digest: {} })
+    expect(await checkDigest("slugger", agentRoot, deps)).toBe(DIGEST_IDLE_MS)
+    fs.rmSync(path.join(agentRoot, "agent.json"))
+    expect(await checkDigest("slugger", agentRoot, deps)).toBe(DIGEST_IDLE_MS)
   })
 
   it("does not reschedule a watch pass that finishes after the stop, and survives a failing pass", async () => {
