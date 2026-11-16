@@ -11,8 +11,6 @@ import { pushDue, stillDue } from "./digest-push"
 import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { startPromptTracker } from "./prompts"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
-import { retireSessions } from "./retire"
-import { noticeOversizedSessions, type Memory } from "./size-watch"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
 
@@ -42,8 +40,6 @@ export interface AppSessionsSenseOptions {
   wasDelivered?: WasDelivered
   /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
   notifyOwner?: NotifyOwner
-  /** Reads swap and free memory for the size watch; the machine's own by default. */
-  memory?: () => Memory
 }
 
 /** The replies the session finished since `entry.offset`, and the offset to continue from. */
@@ -189,7 +185,7 @@ export async function checkDigest(agentName: string, agentRoot: string, deps: { 
     const list = () => listAppSessions({ ...deps.client, now: () => deps.now })
     const rows = await list()
     const state = readDigestState(agentRoot)
-    await resumeStuck(agentRoot, rows, state, deps.now, { client: deps.client, ...(deps.resume ? { send: deps.resume } : {}) })
+    await resumeStuck(rows, state, deps.now, { client: deps.client, ...(deps.resume ? { send: deps.resume } : {}) })
     const digest = await writeDigest({
       agentRoot, config: config.digest, client: deps.client, run: deps.run, now: deps.now, home: deps.home, rows,
       appRunning: appRunning(deps.client), waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
@@ -218,7 +214,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let runnerPoll: Promise<unknown> = Promise.resolve()
   const due = new Map<string, number>()
   let waitingPoll: Promise<unknown> = Promise.resolve()
-  let sizePoll: Promise<unknown> = Promise.resolve()
   const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
   let cancelDigest: (() => void) | null = null
   let digestPoll: Promise<unknown> = Promise.resolve()
@@ -227,16 +222,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
     if (stopped) return
     waitingPoll = waitingPoll.then(() => recordSnapshot(agentRoot, client, now())).then(taken => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
-    })
-    sizePoll = sizePoll.then(async () => {
-      const rows = await listAppSessions({ ...client, now: () => now() })
-      const retired = await retireSessions(agentRoot, rows, { now: now(), client }).catch((error: Error) => {
-        emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_retire_error", message: "could not retire handed-off or finished sessions", meta: { error: error.message } })
-        return [] as string[]
-      })
-      await noticeOversizedSessions(agentRoot, rows.filter(row => !retired.includes(row.id)), { notify: notifyOwner, now: now(), client, ...(options.memory ? { memory: options.memory } : {}) })
-    }).catch((error: Error) => {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_oversize_error", message: "could not check the sessions' history sizes", meta: { error: error.message } })
     })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
   }
@@ -276,6 +261,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       cancelDigest?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, sizePoll, digestPoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, digestPoll]).then(() => undefined),
   }
 }
