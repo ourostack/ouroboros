@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 import { eventLogPath, type AppSessionRow, type AppSessionsOptions } from "./client"
 import { appSessionsStateDir, readJson } from "./store"
 
@@ -33,7 +34,10 @@ export function isHandedOff(agentRoot: string, row: Pick<AppSessionRow, "id" | "
       const len = fs.readSync(fd, buf, 0, buf.length, 0)
       fs.closeSync(fd)
       const head = buf.toString("utf8", 0, len)
-      if ((head.includes(row.id) || head.includes(row.id.slice(0, 8))) && HANDOFF_WORDS.test(head)) return true
+      if ((head.includes(row.id) || head.includes(row.id.slice(0, 8))) && HANDOFF_WORDS.test(head)) {
+        emitNervesEvent({ component: "senses", event: "senses.app_sessions_handoff_found", message: "found the successor that a session was handed off to", meta: { session: row.id, successor: name } })
+        return true
+      }
     } catch {
       continue
     }

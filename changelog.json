@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1154",
       "changes": [
-        "archive_session may now archive a session this agent did not create when it is flagged oversize and a newer session names it as handed off, or when the owner asked for it explicitly. Each such archive is logged and listed in the next status digest; archiving is reversible."
+        "archive_session may now archive a session this agent did not create when it is flagged oversize and a newer session names it as handed off, or when the owner asked for it explicitly. Each such archive is logged and listed in the next status digest, and archiving is reversible."
       ]
     },
     {
