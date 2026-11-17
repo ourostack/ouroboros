@@ -22,7 +22,7 @@ export const PARSER_FLAGS: readonly string[] = [
   "--generate-unlock-secret", "--github-token", "--habit", "--help", "--home", "--host", "--host-stall-observed",
   "--human", "--id", "--identity-file", "--idle-silence-ms", "--ids", "--init", "--initiative", "--input-file", "--into",
   "--item", "--json", "--keep-versions", "--key", "--keys-dir", "--lane", "--last", "--latest", "--legacy",
-  "--legacy-root", "--level", "--limit", "--manifest", "--max-duration-ms", "--max-old-space-size", "--message-guid",
+  "--legacy-root", "--level", "--limit", "--live", "--manifest", "--max-duration-ms", "--max-old-space-size", "--message-guid",
   "--migration-path", "--min-mem-available-mb", "--mode", "--model", "--name", "--native", "--no-chat",
   "--no-delegated-source", "--no-repair", "--no-send", "--no-wake", "--note", "--notify-session", "--oauth-token",
   "--observe-only", "--occasion", "--oom-score-adj", "--operation-id", "--output", "--output-file", "--owner-alone",
