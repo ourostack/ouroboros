@@ -967,9 +967,14 @@ export async function streamResponsesApi(
         }
         break;
       }
+      case "response.failed":
       case "response.incomplete":
       case "response.completed":
       case "response.done": {
+        if (event.type === "response.failed" || event.response?.status === "failed") {
+          const message = event.response?.error?.message;
+          throw new Error(`Responses API failed: ${typeof message === "string" ? message : "without error details"}`);
+        }
         if (event.type === "response.incomplete" || event.response?.status === "incomplete") incomplete = true;
         const u = event.response?.usage as ResponseUsage | undefined;
         if (u) {
