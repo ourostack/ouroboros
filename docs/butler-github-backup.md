@@ -7,6 +7,8 @@ Your Butler keeps everything it is in its bundle: its psyche (who it is and what
 
 Without a remote, sync still commits each change locally inside the bundle, so you have history but no off-machine backup.
 
+You can also ask your Butler to edit its psyche in your own private chat when your relationship has family trust. On Teams, the conversation must be explicitly identified as personal; group chats, channels and conversations of unknown type cannot authorize an identity edit.
+
 ## What goes to GitHub
 
 Sync commits the bundle except for what its exclude list leaves out. The Butler writes that list to the bundle's `.git/info/exclude` on every start, and `ouro sanctuary git-exclude --print` shows it. It leaves out:
