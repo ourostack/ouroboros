@@ -203,7 +203,9 @@ async function runCli(cli: Cli, argv: readonly string[], io: CliIo, options: Run
     return printResult(cli, cmd, input, result, json, io, voice, options.env ?? processEnv());
   } catch (e) {
     const shape: AxErrorShape = isAxError(e) ? e.shape : { code: "error", exit: cli.exits.code("error"), thing: cli.name, problem: e instanceof Error ? e.message : String(e), fix: null };
-    io.stderr.write(`${errorLine(cli.name, shape)}\n`);
+    // A message that is already a whole `<tool>: ...` line (a failure the tool's own code built) is printed as it is, not prefixed again.
+    const whole = !isAxError(e) && e instanceof Error && /^[a-z][a-z0-9-]*: /.test(e.message);
+    io.stderr.write(`${whole ? shape.problem.replace(/\s*[\r\n]+\s*/g, " ") : errorLine(cli.name, shape)}\n`);
     // A person-only word, or another agent's item, is a refusal of an action, so --json answers with its outcome, which
     // carries the same error.
     if (json) io.stdout.write(`${JSON.stringify(shape.code === "person-only" || shape.code === "not-yours" ? outcome({ action: shape.thing, state: "refused", summary: errorMessage(shape), error: shape }) : errorJson(shape), null, 2)}\n`);
