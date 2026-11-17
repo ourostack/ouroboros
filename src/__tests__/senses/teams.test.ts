@@ -4243,7 +4243,7 @@ describe("Teams adapter - session persistence", () => {
     })
     mockTeamsDeps({ runAgentFn, friend: { kind, trustLevel } })
     const teams = await import("../../senses/teams")
-    await teams.handleTeamsMessage('I need more brevity. wanna edit your psyche?', { emit: vi.fn(), update: vi.fn(), close: vi.fn() }, "psyche-request", {
+    await teams.handleTeamsMessage("wanna edit your psyche?", { emit: vi.fn(), update: vi.fn(), close: vi.fn() }, "psyche-request", {
       signin: async () => undefined,
       aadObjectId: "synthetic-owner-aad",
       tenantId: "synthetic-tenant",

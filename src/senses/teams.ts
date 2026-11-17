@@ -816,9 +816,9 @@ export function parseTeamsQuotedReply(
 }
 
 // Context from the Teams activity that carries OAuth tokens and signin ability
-/** Teams calls a one-to-one chat "personal"; a group chat or channel is shared with other people. Unknown counts as one-to-one, as before. */
-export function teamsIsGroupChat(conversationType: unknown): boolean {
-  return conversationType !== undefined && conversationType !== "personal"
+/** Only Teams' explicit "personal" conversation type proves a one-to-one chat. */
+export function teamsIsGroupChat(conversationType: unknown): boolean | undefined {
+  return conversationType === undefined ? undefined : conversationType !== "personal"
 }
 
 export interface TeamsMessageContext {
@@ -975,7 +975,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   })
 
   // Pre-resolve friend for session path + slash commands (pipeline will re-use the cached result)
-  const resolvedContext = await resolver.resolve()
+  const resolvedContext = { ...await resolver.resolve(), isGroupChat: teamsContext?.isGroupChat }
   const friendId = resolvedContext.friend.id
 
   // The owner's "how's it going?" is answered from the status digest with no model turn.
