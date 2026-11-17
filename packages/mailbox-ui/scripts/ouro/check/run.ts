@@ -58,6 +58,8 @@ interface Finding {
   // A blurry picture's numbers, and the file it drew when the check served it from a built folder.
   // url is the page's address: a URL target's own, or a built folder's page path, since its server's port changes each run.
   image?: ImageMeasure & { url?: string; file?: string };
+  // first-paint-swap's two controls' HTML, first drawn and at rest, so the finding explains itself without a rerun.
+  swap?: PageIssue["swap"];
   box?: Box;
   closeUp?: string;
   pair?: string;
@@ -630,9 +632,9 @@ async function check(options: CheckOptions): Promise<CheckResult> {
   };
   // A finding, recorded, and photographed with its element outlined unless the page already has one of it or 40.
   const record = async (page: Page, target: Target, issue: PageIssue, width: number, height: number, theme: string) => {
-    const { ref, rule, element, detail, value, budget, unit, samples, image } = issue;
+    const { ref, rule, element, detail, value, budget, unit, samples, image, swap } = issue;
     const measured = value === undefined ? {} : { value, budget: budget!, unit: unit!, ...(samples ? { samples } : {}) };
-    const f: Finding = { site: target.site, page: target.page, width, height, theme, rule, element, detail, ...measured, gated: isGated(config, target.page, rule, detail), dpr: dprAt(width), ...(image ? { image: { ...image, ...placeOf(target, image.src) } } : {}) };
+    const f: Finding = { site: target.site, page: target.page, width, height, theme, rule, element, detail, ...measured, gated: isGated(config, target.page, rule, detail), dpr: dprAt(width), ...(image ? { image: { ...image, ...placeOf(target, image.src) } } : {}), ...(swap ? { swap } : {}) };
     findings.push(f);
     const key = keyOf(f);
     if (pictured.has(key) || closeUps.get(target)! >= MAX_CLOSE_UPS) return;
