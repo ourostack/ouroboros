@@ -199,7 +199,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     }
   })
 
-  it("records completed source retirement without moving either debt deadline", () => {
+  it("records completed source retirement and the paid mailroom raw-orphan debt", () => {
     const debt = JSON.parse(fs.readFileSync("docs/intentional-debt.json", "utf8")) as { items: Array<Record<string, unknown>> }
     expect(debt.items).toContainEqual({
       id: "sanctuary-alpha797-source-compatibility",
@@ -208,9 +208,7 @@ describe("Sanctuary pre-activation container auditor", () => {
       due: "2026-09-12",
       removalCriteria: "After a verified package-managed release is installed and is the retained rollback, remove the pinned alpha.797 source contract/constant/runbook branch and its tests; never use it for target creation.",
     })
-    expect(debt.items).toContainEqual(expect.objectContaining({
-      id: "mailroom-encrypted-raw-orphans", status: "open", owner: "Mailroom", due: "2026-11-24",
-    }))
+    expect(debt.items.some((item) => item.id === "mailroom-encrypted-raw-orphans")).toBe(false)
   })
 
   it("fails closed across malformed optional inspect fields", () => {
