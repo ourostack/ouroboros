@@ -44,7 +44,7 @@ interface StreamDelta {
   tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
 }
 
-export type ProviderFinishReason = "stop" | "length" | "content_filter" | "tool_calls" | "function_call" | "unknown";
+export type ProviderFinishReason = "stop" | "length" | "incomplete" | "content_filter" | "tool_calls" | "function_call" | "unknown";
 
 export interface TurnResult {
   content: string;
@@ -898,6 +898,7 @@ export async function streamResponsesApi(
   let streamStarted = false;
   const toolCalls: { id: string; name: string; arguments: string }[] = [];
   const outputItems: ResponseItem[] = [];
+  let incomplete = false;
   let currentToolCall: { call_id: string; name: string; arguments: string } | null = null;
   let usage: UsageData | undefined;
   const answerStreamer = new SettleStreamer(callbacks, eagerSettleStreaming);
@@ -966,8 +967,10 @@ export async function streamResponsesApi(
         }
         break;
       }
+      case "response.incomplete":
       case "response.completed":
       case "response.done": {
+        if (event.type === "response.incomplete" || event.response?.status === "incomplete") incomplete = true;
         const u = event.response?.usage as ResponseUsage | undefined;
         if (u) {
           usage = {
@@ -1020,6 +1023,7 @@ export async function streamResponsesApi(
     toolCalls,
     outputItems,
     usage,
+    ...(incomplete ? { termination: { finishReason: "incomplete" as const, refused: false } } : {}),
     settleStreamed: answerStreamer.streamed,
     ...(settleFinalization ? { settleFinalization } : {}),
   };

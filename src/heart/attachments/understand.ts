@@ -64,10 +64,11 @@ export async function describeImage(agentName: string, params: {
         ],
       }]
       runtime.resetTurnState(messages)
+      const signal = params.timeoutMs === undefined ? undefined : AbortSignal.timeout(params.timeoutMs)
       const result = await runtime.streamTurn({
         messages,
         activeTools: [],
-        signal: params.timeoutMs === undefined ? undefined : AbortSignal.timeout(params.timeoutMs),
+        signal,
         callbacks: {
           onModelStart: ignoreProgress,
           onModelStreamStart: ignoreProgress,
@@ -78,8 +79,10 @@ export async function describeImage(agentName: string, params: {
           onError(error) { throw error },
         },
       })
+      signal?.throwIfAborted()
       if (!result.content.trim() || result.toolCalls.length > 0 || result.termination?.refused
-        || result.termination?.finishReason === "length" || result.termination?.finishReason === "content_filter") {
+        || result.termination?.finishReason === "length" || result.termination?.finishReason === "incomplete"
+        || result.termination?.finishReason === "content_filter") {
         throw new Error(`image description from ${runtime.id} (${runtime.model}) was empty, refused or incomplete; retry the image request`)
       }
       description = result.content

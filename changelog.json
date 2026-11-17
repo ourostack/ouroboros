@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1179",
       "changes": [
-        "Describe Teams screenshots and image attachments through the agent's configured vision provider without requiring a MiniMax key."
+        "Describe Teams screenshots and image attachments through the agent's configured vision provider without requiring a MiniMax key.",
+        "Reject truncated native image descriptions and preserve provider completion status and attachment timeouts."
       ]
     },
     {

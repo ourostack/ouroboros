@@ -386,6 +386,7 @@ async function streamAnthropicMessages(
   let content = "";
   let streamStarted = false;
   let usage: UsageData | undefined;
+  let termination: TurnResult["termination"];
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   const thinkingBlocks = new Map<number, { type: "thinking"; thinking: string; signature: string }>();
   const redactedBlocks = new Map<number, { type: "redacted_thinking"; data: string }>();
@@ -483,6 +484,11 @@ async function streamAnthropicMessages(
       }
 
       if (eventType === "message_delta") {
+        const stopReason = (event.delta as { stop_reason?: unknown } | undefined)?.stop_reason;
+        if (stopReason === "max_tokens" || stopReason === "model_context_window_exceeded"
+          || stopReason === "pause_turn" || stopReason === "refusal") {
+          termination = { finishReason: "incomplete", refused: stopReason === "refusal" };
+        }
         const rawUsage = event.usage;
         if (rawUsage && typeof rawUsage === "object") {
           usage = toAnthropicUsage(rawUsage as Record<string, unknown>);
@@ -525,6 +531,7 @@ async function streamAnthropicMessages(
     toolCalls: completedToolCalls,
     outputItems,
     usage,
+    ...(termination ? { termination } : {}),
     settleStreamed: answerStreamer.streamed,
     ...(settleFinalization ? { settleFinalization } : {}),
   };
