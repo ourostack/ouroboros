@@ -386,6 +386,10 @@ The retry ladder is:
 6. Retry the request within the bounded retry policy.
 7. If it still fails, mark the lane degraded and surface exact repair guidance.
 
+### Vault outage at daemon startup
+
+If the vault does not answer at all (a network timeout, refused or reset connection, DNS failure) when the daemon starts, the daemon stays up instead of exiting. That agent is marked degraded as `vault:<agent>` in the daemon health file (so `ouro status`, Housesitter and Shepherd see it), and the daemon retries the vault with capped exponential backoff (5 s doubling to 5 min), clearing the state when the vault answers. No credential is cached on disk to bridge the outage: a fresh daemon process holds none, so anything that needs a secret (provider calls, runtime-config senses) stays down until the vault returns, while the rest of the daemon (process management, health, habits that need no secret) keeps running. A vault that answers with a rejection (locked, wrong password, missing or invalid credential) is still fatal. Destructive commands such as `ouro mail sweep-orphans` keep requiring a fresh vault read and never use cached credentials.
+
 Repair guidance must include an actor:
 
 - `agent-runnable`: safe for the agent to run when it has tool access, such as status, verify, and refresh commands.

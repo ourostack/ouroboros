@@ -54,6 +54,8 @@ import {
 } from "../provider-credentials"
 import { confirmedAbsentRuntimeCredentialItems, readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { prepareProviderRuntimeTolerantOfVaultOutage } from "./vault-outage"
+import type { ConfigCheckResult } from "./agent-config-check"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import {
   createProviderReadinessPreparationFailure,
@@ -731,40 +733,48 @@ function writeStopCommandHealthState(): void {
   }
 }
 
+/* v8 ignore start -- degraded-component bookkeeping wiring; retry/backoff logic is tested in vault-outage.test.ts @preserve */
+function setVaultDegraded(agent: string, reason: string): void {
+  const component = `vault:${agent}`
+  const fullReason = `${reason}. Fix: the agent's vault is unreachable; the daemon stays up and retries. Run 'ouro doctor' if this persists.`
+  const existing = degradedComponents.find((entry) => entry.component === component)
+  if (existing) existing.reason = fullReason
+  else degradedComponents.push({ component, reason: fullReason, since: new Date().toISOString() })
+}
+
+function clearVaultDegraded(agent: string): void {
+  const index = degradedComponents.findIndex((entry) => entry.component === `vault:${agent}`)
+  if (index >= 0) degradedComponents.splice(index, 1)
+}
+
+/* v8 ignore stop */
+
+async function checkProviderRuntime(agent: string): Promise<ConfigCheckResult> {
+  try {
+    await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+    // Read from the same vault listing: whether this machine has config or not, the
+    // daemon then knows, and its bootstrap spares each worker and sense a vault CLI run.
+    await refreshMachineRuntimeCredentialConfig(agent, daemonMachineId, { preserveCachedOnFailure: true })
+    // The ping runs in a child process, so the provider SDK it loads doesn't stay in the daemon.
+    return await checkAgentConfigWithProviderHealth(agent, getAgentBundlesRoot(), { pingProvider: pingProviderInChild })
+  } catch {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.provider_readiness_unavailable",
+      message: "fresh provider readiness check failed before daemon startup",
+      meta: { agent },
+    })
+    throw new Error("provider runtime preparation failed")
+  }
+}
+
 async function prepareProviderRuntime(): Promise<void> {
-  const bundlesRoot = getAgentBundlesRoot()
-  const readiness = await Promise.all(readinessAgents.map(async (agent) => {
-    try {
-      await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
-      // Read from the same vault listing: whether this machine has config or not, the
-      // daemon then knows, and its bootstrap spares each worker and sense a vault CLI run.
-      await refreshMachineRuntimeCredentialConfig(agent, daemonMachineId, { preserveCachedOnFailure: true })
-      // The ping runs in a child process, so the provider SDK it loads doesn't stay in the daemon.
-      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot, { pingProvider: pingProviderInChild })
-      if (result.ok) return null
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.provider_readiness_unavailable",
-        message: "fresh provider readiness was unavailable before daemon startup",
-        meta: { agent },
-      })
-      return result.issue ?? {
-        summary: `${agent}: provider runtime unavailable`,
-        actions: [{ actor: "agent-runnable", command: "ouro doctor" }],
-      }
-    } catch {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.provider_readiness_unavailable",
-        message: "fresh provider readiness check failed before daemon startup",
-        meta: { agent },
-      })
-      throw new Error("provider runtime preparation failed")
-    }
-  }))
-  const failures = readiness.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+  const failures = await prepareProviderRuntimeTolerantOfVaultOutage(readinessAgents, {
+    check: checkProviderRuntime,
+    onDegraded: setVaultDegraded,
+    onRecovered: clearVaultDegraded,
+  })
   if (failures.length > 0) {
     throw createProviderReadinessPreparationFailure(failures)
   }

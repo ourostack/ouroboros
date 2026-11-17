@@ -53,4 +53,14 @@ describe("mail sweep-orphans", () => {
     mocks.resolve.mockReturnValueOnce({ ok: true, storeKind: "file", store: {} })
     await expect(runOuroCli(["mail", "sweep-orphans", "--agent", "Slugger"], deps)).rejects.toThrow("requires hosted Azure Mailroom; resolved file")
   })
+
+  it("stays fail-closed during a vault outage: never uses cached credentials and never sweeps", async () => {
+    const deps = { writeStdout: () => undefined } as unknown as OuroCliDeps
+    mocks.refresh.mockClear()
+    mocks.resolve.mockClear()
+    mocks.refresh.mockResolvedValueOnce({ ok: false, itemPath: "runtime/config", error: "vault request to /identity/accounts/prelogin timed out" })
+    await expect(runOuroCli(["mail", "sweep-orphans", "--agent", "Slugger", "--live"], deps)).rejects.toThrow("requires fresh runtime/config: vault request to /identity/accounts/prelogin timed out")
+    expect(mocks.refresh).toHaveBeenCalledWith("Slugger", { preserveCachedOnFailure: false })
+    expect(mocks.resolve).not.toHaveBeenCalled()
+  })
 })
