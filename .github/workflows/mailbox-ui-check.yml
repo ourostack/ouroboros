@@ -53,7 +53,7 @@ jobs:
 
       # Gated: any finding fails the job. The report is uploaded either way.
       - name: Ouro check
-        run: node src/lib/ouro/check/check.ts http://127.0.0.1:6878/ --out ouro-check
+        run: node scripts/ouro/check/check.ts http://127.0.0.1:6878/ --out ouro-check
 
       - name: Upload the Ouro check report
         if: always()
