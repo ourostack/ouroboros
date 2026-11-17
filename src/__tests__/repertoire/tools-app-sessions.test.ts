@@ -61,6 +61,21 @@ describe("the tool set", () => {
     ])
   })
 
+  it("tells the agent a message goes as a peer from Ouroboros, not as the owner", () => {
+    const text = tools.sendSessionMessageTool.tool.function.description
+    expect(text).toContain("cross-session message from Ouroboros")
+    expect(text).toContain("not as the owner")
+    expect(text).not.toContain("takes it for the person")
+    expect(text).toContain("not this runtime itself")
+  })
+
+  it("tells the agent repository work goes to a project session, never a chat", () => {
+    const text = tools.createSessionTool.tool.function.description
+    expect(text).toContain("General Chat")
+    expect(text).toContain("must pass project_id")
+    expect(text).toContain("ouroboros project")
+  })
+
   it("is on only when agent.json enables the sense", () => {
     expect(tools.appSessionsToolsEnabled(undefined)).toBe(false)
     expect(tools.appSessionsToolsEnabled(agentRoot)).toBe(false)
@@ -104,7 +119,7 @@ describe("each tool runs its Shepherd verb", () => {
     expect(await call(tools.sendSessionMessageTool, { session_id: "s1", message: "hi", delivery_mode: "enqueue" })).toEqual({ ok: true, status: "accepted", session_id: "s1", watching: true })
     expect(calls()).toEqual([
       { argv: ["session", "s1", "--json"] },
-      { argv: ["send", "s1", "--json", "--input", "-"], input: { message: "hi", delivery_mode: "enqueue" } },
+      { argv: ["send", "s1", "--json", "--why", "Ouroboros messages Now: hi", "--input", "-"], input: { message: "hi", delivery_mode: "enqueue" } },
     ])
     expect(readWatches(agentRoot).s1).toMatchObject({ name: "Now", after: expect.any(String), once: true })
     expect(await call(tools.sendSessionMessageTool, { session_id: "s1", message: "again", notify_on_idle: "never" })).toMatchObject({ watching: false })
@@ -115,7 +130,7 @@ describe("each tool runs its Shepherd verb", () => {
   it("creates a session with its kickoff, and watches the first reply from the start of its log only when prompted", async () => {
     replies({ create: { body: { ok: true, created: true, session_id: "n1", app_url: "ghapp://sessions/n1", kind: "session" } } })
     expect(await call(tools.createSessionTool, { name: "New", project_id: "proj", kickoff: { prompt: "go" }, notify_on_idle: "always" })).toMatchObject({ session_id: "n1", watching: true })
-    expect(calls()).toEqual([{ argv: ["create", "--json", "--input", "-"], input: { name: "New", project_id: "proj", kickoff: { prompt: "go" } } }])
+    expect(calls()).toEqual([{ argv: ["create", "--json", "--why", "Ouroboros opens New: go", "--input", "-"], input: { name: "New", project_id: "proj", kickoff: { prompt: "go" } } }])
     expect(readWatches(agentRoot).n1).toMatchObject({ name: "New", after: expect.any(String) })
     replies({ create: { body: { ok: true, created: true, session_id: "n3" } } })
     expect(await call(tools.createSessionTool, { project_id: "proj", kickoff: { prompt: "go" } })).toMatchObject({ watching: true })
@@ -129,18 +144,20 @@ describe("each tool runs its Shepherd verb", () => {
     expect(await call(tools.answerSessionInputTool, { session_id: "s1", answer: "yes" })).toEqual({ ok: true, session_id: "s1" })
     expect(await call(tools.respondToSessionPlanTool, { session_id: "s1", approved: true, selected_action: "go", feedback: "f" })).toMatchObject({ approved: true })
     expect(calls()).toEqual([
-      { argv: ["answer", "s1", "--json", "--input", "-"], input: { answer: "yes" } },
-      { argv: ["plan", "s1", "--json", "--input", "-"], input: { approved: true, selected_action: "go", feedback: "f" } },
+      { argv: ["answer", "s1", "--json", "--why", "Ouroboros answers the question session s1 asked: yes", "--input", "-"], input: { answer: "yes" } },
+      { argv: ["plan", "s1", "--json", "--why", "Ouroboros approves the plan of session s1: f", "--input", "-"], input: { approved: true, selected_action: "go", feedback: "f" } },
     ])
+    await call(tools.respondToSessionPlanTool, { session_id: "s1", approved: false })
+    expect(calls().at(-1)).toEqual({ argv: ["plan", "s1", "--json", "--why", "Ouroboros rejects the plan of session s1", "--input", "-"], input: { approved: false } })
   })
 
   it("archives a session, and logs an archive the owner asked for", async () => {
     replies({ session: { body: { id: "s1", name: "Now" } }, archive: { body: { ok: true, session_id: "s1" } } })
     expect(await call(tools.archiveSessionTool, { session_id: "s1" })).toEqual({ ok: true, session_id: "s1" })
-    expect(calls().at(-1)).toEqual({ argv: ["archive", "s1", "--json"] })
+    expect(calls().at(-1)).toEqual({ argv: ["archive", "s1", "--json", "--why", "Ouroboros archives Now, which it created or which was handed off"] })
     expect(readArchiveLog(agentRoot)).toEqual([])
     expect(await call(tools.archiveSessionTool, { session_id: "s1", owner_asked: true })).toEqual({ ok: true, session_id: "s1" })
-    expect(calls().at(-1)).toEqual({ argv: ["archive", "s1", "--json", "--input", "-"], input: { owner_asked: true } })
+    expect(calls().at(-1)).toEqual({ argv: ["archive", "s1", "--json", "--why", "The owner asked Ouroboros to archive Now", "--input", "-"], input: { owner_asked: true } })
     expect(readArchiveLog(agentRoot)).toEqual([expect.objectContaining({ id: "s1", name: "Now", reason: "owner-asked" })])
   })
 
@@ -154,12 +171,12 @@ describe("each tool runs its Shepherd verb", () => {
     expect(await call(tools.runWorkflowTool, { id: "w1" })).toEqual({})
     expect(calls()).toEqual([
       { argv: ["open", "s1", "--json"] },
-      { argv: ["automation", "s1", "--json", "--input", "-"], input: { interval: "minutes", every_minutes: 5, prompt: "p" } },
-      { argv: ["automation", "s1", "--json", "--input", "-"], input: { clear: true } },
+      { argv: ["automation", "s1", "--json", "--why", "Ouroboros schedules a wake-up for session s1: p", "--input", "-"], input: { interval: "minutes", every_minutes: 5, prompt: "p" } },
+      { argv: ["automation", "s1", "--json", "--why", "Ouroboros clears the wake-ups of session s1", "--input", "-"], input: { clear: true } },
       { argv: ["automation", "s1", "--json"] },
       { argv: ["automation", "s1", "--json"] },
       { argv: ["workflows", "--json"] },
-      { argv: ["run-workflow", "w1", "--json"] },
+      { argv: ["run-workflow", "w1", "--json", "--why", "Ouroboros runs workflow w1"] },
     ])
   })
 
