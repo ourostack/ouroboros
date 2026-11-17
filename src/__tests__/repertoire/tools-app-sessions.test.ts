@@ -147,6 +147,8 @@ describe("each tool runs its Shepherd verb", () => {
       { argv: ["answer", "s1", "--json", "--why", "Ouroboros answers the question session s1 asked: yes", "--input", "-"], input: { answer: "yes" } },
       { argv: ["plan", "s1", "--json", "--why", "Ouroboros approves the plan of session s1: f", "--input", "-"], input: { approved: true, selected_action: "go", feedback: "f" } },
     ])
+    await call(tools.respondToSessionPlanTool, { session_id: "s1", approved: false })
+    expect(calls().at(-1)).toEqual({ argv: ["plan", "s1", "--json", "--why", "Ouroboros rejects the plan of session s1", "--input", "-"], input: { approved: false } })
   })
 
   it("archives a session, and logs an archive the owner asked for", async () => {
