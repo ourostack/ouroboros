@@ -18,6 +18,7 @@ import { findSizeIssues, type ImageMeasure, type Measure, type PageIssue } from 
 import { findTextIssues } from "./text-check.ts";
 import { findLayoutIssues } from "./layout-check.ts";
 import { findThemeIssues } from "./theme-check.ts";
+import { findOffThemeIssues } from "./token-check.ts";
 import { findInteractionIssues } from "./interaction-check.ts";
 import { quietPipes, runCli, defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input, BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE, DEFAULT_OUTCOME_EXITS, outcome, type Outcome, AxError, commandLine, didYouMean, isAxError } from "./run.kit.mts";
 import { findWrapIssues, readHeroArt, type HeroArt } from "./wrap-check.ts";
@@ -224,6 +225,8 @@ const LABELS: Record<string, string> = {
   "stray-scrollbar": "stray scrollbar",
   "focus-ring": "no focus ring",
   "dark-miss": "missed dark mode",
+  "off-theme": "off the theme",
+  "off-scale": "spacing off the scale",
   "hero-dark-art": "hero without night art",
   "disabled-no-reason": "disabled, no reason",
   "lone-word": "lone last word",
@@ -263,6 +266,8 @@ const HINTS: Record<string, string> = {
   "first-paint-swap": "draw the final controls in the first frame, a list that fits with More already in it, rather than replacing one a frame later",
   "focus-ring": "give it a :focus-visible outline in a colour that stands out from what is behind it",
   "dark-miss": "fill it from a theme token that has a dark value, not a fixed light colour",
+  "off-theme": "take the value from the token the finding names (its var() or its Tailwind class), so a theme change reaches it",
+  "off-scale": "take the spacing from the step the finding names (its Tailwind class, or a layout component's gap)",
   "hero-dark-art": "pass picture={{ light, dark }}, the same scene by day and at night",
   "disabled-no-reason": "say why beside it and tie the words to it with aria-describedby, or give it a title",
   "lone-word": "wrap it with text-wrap: pretty (balance for a heading or centred text), or keep a short phrase together",
@@ -828,6 +833,8 @@ async function check(options: CheckOptions): Promise<CheckResult> {
       shown.push(...(await page.evaluate(findTextIssues)));
       shown.push(...(await page.evaluate(findLayoutIssues, {})));
       shown.push(...(await page.evaluate(findThemeIssues, {})));
+      // off-theme and off-scale read the page's style rules, the same at every size and theme: at one, inp's.
+      if (inpAt === `${width}x${height} ${theme}`) shown.push(...(await page.evaluate(findOffThemeIssues, {})));
       shown.push(...(await page.evaluate(findInteractionIssues)));
       shown.push(...(await page.evaluate(findWrapIssues, {})));
       const behind = new Set(await page.evaluate(behindModal, [...new Set(shown.map((issue) => issue.ref))]));
