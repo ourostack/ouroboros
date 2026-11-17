@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const digest = vi.hoisted(() => ({ readDigestText: vi.fn() }))
 vi.mock("../../senses/app-sessions/digest", () => digest)
-const client = vi.hoisted(() => ({ eventLogSize: vi.fn(() => 42), restartStatus: vi.fn(), restartEnqueue: vi.fn() }))
+const client = vi.hoisted(() => ({ restartStatus: vi.fn(), restartEnqueue: vi.fn() }))
 vi.mock("../../senses/app-sessions/client", () => client)
 
 import * as tools from "../../repertoire/tools-app-sessions"
@@ -44,7 +44,6 @@ beforeEach(() => {
   process.env.SHEPHERD_BIN = path.join(shepherdDir, "shepherd.mjs")
   ctx = { agentRoot, agentName: "ouroboros" } as ToolContext
   vi.clearAllMocks()
-  client.eventLogSize.mockReturnValue(42)
 })
 afterEach(() => {
   for (const [key, value] of Object.entries(SAVED)) {
@@ -107,7 +106,7 @@ describe("each tool runs its Shepherd verb", () => {
       { argv: ["session", "s1", "--json"] },
       { argv: ["send", "s1", "--json", "--input", "-"], input: { message: "hi", delivery_mode: "enqueue" } },
     ])
-    expect(readWatches(agentRoot).s1).toMatchObject({ name: "Now", offset: 42, once: true })
+    expect(readWatches(agentRoot).s1).toMatchObject({ name: "Now", after: expect.any(String), once: true })
     expect(await call(tools.sendSessionMessageTool, { session_id: "s1", message: "again", notify_on_idle: "never" })).toMatchObject({ watching: false })
     expect(await call(tools.sendSessionMessageTool, { session_id: "s1", message: "always", notify_on_idle: "always" })).toMatchObject({ watching: true })
     expect(readWatches(agentRoot).s1).not.toHaveProperty("once")
@@ -117,10 +116,10 @@ describe("each tool runs its Shepherd verb", () => {
     replies({ create: { body: { ok: true, created: true, session_id: "n1", app_url: "ghapp://sessions/n1", kind: "session" } } })
     expect(await call(tools.createSessionTool, { name: "New", project_id: "proj", kickoff: { prompt: "go" }, notify_on_idle: "always" })).toMatchObject({ session_id: "n1", watching: true })
     expect(calls()).toEqual([{ argv: ["create", "--json", "--input", "-"], input: { name: "New", project_id: "proj", kickoff: { prompt: "go" } } }])
-    expect(readWatches(agentRoot).n1).toMatchObject({ name: "New", offset: 0 })
+    expect(readWatches(agentRoot).n1).toMatchObject({ name: "New", after: expect.any(String) })
     replies({ create: { body: { ok: true, created: true, session_id: "n3" } } })
     expect(await call(tools.createSessionTool, { project_id: "proj", kickoff: { prompt: "go" } })).toMatchObject({ watching: true })
-    expect(readWatches(agentRoot).n3).toMatchObject({ name: null, offset: 0 })
+    expect(readWatches(agentRoot).n3).toMatchObject({ name: null, after: expect.any(String) })
     expect(await call(tools.createSessionTool, { name: "Quiet", session_kind: "chat" })).not.toHaveProperty("watching")
     expect(readWatches(agentRoot)).not.toHaveProperty("n2")
   })

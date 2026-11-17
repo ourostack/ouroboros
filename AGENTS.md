@@ -11,7 +11,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 
 ## The Copilot app's sessions are Shepherd's
 
-**[Shepherd](https://github.com/ourostack/shepherd) keeps the flock: the GitHub Copilot app's sessions, as work. [Housesitter](https://github.com/ourostack/housesitter) keeps the house: the Mac and the app as a running process.** Ouroboros is an agent that uses them, not their home. Don't add another reader of the app's socket, `data.db` or session histories here: use Shepherd's, and contribute what it lacks to Shepherd. The app-sessions sense in `src/senses/app-sessions/` is moving there duty by duty, and Ouroboros's tools will call the `shepherd` CLI with `--json`.
+**[Shepherd](https://github.com/ourostack/shepherd) keeps the flock: the GitHub Copilot app's sessions, as work. [Housesitter](https://github.com/ourostack/housesitter) keeps the house: the Mac and the app as a running process.** Ouroboros is an agent that uses them, not their home. Don't add another reader of the app's socket, `data.db` or session histories here: use Shepherd's, and contribute what it lacks to Shepherd. The move is done: Ouroboros's app-sessions tools and sense read and act through the `shepherd` CLI with `--json` (`src/senses/app-sessions/shepherd-cli.ts`). The one reader of a session's event log left here is the digest's task-card scan, until Shepherd exposes tool calls.
 
 ## Constitutional Commitments
 

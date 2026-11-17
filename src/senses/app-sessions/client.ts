@@ -2,29 +2,17 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { execFile } from "node:child_process"
-import WebSocket from "ws"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 /**
- * This Mac's GitHub Copilot app, read and written the way the app's own sidebar does it. The session list comes from
- * the app's database (`<stateDir>/data.db`, opened read-only), what a session said from its event log
- * (`<stateDir>/session-state/<id>/events.jsonl`), and every write is a request on the app's local WebSocket (port and
- * token in `<stateDir>/run/`). A restart of the app is asked of Housesitter (`housesitter restart-copilot`), never done here.
- *
- * This module is the per-machine client: it knows nothing about agents, tools or prompts, so the app-sessions sense,
- * its tools and the fleet sense all build on it.
+ * The shapes the app-sessions sense works from, the state-folder path its digest reads a session's task from, and
+ * Housesitter's restart. The app's sessions come from Shepherd (`shepherd-rows.ts`); nothing here talks to the app.
  */
-export type Frame = Record<string, unknown>
-export type OpenSocket = (url: string) => WebSocket
 export type RunFile = (file: string, args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
 
 export interface AppSessionsOptions {
   /** The app's state folder, `~/.copilot` unless a test says otherwise. */
   stateDir?: string
-  openSocket?: OpenSocket
-  now?: () => number
-  /** How long a send waits for the app's answer. Closing the socket before the app answers cancels the send. */
-  sendWaitMs?: number
   /** Runs Housesitter; tests replace it. */
   runFile?: RunFile
   /** Where to look for Housesitter's `bin/housesitter.mjs` (or an executable named housesitter), first match wins; tests replace it. */
@@ -58,22 +46,18 @@ export interface AppSessionRow {
   createdAt: string | null
   updatedAt: string | null
   lastActivity: string | null
-  /** What the session's history says it waits on: a question, a plan approval or a permission. */
+  /** What the session waits on: a question, a plan approval or a permission. */
   awaiting?: "input" | "plan" | "permission"
-  /** The oldest permission request still open, whatever else the session waits on. */
+  /** The permission request the person has not answered yet. */
   prompt?: PermissionPrompt
-  /** A pull request the session opened that is neither merged nor closed. */
-  openPullRequest?: string
-  /** The session has a wake-up automation, or agent merge, that archiving would stop. */
-  automation?: true
 }
 
-/** A permission request the person has not answered yet, from the session's own history. */
+/** A permission request the person has not answered yet. */
 export interface PermissionPrompt {
   requestId: string
   /** What is being asked, in a few plain words. */
   what: string
-  /** When the app recorded the request, if its event carries a time. */
+  /** When the app recorded the request, if it says; Shepherd does not. */
   at: string | null
 }
 
@@ -91,455 +75,34 @@ export interface AppMessage {
   truncated?: boolean
 }
 
-
-/** The most a send waits: a session whose runtime is not in memory loads first, often for more than 20 s. */
-export const SEND_WAIT_MS = 120_000
 /** Names the Housesitter command to run: the path of its `bin/housesitter.mjs`, or of an executable. */
 export const HOUSESITTER_ENV = "HOUSESITTER_BIN"
-const REQUEST_WAIT_MS = 30_000
 const HOUSESITTER_WAIT_MS = 30_000
-const STATUS_TAIL_BYTES = 512 * 1024
-const EVENT_CHUNK_BYTES = 256 * 1024
-const MAX_EVENT_BYTES = 8 * 1024 * 1024
-const MESSAGE_MAX_CHARS = 4_000
-/** A cut loop this fresh may just be a turn the database has not marked running yet. */
-const STUCK_GRACE_MS = 120_000
-/** A session the app says is running whose history, sub-agents included, has not grown for this long is hung. */
-export const HUNG_MS = 30 * 60_000
 const SESSION_ID = /^[A-Za-z0-9-]+$/
-const ASK_TOOLS = new Set(["ask_user", "ask_followup_question", "request_user_input"])
-const PLAN_TOOLS = new Set(["exit_plan_mode"])
-const LOOP = new Set([
-  "user.message", "assistant.turn_start", "assistant.message", "assistant.turn_end", "abort", "session.task_complete",
-  "tool.execution_start", "tool.execution_complete", "subagent.started", "subagent.completed",
-])
 
-export function defaultStateDir(): string {
-  return path.join(os.homedir(), ".copilot")
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM"
-  }
-}
-
-/**
- * The app's current server address. Every app build (release, dev, PR) writes `ws.port` and
- * `ws.token`; the release app also writes `ws.release.*`, so those win. The port file holds
- * `<port>\n<pid>`, and a file whose app has exited is skipped.
- */
-export function copilotAppUrl(stateDir: string, alive: (pid: number) => boolean = processAlive): string {
-  const run = path.join(stateDir, "run")
-  for (const prefix of ["ws.release", "ws"]) {
-    let port: string, pid: string | undefined, token: string
-    try {
-      ;[port, pid] = fs.readFileSync(path.join(run, `${prefix}.port`), "utf-8").split(/\r?\n/).map(line => line.trim()) as [string, string | undefined]
-      token = fs.readFileSync(path.join(run, `${prefix}.token`), "utf-8").split(/\r?\n/)[0]!.trim()
-    } catch {
-      continue
-    }
-    if (!/^\d+$/.test(port) || !token) continue
-    if (pid && /^\d+$/.test(pid) && !alive(Number(pid))) continue
-    return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}&observer=1`
-  }
-  throw new Error(`the GitHub Copilot app is not running (no live server files in ${run})`)
-}
-
-function stateDirOf(options: AppSessionsOptions): string {
-  return options.stateDir ?? defaultStateDir()
-}
-
-function isRecord(value: unknown): value is Frame {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null
-}
-
-export function assertSessionId(id: string): string {
-  if (!SESSION_ID.test(id)) throw new Error(`'${id}' is not a Copilot app session id`)
-  return id
-}
-
-// ---------- the session's event log ----------
-
-export function eventLogPath(id: string, options: AppSessionsOptions = {}): string {
-  return path.join(stateDirOf(options), "session-state", assertSessionId(id), "events.jsonl")
-}
-
-/** `length` bytes of the session's event log ending at `end` (default: its end), as text. */
-export function readEventLog(id: string, options: AppSessionsOptions & { from?: number; maxBytes: number }): { text: string; start: number; end: number } {
-  let fd: number
-  try {
-    fd = fs.openSync(eventLogPath(id, options), "r")
-  } catch {
-    return { text: "", start: 0, end: 0 }
-  }
-  try {
-    const size = fs.fstatSync(fd).size
-    const start = Math.max(options.from ?? 0, size - options.maxBytes, 0)
-    const buffer = Buffer.alloc(Math.max(0, size - start))
-    fs.readSync(fd, buffer, 0, buffer.length, start)
-    return { text: buffer.toString("utf-8"), start, end: size }
-  } finally {
-    fs.closeSync(fd)
-  }
-}
-
-export function parseEventLines(text: string): Frame[] {
-  const events: Frame[] = []
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("{")) continue
-    try {
-      const event: unknown = JSON.parse(line)
-      if (isRecord(event)) events.push(event)
-    } catch {
-      // A line cut by the tail window is not an event.
-    }
-  }
-  return events
-}
-
-function tailEvents(stateDir: string, id: string, bytes: number): Frame[] {
-  return parseEventLines(readEventLog(id, { stateDir, maxBytes: bytes }).text)
-}
-
-export interface TailFacts {
-  awaiting: "input" | "plan" | "permission" | null
-  /** The agent loop stopped mid-turn, or between turns after asking for tools. */
-  loopCut: boolean
-  detail: string
-  lastActivity: string | null
-  /** The oldest permission request still open, whatever else the session waits on. */
-  prompt?: PermissionPrompt
-}
-
-const PERMISSION_WHAT: Record<string, string> = {
-  shell: "run a shell command",
-  write: "change a file",
-  read: "read a file",
-  url: "open a web address",
-  mcp: "use a connected tool",
-  "custom-tool": "use a custom tool",
-  "extension-management": "change an extension",
-}
-
-/** The request in a few plain words. A command's text stays out: it can carry secrets. */
-export function describePermission(request: unknown): string {
-  const record = isRecord(request) ? request : {}
-  const kind = str(record.kind)
-  if (kind === "extension-permission-access") {
-    const capabilities = Array.isArray(record.capabilities) ? record.capabilities.filter((item): item is string => typeof item === "string").join(", ") : ""
-    return `let the extension ${str(record.extensionName) ?? "(unnamed)"} ${capabilities || "ask for access"}`
-  }
-  const what = (kind && PERMISSION_WHAT[kind]) || (kind ? `a ${kind} permission` : "a permission")
-  const intention = str(record.intention)
-  return intention ? `${what} (${intention})` : what
-}
-
-/** What the session's own history says about its agent loop. Sub-agent events are their parent's business. */
-export function tailFacts(events: Frame[]): TailFacts {
-  const tools = new Map<string, string>()
-  const permissions = new Map<string, PermissionPrompt>()
-  let last: string | null = null
-  let lastActivity: string | null = null
-  let askedTools = false
-  let finished = false
-  for (const event of events) {
-    if (event.agentId !== undefined) continue
-    const type = str(event.type) ?? ""
-    const data = isRecord(event.data) ? event.data : {}
-    if (type === "session.shutdown" || type === "session.resume" || type === "session.start") {
-      tools.clear()
-      permissions.clear()
-    }
-    if (type === "tool.execution_start" && str(data.toolCallId)) tools.set(data.toolCallId as string, str(data.toolName) ?? "")
-    if (type === "tool.execution_complete" && str(data.toolCallId)) tools.delete(data.toolCallId as string)
-    if (type === "permission.requested" && str(data.requestId) && data.resolvedByHook !== true) permissions.set(data.requestId as string, { requestId: data.requestId as string, what: describePermission(data.permissionRequest), at: str(event.timestamp) })
-    if (type === "permission.completed" && str(data.requestId)) permissions.delete(data.requestId as string)
-    if (!LOOP.has(type)) continue
-    // Only a person's stop counts; a runtime shutdown cancels sub-agents with other reasons.
-    if (type === "abort" && str(data.reason) && data.reason !== "user_initiated") continue
-    if (type === "assistant.message") {
-      askedTools = Array.isArray(data.toolRequests) && data.toolRequests.length > 0
-      finished = false
-    }
-    if (type === "session.task_complete") finished = true
-    if (type === "user.message") {
-      askedTools = false
-      finished = false
-    }
-    last = type
-    lastActivity = str(event.timestamp) ?? lastActivity
-  }
-  const pending = [...tools.values()].map(name => name.replace(/^[\w-]+?-(?=ask_|exit_)/, ""))
-  const awaiting = pending.some(name => ASK_TOOLS.has(name)) ? "input" : pending.some(name => PLAN_TOOLS.has(name)) ? "plan" : permissions.size > 0 ? "permission" : null
-  let loopCut = false
-  let detail = "no agent activity"
-  if (last === "abort") detail = "stopped by the person"
-  else if (last === "session.task_complete" || (last === "assistant.turn_end" && finished)) detail = "task complete"
-  else if (last === "assistant.turn_end") {
-    loopCut = askedTools
-    detail = askedTools ? "between turns (its last turn called tools and no next turn started)" : "its turn ended"
-  } else if (last) {
-    loopCut = true
-    detail = `mid-turn (last ${last})`
-  }
-  const prompt = permissions.values().next().value
-  return { awaiting, loopCut, detail, lastActivity, ...(prompt ? { prompt } : {}) }
-}
-
-const factsCache = new Map<string, { key: string; facts: TailFacts; writtenAtMs: number | null }>()
-
-/** The tail facts and when the log was last written, re-read only when the log changed, so a periodic snapshot stays cheap. */
-function cachedTailFacts(stateDir: string, id: string): { facts: TailFacts; writtenAtMs: number | null } {
-  const file = eventLogPath(id, { stateDir })
-  let key = "missing"
-  let writtenAtMs: number | null = null
-  try {
-    const stat = fs.statSync(file)
-    key = `${stat.size}:${stat.mtimeMs}`
-    writtenAtMs = stat.mtimeMs
-  } catch {
-    // No log yet: the facts of an empty history.
-  }
-  const cached = factsCache.get(file)
-  if (cached?.key === key) return cached
-  const entry = { key, facts: tailFacts(tailEvents(stateDir, id, STATUS_TAIL_BYTES)), writtenAtMs }
-  factsCache.set(file, entry)
-  return entry
-}
-
-export function classify(isRunning: boolean, facts: TailFacts, nowMs: number, writtenAtMs: number | null = null): { state: AppSessionState; detail: string } {
-  if (facts.awaiting === "permission") return { state: "waiting", detail: "waiting for a permission answer" }
-  if (facts.awaiting) return { state: "waiting", detail: `waiting for the person's ${facts.awaiting === "plan" ? "plan approval" : "answer"}` }
-  if (isRunning) {
-    if (writtenAtMs !== null && nowMs - writtenAtMs >= HUNG_MS) return { state: "stuck", detail: `the app says it is running, but its history has not grown for ${Math.round((nowMs - writtenAtMs) / 60_000)} min` }
-    return { state: "working", detail: "the app says it is running" }
-  }
-  if (facts.loopCut) {
-    const at = Date.parse(facts.lastActivity ?? "")
-    if (!Number.isNaN(at) && nowMs - at < STUCK_GRACE_MS) return { state: "working", detail: `starting up (${facts.detail})` }
-    return { state: "stuck", detail: `not running, but its loop stopped ${facts.detail}` }
-  }
-  return { state: "idle", detail: facts.detail }
-}
-
-const arr = (value: unknown): Frame[] => (Array.isArray(value) ? value.filter(isRecord) : [])
-
-/** The sidebar as the app itself lists it: its workspace sessions and its chats, in one exchange. */
-async function sidebarItems(options: AppSessionsOptions): Promise<{ workspaces: Frame[]; chats: Frame[] }> {
-  const got = await exchange(
-    [{ type: "list_workspaces" }, { type: "list_general_chat_sessions" }],
-    {
-      keep: (frame) => /^(workspace_list|general_chat_sessions_list|socket_error)$/.test(String(frame.type)),
-      done: (_frame, all) => all.some(frame => frame.type === "workspace_list") && all.some(frame => frame.type === "general_chat_sessions_list") || all.some(frame => frame.type === "socket_error"),
-      waitMs: REQUEST_WAIT_MS,
-    },
-    options,
-  )
-  const workspaces = got.find(frame => frame.type === "workspace_list")
-  const chats = got.find(frame => frame.type === "general_chat_sessions_list")
-  if (!workspaces || !chats) throw new Error(str(got.find(frame => frame.type === "socket_error")?.message) ?? "the Copilot app did not list its sessions in time")
-  return { workspaces: arr(workspaces.workspaces), chats: arr(chats.sessions) }
-}
-
-/** Every session in this Mac's Copilot app sidebar, with what it is doing now. */
-export async function listAppSessions(options: AppSessionsOptions = {}): Promise<AppSessionRow[]> {
-  const stateDir = stateDirOf(options)
-  const now = (options.now ?? Date.now)()
-  const { workspaces, chats } = await sidebarItems(options)
-  const rows: AppSessionRow[] = []
-  const add = (id: string | null, row: Omit<AppSessionRow, "id" | "state" | "detail" | "lastActivity" | "awaiting" | "prompt">, isRunning: boolean): void => {
-    if (!id || !SESSION_ID.test(id) || rows.some(known => known.id === id)) return
-    const { facts, writtenAtMs } = cachedTailFacts(stateDir, id)
-    const { state, detail } = classify(isRunning, facts, now, writtenAtMs)
-    rows.push({
-      id, ...row, state, detail, lastActivity: facts.lastActivity ?? row.updatedAt,
-      ...(facts.awaiting ? { awaiting: facts.awaiting } : {}),
-      ...(facts.prompt ? { prompt: facts.prompt } : {}),
-    })
-  }
-  for (const workspace of workspaces) {
-    if (workspace.archivedAt) continue
-    const session = isRecord(workspace.session) ? workspace.session : {}
-    const binding = arr(workspace.checkoutBindings)[0]
-    const openPr = arr(workspace.repoContexts).map(context => isRecord(context.createdPullRequest) ? context.createdPullRequest : null).find(pr => pr && !/^(merged|closed)$/i.test(str(pr.state) ?? ""))
-    add(str(session.sessionId) ?? str(workspace.activeSessionId), {
-      name: str(workspace.name) ?? str(session.title) ?? "(unnamed)", kind: "workspace", workspaceId: str(workspace.id), workspaceType: str(workspace.workspaceType),
-      project: str(workspace.projectName), projectId: str(workspace.projectId), projectRepo: str(binding?.repoFullName), branch: str(workspace.branch), path: str(workspace.displayPath),
-      creatorSessionId: str(workspace.creatorSessionId), coordinatingCreatorSessionId: str(workspace.coordinatingCreatorSessionId), parentSessionId: null,
-      isRunning: session.isRunning === true, wasInterrupted: session.wasInterrupted === true,
-      remote: (str(workspace.hostId) ?? "local") !== "local" || (str(session.executionLocation) ?? "local") !== "local",
-      createdAt: str(workspace.createdAt), updatedAt: str(session.updatedAt) ?? str(workspace.updatedAt),
-      ...(openPr ? { openPullRequest: str(openPr.htmlUrl) ?? `#${String(openPr.number)}` } : {}),
-      ...(session.sessionAutomation || workspace.agentMergeEnabled === true ? { automation: true as const } : {}),
-    }, session.isRunning === true)
-  }
-  for (const chat of chats) {
-    if (chat.archivedAt) continue
-    add(str(chat.id), {
-      name: str(chat.title) ?? "(unnamed chat)", kind: "chat", workspaceId: null, workspaceType: null, project: null, projectId: null, projectRepo: null, branch: null, path: null,
-      creatorSessionId: null, coordinatingCreatorSessionId: str(chat.coordinatingCreatorSessionId), parentSessionId: str(chat.parentSessionId),
-      isRunning: chat.isRunning === true, wasInterrupted: chat.wasInterrupted === true, remote: (str(chat.executionLocation) ?? "local") !== "local",
-      createdAt: str(chat.createdAt), updatedAt: str(chat.updatedAt),
-    }, chat.isRunning === true)
-  }
-  emitNervesEvent({ component: "senses", event: "senses.app_sessions_listed", message: "listed the Copilot app's sessions", meta: { sessions: rows.length } })
-  return rows
-}
-
-/** Counts by state and every session's id, name and state: the cheap picture a sense or a fleet view carries. */
-export function snapshot(options: AppSessionsOptions, rows: AppSessionRow[]): AppSessionsSnapshot {
+/** The app's sessions as the sidebar lists them, counted by state, with each one's id, name and state. */
+export function snapshot(rows: AppSessionRow[], now: number): AppSessionsSnapshot {
   const counts: Record<AppSessionState, number> = { working: 0, idle: 0, waiting: 0, stuck: 0 }
   for (const row of rows) counts[row.state] += 1
   return {
-    at: new Date((options.now ?? Date.now)()).toISOString(),
-    appRunning: appRunning(options),
+    at: new Date(now).toISOString(),
+    appRunning: true,
     counts,
     sessions: rows.map(row => ({ id: row.id, name: row.name, state: row.state })),
-  }
-}
-
-function openEventLog(id: string, options: AppSessionsOptions): number | null {
-  try {
-    return fs.openSync(eventLogPath(id, options), "r")
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
-    throw error
   }
 }
 
 /** The link that opens a session in the app. */
 export const appUrl = (id: string): string => `ghapp://sessions/${id}`
 
-/** Read forward from a watch cursor; stop at a complete event after the budget, never jump to the newest tail. */
-export function readNewAppEvents(id: string, from: number, maxBytes: number, visit: (event: Frame) => void, options: AppSessionsOptions = {}): { offset: number; logBytes: number; skippedEvents: number } {
-  const fd = openEventLog(id, options)
-  if (fd === null) return { offset: 0, logBytes: 0, skippedEvents: 0 }
-  try {
-    const logBytes = fs.fstatSync(fd).size
-    const result = { offset: Math.min(from, logBytes), logBytes, skippedEvents: 0 }
-    let position = result.offset
-    let carry = Buffer.alloc(0)
-    let dropping = false
-    while (position < logBytes) {
-      const chunk = Buffer.alloc(Math.min(EVENT_CHUNK_BYTES, logBytes - position))
-      fs.readSync(fd, chunk, 0, chunk.length, position)
-      const buffer = Buffer.concat([carry, chunk])
-      const start = position - carry.length
-      position += chunk.length
-      let lineStart = 0
-      for (let at = buffer.indexOf(10); at >= 0; at = buffer.indexOf(10, lineStart)) {
-        const line = buffer.subarray(lineStart, at)
-        if (dropping || line.length > MAX_EVENT_BYTES) result.skippedEvents += 1
-        else if (line.length) {
-          const events = parseEventLines(line.toString("utf-8"))
-          if (!events.length) result.skippedEvents += 1
-          for (const event of events) visit(event)
-        }
-        dropping = false
-        result.offset = start + at + 1
-        lineStart = at + 1
-        if (result.offset - from >= maxBytes) return result
-      }
-      carry = buffer.subarray(lineStart)
-      if (dropping || carry.length > MAX_EVENT_BYTES) {
-        dropping = true
-        carry = Buffer.alloc(0)
-      }
-    }
-    return result
-  } finally {
-    fs.closeSync(fd)
-  }
+export function assertSessionId(id: string): string {
+  if (!SESSION_ID.test(id)) throw new Error(`'${id}' is not a Copilot app session id`)
+  return id
 }
 
-/** The top-level user and assistant messages among `events`. */
-export function messagesIn(events: Frame[]): AppMessage[] {
-  const messages: AppMessage[] = []
-  for (const event of events) {
-    if (event.agentId !== undefined) continue
-    const data = isRecord(event.data) ? event.data : {}
-    const text = typeof data.content === "string" ? data.content : ""
-    if ((event.type === "user.message" || event.type === "assistant.message") && text.trim()) {
-      messages.push({ at: str(event.timestamp), role: event.type === "user.message" ? "user" : "assistant", text: text.slice(0, MESSAGE_MAX_CHARS), ...(text.length > MESSAGE_MAX_CHARS ? { truncated: true } : {}) })
-    }
-  }
-  return messages
-}
-
-/** The size of the session's event log now: where a reply to a message sent now will start. */
-export function eventLogSize(id: string, options: AppSessionsOptions = {}): number {
-  try {
-    return fs.statSync(eventLogPath(id, options)).size
-  } catch {
-    return 0
-  }
-}
-
-// ---------- the app's socket ----------
-
-export interface ExchangeOptions {
-  done?: (frame: Frame, all: Frame[]) => boolean
-  keep?: (frame: Frame) => boolean
-  waitMs: number
-}
-
-/**
- * Send requests on one connection and collect the replies `keep` accepts until `done` says so or the wait runs out.
- * A socket error ends the exchange with a `socket_error` frame; the app not running throws.
- */
-export function exchange(frames: Frame[], exchangeOptions: ExchangeOptions, options: AppSessionsOptions = {}): Promise<Frame[]> {
-  const url = copilotAppUrl(stateDirOf(options))
-  const openSocket = options.openSocket ?? ((target: string) => new WebSocket(target))
-  const keep = exchangeOptions.keep ?? (() => true)
-  const done = exchangeOptions.done ?? (() => false)
-  return new Promise((resolve) => {
-    const got: Frame[] = []
-    let finished = false
-    const socket = openSocket(url)
-    const finish = (): void => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-      socket.close()
-      resolve(got)
-    }
-    const timer = setTimeout(finish, exchangeOptions.waitMs)
-    socket.on("open", () => { for (const frame of frames) socket.send(JSON.stringify(frame)) })
-    socket.on("message", (data) => {
-      let frame: unknown
-      try {
-        frame = JSON.parse(String(data))
-      } catch {
-        return
-      }
-      if (!isRecord(frame) || !keep(frame)) return
-      got.push(frame)
-      if (done(frame, got)) finish()
-    })
-    socket.on("error", (error) => {
-      got.push({ type: "socket_error", message: error.message })
-      finish()
-    })
-    socket.on("close", finish)
-  })
-}
-
-/** Whether the app is up: its server files name a live process. */
-export function appRunning(options: AppSessionsOptions = {}): boolean {
-  try {
-    copilotAppUrl(stateDirOf(options))
-    return true
-  } catch {
-    return false
-  }
+/** A session's event log in the app's state folder; the digest reads a task declaration from it (see `digest-cards.ts`). */
+export function eventLogPath(id: string, options: AppSessionsOptions = {}): string {
+  return path.join(options.stateDir ?? path.join(os.homedir(), ".copilot"), "session-state", assertSessionId(id), "events.jsonl")
 }
 
 // ---------- restarting the app (Housesitter) ----------
