@@ -25,6 +25,12 @@ import type { PageIssue } from "./size-check.ts";
 // define tokens rather than use them; zero, auto, percentages and a pill's 9999px; and the system colours forced
 // colours use. A rule is judged once, by its selector and property, on the first element it styles.
 //
+// The app's own variables are judged by what they hold, except one the theme's tokens are defined through
+// (--muted: var(--color-undergrowth)) or one that holds a theme value (a colour a theme token is given, a radius step or
+// a whole spacing step): the app names the theme there, as with --gutter: 1.5rem beside --spacing: 0.25rem. A fixed
+// fallback a rule sets beside the same property through a variable (Tailwind's colour before its color-mix()) is
+// the variable compiled, and is judged by the variable.
+//
 // An element opts out with data-ouro-allow="off-theme" (or "off-scale") and a reason in data-ouro-allow-why, as the other rules do.
 
 interface OffThemeOptions {
@@ -217,17 +223,20 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
   const family = (property: string) => families.find(([test]) => test.test(property))?.[1] ?? property;
 
   // The page's style rules, each with the layer it is in and the selector that picks its elements.
-  const found: { rule: CSSStyleRule; layer: string; selector: string }[] = [];
-  const walk = (list: CSSRuleList, layer: string, outer: string) => {
+  const found: { rule: CSSStyleRule | CSSNestedDeclarations; layer: string; selector: string; supports: boolean }[] = [];
+  const walk = (list: CSSRuleList, layer: string, outer: string, supports = false) => {
     for (const rule of Array.from(list)) {
-      if (rule instanceof CSSLayerBlockRule) walk(rule.cssRules, rule.name.split(".")[0] || layer, outer);
+      if (rule instanceof CSSLayerBlockRule) walk(rule.cssRules, rule.name.split(".")[0] || layer, outer, supports);
       else if (rule instanceof CSSStyleRule) {
         // A nested rule's selector, resolved against the rule around it: browsers write a nested rule's & in.
         const around = outer.includes(",") ? `:is(${outer})` : outer;
         const selector = outer ? rule.selectorText.replaceAll("&", around) : rule.selectorText;
-        found.push({ rule, layer, selector });
-        walk(rule.cssRules, layer, selector);
-      } else if (rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule || rule instanceof CSSContainerRule) walk(rule.cssRules, layer, outer);
+        found.push({ rule, layer, selector, supports });
+        walk(rule.cssRules, layer, selector, supports);
+      } else if (rule.constructor.name === "CSSNestedDeclarations") {
+        // Declarations nested in a rule's own @supports, which hold the rule's selector.
+        found.push({ rule: rule as CSSNestedDeclarations, layer, selector: outer, supports });
+      } else if (rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule || rule instanceof CSSContainerRule) walk(rule.cssRules, layer, outer, supports || rule instanceof CSSSupportsRule);
     }
   };
   for (const sheet of Array.from(document.styleSheets)) {
@@ -269,17 +278,58 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
       /^(?:ouro-|tw-|chart-|sidebar|avatar-|leading-|tracking-|default-|animate-|ease-|blur-|container-|breakpoint-|inset-shadow-|drop-shadow-|perspective-|aspect-)/.test(bare)
     );
   };
+  // A variable of the app's own that the theme is built from (--muted: var(--color-undergrowth)) is the theme's too,
+  // through any depth of the app's own variables.
+  const names = (value: string) => [...value.matchAll(/var\(\s*(--[\w-]+)/g)].map(([, name]) => name!);
+  const themeVars = new Set<string>();
+  const from = [...defs.keys()].filter(tokenVar);
+  while (from.length) {
+    for (const name of (defs.get(from.pop()!) ?? []).flatMap(names)) {
+      if (!tokenVar(name) && !themeVars.has(name)) {
+        themeVars.add(name);
+        from.push(name);
+      }
+    }
+  }
+  // The colours the theme's tokens are given, in each theme, by value: a variable of the app's own that holds one of
+  // them, or a whole spacing step, or one of the radius steps, names the theme's value rather than bypassing it.
+  const themeColors = new Set(
+    [...defs.entries()]
+      .filter(([name]) => tokenVar(name) && colorNames.includes(name.slice(2).replace(/^color-/, "")))
+      .flatMap(([, values]) => values)
+      .filter((v) => !v.includes("var(") && fixedColor(v))
+      .map((v) => JSON.stringify(rgb(v))),
+  );
+  const onTheme = (kind: string, value: string) => {
+    if (kind === "colour") return !palette.test(value) && themeColors.has(JSON.stringify(rgb(value)));
+    const all = lengths(value).filter(({ n }) => n !== 0);
+    if (value.includes("(")) return false;
+    if (kind === "spacing") return all.every(({ n, unit }) => unit !== "em" && Number.isInteger(Math.round((px(`${n}${unit}`) / spacingPx) * 1000) / 1000));
+    if (kind === "radius") return all.every(({ n, unit }) => radiusSteps.some((step) => Math.abs(step.px - px(`${n}${unit}`)) < 0.5));
+    return false;
+  };
   // The fixed value a variable of the app's own holds, through other variables of its own, or "".
   const throughOwn = (value: string, test: (v: string) => boolean, depth = 0): string => {
-    for (const [, name] of value.matchAll(/var\(\s*(--[\w-]+)/g)) {
-      if (depth >= 4 || tokenVar(name!)) continue;
-      for (const d of defs.get(name!) ?? []) {
+    for (const name of names(value)) {
+      if (depth >= 4 || tokenVar(name) || themeVars.has(name)) continue;
+      for (const d of defs.get(name) ?? []) {
         const held = test(d) ? d : throughOwn(d, test, depth + 1);
         if (held) return held;
       }
     }
     return "";
   };
+
+  // A rule that sets a property through a variable and also to a fixed fallback for older browsers (Tailwind's
+  // bg-canopy/30 writes the colour itself, then color-mix() of var(--color-canopy) under @supports) is judged by the
+  // variable: the fallback is the token compiled.
+  const throughVar = new Set<string>();
+  for (const { rule, selector } of found.filter((f) => f.supports)) {
+    for (let i = 0; i < rule.style.length; i++) {
+      const property = rule.style[i]!;
+      if (!property.startsWith("--") && rule.style.getPropertyValue(property).includes("var(")) throughVar.add(`${selector}\u0000${family(property)}`);
+    }
+  }
 
   const seen = new Set<string>();
   try {
@@ -296,11 +346,12 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
           ? layer === "utilities" && property.startsWith("--tw-") && palette.test(value) ? kinds.find((k) => k.on && k.kind === "colour") : undefined
           : kinds.find((k) => k.on && k.test(property));
         if (!kind || !value || keywords.has(value.toLowerCase())) continue;
-        const ownFixed = (d: string) => !keywords.has(d.toLowerCase()) && (kind.kind === "colour" ? fixedColor(d) : kind.fixed(d, property));
+        const ownFixed = (d: string) => !keywords.has(d.toLowerCase()) && (kind.kind === "colour" ? fixedColor(d) : kind.fixed(d, property)) && !onTheme(kind.kind, d);
         // What is measured for the token to name: the value, or what the app's own variable holds.
-        const held = kind.fixed(value, property) ? value : throughOwn(value, ownFixed);
-        if (!held) continue;
         const key = `${selector}\u0000${family(property)}`;
+        const fallback = !value.includes("var(") && throughVar.has(key);
+        const held = fallback ? "" : kind.fixed(value, property) ? value : throughOwn(value, ownFixed);
+        if (!held) continue;
         if (seen.has(key)) continue;
         seen.add(key);
         let elements: Element[];
