@@ -3581,7 +3581,7 @@ describe("BlueBubbles client", () => {
       vi.doUnmock("../../../heart/provider-credentials")
     })
 
-    it("vlmDescribe closure describes with the minimax key even when the chat provider is not minimax", async () => {
+    it("vlmDescribe refuses an unsupported configured model instead of borrowing the minimax key", async () => {
       const { loadAgentConfig } = await import("../../../heart/identity")
       vi.mocked(loadAgentConfig).mockReturnValue({
         humanFacing: { provider: "anthropic", model: "MiniMax-M2.5" },
@@ -3654,8 +3654,8 @@ describe("BlueBubbles client", () => {
           prompt: "p",
           imageDataUrl: "data:image/png;base64,xx",
         }),
-      ).resolves.toBe("a cat")
-      expect(minimaxVlmDescribe).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "sk-test", prompt: "p" }))
+      ).rejects.toThrow(/does not support images/)
+      expect(minimaxVlmDescribe).not.toHaveBeenCalled()
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
@@ -3737,7 +3737,7 @@ describe("BlueBubbles client", () => {
           prompt: "p",
           imageDataUrl: "data:image/png;base64,xx",
         }),
-      ).rejects.toThrow(/needs a MiniMax API key in the agent vault/)
+      ).rejects.toThrow(/minimax.*has no credentials/)
       expect(minimaxVlmDescribe).not.toHaveBeenCalled()
 
       vi.doUnmock("../../../senses/bluebubbles/media")

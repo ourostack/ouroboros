@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1179",
+      "changes": [
+        "Describe Teams screenshots and image attachments through the agent's configured vision provider without requiring a MiniMax key.",
+        "Reject truncated native image descriptions and preserve provider completion status and attachment timeouts.",
+        "Preserve Responses API failure messages and reject partial image descriptions from failed streams."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1178",
       "changes": [
         "The owner can ask for a psyche edit in a private Teams chat: the adapter now carries Teams' private/shared conversation status through friend resolution to tool authorization. Unknown conversation types remain unproven, and group, channel, non-family and agent requests stay blocked."
