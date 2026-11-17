@@ -7,7 +7,7 @@ const fs = require("fs")
 const { validateChangelog } = require("./changelog-gate.cjs")
 const { validatePackageAssets } = require("./package-assets.cjs")
 const { validateTrustedPublisherLocalContract } = require("./npm-trusted-publishers.cjs")
-const { validateIntentionalDebtFile } = require("./intentional-debt-gate.cjs")
+const { validateIntentionalDebtFile, validDateOnly } = require("./intentional-debt-gate.cjs")
 
 function splitLines(output) {
   return output
@@ -357,7 +357,7 @@ function summarizeNpmAuditFailure(output) {
 /**
  * Advisories with no patched release can be accepted only through a reviewed entry in
  * docs/audit-exceptions.json: { items: [{ advisory, package, reason, due }] }. An entry
- * covers exactly one advisory URL and stops covering it on its due date, so an accepted
+ * covers exactly one advisory URL/dependency pair and stops covering it on its due date, so an accepted
  * risk is re-decided rather than forgotten. Every advisory in the report must be covered.
  */
 function readAuditExceptions(packageRoot) {
@@ -365,23 +365,31 @@ function readAuditExceptions(packageRoot) {
   if (!fs.existsSync(file)) return []
   const parsed = JSON.parse(fs.readFileSync(file, "utf-8"))
   const items = Array.isArray(parsed?.items) ? parsed.items : []
-  return items.filter((item) => item && typeof item.advisory === "string" && typeof item.due === "string"
-    && typeof item.reason === "string" && item.reason.trim() && /^\d{4}-\d{2}-\d{2}$/u.test(item.due))
+  return items.filter((item) => item && typeof item.advisory === "string"
+    && typeof item.package === "string" && item.package.trim()
+    && typeof item.reason === "string" && item.reason.trim() && validDateOnly(item.due))
 }
 
 function uncoveredAuditAdvisories(output, exceptions, today) {
   let parsed
   try { parsed = JSON.parse(String(output)) } catch { return null }
-  const vulnerabilities = parsed?.vulnerabilities && typeof parsed.vulnerabilities === "object" ? Object.values(parsed.vulnerabilities) : []
-  const advisories = new Set()
-  for (const record of vulnerabilities) {
+  const vulnerabilities = parsed?.vulnerabilities && typeof parsed.vulnerabilities === "object" ? Object.entries(parsed.vulnerabilities) : []
+  const advisories = new Map()
+  for (const [packageName, record] of vulnerabilities) {
     for (const entry of Array.isArray(record?.via) ? record.via : []) {
-      if (entry && typeof entry === "object") advisories.add(typeof entry.url === "string" ? entry.url : "(advisory without url)")
+      if (entry && typeof entry === "object") {
+        const url = typeof entry.url === "string" ? entry.url : "(advisory without url)"
+        const dependency = typeof entry.name === "string" ? entry.name : packageName
+        advisories.set(JSON.stringify([dependency, url]), url)
+      }
     }
   }
   if (advisories.size === 0) return null
-  const active = new Set(exceptions.filter((item) => today < item.due).map((item) => item.advisory))
-  return { uncovered: [...advisories].filter((url) => !active.has(url)), covered: [...advisories].filter((url) => active.has(url)) }
+  const active = new Set(exceptions.filter((item) => today < item.due).map((item) => JSON.stringify([item.package, item.advisory])))
+  return {
+    uncovered: [...advisories].filter(([key]) => !active.has(key)).map(([, url]) => url),
+    covered: [...advisories].filter(([key]) => active.has(key)).map(([, url]) => url),
+  }
 }
 
 function runRootDependencyAudit(packageRoot, execSyncImpl, options = {}) {

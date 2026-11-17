@@ -44,6 +44,12 @@ GitHub increments `run_attempt` on rerun; only attempt 1 is eligible. A manual r
 
 Recovery executes only trusted default-branch code, never the triggering PR's code or artifacts. Its dependency-free regression tests run with `node --test .github/scripts/recover-cancelled-checks.test.cjs`; the workflow enforces complete coverage for the recovery module.
 
+## Dated npm Audit Exceptions
+
+The existing release-preflight policy permits reviewed entries in `docs/audit-exceptions.json` when no patched release exists. A normal repository-reviewed PR and required-check merge authorize an entry; the policy does not name a separate approval role. General `intentional-debt.json` records do not accept npm advisories.
+
+Each audit entry covers exactly its advisory URL and source dependency, with a reason and a valid UTC due date. Preflight stops accepting it on that date, so the release gate reopens without automatic renewal. Other advisories still fail unless independently covered. The picomatch risk remains open in [#1391](https://github.com/ourostack/ouroboros/issues/1391), owned by Ouroboros maintainers, and expires on 2026-11-24; it is not a vulnerability fix.
+
 ## TDD Rule
 
 Use strict red -> green -> refactor.

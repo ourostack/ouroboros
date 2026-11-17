@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1183",
+      "changes": [
+        "Reopen release preflight with the reviewed, package-scoped picomatch risk exception expiring 2026-11-24; the upstream vulnerability remains tracked in #1391."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1182",
       "changes": [
         "Make ouro.bot wrapper publish verify registry contents like the CLI, and require a version bump when shipped mailbox UI assets change."
