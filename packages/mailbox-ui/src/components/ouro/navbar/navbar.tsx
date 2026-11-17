@@ -138,7 +138,7 @@ const bar =
 // fine one. The current page, or the section it is in, is underlined in the primary colour as in the bar's row and in
 // FamilyBar, not given a hover highlight; forced colours keep the underline.
 const link_ =
-  "relative m-0 box-border items-center rounded-md px-3 font-medium text-muted-foreground no-underline select-none touch-manipulation " +
+  "relative m-0 box-border items-center rounded-ouro-md px-3 font-medium text-muted-foreground no-underline select-none touch-manipulation " +
   "text-base pointer-fine:text-sm leading-5 [-webkit-tap-highlight-color:transparent] " +
   "pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground aria-[current=page]:font-semibold aria-[current=page]:text-foreground aria-[current=true]:font-semibold aria-[current=true]:text-foreground " +
   "aria-[current=page]:underline aria-[current=true]:underline decoration-primary decoration-2 underline-offset-5 [text-decoration-skip-ink:none] " +

@@ -45,7 +45,7 @@ const menuSheetPositionerClass =
  */
 const menuPopupClass =
   "box-border min-w-48 max-w-(--available-width) max-h-(--available-height) overflow-y-auto overscroll-contain p-1 " +
-  "rounded-lg bg-popover text-popover-foreground outline-none " +
+  "rounded-ouro-lg bg-popover text-popover-foreground outline-none " +
   "ring-1 ring-border/60 shadow-(--shadow-lg) " +
   "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:1.5rem] " +
   "origin-(--transform-origin) " +
@@ -66,7 +66,7 @@ const menuPopupClass =
 const menuSheetPopupClass =
   "box-border w-full max-h-[min(80dvh,calc(100dvh-4rem))] overflow-y-auto overscroll-contain " +
   "px-2 pt-2 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)] " +
-  "rounded-t-xl bg-popover text-popover-foreground outline-none " +
+  "rounded-t-ouro-xl bg-popover text-popover-foreground outline-none " +
   "[box-shadow:var(--ouro-shadow-sheet-bottom)] " +
   "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:1.5rem] " +
   "[transition:transform_var(--ouro-duration-sheet)_var(--ouro-ease-drawer),opacity_var(--ouro-duration-fast)_var(--ouro-ease-out)] " +
@@ -98,7 +98,7 @@ const menuBackdropClass =
  */
 const menuItemClass =
   "relative m-0 box-border flex w-full min-h-11 pointer-fine:min-h-8 cursor-default items-center gap-3 " +
-  "rounded-md py-1.5 pe-2 ps-[calc(0.5rem+var(--ouro-menu-inset,0px))] " +
+  "rounded-ouro-md py-1.5 pe-2 ps-[calc(0.5rem+var(--ouro-menu-inset,0px))] " +
   "text-start text-base leading-5 pointer-fine:text-sm text-popover-foreground no-underline outline-none select-none " +
   "[-webkit-tap-highlight-color:transparent] " +
   "data-highlighted:bg-accent data-highlighted:text-accent-foreground active:bg-accent active:text-accent-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground " +
@@ -157,7 +157,7 @@ const menuGuardsClass = "absolute";
  * @claim "A menubar's menu button: 44px tall" registry/ouro/components/ouro/menu/menu.touch.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.touch.test.tsx::Menu on a phone > gives menubar buttons a 44px height)
  */
 const menuBarTriggerClass =
-  "relative m-0 box-border inline-flex h-11 pointer-fine:h-8 items-center rounded-md border-0 bg-transparent px-3 " +
+  "relative m-0 box-border inline-flex h-11 pointer-fine:h-8 items-center rounded-ouro-md border-0 bg-transparent px-3 " +
   "font-[inherit] text-base pointer-fine:text-sm leading-5 font-medium text-foreground cursor-default select-none " +
   "[-webkit-tap-highlight-color:transparent] outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
   "pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground active:bg-accent active:text-accent-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground " +

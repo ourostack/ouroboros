@@ -175,7 +175,7 @@ export function Kbd(props: KbdProps): JSX.Element {
       data-platform={apple ? "apple" : platform === "unknown" ? "unknown" : "other"}
       className={cn(
         "box-border inline-flex h-[1.6em] min-w-[1.6em] items-center justify-center gap-[0.15em] align-[0.1em] " +
-          "rounded-sm border border-solid border-border bg-muted px-[0.35em] [font-family:inherit] text-[0.85em]/none font-medium " +
+          "rounded-ouro-sm border border-solid border-border bg-muted px-[0.35em] [font-family:inherit] text-[0.85em]/none font-medium " +
           "text-foreground whitespace-nowrap select-none",
         className,
       )}

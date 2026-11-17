@@ -125,7 +125,7 @@ const floatingMotionClass =
  * @internal
  */
 const floatingSurfaceClass =
-  "box-border rounded-lg bg-popover text-popover-foreground outline-none " +
+  "box-border rounded-ouro-lg bg-popover text-popover-foreground outline-none " +
   "ring-1 ring-border/60 shadow-(--shadow-lg)";
 
 /**

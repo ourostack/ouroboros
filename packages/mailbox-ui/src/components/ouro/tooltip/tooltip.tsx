@@ -63,7 +63,7 @@ const LABEL_LENGTH = 80;
 
 const popupClass =
   floatingMotionClass +
-  " box-border max-w-xs rounded-md bg-foreground px-2 py-1 text-xs leading-4 text-balance text-background [--ouro-floating-duration:var(--ouro-duration-fast)] data-instant:duration-0";
+  " box-border max-w-xs rounded-ouro-md bg-foreground px-2 py-1 text-xs leading-4 text-balance text-background [--ouro-floating-duration:var(--ouro-duration-fast)] data-instant:duration-0";
 
 // Base UI's delay before a tooltip opens under a resting pointer, and how long after one closes a neighbour inside
 // OuroProvider still opens at once.
