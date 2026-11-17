@@ -61,6 +61,13 @@ describe("the tool set", () => {
     ])
   })
 
+  it("tells the agent a message goes as a peer from Ouroboros, not as the owner", () => {
+    const text = tools.sendSessionMessageTool.tool.function.description
+    expect(text).toContain("cross-session message from Ouroboros")
+    expect(text).toContain("not as the owner")
+    expect(text).not.toContain("takes it for the person")
+  })
+
   it("is on only when agent.json enables the sense", () => {
     expect(tools.appSessionsToolsEnabled(undefined)).toBe(false)
     expect(tools.appSessionsToolsEnabled(agentRoot)).toBe(false)

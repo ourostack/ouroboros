@@ -85,7 +85,7 @@ export const getSessionsStatusTool = define(
 export const getSessionTool = define("get_session", "One session's details and what it is doing now, including what it waits on (awaiting_input). Read-only.", { session_id: session }, ["session_id"], READ, args => shepherd(["session", sessionId(args)]), ["session_id"])
 
 export const sendSessionMessageTool = define(
-  "send_session_message", "Send a message into a session, as its message box does; waits up to 2 minutes for the app to accept it (a session that is not loaded loads first). The app takes it for the person's, so say who you are in it. immediate (default) is admitted at the session's next turn boundary; enqueue waits behind its work.",
+  "send_session_message", "Send a message to a session as a peer: the session sees it as a cross-session message from Ouroboros (Shepherd's own Ouroboros session is the sender), never as the owner's turn. Write as yourself, Ouroboros, not as the owner or the owner's agent; the sender already says who you are. Replies come back to that Ouroboros session (read it with shepherd messages). Waits up to 2 minutes for the app to accept it (a session that is not loaded loads first). immediate (default) is admitted at the session's next turn boundary; enqueue waits behind its work.",
   { session_id: session, message: { type: "string", description: "What to send." }, delivery_mode: { type: "string", enum: ["immediate", "enqueue"] }, notify_on_idle: notifyOnIdle }, ["session_id", "message"],
   write("sends a message into another agent session in the owner's Copilot app"),
   async (args, agentRoot) => {
