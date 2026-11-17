@@ -70,6 +70,7 @@ export type OuroCliCommand =
   | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
   | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
+  | { kind: "mail.sweep-orphans"; agent?: string; live?: boolean }
   | { kind: "mail.sync-cache"; agent?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider; apiKeyFile?: string; baseUrl?: string }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }

@@ -307,6 +307,7 @@ export function usage(): string {
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
     "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
+    "  ouro mail sweep-orphans [--agent <name>] [--live]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
     "  ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
@@ -1392,7 +1393,12 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
 
 function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
-  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]\n       ouro mail sync-cache [--agent <name>]"
+  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]\n       ouro mail sync-cache [--agent <name>]\n       ouro mail sweep-orphans [--agent <name>] [--live]"
+  if (sub === "sweep-orphans") {
+    const { agent, rest } = extractAgentFlag(subArgs)
+    if (rest.some((token) => token !== "--live")) throw new Error(usageText)
+    return { kind: "mail.sweep-orphans", ...(agent ? { agent } : {}), ...(rest.length > 0 ? { live: true } : {}) }
+  }
   if (sub === "sync-cache") {
     const agentFlagCount = subArgs.filter((token) => token === "--agent").length
     const { agent, rest } = extractAgentFlag(subArgs)
