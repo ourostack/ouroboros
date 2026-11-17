@@ -15,7 +15,7 @@ vi.mock("../../../heart/provider-credentials", () => ({
   refreshProviderCredentialPool: (...args: unknown[]) => refreshProviderCredentialPoolMock(...args),
 }))
 
-import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth, isTransientVaultError } from "../../../heart/daemon/agent-config-check"
 import { createProviderReadinessPreparationFailure } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 const mockReadFileSync = vi.mocked(fs.readFileSync)
@@ -514,6 +514,23 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.fix).toContain("ouro up")
     expect(result.fix).not.toContain("ouro vault unlock")
     expect(result.issue).toBeUndefined()
+    expect(result.vaultUnreachable).toBe(true)
+  })
+
+  it("does not flag a locked vault or an auth rejection as unreachable", async () => {
+    for (const error of ["ouro credential vault is locked on this machine", "Invalid master password"]) {
+      refreshProviderCredentialPoolMock.mockResolvedValue({ ok: false, reason: "unavailable", poolPath: "vault:myagent:providers/*", error })
+      const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+      expect(result.ok).toBe(false)
+      expect(result.vaultUnreachable).toBeUndefined()
+    }
+  })
+
+  it("classifies DNS and connection reset failures as an unreachable vault", () => {
+    for (const error of ["getaddrinfo ENOTFOUND vault.ouro.bot", "read ECONNRESET", "getaddrinfo EAI_AGAIN vault.ouro.bot", "connect EHOSTUNREACH 1.2.3.4:443"]) {
+      expect(isTransientVaultError(error)).toBe(true)
+    }
+    expect(isTransientVaultError("Invalid master password")).toBe(false)
   })
 
   it("classifies socket hang up errors as transient and suggests retry", async () => {

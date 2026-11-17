@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1175",
+      "changes": [
+        "The daemon survives a vault outage at startup instead of crash-looping. When the vault does not answer (timeout, refused or reset connection, DNS failure), provider readiness no longer aborts startup: the agent is marked degraded as `vault:<agent>` in daemon health and the vault is retried with capped backoff until it answers. Rejections from a reachable vault (locked, wrong password, missing credential) still fail startup, and `ouro mail sweep-orphans` still requires a fresh vault read. No credentials are cached on disk."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1174",
       "changes": [
         "The app-sessions tools run Shepherd's `shepherd` CLI with `--json` for every verb (sessions, session, messages, send, create, answer, plan, archive, automation, workflows, run-workflow, open) instead of the app's socket. Shepherd is found by `SHEPHERD_BIN`, then `shepherd` on PATH, then Housesitter's copy; without it the tools say how to install it (`npx github:ourostack/shepherd#v0.8.1`). The app-interface socket requests, the handoff and coordinator readers, the probe list and the event-log history reader are removed. A notify_on_idle watch still reads the event log until the sense moves to Shepherd too."
