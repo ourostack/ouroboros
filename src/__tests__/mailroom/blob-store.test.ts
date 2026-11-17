@@ -559,6 +559,17 @@ describe("AzureBlobMailroomStore", () => {
       expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(true)
     })
 
+    it("defaults the clock and grace period, and honors an explicit grace period", async () => {
+      const { store, blobs, put } = await seed()
+      put(`raw/mail_orphan.${fp}.json`, old)
+      const defaults = await store.sweepOrphanedEncryptedRaw()
+      expect(defaults.deleted).toBe(1)
+      put(`raw/mail_recent.${fp}.json`, new Date())
+      const zeroGrace = await store.sweepOrphanedEncryptedRaw({ minAgeMs: 0 })
+      expect(zeroGrace.deleted).toBe(1)
+      expect(blobs.has(`raw/mail_recent.${fp}.json`)).toBe(false)
+    })
+
     it("reports non-Error failures", async () => {
       const { store } = await seed()
       ;(store as unknown as { container: FakeContainerClient }).container.listError = "boom"

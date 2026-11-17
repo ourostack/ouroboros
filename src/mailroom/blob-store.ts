@@ -674,8 +674,8 @@ export class AzureBlobMailroomStore implements MailroomStore {
       const referenced = new Set<string>()
       await mapWithConcurrency(messageNames, this.messageFetchConcurrency, async (name) => {
         const message = await downloadJson<{ rawObject?: unknown }>(this.container.getBlockBlobClient(name), this.blobOperationTimeoutMs)
-        if (message && isNonEmptyString(message.rawObject)) referenced.add(message.rawObject)
-        else if (message) throw new Error(`committed message blob ${name} has no raw reference; refusing to sweep`)
+        if (!isNonEmptyString(message?.rawObject)) throw new Error(`committed message blob ${name} has no raw reference; refusing to sweep`)
+        referenced.add(message.rawObject)
       })
 
       const candidates: Array<{ name: string; messageId: string; ageMs: number | null }> = []
