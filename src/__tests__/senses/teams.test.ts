@@ -3,6 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import type { ChannelCallbacks } from "../../heart/core"
+import type { FriendRecord } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const mockIdentityPaths = vi.hoisted(() => ({
@@ -4099,6 +4100,7 @@ describe("Teams adapter - session persistence", () => {
   })
 
   function mockTeamsDeps(overrides: {
+    friend?: Partial<FriendRecord>
     runAgentFn?: any
     loadSessionReturn?: any
     saveSessionCalls?: any[][]
@@ -4185,6 +4187,7 @@ describe("Teams adapter - session persistence", () => {
         createdAt: "2026-01-01",
         updatedAt: "2026-01-01",
         schemaVersion: 1,
+        ...overrides.friend,
       },
       channel: {
         channel: "teams",
@@ -4217,6 +4220,37 @@ describe("Teams adapter - session persistence", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("hello", mockStream as any, "conv-123")
     expect(runAgentFn).toHaveBeenCalled()
+  })
+
+  it.each([
+    { conversationType: "personal", kind: "human", trustLevel: "family", allowed: true },
+    { conversationType: "groupChat", kind: "human", trustLevel: "family", allowed: false },
+    { conversationType: "channel", kind: "human", trustLevel: "family", allowed: false },
+    { conversationType: undefined, kind: "human", trustLevel: "family", allowed: false },
+    { conversationType: "personal", kind: "agent", trustLevel: "family", allowed: false },
+    { conversationType: "personal", kind: "human", trustLevel: "friend", allowed: false },
+  ] as const)("psyche edit from Teams $conversationType by $trustLevel $kind (allowed=$allowed)", async ({ conversationType, kind, trustLevel, allowed }) => {
+    vi.resetModules()
+    const target = path.join(mockIdentityPaths.agentRoot, "psyche", "IDENTITY.md")
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, "I give long answers.")
+    let toolResult: string | undefined
+    const runAgentFn = vi.fn<typeof import("../../heart/core").runAgent>(async (_messages, _callbacks, _channel, _signal, options) => {
+      const { execTool } = await import("../../repertoire/tools")
+      await execTool("read_file", { path: target }, options?.toolContext)
+      toolResult = await execTool("edit_file", { path: target, old_string: "I give long answers.", new_string: "I keep answers brief." }, options?.toolContext)
+      return { outcome: "settled" }
+    })
+    mockTeamsDeps({ runAgentFn, friend: { kind, trustLevel } })
+    const teams = await import("../../senses/teams")
+    await teams.handleTeamsMessage("wanna edit your psyche?", { emit: vi.fn(), update: vi.fn(), close: vi.fn() }, "psyche-request", {
+      signin: async () => undefined,
+      aadObjectId: "synthetic-owner-aad",
+      tenantId: "synthetic-tenant",
+      isGroupChat: teams.teamsIsGroupChat(conversationType),
+    })
+    expect(fs.readFileSync(target, "utf8")).toBe(allowed ? "I keep answers brief." : "I give long answers.")
+    expect(toolResult).toContain(allowed ? "psyche edit: I changed psyche/IDENTITY.md." : "that file is part of me")
   })
 
   it("loads session for conversation on each message", async () => {
@@ -6415,7 +6449,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     vi.resetModules()
     const { mockHandleInboundTurn } = mockPipelineDeps()
     const teams = await import("../../senses/teams")
-    expect([teams.teamsIsGroupChat("personal"), teams.teamsIsGroupChat("groupChat"), teams.teamsIsGroupChat("channel"), teams.teamsIsGroupChat(undefined)]).toEqual([false, true, true, false])
+    expect([teams.teamsIsGroupChat("personal"), teams.teamsIsGroupChat("groupChat"), teams.teamsIsGroupChat("channel"), teams.teamsIsGroupChat(undefined)]).toEqual([false, true, true, undefined])
 
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("hello all", mockStream as any, "conv-group", { signin: vi.fn(), aadObjectId: "aad-user-123", tenantId: "tenant-abc", isGroupChat: true })
