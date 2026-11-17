@@ -34,12 +34,19 @@ function parseArgs(argv) {
   return options
 }
 
+function isShippedMailboxUiAsset(file) {
+  return file.startsWith("packages/mailbox-ui/") &&
+    (file.startsWith("packages/mailbox-ui/src/") || file === "packages/mailbox-ui/index.html") &&
+    !/\.test\.tsx?$/.test(file)
+}
+
 function versionBumpRequired(changedFiles) {
   return changedFiles.some(
     (file) => file === "package.json" ||
       file.startsWith("deploy/unraid/") ||
       file.startsWith("skills/") ||
       file.startsWith("scripts/") ||
+      isShippedMailboxUiAsset(file) ||
       (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
   )
 }
@@ -52,6 +59,7 @@ function pathRequiresChangelogFreshness(file) {
   return file.startsWith("deploy/unraid/") ||
     file.startsWith("scripts/") ||
     file.startsWith("skills/") ||
+    isShippedMailboxUiAsset(file) ||
     (file.startsWith("src/") && !file.startsWith("src/__tests__/")) ||
     (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
 }

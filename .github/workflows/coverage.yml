@@ -570,6 +570,7 @@ jobs:
           const fs = require('fs')
           const { execSync } = require('child_process')
           const { assessWrapperPublishSync } = require('./dist/heart/versioning/wrapper-publish-guard.js')
+          const { lookupPublishedVersion } = require('./scripts/npm-publish-idempotency.cjs')
 
           const changedFiles = execSync(
             'git diff-tree --no-commit-id --name-only -r HEAD -- packages/ouro.bot/',
@@ -578,26 +579,17 @@ jobs:
 
           const localVersion = require('./packages/ouro.bot/package.json').version
           const cliVersion = require('./package.json').version
-          let publishedVersion = ''
-          try {
-            publishedVersion = execSync(`npm view "ouro.bot@${localVersion}" version`, {
-              encoding: 'utf-8',
-              stdio: ['ignore', 'pipe', 'ignore'],
-            }).trim()
-          } catch {
-            publishedVersion = ''
-          }
+          const publishedVersion = lookupPublishedVersion(`ouro.bot@${localVersion}`) ?? ''
 
           const result = assessWrapperPublishSync({ changedFiles, localVersion, cliVersion, publishedVersion })
           if (!result.ok) {
             console.error(result.message)
             process.exit(1)
           }
-          if (publishedVersion === localVersion) {
-            console.log(`ouro.bot@${localVersion} already published — skipping`)
-            process.exit(0)
-          }
           console.log(result.message)
+          if (publishedVersion === localVersion) {
+            console.log(`ouro.bot@${localVersion} is already on npm; the publish step verifies its contents`)
+          }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, 'should_publish=true\n')
           NODE
 
@@ -612,7 +604,7 @@ jobs:
         if: steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
-          npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
+          node ../../scripts/npm-publish-idempotency.cjs publish "${{ steps.wrapper-publish-tag.outputs.tag }}"
 
 
   # Waits out npm's registry propagation, then hands the exact published bytes to the

@@ -58,7 +58,7 @@ publish:
       run: |
         const fallback = "11.6.4"
     - run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
-    - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - run: node ../../scripts/npm-publish-idempotency.cjs publish "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
       run: echo "selected npm dist-tags verified"
 `)
@@ -97,7 +97,7 @@ publish:
     contents: read
   steps:
     - run: npm publish --access public --tag "$TAG"
-    - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - run: node ../../scripts/npm-publish-idempotency.cjs publish "\${{ steps.wrapper-publish-tag.outputs.tag }}"
 `,
     })
     const result = validateTrustedPublisherLocalContract({ repoRoot: root })
@@ -123,7 +123,7 @@ publish:
     - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
       run: npm install -g npm@latest
     - run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
-    - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+    - run: node ../../scripts/npm-publish-idempotency.cjs publish "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
       run: echo "selected npm dist-tags verified"
 `,
