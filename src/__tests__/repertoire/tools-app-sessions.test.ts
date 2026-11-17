@@ -66,6 +66,14 @@ describe("the tool set", () => {
     expect(text).toContain("cross-session message from Ouroboros")
     expect(text).toContain("not as the owner")
     expect(text).not.toContain("takes it for the person")
+    expect(text).toContain("not this runtime itself")
+  })
+
+  it("tells the agent repository work goes to a project session, never a chat", () => {
+    const text = tools.createSessionTool.tool.function.description
+    expect(text).toContain("General Chat")
+    expect(text).toContain("must pass project_id")
+    expect(text).toContain("ouroboros project")
   })
 
   it("is on only when agent.json enables the sense", () => {
