@@ -53,7 +53,7 @@ function validateTrustedPublisherLocalContract(options = {}) {
     "Verify npm trusted-publishing toolchain",
     'fallback = "11.6.4"',
     'node scripts/npm-publish-idempotency.cjs publish "${{ steps.cli-publish-tag.outputs.tag }}"',
-    'npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"',
+    'node ../../scripts/npm-publish-idempotency.cjs publish "${{ steps.wrapper-publish-tag.outputs.tag }}"',
     "Verify selected npm dist-tags",
     "selected npm dist-tags verified",
   ]

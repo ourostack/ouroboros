@@ -159,7 +159,7 @@ publish:
     - name: Publish @ouro.bot/cli
       run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
     - name: Publish ouro.bot
-      run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+      run: node ../../scripts/npm-publish-idempotency.cjs publish "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
       run: echo "selected npm dist-tags verified"
 `
@@ -216,6 +216,14 @@ describe("release-preflight", () => {
     expect(versionBumpRequired(["scripts/release-smoke.cjs"])).toBe(true)
     expect(versionBumpRequired(["deploy/unraid/Dockerfile"])).toBe(true)
     expect(versionBumpRequired(["src/__tests__/scripts/changelog-gate.test.ts"])).toBe(false)
+  })
+
+  it("requires a bump for mailbox-ui assets that ship in the CLI, not for their tests", () => {
+    expect(versionBumpRequired(["packages/mailbox-ui/src/style.css"])).toBe(true)
+    expect(versionBumpRequired(["packages/mailbox-ui/src/lib/ouro/dev.ts"])).toBe(true)
+    expect(versionBumpRequired(["packages/mailbox-ui/index.html"])).toBe(true)
+    expect(versionBumpRequired(["packages/mailbox-ui/src/api.test.ts"])).toBe(false)
+    expect(pathRequiresChangelogFreshness("packages/mailbox-ui/src/style.css")).toBe(true)
   })
 
   it("flags implementation paths that require a fresh changelog entry", () => {
