@@ -157,7 +157,7 @@ publish:
       run: |
         const fallback = "11.6.4"
     - name: Publish @ouro.bot/cli
-      run: npm publish --access public --tag "$TAG"
+      run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
     - name: Publish ouro.bot
       run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags

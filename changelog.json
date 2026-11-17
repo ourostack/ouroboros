@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1181",
+      "changes": [
+        "Ship the Ouro UI v1.3.261 mailbox UI sync that merged after 0.1.0-alpha.1180 was already published.",
+        "Make the npm publish step verify registry contents, skipping identical artifacts and failing on real version conflicts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1180",
       "changes": [
         "Ouroboros says it messages sessions as a relayed peer, opens repository work as project sessions, and passes a why with every Shepherd write."

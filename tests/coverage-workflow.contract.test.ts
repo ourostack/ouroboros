@@ -88,7 +88,7 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain("node-version: 24")
     expect(workflow).toContain("package-manager-cache: false")
     expect(workflow).toContain("trusted publishing requires npm >=11.5.1 on Node >=22.14")
-    expect(workflow).toContain('npm publish --access public --tag "$TAG"')
+    expect(workflow).toContain('node scripts/npm-publish-idempotency.cjs publish "${{ steps.cli-publish-tag.outputs.tag }}"')
     expect(workflow).toContain('npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"')
     expect(workflow).not.toContain("--provenance")
     expect(workflow).not.toContain("npm dist-tag add")

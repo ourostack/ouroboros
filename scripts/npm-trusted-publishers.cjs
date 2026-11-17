@@ -52,7 +52,7 @@ function validateTrustedPublisherLocalContract(options = {}) {
     "package-manager-cache: false",
     "Verify npm trusted-publishing toolchain",
     'fallback = "11.6.4"',
-    'npm publish --access public --tag "$TAG"',
+    'node scripts/npm-publish-idempotency.cjs publish "${{ steps.cli-publish-tag.outputs.tag }}"',
     'npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"',
     "Verify selected npm dist-tags",
     "selected npm dist-tags verified",
