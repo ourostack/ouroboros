@@ -109,25 +109,22 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 
 ### Configuration Policy (Required)
 
-- This project avoids environment variables. Prefer explicit CLI arguments, committed config files, or in-repo defaults.
-- If a proposal would normally use env vars, present a non-env-var alternative instead.
+- Avoid environment variables. Use CLI arguments, committed config files or in-repo defaults, and offer one of those whenever a proposal would reach for an env var. (Judgment: no check.)
 
 ### Runtime Config Contract (Required)
 
-- The full auth/provider contract is locked in `docs/auth-and-providers.md`. Keep code, tests, prompt rendering, CLI errors, and docs aligned with that file.
-- `agent.json` is the source of truth for agent identity, phrases, enabled senses, vault coordinates, and context settings. Vault coordinates are not secrets.
-- Provider selection lives in `~/AgentBundles/<agent>.ouro/agent.json`. Human-facing maps to the `outward` lane; agent-facing maps to the `inner` lane. Both lanes must be complete; there is no silent fallback between them and no second local provider config.
-- All raw credentials live in the owning agent's Bitwarden/Vaultwarden vault: the agent's password manager. Provider credentials use `providers/<provider>`, portable runtime/integration credentials use `runtime/config`, local sense attachments use `runtime/machines/<machine-id>/config`, and travel/tool credentials use ordinary vault credential items. There is one vault per agent and no machine-wide credential pool.
-- The only Ouro-owned durable credential locations are the bundle and the agent vault. Local unlock material is a machine-local cache, not a credential source of truth.
-- The only local secret is vault unlock material stored in macOS Keychain, Windows DPAPI, Linux Secret Service, or an explicit human-approved plaintext fallback under ignored local state.
-- New vault unlock secret flows must use hidden terminal prompts, require confirmation, and enforce minimum strength: at least 8 characters, uppercase and lowercase letters, one number, and one special character.
-- `ouro auth --agent <agent> --provider <provider>` writes provider credentials to that agent's vault. `ouro connect --agent <agent>` guides integration and local-sense setup. `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` writes provider selection to `agent.json`. `ouro provider refresh --agent <agent>` refreshes the daemon's in-memory provider credential cache from the vault.
-- CLI commands that mutate bundle config after auth/connect/vault repair must run the existing bundle sync path when `sync.enabled` is true and must surface a compact `bundle sync:` success/failure line.
-- Provider and runtime credentials are cached in process memory after refresh/startup/auth/unlock. Do not read the remote vault on every model/tool/sense request and do not add a local credential cache on disk.
-- Repair guidance must include the actor: `agent-runnable`, `human-required`, or `human-choice`. Agents may run checks/refreshes, but browser login, MFA, provider dashboards, API-token creation, and secret entry are human-required.
-- SerpentGuide hatch bootstrap may use existing unlockable agent-vault credentials or prompt the human. It runs with selected credentials in memory and stores them in the hatchling vault. SerpentGuide must not have persistent provider credentials or a persistent credential vault.
-- Keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped runtime artifacts under `~/.ouro-cli/...`.
-- Runtime must fail fast with explicit guidance when the vault is locked, credentials are missing, or a selected provider/model fails its live check. Do not implement silent provider fallback behavior. The one automatic fallback is opt-in through `providerFallback` in `agent.json`, and it is logged and told to the owner (see `docs/auth-and-providers.md`, Automatic provider fallback).
+The auth/provider contract is locked in `docs/auth-and-providers.md`; keep code, tests, prompt rendering, CLI errors and docs aligned with it (enforced: `src/__tests__/docs/auth-and-providers.contract.test.ts`). Rules tagged "(enforced: …)" name the test or type that fails when they break; untagged rules are held by review.
+
+- `agent.json` is the source of truth for agent identity, phrases, enabled senses, vault coordinates (not secrets) and context settings. Provider selection lives there too: human-facing is the `outward` lane, agent-facing the `inner` lane. Both lanes must be complete, with no silent fallback between them and no second local provider config. The one automatic fallback is opt-in `providerFallback`, logged and told to the owner (docs, "Automatic provider fallback").
+- Runtime fails fast with explicit guidance when the vault is locked, credentials are missing, or a selected provider/model fails its live check.
+- Raw credentials live only in the owning agent's Bitwarden/Vaultwarden vault, one vault per agent, no machine-wide pool: `providers/<provider>`, `runtime/config` (portable runtime/integration), `runtime/machines/<machine-id>/config` (local senses), ordinary items for travel/tool credentials. The bundle and the vault are the only Ouro-owned durable credential locations (enforced: auth-and-providers contract test).
+- The only local secret is vault unlock material in macOS Keychain, Windows DPAPI, Linux Secret Service, or a human-approved plaintext fallback under ignored local state. New unlock-secret prompts are hidden, confirmed, and need 8+ characters with upper, lower, number and special (enforced: `src/__tests__/repertoire/vault-unlock.test.ts`).
+- Credentials are cached in process memory after refresh/startup/auth/unlock. Don't read the remote vault per request, and don't add an on-disk credential cache.
+- Commands: `ouro auth --agent <a> --provider <p>` writes provider credentials to the vault; `ouro connect --agent <a>` sets up integrations and local senses; `ouro use --agent <a> --lane <outward|inner> --provider <p> --model <m>` writes selection to `agent.json`; `ouro provider refresh --agent <a>` reloads the daemon's in-memory cache.
+- Commands that mutate bundle config run the bundle sync path when `sync.enabled` is true and print a compact `bundle sync:` line (enforced: `src/__tests__/heart/daemon/provider-cli-commands.test.ts`).
+- Repair guidance names its actor, `agent-runnable`, `human-required` or `human-choice` (enforced: the `AutonomyRepairActor` type in `src/heart/autonomy-budget.ts`). Browser login, MFA, provider dashboards, API-token creation and secret entry are human-required.
+- SerpentGuide hatch bootstrap uses existing agent-vault credentials or prompts the human, holds them in memory, and stores them in the hatchling vault; SerpentGuide never has persistent credentials or a vault (enforced: `src/__tests__/repertoire/credential-access.test.ts`).
+- Agent-owned runtime/session/log/PII artifacts go under `~/AgentBundles/<agent>.ouro/state/...`; machine-scoped ones under `~/.ouro-cli/...`.
 
 ### Git Discipline
 
