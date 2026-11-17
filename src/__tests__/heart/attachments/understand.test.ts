@@ -3,14 +3,17 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AttachmentRecord } from "../../../heart/attachments/types"
+import type { ProviderRuntime } from "../../../heart/core"
 
 const mocks = vi.hoisted(() => ({
+  getProviderRuntime: vi.fn(),
   readProviderCredentialRecord: vi.fn(),
   minimaxVlmDescribe: vi.fn(),
   materializeAttachment: vi.fn(),
   voiceNoteLine: vi.fn(),
 }))
 
+vi.mock("../../../heart/core", () => ({ getProviderRuntime: mocks.getProviderRuntime }))
 vi.mock("../../../heart/provider-credentials", () => ({ readProviderCredentialRecord: mocks.readProviderCredentialRecord }))
 vi.mock("../../../heart/providers/minimax-vlm", () => ({ minimaxVlmDescribe: mocks.minimaxVlmDescribe }))
 vi.mock("../../../heart/attachments/materialize", () => ({ materializeAttachment: mocks.materializeAttachment }))
@@ -44,6 +47,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "understand-"))
   fs.writeFileSync(path.join(dir, "pic.png"), "png")
   mocks.materializeAttachment.mockResolvedValue({ path: path.join(dir, "pic.png"), mimeType: "image/png" })
+  mocks.getProviderRuntime.mockResolvedValue({ id: "minimax", model: "MiniMax-M3" })
 })
 
 afterEach(() => {
@@ -52,6 +56,65 @@ afterEach(() => {
 })
 
 describe("image helpers", () => {
+  it.each([
+    ["github-copilot", "claude-opus-5.5"],
+    ["github-copilot", "gpt-6.1-sol"],
+    ["anthropic", "claude-opus-5-5"],
+  ] as const)("describes through the selected %s / %s runtime without a MiniMax key", async (id, model) => {
+    const streamTurn = vi.fn<ProviderRuntime["streamTurn"]>().mockResolvedValue({
+      content: "a screenshot saying SYNTHETIC-42",
+      toolCalls: [],
+      outputItems: [],
+    })
+    const resetTurnState = vi.fn()
+    mocks.getProviderRuntime.mockResolvedValue({ id, model, streamTurn, resetTurnState })
+    mocks.readProviderCredentialRecord.mockResolvedValue({ ok: false })
+
+    await expect(describeImage("butler", { prompt: "read the label", imageDataUrl: "data:image/png;base64,cG5n" })).resolves.toBe("a screenshot saying SYNTHETIC-42")
+    expect(mocks.getProviderRuntime).toHaveBeenCalledWith("human", expect.objectContaining({ agentName: "butler" }))
+    const request = streamTurn.mock.calls[0]![0]
+    expect(request.messages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "read the label" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,cG5n" } },
+      ],
+    }])
+    expect(resetTurnState).toHaveBeenCalledWith(request.messages)
+    expect(request.activeTools).toEqual([])
+    expect(mocks.readProviderCredentialRecord).not.toHaveBeenCalled()
+    expect(mocks.minimaxVlmDescribe).not.toHaveBeenCalled()
+  })
+
+  it("reports an unsupported configured model without borrowing another provider's credentials", async () => {
+    mocks.getProviderRuntime.mockResolvedValue({ id: "openai-compatible", model: "text-only-model" })
+    await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n" })).rejects.toThrow(/text-only-model.*does not support images/u)
+    expect(mocks.readProviderCredentialRecord).not.toHaveBeenCalled()
+    expect(mocks.minimaxVlmDescribe).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { content: "", toolCalls: [], outputItems: [] },
+    { content: "partial", toolCalls: [], outputItems: [], termination: { finishReason: "length", refused: false } },
+    { content: "no", toolCalls: [], outputItems: [], termination: { finishReason: "stop", refused: true } },
+    { content: "calling", toolCalls: [{ id: "1", name: "tool", arguments: "{}" }], outputItems: [] },
+  ])("rejects an incomplete image description: %j", async (result) => {
+    mocks.getProviderRuntime.mockResolvedValue({
+      id: "github-copilot", model: "claude-opus-5.5", resetTurnState: vi.fn(),
+      streamTurn: vi.fn().mockResolvedValue(result),
+    })
+    await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n" })).rejects.toThrow(/image description/u)
+  })
+
+  it("surfaces provider errors without switching to MiniMax", async () => {
+    mocks.getProviderRuntime.mockResolvedValue({
+      id: "github-copilot", model: "claude-opus-5.5", resetTurnState: vi.fn(),
+      streamTurn: vi.fn().mockRejectedValue(new Error("provider unavailable")),
+    })
+    await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n" })).rejects.toThrow("provider unavailable")
+    expect(mocks.minimaxVlmDescribe).not.toHaveBeenCalled()
+  })
+
   it("builds the description prompt with or without the user's text", () => {
     expect(imageDescriptionPrompt("look")).toContain('User message: "look"')
     expect(imageDescriptionPrompt(undefined)).toContain('User message: ""')
