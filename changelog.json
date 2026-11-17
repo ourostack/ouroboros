@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1172",
+      "changes": [
+        "Mailroom: AzureBlobMailroomStore.sweepOrphanedEncryptedRaw deletes encrypted raw objects no committed message references (24h grace, fail-closed, dry-run), paying the raw-orphan debt."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1171",
       "changes": [
         "The app-sessions sense no longer runs wake delivery or stuck resume: Shepherd owns them now (`shepherd wakes status`, `shepherd stuck plan`). A `wakeRunners` block in agent.json is ignored, and a hand-off is read from the successor's `Succeeds:` line alone."
