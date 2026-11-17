@@ -1,8 +1,7 @@
-export { blank, BUDGETS, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, parseArgs, placeOf, RULES, SIZES, summary, transportIssues };
+export { blank, BUDGETS, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, parseArgs, placeOf, RULES, runScript, SIZES, summary, transportIssues };
 export type { Budgets, CheckOptions, CheckResult, Finding, Gate, ImageEntry, MergeOptions, Report };
 
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { appendFile, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -20,21 +19,17 @@ import { findTextIssues } from "./text-check.ts";
 import { findLayoutIssues } from "./layout-check.ts";
 import { findThemeIssues } from "./theme-check.ts";
 import { findInteractionIssues } from "./interaction-check.ts";
-import { quietPipes, runCli } from "../ax/cli.ts";
-import { defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input } from "../ax/command.ts";
-import { BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE } from "../ax/exit-codes.ts";
-import { DEFAULT_OUTCOME_EXITS, outcome, type Outcome } from "../ax/outcome.ts";
-import { AxError, commandLine, didYouMean, isAxError } from "../ax/problem.ts";
+import { quietPipes, runCli, defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input, BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE, DEFAULT_OUTCOME_EXITS, outcome, type Outcome, AxError, commandLine, didYouMean, isAxError } from "./run.kit.mts";
 import { findWrapIssues, readHeroArt, type HeroArt } from "./wrap-check.ts";
 
 // Ouro check: every page at every screen size from a 320px phone to a 3840px screen, plus the short landscape screens of
 // a dual-screen phone unfolded sideways, light and dark, at density 2 up to 3072px wide and 1 above. Pass and fail come from measurement, never from
 // looking at pictures; the pictures are for the person who fixes what it finds.
 //
-//   node lib/ouro/check/check.ts <url | built folder>… [--pages <glob>] [--out <folder>] [--sizes WxH,…]
+//   node scripts/ouro/check/check.ts <url | built folder>… [--pages <glob>] [--out <folder>] [--sizes WxH,…]
 //        [--themes light,dark] [--before <old report.json>] [--config ouro-check.json] [--no-axe]
 //        [--no-measured] [--ready-event <name>] [--shard k/n] [--images-report <file.json>]
-//   node lib/ouro/check/check.ts merge <out folder>… [--out <folder>] [--config ouro-check.json] [--images-report <file.json>]
+//   node scripts/ouro/check/check.ts merge <out folder>… [--out <folder>] [--config ouro-check.json] [--images-report <file.json>]
 //
 // Exits as every Ouro tool does (EXIT): 0 ok, 1 error (the check could not run), 2 usage, 3 findings. Playwright comes
 // from the app's playwright (or PLAYWRIGHT_MODULE), Chromium from Playwright or BROWSER_EXECUTABLE, axe-core from the app or AXE_CORE.
@@ -241,7 +236,7 @@ const LABELS: Record<string, string> = {
 };
 const RULES = Object.keys(LABELS);
 // The exit codes every Ouro tool shares (the Ouro AX kit's table: 0 ok, 1 error, 2 usage), and this tool's own 3. A
-// copy rather than an import: the kit installs where the app keeps its lib, and this file runs from lib/ouro/check.
+// copy rather than an import: the kit installs where the app keeps its lib, and this file runs from scripts/ouro/check.
 const EXIT = Object.freeze({ ok: 0, error: 1, usage: 2, findings: 3 });
 // What usually causes a finding, for the person who fixes it.
 const HINTS: Record<string, string> = {
@@ -1432,8 +1427,9 @@ async function main(argv: readonly string[], context: Env): Promise<number> {
 }
 
 /* node:coverage disable */
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+// What check.ts runs as a command: quiet pipes, then the exit code the command returns.
+async function runScript(argv: readonly string[]): Promise<void> {
   quietPipes(process);
-  process.exitCode = await main(process.argv.slice(2), { cwd: process.cwd(), env: process.env, log: console.log, error: console.error });
+  process.exitCode = await main(argv, { cwd: process.cwd(), env: process.env, log: console.log, error: console.error });
 }
 /* node:coverage enable */

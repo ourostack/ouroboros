@@ -8,10 +8,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { quietPipes, runCli, type CliIo } from "./cli.ts";
-import { defineCli, defineCommand, type Cli, type CommandDef, type FlagSpec, type Input } from "./command.ts";
-import { outcome, type Outcome } from "./outcome.ts";
-import { AxError, commandLine } from "./problem.ts";
+import { quietPipes, runCli, type CliIo, defineCli, defineCommand, type Cli, type CommandDef, type FlagSpec, type Input, outcome, type Outcome, AxError, commandLine } from "./flows.kit.mts";
 
 /**
  * An adopter's agent flows as data, run in CI without a model: a flow is the calls a good agent makes for one task, and
@@ -19,7 +16,7 @@ import { AxError, commandLine } from "./problem.ts";
  * the `flow-review/0` format (`findings.jsonl`, one check a line, and `report.json`), with an X-ray report attached when
  * given. The X-ray checks what every command must do; flows check what a task needs, and each finds what the other can't.
  *
- *   node lib/ouro/ax/flows.ts run <suite module> [--out report] [--flows a,b] [--slack n] [--xray report.json]
+ *   node scripts/ouro/ax/flows.ts run <suite module> [--out report] [--flows a,b] [--slack n] [--xray report.json]
  *
  * @claim "each finds what the other can't" docs/decisions/2026-10-30-ouro-ax/evidence/agent-flow-review.md verify:fileLine(docs/decisions/2026-10-30-ouro-ax/evidence/agent-flow-review.md, /The same commit's X-ray called the CLI conformant/)
  */

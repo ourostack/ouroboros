@@ -4,7 +4,7 @@
     {
       "id": "ourostack-ouro-ui-ax",
       "repository": "ourostack/ouro-ui",
-      "commit": "6da58e6fd438a174d9852c707f458d58f2f2d412",
+      "commit": "a36eb47dc30ece4e003b896744ac98adf55eaec5",
       "license": "MIT",
       "files": [
         { "sourcePath": "LICENSE", "generatedPath": "lib/ouro-ui/LICENSE", "sha256": "6515c640c8b25cea05a476e6c5e325a3d9699f16e83a72048b32ecae08fdc4ab" },
@@ -17,20 +17,23 @@
         { "sourcePath": "registry/ouro/ax/effects.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/effects.ts", "sha256": "08c5e6ebd2485ec34a6e0d915200bdd09447548754d5b430cfb4941a7c7dc5ca" },
         { "sourcePath": "registry/ouro/ax/example-cli.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/example-cli.ts", "sha256": "7010daed10ef381e3c6b4f21107049f20b49830ed96cbedf90a19109a00e6f9d" },
         { "sourcePath": "registry/ouro/ax/exit-codes.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/exit-codes.ts", "sha256": "b6a6cc62877e7125f17846f9aa0861e3f849fa20cff3e52d4e44391562780d7c" },
-        { "sourcePath": "registry/ouro/ax/flows.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/flows.ts", "sha256": "6d1028cdae7a0928f896a8298d629180fa20627ffcb31bc8323521b3051ed887" },
+        { "sourcePath": "registry/ouro/ax/flows.kit.mts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/flows.kit.mts", "sha256": "d5fc7c50890c8cfe4e8ff83371933494524d482080a9d0a4785cf9172c2acd9f" },
+        { "sourcePath": "registry/ouro/ax/flows.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/flows.ts", "sha256": "a2baeeb8204e0e681900bc8e561eb869a9956bbfdae0d605ce567379e453e66e" },
         { "sourcePath": "registry/ouro/ax/help.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/help.ts", "sha256": "3e10e7b43b176bfae882ec25ab950f722eca76bda2b24a8239f19f8805dbb1cb" },
         { "sourcePath": "registry/ouro/ax/lint.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/lint.ts", "sha256": "3a0597475fa506a7d54c4fee52c49f3d3454ed07e8b013579d050ae3702dc7dc" },
         { "sourcePath": "registry/ouro/ax/mcp.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/mcp.ts", "sha256": "648563fbc2aac0912783533a385099adc8608d1f58a43b7a5450a73f9108a0ff" },
         { "sourcePath": "registry/ouro/ax/outcome.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/outcome.ts", "sha256": "ab83a9c4182039a7d23a176bdfc159c29aaf9b3515c7bb939190877bdbaefe60" },
         { "sourcePath": "registry/ouro/ax/output.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/output.ts", "sha256": "fcee98161b3537d82043898d4139af0fa2b84f4a6fa52bc1bb9c0ed6615356a2" },
-        { "sourcePath": "registry/ouro/ax/precise-copy.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/precise-copy.ts", "sha256": "153a41f0fd865abe7e03ec8702ab72319185dd1afeef86e0f29b5ec6300a2e32" },
+        { "sourcePath": "registry/ouro/ax/precise-copy.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/precise-copy.ts", "sha256": "d93b0f3dc86634e3432b81f8709d1f0ce42e1c63a1554c059ae285f46792edee" },
         { "sourcePath": "registry/ouro/ax/problem.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/problem.ts", "sha256": "3f4d9ed5fe2a0f773d525da2222414b33d03ae903a6d69530cecbc0a55b69d58" },
-        { "sourcePath": "registry/ouro/ax/surfaces.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/surfaces.ts", "sha256": "1a6e09a3b38cadc7488c51bcb276fd5f41d4d8c9139d56f5688b209c2b75f050" },
+        { "sourcePath": "registry/ouro/ax/surfaces.kit.mts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/surfaces.kit.mts", "sha256": "bce338c1022dc9b78db94df6f58398155c487de836ed76273769f61eeee01233" },
+        { "sourcePath": "registry/ouro/ax/surfaces.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/surfaces.ts", "sha256": "e4b65cbc66b718c6e0cba5c169c4cf524ef52d480348dfae855fe03b7bcb516a" },
         { "sourcePath": "registry/ouro/ax/terminal.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/terminal.ts", "sha256": "41b6a375fe92d67e6190dccabfa80c94a9e275c641e83c46114d8d209c652ca5" },
         { "sourcePath": "registry/ouro/ax/voice.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/voice.ts", "sha256": "b92512692f13f2fbd3ee45407b876d6a18ac164f8c35a33524ac5d7c88a015b5" },
         { "sourcePath": "registry/ouro/ax/wait.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/wait.ts", "sha256": "fed4890771d0ce5d1a43d93e73c7d621818bbcb44b30e88c88be274972a133c7" },
         { "sourcePath": "registry/ouro/ax/work-event.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/work-event.ts", "sha256": "48d58f3357b420a72e6b31a0682bf4710cff530efef4c43c4668392c3639c230" },
-        { "sourcePath": "registry/ouro/ax/xray.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.ts", "sha256": "d7d007c30618a0d3b3227ae85a3c6f5e601ec4d44cbe672300f05e42cbdc05fd" }
+        { "sourcePath": "registry/ouro/ax/xray.kit.mts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.kit.mts", "sha256": "692b53e9cb44397fb93dd56e2c62a477942fd2ee112700fc69cabbc547157f4f" },
+        { "sourcePath": "registry/ouro/ax/xray.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.ts", "sha256": "d9b579e9e636e05c427891813dc1f0001600d4fefac8c90a60b76472379a3200" }
       ]
     }
   ]

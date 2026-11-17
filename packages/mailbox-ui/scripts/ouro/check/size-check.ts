@@ -2,7 +2,7 @@ export { findSizeIssues };
 export type { ImageMeasure, Measure, PageIssue, SizeCheckOptions };
 
 // Runs in the page (page.evaluate), so nothing in it may close over anything outside the function. With
-// overlap-check.ts (text on text or on a picture) and axe, check.ts holds pages to these at every size:
+// overlap-check.ts (text on text or on a picture) and axe, run.ts holds pages to these at every size:
 //
 //   sideways-scroll  the page is wider than the screen; names the outermost elements that stick out
 //   clipped-text     a block of text cut off by its own box: overflow, an ellipsis or a line clamp; or a text block or a
@@ -129,7 +129,7 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
 
   // Clipped text.
   // Text hidden from assistive technology by the page: under aria-hidden that no open modal set. Text a modal hides is the
-  // page behind it, whose findings check.ts leaves to the page's own run (behindModal).
+  // page behind it, whose findings run.ts leaves to the page's own run (behindModal).
   const modals = [...document.querySelectorAll('[aria-modal="true"], dialog:modal')].filter((m) => m.getClientRects().length);
   const unreachable = (el: Element) => {
     const hidden = el.closest('[aria-hidden="true"]');

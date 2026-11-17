@@ -6,7 +6,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, relative, resolve, sep } from "node:path";
 
-// The built-folder side of check.ts: a static server for the folder, as a host would serve it, and the folder's pages.
+// The built-folder side of run.ts: a static server for the folder, as a host would serve it, and the folder's pages.
 
 interface Server {
   origin: string;
