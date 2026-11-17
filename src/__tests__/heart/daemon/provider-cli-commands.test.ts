@@ -9337,7 +9337,7 @@ describe("provider CLI command execution", () => {
     expect(prompt).toContain("ouro vault unlock --agent Slugger")
   })
 
-  it("treats generic provider vault read failures as unlockable in the root connect bay", async () => {
+  it("treats generic provider vault read failures as self-recovering, not unlockable, in the root connect bay", async () => {
     emitTestEvent("provider cli connect menu provider unlock repair")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-home")
@@ -9371,8 +9371,8 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expectConnectStatus(prompt, 1, "Providers", "locked")
-    expect(prompt).toContain("ouro vault unlock --agent Slugger")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).not.toContain("ouro vault unlock")
   })
 
   it("keeps the connect bay usable when provider verification throws unexpectedly", async () => {
