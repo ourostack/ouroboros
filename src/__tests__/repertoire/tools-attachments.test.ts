@@ -8,6 +8,9 @@ const testState = vi.hoisted(() => ({
 }))
 
 const mockReadProviderCredentialRecord = vi.hoisted(() => vi.fn())
+const mockGetProviderRuntime = vi.hoisted(() => vi.fn())
+
+vi.mock("../../heart/core", () => ({ getProviderRuntime: mockGetProviderRuntime }))
 
 vi.mock("../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
@@ -53,6 +56,7 @@ function writeFile(dir: string, name: string, content: string): string {
 beforeEach(() => {
   vi.resetAllMocks()
   testState.agentRoot = ""
+  mockGetProviderRuntime.mockResolvedValue({ id: "minimax", model: "MiniMax-M3" })
   mockReadProviderCredentialRecord.mockResolvedValue({
     ok: true,
     record: {
