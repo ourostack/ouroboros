@@ -25,7 +25,7 @@ async function recoverCancelledChecks({ github, context, core }) {
   const pr = await readPr()
   const prEligible = (candidate) =>
     candidate.state === "open" && !candidate.draft && Boolean(candidate.auto_merge) &&
-    candidate.head.sha === run.head_sha
+    candidate.head.sha === run.head_sha && candidate.base.ref === pr.base.ref
   if (!prEligible(pr)) return skip("pull request is not armed at this head")
 
   const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {

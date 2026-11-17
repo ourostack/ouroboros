@@ -91,6 +91,9 @@ for (const [name, change] of [
   }],
   ["head moved during inspection", (s) => { s.nextPr = { ...s.pr, head: { sha: "new" } } }],
   ["disarmed during inspection", (s) => { s.nextPr = { ...s.pr, auto_merge: null } }],
+  ["target branch changed during inspection", (s) => {
+    s.nextPr = { ...s.pr, base: { ref: "other-target" } }
+  }],
   ["run already restarted during inspection", (s) => { s.nextRun = { ...s.run, run_attempt: 2 } }],
 ]) {
   test(`does not recover: ${name}`, async () => {
