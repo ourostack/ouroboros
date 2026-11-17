@@ -1,0 +1,54 @@
+name: Recover cancelled required checks
+
+on:
+  workflow_run:
+    workflows: [coverage-gate, ax-xray, mailbox-ui-check]
+    types: [completed]
+  pull_request:
+    paths:
+      - .github/scripts/recover-cancelled-checks*
+      - .github/workflows/recover-cancelled-checks.yml
+      - .github/workflows/coverage.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include='.github/scripts/recover-cancelled-checks.cjs'
+          --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100
+          .github/scripts/recover-cancelled-checks.test.cjs
+
+  recover:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: recover-cancelled-${{ github.event.workflow_run.id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+    steps:
+      # workflow_run is privileged: load only trusted default-branch code.
+      # Never checkout the triggering head or consume its artifacts.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { recoverCancelledChecks } = require('./.github/scripts/recover-cancelled-checks.cjs')
+            await recoverCancelledChecks({ github, context, core })
