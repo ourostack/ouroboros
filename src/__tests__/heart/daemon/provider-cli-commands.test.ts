@@ -9375,6 +9375,44 @@ describe("provider CLI command execution", () => {
     expect(prompt).not.toContain("ouro vault unlock")
   })
 
+  it("keeps a rejected saved unlock secret loud and unlockable in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu provider rejected unlock repair")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-rejected-unlock-repair-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-rejected-unlock-repair-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "agent.json",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "agent.json",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeUnavailableProviderCredentialPool("Slugger", "bw CLI rejected the saved vault unlock secret for this machine")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "locked")
+    expect(prompt).toContain("ouro vault unlock --agent Slugger")
+  })
+
   it("keeps the connect bay usable when provider verification throws unexpectedly", async () => {
     emitTestEvent("provider cli connect menu provider health throws")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-health-throws-bundles")
