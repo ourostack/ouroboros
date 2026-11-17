@@ -8,6 +8,9 @@ const testState = vi.hoisted(() => ({
 }))
 
 const mockReadProviderCredentialRecord = vi.hoisted(() => vi.fn())
+const mockGetProviderRuntime = vi.hoisted(() => vi.fn())
+
+vi.mock("../../heart/core", () => ({ getProviderRuntime: mockGetProviderRuntime }))
 
 vi.mock("../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
@@ -53,6 +56,7 @@ function writeFile(dir: string, name: string, content: string): string {
 beforeEach(() => {
   vi.resetAllMocks()
   testState.agentRoot = ""
+  mockGetProviderRuntime.mockResolvedValue({ id: "minimax", model: "MiniMax-M3" })
   mockReadProviderCredentialRecord.mockResolvedValue({
     ok: true,
     record: {
@@ -385,6 +389,25 @@ describe("attachment tool handlers", () => {
 
     expect(raw).toContain("vision model timed out")
     expect(raw).not.toContain("describe_image:minimax-missing-key")
+    expect(JSON.parse(raw)).toMatchObject({ friction: { kind: "external_blocker", recoverability: "retryable" } })
+  })
+
+  it("reports an unsupported outward model as blocked without suggesting image materialization again", async () => {
+    const agentRoot = makeAgentRoot()
+    const normalizedPath = writeFile(agentRoot, "normalized.png", "png")
+    vi.spyOn(materializeModule, "materializeAttachment").mockResolvedValue({
+      attachmentId: "attachment:teams:synthetic", variant: "vision_safe",
+      path: normalizedPath, displayName: "synthetic.png", mimeType: "image/png", byteCount: 3,
+    })
+    mockGetProviderRuntime.mockResolvedValue({ id: "openai-compatible", model: "text-only-model" })
+    const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
+    const parsed = JSON.parse(await tool.handler({ attachment_id: "attachment:teams:synthetic", prompt: "what is this?" }))
+
+    expect(parsed).toMatchObject({ ok: false, friction: {
+      kind: "external_blocker", recoverability: "blocked", signature: "describe_image:provider-unavailable",
+      summary: expect.stringContaining("text-only-model"),
+    } })
+    expect(parsed.friction.suggested_next_actions).toEqual([expect.objectContaining({ kind: "message", message: expect.stringContaining("vision-capable outward model") })])
   })
 
   it("returns a structured friction envelope when an attachment cannot be found", async () => {

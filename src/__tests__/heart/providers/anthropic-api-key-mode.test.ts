@@ -66,6 +66,21 @@ describe("Anthropic API-key mode", () => {
     mockCreate.mockClear()
   })
 
+  it.each(["max_tokens", "model_context_window_exceeded", "pause_turn", "refusal"])("preserves unfinished image-description status: %s", async (stopReason) => {
+    mockCreate.mockReturnValueOnce({
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial screenshot description" } }
+        yield { type: "message_delta", delta: { stop_reason: stopReason } }
+      },
+    })
+    const { createAnthropicProviderRuntime } = await import("../../../heart/providers/anthropic")
+    const runtime = createAnthropicProviderRuntime("claude-opus-5-5", { setupToken: "", apiKey: "synthetic" })
+    const result = await runtime.streamTurn({
+      messages: [{ role: "user", content: "describe the screenshot" }], activeTools: [], callbacks,
+    })
+    expect(result.termination).toEqual({ finishReason: "incomplete", refused: stopReason === "refusal" })
+  })
+
   it("builds the client with apiKey and baseURL, no auth token and no Claude Code headers", async () => {
     emitTestEvent("anthropic api-key client options")
     const { createAnthropicProviderRuntime } = await import("../../../heart/providers/anthropic")
