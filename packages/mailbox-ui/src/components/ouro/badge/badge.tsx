@@ -128,7 +128,7 @@ const base =
   // Stryker disable next-line StringLiteral: a class string in a class position, unchanged but for the joining plus
   "h-6 rounded-md border border-solid px-2 text-xs/none font-medium whitespace-nowrap no-underline " +
   // Where corner-shape is missing, the surface slot paints the background, border and state layer instead (see ouro-base.css).
-  "bg-(--ouro-bg) border-(--ouro-bd) [--ouro-sq-w:1px] [--ouro-sq-r:calc(var(--radius-md)/var(--ouro-corner-fallback,1))]";
+  "bg-(--ouro-bg) border-(--ouro-bd) [--ouro-sq-w:1px] [--ouro-sq-r:calc(var(--radius)*var(--ouro-radius-scale,1)*0.8)]";
 
 // Only for the link and button kinds: press feedback, a state layer and the focus ring,
 // as on Button.
