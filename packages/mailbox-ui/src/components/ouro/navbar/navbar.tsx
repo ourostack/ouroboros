@@ -75,7 +75,7 @@ export interface NavbarProps {
    */
   actions?: ReactNode;
   /**
-   * The name of the button that opens the links below 640px, and the title of the sheet
+   * The name of the button that opens the links below `collapseBelow` (640px by default), and the title of the sheet
    * it opens. @default "Menu"
    * @claim "The name of the button that" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > collapses the links into a sheet behind a menu button below 640px)
    * @claim "The name of the button that" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > hides the menu button from 640px up)
@@ -97,6 +97,14 @@ export interface NavbarProps {
   menu?: ReactNode;
   /** The label of that sheet's close button. @default "Close" */
   closeLabel?: string | undefined;
+  /**
+   * The Tailwind breakpoint below which the links collapse behind the menu button: `sm`, `md`, `lg` or `xl`. The server HTML
+   * and the first paint use it too, so the bar matches on hydration at every width. Use `lg` when the links need more room
+   * than a tablet's bar has. @default "sm"
+   * @claim "The Tailwind breakpoint below which the links collapse" test/navbar-first-paint.test.tsx verify:testExists(test/navbar-first-paint.test.tsx::Navbar's collapse breakpoint > with collapseBelow lg, the menu shows below lg and the links from lg up)
+   * @claim "The server HTML and the first paint use it too" test/navbar-first-paint.test.tsx verify:testExists(test/navbar-first-paint.test.tsx::Navbar's collapse breakpoint > with collapseBelow lg, is the same bar at 390, 768, 1024 and 1440, server HTML and hydrated, with nothing swapped)
+   */
+  collapseBelow?: "sm" | "md" | "lg" | "xl" | (string & { "one of sm, md, lg, xl": never }) | undefined;
   /** Layout only: margins, position (`sticky top-0`). Appearance classes warn in development. */
   className?: string | undefined;
   ref?: Ref<HTMLElement> | undefined;
@@ -111,12 +119,19 @@ export interface NavbarProps {
   children?: { "Use items={[{ label, href }]}, brand={...} and actions={...}": never };
 }
 
-// Class strings are literal so the app's Tailwind finds them when it compiles.
+// Class strings are literal so the app's Tailwind finds them when it compiles. Each breakpoint is one of Tailwind's, the
+// media query the script reads, and the classes that show or hide the two forms and wrap the bar below it.
+const breakpoints = {
+  sm: { query: "(min-width: 40rem)", show: "sm:hidden", hide: "max-sm:hidden", wrap: "max-sm:flex-wrap max-sm:py-1" },
+  md: { query: "(min-width: 48rem)", show: "md:hidden", hide: "max-md:hidden", wrap: "max-md:flex-wrap max-md:py-1" },
+  lg: { query: "(min-width: 64rem)", show: "lg:hidden", hide: "max-lg:hidden", wrap: "max-lg:flex-wrap max-lg:py-1" },
+  xl: { query: "(min-width: 80rem)", show: "xl:hidden", hide: "max-xl:hidden", wrap: "max-xl:flex-wrap max-xl:py-1" },
+} as const;
 
-// Below 640px the links are always behind the menu button, so a wrap there changes no measure of theirs; from 640px
-// the links' room decides whether the menu button shows, and a wrap would change that room.
+// Below the collapse breakpoint the links are always behind the menu button, so a wrap there changes no measure of theirs;
+// from it up the links' room decides whether the menu button shows, and a wrap would change that room.
 const bar =
-  "box-border flex min-h-14 items-center gap-2 border-0 max-sm:flex-wrap max-sm:py-1 border-b border-solid border-border bg-background text-foreground " +
+  "box-border flex min-h-14 items-center gap-2 border-0 border-b border-solid border-border bg-background text-foreground " +
   "ps-[max(1rem,env(safe-area-inset-left,0px))] pe-[max(1rem,env(safe-area-inset-right,0px))]";
 
 // A link: 44px with 16px text on a coarse pointer at every width, 36px with 14px text with a
@@ -137,15 +152,15 @@ const example = '<Navbar label="Main" items={[{ label: "Recipes", href: "/recipe
 /**
  * The bar across the top of an app: your brand, the main links and a few controls, with
  * the current page marked `aria-current="page"`, and the link of the section it is in `aria-current="true"`, both underlined in the primary colour as in `FamilyBar`, distinct from hover and press highlights. A group of links (`{ label, links }`)
- * opens a panel, as in `NavigationMenu`. Whenever the links do not fit, below 640px and on
- * a narrow tablet, they collapse behind a menu button into a `Sheet` that slides in from
- * the side, with each group under its name; the brand and `actions` stay in the bar. When, below
- * 640px, even the brand and `actions` do not fit side by side (large text on a phone), the actions
+ * opens a panel, as in `NavigationMenu`. Whenever the links do not fit, below the `collapseBelow` breakpoint and
+ * wherever they overflow the bar, they collapse behind a menu button into a `Sheet` that slides in from
+ * the side, with each group under its name; the brand and `actions` stay in the bar. When, below the collapse breakpoint,
+ * even the brand and `actions` do not fit side by side (large text on a phone), the actions
  * move to a second row rather than off the screen. Links render through `OuroProvider`'s `linkComponent`,
  * so your router navigates.
  *
  * The phone menu opens once JavaScript has loaded (after hydration). Both the links and the menu button are in the
- * server HTML, and CSS shows one of them at 640px, so the bar does not change when the page hydrates; only links
+ * server HTML, and CSS shows one of them at the `collapseBelow` breakpoint, so the bar does not change when the page hydrates; only links
  * that do not fit the bar, on a tablet, collapse once the page has measured them. A tap on the menu button before then
  * does nothing unless your app keeps it: this site's head script keeps a tap on any control React has not yet hydrated, shows
  * the control pressed, and presses it again once it has (`site/src/early-input.ts` in the
@@ -177,7 +192,7 @@ const example = '<Navbar label="Main" items={[{ label: "Recipes", href: "/recipe
  * @claim "The phone menu opens once JavaScript" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar at tablet widths and with groups > puts a group's button and the bar's links in the server HTML)
  * @claim "this site's head script keeps a tap" site/e2e/early-input.spec.ts verify:fileLine(site/e2e/early-input.spec.ts, /a tap on the menu button before the page's script has run opens the menu/) verify:fileLine(site/src/early-input.ts, /export function keepEarlyInput/)
  * @claim "the sheet is built while the page is" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > builds the sheet while the page is idle once the menu button shows, and keeps it, hidden, between opens)
- * @claim "When, below 640px, even the brand and `actions` do not fit side by side" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > moves its actions to a second row when they and the brand do not fit beside each other, as with large text)
+ * @claim "When, below the collapse breakpoint, even the brand and `actions` do not fit side by side" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > moves its actions to a second row when they and the brand do not fit beside each other, as with large text)
  * @claim "Both the links and the menu button are in the server HTML" test/navbar-first-paint.test.tsx verify:testExists(test/navbar-first-paint.test.tsx::Navbar's first paint > is the same bar on a phone, server HTML and hydrated, with nothing swapped)
  */
 export function Navbar(props: NavbarProps): JSX.Element {
@@ -190,6 +205,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
     menuLabel = "Menu",
     menu,
     closeLabel = "Close",
+    collapseBelow = "sm",
     className,
     ref,
     // Guard props (hint types), dropped here so they never reach the DOM.
@@ -214,15 +230,18 @@ export function Navbar(props: NavbarProps): JSX.Element {
           logo !== undefined && ["logo is not a prop", "<Navbar brand={<Logo />}>"],
           pathname !== undefined && ["pathname is not a prop", "<Navbar currentPath={pathname}>"],
           children !== undefined && ["children are not rendered", `${example} brand={…} actions={…} />`],
+          !Object.hasOwn(breakpoints, collapseBelow) && ["collapseBelow is not a breakpoint; it takes sm, md, lg or xl", '<Navbar collapseBelow="lg">'],
         ]
       : /* istanbul ignore next @preserve -- production only */ undefined,
   );
 
-  // Both forms are in the server HTML, and CSS shows one: the links from the sm breakpoint up, the menu button below it.
-  // This query is that same breakpoint, in rem as sm is, so the sheet's script and the CSS agree at any root font size.
+  // The unknown value, which the development check names, renders as sm.
+  const breakpoint = Object.hasOwn(breakpoints, collapseBelow) ? breakpoints[collapseBelow as keyof typeof breakpoints] : breakpoints.sm;
+  // Both forms are in the server HTML, and CSS shows one: the links from the collapse breakpoint up, the menu button below it.
+  // This query is that same breakpoint, in rem as the Tailwind classes are, so the sheet's script and the CSS agree at any root font size.
   // The links also collapse wherever they do not fit the bar, which only the measure below can tell.
   // Stryker disable next-line BooleanLiteral: the server default feeds only the hydration render, which draws the same bar either way; the sheet's build waits for an effect that reads the live value.
-  const wide = useMediaQuery("(min-width: 40rem)", true);
+  const wide = useMediaQuery(breakpoint.query, true);
   const [overflow, setOverflow] = useState(false);
   const collapsed = !wide || overflow;
   const [open, setOpen] = useState(false);
@@ -295,7 +314,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
   );
 
   return (
-    <header ref={ref} data-ouro="navbar" className={cn(bar, className)}>
+    <header ref={ref} data-ouro="navbar" className={cn(bar, breakpoint.wrap, className)}>
       <Button
         ref={menuButton}
         data-ouro-navbar-menu=""
@@ -309,7 +328,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        className={cn("-ms-2 w-11 px-0", !overflow && "sm:hidden")}
+        className={cn("-ms-2 w-11 px-0", !overflow && breakpoint.show)}
       >
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="size-5">
           <path d="M3 5.5h14M3 10h14M3 14.5h14" />
@@ -317,7 +336,7 @@ export function Navbar(props: NavbarProps): JSX.Element {
       </Button>
       {brand !== undefined && <div className="flex min-w-0 shrink-0 items-center">{brand}</div>}
       {/* The links' slot takes the room between the brand and the actions; hidden but measured when they do not fit. */}
-      <div ref={slot} data-ouro-navbar-links="" className={cn("min-w-0 flex-1 overflow-hidden max-sm:hidden", overflow && "invisible")}>
+      <div ref={slot} data-ouro-navbar-links="" className={cn("min-w-0 flex-1 overflow-hidden", breakpoint.hide, overflow && "invisible")}>
         <NavigationMenuView label={label} items={items} currentPath={currentPath} oneLine listRef={list} />
       </div>
       {actions !== undefined && <div className="ms-auto flex shrink-0 items-center gap-2">{actions}</div>}
