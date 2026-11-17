@@ -2,7 +2,7 @@ export { findImageFades };
 
 import type { PageIssue } from "./size-check.ts";
 
-// Runs in the page (page.evaluate), so nothing in it may close over anything outside the function. check.ts holds pages
+// Runs in the page (page.evaluate), so nothing in it may close over anything outside the function. run.ts holds pages
 // to it at every size:
 //
 //   image-fade  a picture that fades into the page: an <img>, an SVG <image> or an element with a url() background

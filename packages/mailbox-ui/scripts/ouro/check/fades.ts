@@ -5,13 +5,13 @@ import { realpathSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXIT } from "./check.ts";
+import { EXIT } from "./run.ts";
 
 // The fade check: a picture never fades into the page. It reads an app's source and finds the two usual ways a picture
 // is made to dissolve, in stylesheets, Tailwind classes and style objects alike: every gradient used as a mask, and every
 // wash, a gradient that reaches transparent laid over a picture:
 //
-//   node lib/ouro/check/fades.ts <folder | file>…
+//   node scripts/ouro/check/fades.ts <folder | file>…
 //
 // A wash is a gradient that reaches transparent on a layer over the picture, a `::before` or `::after` or an absolutely
 // positioned or fixed box other than a hairline, in a file that draws a picture (an `<img>`, `<picture>`, `<video>` or a
@@ -254,7 +254,7 @@ async function scan(paths: string[], cwd: string): Promise<Fade[]> {
   return fades;
 }
 
-const USAGE = `Usage: node lib/ouro/check/fades.ts <folder | file>…
+const USAGE = `Usage: node scripts/ouro/check/fades.ts <folder | file>…
 
 Finds every gradient used as a mask, and every wash (a gradient that reaches transparent on a layer over a picture, or
 named a wash, scrim, fade, veil or haze), in the source under each folder (its stylesheets, Tailwind classes and style

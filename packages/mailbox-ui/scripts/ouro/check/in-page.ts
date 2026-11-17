@@ -3,7 +3,7 @@ export type { Allowance, AxeIssue, Box };
 
 import type { PageIssue } from "./size-check.ts";
 
-// The rest of check.ts's in-page side. Playwright runs these functions in the page (page.evaluate,
+// The rest of run.ts's in-page side. Playwright runs these functions in the page (page.evaluate,
 // page.waitForFunction, context.addInitScript), so none of them may close over anything outside itself.
 
 interface Box {

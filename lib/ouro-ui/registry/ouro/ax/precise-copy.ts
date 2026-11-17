@@ -19,7 +19,7 @@ export type { FailureCopyAllow, VagueFailureFinding, VagueFailuresOptions };
  * @claim "A negation or an action before the word" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::finds each vague phrase and a bare failure, and lets precise copy and allowed text through)
  * @claim "unless the cause follows the phrase" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::finds each vague phrase and a bare failure, and lets precise copy and allowed text through)
  * @claim "goes on an allow-list, each entry with its reason" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::an allow-list needs a match and a reason in every entry)
- * @claim "The source rules kit (ouro-source-rules) keeps the identical list" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::keeps the source rules kit's list of phrases)
+ * @claim "The source rules kit (ouro-source-rules) keeps the identical list" scripts/ax.test.mjs verify:testExists(scripts/ax.test.mjs::the precise-copy list keeps the source rules kit's phrases)
  */
 interface FailureCopyAllow {
   /** Part of the text, case-sensitive: a text that holds it passes. */
