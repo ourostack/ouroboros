@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1177",
+      "changes": [
+        "A vault or local unlock-store error that is not a rejection of the saved unlock secret no longer asks a human to run `ouro vault unlock`. A locked or unavailable macOS login keychain, a bw or server hiccup, or an unclassified vault error at daemon startup degrades that agent (`vault:<agent>` in daemon health) and retries on its own, so `ouro up` repair stops offering an unlock prompt for them. Only the server rejecting the saved unlock secret, or no saved secret at all, still asks a human."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1176",
       "changes": [
         "The app-sessions sense reads the app through Shepherd's `shepherd` CLI: the sidebar from `shepherd sessions --json` and a watched session's replies from `shepherd messages --json`. It no longer opens the app's socket, reads its database or its event logs for the sidebar, watches or questions. A watch's cursor is the time it was sent to; a reply is an assistant message after it. Shepherd's messages carry no tool requests, so a message that narrates before a tool call counts as a reply. The prompt listener (prompts.ts) and its pending-request store are removed: Shepherd's resident watch hears questions and plans. The digest's task cards still read the session's event log, until Shepherd exposes tool calls.",

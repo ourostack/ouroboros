@@ -408,21 +408,34 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.fix).not.toContain("ouro vault unlock")
   })
 
-  it("keeps unlock first for unavailable vault errors that are not explicit lock messages", async () => {
+  it("treats an unclassified unavailable vault error as a self-recovering outage, not a request to unlock", async () => {
+    for (const error of ["temporary vault service outage", "failed to read vault unlock secret from macOS Keychain: User interaction is not allowed."]) {
+      refreshProviderCredentialPoolMock.mockResolvedValue({ ok: false, reason: "unavailable", poolPath: "vault:myagent:providers/*", error })
+
+      const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain(error)
+      expect(result.vaultUnreachable).toBe(true)
+      expect(result.fix).not.toContain("ouro vault unlock")
+      expect(result.fix).not.toContain("ouro vault replace")
+      expect(result.issue).toBeUndefined()
+    }
+  })
+
+  it("keeps a server rejection of the saved unlock secret loud and human-directed", async () => {
     refreshProviderCredentialPoolMock.mockResolvedValue({
       ok: false,
       reason: "unavailable",
       poolPath: "vault:myagent:providers/*",
-      error: "temporary vault service outage",
+      error: "bw CLI rejected the saved vault unlock secret for this machine",
     })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
 
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("temporary vault service outage")
+    expect(result.vaultUnreachable).toBeUndefined()
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
-    expect(result.fix).toContain("ouro vault replace --agent myagent")
-    expect(result.fix).not.toContain("ouro vault recover")
   })
 
   it("reports a broken local vault CLI without proposing vault replacement or exposing subprocess output", async () => {

@@ -321,6 +321,16 @@ function invalidPoolResult(
       issue: vaultUnconfiguredIssue(agentName),
     }
   }
+  if (pool.reason === "unavailable" && !isVaultAuthRejection(pool.error)) {
+    // Nothing says the saved unlock secret is wrong (a locked login keychain, a bw or server hiccup, an outage),
+    // so asking a human to unlock the vault would be wrong; the daemon retries on its own.
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault: ${pool.error}`,
+      fix: `The vault or this machine's local unlock store is temporarily unavailable; Ouro keeps retrying on its own. If it persists, run 'ouro doctor'.`,
+      vaultUnreachable: true,
+    }
+  }
   if (pool.reason === "invalid") {
     return {
       ok: false,
@@ -333,6 +343,11 @@ function invalidPoolResult(
     error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault at ${pool.poolPath}: ${pool.error}`,
     fix: vaultUnlockOrRecoverFix(agentName, `Then run 'ouro up' again. If the credential is missing or stale after unlock or recovery, run 'ouro auth --agent ${agentName} --provider ${provider}'.`),
   }
+}
+
+/** The vault server said the saved unlock secret is wrong: the one case where a human must act. */
+function isVaultAuthRejection(error: string): boolean {
+  return /rejected the saved|saved vault unlock secret|username or password is incorrect|invalid master password/i.test(error)
 }
 
 function isVaultLockedError(error: string): boolean {
