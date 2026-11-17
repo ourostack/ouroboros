@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 import { getAgentName } from "../heart/identity"
-import { describeImage, imageFileDataUrl } from "../heart/attachments/understand"
+import { describeImage, imageFileDataUrl, UnsupportedImageModelError } from "../heart/attachments/understand"
 import { listRecentAttachments } from "../heart/attachments/store"
 import { materializeAttachment } from "../heart/attachments/materialize"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -255,16 +255,19 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         try {
           description = await describeImage(agentName, { prompt, imageDataUrl, attachmentGuid: attachmentId, mimeType: materialized.mimeType })
         } catch (error) {
-          if (!/MiniMax API key/.test(normalizeThrownReason(error))) throw error
+          const reason = normalizeThrownReason(error)
+          const missingMinimaxKey = /MiniMax API key/.test(reason)
           return frictionToolResult("describe_image", {
             kind: "external_blocker",
-            recoverability: "blocked",
-            summary: "MiniMax credentials are missing, so image understanding is unavailable until credentials are fixed.",
-            signature: "describe_image:minimax-missing-key",
+            recoverability: missingMinimaxKey || error instanceof UnsupportedImageModelError ? "blocked" : "retryable",
+            summary: reason,
+            signature: missingMinimaxKey ? "describe_image:minimax-missing-key" : "describe_image:provider-unavailable",
             suggested_next_actions: [
               {
                 kind: "message",
-                message: "Run `ouro auth --agent <agent> --provider minimax`, then retry describe_image.",
+                message: missingMinimaxKey
+                  ? "Human-required: run `ouro auth --agent <agent> --provider minimax`, then retry describe_image."
+                  : reason,
               },
             ],
           })

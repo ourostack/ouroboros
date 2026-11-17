@@ -48,6 +48,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(dir, "pic.png"), "png")
   mocks.materializeAttachment.mockResolvedValue({ path: path.join(dir, "pic.png"), mimeType: "image/png" })
   mocks.getProviderRuntime.mockResolvedValue({ id: "minimax", model: "MiniMax-M3" })
+  mocks.readProviderCredentialRecord.mockResolvedValue({ ok: false })
 })
 
 afterEach(() => {
@@ -61,10 +62,13 @@ describe("image helpers", () => {
     ["github-copilot", "gpt-6.1-sol"],
     ["anthropic", "claude-opus-5-5"],
   ] as const)("describes through the selected %s / %s runtime without a MiniMax key", async (id, model) => {
-    const streamTurn = vi.fn<ProviderRuntime["streamTurn"]>().mockResolvedValue({
-      content: "a screenshot saying SYNTHETIC-42",
-      toolCalls: [],
-      outputItems: [],
+    const streamTurn = vi.fn<ProviderRuntime["streamTurn"]>().mockImplementation(async (request) => {
+      request.callbacks.onModelStreamStart()
+      return {
+        content: "a screenshot saying SYNTHETIC-42",
+        toolCalls: [],
+        outputItems: [],
+      }
     })
     const resetTurnState = vi.fn()
     mocks.getProviderRuntime.mockResolvedValue({ id, model, streamTurn, resetTurnState })
@@ -97,6 +101,7 @@ describe("image helpers", () => {
     { content: "", toolCalls: [], outputItems: [] },
     { content: "partial", toolCalls: [], outputItems: [], termination: { finishReason: "length", refused: false } },
     { content: "no", toolCalls: [], outputItems: [], termination: { finishReason: "stop", refused: true } },
+    { content: "filtered", toolCalls: [], outputItems: [], termination: { finishReason: "content_filter", refused: false } },
     { content: "calling", toolCalls: [{ id: "1", name: "tool", arguments: "{}" }], outputItems: [] },
   ])("rejects an incomplete image description: %j", async (result) => {
     mocks.getProviderRuntime.mockResolvedValue({
@@ -113,6 +118,18 @@ describe("image helpers", () => {
     })
     await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n" })).rejects.toThrow("provider unavailable")
     expect(mocks.minimaxVlmDescribe).not.toHaveBeenCalled()
+  })
+
+  it("propagates callback errors and passes an explicit image timeout to the provider", async () => {
+    const streamTurn = vi.fn<ProviderRuntime["streamTurn"]>().mockImplementation(async (request) => {
+      expect(request.signal).toBeInstanceOf(AbortSignal)
+      request.callbacks.onError(new Error("stream failed"), "terminal")
+      throw new Error("unreachable")
+    })
+    mocks.getProviderRuntime.mockResolvedValue({
+      id: "github-copilot", model: "claude-opus-5.5", resetTurnState: vi.fn(), streamTurn,
+    })
+    await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n", timeoutMs: 1000 })).rejects.toThrow("stream failed")
   })
 
   it("builds the description prompt with or without the user's text", () => {

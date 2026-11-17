@@ -99,6 +99,12 @@ ouro use --agent <agent> --lane outward --provider <provider> --model <model>
 ouro use --agent <agent> --lane inner --provider <provider> --model <model>
 ```
 
+### Image understanding
+
+Inbound attachment descriptions (including Teams screenshots) and `describe_image` use the owning agent's configured `outward` provider and model. Vision-capable models receive normalized image bytes through the existing provider adapter: Copilot handles its vision header and Responses conversion, and Anthropic handles native image blocks. No additional provider's key is required. Description requests have no tools and do not receive the conversation history.
+
+When the selected provider is MiniMax and its chat model lacks native vision, its existing VLM endpoint uses that same agent's MiniMax credential. Other non-vision models return an explicit unsupported-model error with **human-choice** guidance to select a vision-capable outward model. Authentication, provider and incomplete-response failures remain visible; image understanding never silently switches providers.
+
 `ouro use` changes the provider/model choice in `agent.json`. It does not create or update credentials.
 
 ### Automatic provider fallback
