@@ -1,0 +1,10 @@
+[
+  {
+    "rule": "off-theme",
+    "summary": "A colour, radius, shadow or font written past the theme where the theme has a token for it; each finding names the token to use."
+  },
+  {
+    "rule": "off-scale",
+    "summary": "Spacing (a margin, padding or gap) off the theme's spacing scale; each finding names the step to use."
+  }
+]

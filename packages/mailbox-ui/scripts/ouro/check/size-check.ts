@@ -35,6 +35,8 @@ interface PageIssue {
   unit?: string;
   samples?: number[];
   image?: ImageMeasure;
+  // first-paint-swap's two controls, each as its first frame drew it and as it is at rest (null: it left the page).
+  swap?: { gone: { first: string; rest: string | null }; taker: { first: string; rest: string } };
 }
 
 // A blurry picture's numbers, for a report a person or a tool can make larger art from: where it is (a CSS selector),

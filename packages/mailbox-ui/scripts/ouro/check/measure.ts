@@ -23,6 +23,8 @@ interface Painted {
   frame: number;
   box: { left: number; top: number; right: number; bottom: number };
   skipped: boolean;
+  /** Its HTML as that frame drew it, trimmed: a swap's finding shows it beside the HTML at rest. */
+  html: string;
 }
 
 interface Measures {
@@ -113,6 +115,11 @@ function listenForMeasures(): void {
     }
     return false;
   };
+  // An element's HTML, whitespace collapsed and cut at 500 characters, so a large one costs the report little.
+  const htmlOf = (el: Element) => {
+    const html = el.outerHTML.replace(/\s+/g, " ");
+    return html.length > 500 ? `${html.slice(0, 500)}…` : html;
+  };
   const readFrame = () => {
     frames++;
     for (const el of document.querySelectorAll("button, a[href], input, select, textarea, [role=button], [role=link], [role=tab], [role=menuitem], [data-ouro-control]")) {
@@ -120,7 +127,7 @@ function listenForMeasures(): void {
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1 || r.right <= 0 || r.bottom <= 0 || r.left >= window.innerWidth || r.top >= window.innerHeight) continue;
       if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
-      m.painted.set(el, { frame: frames, box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, skipped: skipped(el) });
+      m.painted.set(el, { frame: frames, box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, skipped: skipped(el), html: htmlOf(el) });
     }
   };
   const paintFrame = (): void =>
@@ -164,7 +171,7 @@ async function findLoadingIssues(budgets: LoadingBudgets): Promise<PageIssue[]> 
     const w = words(el);
     return `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${el.classList.length ? `.${[...el.classList].slice(0, 3).join(".")}` : ""}${w ? ` "${w.slice(0, 40)}${w.length > 40 ? "…" : ""}"` : ""}`;
   };
-  const report = (rule: keyof LoadingBudgets | "first-paint-swap", node: Node | null, value: number | undefined, detail: string) => {
+  const report = (rule: keyof LoadingBudgets | "first-paint-swap", node: Node | null, value: number | undefined, detail: string, swap?: PageIssue["swap"]) => {
     const found = node instanceof Element ? node : (node?.parentElement ?? null);
     // Content that has left the page since is named as the page, and pictured as the screen.
     const el = found?.isConnected ? found : document.body;
@@ -173,9 +180,9 @@ async function findLoadingIssues(budgets: LoadingBudgets): Promise<PageIssue[]> 
     const ref = `m${counter.__ouroCheckRef}`;
     el.setAttribute("data-ouro-check-ref", `${el.getAttribute("data-ouro-check-ref") ?? ""} ${ref}`.trim());
     const element = el === document.body ? "the page" : name(el);
-    // A count, not a budget: a finding with no number, as the size rules report.
-    if (value === undefined) issues.push({ ref, rule, element, detail });
-    else issues.push({ ref, rule, element, detail, value, budget: budgets[rule as keyof LoadingBudgets], unit: rule === "layout-shift" ? "" : "ms" });
+    // A swap is a count, not a budget: a finding with no number, as the size rules report, and its two controls' HTML.
+    if (swap) issues.push({ ref, rule, element, detail, swap });
+    else issues.push({ ref, rule, element, detail, value: value!, budget: budgets[rule as keyof LoadingBudgets], unit: rule === "layout-shift" ? "" : "ms" });
   };
   const shift = Math.round(m.shift * 1000) / 1000;
   if (shift > budgets["layout-shift"]) report("layout-shift", m.shiftNode, shift, `shifted ${shift} while loading, over the budget of ${budgets["layout-shift"]}`);
@@ -190,6 +197,12 @@ async function findLoadingIssues(budgets: LoadingBudgets): Promise<PageIssue[]> 
   const at = new Map<Element, DOMRect>();
   for (const el of m.painted.keys()) if (shown(el)) at.set(el, el.getBoundingClientRect());
   const taken = new Set<Element>();
+  // As readFrame cuts it, so the first frame's HTML and the HTML at rest compare, less the marks this check has put on
+  // the page since (the other loading rules' data-ouro-check-ref), which the app never wrote.
+  const htmlOf = (el: Element) => {
+    const html = el.outerHTML.replace(/ data-ouro-check-[\w-]+="[^"]*"/g, "").replace(/\s+/g, " ");
+    return html.length > 500 ? `${html.slice(0, 500)}…` : html;
+  };
   for (const [gone, was] of m.painted) {
     if (was.skipped || at.has(gone)) continue;
     for (const [taker, later] of m.painted) {
@@ -197,7 +210,10 @@ async function findLoadingIssues(budgets: LoadingBudgets): Promise<PageIssue[]> 
       if (!rect || taken.has(taker) || later.skipped || later.frame <= was.frame || !overlaps(was.box, rect)) continue;
       if (taker.tagName === gone.tagName && taker.getAttribute("role") === gone.getAttribute("role") && words(taker) === words(gone)) continue;
       taken.add(taker);
-      report("first-paint-swap", taker, undefined, `${name(gone)} drew in the first frame, then ${name(taker)} took its place without input`);
+      // Each as it was first drawn and as it is at rest, read before the report marks the taker; gone at rest is null
+      // when it has left the page, and its HTML when it is still there but hidden.
+      const swap = { gone: { first: was.html, rest: gone.isConnected ? htmlOf(gone) : null }, taker: { first: later.html, rest: htmlOf(taker) } };
+      report("first-paint-swap", taker, undefined, `${name(gone)} drew in the first frame, then ${name(taker)} took its place without input`, swap);
       break;
     }
   }
