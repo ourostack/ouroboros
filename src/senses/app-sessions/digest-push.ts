@@ -1,7 +1,6 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import { plain } from "../shepherd/owner-notice"
-import { appUrl } from "./app-interface"
-import type { AppSessionRow } from "./client"
+import { appUrl, type AppSessionRow } from "./client"
 import { readCard } from "./digest-cards"
 import type { Digest, DigestState } from "./digest"
 import type { NotifyOwner } from "./waiting-prompts"

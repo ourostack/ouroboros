@@ -6,9 +6,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type WebSocket from "ws"
 
 import {
-  appRunning, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV, HUNG_MS,
+  appRunning, appUrl, assertSessionId, classify, defaultStateDir, describePermission, eventLogSize, exchange, findHousesitter, HOUSESITTER_ENV, HUNG_MS,
   listAppSessions, messagesIn, parseEventLines, readEventLog, realRunFile, restartEnqueue, restartStatus,
-  readAppSessionHistory, readNewAppEvents, snapshot, tailAppSession, tailFacts, type RunFile,
+  readNewAppEvents, snapshot, tailFacts, type RunFile,
 } from "../../../senses/app-sessions/client"
 
 type Frame = Record<string, unknown>
@@ -96,10 +96,11 @@ afterEach(() => {
 })
 
 describe("app-sessions client basics", () => {
-  it("defaults to ~/.copilot and checks session ids", () => {
+  it("defaults to ~/.copilot, checks session ids, and links a session in the app", () => {
     expect(defaultStateDir()).toBe(path.join(os.homedir(), ".copilot"))
     expect(assertSessionId(WS)).toBe(WS)
     expect(() => assertSessionId("../etc")).toThrow("is not a Copilot app session id")
+    expect(appUrl(WS)).toBe(`ghapp://sessions/${WS}`)
   })
 
   it("knows whether the app is running from its server files", () => {
@@ -288,67 +289,6 @@ describe("listing the sidebar", () => {
 })
 
 describe("reading a session", () => {
-  it("tails the last user and assistant messages, top level only", () => {
-    writeEvents(WS, [
-      event("user.message", { content: "hi" }, { timestamp: "t1" }),
-      event("assistant.message", { content: "  " }),
-      event("assistant.message", { content: "sub" }, { agentId: "a" }),
-      event("tool.execution_start"),
-      event("assistant.message", { content: "hello" }, { timestamp: "t2" }),
-      event("user.message", {}),
-      event("user.message", { content: "x".repeat(5000) }, { timestamp: undefined }),
-    ])
-    const messages = tailAppSession(WS, 3, { stateDir })
-    expect(messages.map(message => [message.role, message.text.length])).toEqual([["user", 2], ["assistant", 5], ["user", 4000]])
-    expect(messages[2].truncated).toBe(true)
-    expect(messages[2].at).toBeNull()
-    expect(tailAppSession(WS, 0, { stateDir })).toHaveLength(1)
-    expect(tailAppSession(CHAT, 5, { stateDir })).toEqual([])
-    expect(messagesIn([{ type: "assistant.message" }])).toEqual([])
-  })
-
-  it("finds the requested conversation across large non-message events", () => {
-    const conversation = Array.from({ length: 12 }, (_, index) =>
-      event(index % 2 ? "assistant.message" : "user.message", { content: `turn ${index}` }))
-    writeEvents(WS, [
-      ...conversation.slice(0, 11),
-      event("model.messages_snapshot", { padding: "x".repeat(3 * 1024 * 1024) }),
-      event("session.binary_asset", { padding: "x".repeat(9 * 1024 * 1024) }),
-      ...conversation.slice(11),
-    ])
-    expect(tailAppSession(WS, 12, { stateDir }).map(message => message.text))
-      .toEqual(conversation.map(item => item.data.content))
-    expect(readAppSessionHistory(WS, 12, { stateDir })).toMatchObject({ requestedCount: 12, returnedCount: 12, skippedEvents: 1, source: "local_event_log" })
-  })
-
-  it("reports short, missing, malformed and truncated history without fabricating completeness", () => {
-    expect(readAppSessionHistory(CHAT, 12, options())).toMatchObject({ missing: true, returnedCount: 0, beginningReached: false })
-    const file = writeEvents(WS, ["", "not json", event("assistant.message", { content: "é".repeat(300_000) })])
-    const history = readAppSessionHistory(WS, 12, options())
-    expect(history).toMatchObject({ missing: false, beginningReached: true, returnedCount: 1, skippedEvents: 1, observedAt: iso(NOW) })
-    expect(history.messages[0]).toMatchObject({ text: "é".repeat(4000), truncated: true })
-    fs.writeFileSync(file, "")
-    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ beginningReached: true, logBytes: 0, returnedCount: 0 })
-    fs.writeFileSync(file, JSON.stringify(event("user.message", { content: "no final newline" })))
-    expect(tailAppSession(WS, 12, options())[0].text).toBe("no final newline")
-    fs.rmSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(path.dirname(file), "not a directory")
-    expect(() => readAppSessionHistory(WS, 12, options())).toThrow()
-  })
-
-  it("does not discard a preceding message when an oversized line aligns with a chunk boundary or starts the file", () => {
-    const first = JSON.stringify(event("user.message", { content: "first" })) + "\n"
-    const last = JSON.stringify(event("assistant.message", { content: "last" })) + "\n"
-    const empty = JSON.stringify(event("session.binary_asset", { padding: "" })) + "\n"
-    const huge = JSON.stringify(event("session.binary_asset", { padding: "x".repeat(9 * 1024 * 1024 - Buffer.byteLength(last) - Buffer.byteLength(empty)) })) + "\n"
-    const file = writeEvents(WS, [])
-    fs.writeFileSync(file, first + huge + last)
-    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ returnedCount: 2, skippedEvents: 1, beginningReached: true })
-    expect(tailAppSession(WS, 12, options()).map(message => message.text)).toEqual(["first", "last"])
-    fs.writeFileSync(file, huge + last)
-    expect(readAppSessionHistory(WS, 12, options())).toMatchObject({ returnedCount: 1, skippedEvents: 1 })
-  })
-
   it("reads forward in bounded complete-event batches and survives oversized or incomplete lines", () => {
     const file = writeEvents(WS, [
       event("assistant.message", { content: "first" }),
@@ -361,9 +301,13 @@ describe("reading a session", () => {
     const next = readNewAppEvents(WS, first.offset, 20 * 1024 * 1024, item => seen.push(item), options())
     expect(next).toMatchObject({ offset: fs.statSync(file).size, skippedEvents: 2 })
     expect(messagesIn(seen).map(message => message.text)).toEqual(["first", "last"])
+    expect(messagesIn([event("user.message", { content: "x".repeat(4001) }), event("user.message", { content: 5 }), { type: "user.message" }, { type: "assistant.message", agentId: "a", data: { content: "sub" } }])).toEqual([expect.objectContaining({ text: "x".repeat(4000), truncated: true })])
     fs.appendFileSync(file, '{"type":"assistant.message"')
     expect(readNewAppEvents(WS, next.offset, 100, item => seen.push(item), options()).offset).toBe(next.offset)
     expect(readNewAppEvents(CHAT, 0, 100, () => undefined, options())).toEqual({ offset: 0, logBytes: 0, skippedEvents: 0 })
+    fs.rmSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(path.dirname(file), "not a directory")
+    expect(() => readNewAppEvents(WS, 0, 100, () => undefined, options())).toThrow()
   })
 
   it("reads the log from an offset, bounded, and knows its size", () => {
