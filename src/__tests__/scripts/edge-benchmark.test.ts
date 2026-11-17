@@ -126,7 +126,7 @@ describe("edge-benchmark ratchet", () => {
     expect(bench.ratchetLimit("turn.peakProcesses", linuxArm)).toBe(0)
     expect(bench.ratchetLimit("turn.peakProcesses", { platform: "darwin" })).toBeNull()
     expect(bench.ratchetLimit("daemon.idleRssKb", { platform: "linux", arch: "x64" })).toBe(0.05)
-    expect(bench.ratchetLimit("turn.peakPssKb", linuxArm)).toBe(0.12)
+    expect(bench.ratchetLimit("turn.peakPssKb", linuxArm)).toBe(0.2)
     expect(bench.ratchetLimit("turn.peakRssKb", { platform: "darwin" })).toBeNull()
     expect(bench.ratchetLimit("daemon.idleRssKb", { platform: "darwin", arch: "arm64" })).toBeNull()
     expect(bench.ratchetLimit("cli.wallMs", linuxArm)).toBe(0.25)

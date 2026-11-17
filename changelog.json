@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1173",
       "changes": [
-        "New `ouro mail sweep-orphans [--agent <name>] [--live]` runs the hosted encrypted-raw orphan sweep (dry run unless --live, counts only). The edge benchmark ratchet allows +12% on the turn's peak memory (a 100 ms sample of a tree that briefly holds a second process, ~16 MiB between identical builds) and +5% on other Linux memory."
+        "New `ouro mail sweep-orphans [--agent <name>] [--live]` runs the hosted encrypted-raw orphan sweep (dry run unless --live, counts only). The edge benchmark ratchet allows +20% on the turn's peak memory (a 100 ms sample of a tree that briefly holds a second process, ~16 MiB between identical builds) and +5% on other Linux memory."
       ]
     },
     {

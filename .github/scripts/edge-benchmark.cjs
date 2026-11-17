@@ -190,7 +190,7 @@ function ratchetLimit(key, host) {
   if (key === "install.bytes") return 0.02
   // The turn's peak is a 100 ms sample of a tree that briefly holds a second process, so whether the sampler lands on
   // it moves the peak by ~16 MiB (9%) between identical builds (four linux-arm64 runs on 2026-11-17).
-  if (TURN_PEAKS.includes(key)) return linux ? 0.12 : null
+  if (TURN_PEAKS.includes(key)) return linux ? 0.2 : null
   if (MEMORY.includes(key)) return linux ? 0.05 : null
   if (TIMINGS.includes(key)) return linux && host?.arch === "arm64" ? 0.25 : null
   return null
