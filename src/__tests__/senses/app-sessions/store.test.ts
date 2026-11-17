@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import {
-  addProbe, appSessionsSenseStatus, appSessionsStateDir, readProbes, readSnapshot, readWatches, removeProbe, snapshotSummary,
+  appSessionsSenseStatus, appSessionsStateDir, readSnapshot, readWatches, snapshotSummary,
   unwatchSession, updateWatches, WATCH_MS, watchSession, writeSnapshot, type SenseSnapshot,
 } from "../../../senses/app-sessions/store"
 
@@ -46,14 +46,6 @@ describe("app-sessions store", () => {
     watchSession(agentRoot, "s3", null, 100, NOW)
     updateWatches(agentRoot, { s1: 250, s3: 50, gone: 9 }, NOW)
     expect(readWatches(agentRoot)).toEqual({ s1: { name: null, offset: 250, until: NOW + WATCH_MS }, s3: { name: null, offset: 100, until: NOW + WATCH_MS } })
-  })
-
-  it("remembers the probe sessions the agent opened", () => {
-    expect(readProbes(agentRoot)).toEqual({})
-    addProbe(agentRoot, "p1", "Probe", NOW)
-    addProbe(agentRoot, "p2", null, NOW)
-    removeProbe(agentRoot, "p2")
-    expect(readProbes(agentRoot)).toEqual({ p1: { name: "Probe", at: new Date(NOW).toISOString() } })
   })
 
   it("writes and reads the snapshot", () => {

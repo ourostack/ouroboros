@@ -76,7 +76,6 @@ export function writeJson(file: string, value: unknown): void {
 }
 
 const watchFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "watch.json")
-const probesFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "probes.json")
 const pendingFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "pending.json")
 const snapshotFile = (agentRoot: string): string => path.join(appSessionsStateDir(agentRoot), "snapshot.json")
 
@@ -121,22 +120,6 @@ export function updateWatches(agentRoot: string, offsets: Record<string, number>
     if (observation?.name !== undefined) entry.name = observation.name
   }
   writeJson(watchFile(agentRoot), watches)
-}
-
-export function readProbes(agentRoot: string): Record<string, { name: string | null; at: string }> {
-  return readJson<Record<string, { name: string | null; at: string }>>(probesFile(agentRoot), {})
-}
-
-export function addProbe(agentRoot: string, id: string, name: string | null, now: number): void {
-  const probes = readProbes(agentRoot)
-  probes[id] = { name, at: new Date(now).toISOString() }
-  writeJson(probesFile(agentRoot), probes)
-}
-
-export function removeProbe(agentRoot: string, id: string): void {
-  const probes = readProbes(agentRoot)
-  delete probes[id]
-  writeJson(probesFile(agentRoot), probes)
 }
 
 /** The open requests by session id. */

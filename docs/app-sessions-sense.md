@@ -18,7 +18,9 @@ gains the `app_sessions_*` tools.
 ## What the agent can do
 
 The tools are the ones a coordinating session of the app has, under the same names and in the same shapes.
-`src/senses/app-sessions/app-interface.ts` sends each as a request on the app's local WebSocket, as an observer client.
+Each one runs the matching verb of Shepherd's `shepherd` CLI with `--json` (`src/senses/app-sessions/shepherd-cli.ts`);
+Shepherd owns the app's socket and database, and a failed verb comes back as its code, problem and fix. Without Shepherd
+installed the tools say so and how to install it (`npx github:ourostack/shepherd#v0.8.1`, or `SHEPHERD_BIN`).
 
 | Tool | What it does |
 | --- | --- |
@@ -52,12 +54,12 @@ plan approval or permission request is open.
 
 **Coordinator.** The app records a session's coordinator once and never lets another session take the field over, so after a coordinator
 hands off to a successor and is archived, `coordinating_creator_session_id` still names the archived one. `list_sessions_and_chats`,
-`get_session` and `get_sessions_status` add who coordinates it now (`coordinator_session_id`, `coordinator_name`): the recorded one while it is
-listed, else its listed successor, else the listed session the lane last sent a `send_session_message` to (`coordinator_found_by`). Only
-`coordinator_gone: true` means it has none (`coordinator.ts`, using `successorOf` from `handoff.ts`).
+`get_session` and `get_sessions_status` add who coordinates it now (`coordinator_session_id`, `coordinator_name`), as Shepherd works it
+out: the recorded one while it is listed, else its listed successor, else the listed session the lane last sent a message to
+(`coordinator_found_by`). Only `coordinator_gone: true` means it has none.
 
-**History is message-bounded, not byte-tailed.** The reader scans backwards in bounded-memory chunks until it finds
-the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
+**History is message-bounded, not byte-tailed.** `app_sessions_tail` reads through `shepherd messages`, which scans backwards in
+bounded-memory chunks until it finds the requested visible messages or reaches the beginning. Tool-only assistant events, hooks, usage records and model
 snapshots do not consume the requested count. Messages over 4,000 characters carry `truncated: true`; malformed or
 oversized event lines (over 8 MiB) are skipped with an explicit `skippedEvents` count and `coverage: "incomplete"`.
 The result includes `observedAt`, `source: "local_event_log"`, requested/returned counts, scanned/log bytes,
@@ -178,9 +180,8 @@ tokens, and a model-written answer costs the digest plus a few lines. Each build
 
 ## How it talks to the app
 
-`src/senses/app-sessions/app-interface.ts` is the thin client over the app's local WebSocket
-(`ws://127.0.0.1:<port>/?token=<token>&observer=1`, port and token in `~/.copilot/run/`); `prompts.ts` is the
-persistent listener that records questions and plans; `client.ts` holds the transport, the sidebar read
-(`list_workspaces` and `list_general_chat_sessions`), the event-log readers that classify working, stuck and waiting
-sessions (the socket reports only whether a session is running or was interrupted), and Housesitter's CLI
-(`housesitter restart-copilot --status --json`, or `--resume --detach` to start a restart).
+The tools reach the app through Shepherd's CLI (`shepherd-cli.ts`, above). The sense itself still reads the app directly:
+`client.ts` holds the sidebar read (`list_workspaces` and `list_general_chat_sessions`), the event-log readers that classify
+working, stuck and waiting sessions, and Housesitter's CLI (`housesitter restart-copilot --status --json`, or `--resume --detach`
+to start a restart); `prompts.ts` is the persistent listener that records questions and plans on the app's local WebSocket
+(`ws://127.0.0.1:<port>/?token=<token>&observer=1`, port and token in `~/.copilot/run/`).

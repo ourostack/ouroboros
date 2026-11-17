@@ -415,80 +415,8 @@ function openEventLog(id: string, options: AppSessionsOptions): number | null {
   }
 }
 
-export interface AppSessionHistory {
-  messages: AppMessage[]
-  observedAt: string
-  source: "local_event_log"
-  requestedCount: number
-  returnedCount: number
-  logBytes: number
-  scannedBytes: number
-  beginningReached: boolean
-  skippedEvents: number
-  missing: boolean
-}
-
-/** Scan backwards until enough visible messages or the beginning, with bounded memory, not a fixed byte tail. */
-export function readAppSessionHistory(id: string, count: number, options: AppSessionsOptions = {}): AppSessionHistory {
-  const requestedCount = Math.min(50, Math.max(1, Math.trunc(count) || 1))
-  const result: AppSessionHistory = {
-    messages: [], observedAt: new Date((options.now ?? Date.now)()).toISOString(), source: "local_event_log",
-    requestedCount, returnedCount: 0, logBytes: 0, scannedBytes: 0, beginningReached: false, skippedEvents: 0, missing: false,
-  }
-  const fd = openEventLog(id, options)
-  if (fd === null) return { ...result, missing: true }
-  try {
-    let position = fs.fstatSync(fd).size
-    result.logBytes = position
-    let carry = Buffer.alloc(0)
-    let dropping = false
-    const keep = (line: Buffer): void => {
-      if (dropping || line.length > MAX_EVENT_BYTES) {
-        result.skippedEvents += 1
-        dropping = false
-        return
-      }
-      if (!line.length) return
-      const events = parseEventLines(line.toString("utf-8"))
-      if (!events.length) result.skippedEvents += 1
-      result.messages.push(...messagesIn(events))
-    }
-    while (position > 0 && result.messages.length < requestedCount) {
-      const length = Math.min(EVENT_CHUNK_BYTES, position)
-      position -= length
-      const chunk = Buffer.alloc(length)
-      fs.readSync(fd, chunk, 0, length, position)
-      result.scannedBytes += length
-      const buffer = Buffer.concat([chunk, carry])
-      let end = buffer.length
-      for (let at = buffer.lastIndexOf(10, end - 1); at >= 0; at = end > 0 ? buffer.lastIndexOf(10, end - 1) : -1) {
-        keep(buffer.subarray(at + 1, end))
-        end = at
-        if (result.messages.length >= requestedCount) break
-      }
-      carry = buffer.subarray(0, end)
-      if (dropping || carry.length > MAX_EVENT_BYTES) {
-        dropping = true
-        carry = Buffer.alloc(0)
-      }
-    }
-    if (position === 0 && result.messages.length < requestedCount) {
-      keep(carry)
-      result.beginningReached = true
-    }
-    result.messages.reverse()
-    result.returnedCount = result.messages.length
-    emitNervesEvent({ component: "senses", event: "senses.app_sessions_history_read", message: "read bounded conversation history", meta: { session: id, returned: result.returnedCount, scannedBytes: result.scannedBytes, skippedEvents: result.skippedEvents } })
-    return result
-  } finally {
-    fs.closeSync(fd)
-  }
-}
-
-/** Compatibility array view; tools also expose the read's coverage and observation time. */
-export function tailAppSession(id: string, count: number, options: AppSessionsOptions = {}): AppMessage[] {
-  return readAppSessionHistory(id, count, options).messages
-}
+/** The link that opens a session in the app. */
+export const appUrl = (id: string): string => `ghapp://sessions/${id}`
 
 /** Read forward from a watch cursor; stop at a complete event after the budget, never jump to the newest tail. */
 export function readNewAppEvents(id: string, from: number, maxBytes: number, visit: (event: Frame) => void, options: AppSessionsOptions = {}): { offset: number; logBytes: number; skippedEvents: number } {
