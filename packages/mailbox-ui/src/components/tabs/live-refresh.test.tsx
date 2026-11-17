@@ -377,6 +377,38 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(overview.container.textContent).not.toContain("Inner")
   })
 
+  it("holds the continuity cards' place while they load, with the same grid and cards", async () => {
+    let release: (value: Response) => void = () => {}
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/needs-me")) return jsonResponse({ items: [] })
+      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.endsWith("/continuity")) return new Promise<Response>((resolve) => { release = resolve })
+      if (url.endsWith("/orientation")) return jsonResponse({ currentSession: null, centerOfGravity: "steady", primaryObligation: null, resumeHandle: null, otherActiveSessions: [] })
+      if (url.endsWith("/changes")) return jsonResponse({ changeCount: 0, items: [], snapshotAge: null, formatted: "none" })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <OverviewTab view={makeAgentView()} refreshGeneration={0} deskPrefs={null} />
+      </NavigationContext.Provider>
+    )
+    const loading = await ui.findByTestId("continuity-loading")
+    const shape = (grid: Element) => [grid.className, [...grid.children].map((card) => card.className)]
+    const held = shape(loading)
+    expect(held[1]).toHaveLength(3)
+
+    await act(async () => {
+      release(jsonResponse({ presence: { self: null, peers: [] }, cares: { activeCount: 0, items: [] }, episodes: { recentCount: 0, items: [] } }))
+    })
+    await waitFor(() => expect(ui.queryByTestId("continuity-loading")).toBeNull())
+    const loaded = ui.getByText("No presence data").closest(".grid")
+    expect(loaded).not.toBeNull()
+    expect(shape(loaded!)).toEqual(held)
+  })
+
   it("re-fetches overview deep data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
