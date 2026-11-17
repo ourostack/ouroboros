@@ -871,6 +871,18 @@ describe("streamResponsesApi", () => {
     streamResponsesApi = core.streamResponsesApi
   })
 
+  it.each([
+    { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    { type: "response.done", response: { status: "incomplete", incomplete_details: { reason: "content_filter" } } },
+  ])("preserves incomplete status for image-description consumers: $type", async (terminal) => {
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_text.delta", delta: "partial screenshot description" },
+      terminal,
+    ])) } }
+    const result = await streamResponsesApi(client, {}, makeCallbacks())
+    expect(result.termination).toEqual({ finishReason: "incomplete", refused: false })
+  })
+
   it("calls client.responses.create with createParams and signal", async () => {
     const create = vi.fn().mockReturnValue(makeResponsesStream([]))
     const client = { responses: { create } }
