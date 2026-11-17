@@ -45,6 +45,7 @@ export interface EncryptedRawSweepResult {
   scanned: number
   referenced: number
   orphaned: number
+  deletable: number
   deleted: number
   skippedYoung: number
   dryRun: boolean
@@ -706,6 +707,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
         scanned,
         referenced: scanned - candidates.length,
         orphaned: candidates.length,
+        deletable: deleted,
         deleted: dryRun ? 0 : deleted,
         skippedYoung,
         dryRun,

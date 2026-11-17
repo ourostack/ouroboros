@@ -5,7 +5,9 @@ export type { ImageMeasure, Measure, PageIssue, SizeCheckOptions };
 // overlap-check.ts (text on text or on a picture) and axe, check.ts holds pages to these at every size:
 //
 //   sideways-scroll  the page is wider than the screen; names the outermost elements that stick out
-//   clipped-text     a block of text cut off by its box: overflow, an ellipsis or a line clamp
+//   clipped-text     a block of text cut off by its own box: overflow, an ellipsis or a line clamp; or a text block or a
+//                    picture with less than 90% of its box shown, cut by the nearest ancestor whose overflow is hidden or
+//                    clip (not inside a scroll container or a carousel)
 //   blurry-image     a raster picture, a video or a raster CSS background drawn larger than its file's own pixels allow
 //                    at the screen's density, at most 2: its drawn width × density must not pass its file's width (half
 //                    a pixel's slack for rounding). It cannot be waived: an attempt to is itself a finding
@@ -133,6 +135,8 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
     const hidden = el.closest('[aria-hidden="true"]');
     return Boolean(hidden) && !modals.some((m) => !m.contains(el) && !hidden!.contains(m));
   };
+  // What this pass reports, so the box-cut pass below does not report an element twice.
+  const cutOwn = new Set<Element>();
   for (const el of document.body.querySelectorAll("*")) {
     if (el.closest("svg, select, textarea, script, style") || optedOut(el, "clipped-text", ["data-clip-ok", "data-size-ignore"])) continue;
     if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent!.trim()) || !inlineOnly(el)) continue;
@@ -150,6 +154,7 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
     const told = [el.getAttribute("title"), el.getAttribute("aria-label")].some((text) => text?.trim().replace(/\s+/g, " ").includes(whole));
     const intended = (s.textOverflow === "ellipsis" || clamped) && (told || !unreachable(el));
     if ((cutX || cutY) && !intended) {
+      cutOwn.add(el);
       issues.push({
         ref: ref(el),
         rule: "clipped-text",
@@ -157,6 +162,60 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
         detail: cutX ? `${el.scrollWidth - el.clientWidth}px cut across${s.textOverflow === "ellipsis" ? " (ellipsis)" : ""}` : `${el.scrollHeight - el.clientHeight}px cut below${clamped ? " (line clamp)" : ""}`,
       });
     }
+  }
+
+  // Cut by an ancestor's box. The pass above reads only text that overflows its own box, so a title, a paragraph or a
+  // picture pushed partly out of a card that hides its overflow went unread. Each is measured against the box that cuts it.
+  // A scroll container between the element and that box scrolls the content rather than cuts it, and a box that is
+  // position: fixed escapes an ancestor's overflow, so neither is judged. A scroll container is one
+  // whose overflow is auto or scroll and that really overflows: a box hidden on one axis computes auto on the other. The
+  // box is measured, not what is drawn in it, so object-fit cropping a picture inside a box that fits it is no finding.
+  const blocks = 'h1, h2, h3, h4, h5, h6, p, li, img, picture, figcaption, [data-ouro="text"]';
+  const scrollers = '[data-ouro-scroll], [role=carousel], [aria-roledescription="carousel" i]';
+  const scrolls = (n: Element) => {
+    const s = getComputedStyle(n);
+    return (/auto|scroll/.test(s.overflowX) && n.scrollWidth > n.clientWidth + 1) || (/auto|scroll/.test(s.overflowY) && n.scrollHeight > n.clientHeight + 1);
+  };
+  // A clipping ancestor is the nearest one whose overflow is not visible on an axis, and that does not scroll: a box
+  // hidden on one axis computes auto on the other, which cuts whatever lies outside it all the same.
+  const clipperOf = (el: Element) => {
+    for (let n: Element | null = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      if (n.matches(scrollers) || scrolls(n)) return null;
+      const s = getComputedStyle(n);
+      const x = s.overflowX !== "visible";
+      const y = s.overflowY !== "visible";
+      if (x || y) return { box: n, x, y };
+    }
+    return null;
+  };
+  const insetHidden = (el: Element) => {
+    for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) if (/inset\(50%\)/.test(getComputedStyle(n).clipPath)) return true;
+    return false;
+  };
+  // A picture is named by its image's alt text.
+  const named = (el: Element) => {
+    const text = words(el.localName === "picture" ? (el.querySelector("img") ?? el) : el);
+    return text ? ` "${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"` : "";
+  };
+  const cutOff: { el: Element; detail: string }[] = [];
+  for (const el of document.body.querySelectorAll(blocks)) {
+    if (el.closest("svg, select, textarea, script, style") || !shown(el) || el.matches(scrollers) || getComputedStyle(el).position === "fixed") continue;
+    if (cutOwn.has(el) || insetHidden(el) || optedOut(el, "clipped-text", ["data-clip-ok", "data-size-ignore"])) continue;
+    const clip = clipperOf(el);
+    if (!clip) continue;
+    const r = el.getBoundingClientRect();
+    const c = clip.box.getBoundingClientRect();
+    const width = clip.x ? Math.max(0, Math.min(r.right, c.right) - Math.max(r.left, c.left)) : r.width;
+    const height = clip.y ? Math.max(0, Math.min(r.bottom, c.bottom) - Math.max(r.top, c.top)) : r.height;
+    if ((width * height) / (r.width * r.height) >= 0.9) continue;
+    const byHeight = height / r.height <= width / r.width;
+    const detail = byHeight ? `shown ${Math.round(height)}px/${Math.round(r.height)}px` : `shown ${Math.round(width)}px/${Math.round(r.width)}px`;
+    cutOff.push({ el, detail });
+  }
+  // The outermost of each nest that is cut: a list item and the paragraph in it are one finding.
+  const cutElements = cutOff.map(({ el }) => el);
+  for (const { el, detail } of cutOff.filter(({ el }) => !cutElements.some((other) => other !== el && other.contains(el)))) {
+    issues.push({ ref: ref(el), rule: "clipped-text", element: `${describe(el)}${named(el)}`, detail });
   }
 
   // Blurry pictures. Missing pixels are never a design choice, so no allow lets one through: an element that tries is a

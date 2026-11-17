@@ -113,8 +113,10 @@ export interface NavbarProps {
 
 // Class strings are literal so the app's Tailwind finds them when it compiles.
 
+// Below 640px the links are always behind the menu button, so a wrap there changes no measure of theirs; from 640px
+// the links' room decides whether the menu button shows, and a wrap would change that room.
 const bar =
-  "box-border flex min-h-14 items-center gap-2 border-0 border-b border-solid border-border bg-background text-foreground " +
+  "box-border flex min-h-14 items-center gap-2 border-0 max-sm:flex-wrap max-sm:py-1 border-b border-solid border-border bg-background text-foreground " +
   "ps-[max(1rem,env(safe-area-inset-left,0px))] pe-[max(1rem,env(safe-area-inset-right,0px))]";
 
 // A link: 44px with 16px text on a coarse pointer at every width, 36px with 14px text with a
@@ -137,12 +139,15 @@ const example = '<Navbar label="Main" items={[{ label: "Recipes", href: "/recipe
  * the current page marked `aria-current="page"`, and the link of the section it is in `aria-current="true"`, both underlined in the primary colour as in `FamilyBar`, distinct from hover and press highlights. A group of links (`{ label, links }`)
  * opens a panel, as in `NavigationMenu`. Whenever the links do not fit, below 640px and on
  * a narrow tablet, they collapse behind a menu button into a `Sheet` that slides in from
- * the side, with each group under its name; the brand and `actions` stay in the bar. Links
- * render through `OuroProvider`'s `linkComponent`, so your router navigates.
+ * the side, with each group under its name; the brand and `actions` stay in the bar. When, below
+ * 640px, even the brand and `actions` do not fit side by side (large text on a phone), the actions
+ * move to a second row rather than off the screen. Links render through `OuroProvider`'s `linkComponent`,
+ * so your router navigates.
  *
- * The phone menu opens once JavaScript has loaded (after hydration); the links are in the
- * server HTML from 640px up. A tap on the menu button before then does nothing unless your app
- * keeps it: this site's head script keeps a tap on any control React has not yet hydrated, shows
+ * The phone menu opens once JavaScript has loaded (after hydration). Both the links and the menu button are in the
+ * server HTML, and CSS shows one of them at 640px, so the bar does not change when the page hydrates; only links
+ * that do not fit the bar, on a tablet, collapse once the page has measured them. A tap on the menu button before then
+ * does nothing unless your app keeps it: this site's head script keeps a tap on any control React has not yet hydrated, shows
  * the control pressed, and presses it again once it has (`site/src/early-input.ts` in the
  * repository). Once the menu button shows, the sheet is built while the page is idle and kept,
  * hidden, between opens, so a press only shows it.
@@ -172,6 +177,8 @@ const example = '<Navbar label="Main" items={[{ label: "Recipes", href: "/recipe
  * @claim "The phone menu opens once JavaScript" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar at tablet widths and with groups > puts a group's button and the bar's links in the server HTML)
  * @claim "this site's head script keeps a tap" site/e2e/early-input.spec.ts verify:fileLine(site/e2e/early-input.spec.ts, /a tap on the menu button before the page's script has run opens the menu/) verify:fileLine(site/src/early-input.ts, /export function keepEarlyInput/)
  * @claim "the sheet is built while the page is" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > builds the sheet while the page is idle once the menu button shows, and keeps it, hidden, between opens)
+ * @claim "When, below 640px, even the brand and `actions` do not fit side by side" registry/ouro/components/ouro/navbar/navbar.test.tsx verify:testExists(registry/ouro/components/ouro/navbar/navbar.test.tsx::Navbar > moves its actions to a second row when they and the brand do not fit beside each other, as with large text)
+ * @claim "Both the links and the menu button are in the server HTML" test/navbar-first-paint.test.tsx verify:testExists(test/navbar-first-paint.test.tsx::Navbar's first paint > is the same bar on a phone, server HTML and hydrated, with nothing swapped)
  */
 export function Navbar(props: NavbarProps): JSX.Element {
   const {
@@ -211,9 +218,11 @@ export function Navbar(props: NavbarProps): JSX.Element {
       : /* istanbul ignore next @preserve -- production only */ undefined,
   );
 
-  // The links collapse into the sheet below the sm breakpoint, and wherever they do not fit
-  // the bar. Server HTML shows them from 640px up, until the client measures.
-  const wide = useMediaQuery("(min-width: 640px)", true);
+  // Both forms are in the server HTML, and CSS shows one: the links from the sm breakpoint up, the menu button below it.
+  // This query is that same breakpoint, in rem as sm is, so the sheet's script and the CSS agree at any root font size.
+  // The links also collapse wherever they do not fit the bar, which only the measure below can tell.
+  // Stryker disable next-line BooleanLiteral: the server default feeds only the hydration render, which draws the same bar either way; the sheet's build waits for an effect that reads the live value.
+  const wide = useMediaQuery("(min-width: 40rem)", true);
   const [overflow, setOverflow] = useState(false);
   const collapsed = !wide || overflow;
   const [open, setOpen] = useState(false);
@@ -295,8 +304,9 @@ export function Navbar(props: NavbarProps): JSX.Element {
         variant="plain"
         tone="secondary"
         aria-label={menuLabel}
-        // Only where the button shows: then it opens the sheet.
-        aria-haspopup={collapsed ? "dialog" : undefined}
+        // In the server HTML at every width, so the bar never changes on hydration: where the button is hidden it is out of
+        // the tree, and where it shows it opens the sheet.
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
         className={cn("-ms-2 w-11 px-0", !overflow && "sm:hidden")}

@@ -146,11 +146,11 @@ export interface SidebarProps {
 
 // Class strings are literal so the app's Tailwind finds them when it compiles.
 
-// The column: 16rem, or a rail (a 44px target, its padding and the border) when collapsed. The
-// width changes at once: layout does not animate.
+// The column: --ouro-sidebar-w, which the app may set on the Sidebar or around it, else 16rem; or a rail (a 44px target,
+// its padding and the border) when collapsed. The width changes at once: layout does not animate.
 const column =
-  "box-border flex h-full w-(--ouro-sidebar-w) flex-col overflow-hidden border-0 border-e border-solid border-border bg-background text-foreground " +
-  "[--ouro-sidebar-w:16rem] data-collapsed:[--ouro-sidebar-w:calc(3.75rem+1px)] max-sm:hidden";
+  "box-border flex h-full w-[var(--ouro-sidebar-w,16rem)] flex-col overflow-hidden border-0 border-e border-solid border-border bg-background text-foreground " +
+  "data-collapsed:w-[calc(3.75rem+1px)] max-sm:hidden";
 
 // A count or tag at the row's end. Its muted text is mixed 20% toward the foreground, so it keeps
 // 4.5:1 on the muted tag under shadcn's stock values too (plain text-muted-foreground is 4.34:1).
@@ -179,6 +179,7 @@ const example = '<Sidebar label="Main" sections={[{ items: [{ label: "Recipes", 
  * container's height and collapses to a rail of icons with its own button, each named by a
  * `Tooltip`, where an item with nested links opens them in a `Menu`; below 640px it is a menu button that opens the same links as a `Sheet`
  * drawer. Links render through `OuroProvider`'s `linkComponent`, so your router navigates.
+ * It is 16rem wide; set `--ouro-sidebar-w` on it or around it for another width (`className="[--ouro-sidebar-w:12rem]"`).
  *
  * The phone menu opens once JavaScript has loaded (after hydration);
  * the links are in the server HTML from 640px up.
@@ -203,6 +204,7 @@ const example = '<Sidebar label="Main" sections={[{ items: [{ label: "Recipes", 
  * @claim "From 640px up it fills its" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar > becomes a menu button that opens a drawer below 640px)
  * @claim "From 640px up it fills its" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar > hides the menu button from 640px up)
  * @claim "From 640px up it fills its" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar > closes the drawer when the screen grows past 640px)
+ * @claim "It is 16rem wide; set `--ouro-sidebar-w`" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar > takes its width from --ouro-sidebar-w, set on it or around it, and is still a rail when collapsed)
  * @claim "The phone menu opens once JavaScript" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar > puts the nav and its links in the server HTML)
  */
 export function Sidebar(props: SidebarProps): JSX.Element {

@@ -52,6 +52,7 @@ export const CLI_COMMANDS: readonly CliCommandDeclaration[] = [
   { name: "link", effect: PRIVATE, summary: "Link an agent to a friend's external account." },
   { name: "logs", effect: PRIVATE, readOnly: true, summary: "Show the daemon's recent logs." },
   { name: "mail backfill-indexes", effect: PRIVATE, summary: "Rebuild the mail indexes for an agent." },
+  { name: "mail sweep-orphans", effect: PRIVATE, summary: "Delete unreferenced encrypted raw mail (dry run unless --live)." },
   { name: "mail import-mbox", effect: PRIVATE, summary: "Import an MBOX export into the agent's mail." },
   { name: "mailbox", effect: PRIVATE, readOnly: true, summary: "Show the agent's mailbox." },
   { name: "mcp call", effect: PRIVATE, summary: "Call a tool on an MCP server." },

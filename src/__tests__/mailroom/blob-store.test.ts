@@ -514,11 +514,11 @@ describe("AzureBlobMailroomStore", () => {
       put("raw/mail_legacy.eml", old)
 
       const dry = await store.sweepOrphanedEncryptedRaw({ now, dryRun: true })
-      expect(dry).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deleted: 0, skippedYoung: 1, dryRun: true })
+      expect(dry).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deletable: 1, deleted: 0, skippedYoung: 1, dryRun: true })
       expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(true)
 
       const result = await store.sweepOrphanedEncryptedRaw({ now })
-      expect(result).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deleted: 1, skippedYoung: 1, dryRun: false })
+      expect(result).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deletable: 1, deleted: 1, skippedYoung: 1, dryRun: false })
       expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(false)
       expect(blobs.has(message.rawObject)).toBe(true)
       expect(blobs.has(`raw/mail_young.${fp}.json`)).toBe(true)

@@ -339,9 +339,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   mail: {
     category: "Auth",
     description: "Import delegated mail and repair hosted Mailroom indexes or local search cache",
-    usage: "ouro mail <import-mbox|backfill-indexes|sync-cache> [--agent <name>]",
+    usage: "ouro mail <import-mbox|backfill-indexes|sync-cache|sweep-orphans> [--agent <name>]",
     example: "ouro mail import-mbox --discover --owner-email you@example.com --source hey --agent <agent>",
-    subcommands: ["import-mbox", "backfill-indexes", "sync-cache"],
+    subcommands: ["import-mbox", "backfill-indexes", "sync-cache", "sweep-orphans"],
   },
   use: {
     category: "Auth",
@@ -645,6 +645,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Converge the local decrypted search cache against stable hosted Mailroom authority in up to three passes, using 20 bounded body-read workers, foreground settlement progress, a 30-second heartbeat, and durable missing-key receipts.",
     usage: "ouro mail sync-cache [--agent <name>]",
     example: "ouro mail sync-cache --agent <agent>",
+  },
+  "mail sweep-orphans": {
+    description: "Delete encrypted raw mail objects in the hosted Mailroom that no committed message references. Reports counts only and deletes nothing unless --live is given; objects younger than 24 hours and anything still referenced are always kept.",
+    usage: "ouro mail sweep-orphans [--agent <name>] [--live]",
+    example: "ouro mail sweep-orphans --agent <agent>",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into the running daemon",

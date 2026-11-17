@@ -445,17 +445,22 @@ async function blank(page: Pick<Page, "goto" | "waitForLoadState" | "url">): Pro
   }
 }
 
+const RACE_WAIT = 5000;
+
 // Goes to a page from the blank one. An about:blank navigation still landing after blank() returned (#1521), or one to
 // the same page that a press set off before (#1595), can win over this one, which Playwright reports as interrupted:
 // that navigation is let finish, and the page asked for again, a few times at most, so its own answer is the one read.
-async function goTo(page: Pick<Page, "goto" | "waitForLoadState">, url: string): Promise<Awaited<ReturnType<Page["goto"]>>> {
+// It finishes with its own load event: the page it replaces had fired its load already, so waitForLoadState would return
+// at once and the next try could meet the same navigation again (#1641). A load that came before the wait is waited for
+// no longer than RACE_WAIT.
+async function goTo(page: Pick<Page, "goto" | "waitForEvent">, url: string): Promise<Awaited<ReturnType<Page["goto"]>>> {
   const raced = (message: string) => [`another navigation to "about:blank"`, `another navigation to "${url}"`].some((to) => message.includes(`is interrupted by ${to}`));
   for (let attempt = 1; attempt < 3; attempt++) {
     try {
       return await page.goto(url, { waitUntil: "load" });
     } catch (problem) {
       if (!raced((problem as Error).message)) throw problem;
-      await page.waitForLoadState("load");
+      await page.waitForEvent("load", { timeout: RACE_WAIT }).catch(() => undefined);
     }
   }
   return page.goto(url, { waitUntil: "load" });
