@@ -2,7 +2,7 @@
 
 import type { JSX, ReactElement, ReactNode } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
-import { checkOpenMode } from "@/lib/ouro/open-mode";
+import { checkOpenMode, type TriggerOrOpen } from "@/lib/ouro/open-mode";
 import { TouchTarget } from "@/lib/ouro/touch-target";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 import {
@@ -94,7 +94,7 @@ export type SheetWithTriggerProps = SheetBaseProps & {
   /** The element that opens the sheet, usually a Button: `trigger={<Button>Save</Button>}`. */
   trigger: ReactElement;
   /** Not with `trigger`. Remove `trigger` to control the sheet with `open` and `onOpenChange`. */
-  open?: never;
+  open?: TriggerOrOpen;
   /** Not with `trigger`. Remove `trigger` to control the sheet with `open` and `onOpenChange`. */
   onOpenChange?: never;
 };
