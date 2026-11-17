@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1175",
       "changes": [
-        "The app-sessions sense reads the app through Shepherd's `shepherd` CLI: the sidebar from `shepherd sessions --json` and a watched session's replies from `shepherd messages --json`. It no longer opens the app's socket, reads its database or its event logs for the sidebar, watches or questions. A watch's cursor is the time it was sent to; a reply is an assistant message after it. Shepherd's messages carry no tool requests, so a message that narrates before a tool call counts as a reply. The prompt listener (prompts.ts) and its pending-request store are removed: Shepherd's resident watch hears questions and plans. The digest's task cards still read the session's event log, until Shepherd exposes tool calls."
+        "The app-sessions sense reads the app through Shepherd's `shepherd` CLI: the sidebar from `shepherd sessions --json` and a watched session's replies from `shepherd messages --json`. It no longer opens the app's socket, reads its database or its event logs for the sidebar, watches or questions. A watch's cursor is the time it was sent to; a reply is an assistant message after it. Shepherd's messages carry no tool requests, so a message that narrates before a tool call counts as a reply. The prompt listener (prompts.ts) and its pending-request store are removed: Shepherd's resident watch hears questions and plans. The digest's task cards still read the session's event log, until Shepherd exposes tool calls.",
+        "Each read of the app's sessions through Shepherd emits a nerves event (`senses.app_sessions_rows`) with its row count."
       ]
     },
     {
