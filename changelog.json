@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1175",
       "changes": [
-        "The daemon survives a vault outage at startup instead of crash-looping. When the vault does not answer (timeout, refused or reset connection, DNS failure), provider readiness no longer aborts startup: the agent is marked degraded as `vault:<agent>` in daemon health and the vault is retried with capped backoff until it answers. Rejections from a reachable vault (locked, wrong password, missing credential) still fail startup, and `ouro mail sweep-orphans` still requires a fresh vault read. No credentials are cached on disk."
+        "The daemon survives a vault outage at startup instead of crash-looping. When the vault does not answer (timeout, refused or reset connection, DNS failure), provider readiness no longer aborts startup: the agent is marked degraded as `vault:<agent>` in daemon health and the vault is retried with capped backoff until it answers. Rejections from a reachable vault (locked, wrong password, missing credential) still fail startup, and `ouro mail sweep-orphans` still requires a fresh vault read. No credentials are cached on disk. The Unraid template follows the release version."
       ]
     },
     {
