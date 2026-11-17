@@ -68,6 +68,7 @@ describe("image helpers", () => {
         content: "a screenshot saying SYNTHETIC-42",
         toolCalls: [],
         outputItems: [],
+        termination: id === "anthropic" ? { finishReason: "stop", refused: false } : undefined,
       }
     })
     const resetTurnState = vi.fn()
@@ -100,6 +101,7 @@ describe("image helpers", () => {
   it.each([
     { content: "", toolCalls: [], outputItems: [] },
     { content: "partial", toolCalls: [], outputItems: [], termination: { finishReason: "length", refused: false } },
+    { content: "partial", toolCalls: [], outputItems: [], termination: { finishReason: "incomplete", refused: false } },
     { content: "no", toolCalls: [], outputItems: [], termination: { finishReason: "stop", refused: true } },
     { content: "filtered", toolCalls: [], outputItems: [], termination: { finishReason: "content_filter", refused: false } },
     { content: "calling", toolCalls: [{ id: "1", name: "tool", arguments: "{}" }], outputItems: [] },
@@ -130,6 +132,17 @@ describe("image helpers", () => {
       id: "github-copilot", model: "claude-opus-5.5", resetTurnState: vi.fn(), streamTurn,
     })
     await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n", timeoutMs: 1000 })).rejects.toThrow("stream failed")
+  })
+
+  it("does not accept partial content returned after the image timeout", async () => {
+    const streamTurn = vi.fn<ProviderRuntime["streamTurn"]>().mockImplementation(async (request) => {
+      await new Promise<void>((resolve) => request.signal!.addEventListener("abort", () => resolve(), { once: true }))
+      return { content: "partial screenshot description", toolCalls: [], outputItems: [] }
+    })
+    mocks.getProviderRuntime.mockResolvedValue({
+      id: "github-copilot", model: "claude-opus-5.5", resetTurnState: vi.fn(), streamTurn,
+    })
+    await expect(describeImage("butler", { prompt: "p", imageDataUrl: "data:image/png;base64,cG5n", timeoutMs: 1 })).rejects.toThrow(/timed out|aborted/i)
   })
 
   it("builds the description prompt with or without the user's text", () => {
