@@ -57,19 +57,12 @@ describe("doctor and bounded-repair documentation contract", () => {
     expect(mailRecovery).toContain("missing-key receipts")
   })
 
-  it("tracks raw-orphan debt with CI-enforced ownership, expiry, and removal criteria", () => {
+  it("has paid the raw-orphan debt with a store sweeper and keeps the CI debt gate wired", () => {
     const debt = JSON.parse(readRepoFile("docs", "intentional-debt.json")) as {
       items: Array<Record<string, unknown>>
     }
-    const item = debt.items.find((entry) => entry.id === "mailroom-encrypted-raw-orphans")
-    expect(item).toEqual(expect.objectContaining({
-      status: "open",
-      owner: "Mailroom",
-      // Moved from 2026-11-17 on 2026-11-17 (issue 1350): the sweeper is still open and the expired date blocked releases.
-      due: "2026-11-24",
-    }))
-    expect(String(item?.removalCriteria)).toContain("transaction")
-    expect(String(item?.removalCriteria)).toContain("orphan")
+    expect(debt.items.some((entry) => entry.id === "mailroom-encrypted-raw-orphans")).toBe(false)
+    expect(readRepoFile("src", "mailroom", "blob-store.ts")).toContain("sweepOrphanedEncryptedRaw")
 
     const releasePreflight = readRepoFile("scripts", "release-preflight.cjs")
     expect(releasePreflight).toContain("validateIntentionalDebt")

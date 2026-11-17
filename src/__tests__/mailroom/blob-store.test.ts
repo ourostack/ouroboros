@@ -32,6 +32,7 @@ interface FakeBlobState {
   downloadFailuresRemaining?: number
   downloadFailureMessage?: string
   downloadFailureError?: unknown
+  lastModified?: Date
 }
 
 class FakeBlockBlobClient {
@@ -144,7 +145,7 @@ class FakeContainerClient {
     return new FakeBlockBlobClient(this, name)
   }
 
-  async *listBlobsFlat(options: { prefix?: string; abortSignal?: AbortSignal } = {}): AsyncGenerator<{ name: string }> {
+  async *listBlobsFlat(options: { prefix?: string; abortSignal?: AbortSignal } = {}): AsyncGenerator<{ name: string; properties: { lastModified?: Date } }> {
     if (this.listError) throw this.listError
     if (this.stallListing) {
       await new Promise<never>((_resolve, reject) => {
@@ -154,7 +155,7 @@ class FakeContainerClient {
     for (const [name, state] of [...this.blobs.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
       if (!state.data) continue
       if (!options.prefix || name.startsWith(options.prefix)) {
-        yield { name }
+        yield { name, properties: { lastModified: state.lastModified } }
       }
     }
   }
@@ -477,6 +478,92 @@ describe("AzureBlobMailroomStore", () => {
       .filter(([name, state]) => name.startsWith(`raw/${winner.id}`) && state.data)
       .map(([name]) => name)
     expect(liveRawObjects).toEqual([winner.rawObject])
+  })
+
+  describe("sweepOrphanedEncryptedRaw", () => {
+    const now = new Date("2026-11-17T12:00:00.000Z")
+    const old = new Date("2026-11-01T00:00:00.000Z")
+    const fp = "a".repeat(64)
+
+    async function seed() {
+      const serviceClient = new FakeBlobServiceClient()
+      const store = new AzureBlobMailroomStore({
+        serviceClient: serviceClient as unknown as BlobServiceClient,
+        containerName: "mailroom",
+      })
+      const provision = provisionMailboxRegistry({ agentId: "slugger" })
+      const resolved = resolveMailAddress(provision.registry, "slugger@ouro.bot")
+      if (!resolved) throw new Error("expected mailbox")
+      const { message } = await store.putRawMessage({
+        resolved,
+        envelope: { mailFrom: "owner@example.test", rcptTo: ["slugger@ouro.bot"] },
+        rawMime: Buffer.from("From: a@example.test\r\nTo: slugger@ouro.bot\r\nSubject: Sweep\r\n\r\nHi\r\n"),
+      })
+      const blobs = serviceClient.container.blobs
+      const put = (name: string, lastModified: Date, data = "{}") => {
+        blobs.set(name, { data: Buffer.from(data), downloads: 0, uploads: 0, deletes: 0, lastModified })
+      }
+      blobs.get(message.rawObject)!.lastModified = old
+      return { store, blobs, message, put }
+    }
+
+    it("deletes old unreferenced encrypted raw objects and keeps referenced, young, and non-encrypted ones", async () => {
+      const { store, blobs, message, put } = await seed()
+      put(`raw/mail_orphan.${fp}.json`, old)
+      put(`raw/mail_young.${fp}.json`, new Date("2026-11-17T11:00:00.000Z"))
+      put("raw/mail_legacy.eml", old)
+
+      const dry = await store.sweepOrphanedEncryptedRaw({ now, dryRun: true })
+      expect(dry).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deleted: 0, skippedYoung: 1, dryRun: true })
+      expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(true)
+
+      const result = await store.sweepOrphanedEncryptedRaw({ now })
+      expect(result).toEqual({ scanned: 3, referenced: 1, orphaned: 2, deleted: 1, skippedYoung: 1, dryRun: false })
+      expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(false)
+      expect(blobs.has(message.rawObject)).toBe(true)
+      expect(blobs.has(`raw/mail_young.${fp}.json`)).toBe(true)
+      expect(blobs.has("raw/mail_legacy.eml")).toBe(true)
+    })
+
+    it("keeps objects without a modification time and any object a message references at delete time", async () => {
+      const { store, blobs, message, put } = await seed()
+      put(`raw/mail_unknown.${fp}.json`, undefined as unknown as Date)
+      const lateName = `raw/${message.id}.${"b".repeat(64)}.json`
+      put(lateName, old)
+      const original = store.sweepOrphanedEncryptedRaw.bind(store)
+      // Commit lands after the scan: the owner now points at the late object.
+      const container = (store as unknown as { container: FakeContainerClient }).container
+      const realList = container.listBlobsFlat.bind(container)
+      let rawListed = false
+      container.listBlobsFlat = async function* (options = {}) {
+        yield* realList(options)
+        if (options.prefix === "raw/" && !rawListed) {
+          rawListed = true
+          blobs.get(`messages/${message.id}.json`)!.data = Buffer.from(JSON.stringify({ ...message, rawObject: lateName }))
+        }
+      }
+      const result = await original({ now })
+      expect(result.deleted).toBe(0)
+      expect(blobs.has(lateName)).toBe(true)
+      expect(blobs.has(`raw/mail_unknown.${fp}.json`)).toBe(true)
+    })
+
+    it("fails closed without deleting when a committed message has no raw reference or cannot be read", async () => {
+      const { store, blobs, put } = await seed()
+      put(`raw/mail_orphan.${fp}.json`, old)
+      put("messages/mail_bad.json", old, "{}")
+      await expect(store.sweepOrphanedEncryptedRaw({ now })).rejects.toThrow("no raw reference")
+      blobs.delete("messages/mail_bad.json")
+      put("messages/mail_garbled.json", old, "not json")
+      await expect(store.sweepOrphanedEncryptedRaw({ now })).rejects.toThrow()
+      expect(blobs.has(`raw/mail_orphan.${fp}.json`)).toBe(true)
+    })
+
+    it("reports non-Error failures", async () => {
+      const { store } = await seed()
+      ;(store as unknown as { container: FakeContainerClient }).container.listError = "boom"
+      await expect(store.sweepOrphanedEncryptedRaw({ now })).rejects.toBe("boom")
+    })
   })
 
   it("keeps the committed winner when best-effort loser raw cleanup fails", async () => {

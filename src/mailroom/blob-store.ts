@@ -37,6 +37,18 @@ const DEFAULT_BLOB_DOWNLOAD_ATTEMPTS = 2
 const DEFAULT_MESSAGE_FETCH_CONCURRENCY = 20
 const DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY = 8
 const MESSAGE_LIST_SCAN_CONCURRENCY = 32
+// An encrypted raw object is uploaded before its message commits, so a young unreferenced object may be in flight.
+const DEFAULT_ORPHAN_RAW_MIN_AGE_MS = 24 * 60 * 60 * 1000
+const ENCRYPTED_RAW_OBJECT_PATTERN = /^raw\/([^/]+)\.[a-f0-9]{64}\.json$/
+
+export interface EncryptedRawSweepResult {
+  scanned: number
+  referenced: number
+  orphaned: number
+  deleted: number
+  skippedYoung: number
+  dryRun: boolean
+}
 
 export interface AzureBlobMailroomStoreOptions {
   serviceClient: BlobServiceClient
@@ -638,6 +650,83 @@ export class AzureBlobMailroomStore implements MailroomStore {
       meta: { agentId: agentId ?? null, indexed },
     })
     return indexed
+  }
+
+  /**
+   * Deletes encrypted raw objects that no committed message references. Fails closed: if any committed
+   * message cannot be read, nothing is deleted. Young objects (possibly mid-ingest) and objects a
+   * message still references at delete time are always kept.
+   */
+  async sweepOrphanedEncryptedRaw(options: { minAgeMs?: number; now?: Date; dryRun?: boolean } = {}): Promise<EncryptedRawSweepResult> {
+    await this.ensureContainer()
+    const minAgeMs = options.minAgeMs ?? DEFAULT_ORPHAN_RAW_MIN_AGE_MS
+    const nowMs = (options.now ?? new Date()).getTime()
+    const dryRun = options.dryRun === true
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_store_raw_sweep_start",
+      message: "azure blob mailroom store started encrypted raw orphan sweep",
+      meta: { minAgeMs, dryRun },
+    })
+    try {
+      const messageNames: string[] = []
+      for await (const item of this.container.listBlobsFlat({ prefix: "messages/" })) messageNames.push(item.name)
+      const referenced = new Set<string>()
+      await mapWithConcurrency(messageNames, this.messageFetchConcurrency, async (name) => {
+        const message = await downloadJson<{ rawObject?: unknown }>(this.container.getBlockBlobClient(name), this.blobOperationTimeoutMs)
+        if (message && isNonEmptyString(message.rawObject)) referenced.add(message.rawObject)
+        else if (message) throw new Error(`committed message blob ${name} has no raw reference; refusing to sweep`)
+      })
+
+      const candidates: Array<{ name: string; messageId: string; ageMs: number | null }> = []
+      let scanned = 0
+      for await (const item of this.container.listBlobsFlat({ prefix: "raw/" })) {
+        const match = ENCRYPTED_RAW_OBJECT_PATTERN.exec(item.name)
+        if (!match) continue
+        scanned += 1
+        if (referenced.has(item.name)) continue
+        const modified = item.properties?.lastModified
+        candidates.push({ name: item.name, messageId: match[1], ageMs: modified ? nowMs - modified.getTime() : null })
+      }
+
+      let deleted = 0
+      let skippedYoung = 0
+      for (const candidate of candidates) {
+        if (candidate.ageMs === null || candidate.ageMs < minAgeMs) {
+          skippedYoung += 1
+          continue
+        }
+        // Re-read the owner at delete time: a commit may have landed since the scan.
+        const owner = await downloadJson<{ rawObject?: unknown }>(this.messageBlob(candidate.messageId), this.blobOperationTimeoutMs)
+        if (owner?.rawObject === candidate.name) continue
+        if (!dryRun) await this.rawBlob(candidate.name).deleteIfExists()
+        deleted += 1
+      }
+      const result = {
+        scanned,
+        referenced: scanned - candidates.length,
+        orphaned: candidates.length,
+        deleted: dryRun ? 0 : deleted,
+        skippedYoung,
+        dryRun,
+      }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_blob_store_raw_sweep_end",
+        message: "azure blob mailroom store finished encrypted raw orphan sweep",
+        meta: { ...result },
+      })
+      return result
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.mail_blob_store_raw_sweep_error",
+        message: "azure blob mailroom store encrypted raw orphan sweep failed",
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+      throw error
+    }
   }
 
   async putRawMessage(input: {

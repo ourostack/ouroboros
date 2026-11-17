@@ -9,13 +9,6 @@
       "removalCriteria": "Add an explicitly authorized, audited reconciliation/archive path for permanently uncertain feedback review or delivery records, preserving immutable receipts, actor/conversation binding and no automatic replay; verify capacity can be reclaimed without re-invoking model/tool effects or duplicating unknown Teams sends."
     },
     {
-      "id": "mailroom-encrypted-raw-orphans",
-      "status": "open",
-      "owner": "Mailroom",
-      "due": "2026-11-24",
-      "removalCriteria": "Replace the hosted encrypted-message upload/commit ordering with a transaction or equivalent lifecycle that guarantees loser cleanup, then deploy a provenance-safe orphan sweeper and verify that no unreferenced encrypted raw objects remain."
-    },
-    {
       "id": "sanctuary-alpha797-source-compatibility",
       "status": "resolved",
       "owner": "Sanctuary Butler",
