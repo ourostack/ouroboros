@@ -1,6 +1,6 @@
 {
-  "tag": "v1.3.264",
-  "tagCommit": "848af7d03dbb94e35d090ac0c8d939b8c8e3e3c5",
+  "tag": "v1.3.266",
+  "tagCommit": "e1f7b220b31b8f28ef3720621f2ff187c3801ccb",
   "files": {
     "packages/mailbox-ui/scripts/ouro/check/ax-hooks.ts": "5e83546160a532c0477e759212c79fdae07b98d7b519cfcb38dd309f3cd10d81",
     "packages/mailbox-ui/scripts/ouro/check/check.ts": "ad67f5da8e910f1abe47a03575b08fc1ebcc0c170279e5a5334662caa0902811",
@@ -24,7 +24,7 @@
     "packages/mailbox-ui/scripts/ouro/check/token-check.ts": "bba3162ebd8e7ace23c391edcf56a92d47095cac1fb7c5e637c0c98398c8ebb2",
     "packages/mailbox-ui/scripts/ouro/check/wrap-check.ts": "474c9b7a08be766c7479931b3f0f0cb6678efcd10918d0047270f3e6fccda918",
     "packages/mailbox-ui/src/components/ouro/badge/badge.tsx": "588a9b5acaed5c31bb3a89e4f4c904fe9fe318acc28b00344343736266d96f53",
-    "packages/mailbox-ui/src/components/ouro/button/button.tsx": "0e762f17f708ea0141e08fef5fdc836e166cd4362fa26007f29d1512a7e629af",
+    "packages/mailbox-ui/src/components/ouro/button/button.tsx": "d0550afed4b9f9b59bd623196ef25e6b9256419813cb004ad4b8cfd06b70933a",
     "packages/mailbox-ui/src/components/ouro/kbd/kbd.tsx": "1ae7429296990ac1cfb874e1ca90b35903812b12f7fb2a7b923afa447d75f5e8",
     "packages/mailbox-ui/src/components/ouro/menu/menu-styles.ts": "108d7678e8c9da178cc9a30821d49e19fb4936935046adba96ec85a923cc2f6e",
     "packages/mailbox-ui/src/components/ouro/menu/menu.tsx": "2dd0af4209f8f09c015308dd00b6efcc6daa2defb8c40e6cc0c1df9ca41cbbc9",
@@ -54,7 +54,7 @@
     "packages/mailbox-ui/src/lib/ouro/class-name-check.ts": "600bc22afbe0b7dd47451277ad893ff0f240a2a1c76c42c8e7e9e36320515cfc",
     "packages/mailbox-ui/src/lib/ouro/cn.ts": "df32c7d3dc69c7d70cf39bd63b63583397a2868134dc16bc3e55ab774bd6401b",
     "packages/mailbox-ui/src/lib/ouro/current-path.ts": "bbb63ed157c7458ddec1d11ccf615da1f0978a5f224eeffb7c8fe0ab7a2cc3f6",
-    "packages/mailbox-ui/src/lib/ouro/dev.ts": "f141319460b8a534d299b3175b6f74f9255a5674f356131874092870ef78225e",
+    "packages/mailbox-ui/src/lib/ouro/dev.ts": "114d18b7e993d5c4d6bef7392543d2a7d7ebbf0b5c0434f6702137a9e4dc5b6f",
     "packages/mailbox-ui/src/lib/ouro/env.d.ts": "b9b1f9fbff01e0acecd2452110007846804d4d30e159a302f56312d2771fe90c",
     "packages/mailbox-ui/src/lib/ouro/floating.ts": "64e6f7dc0f138f472db435d687894bd63e1233cab1a62093cc7f0bbfe9d5ea01",
     "packages/mailbox-ui/src/lib/ouro/key-shortcuts.ts": "fd2d1311d04ac773de046112b2c0455769360eaab37f26d2c2e483ff6bd894ee",

@@ -1,7 +1,7 @@
 "use client";
 
 import { Button as BaseButton } from "@base-ui/react/button";
-import { useEffect, useRef } from "react";
+import { Fragment, isValidElement, useEffect, useRef } from "react";
 import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,
@@ -77,8 +77,10 @@ export interface ButtonBaseProps {
    * such as Undo in a note: it takes the text's size, leaves the line's height as it was and
    * keeps a target at least 24px tall and wide (44px on a coarse pointer). shadcn's `default`
    * is `md`; for an icon-only button, pass the icon as children and an `aria-label`: Button sizes
-   * the icon as it sizes `startIcon`, unless the icon has a size class of its own. Any other
+   * the icon as it sizes `startIcon`, unless the icon has a size class of its own, and makes the
+   * button as wide as it is tall (a circle where the theme's controls are capsules). Any other
    * string is a type error whose message names the fix. @default "md"
+   * @claim "as wide as it is tall" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > is as wide as it is tall at size %s, with only an icon and a name)
    * @claim "are taller on phones" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::appearance > orders sizes sm < md < lg)
    * @claim "are taller on phones" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::className > lets the app's height and padding win at desktop widths too)
    * @claim "it takes the text's size" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::inline size > sits in a line of text at the text's size without moving the line, and keeps a 24px target)
@@ -490,7 +492,17 @@ export function Button(props: ButtonProps): JSX.Element {
   }, [pressable]);
 
   const buttonRef = useMergedRef((rest as { ref?: Ref<HTMLElement> }).ref, own);
-  const classes = cn(base, iconChildClass, sizes[size], looks[variant][tone], fullWidth && "w-full", className);
+  // An icon-only button (one element as its whole label, named by aria-label or aria-labelledby) is as wide as it is
+  // tall, as shadcn's icon size is, so a theme whose controls are capsules draws it as a circle.
+  const named = rest as { "aria-label"?: string; "aria-labelledby"?: string };
+  const iconOnly =
+    size !== "inline" &&
+    !StartIcon &&
+    !EndIcon &&
+    isValidElement(children) &&
+    children.type !== Fragment &&
+    Boolean(named["aria-label"] || named["aria-labelledby"]);
+  const classes = cn(base, iconChildClass, sizes[size], iconOnly && "w-(--ouro-button-h) px-0", looks[variant][tone], fullWidth && "w-full", className);
 
   // The touch target comes first and the label is positioned, so the label paints above
   // the target: the target still enlarges the hit area, and nothing covers the text
