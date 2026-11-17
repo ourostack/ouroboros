@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../../nerves/runtime"
 import { shepherd } from "./shepherd-cli"
 import type { AppMessage, AppSessionRow, AppSessionState } from "./client"
 
@@ -48,7 +49,9 @@ export function rowOf(item: Json): AppSessionRow {
 /** Every session in the app's sidebar. Throws when Shepherd cannot read the app. */
 export async function sessionRows(): Promise<AppSessionRow[]> {
   const picture = await shepherd(["sessions"])
-  return (Array.isArray(picture.sessions) ? picture.sessions : []).map(item => rowOf(object(item)))
+  const rows = (Array.isArray(picture.sessions) ? picture.sessions : []).map(item => rowOf(object(item)))
+  emitNervesEvent({ component: "senses", event: "senses.app_sessions_rows", message: "read the app's session rows through Shepherd", meta: { rows: rows.length } })
+  return rows
 }
 
 /** The last `count` visible messages of a session, oldest first, as Shepherd reads them. */
