@@ -304,7 +304,17 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Mail
       )}
 
       {/* Continuity — presence, cares, episodes */}
-      {continuity === null && <div aria-hidden="true" className="min-h-40" />}
+      {/* While continuity loads, the same three cards hold its place, so nothing below moves when it lands. */}
+      {continuity === null && (
+        <div aria-busy="true" className="grid gap-4 sm:grid-cols-3" data-testid="continuity-loading">
+          {["Presence", "Cares", "Episodes"].map((title) => (
+            <div key={title} className="rounded-xl bg-ouro-void/50 p-4 ring-1 ring-ouro-moss/20">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">{title}</p>
+              <p className="mt-2 text-sm text-ouro-shadow">Loading…</p>
+            </div>
+          ))}
+        </div>
+      )}
       {continuity && (
         <div className="grid gap-4 sm:grid-cols-3">
           {/* Self presence */}
