@@ -414,14 +414,19 @@ const slug = (text: string) =>
  * outside tests, when it has several words. An id is `<path>#<first words>`, with `~2` for a repeat, so rewording an
  * error's end keeps its id. A `code:` on the same line, or on the line before or after, gives the error its code. It reads the source as
  * text, so it can miss a text built elsewhere and read a string that is not an error: its manifest is a start to edit,
- * and the ratchet works from the manifest you keep.
+ * and the ratchet works from the manifest you keep. `exclude` lists folders or files, relative to `root`, to leave out,
+ * such as a copy of the kit your repository vendors.
  *
  * @example
- * extractSurfaces({ root: ".", paths: ["src"], tool: "notes" }).errors;
+ * extractSurfaces({ root: ".", paths: ["src"], tool: "notes", exclude: ["src/lib/ouro"] }).errors;
  */
-function extractSurfaces(options: { root: string; paths: readonly string[]; tool: string }): Surfaces {
+function extractSurfaces(options: { root: string; paths: readonly string[]; tool: string; exclude?: readonly string[] }): Surfaces {
   const errors: ErrorSurface[] = [];
-  const files = options.paths.flatMap((p) => sourceFiles(resolve(options.root, p))).filter((f) => SOURCE.test(f) && !TEST_FILE.test(f)).sort();
+  const excluded = (file: string) => {
+    const rel = relative(options.root, file).split("\\").join("/");
+    return (options.exclude ?? []).some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
+  };
+  const files = options.paths.flatMap((p) => sourceFiles(resolve(options.root, p))).filter((f) => SOURCE.test(f) && !TEST_FILE.test(f) && !excluded(f)).sort();
   for (const file of files) {
     const src = readFileSync(file, "utf8");
     const rel = relative(options.root, file).split("\\").join("/");
@@ -449,7 +454,7 @@ function extractSurfaces(options: { root: string; paths: readonly string[]; tool
 
 const USAGE = [
   "surfaces check <manifest.json> [--baseline <file>] [--update | --init] [--json]",
-  "surfaces extract <path>... [--tool <name>] [--root <dir>] [--out <manifest.json>]",
+  "surfaces extract <path>... [--tool <name>] [--root <dir>] [--exclude <path,path>] [--out <manifest.json>]",
 ].join("\n");
 
 interface Io {
@@ -460,7 +465,7 @@ interface Io {
 function parseFlags(args: readonly string[]): { positional: string[]; flags: Map<string, string | true> } {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
-  const valued = new Set(["baseline", "tool", "root", "out"]);
+  const valued = new Set(["baseline", "tool", "root", "out", "exclude"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (!a.startsWith("--")) positional.push(a);
@@ -508,7 +513,7 @@ async function main(args: readonly string[], io: Io = process): Promise<number> 
     if (command === "extract") {
       if (positional.length === 0) return refuse(usageError("extract", "no path to read", "pass a file or folder, such as: surfaces extract src --tool notes"));
       const root = resolve(String(flags.get("root") ?? "."));
-      const manifest = extractSurfaces({ root, paths: positional, tool: String(flags.get("tool") ?? "tool") });
+      const manifest = extractSurfaces({ root, paths: positional, tool: String(flags.get("tool") ?? "tool"), exclude: String(flags.get("exclude") ?? "").split(",").filter(Boolean) });
       const json = `${JSON.stringify(manifest, null, 2)}\n`;
       const out = flags.get("out");
       if (typeof out === "string" && out) {

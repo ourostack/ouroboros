@@ -66,29 +66,30 @@ function errorJson(shape: AxErrorShape): { error: AxErrorBody } {
   return { error: { ...shape, message: errorMessage(shape) } };
 }
 
+// Edits between two words, a swap of two letters side by side counting as one: "romos" is one edit from "rooms".
 function distance(a: string, b: string): number {
-  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
   for (let i = 1; i <= a.length; i++) {
-    let diagonal = row[0]!;
-    row[0] = i;
     for (let j = 1; j <= b.length; j++) {
-      const above = row[j]!;
-      row[j] = Math.min(above + 1, row[j - 1]! + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
-      diagonal = above;
+      const row = rows[i]!;
+      row[j] = Math.min(rows[i - 1]![j]! + 1, row[j - 1]! + 1, rows[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) row[j] = Math.min(row[j]!, rows[i - 2]![j - 2]! + 1);
     }
   }
-  return row[b.length]!;
+  return rows[a.length]![b.length]!;
 }
 
 /**
- * The candidate an agent most likely meant: the nearest within two edits, else a unique prefix; null when neither applies.
+ * The candidate an agent most likely meant: the nearest within an edit for every three letters of the word (at least one,
+ * at most two), else a unique prefix; null when neither applies.
  *
- * @claim "the nearest within two edits" registry/ouro/ax/problem.test.mts verify:testExists(registry/ouro/ax/problem.test.mts::didYouMean: the nearest within a couple of edits, else a unique prefix, else null)
+ * @claim "the nearest within an edit for every three letters of the word" registry/ouro/ax/problem.test.mts verify:testExists(registry/ouro/ax/problem.test.mts::didYouMean: the nearest within a couple of edits, else a unique prefix, else null) verify:testExists(registry/ouro/ax/problem.test.mts::didYouMean: a short word suggests only a name an edit away, not one that changes half its letters)
  */
 function didYouMean(word: string, candidates: readonly string[]): string | null {
   if (word === "") return null;
   let best: string | null = null;
-  let bestDistance = Math.min(3, Math.max(2, Math.floor(word.length / 2)) + 1);
+  // Scaled to the word: two edits in a four-letter word change half of it, which is a different word, not a typo (#1670).
+  let bestDistance = Math.min(2, Math.max(1, Math.floor(word.length / 3))) + 1;
   for (const c of candidates) {
     const d = distance(word, c);
     if (d < bestDistance) {

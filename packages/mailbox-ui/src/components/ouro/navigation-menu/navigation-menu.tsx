@@ -1,7 +1,7 @@
 "use client";
 
 import { NavigationMenu as BaseNavigationMenu } from "@base-ui/react/navigation-menu";
-import { useState, type JSX, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
+import { useRef, useState, type JSX, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
 import { currentHref, samePath } from "@/lib/ouro/current-path";
@@ -9,6 +9,8 @@ import { floatingPortalClass } from "@/lib/ouro/floating";
 import { RouterLink } from "@/lib/ouro/router-link";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 import { PortalScope, usePortalContainer } from "@/lib/ouro/portal-container";
+import { PageDirection } from "@/lib/ouro/page-direction";
+import { useMergedRef } from "@/lib/ouro/refs";
 
 /** One link inside a NavigationMenu panel. */
 export interface NavigationMenuLink {
@@ -189,8 +191,11 @@ const example =
  * Use `Navbar` instead when every item is a plain link; it also collapses into a drawer on
  * a phone, which this row does not. Use `Menu` for actions rather than pages, and `Sidebar`
  * for a column of links.
+ * In a right-to-left page (`dir="rtl"` on `<html>`) ArrowLeft moves to the next button.
+ *
  *
  * @group Navigation
+ * @claim "In a right-to-left page" registry/ouro/components/ouro/navigation-menu/navigation-menu.test.tsx verify:testExists(registry/ouro/components/ouro/navigation-menu/navigation-menu.test.tsx::NavigationMenu > moves to the next button with ArrowLeft in a right-to-left page, where it sits on the left)
  * @see https://ui.ouroboros.bot/docs/navigation-menu
  *
  * @example
@@ -287,6 +292,8 @@ function isPanel(item: NavigationMenuItem): item is NavigationMenuPanelItem {
  */
 export function NavigationMenuView(props: NavigationMenuViewProps): JSX.Element {
   const { label, items, currentPath, className, ref, oneLine, listRef } = props;
+  const nav = useRef<HTMLElement>(null);
+  const mergedNav = useMergedRef(ref, nav);
   // Controlled, so a link in a panel's content can close it.
   const [value, setValue] = useState<number | null>(null);
   const [instant, setInstant] = useState(false);
@@ -310,9 +317,9 @@ export function NavigationMenuView(props: NavigationMenuViewProps): JSX.Element 
   };
 
   const portal = usePortalContainer("NavigationMenu");
-  return (
+  const directed = (
     <BaseNavigationMenu.Root
-      ref={ref}
+      ref={mergedNav}
       data-ouro="navigation-menu"
       aria-label={label}
       value={value}
@@ -397,4 +404,5 @@ export function NavigationMenuView(props: NavigationMenuViewProps): JSX.Element 
       </BaseNavigationMenu.Portal>
     </BaseNavigationMenu.Root>
   );
+  return <PageDirection of={nav}>{directed}</PageDirection>;
 }

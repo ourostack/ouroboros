@@ -156,6 +156,12 @@ interface CommandDef<R = unknown, C extends RunContext = RunContext> {
   output?: string;
   /** Out of the overview, still callable and with its help. */
   hidden?: boolean;
+  /**
+   * The command is a protocol: another program reads its stdout as one JSON reply line (such as `wire`, which a --via
+   * Mac's caller reads), not a person. The X-ray takes that one line as the reply, and still checks the one stderr line
+   * of an error. Help JSON says `protocol: true` for it. Use it only for a stdin/stdout protocol, never for a person's command.
+   */
+  protocol?: boolean;
   /** Marks the command whose text sums up the person's day: the voice's `summary` line may follow it on a terminal. */
   summarizes?: boolean;
   /** Flags and extra words pass through unchecked: a command adopted before its flags were declared. */
@@ -197,7 +203,11 @@ interface CliDefBase {
   ambiguous?: Readonly<Record<string, readonly Meaning[]>>;
   /** Words only the person acts on, by the words an agent might try (`unmute`). */
   personOnly?: Readonly<Record<string, PersonOnly>>;
-  /** The overview's one line for a multi-word group ("draft"), when its first command's summary is not it. */
+  /**
+   * The overview's one line for a multi-word group ("draft"); without one, each of its commands is listed by its whole name.
+   *
+   * @claim "each of its commands is listed by its whole name" registry/ouro/ax/help.test.mts verify:testExists(registry/ouro/ax/help.test.mts::a multi-word command with no group summary is listed by its whole name, never as its first word)
+   */
   groups?: Readonly<Record<string, string>>;
   /** Exit code names by outcome state; defaults to DEFAULT_OUTCOME_EXITS. */
   outcomeExits?: OutcomeExits;
