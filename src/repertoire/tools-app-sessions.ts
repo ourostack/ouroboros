@@ -43,6 +43,12 @@ function bodyOf(args: Args, ...skip: string[]): Row | undefined {
   const body = Object.fromEntries(Object.entries(args).filter(([key]) => !skip.includes(key)))
   return Object.keys(body).length ? body : undefined
 }
+/** The `--why` Shepherd records with a write verb: what Ouroboros is doing, then the intent already in the call (a message, a prompt), kept to one line. */
+function because(action: string, ...detail: unknown[]): { why: string } {
+  const gist = (value: unknown): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 120) : "")
+  return { why: [action, ...detail.map(gist).filter(Boolean)].join(": ") }
+}
+const short = (id: unknown): string => String(id).slice(0, 8)
 /** Whether a watch answers the session's replies: `never` does not, `always` keeps watching for a day, `once` (the default) stops at the first reply. */
 const watchMode = (value: unknown): "once" | "always" | null => (value === "never" ? null : value === "always" ? "always" : "once")
 
@@ -94,7 +100,7 @@ export const sendSessionMessageTool = define(
     const id = String(row.id)
     const mode = watchMode(args.notify_on_idle)
     const sentAt = new Date().toISOString()
-    const sent = await shepherd(["send", id], bodyOf(args, "session_id", "notify_on_idle"))
+    const sent = await shepherd(["send", id], bodyOf(args, "session_id", "notify_on_idle"), because(`Ouroboros messages ${String(row.name)}`, args.message))
     if (mode !== null) watchSession(agentRoot, id, String(row.name), sentAt, Date.now(), mode === "once")
     return { ...sent, watching: mode !== null }
   }, ["session_id"],
@@ -115,9 +121,9 @@ export const createSessionTool = define(
     notify_on_idle: notifyOnIdle,
   }, [], write("opens a new agent session in the owner's Copilot app"),
   async (args, agentRoot) => {
-    const created = await shepherd(["create"], bodyOf(args, "notify_on_idle"))
-    const mode = watchMode(args.notify_on_idle)
     const kickoff = (args.kickoff && typeof args.kickoff === "object" ? args.kickoff : {}) as Row
+    const created = await shepherd(["create"], bodyOf(args, "notify_on_idle"), because(`Ouroboros opens ${typeof args.name === "string" && args.name ? args.name : "a session"}`, kickoff.prompt))
+    const mode = watchMode(args.notify_on_idle)
     const prompted = Boolean(kickoff.prompt)
     // A new session has no replies before this, so its first one is read from the time it was made.
     if (prompted && mode !== null) watchSession(agentRoot, String(created.session_id), typeof args.name === "string" ? args.name : null, new Date().toISOString(), Date.now(), mode === "once")
@@ -128,13 +134,13 @@ export const createSessionTool = define(
 export const answerSessionInputTool = define(
   "answer_session_input", "Answer the question a session asked with ask_user and is blocked on. get_session shows it (awaiting_input.question, choices). A choice or free text. A question asked while this agent was not connected has no request id and cannot be answered here.",
   { session_id: session, answer: { type: "string" } }, ["session_id", "answer"], write("answers a question for the person in another agent session"),
-  args => shepherd(["answer", sessionId(args)], bodyOf(args, "session_id")), ["session_id"],
+  args => shepherd(["answer", sessionId(args)], bodyOf(args, "session_id"), because(`Ouroboros answers the question session ${short(args.session_id)} asked`, args.answer)), ["session_id"],
 )
 
 export const respondToSessionPlanTool = define(
   "respond_to_session_plan_v2", "Approve or reject the plan a session paused on (awaiting_plan_approval). feedback is sent to the session as a message after the decision.",
   { session_id: session, approved: { type: "boolean" }, selected_action: { type: "string", description: "One of awaiting_input.actions; the recommended one by default." }, feedback: { type: "string" } }, ["session_id", "approved"],
-  write("approves or rejects another agent session's plan for the person"), args => shepherd(["plan", sessionId(args)], bodyOf(args, "session_id")), ["session_id"],
+  write("approves or rejects another agent session's plan for the person"), args => shepherd(["plan", sessionId(args)], bodyOf(args, "session_id"), because(`Ouroboros ${args.approved === true ? "approves" : "rejects"} the plan of session ${short(args.session_id)}`, args.feedback)), ["session_id"],
 )
 
 export const archiveSessionTool = define(
@@ -143,7 +149,7 @@ export const archiveSessionTool = define(
   async (args, agentRoot) => {
     const ownerAsked = args.owner_asked === true
     const row = await shepherd(["session", sessionId(args)])
-    const archived = await shepherd(["archive", String(row.id)], ownerAsked ? { owner_asked: true } : undefined)
+    const archived = await shepherd(["archive", String(row.id)], ownerAsked ? { owner_asked: true } : undefined, because(ownerAsked ? `The owner asked Ouroboros to archive ${String(row.name)}` : `Ouroboros archives ${String(row.name)}, which it created or which was handed off`))
     // Shepherd logs the archives it makes itself; the owner-asked ones are logged here for the digest.
     if (ownerAsked) addArchiveLog(agentRoot, { id: String(row.id), name: String(row.name), at: new Date().toISOString(), reason: "owner-asked" })
     return archived
@@ -158,14 +164,17 @@ export const saveSessionAutomationTool = define(
     session_id: session, prompt: { type: "string" }, interval: { type: "string", enum: ["once", "minutes", "daily", "weekly", "cron"] }, run_at: { type: "string" }, every_minutes: { type: "number" },
     schedule_hour: { type: "number" }, schedule_minute: { type: "number" }, schedule_day: { type: "number" }, cron_expression: { type: "string" }, name: { type: "string" },
     clear: { type: "boolean", description: "Remove the session's automation instead." },
-  }, ["session_id"], write("schedules wake-ups for an agent session in the owner's Copilot app"), args => shepherd(["automation", sessionId(args)], bodyOf(args, "session_id")), ["session_id"],
+  }, ["session_id"], write("schedules wake-ups for an agent session in the owner's Copilot app"), args => {
+    const body = bodyOf(args, "session_id")
+    return shepherd(["automation", sessionId(args)], body, body ? because(args.clear === true ? `Ouroboros clears the wake-ups of session ${short(args.session_id)}` : `Ouroboros schedules a wake-up for session ${short(args.session_id)}`, args.prompt) : {})
+  }, ["session_id"],
 )
 
 export const getSessionAutomationTool = define("get_session_automation", "The automation attached to a session. Read-only.", { session_id: session }, ["session_id"], READ, args => shepherd(["automation", sessionId(args)]), ["session_id"])
 
 export const listWorkflowsTool = define("list_workflows", "The app's automations (workflows), with their ids and schedules. Read-only.", {}, [], READ, () => shepherd(["workflows"]))
 
-export const runWorkflowTool = define("run_workflow", "Run one of the app's automations now, in a new session.", { id: { type: "string", description: "From list_workflows." } }, ["id"], write("starts a session in the owner's Copilot app"), args => shepherd(["run-workflow", String(args.id)]), ["id"])
+export const runWorkflowTool = define("run_workflow", "Run one of the app's automations now, in a new session.", { id: { type: "string", description: "From list_workflows." } }, ["id"], write("starts a session in the owner's Copilot app"), args => shepherd(["run-workflow", String(args.id)], undefined, because(`Ouroboros runs workflow ${String(args.id)}`)), ["id"])
 
 export const appSessionsTailTool = define(
   "app_sessions_tail", "A session's last visible prompts and replies, oldest first, with its current name and state and how much of the local log was read. Re-read before reporting current progress: older messages are not live status. Read-only.",

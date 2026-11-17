@@ -38,7 +38,7 @@ export class ShepherdFailure extends Error {
 }
 
 export interface ShepherdCommand { file: string; prefix: string[] }
-export interface ShepherdRun { env?: NodeJS.ProcessEnv; home?: string; timeoutMs?: number }
+export interface ShepherdRun { env?: NodeJS.ProcessEnv; home?: string; timeoutMs?: number; why?: string }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 
@@ -116,7 +116,8 @@ function jsonResult(stdout: string): Record<string, unknown> | null {
 export async function shepherd(verb: string[], input?: Record<string, unknown>, options: ShepherdRun = {}): Promise<Record<string, unknown>> {
   const command = resolveShepherd(options.env, options.home)
   if (!command) throw new ShepherdUnavailableError("Shepherd is not installed, so the GitHub Copilot app's sessions cannot be reached")
-  const args = [...verb, "--json", ...(input === undefined ? [] : ["--input", "-"])]
+  const why = options.why?.replace(/\s+/g, " ").trim().slice(0, 300)
+  const args = [...verb, "--json", ...(why ? ["--why", why] : []), ...(input === undefined ? [] : ["--input", "-"])]
   const { code, stdout, stderr } = await runCommand(command, args, input === undefined ? null : JSON.stringify(input), options.timeoutMs ?? SHEPHERD_TIMEOUT_MS)
   const parsed = jsonResult(stdout)
   if (code !== 0 || parsed?.ok === false) {
