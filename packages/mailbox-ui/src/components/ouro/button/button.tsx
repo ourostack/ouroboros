@@ -220,7 +220,7 @@ const base =
   "before:opacity-0 before:transition-opacity before:duration-(--ouro-duration-fast) before:ease-[ease] " +
   "not-data-disabled:not-active:pointer-fine:hover:before:opacity-8 not-data-disabled:active:before:opacity-14 " +
   // Where corner-shape is missing, the surface slot paints the background, border and state layer instead (see ouro-base.css).
-  "bg-(--ouro-bg) border-(--ouro-bd) [--ouro-sq-w:1px] [--ouro-sq-r:calc(var(--radius-lg)/var(--ouro-corner-fallback,1))] " +
+  "bg-(--ouro-bg) border-(--ouro-bd) [--ouro-sq-w:1px] [--ouro-sq-r:calc(var(--radius)*var(--ouro-radius-scale,1))] " +
   // Stryker disable next-line StringLiteral: a class string in a class position, which no test reads
   "not-data-disabled:not-active:pointer-fine:hover:[--ouro-state:0.08] not-data-disabled:active:[--ouro-state:0.14] " +
   // Press feedback: scale only when motion is allowed and the button is enabled.
