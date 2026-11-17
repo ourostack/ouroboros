@@ -558,15 +558,7 @@ jobs:
           echo "publishing @ouro.bot/cli with dist-tag ${TAG}"
 
       - name: Publish @ouro.bot/cli
-        run: |
-          LOCAL=$(node -p "require('./package.json').version")
-          TAG="${{ steps.cli-publish-tag.outputs.tag }}"
-          PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
-          if [ "$LOCAL" = "$PUBLISHED" ]; then
-            echo "@ouro.bot/cli@${LOCAL} already published — skipping"
-          else
-            npm publish --access public --tag "$TAG"
-          fi
+        run: node scripts/npm-publish-idempotency.cjs publish "${{ steps.cli-publish-tag.outputs.tag }}"
 
       - name: Build for wrapper publish guard
         run: npm run build

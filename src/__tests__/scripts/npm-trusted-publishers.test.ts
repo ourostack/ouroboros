@@ -57,7 +57,7 @@ publish:
     - name: Verify npm trusted-publishing toolchain (trusted publishing requires npm >=11.5.1 on Node >=22.14)
       run: |
         const fallback = "11.6.4"
-    - run: npm publish --access public --tag "$TAG"
+    - run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
     - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
       run: echo "selected npm dist-tags verified"
@@ -122,7 +122,7 @@ publish:
         package-manager-cache: false
     - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
       run: npm install -g npm@latest
-    - run: npm publish --access public --tag "$TAG"
+    - run: node scripts/npm-publish-idempotency.cjs publish "\${{ steps.cli-publish-tag.outputs.tag }}"
     - run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
     - name: Verify selected npm dist-tags
       run: echo "selected npm dist-tags verified"
