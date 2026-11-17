@@ -44,13 +44,13 @@ event; none is gated beyond the harness's usual trust rule (the tools are family
 **What an outside client cannot do.** An observer client is anonymous: the app ignores creator and coordination fields,
 so a created session has no coordinator and nothing reports back (`notify_on_idle` makes this sense watch it instead).
 `publish_chat_update` and `relay_session_input` have no WebSocket form. A question or plan is announced once, only to
-clients connected at that moment, so the sense keeps a persistent listener (`prompts.ts`) that records them in
-`pending.json`; `answer_session_input` and `respond_to_session_plan_v2` need a recorded `request_id`. A session whose
-question was asked while the sense was down reports it in `get_session` but cannot be answered from here.
+the observers connected at that moment: Shepherd's resident watch (`shepherd watch --every 60`) keeps the observer that
+hears them, so `answer_session_input` and `respond_to_session_plan_v2` need that watch running. A question asked while no
+observer was connected reports in `get_session` but cannot be answered from here.
 
-**Stuck** means the app does not say the session is running, but its own history (`events.jsonl`) shows its agent loop
-stopped mid-turn, or between turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`,
-plan approval or permission request is open.
+**Stuck**, **waiting** and **idle** are Shepherd's classification of each session (`shepherd sessions` gives its `activity`).
+Stuck means the app does not say the session is running, but its history shows its agent loop stopped mid-turn, or between
+turns after asking for tools, more than two minutes ago. **Waiting** means an `ask_user`, plan approval or permission request is open.
 
 **Coordinator.** The app records a session's coordinator once and never lets another session take the field over, so after a coordinator
 hands off to a successor and is archived, `coordinating_creator_session_id` still names the archived one. `list_sessions_and_chats`,
@@ -71,9 +71,8 @@ The result includes `observedAt`, `source: "local_event_log"`, requested/returne
 reporting current progress or promising an update; a historical reply does not establish what work a session owns
 now. A name change invalidates the old attribution, not necessarily the session itself.
 
-**Sending waits.** A session whose runtime is not loaded loads first, often for more than 20 seconds, and closing the
-socket before the app answers cancels the send. The tool always waits for the app's `session_message_sent` or
-`session_message_queued`.
+**Sending waits.** A session whose runtime is not loaded loads first, often for more than 20 seconds. The send is Shepherd's
+(`shepherd send`), which waits for the app to accept the message (`session_message_sent` or `session_message_queued`) for up to two minutes.
 
 **Restarting is Housesitter's job.** The harness never restarts the app itself. `enqueue` runs
 `housesitter restart-copilot --resume --detach` (found at `HOUSESITTER_BIN`, `~/code/housesitter/bin/housesitter.mjs`, or
@@ -102,15 +101,15 @@ The sense process does these things:
   shown but not announced, and a notice that could not reach the owner is retried each minute. `ouro status` lists
   each as `waiting on you: 1a2b3c4d (Babysitter) for 5 min: run a shell command`. The prompt comes from the open
   `permission.requested` event in the session's own history, the same source that makes the session `waiting`.
-- Every ten seconds it reads the new part of each **watched** session's history. Sending to a session (or resuming it,
-  or opening it with a first message) watches it for a day after the last write. When a watched session finishes a
-  reply (an assistant message that asks for no tools), the reply is queued for the agent's private runtime and the
-  runtime is woken (`triggerSource: "app-sessions"`), the way Shepherd's returns arrive. So a conversation with another
-  session, such as a steward session, works both ways.
+- Every ten seconds it reads the last 50 messages of each **watched** session (`shepherd messages`). Sending to a session
+  (or creating one with a first message) watches it for a day after the last write. A new assistant message in it is a
+  reply: it is queued for the agent's private runtime and the runtime is woken (`triggerSource: "app-sessions"`), the way
+  Shepherd's returns arrive. So a conversation with another session, such as a steward session, works both ways.
 
-Watch reads advance forward from their cursor in bounded batches, so a large burst is drained over several polls
-rather than silently jumping over earlier replies. An oversized or malformed event produces an observation-gap
-notice, not a fabricated session reply. Failed delivery leaves the cursor and name unchanged for retry.
+A watch's cursor is the time it was sent to (ISO): only assistant messages after it are replies, and the cursor
+moves to the latest one delivered. Shepherd's messages carry no tool requests, so a message that narrates before a tool
+call counts as a reply, unlike the event-log reader it replaced. A session that writes more than 50 messages between two
+passes loses the older ones. Failed delivery leaves the cursor and name unchanged for retry.
 Each delivered burst carries the observation time, current sidebar identity/state when available, and message
 timestamps. Renames trigger a notice even without a finished reply; after delivery the watch adopts the current
 name. If the sidebar cannot be read, reply attribution is explicitly unverified.
@@ -180,8 +179,11 @@ tokens, and a model-written answer costs the digest plus a few lines. Each build
 
 ## How it talks to the app
 
-The tools reach the app through Shepherd's CLI (`shepherd-cli.ts`, above). The sense itself still reads the app directly:
-`client.ts` holds the sidebar read (`list_workspaces` and `list_general_chat_sessions`), the event-log readers that classify
-working, stuck and waiting sessions, and Housesitter's CLI (`housesitter restart-copilot --status --json`, or `--resume --detach`
-to start a restart); `prompts.ts` is the persistent listener that records questions and plans on the app's local WebSocket
-(`ws://127.0.0.1:<port>/?token=<token>&observer=1`, port and token in `~/.copilot/run/`).
+The sense and its tools read and act through Shepherd's CLI (`src/senses/app-sessions/shepherd-cli.ts`, `--json`): the
+sidebar is `shepherd sessions` (mapped to rows by `shepherd-rows.ts`), a watched session's replies are `shepherd messages`,
+and each tool is the matching verb. Nothing here opens the app's socket or reads its database.
+
+Three things stay in this repo. `client.ts` holds the row and snapshot shapes and Housesitter's restart
+(`housesitter restart-copilot --status --json`, or `--resume --detach`). The digest's task cards (`digest-cards.ts`) read the
+session's event log for its `task_focus` declaration, which is a tool call that Shepherd's messages do not carry; that is the one
+reader of a session's history left here, and it goes once Shepherd exposes tool calls.

@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readDigestText } from "../senses/app-sessions/digest"
-import { eventLogSize, restartEnqueue, restartStatus, type AppSessionsOptions } from "../senses/app-sessions/client"
+import { restartEnqueue, restartStatus, type AppSessionsOptions } from "../senses/app-sessions/client"
 import { shepherd, ShepherdFailure } from "../senses/app-sessions/shepherd-cli"
 import { addArchiveLog, readWatches, watchSession } from "../senses/app-sessions/store"
 import type { ToolContext, ToolDefinition, ToolRiskProfile } from "./tools-base"
@@ -89,13 +89,13 @@ export const sendSessionMessageTool = define(
   { session_id: session, message: { type: "string", description: "What to send." }, delivery_mode: { type: "string", enum: ["immediate", "enqueue"] }, notify_on_idle: notifyOnIdle }, ["session_id", "message"],
   write("sends a message into another agent session in the owner's Copilot app"),
   async (args, agentRoot) => {
-    // The session is resolved and its log measured before the send, so the watch starts where the reply will follow.
+    // The session is resolved and the send time taken before the send, so the watch's cursor sits before any reply to it.
     const row = await shepherd(["session", sessionId(args)])
     const id = String(row.id)
     const mode = watchMode(args.notify_on_idle)
-    const offset = eventLogSize(id)
+    const sentAt = new Date().toISOString()
     const sent = await shepherd(["send", id], bodyOf(args, "session_id", "notify_on_idle"))
-    if (mode !== null) watchSession(agentRoot, id, String(row.name), offset, Date.now(), mode === "once")
+    if (mode !== null) watchSession(agentRoot, id, String(row.name), sentAt, Date.now(), mode === "once")
     return { ...sent, watching: mode !== null }
   }, ["session_id"],
 )
@@ -119,8 +119,8 @@ export const createSessionTool = define(
     const mode = watchMode(args.notify_on_idle)
     const kickoff = (args.kickoff && typeof args.kickoff === "object" ? args.kickoff : {}) as Row
     const prompted = Boolean(kickoff.prompt)
-    // A new session's log starts empty, so its first reply is read from offset 0.
-    if (prompted && mode !== null) watchSession(agentRoot, String(created.session_id), typeof args.name === "string" ? args.name : null, 0, Date.now(), mode === "once")
+    // A new session has no replies before this, so its first one is read from the time it was made.
+    if (prompted && mode !== null) watchSession(agentRoot, String(created.session_id), typeof args.name === "string" ? args.name : null, new Date().toISOString(), Date.now(), mode === "once")
     return prompted ? { ...created, watching: mode !== null } : created
   }, ["name"],
 )

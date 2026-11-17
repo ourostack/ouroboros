@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1176",
+      "changes": [
+        "The app-sessions sense reads the app through Shepherd's `shepherd` CLI: the sidebar from `shepherd sessions --json` and a watched session's replies from `shepherd messages --json`. It no longer opens the app's socket, reads its database or its event logs for the sidebar, watches or questions. A watch's cursor is the time it was sent to; a reply is an assistant message after it. Shepherd's messages carry no tool requests, so a message that narrates before a tool call counts as a reply. The prompt listener (prompts.ts) and its pending-request store are removed: Shepherd's resident watch hears questions and plans. The digest's task cards still read the session's event log, until Shepherd exposes tool calls.",
+        "Each read of the app's sessions through Shepherd emits a nerves event (`senses.app_sessions_rows`) with its row count."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1175",
       "changes": [
         "The daemon survives a vault outage at startup instead of crash-looping. When the vault does not answer (timeout, refused or reset connection, DNS failure), provider readiness no longer aborts startup: the agent is marked degraded as `vault:<agent>` in daemon health and the vault is retried with capped backoff until it answers. Rejections from a reachable vault (locked, wrong password, missing credential) still fail startup, and `ouro mail sweep-orphans` still requires a fresh vault read. No credentials are cached on disk. The Unraid template follows the release version."

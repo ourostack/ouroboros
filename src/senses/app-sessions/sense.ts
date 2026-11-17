@@ -7,22 +7,23 @@ import { realSchedule } from "../shepherd/cmux"
 import * as os from "node:os"
 import { DIGEST_DEFAULT_SECONDS, expandHome, readDigestState, writeDigest, writeDigestState } from "./digest"
 import { pushDue, stillDue } from "./digest-push"
-import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
-import { startPromptTracker } from "./prompts"
+import { snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions } from "./client"
+import { sessionMessages, sessionRows } from "./shepherd-rows"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
 import { runCommand, type RunCommand } from "./run-command"
 
 /**
- * The app-sessions perception loop. Every minute it snapshots the app's sessions (counts and stuck ids) into the
- * agent's state for its prompt and health. Every ten seconds it reads the new part of each watched session's log
- * (a session the agent wrote to), and a finished reply there comes to the agent as an inbound message on its
- * private runtime, the way Shepherd's returns do, so a conversation with another session works both ways.
+ * The app-sessions perception loop. Shepherd reads the app: every minute the sense takes the app's sessions from
+ * `shepherd sessions` into the agent's state for its prompt and health. Every ten seconds it reads the recent messages of
+ * each session the agent watches (`shepherd messages`), and a finished reply there comes to the agent as an inbound
+ * message on its private runtime, the way Shepherd's returns do, so a conversation with another session works both ways.
  */
 export const SNAPSHOT_MS = 60_000
 export const WATCH_POLL_MS = 10_000
 export const APP_SESSIONS_WAKE_TRIGGER = "app-sessions"
-const REPLY_SCAN_BYTES = 4 * 1024 * 1024
+/** The messages a watch pass reads: a session's replies between two passes, ten seconds apart, are far fewer. */
+const REPLY_COUNT = 50
 const INBOUND_TTL_MS = 24 * 3_600_000
 
 export type Deliver = (content: string, refs: string[]) => Promise<void>
@@ -39,19 +40,14 @@ export interface AppSessionsSenseOptions {
   notifyOwner?: NotifyOwner
 }
 
-/** The replies the session finished since `entry.offset`, and the offset to continue from. */
-export function newReplies(id: string, entry: WatchEntry, client: AppSessionsOptions = {}): { offset: number; replies: AppMessage[]; gap?: string; backlog?: boolean } {
-  const replies: AppMessage[] = []
-  const read = readNewAppEvents(id, entry.offset, REPLY_SCAN_BYTES, event => {
-    if (event.type !== "assistant.message") return
-    const data = event.data as Frame | undefined
-    if (Array.isArray(data?.toolRequests) && data.toolRequests.length) return
-    replies.push(...messagesIn([event]))
-  }, client)
-  const gap = read.logBytes < entry.offset
-    ? "Observation gap: the session log shrank or is missing. Re-read the conversation before relying on prior progress."
-    : read.skippedEvents ? `Observation gap: ${read.skippedEvents} malformed or oversized events skipped. Re-read app_sessions_tail; do not assume this is complete history.` : null
-  return { offset: read.offset, replies, ...(gap ? { gap } : {}), ...(read.offset < read.logBytes ? { backlog: true } : {}) }
+/** A message's time in ms; a message with no time is never after a cursor. */
+const timeOf = (at: string | null): number => Date.parse(at ?? "")
+
+/** The assistant messages a watched session wrote after the watch's cursor, and the cursor to continue from. */
+export async function newReplies(id: string, entry: WatchEntry): Promise<{ after: string; replies: AppMessage[] }> {
+  const replies = (await sessionMessages(id, REPLY_COUNT)).filter(message => message.role === "assistant" && timeOf(message.at) > Date.parse(entry.after))
+  const after = replies.reduce((latest, reply) => (timeOf(reply.at) > Date.parse(latest) ? reply.at! : latest), entry.after)
+  return { after, replies }
 }
 
 export function replyContent(id: string, name: string | null, replies: AppMessage[]): string {
@@ -88,13 +84,13 @@ export function privateRuntimeDeliver(agent: string, now: () => number): Deliver
   }
 }
 
-/** Read every watched session once; deliver what they finished saying. Returns how many replies went to the agent. */
-export async function checkWatches(agentRoot: string, deliver: Deliver, client: AppSessionsOptions, now: number): Promise<number> {
-  const offsets: Record<string, number> = {}
-  const observations: Record<string, { name?: string; previousOffset: number }> = {}
+/** Read every watched session once; deliver what they finished saying. Returns how many passes delivered to the agent. */
+export async function checkWatches(agentRoot: string, deliver: Deliver, now: number): Promise<number> {
+  const afters: Record<string, string> = {}
+  const observations: Record<string, { name?: string }> = {}
   let sidebar: Map<string, AppSessionRow> | null = null
   try {
-    sidebar = new Map((await listAppSessions({ ...client, now: () => now })).map(row => [row.id, row]))
+    sidebar = new Map((await sessionRows()).map(row => [row.id, row]))
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_watch_error", message: "current sidebar identity unavailable; replies are historical only", meta: { error: (error as Error).message } })
   }
@@ -102,38 +98,37 @@ export async function checkWatches(agentRoot: string, deliver: Deliver, client: 
   for (const [id, entry] of Object.entries(readWatches(agentRoot))) {
     if (entry.until <= now) continue
     try {
-      const { offset, replies, gap, backlog } = newReplies(id, entry, client)
+      const { after, replies } = await newReplies(id, entry)
       const current = sidebar?.get(id)
       const renamed = current && entry.name && current.name !== entry.name
-      if (replies.length > 0 || renamed || gap) {
+      if (replies.length > 0 || renamed) {
         const identity = current
           ? `Observed at ${new Date(now).toISOString()}: current name ${JSON.stringify(current.name)}, state ${current.state}.${renamed ? ` Renamed from ${JSON.stringify(entry.name)}; prior work attribution may be stale, re-read the conversation.` : ""}`
           : `Observed at ${new Date(now).toISOString()}: current sidebar identity unavailable; re-read before attributing these replies to current work.`
-        await deliver(`${identity}${gap ? `\n${gap}` : ""}${backlog ? "\nMore local events remain unread; this burst is not the latest complete conversation." : ""}${replies.length ? `\n${replyContent(id, current?.name ?? entry.name, replies)}` : "\n[Copilot app session observation; no new reply] Re-read app_sessions_tail and get_sessions_status before reporting current progress."}`, [`${id}:${offset}:${current?.name ?? ""}`])
+        await deliver(`${identity}${replies.length ? `\n${replyContent(id, current?.name ?? entry.name, replies)}` : "\n[Copilot app session observation; no new reply] Re-read app_sessions_tail and get_sessions_status before reporting current progress."}`, [`${id}:${after}:${current?.name ?? ""}`])
         delivered += 1
         if (entry.once && replies.length > 0) unwatchSession(agentRoot, id)
         emitNervesEvent({ component: "senses", event: "senses.app_sessions_reply_delivered", message: "delivered a watched Copilot app session's reply to the agent", meta: { session: id, messages: replies.length } })
       }
-      offsets[id] = offset
-      observations[id] = { previousOffset: entry.offset, ...(current ? { name: current.name } : {}) }
+      afters[id] = after
+      observations[id] = { name: current?.name }
     } catch (error) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_watch_error", message: "could not read a watched Copilot app session", meta: { session: id, error: (error as Error).message } })
     }
   }
-  updateWatches(agentRoot, offsets, now, observations)
+  updateWatches(agentRoot, afters, now, observations)
   return delivered
 }
 
 /** Snapshot the app's sessions into the agent's state. A failure is recorded in the snapshot, not thrown. */
-export async function recordSnapshot(agentRoot: string, client: AppSessionsOptions, now: number): Promise<SenseSnapshot> {
+export async function recordSnapshot(agentRoot: string, now: number): Promise<SenseSnapshot> {
   let result: SenseSnapshot
   try {
-    const rows = await listAppSessions({ ...client, now: () => now })
-    const picture = snapshot({ ...client, now: () => now }, rows)
-    const names = new Map(picture.sessions.map(row => [row.id, row.name]))
+    const rows = await sessionRows()
+    const picture = snapshot(rows, now)
     result = {
       ...picture,
-      stuck: picture.sessions.filter(row => row.state === "stuck").map(row => ({ id: row.id, name: names.get(row.id)! })),
+      stuck: picture.sessions.filter(row => row.state === "stuck").map(row => ({ id: row.id, name: row.name })),
       waitingPrompts: waitingPromptsOf(agentRoot, rows, now),
     }
   } catch (error) {
@@ -156,15 +151,14 @@ export async function checkDigest(agentName: string, agentRoot: string, deps: { 
   try {
     const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
     if (!config?.enabled || !config.digest) return DIGEST_IDLE_MS
-    const list = () => listAppSessions({ ...deps.client, now: () => deps.now })
-    const rows = await list()
+    const rows = await sessionRows()
     const state = readDigestState(agentRoot)
     const digest = await writeDigest({
       agentRoot, config: config.digest, client: deps.client, run: deps.run, now: deps.now, home: deps.home, rows,
-      appRunning: appRunning(deps.client), waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
+      appRunning: true, waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
     })
     const roots = (config.digest.deskRoots ?? []).map(folder => expandHome(folder, deps.home))
-    await pushDue(digest, state, deps.now, deps.notify, async items => stillDue(items, await list(), roots))
+    await pushDue(digest, state, deps.now, deps.notify, async items => stillDue(items, await sessionRows(), roots))
     writeDigestState(agentRoot, state)
     return (config.digest.everySeconds ?? DIGEST_DEFAULT_SECONDS) * 1000
   } catch (error) {
@@ -190,14 +184,14 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
 
   const snapshotTick = (): void => {
     if (stopped) return
-    waitingPoll = waitingPoll.then(() => recordSnapshot(agentRoot, client, now())).then(taken => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
+    waitingPoll = waitingPoll.then(() => recordSnapshot(agentRoot, now())).then(taken => noticeWaitingPrompts(agentRoot, taken, { notify: notifyOwner, now: now() })).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_waiting_error", message: "could not check the sessions waiting on a prompt", meta: { error: error.message } })
     })
     cancelSnapshot = schedule(snapshotTick, SNAPSHOT_MS)
   }
   const watchTick = (): void => {
     if (stopped) return
-    inFlight = checkWatches(agentRoot, deliver, client, now()).catch((error: Error) => {
+    inFlight = checkWatches(agentRoot, deliver, now()).catch((error: Error) => {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_watch_error", message: "could not check the watched Copilot app sessions", meta: { error: error.message } })
     }).finally(() => {
       if (!stopped) cancelWatch = schedule(watchTick, WATCH_POLL_MS)
@@ -210,7 +204,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
     })
   }
   emitNervesEvent({ component: "senses", event: "senses.app_sessions_start", message: "app-sessions sense started", meta: { agent: options.agentName } })
-  const prompts = startPromptTracker({ agentRoot, ...(client.stateDir ? { stateDir: client.stateDir } : {}), ...(client.openSocket ? { openSocket: client.openSocket } : {}), schedule, now })
   snapshotTick()
   watchTick()
   digestTick()
@@ -219,7 +212,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       stopped = true
       cancelSnapshot()
       cancelWatch?.()
-      prompts.stop()
       cancelDigest?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
