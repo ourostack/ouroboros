@@ -342,11 +342,6 @@ describe("answering", () => {
 })
 
 describe("archiving a session this agent did not create", () => {
-  const flag = (): void => {
-    const dir = path.join(agentRoot, "state", "senses", "app-sessions")
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { [WS]: { bytes: 1, name: "Fix it" } } }))
-  }
   const successor = (text: string): void => {
     const dir = path.join(stateDir, "session-state", "99999999-0000-4000-8000-000000000009")
     fs.mkdirSync(dir, { recursive: true })
@@ -368,17 +363,15 @@ describe("archiving a session this agent did not create", () => {
     expect(readArchiveLog(agentRoot)).toMatchObject([{ id: WS, name: "Fix it", reason: "owner-asked" }])
   })
 
-  it("archives an oversize session that a newer session names as handed off, and nothing else", async () => {
-    successor(`Succeeds: ${WS}\n\nCarry on as the retired coordinator.`)
+  it("archives a session that a newer session names as handed off, and nothing else", async () => {
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
-    flag()
+    successor(`Succeeds: ${WS}\n\nCarry on as the retired coordinator.`)
     app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
     expect(await archiveSession(agentRoot, WS, options())).toEqual({ ok: true, session_id: WS })
     expect(readArchiveLog(agentRoot)).toMatchObject([{ id: WS, reason: "handed-off" }])
   })
 
   it("accepts a successor that names the session by its short id", async () => {
-    flag()
     fs.mkdirSync(path.join(stateDir, "session-state", WS), { recursive: true })
     successor(`You are the successor of ${WS.slice(0, 8)}, which handed off.`)
     app.reply("archive_workspace", () => ({ type: "workspace_archived" }))
@@ -386,7 +379,6 @@ describe("archiving a session this agent did not create", () => {
   })
 
   it("skips successors that are stale or unreadable, and a missing state directory", async () => {
-    flag()
     const stale = path.join(stateDir, "session-state", "88888888-stale")
     fs.mkdirSync(stale, { recursive: true })
     fs.writeFileSync(path.join(stale, "events.jsonl"), `{"text":"successor of ${WS}"}\n`)
@@ -400,8 +392,7 @@ describe("archiving a session this agent did not create", () => {
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
   })
 
-  it("refuses an oversize session that no newer session names, or that one only mentions", async () => {
-    flag()
+  it("refuses a session that no newer session names, or that one only mentions", async () => {
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")
     successor(`Unrelated work on ${WS}.`)
     await expect(archiveSession(agentRoot, WS, options())).rejects.toThrow("will not archive it unless")

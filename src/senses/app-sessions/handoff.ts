@@ -137,13 +137,8 @@ export function successorOf(id: string, successions: Successions): string | null
   return current === id ? null : current
 }
 
-/**
- * Whether an oversize session has been handed off: it is in the oversize list, and a newer session's first message
- * names it as the session it succeeds, as the sense last recorded.
- */
+/** Whether a newer session's first message names this one as the session it succeeds (the chain's live end, via `successorOf`). */
 export function isHandedOff(agentRoot: string, row: Pick<AppSessionRow, "id">): boolean {
-  const flagged = readJson<{ sessions?: Record<string, unknown> }>(path.join(appSessionsStateDir(agentRoot), "oversize.json"), {}).sessions ?? {}
-  if (!flagged[row.id]) return false
   const successor = successorOf(row.id, readSuccessions(agentRoot))
   if (successor) emitNervesEvent({ component: "senses", event: "senses.app_sessions_handoff_found", message: "found the successor that a session was handed off to", meta: { session: row.id, successor } })
   return successor !== null

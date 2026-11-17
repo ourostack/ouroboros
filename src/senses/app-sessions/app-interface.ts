@@ -274,7 +274,7 @@ export async function archiveSession(agentRoot: string, id: unknown, options: Ap
     reason = ownerAsked ? "owner-asked" : isHandedOff(agentRoot, row) ? "handed-off" : null
     if (!reason) {
       emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_archive_declined", message: "declined to archive a session this agent did not create", meta: { session: row.id } })
-      throw new Error(`session ${row.id} was not created by this agent, so it will not archive it unless the owner asked for it or it is oversize and a newer session names it as handed off (yours: ${Object.keys(made).join(", ") || "none"})`)
+      throw new Error(`session ${row.id} was not created by this agent, so it will not archive it unless the owner asked for it or a newer session names it as handed off (yours: ${Object.keys(made).join(", ") || "none"})`)
     }
   }
   return archiveRow(agentRoot, row, reason, options)

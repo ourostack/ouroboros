@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { restartStatus, type AppSessionsOptions } from "./client"
 import { writeJson, readJson } from "./store"
-import type { RunCommand } from "./wake-runner"
+import type { RunCommand } from "./run-command"
 
 /**
  * The facts the status digest reads besides the app's sessions: the machine's health from Housesitter, the drains' status

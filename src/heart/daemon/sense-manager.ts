@@ -3,7 +3,7 @@ import { checkBlueBubblesHostDeclared } from "../bluebubbles-host-account"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeWakeRunners, type AgentSensesConfig, type SenseName, type WakeRunnerConfig } from "../identity"
+import { DEFAULT_AGENT_SENSES, hasStaleWorkbenchBundleEntry, normalizeAppSessionsConfig, type AgentSensesConfig, type SenseName } from "../identity"
 import {
   confirmedAbsentRuntimeCredentialItems,
   readMachineRuntimeCredentialConfig,
@@ -18,7 +18,6 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { shepherdConfigFacts, shepherdRepairHint } from "../shepherd-config"
-import { readWakeRunnerStates, wakeRunnerStatusLines } from "../../senses/app-sessions/wake-runner-state"
 import { readSnapshot, snapshotSummary } from "../../senses/app-sessions/store"
 import { waitingStatusLines } from "../../senses/app-sessions/waiting-status"
 import { DaemonProcessManager } from "./process-manager"
@@ -187,10 +186,10 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
       if (sense === "bluebubbles" && typeof hostUsername === "string" && hostUsername.trim().length > 0) {
         defaults[sense] = { enabled, hostUsername: hostUsername.trim() }
       }
-      // Wake runners the config rejects stay unset here; the sense itself reports the error when it runs them.
+      // Config the app-sessions block rejects stays unset here; the sense itself reports the error when it runs.
       if (sense === "app-sessions") {
         try {
-          defaults[sense] = { enabled, ...normalizeWakeRunners(rawSense as Record<string, unknown>, agentJsonPath) }
+          defaults[sense] = { enabled, ...normalizeAppSessionsConfig(rawSense as Record<string, unknown>, agentJsonPath) }
         } catch {
           defaults[sense] = { enabled }
         }
@@ -205,12 +204,11 @@ function readAgentSenses(agentJsonPath: string): { senses: AgentSensesConfig; wo
   return { senses: defaults, workbenchHasStaleBundleEntry }
 }
 
-/** The app-sessions row's `ouro status` lines: sessions waiting on the owner, then each wake runner. */
-function appSessionsLines(agentRoot: string, config: { wakeRunners?: WakeRunnerConfig[]; retiredIssueDrains?: true }, now: number): { lines?: string[] } {
+/** The app-sessions row's `ouro status` lines: sessions waiting on the owner, and a retired `issueDrains` notice. */
+function appSessionsLines(agentRoot: string, config: { retiredIssueDrains?: true }, now: number): { lines?: string[] } {
   const lines = [
     ...waitingStatusLines(readSnapshot(agentRoot), now),
-    ...(config.retiredIssueDrains ? ["issueDrains in agent.json is retired and no longer polled: Desk polls drains now, so move them to Desk's drain config and add a wakeRunners entry (docs/app-sessions-sense.md)"] : []),
-    ...(config.wakeRunners?.length ? wakeRunnerStatusLines(config.wakeRunners, readWakeRunnerStates(agentRoot), now) : []),
+    ...(config.retiredIssueDrains ? ["issueDrains in agent.json is retired and no longer polled: Desk polls drains now, so move them to Desk's drain config, and wake delivery is Shepherd's (~/.config/shepherd/wakes.json; docs/app-sessions-sense.md)"] : []),
   ]
   return lines.length ? { lines } : {}
 }

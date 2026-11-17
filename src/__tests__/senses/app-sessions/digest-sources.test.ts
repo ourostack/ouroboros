@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import {
   DRAIN_STALE_MS, isFolder, MERGED_TTL_MS, mergedCacheFile, parseDrains, parseHttp, readDrains, readMachine, readMergedToday, sourceFailed, startOfToday,
 } from "../../../senses/app-sessions/digest-sources"
-import type { RunCommand } from "../../../senses/app-sessions/wake-runner"
+import type { RunCommand } from "../../../senses/app-sessions/run-command"
 import type { RunFile } from "../../../senses/app-sessions/client"
 
 const NOW = Date.parse("2026-11-15T22:00:00Z")

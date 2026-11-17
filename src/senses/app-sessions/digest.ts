@@ -5,8 +5,7 @@ import type { AppSessionRow, AppSessionsOptions } from "./client"
 import { FIRST_SCAN_BYTES, readCard, scanFocus, type CardFacts, type FocusEntry } from "./digest-cards"
 import { isFolder, mergedCacheFile, readDrains, readMachine, readMergedToday, sourceFailed, type DrainFacts, type MachineFacts, type MergedFacts } from "./digest-sources"
 import { appSessionsStateDir, readArchiveLog, readJson, writeJson, type ArchiveLogEntry, type WaitingPrompt } from "./store"
-import type { ResumeEntry } from "./stuck-resume"
-import type { RunCommand } from "./wake-runner"
+import type { RunCommand } from "./run-command"
 
 /**
  * The status digest: one deterministic picture of how everything is going, built with no model turn from the app's
@@ -60,8 +59,6 @@ export interface Digest {
   machine: MachineFacts | null
   drains: DrainFacts | null
   merged: MergedFacts[]
-  /** What the sense fixed itself in the last day, such as a stopped session it resumed, newest first. */
-  fixed?: Array<{ session: string; name: string; what: string; at: string; /** The stop it answered: the session's last activity then. */ stop: string | null }>
   /** Sessions archived in the last day that this agent did not create. */
   archived?: Array<{ name: string; reason: string }>
   /** Sources that could not be read, one line each. */
@@ -80,8 +77,6 @@ export interface DigestState {
   pushed: Record<string, string>
   lastPushAt: number
   seeded: boolean
-  /** Sessions whose stopped loop the sense resumed, by id (`stuck-resume.ts`). */
-  resumed?: Record<string, ResumeEntry>
 }
 
 export const EMPTY_DIGEST_STATE: DigestState = { focus: {}, cards: {}, firstSeen: {}, pushed: {}, lastPushAt: 0, seeded: false }
@@ -193,10 +188,6 @@ export async function buildDigest(input: DigestInput): Promise<Digest> {
   const recentArchives = readArchiveLog(input.agentRoot)
     .filter(entry => input.now - Date.parse(entry.at) < CARD_WINDOW_MS)
     .map(entry => ({ name: cut(entry.name, NAME_MAX), reason: `${ARCHIVE_REASONS[entry.reason]}${entry.note ? ` (${entry.note})` : ""}` }))
-  const fixed = Object.entries(input.state.resumed ?? {})
-    .filter(([, entry]) => entry.ok && input.now - Date.parse(entry.at) < CARD_WINDOW_MS)
-    .sort(([, a], [, b]) => b.at.localeCompare(a.at))
-    .map(([session, entry]) => ({ session, name: cut(entry.name, NAME_MAX), what: "resumed it: its loop had stopped", at: entry.at, stop: entry.lastActivity }))
   const digest: Digest = {
     at: new Date(input.now).toISOString(),
     appRunning: input.appRunning,
@@ -206,7 +197,6 @@ export async function buildDigest(input: DigestInput): Promise<Digest> {
     machine: machine.installed || machine.error ? machine : null,
     drains,
     merged,
-    ...(fixed.length ? { fixed } : {}),
     ...(recentArchives.length ? { archived: recentArchives } : {}),
     unread,
     tokens: 0,
@@ -234,15 +224,11 @@ export function renderDigest(digest: Digest, now: number, plain = false): string
     blocks.push(["**Needs you**", ...digest.needsOwner.map(item => `- ${item.name} — ${item.text}${item.since ? ` (${minutes(now - item.since)})` : ""}`)].join("\n"))
   }
   const broken: string[] = []
-  // A stopped session the sense resumed from this very stop is under "Fixed", not here; one that stopped again is.
-  const resumed = new Set((digest.fixed ?? []).map(item => `${item.session}@${item.stop}`))
-  for (const session of digest.sessions) if (session.state === "stuck" && !resumed.has(`${session.id}@${session.lastActivity}`)) broken.push(`- ${session.name} — stuck (${session.detail})`)
+  for (const session of digest.sessions) if (session.state === "stuck") broken.push(`- ${session.name} — stuck (${session.detail})`)
   if (digest.machine?.heartbeat === "bad" || digest.machine?.heartbeat === "stale") broken.push(`- Mac watcher — heartbeat ${digest.machine.heartbeat}${digest.machine.bad ? `: ${digest.machine.bad}` : ""}`)
   for (const session of digest.machine?.watchBad ?? []) broken.push(`- ${cut(session.title, NAME_MAX)} — health watch: ${session.status}`)
   for (const stale of digest.drains?.stale ?? []) broken.push(`- drain ${stale} since its last good poll`)
   if (broken.length) blocks.push(["**Broken**", ...broken].join("\n"))
-  if (digest.fixed?.length) blocks.push(["**Fixed by me**", ...digest.fixed.map(item => `- ${item.name} — ${item.what} (${minutes(now - Date.parse(item.at))} ago)`)].join("\n"))
-
   const { counts } = digest
   const working = digest.sessions.filter(session => session.state === "working")
   const list = working.slice(0, WORKING_LISTED).map(session => sessionLine(session, now))

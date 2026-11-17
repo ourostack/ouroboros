@@ -9,8 +9,8 @@ import type { NotifyOwner } from "./waiting-prompts"
 /**
  * What is worth telling the owner unasked, judged with no model turn from the digest: only what only they can act on.
  * That is work ready for them to look at, and a session waiting on their answer. Finished work and things that are
- * broken go in the digest (`/status`), not in a push: a stuck session is resumed by the sense itself (`stuck-resume.ts`)
- * and shown there as fixed, and the machine, the drains and the health watch have owners of their own.
+ * broken go in the digest (`/status`), not in a push: a stuck session is shown under Broken there (`shepherd stuck plan` is
+ * where it gets fixed), and the machine, the drains and the health watch have owners of their own.
  *
  * A condition must last before it counts, is told once and then not again until it clears and comes back, and is
  * checked live again just before the message goes out. One message carries everything due, at most one per half hour,

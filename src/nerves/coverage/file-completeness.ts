@@ -100,9 +100,8 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
   "heart/mailbox/mailbox-types",
-  // Wake-runner status reader: pure state-file read and line rendering for `ouro status`. The runner
-  // (wake-runner.ts) owns observability via senses.wake_runner_run and friends.
-  "senses/app-sessions/wake-runner-state",
+  // Argv runner: no events of its own; the digest's sources report a run that failed, with its reason.
+  "senses/app-sessions/run-command",
   // Waiting-prompt status reader: pure line rendering for `ouro status`. The notifier
   // (waiting-prompts.ts) owns observability via senses.app_sessions_waiting_notice and friends.
   "senses/app-sessions/waiting-status",
