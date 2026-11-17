@@ -6,7 +6,7 @@
       "changes": [
         "Describe Teams screenshots and image attachments through the agent's configured vision provider without requiring a MiniMax key.",
         "Reject truncated native image descriptions and preserve provider completion status and attachment timeouts.",
-        "Propagate failed Responses API streams as provider errors instead of accepting partial image descriptions."
+        "Preserve Responses API failure messages and reject partial image descriptions from failed streams."
       ]
     },
     {

@@ -26,7 +26,7 @@ interface ResponseStreamEvent {
   type: string;
   delta?: string;
   item?: Record<string, unknown>;
-  response?: Record<string, unknown>;
+  response?: Record<string, unknown> & { error?: { message?: unknown } };
 }
 
 // Azure Responses API usage shape
