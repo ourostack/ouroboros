@@ -7,7 +7,7 @@ import {
   buildDigest, CARD_WINDOW_MS, DIGEST_STALE_MS, digestFiles, EMPTY_DIGEST_STATE, expandHome, isStatusAsk, minutes, readDigestState, readDigestText,
   renderDigest, statusAnswer, writeDigest, type DigestInput, type DigestState,
 } from "../../../senses/app-sessions/digest"
-import type { RunCommand } from "../../../senses/app-sessions/wake-runner"
+import type { RunCommand } from "../../../senses/app-sessions/run-command"
 import { addArchiveLog } from "../../../senses/app-sessions/store"
 
 const NOW = Date.parse("2026-11-15T22:00:00Z")
@@ -105,21 +105,13 @@ describe("buildDigest and renderDigest", () => {
     expect(text).not.toContain("Last week")
   })
 
-  it("shows a stopped lane it resumed under Fixed, not Broken, until it stops again; and forgets a fix after a day or one that failed", async () => {
+  it("lists every stopped lane under Broken, since nothing resumes it here", async () => {
     const tracker = "ad8f4be3-3a5a-4bc7-bb55-7821d8b5934c"
     const again = "aaaaaaaa-0000-0000-0000-00000000000a"
-    const state: DigestState = { ...structuredClone(EMPTY_DIGEST_STATE), resumed: {
-      [tracker]: { name: "Ouro migration: customer tracker", lastActivity: iso(30), at: iso(4), ok: true, times: [iso(4)] },
-      [again]: { name: "Again lane", lastActivity: iso(90), at: iso(80), ok: true, times: [iso(80)] },
-      failed: { name: "Refused lane", lastActivity: iso(10), at: iso(9), ok: false, times: [iso(9)] },
-      old: { name: "Yesterday lane", lastActivity: iso(60 * 30), at: iso(60 * 25), ok: true, times: [iso(60 * 25)] },
-    } }
     const rows = [row(tracker, "Ouro migration: customer tracker", "stuck", { lastActivity: iso(30) }), row(again, "Again lane", "stuck", { lastActivity: iso(20) })]
-    const text = renderDigest(await buildDigest(input(rows, { state })), NOW)
-    expect(text).toContain("**Broken**\n- Again lane — stuck (stuck detail)")
-    expect(text).not.toContain("customer tracker — stuck")
-    expect(text).toContain("**Fixed by me**\n- Ouro migration: customer tracker — resumed it: its loop had stopped (4 min ago)\n- Again lane — resumed it: its loop had stopped (80 min ago)")
-    expect(text).not.toMatch(/Refused lane|Yesterday lane/)
+    const text = renderDigest(await buildDigest(input(rows)), NOW)
+    expect(text).toContain("**Broken**\n- Ouro migration: customer tracker — stuck (stuck detail)\n- Again lane — stuck (stuck detail)")
+    expect(text).not.toContain("Fixed by me")
   })
 
   it("shows the drains and what merged today, and names a source it could not read", async () => {

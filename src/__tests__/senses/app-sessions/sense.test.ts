@@ -29,11 +29,10 @@ vi.mock("../../../senses/app-sessions/client", async (importActual) => {
 import { getAgentRoot } from "../../../heart/identity"
 import { getPrivateRuntimePendingDir } from "../../../mind/pending"
 import {
-  APP_SESSIONS_WAKE_TRIGGER, checkDigest, checkWakeRunners, DIGEST_IDLE_MS, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
-  startAppSessionsSense, WAKE_RUNNER_IDLE_MS, WATCH_POLL_MS,
+  APP_SESSIONS_WAKE_TRIGGER, checkDigest, DIGEST_IDLE_MS, checkWatches, newReplies, privateRuntimeDeliver, recordSnapshot, replyContent, SNAPSHOT_MS,
+  startAppSessionsSense, WATCH_POLL_MS,
 } from "../../../senses/app-sessions/sense"
 import { appSessionsStateDir, readSnapshot, readWatches, watchSession } from "../../../senses/app-sessions/store"
-import { readWakeRunnerStates } from "../../../senses/app-sessions/wake-runner-state"
 
 const ID = "11111111-aaaa-bbbb-cccc-000000000001"
 const NOW = Date.parse("2026-11-10T03:00:00Z")
@@ -318,55 +317,20 @@ describe("the sense", () => {
     expect(readSnapshot(agentRoot)).toMatchObject({ counts: { idle: 1 } })
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(1)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(1)
-    expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(1)
     expect(scheduler.live(DIGEST_IDLE_MS)).toHaveLength(1)
     scheduler.fire(SNAPSHOT_MS)
     scheduler.fire(WATCH_POLL_MS)
-    scheduler.fire(WAKE_RUNNER_IDLE_MS)
     scheduler.fire(DIGEST_IDLE_MS)
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(9)
+    expect(scheduler.tasks).toHaveLength(7)
     sense.stop()
     expect(scheduler.live(DIGEST_IDLE_MS)).toHaveLength(0)
     expect(scheduler.live(SNAPSHOT_MS)).toHaveLength(0)
     expect(scheduler.live(WATCH_POLL_MS)).toHaveLength(0)
-    expect(scheduler.live(WAKE_RUNNER_IDLE_MS)).toHaveLength(0)
     // A tick that fires after the stop does nothing.
     for (const task of [...scheduler.tasks]) task.fn()
     await sense.done()
-    expect(scheduler.tasks).toHaveLength(9)
-  })
-
-  it("runs each configured wake runner on its own cadence, only when due, with no model turn", async () => {
-    const config = (appSessions: unknown) => fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
-      version: 2, enabled: true,
-      humanFacing: { provider: "anthropic", model: "test" }, agentFacing: { provider: "anthropic", model: "test" },
-      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
-      senses: { "app-sessions": appSessions },
-    }))
-    const run = vi.fn(async () => ({ ok: true, stdout: JSON.stringify({ wakes: [] }), error: null }))
-    const deps = (now: number) => ({ run, send: vi.fn(async () => ({ ok: true, error: null })), delivered: () => false, now })
-    const due = new Map<string, number>()
-    const fast = { name: "fast", command: ["a"], everySeconds: 30 }
-    const slow = { name: "slow", command: ["b"] }
-    config({ enabled: true, wakeRunners: [fast, slow] })
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW), due)).toBe(30_000)
-    expect(run).toHaveBeenCalledTimes(2)
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 30_000), due)).toBe(30_000)
-    expect(run.mock.calls.map(call => call[0])).toEqual([["a"], ["b"], ["a"]])
-    expect(Object.keys(readWakeRunnerStates(agentRoot))).toEqual(["fast", "slow"])
-    config({ enabled: true, wakeRunners: [slow] })
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 40_000), due)).toBe(260_000)
-    expect([...due.keys()]).toEqual(["slow"])
-    config({ enabled: false, wakeRunners: [fast] })
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 50_000), due)).toBe(WAKE_RUNNER_IDLE_MS)
-    config({ enabled: true })
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW + 50_000), due)).toBe(WAKE_RUNNER_IDLE_MS)
-    expect(run).toHaveBeenCalledTimes(3)
-    config({ enabled: true, wakeRunners: "nope" })
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
-    fs.rmSync(path.join(agentRoot, "agent.json"))
-    expect(await checkWakeRunners("slugger", agentRoot, deps(NOW))).toBe(WAKE_RUNNER_IDLE_MS)
+    expect(scheduler.tasks).toHaveLength(7)
   })
 
   it("builds the status digest on its cadence and tells the owner what is due, only when agent.json asks for one", async () => {
@@ -397,7 +361,7 @@ describe("the sense", () => {
     expect(await checkDigest("slugger", agentRoot, deps)).toBe(DIGEST_IDLE_MS)
   })
 
-  it("replays 07:49 PT: resumes the stopped lane itself instead of telling the owner, and pushes only an answer they owe, checked live", async () => {
+  it("replays 07:49 PT: a stopped lane goes under Broken in the digest and is not resumed, and pushes only an answer they owe, checked live", async () => {
     makeDb()
     const TRACKER = "ad8f4be3-3a5a-4bc7-bb55-7821d8b5934c"
     const ASKS = "22222222-aaaa-bbbb-cccc-000000000002"
@@ -416,15 +380,12 @@ describe("the sense", () => {
       senses: { "app-sessions": { enabled: true, digest: { deskRoots: ["~/desk"] } } },
     }))
     const notify = vi.fn(async (_text: string, _keys: string[]) => "sent" as const)
-    const resume = vi.fn(async (_id: string, _text: string) => ({ ok: true, frame: null, error: null }))
-    const deps = (now: number) => ({ client: { stateDir, housesitterPaths: ["/nonexistent/housesitter"], homeDir: agentRoot }, run: vi.fn(), notify, now, home: agentRoot, resume })
+    const deps = (now: number) => ({ client: { stateDir, housesitterPaths: ["/nonexistent/housesitter"], homeDir: agentRoot }, run: vi.fn(), notify, now, home: agentRoot })
     await checkDigest("slugger", agentRoot, deps(NOW))
-    expect(resume).toHaveBeenCalledWith(TRACKER, expect.stringContaining("Carry on where you left off"))
     expect(notify).not.toHaveBeenCalled()
     const digest = fs.readFileSync(path.join(appSessionsStateDir(agentRoot), "digest.json"), "utf-8")
-    expect(JSON.parse(digest).fixed).toEqual([expect.objectContaining({ session: TRACKER, what: "resumed it: its loop had stopped" })])
+    expect(JSON.parse(digest).sessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: TRACKER, state: "stuck" })]))
     await checkDigest("slugger", agentRoot, deps(NOW + 11 * 60_000))
-    expect(resume).toHaveBeenCalledTimes(1)
     expect(notify).toHaveBeenCalledTimes(1)
     const [text] = notify.mock.calls[0]!
     expect(text).toBe(`Waiting on you:\n- "Ask lane" is waiting for your answer. ghapp://sessions/${ASKS}`)

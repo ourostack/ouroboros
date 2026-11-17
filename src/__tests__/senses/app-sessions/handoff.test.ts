@@ -132,22 +132,13 @@ describe("following successions through the histories", () => {
   })
 })
 
-describe("whether an oversize session was handed off", () => {
-  const flag = (): void => {
-    const dir = path.join(agentRoot, "state", "senses", "app-sessions")
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, "oversize.json"), JSON.stringify({ sessions: { [A]: { bytes: 1, name: "Giant" } } }))
-  }
-
-  it("is true only for a flagged session that a later first message succeeds, as the sense last recorded", () => {
+describe("whether a session was handed off", () => {
+  it("is true only for a session that a later first message succeeds, as the sense last recorded", () => {
     history(stateDir, A, "Original.")
     history(stateDir, B, `Succeeds: ${A}`)
-    flag()
     expect(isHandedOff(agentRoot, { id: A })).toBe(false)
     refresh([A, B])
     expect(isHandedOff(agentRoot, { id: A })).toBe(true)
     expect(isHandedOff(agentRoot, { id: B })).toBe(false)
-    fs.rmSync(path.join(agentRoot, "state", "senses", "app-sessions", "oversize.json"))
-    expect(isHandedOff(agentRoot, { id: A })).toBe(false)
   })
 })

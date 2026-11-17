@@ -1708,11 +1708,11 @@ describe("daemon sense manager", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
-  it("lists each wake runner under the app-sessions row, tolerates runners the config rejects, and flags a retired issueDrains list", async () => {
+  it("ignores wake runners in agent.json, which Shepherd delivers now, and flags a retired issueDrains list", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const agentJson = (appSessions: unknown) => ({ version: 1, enabled: true, provider: "anthropic", senses: { cli: { enabled: true }, "app-sessions": appSessions }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
     writeAgentJson(bundlesRoot, "slugger", agentJson({ enabled: true, wakeRunners: [{ name: "drains", command: ["node", "drains.js", "poll"] }] }))
-    writeAgentJson(bundlesRoot, "badger", agentJson({ enabled: true, wakeRunners: "nope" }))
+    writeAgentJson(bundlesRoot, "badger", agentJson({ enabled: true, digest: "nope" }))
     writeAgentJson(bundlesRoot, "ferret", agentJson({ enabled: true, issueDrains: [{ repo: "a/b", session: "s" }] }))
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class MockProcessManager {
@@ -1724,7 +1724,7 @@ describe("daemon sense manager", () => {
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     const manager = new DaemonSenseManager({ agents: ["slugger", "badger", "ferret"], bundlesRoot })
     const row = (agent: string) => manager.listSenseRows().find((entry) => entry.agent === agent && entry.sense === "app-sessions")!
-    expect(row("slugger").lines).toEqual(["wake runner drains: not run yet"])
+    expect(row("slugger").lines).toBeUndefined()
     expect(row("badger").lines).toBeUndefined()
     expect(row("ferret").lines).toEqual([expect.stringContaining("issueDrains in agent.json is retired and no longer polled")])
     fs.rmSync(bundlesRoot, { recursive: true, force: true })

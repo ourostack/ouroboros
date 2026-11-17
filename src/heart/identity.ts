@@ -48,31 +48,11 @@ export interface AgentSenseConfig {
    */
   notify?: ShepherdNoticePolicy
   checkInMinutes?: number
-  /**
-   * app-sessions only: commands the sense runs on a cadence and delivers the wakes of to Copilot app sessions. The
-   * command decides what is worth a wake; the sense only delivers (see `WakeRunnerConfig`).
-   */
-  wakeRunners?: WakeRunnerConfig[]
   /** app-sessions only: the owner's status digest, built with no model turns (see `DigestConfig`). Absent means no digest. */
   digest?: DigestConfig
   /** app-sessions only: set when `agent.json` still carries the retired `issueDrains` list, which Desk polls now and this sense ignores. */
   retiredIssueDrains?: true
 }
-
-export interface WakeRunnerConfig {
-  /** Names the runner in `ouro status` and its state. Unique within the agent. */
-  name: string
-  /** The program and its arguments, run with no shell. It prints the wakes as JSON. */
-  command: string[]
-  /** Seconds between runs (10 or more; default 300). */
-  everySeconds?: number
-  /** The session (full id) that receives a wake that names none. */
-  session?: string
-  /** "immediate" (default) puts a wake in at the session's next turn boundary; "enqueue" holds it until the session's current run ends. */
-  delivery?: WakeDelivery
-}
-
-export type WakeDelivery = "immediate" | "enqueue"
 
 /**
  * The status digest the app-sessions sense builds with no model turns: every session's state, its card's next step, the
@@ -82,7 +62,7 @@ export type WakeDelivery = "immediate" | "enqueue"
 export interface DigestConfig {
   /** Seconds between digests (60 or more; default 300). */
   everySeconds?: number
-  /** A command that prints the drains' status as JSON, `{ "status": ["…"] }`, the shape a wake runner prints. */
+  /** A command that prints the drains' status as JSON, `{ "status": ["…"] }`. */
   drains?: string[]
   /** Folders of task cards (`<track>/<slug>/task.md`) that a session's declared task is looked up in. */
   deskRoots?: string[]
@@ -326,38 +306,15 @@ function normalizeDigest(raw: unknown, fail: (what: string) => never): DigestCon
   return result
 }
 
-export function normalizeWakeRunners(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains" | "digest"> {
+export function normalizeAppSessionsConfig(rawSense: Record<string, unknown>, configFile: string): Pick<AgentSenseConfig, "retiredIssueDrains" | "digest"> {
   function fail(what: string): never {
-    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid wake runners", meta: { path: configFile } })
+    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has invalid app-sessions settings", meta: { path: configFile } })
     throw new Error(`agent.json at ${configFile}: senses.app-sessions.${what}.`)
   }
-  const { wakeRunners, issueDrains } = rawSense
-  const result: Pick<AgentSenseConfig, "wakeRunners" | "retiredIssueDrains" | "digest"> = {}
-  if (issueDrains !== undefined) result.retiredIssueDrains = true
+  // `wakeRunners` is ignored: Shepherd delivers wakes now. `issueDrains` is noted, since Desk polls drains now.
+  const result: Pick<AgentSenseConfig, "retiredIssueDrains" | "digest"> = {}
+  if (rawSense.issueDrains !== undefined) result.retiredIssueDrains = true
   if (rawSense.digest !== undefined) result.digest = normalizeDigest(rawSense.digest, fail)
-  if (wakeRunners !== undefined) {
-    if (!Array.isArray(wakeRunners)) fail("wakeRunners must be an array")
-    const names = new Set<string>()
-    result.wakeRunners = (wakeRunners as unknown[]).map((entry, index) => {
-      const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>
-      const { name, command, everySeconds, session, delivery } = item
-      if (typeof name !== "string" || !name.trim()) fail(`wakeRunners[${index}].name must be a non-empty name`)
-      if (!Array.isArray(command) || command.length === 0 || command.some(part => typeof part !== "string" || !part)) fail(`wakeRunners[${index}].command must be a non-empty array of strings`)
-      if (everySeconds !== undefined && (typeof everySeconds !== "number" || !Number.isInteger(everySeconds) || everySeconds < 10)) fail(`wakeRunners[${index}].everySeconds must be a whole number of seconds, 10 or more`)
-      if (session !== undefined && (typeof session !== "string" || !session.trim())) fail(`wakeRunners[${index}].session must be a Copilot app session id`)
-      if (delivery !== undefined && delivery !== "immediate" && delivery !== "enqueue") fail(`wakeRunners[${index}].delivery must be "immediate" or "enqueue"`)
-      const key = (name as string).trim()
-      if (names.has(key)) fail(`wakeRunners[${index}].name ${key} is listed twice`)
-      names.add(key)
-      return {
-        name: key,
-        command: command as string[],
-        ...(everySeconds !== undefined ? { everySeconds: everySeconds as number } : {}),
-        ...(session !== undefined ? { session: (session as string).trim() } : {}),
-        ...(delivery !== undefined ? { delivery: delivery as WakeDelivery } : {}),
-      }
-    })
-  }
   return result
 }
 
@@ -454,7 +411,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
       continue
     }
     if (senseName === "app-sessions") {
-      defaults[senseName] = { enabled, ...normalizeWakeRunners(rawSense as Record<string, unknown>, configFile) }
+      defaults[senseName] = { enabled, ...normalizeAppSessionsConfig(rawSense as Record<string, unknown>, configFile) }
       continue
     }
     defaults[senseName] = { enabled }

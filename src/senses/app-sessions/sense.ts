@@ -6,13 +6,12 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
 import * as os from "node:os"
 import { DIGEST_DEFAULT_SECONDS, expandHome, readDigestState, writeDigest, writeDigestState } from "./digest"
-import { resumeStuck, type SendResume } from "./stuck-resume"
 import { pushDue, stillDue } from "./digest-push"
 import { appRunning, listAppSessions, messagesIn, readNewAppEvents, snapshot, type AppMessage, type AppSessionRow, type AppSessionsOptions, type Frame } from "./client"
 import { startPromptTracker } from "./prompts"
 import { readWatches, unwatchSession, updateWatches, writeSnapshot, type SenseSnapshot, type WatchEntry } from "./store"
 import { noticeWaitingPrompts, ownerNotifier, waitingPromptsOf, type NotifyOwner } from "./waiting-prompts"
-import { runCommand, runWakeRunners, sendWake, WAKE_RUNNER_DEFAULT_SECONDS, wasDelivered, type RunCommand, type RunnerDeps, type SendWake, type WasDelivered } from "./wake-runner"
+import { runCommand, type RunCommand } from "./run-command"
 
 /**
  * The app-sessions perception loop. Every minute it snapshots the app's sessions (counts and stuck ids) into the
@@ -36,8 +35,6 @@ export interface AppSessionsSenseOptions {
   schedule?: (fn: () => void, ms: number) => () => void
   deliver?: Deliver
   runCommand?: RunCommand
-  sendWake?: SendWake
-  wasDelivered?: WasDelivered
   /** Tells the owner about a session frozen on a prompt; the owner-notice path by default. */
   notifyOwner?: NotifyOwner
 }
@@ -148,29 +145,6 @@ export async function recordSnapshot(agentRoot: string, client: AppSessionsOptio
   return result
 }
 
-/** How long to wait before looking again when no wake runner is configured, so one added to `agent.json` starts within five minutes. */
-export const WAKE_RUNNER_IDLE_MS = 5 * 60_000
-
-/**
- * Run the wake runners in `agent.json` that are due and return the milliseconds until the next one is. `due` remembers each
- * runner's next run between calls. A bad config is logged and looked at again later.
- */
-export async function checkWakeRunners(agentName: string, agentRoot: string, deps: RunnerDeps, due: Map<string, number> = new Map()): Promise<number> {
-  try {
-    const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
-    const runners = config?.enabled ? config.wakeRunners ?? [] : []
-    const every = (name: string): number => (runners.find(runner => runner.name === name)?.everySeconds ?? WAKE_RUNNER_DEFAULT_SECONDS) * 1000
-    const ready = new Set(runners.filter(runner => (due.get(runner.name) ?? 0) <= deps.now).map(runner => runner.name))
-    if (runners.length && ready.size) await runWakeRunners(agentRoot, runners, deps, ready)
-    for (const name of ready) due.set(name, deps.now + every(name))
-    for (const name of [...due.keys()]) if (!runners.some(runner => runner.name === name)) due.delete(name)
-    return runners.length ? Math.max(1000, Math.min(...runners.map(runner => due.get(runner.name)! - deps.now))) : WAKE_RUNNER_IDLE_MS
-  } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.wake_runner_config_error", message: "could not check the wake runners", meta: { error: (error as Error).message } })
-    return WAKE_RUNNER_IDLE_MS
-  }
-}
-
 /** How long to wait before looking again when no digest is configured, so one added to `agent.json` starts within two minutes. */
 export const DIGEST_IDLE_MS = 2 * 60_000
 
@@ -178,14 +152,13 @@ export const DIGEST_IDLE_MS = 2 * 60_000
  * Build the status digest if `agent.json` asks for one, and tell the owner what it judges worth telling. Returns the
  * milliseconds until the next one is due. A failure is logged and tried again next time.
  */
-export async function checkDigest(agentName: string, agentRoot: string, deps: { client: AppSessionsOptions; run: RunCommand; notify: NotifyOwner; now: number; home: string; resume?: SendResume }): Promise<number> {
+export async function checkDigest(agentName: string, agentRoot: string, deps: { client: AppSessionsOptions; run: RunCommand; notify: NotifyOwner; now: number; home: string }): Promise<number> {
   try {
     const config = loadAgentConfig({ agentName, agentRoot }).senses?.["app-sessions"]
     if (!config?.enabled || !config.digest) return DIGEST_IDLE_MS
     const list = () => listAppSessions({ ...deps.client, now: () => deps.now })
     const rows = await list()
     const state = readDigestState(agentRoot)
-    await resumeStuck(rows, state, deps.now, { client: deps.client, ...(deps.resume ? { send: deps.resume } : {}) })
     const digest = await writeDigest({
       agentRoot, config: config.digest, client: deps.client, run: deps.run, now: deps.now, home: deps.home, rows,
       appRunning: appRunning(deps.client), waitingPrompts: waitingPromptsOf(agentRoot, rows, deps.now), state,
@@ -210,9 +183,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   let cancelSnapshot: () => void
   let cancelWatch: (() => void) | null = null
   let inFlight: Promise<unknown> = Promise.resolve()
-  let cancelRunners: (() => void) | null = null
-  let runnerPoll: Promise<unknown> = Promise.resolve()
-  const due = new Map<string, number>()
   let waitingPoll: Promise<unknown> = Promise.resolve()
   const notifyOwner = options.notifyOwner ?? ownerNotifier(options.agentName, agentRoot)
   let cancelDigest: (() => void) | null = null
@@ -233,12 +203,6 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
       if (!stopped) cancelWatch = schedule(watchTick, WATCH_POLL_MS)
     })
   }
-  const runnerTick = (): void => {
-    if (stopped) return
-    runnerPoll = checkWakeRunners(options.agentName, agentRoot, { run: options.runCommand ?? runCommand, send: options.sendWake ?? sendWake(client), delivered: options.wasDelivered ?? wasDelivered(client), now: now() }, due).then(ms => {
-      if (!stopped) cancelRunners = schedule(runnerTick, ms)
-    })
-  }
   const digestTick = (): void => {
     if (stopped) return
     digestPoll = checkDigest(options.agentName, agentRoot, { client, run: options.runCommand ?? runCommand, notify: notifyOwner, now: now(), home: os.homedir() }).then(ms => {
@@ -249,18 +213,16 @@ export function startAppSessionsSense(options: AppSessionsSenseOptions): { stop:
   const prompts = startPromptTracker({ agentRoot, ...(client.stateDir ? { stateDir: client.stateDir } : {}), ...(client.openSocket ? { openSocket: client.openSocket } : {}), schedule, now })
   snapshotTick()
   watchTick()
-  runnerTick()
   digestTick()
   return {
     stop: () => {
       stopped = true
       cancelSnapshot()
       cancelWatch?.()
-      cancelRunners?.()
       prompts.stop()
       cancelDigest?.()
       emitNervesEvent({ component: "senses", event: "senses.app_sessions_end", message: "app-sessions sense stopped", meta: { agent: options.agentName } })
     },
-    done: () => Promise.all([inFlight, runnerPoll, waitingPoll, digestPoll]).then(() => undefined),
+    done: () => Promise.all([inFlight, waitingPoll, digestPoll]).then(() => undefined),
   }
 }

@@ -270,36 +270,14 @@ describe("loadAgentConfig", () => {
     expect(() => normalizeSenses({ shepherd: { enabled: true, checkInMinutes: value } }, "/test/agent.json")).toThrow("checkInMinutes")
   })
 
-  it("reads the app-sessions wake runners, and notes a retired issueDrains list", async () => {
+  it("ignores wakeRunners, which Shepherd delivers now, and notes a retired issueDrains list", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
-    const runners = [{ name: " drains ", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: " 58fbd57e ", delivery: "enqueue" }, { name: "other", command: ["x"] }]
-    expect(normalizeSenses({ "app-sessions": { enabled: true, wakeRunners: runners } }, "/test/agent.json")["app-sessions"]).toEqual({
-      enabled: true,
-      wakeRunners: [{ name: "drains", command: ["/usr/bin/node", "drains.js", "poll"], everySeconds: 120, session: "58fbd57e", delivery: "enqueue" }, { name: "other", command: ["x"] }],
-    })
     expect(normalizeSenses({ "app-sessions": { enabled: true } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
+    for (const wakeRunners of ["nope", [null], [{ name: "a", command: [] }], [{ name: "drains", command: ["x"], delivery: "later" }]]) {
+      expect(normalizeSenses({ "app-sessions": { enabled: true, wakeRunners } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true })
+    }
     expect(normalizeSenses({ "app-sessions": { enabled: true, issueDrains: [{ repo: "a/b", session: "s" }], issuePollMinutes: 2 } }, "/test/agent.json")["app-sessions"]).toEqual({ enabled: true, retiredIssueDrains: true })
   })
-
-  it.each([
-    [{ wakeRunners: "x" }, "wakeRunners must be an array"],
-    [{ wakeRunners: [null] }, "wakeRunners[0].name"],
-    [{ wakeRunners: [{ name: " ", command: ["x"] }] }, "wakeRunners[0].name"],
-    [{ wakeRunners: [{ name: "a", command: [] }] }, "wakeRunners[0].command"],
-    [{ wakeRunners: [{ name: "a", command: "node x" }] }, "wakeRunners[0].command"],
-    [{ wakeRunners: [{ name: "a", command: ["x", ""] }] }, "wakeRunners[0].command"],
-    [{ wakeRunners: [{ name: "a", command: [3] }] }, "wakeRunners[0].command"],
-    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: 9 }] }, "wakeRunners[0].everySeconds"],
-    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: 30.5 }] }, "wakeRunners[0].everySeconds"],
-    [{ wakeRunners: [{ name: "a", command: ["x"], everySeconds: "60" }] }, "wakeRunners[0].everySeconds"],
-    [{ wakeRunners: [{ name: "a", command: ["x"], session: " " }] }, "wakeRunners[0].session"],
-    [{ wakeRunners: [{ name: "a", command: ["x"], delivery: "later" }] }, "wakeRunners[0].delivery"],
-    [{ wakeRunners: [{ name: "a", command: ["x"] }, { name: " a ", command: ["y"] }] }, "listed twice"],
-  ])("rejects invalid wake runner config instead of dropping it: %j", async (extra, message) => {
-    const { normalizeSenses } = await import("../../heart/identity")
-    expect(() => normalizeSenses({ "app-sessions": { enabled: true, ...extra } }, "/test/agent.json")).toThrow(message)
-  })
-
   it("reads the app-sessions status digest block", async () => {
     const { normalizeSenses } = await import("../../heart/identity")
     const digest = { everySeconds: 120, drains: ["node", "drains.js", "status"], deskRoots: ["~/desk"], mergedToday: [{ label: " work ", command: ["gh-runner", "work"] }] }

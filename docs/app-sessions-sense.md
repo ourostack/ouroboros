@@ -90,8 +90,8 @@ The sense process does these things:
   `app-sessions: ready (16 working, 0 waiting, 1 stuck, 50 idle; stuck: 1a2b3c4d-… (Babysitter), as of …)`.
 - Each minute the sense does not stat histories or retire sessions any more: those are Shepherd's, `shepherd watch` (the
   size watch: a history over 500 MB is asked to hand off, and an idle one is archived) and `shepherd retire plan` (archives
-  handed-off and finished sessions). Shepherd keeps its own state, and this sense keeps the resume rule below, which skips
-  any session whose history is over 500 MB.
+  handed-off and finished sessions). Shepherd keeps its own state; this sense does not resume stopped sessions (see
+  [Wake delivery and stuck sessions](#wake-delivery-and-stuck-sessions-are-shepherds)).
 - The same snapshot lists the sessions waiting on a **permission prompt**, which only the person can answer in the app
   and which freezes the session while it is open. A prompt open for more than two minutes
   is told once to the owner, with no model turn, through the proactive owner-notice path Shepherd uses (Teams or
@@ -113,35 +113,11 @@ Each delivered burst carries the observation time, current sidebar identity/stat
 timestamps. Renames trigger a notice even without a finished reply; after delivery the watch adopts the current
 name. If the sidebar cannot be read, reply attribution is explicitly unverified.
 
-## Wake runners
+## Wake delivery and stuck sessions are Shepherd's
 
-The sense can run a command on a cadence and deliver the wakes it prints to Copilot app sessions, so a session spends no model turns watching for work. The sense knows nothing about what the command watches. How a team organizes and watches its work (for example, a drain session that works one repository's issues) belongs to Desk: its `drains.js poll` command lists each configured repository's issues, records what changed and prints the wakes. See Desk's issue-drains documentation for its config, state and filters.
+Wake delivery moved to [Shepherd](https://github.com/ourostack/shepherd): its wake runners run from `~/.config/shepherd/wakes.json`, and `shepherd wakes status` shows them. A `wakeRunners` block in `agent.json` is ignored now; move any runner over to Shepherd.
 
-List the runners in `agent.json`:
-
-```json
-{ "senses": { "app-sessions": { "enabled": true, "wakeRunners": [
-  { "name": "issue drains", "command": ["/usr/local/bin/node", "<desk>/plugins/desk/mcp/scripts/drains.js", "poll"], "everySeconds": 300 }
-] } } }
-```
-
-`command` is the program and its arguments, run with no shell. `everySeconds` is 10 or more and defaults to 300. `session` is optional: the session that receives a wake that names none. `delivery` is `"immediate"` (default) or `"enqueue"`. Each run has a two-minute limit.
-
-The command prints one JSON value on stdout:
-
-```json
-{ "wakes": [{ "session": "<session id>", "message": "New or changed issues in owner/name: #12 Title. Drain them.", "replaces": "New or changed issues in owner/name:", "done": ["/usr/local/bin/node", ".../drains.js", "ack", "--repo", "owner/name", "--wake", "…"] }],
-  "status": ["issue drain owner/name -> 58fbd57e: polled just now, 7 open, 0 waiting, last wake 12m ago (1 issue)"] }
-```
-
-- **Deliver.** Each `message` is sent to its `session` (else the runner's) and the app admits it at that session's next turn boundary. A session that works for hours in one run never goes idle, so a message queued behind that run (`"enqueue"`) can wait for hours and arrive about issues that have since closed; choose `"enqueue"` only for a wake that must never interrupt.
-- **Replace.** A wake can name `replaces`, a message prefix (Desk's wakes name `New or changed issues in owner/name:`). Before the wake is sent, the messages the session still holds in the app's own queue that start with that prefix and come from the user side (`source: "user"`, never another session's or an agent's) are removed through the app's `get_session_queue` and `remove_session_queue_item`, so a newer wake replaces older undelivered ones instead of queueing behind them. A wake that replaces is sent, not held.
-- **One at a time.** The app keeps an accepted message in its own queue until the session reaches a turn boundary, and nothing can take it back. So a session has one wake in flight: while the last wake sent to it has not appeared in its event log, the next wake for it is held, reported with `--error "held: …"`, and offered again by the command's next run, which re-derives its state. After 30 minutes without appearing, a wake counts as lost. The runner's state keeps the wake in flight per session (`open`).
-- **Report.** `done` is the argv that reports a wake's delivery. It runs after a successful send, and with `--error <reason>` added after a failed one, so the command can keep the wake pending and send it again with its next run. A run that dies between sending and reporting can repeat one wake.
-- **Failures.** A non-zero exit, a timeout, output that is not this JSON or a failed delivery is recorded as the runner's last error. Nothing else happens: the command owns what is pending.
-- **Status.** `ouro status` lists each runner under the app-sessions row (last run, wakes delivered, last error), then the command's own `status` lines. State lives in `state/senses/app-sessions/wake-runners.json`.
-
-The runner lives and dies with the sense: `ouro up` restarts it. Anything else that can run a command on a schedule, such as a launchd job, can run the same command and deliver its wakes.
+Stuck sessions are Shepherd's too. This sense no longer resumes a stopped loop; `shepherd stuck plan` shows what Shepherd would do about each one. The digest below still lists them under **Broken**.
 
 ### Moving from `issueDrains`
 
@@ -149,7 +125,7 @@ Earlier versions polled drains here from `senses.app-sessions.issueDrains` with 
 
 1. Copy the `issueDrains` array to Desk's drain config as `drains`; the fields are the same.
 2. Copy `issue-drains.json` to Desk's `state.json`; the shape is the same, so the seen markers carry over and nothing wakes again.
-3. Replace `issueDrains` and `issuePollMinutes` with a `wakeRunners` entry as above, then run `ouro up`.
+3. Replace `issueDrains` and `issuePollMinutes` with a wake in Shepherd's `~/.config/shepherd/wakes.json` (see `shepherd wakes status`), then run `ouro up`.
 
 ## Status digest
 
@@ -172,7 +148,7 @@ Every field is optional; without a `digest` block nothing runs. What it reads, a
   declared (the `task_focus` call in its own history, found by reading the log backwards once, then only what was added) with the card's
   status and next step from `<deskRoot>/<track>/<slug>/task.md`.
 - **The Mac**: Housesitter's heartbeat, last restart and resume, and the health watch's sessions (`restart-copilot --status --json`).
-- **Drains**: `drains` is a command that prints `{ "status": ["…"] }` (the shape a wake runner prints); drains whose last good poll is old are named.
+- **Drains**: `drains` is a command that prints `{ "status": ["…"] }`; drains whose last good poll is old are named.
 - **Merged today**: `mergedToday` runs `command` plus `api …` for each account and counts the pull requests merged since local midnight.
   An answer under four minutes old is reused, and the request is conditional when GitHub gives an ETag. Search has its own quota, apart from the drains'.
 
@@ -188,10 +164,9 @@ condition must last before it counts, is told once until it clears, is checked l
 carries everything due, at most one per half hour, each item a whole sentence with the link that opens the session (names are never cut short).
 A restart never announces work that was already ready. Permission prompts and repository-trust cards keep their own notice (see Perception).
 
-**Fixing instead of asking.** A session whose loop stopped (not running, its last turn called tools and no next turn started) is resumed by the
-sense itself with one message to carry on, once per stop and at most three times a day; one asleep for over a day, one whose
-history is over 500 MB or a remote one is left alone (`stuck-resume.ts`). The digest shows each resume under **Fixed by me**; a session that stops again after its last
-resume stays under **Broken**. The machine, the drains and the health watch have owners of their own and are not pushed.
+**Stopped sessions are not fixed here.** A session whose loop stopped (not running, its last turn called tools and no next turn started) is
+listed under **Broken** in the digest, and the sense sends it nothing. Shepherd's `shepherd stuck plan` shows what to do about each one.
+The machine, the drains and the health watch have owners of their own and are not pushed.
 
 **Never over a conversation.** Every notice the owner did not ask for (these pushes, the waiting-prompt notice, Shepherd's owner notices) is
 held while the owner is mid-conversation with the agent on any channel: a turn is running in one of their sessions, they or the agent wrote in
