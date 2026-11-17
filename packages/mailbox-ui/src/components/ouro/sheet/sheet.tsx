@@ -256,6 +256,8 @@ export interface SheetFrameProps {
   presentation?: "sheet" | undefined;
   /** Where focus goes on close: `Dialog` passes its own trigger, which it renders outside the sheet, and `Command` a choice of its own. */
   finalFocus?: SheetPopupProps["finalFocus"];
+  /** What takes focus as the sheet opens: `Command` puts it in its search after a key press or a click, and on the sheet itself after a touch or pen tap. */
+  initialFocus?: SheetPopupProps["initialFocus"];
   /** Disables the close button, as `EditSheet` does while a save is pending. */
   closeDisabled?: boolean | undefined;
   /** Keeps the closed sheet's content in the page, hidden, so an open only shows it (`Navbar` builds its sheet ahead of the press). */
@@ -289,6 +291,7 @@ export function SheetFrame({
   footer,
   presentation,
   finalFocus,
+  initialFocus,
   closeDisabled,
   keepMounted,
   onOpenChangeComplete,
@@ -313,6 +316,7 @@ export function SheetFrame({
             className={className}
             data-ouro-presentation={presentation}
             {...(finalFocus ? { finalFocus } : {})}
+            initialFocus={initialFocus}
           >
             {side === "bottom" && <SheetHandle />}
             {showHeader ? (

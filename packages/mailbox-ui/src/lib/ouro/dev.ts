@@ -85,7 +85,7 @@ const THEME_CHECKED = Symbol.for("ouro-ui.theme-checked");
  *
  * @example
  * if (process.env.NODE_ENV !== "production") checkTheme();
- * @claim "No component installs `ouro-base`, and without" scripts/registry.test.mjs verify:testExists(scripts/registry.test.mjs::only ouro-base and ouro-theme touch the app's stylesheet, and no other item installs them)
+ * @claim "No component installs `ouro-base`, and without" scripts/registry.test.mjs verify:testExists(scripts/registry.test.mjs::only ouro-base, ouro-plain and ouro-theme touch the app's stylesheet, and no other item installs them)
  * @claim "No component installs `ouro-base`, and without" registry/ouro/lib/ouro/dev.test.ts verify:testExists(registry/ouro/lib/ouro/dev.test.ts::checkTheme > names the command that adds ouro-base, once per page, when the token is unset)
  */
 export function checkTheme(): void {
@@ -99,7 +99,7 @@ export function checkTheme(): void {
       devWarn(
         "theme",
         "ouro-base is not in this page's CSS (--ouro-layer is unset), so overlays have no backdrop, layer or motion and fields have no border",
-        "npx shadcn@latest add ourostack/ouro-ui/ouro-base#v1.3.204",
+        "npx shadcn@latest add ourostack/ouro-ui/ouro-base#v1.3.237",
       );
     };
     if (document.readyState === "complete") check();

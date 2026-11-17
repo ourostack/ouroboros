@@ -6,9 +6,9 @@ export type { CheckResult, Inventory, InventoryCompare, Report, Safety, Verdict,
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, relative, resolve } from "node:path";
+import { basename, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface } from "./claims.ts";
 import { isChecksReport, type ChecksReport } from "./checks.ts";
@@ -35,7 +35,7 @@ import { AxError, isAxError } from "./problem.ts";
  * @claim "never by importing the interface's code" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::the kit's example tool conforms, and the X-ray acts on nothing)
  * @claim "only against a target that proves it is a mock" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::without proof of a mock, nothing other people see is called, and it does not conform)
  */
-const XRAY_VERSION = "1.5.0";
+const XRAY_VERSION = "1.6.0";
 
 type Verdict = "pass" | "fail" | "skip";
 
@@ -84,6 +84,7 @@ interface XrayOptions {
   inventory?: string | undefined;
   events?: string | undefined;
   commit?: string | undefined;
+  app?: string | undefined;
   failureCopyAllow?: string | undefined;
   conformance: boolean;
   state: string[];
@@ -430,6 +431,38 @@ function childEnv(opts: XrayOptions): Record<string, string> {
 /** Reads `a.b.c` from a JSON value. */
 const at = (value: unknown, path: string): unknown => path.split(".").reduce<unknown>((v, k) => (isRecord(v) ? v[k] : undefined), value);
 
+/** Whether a path is an existing executable file: the only kind of --env value the X-ray takes as a stub. */
+const isExecutableFileSync = (path: string): boolean => {
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** Why a stub is not inside the X-ray's home or the repository, or null when it is. */
+/** The real path of a folder, or null when it does not exist. */
+const realOrNull = (path: string): string | null => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+/** Why a stub is not inside the X-ray's home or the repository, or null when it is. */
+function stubProblem(path: string, roots: readonly string[]): string | null {
+  const real = realpathSync(path);
+  const inside = roots.some((root) => {
+    const base = realOrNull(root);
+    if (base === null) return false;
+    const rel = relative(base, real);
+    return !rel.startsWith("..") && !isAbsolute(rel);
+  });
+  return inside ? null : `${real} is outside the X-ray's home and the repository`;
+}
+
 /**
  * Whether the X-ray may call what other people see, failing closed: every address it can see is loopback, the home is
  * isolated, the target proves it is a mock (`--mock "<url> <key>=<value>"`, or the adopter's `--guard`, which already
@@ -442,10 +475,18 @@ async function checkSafety(opts: XrayOptions, guardPassed: boolean): Promise<Saf
   const [mockUrl, mockExpect] = opts.mock ? splitCommand(opts.mock) : [];
   const urls = [opts.http, mockUrl, ...Object.values(opts.env).filter((v) => /^https?:\/\//i.test(v))].filter((u): u is string => typeof u === "string" && u !== "");
   const far = urls.filter((u) => !isLoopback(u));
+  // A stub is an --env value naming an executable file: a program the CLI is pointed at instead of the real service.
+  // Other files (a config or data path) are not stubs and are ignored.
+  const stubs = Object.values(opts.env).filter((v) => isAbsolute(v) && isExecutableFileSync(v));
+  const roots = [opts.home, process.cwd()].flatMap((r) => (r ? [resolve(r)] : []));
+  const stubProblems = stubs.map((s) => stubProblem(s, roots)).filter((p): p is string => p !== null);
+  if (stubs.length) checks.push({ name: "stub", ok: stubProblems.length === 0, note: stubProblems.length ? stubProblems.join("; ") : `${stubs.length} stub(s) inside the home or the repository` });
   checks.push(
-    urls.length === 0
-      ? { name: "loopback", ok: false, note: "no address to check: pass --mock \"<loopback url> <key>=<value>\" or --env <NAME>=<loopback url>" }
-      : { name: "loopback", ok: far.length === 0, note: far.length ? `not loopback: ${far.join(", ")}` : `${urls.length} address${urls.length === 1 ? "" : "es"}, all loopback` },
+    urls.length === 0 && stubs.length === 0
+      ? { name: "loopback", ok: false, note: "no address to check: pass --mock \"<loopback url> <key>=<value>\", --env <NAME>=<loopback url>, or --env <NAME>=<stub executable>" }
+      : urls.length === 0
+        ? { name: "loopback", ok: true, note: "no address: the CLI is pointed at a stub" }
+        : { name: "loopback", ok: far.length === 0, note: far.length ? `not loopback: ${far.join(", ")}` : `${urls.length} address${urls.length === 1 ? "" : "es"}, all loopback` },
   );
   const real = homedir();
   const home = opts.home ? resolve(opts.home) : null;
@@ -479,6 +520,8 @@ const refusedNote = (safety: Safety) => `not run: the target is not proven a moc
 
 interface CliCommand {
   name: string;
+  /** The command's stdout is one JSON reply line for another program (help JSON `protocol`). */
+  protocol: boolean;
   /**
    * The words a call starts with: none for the one command of a tool defined with `command` (`single` in help JSON).
    *
@@ -509,14 +552,19 @@ function commandsOf(help: Record<string, unknown>, name: string): CliCommand[] {
     const cmd = String(c["name"]);
     const raw = Array.isArray(c["usage"]) ? c["usage"].map(String) : typeof c["usage"] === "string" ? [c["usage"]] : [cmd];
     const usage = raw.map((u) => (u.startsWith(`${name} `) ? u.slice(name.length + 1) : u));
-    return { name: cmd, words: c["single"] === true ? [] : cmd.split(" "), effect: typeof c["effect"] === "string" ? c["effect"] : null, readOnly: typeof c["readOnly"] === "boolean" ? c["readOnly"] : null, usage, scope: typeof c["scope"] === "string" ? c["scope"] : null };
+    return { name: cmd, protocol: c["protocol"] === true, words: c["single"] === true ? [] : cmd.split(" "), effect: typeof c["effect"] === "string" ? c["effect"] : null, readOnly: typeof c["readOnly"] === "boolean" ? c["readOnly"] : null, usage, scope: typeof c["scope"] === "string" ? c["scope"] : null };
   });
+}
+
+async function toolNameOf(base: readonly string[], env: Record<string, string>, timeoutMs: number): Promise<string | null> {
+  const help = parseJson((await run([...base, "help", "--json"], env, timeoutMs)).stdout);
+  return help.ok && isRecord(help.value) && typeof help.value["tool"] === "string" ? help.value["tool"] : null;
 }
 
 async function checkCli(ctx: Context) {
   const { rec, opts, env } = ctx;
   const base = splitCommand(opts.cli!);
-  const name = opts.name ?? basename(base[base.length - 1]!).replace(/\.[cm]?[jt]s$/, "");
+  const name = opts.name ?? (await toolNameOf(base, env, opts.timeoutMs)) ?? basename(base[base.length - 1]!).replace(/\.[cm]?[jt]s$/, "");
   const calls: (RunResult & { args: string[]; shown: string })[] = [];
   const call = async (args: string[], input: string | null = null, timeoutMs = opts.timeoutMs, closed = false) => {
     const r = await run([...base, ...args], env, timeoutMs, input, closed);
@@ -570,7 +618,7 @@ async function checkCli(ctx: Context) {
     // Without help JSON, commands come from the text: an indented word, two spaces, then words.
     for (const l of overviewLines) {
       const m = /^ {2,4}([a-z][\w-]*):? {2,}\S/.exec(l);
-      if (m?.[1]) commands.push({ name: m[1], words: [m[1]], effect: null, readOnly: null, usage: [m[1]], scope: null });
+      if (m?.[1]) commands.push({ name: m[1], protocol: false, words: [m[1]], effect: null, readOnly: null, usage: [m[1]], scope: null });
     }
   }
   const names = commands.map((c) => c.name);
@@ -637,7 +685,9 @@ async function checkCli(ctx: Context) {
     const errLines = lines(c.stderr).filter((l) => l.trim());
     // With --json, stdout may carry the same error as one JSON document.
     const out = parseJson(c.stdout);
-    const quiet = !c.stdout.trim() || (c.args.includes("--json") && out.ok && isRecord(out.value) && isRecord(out.value["error"]));
+    // A protocol command's stdout is its one JSON reply line; any other command's is silent, or the --json error.
+    const reply = commands.some((x) => x.protocol && x.name === c.args[0]) && lines(c.stdout).filter(Boolean).length === 1 && parseJson(c.stdout.trim()).ok;
+    const quiet = !c.stdout.trim() || reply || (c.args.includes("--json") && out.ok && isRecord(out.value) && isRecord(out.value["error"]));
     const one = errLines.length === 1 && quiet;
     rec.add("cli.one-line-error", surface, one ? "pass" : "fail", one ? clip(errLines[0]!) : `${brief(c)} (${errLines.length} stderr lines, ${lines(c.stdout).filter(Boolean).length} stdout lines)`);
     const t = errLines.length > 0 && teaches(c.stderr);
@@ -1159,9 +1209,10 @@ async function checkCli(ctx: Context) {
     if (!loud.length) rec.add("cli.voice-off-when-piped", `all ${calls.length} calls`, "pass", `none of ${voiceLines.length} voice lines appears`);
   }
   {
+    // A row names a command by its first word ("draft", for a group with a summary) or its whole name ("peer send").
     const listedHeads = new Set(overviewLines.flatMap((l) => {
-      const m = /^ {2,4}([a-z][\w-]*(?:, [a-z][\w-]*)*):? {2,}\S/.exec(l);
-      return m ? m[1]!.split(", ") : [];
+      const m = /^ {2,4}([a-z][\w-]*(?: [a-z][\w-]*)*(?:, [a-z][\w-]*(?: [a-z][\w-]*)*)*):? {2,}\S/.exec(l);
+      return m ? m[1]!.split(", ").map((n) => n.split(" ")[0]!) : [];
     }));
     const heads = new Set(unique.map((n) => n.split(" ")[0]!));
     const namedBy = new Map<string, string>();
@@ -1497,7 +1548,7 @@ interface Report {
   checker: { version: string };
   claimSet: { version: string; hash: string };
   at: string;
-  target: { commit: string | null; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number } };
+  target: { commit: string | null; app?: { name: string }; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number } };
   safety: Safety;
   inventory: { given: boolean; surfaces: ClaimSurface[] };
   effects: { surface: string; note: string }[];
@@ -1660,6 +1711,7 @@ const CHECK_FLAGS: Readonly<Record<string, FlagSpec>> = Object.freeze({
   state: { type: "string", repeat: true, placeholder: '"<args>"', description: "CLI args whose output is the state that must not change." },
   events: { type: "string", placeholder: '"<args>"', description: "CLI args that list the interface's work events, to validate." },
   commit: { type: "string", placeholder: "<sha>", description: "The commit checked, recorded in the report." },
+  app: { type: "string", placeholder: "<name>", description: "The app the report is for, recorded as target.app.name, so a report reads as its own app's." },
   "failure-copy-allow": { type: "string", placeholder: "<file>", description: 'Failure copy that is precise but holds a vague phrase, each with its reason: [{ "match": "<part of the text>", "reason": "<why it is precise>" }].' },
   name: { type: "string", placeholder: "<name>", description: "The CLI's name in its messages (default: the command's file name)." },
   volatile: { type: "list", placeholder: "<k,k>", description: "JSON keys to ignore when comparing state." },
@@ -1764,6 +1816,7 @@ function optionsOf(input: Input, json: boolean): XrayOptions {
     inventory: text("inventory"),
     events: text("events"),
     commit: text("commit"),
+    app: text("app"),
     failureCopyAllow: text("failure-copy-allow"),
     md: text("md"),
     html: text("html"),
@@ -1813,7 +1866,7 @@ async function xray(opts: XrayOptions): Promise<Report> {
   const inventory = opts.inventory ? (JSON.parse(readFileSync(opts.inventory, "utf8")) as Inventory) : null;
   const allow = opts.failureCopyAllow ? readAllow(opts.failureCopyAllow) : [];
   const ctx: Context = { rec: new Recorder(), opts, env, safety: await checkSafety(opts, guardPassed), inventory, effects: [], allow };
-  const target: Report["target"] = { commit: opts.commit ?? null };
+  const target: Report["target"] = { commit: opts.commit ?? null, ...(opts.app ? { app: { name: opts.app } } : {}) };
   if (opts.cli) target.cli = await checkCli(ctx);
   if (opts.http) target.http = await checkHttp(ctx);
   if (opts.mcp) target.mcp = await checkMcp(ctx);

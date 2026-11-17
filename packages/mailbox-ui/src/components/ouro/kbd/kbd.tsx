@@ -1,10 +1,12 @@
 "use client";
 
-import { Fragment, useSyncExternalStore } from "react";
+import { Fragment } from "react";
 import type { HTMLAttributes, JSX, Ref } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
+import type { Platform } from "@/lib/ouro/platform";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
+import { usePlatform } from "@/lib/ouro/use-platform";
 
 /** The props Kbd adds to the `<kbd>` attributes it passes through. */
 export interface KbdOwnProps {
@@ -36,8 +38,6 @@ export interface KbdOwnProps {
 
 /** Props for {@link Kbd}: its own props and the `<kbd>` attributes it passes through. */
 export type KbdProps = Omit<HTMLAttributes<HTMLElement>, keyof KbdOwnProps> & KbdOwnProps;
-
-type Platform = "apple" | "windows" | "other" | "unknown";
 
 /**
  * Each named key as `[Apple glyph, Apple name, other label, other name]`. A name is
@@ -78,18 +78,6 @@ const aliases: Readonly<Record<string, string>> = {
 };
 
 /**
- * `apple` on macOS, iOS and iPadOS, `windows` on Windows (the only platform with a key
- * labeled Win), and `other` on Linux, ChromeOS and the rest, from the platform string of
- * the modern API when the browser has it.
- */
-function detectPlatform(): Platform {
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  const name = nav.userAgentData?.platform ?? nav.platform;
-  if (/mac|iphone|ipad|ipod|ios/i.test(name)) return "apple";
-  return /^win/i.test(name) ? "windows" : "other";
-}
-
-/**
  * Where each modifier goes, so a shortcut reads as the platform writes it: Apple's menus
  * use Control, Option, Shift, Command (⌃⌥⇧⌘); elsewhere it is Win, Ctrl, Alt, Shift. Other
  * keys follow the modifiers in the order given.
@@ -104,12 +92,6 @@ function keyId(key: string): string {
   const lower = key.toLowerCase();
   return Object.hasOwn(aliases, lower) ? aliases[lower]! : lower;
 }
-
-const subscribe = () => () => {};
-// The server can't know the platform, so it and the hydrating client render the
-// "unknown" form (the key names, as elsewhere); React then re-renders with the real
-// platform after hydration, without a mismatch.
-const serverPlatform = (): Platform => "unknown";
 
 /**
  * A one-character key that is also an emoji, such as ↩, followed by U+FE0E so it draws as text in
@@ -158,7 +140,7 @@ export function Kbd(props: KbdProps): JSX.Element {
     shortcut,
     ...rest
   } = props;
-  const platform = useSyncExternalStore(subscribe, detectPlatform, serverPlatform);
+  const platform = usePlatform();
   // A string of keys (a type error) is split on "+", as the agent meant it.
   const keys: readonly string[] = typeof keysProp === "string" ? keysProp.split("+") : (keysProp ?? []);
   useAppearanceClassNameCheck(

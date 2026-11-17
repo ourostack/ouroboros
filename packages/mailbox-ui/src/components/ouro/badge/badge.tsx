@@ -54,6 +54,13 @@ export interface BadgeBaseProps {
   onClick?: MouseEventHandler<HTMLElement> | undefined;
   /** Icon before the label. Pass the component, not an element: `icon={CheckIcon}`. */
   icon?: BadgeIcon | undefined;
+  /**
+   * A status dot before the label, in the tone's colour: `<Badge tone="success" dot>Published</Badge>`.
+   * The dot is decorative; the label names the status.
+   * @default false
+   * @claim "A status dot before the label, in the tone's colour" registry/ouro/components/ouro/badge/badge.test.tsx verify:testExists(registry/ouro/components/ouro/badge/badge.test.tsx::Badge > shows a status dot before its label, in the tone's colour)
+   */
+  dot?: boolean | undefined;
   /** The label: a short word, or a count. */
   children: ReactNode;
   /** Layout only: margins, grid placement (`ms-2`). Appearance classes warn in development; use `tone` and `variant`. */
@@ -203,6 +210,7 @@ export function Badge(props: BadgeProps): JSX.Element {
     tone: toneProp = "secondary",
     variant: variantProp = "solid",
     icon: Icon,
+    dot = false,
     onClick,
     children,
     className,
@@ -253,6 +261,7 @@ export function Badge(props: BadgeProps): JSX.Element {
   const look = looks[variant][tone];
   // The icon and the label go in as siblings of the surface, not in a fragment, which would be a component of its own.
   const icon = Icon && <Icon aria-hidden="true" className="relative -ms-0.5 size-3.5 shrink-0" />;
+  const statusDot = dot && <span data-ouro-dot="" aria-hidden="true" className="relative size-1.5 shrink-0 rounded-full bg-current" />;
 
   if (rest.href !== undefined) {
     const { type: _type, disabled: _disabled, ...anchorProps } = rest as Omit<BadgeLinkProps, keyof BadgeBaseProps>;
@@ -260,6 +269,7 @@ export function Badge(props: BadgeProps): JSX.Element {
       <RouterLink data-ouro-control="badge" data-ouro-part="root" {...anchorProps} onClick={onClick} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
         <TouchTarget />
         <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
+        {statusDot}
         {icon}
         {children}
       </RouterLink>
@@ -271,6 +281,7 @@ export function Badge(props: BadgeProps): JSX.Element {
       <BaseButton data-ouro-control="badge" data-ouro-part="root" {...buttonProps} onClick={onClick} disabled={disabled} ref={ref as Ref<HTMLElement> | undefined} type={type} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
         <TouchTarget />
         <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
+        {statusDot}
         {icon}
         {children}
       </BaseButton>
@@ -281,6 +292,7 @@ export function Badge(props: BadgeProps): JSX.Element {
   return (
     <span {...(spanProps as HTMLAttributes<HTMLSpanElement>)} ref={ref} data-ouro="badge" data-ouro-squircle="" className={cn(base, look, className)}>
       <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
+      {statusDot}
       {icon}
       {children}
     </span>

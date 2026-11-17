@@ -169,8 +169,10 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
     return matchMedia("(prefers-color-scheme: dark)").matches && /dark/.test(getComputedStyle(document.documentElement).colorScheme) ? [18, 18, 18, 1] : [255, 255, 255, 1];
   };
   const pictureLike = (el: Element) => el.matches("img, video, canvas, picture, svg, [role=img]") || (getComputedStyle(el).backgroundImage.includes("url(") && !el.textContent!.trim());
+  // A page behind a gradient or a picture has no one colour to differ from, so no fill is judged against it.
   const fillDiffers = (el: Element) => {
-    const page = backgroundOf(document.body)!;
+    const page = backgroundOf(document.body);
+    if (!page) return false;
     const fill = rgba(getComputedStyle(el).backgroundColor);
     return fill[3] >= 0.5 && Math.abs(fill[0] - page[0]) + Math.abs(fill[1] - page[1]) + Math.abs(fill[2] - page[2]) > 12;
   };

@@ -108,7 +108,14 @@ export interface ButtonBaseProps {
   loadingLabel?: string | undefined;
   /** Icon before the label. Pass the component, not an element: `startIcon={PlusIcon}`. */
   startIcon?: ButtonIcon | undefined;
-  /** Icon after the label. Pass the component, not an element: `endIcon={ArrowRightIcon}`. */
+  /**
+   * Icon after the label. Pass the component, not an element: `endIcon={ArrowRightIcon}`. On a
+   * button wider than its label, such as one with `fullWidth`, it sits at the end and the label
+   * stays centred in the rest, or at the start with `className="justify-start"`.
+   *
+   * @claim "On a button wider than its label" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::button branch > puts an end icon at the inline end of a button wider than its label, %s)
+   * @claim "On a button wider than its label" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::button branch > keeps an app's justify-start on a wide button %s an end icon)
+   */
   endIcon?: ButtonIcon | undefined;
   /** The label. For an icon-only button, also pass `aria-label`. */
   children: ReactNode;
@@ -488,21 +495,21 @@ export function Button(props: ButtonProps): JSX.Element {
   // The touch target comes first and the label is positioned, so the label paints above
   // the target: the target still enlarges the hit area, and nothing covers the text
   // (axe can check its contrast).
+  const fade = cn("relative transition-opacity duration-(--ouro-duration-fast) ease-(--ouro-ease-out)", loading && "opacity-0");
   const content = (
     <>
       <TouchTarget />
       <span data-ouro-surface="" aria-hidden="true" />
       <span
         data-ouro-label=""
-        className={cn(
-          "relative inline-flex items-center gap-[inherit] transition-opacity duration-(--ouro-duration-fast) ease-(--ouro-ease-out)",
-          loading && "opacity-0",
-        )}
+        // The label takes the room a wider button has, aligned as the button aligns it (centred, or the app's
+        // justify-start), so an end icon after it sits at the end.
+        className={cn("inline-flex grow items-center gap-[inherit] [justify-content:inherit]", fade)}
       >
         {StartIcon && <StartIcon aria-hidden="true" className={cn(iconClass, "-ms-0.5")} />}
         {children}
-        {EndIcon && <EndIcon aria-hidden="true" className={cn(iconClass, "-me-0.5")} />}
       </span>
+      {EndIcon && <EndIcon aria-hidden="true" className={cn(iconClass, fade, "-me-0.5")} />}
       {loading && <Spinner />}
     </>
   );
