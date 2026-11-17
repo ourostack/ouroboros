@@ -1,4 +1,4 @@
-export { blank, BUDGETS, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, parseArgs, placeOf, RULES, runScript, SIZES, summary, transportIssues };
+export { blank, BUDGETS, inSweepOrder, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, parseArgs, placeOf, RULES, runScript, SIZES, summary, transportIssues };
 export type { Budgets, CheckOptions, CheckResult, Finding, Gate, ImageEntry, MergeOptions, Report };
 
 import { spawn } from "node:child_process";
@@ -333,6 +333,16 @@ const lowerOfTwoLoads = (first: PageIssue, again: PageIssue | undefined): PageIs
 const keyOf = (f: Finding) => `${f.site}\u0000${f.page}\u0000${f.rule}\u0000${f.element}`;
 const spotOf = (f: Finding) => `${keyOf(f)}\u0000${f.width}x${f.height}\u0000${f.theme}`;
 const pageOf = (f: { site: string; page: string }) => `${f.site} ${f.page}`;
+// The sweep's order (size, then theme, then page), which a report keeps whichever page of the few checked at once
+// finishes first, so the same pages give the same report. Equal places keep the order they were found in.
+function inSweepOrder<T extends { site: string; page: string; width: number; height: number; theme: string }>(items: T[], sizes: [number, number][], themes: string[], pages: { site: string; page: string }[]): T[] {
+  const order = pages.map(pageOf);
+  const rank = (item: T) => [sizes.findIndex(([w, h]) => w === item.width && h === item.height), themes.indexOf(item.theme), order.indexOf(pageOf(item))];
+  return items.sort((a, b) => {
+    const [x, y] = [rank(a), rank(b)];
+    return x[0]! - y[0]! || x[1]! - y[1]! || x[2]! - y[2]!;
+  });
+}
 const escape = (text: string) => text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 // A page's name for its files. A long one (a URL with a long query, say) keeps its start and a hash of the whole, so it
 // fits a file name and two long names stay apart.
@@ -925,6 +935,9 @@ async function check(options: CheckOptions): Promise<CheckResult> {
         );
       }
     }
+
+    inSweepOrder(findings, sizes, themes, list);
+    inSweepOrder(report.shots, sizes, themes, list);
 
     // Findings in the earlier report that this run swept the same spot of and did not find there: the same spot, at
     // the same size, after. Whether each is fixed depends on every size, which a merge of shards decides.
