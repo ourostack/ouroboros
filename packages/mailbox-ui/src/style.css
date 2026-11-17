@@ -589,3 +589,34 @@ body {
     transform: translateY(0) scale(1);
   }
 }
+
+@container style(--corner-shape: round) {
+  [data-ouro-squircle] > [data-ouro-surface] {
+    clip-path: inset(0 round var(--ouro-sq-r));
+  }
+  [data-ouro-squircle] > [data-ouro-surface]::after {
+    border-radius: var(--ouro-sq-r);
+  }
+}
+
+@utility rounded-ouro-control {
+  --ouro-control-r: calc(var(--ouro-control-radius, var(--radius)) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1));
+  --ouro-sq-r: calc(var(--ouro-control-radius, var(--radius)) * var(--ouro-radius-scale, 1));
+  --corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
+  border-radius: var(--ouro-control-r);
+  corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
+}
+
+@utility rounded-ouro-control-md {
+  --ouro-control-r: calc(var(--ouro-control-radius, var(--radius) * 0.8) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1));
+  --ouro-sq-r: calc(var(--ouro-control-radius, var(--radius) * 0.8) * var(--ouro-radius-scale, 1));
+  --corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
+  border-radius: var(--ouro-control-r);
+  corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
+}
+
+@utility rounded-ouro-check {
+  --corner-shape: var(--ouro-check-corner-shape, var(--ouro-corner-shape));
+  border-radius: var(--ouro-check-radius, calc(var(--radius) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1) * 0.6));
+  corner-shape: var(--ouro-check-corner-shape, var(--ouro-corner-shape));
+}
