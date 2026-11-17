@@ -883,6 +883,17 @@ describe("streamResponsesApi", () => {
     expect(result.termination).toEqual({ finishReason: "incomplete", refused: false })
   })
 
+  it.each([
+    { type: "response.failed", response: { error: { message: "synthetic provider outage" } }, reason: "synthetic provider outage" },
+    { type: "response.done", response: { status: "failed" }, reason: "without error details" },
+  ])("rejects failed responses instead of returning partial image descriptions: $type", async ({ reason, ...terminal }) => {
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.output_text.delta", delta: "partial screenshot description" },
+      terminal,
+    ])) } }
+    await expect(streamResponsesApi(client, {}, makeCallbacks())).rejects.toThrow(reason)
+  })
+
   it("calls client.responses.create with createParams and signal", async () => {
     const create = vi.fn().mockReturnValue(makeResponsesStream([]))
     const client = { responses: { create } }
