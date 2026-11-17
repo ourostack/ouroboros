@@ -172,12 +172,13 @@ function compare(current, baseline) {
 /**
  * The ratchet: how much worse than main a pull request may make each metric before the job fails, as a fraction of
  * main's value, or null where the metric is too noisy on that host to gate. Calibrated on main's run-to-run spread
- * (eight runs, 2026-11-10): counts never vary; install size and Linux memory vary under 2%; timings vary 7-12% on
+ * (eight runs, 2026-11-10): counts never vary; install size and Linux idle memory vary under 3% (idle PSS reached 3.1% on 2026-11-17); timings vary 7-12% on
  * linux-arm64 but 24-140% on linux-x64 and macOS, and macOS memory up to 31%; macOS turn peak processes flip 2/3.
  */
 const COUNTS = ["install.packages", "stack.processes", "stack.vaultCalls", "stack.vaultLogins", "stack.vaultSyncs", "turn.modelRequests", "turn.vaultCalls", "turn.vaultLogins", "turn.vaultSyncs"]
 const MODULES = ["cli.modules", "daemon.modules", "stack.modules"]
 const MEMORY = ["cli.maxRssKb", "daemon.idleRssKb", "daemon.idlePssKb", "stack.idleRssKb", "stack.idlePssKb", "turn.peakRssKb", "turn.peakPssKb"]
+const TURN_PEAKS = ["turn.peakRssKb", "turn.peakPssKb"]
 const TIMINGS = ["cli.wallMs", "daemon.readyMs", "stack.upMs", "turn.firstRequestMs", "turn.settledMs"]
 
 function ratchetLimit(key, host) {
@@ -187,7 +188,10 @@ function ratchetLimit(key, host) {
   if (key === "turn.peakProcesses") return linux ? 0 : null
   if (MODULES.includes(key)) return 0.01
   if (key === "install.bytes") return 0.02
-  if (MEMORY.includes(key)) return linux ? 0.03 : null
+  // The turn's peak is a 100 ms sample of a tree that briefly holds a second process, so whether the sampler lands on
+  // it moves the peak by ~16 MiB (9%) between identical builds (four linux-arm64 runs on 2026-11-17).
+  if (TURN_PEAKS.includes(key)) return linux ? 0.12 : null
+  if (MEMORY.includes(key)) return linux ? 0.05 : null
   if (TIMINGS.includes(key)) return linux && host?.arch === "arm64" ? 0.25 : null
   return null
 }
