@@ -212,7 +212,7 @@ export type ButtonProps = ButtonLinkProps | ButtonButtonProps;
 // Class strings are literal so the app's Tailwind finds them when it compiles.
 const base =
   "press relative box-border inline-flex shrink-0 items-center justify-center align-middle " +
-  "rounded-lg border border-solid font-medium whitespace-nowrap " +
+  "rounded-ouro-lg border border-solid font-medium whitespace-nowrap " +
   "no-underline select-none touch-manipulation [-webkit-tap-highlight-color:transparent] " +
   "outline-ring outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid " +
   // A state layer in the text color: a light wash on hover, a deeper one while pressed.
@@ -243,7 +243,7 @@ const sizes = {
     "sm:[--ouro-button-h:calc(var(--spacing)*11)]",
   // In a line of text, at the text's own size: the padding takes the box to 24px and more, and the
   // negative margin gives that back, so the line keeps its height and the label sits on its baseline.
-  inline: "h-auto min-w-6 px-1 py-[3px] -my-1 gap-1 rounded-md align-baseline text-[length:inherit] leading-[inherit]",
+  inline: "h-auto min-w-6 px-1 py-[3px] -my-1 gap-1 rounded-ouro-md align-baseline text-[length:inherit] leading-[inherit]",
 } as const;
 
 // `soft` is the tone at low opacity behind text in the tone, the pattern shadcn uses for

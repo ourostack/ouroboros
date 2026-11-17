@@ -229,7 +229,7 @@ export function Sheet(props: SheetProps): JSX.Element {
  * The close button: in view at the top corner, as Dialog's is, with `TouchTarget` for a coarse pointer.
  */
 const closeClass =
-  "press absolute end-3 z-1 m-0 box-border inline-flex size-8 cursor-default items-center justify-center rounded-lg border-0 bg-transparent p-0 " +
+  "press absolute end-3 z-1 m-0 box-border inline-flex size-8 cursor-default items-center justify-center rounded-ouro-lg border-0 bg-transparent p-0 " +
   "text-muted-foreground outline-ring outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid " +
   "pointer-fine:hover:bg-muted pointer-fine:hover:text-foreground motion-safe:active:scale-(--ouro-press-scale) " +
   "forced-colors:border forced-colors:border-solid disabled:cursor-not-allowed disabled:opacity-50";

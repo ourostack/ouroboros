@@ -51,7 +51,7 @@ export interface SidebarLayoutProps {
 const skipClass =
   "sr-only text-base leading-5 focus-visible:top-2 focus-visible:start-2 focus-visible:z-20 focus-visible:m-0 focus-visible:size-auto " +
   "focus-visible:overflow-visible focus-visible:[clip-path:none] focus-visible:px-4 focus-visible:py-2.5 focus-visible:whitespace-nowrap " +
-  "focus-visible:rounded-lg focus-visible:bg-background focus-visible:text-foreground focus-visible:font-medium " +
+  "focus-visible:rounded-ouro-lg focus-visible:bg-background focus-visible:text-foreground focus-visible:font-medium " +
   "focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring focus-visible:outline-solid";
 
 // Two columns and two rows at every width. From 640px the sidebar spans both rows and

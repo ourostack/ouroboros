@@ -110,14 +110,14 @@ const popupSides = {
     "w-full max-w-[40rem] max-h-[calc(100dvh-var(--ouro-sheet-gap))] ps-[env(safe-area-inset-left,0px)] pe-[env(safe-area-inset-right,0px)] " +
     "[--ouro-sheet-y:calc(var(--drawer-snap-point-offset,0px)+var(--drawer-swipe-movement-y,0px))] " +
     "[--ouro-sheet-transform:translateY(calc(max(var(--ouro-sheet-y),0px)+min(var(--ouro-sheet-y)+var(--ouro-sheet-slack),0px)*var(--ouro-sheet-stretch)+var(--ouro-sheet-grab,0px)))] " +
-    "rounded-t-xl [box-shadow:var(--ouro-shadow-sheet-bottom)] " +
+    "rounded-t-ouro-xl [box-shadow:var(--ouro-shadow-sheet-bottom)] " +
     "after:inset-x-0 after:top-[calc(100%-1px)] after:h-[50dvh] " +
     "data-starting-style:[transform:translateY(calc(100%+2px))] data-ending-style:[transform:translateY(calc(100%+2px))]",
   top:
     "w-full max-w-[40rem] max-h-[calc(100dvh-var(--ouro-sheet-gap))] ps-[env(safe-area-inset-left,0px)] pe-[env(safe-area-inset-right,0px)] " +
     "[--ouro-sheet-y:calc(var(--drawer-snap-point-offset,0px)+var(--drawer-swipe-movement-y,0px))] " +
     "[--ouro-sheet-transform:translateY(calc(min(var(--ouro-sheet-y),0px)+max(var(--ouro-sheet-y)-var(--ouro-sheet-slack),0px)*var(--ouro-sheet-stretch)+var(--ouro-sheet-grab,0px)))] " +
-    "rounded-b-xl [box-shadow:var(--ouro-shadow-sheet-top)] " +
+    "rounded-b-ouro-xl [box-shadow:var(--ouro-shadow-sheet-top)] " +
     "pt-[env(safe-area-inset-top,0px)] " +
     "after:inset-x-0 after:bottom-[calc(100%-1px)] after:h-[50dvh] " +
     "data-starting-style:[transform:translateY(calc(-100%-2px))] data-ending-style:[transform:translateY(calc(-100%-2px))]",
@@ -127,7 +127,7 @@ const popupSides = {
     "pb-[calc(env(safe-area-inset-bottom,0px)+var(--drawer-keyboard-inset,0px))] " +
     "[--ouro-sheet-x:var(--drawer-swipe-movement-x,0px)] " +
     "[--ouro-sheet-transform:translateX(calc(min(var(--ouro-sheet-x),0px)+max(var(--ouro-sheet-x)-var(--ouro-sheet-slack),0px)*var(--ouro-sheet-stretch)+var(--ouro-sheet-grab,0px)))] " +
-    "rounded-r-xl [box-shadow:var(--ouro-shadow-sheet-left)] pl-[env(safe-area-inset-left,0px)] " +
+    "rounded-r-ouro-xl [box-shadow:var(--ouro-shadow-sheet-left)] pl-[env(safe-area-inset-left,0px)] " +
     "after:inset-y-0 after:right-[calc(100%-1px)] after:w-[50vw] " +
     "data-starting-style:[transform:translateX(calc(-100%-2px))] data-ending-style:[transform:translateX(calc(-100%-2px))]",
   right:
@@ -135,7 +135,7 @@ const popupSides = {
     "pb-[calc(env(safe-area-inset-bottom,0px)+var(--drawer-keyboard-inset,0px))] " +
     "[--ouro-sheet-x:var(--drawer-swipe-movement-x,0px)] " +
     "[--ouro-sheet-transform:translateX(calc(max(var(--ouro-sheet-x),0px)+min(var(--ouro-sheet-x)+var(--ouro-sheet-slack),0px)*var(--ouro-sheet-stretch)+var(--ouro-sheet-grab,0px)))] " +
-    "rounded-l-xl [box-shadow:var(--ouro-shadow-sheet-right)] pr-[env(safe-area-inset-right,0px)] " +
+    "rounded-l-ouro-xl [box-shadow:var(--ouro-shadow-sheet-right)] pr-[env(safe-area-inset-right,0px)] " +
     "after:inset-y-0 after:left-[calc(100%-1px)] after:w-[50vw] " +
     "data-starting-style:[transform:translateX(calc(100%+2px))] data-ending-style:[transform:translateX(calc(100%+2px))]",
 } as const;
