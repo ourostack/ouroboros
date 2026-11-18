@@ -173,8 +173,8 @@ describe("each tool runs its Shepherd verb", () => {
       { argv: ["open", "s1", "--json"] },
       { argv: ["automation", "s1", "--json", "--why", "Ouroboros schedules a wake-up for session s1: p", "--input", "-"], input: { interval: "minutes", every_minutes: 5, prompt: "p" } },
       { argv: ["automation", "s1", "--json", "--why", "Ouroboros clears the wake-ups of session s1", "--input", "-"], input: { clear: true } },
-      { argv: ["automation", "s1", "--json"] },
-      { argv: ["automation", "s1", "--json"] },
+      { argv: ["automation", "s1", "--json", "--why", "Ouroboros reads the wake-ups of session s1"] },
+      { argv: ["automation", "s1", "--json", "--why", "Ouroboros reads the wake-ups of session s1"] },
       { argv: ["workflows", "--json"] },
       { argv: ["run-workflow", "w1", "--json", "--why", "Ouroboros runs workflow w1"] },
     ])
