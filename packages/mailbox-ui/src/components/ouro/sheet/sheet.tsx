@@ -7,6 +7,7 @@ import { TouchTarget } from "@/lib/ouro/touch-target";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 import {
   SheetBackdrop,
+  SheetScrim,
   SheetClose,
   SheetContent,
   SheetDescription,
@@ -83,6 +84,16 @@ export interface SheetBaseProps {
    * @claim "`false` on a modal sheet keeps it" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > closeOnOutsidePress={false} keeps a modal sheet open on a press on its backdrop)
    */
   closeOnOutsidePress?: boolean | undefined;
+  /**
+   * With `modal={false}`, draws a light dimming layer over the page behind the sheet, so the
+   * sheet stays set apart from the page it sits beside. The page stays readable and in reach:
+   * the layer passes presses through, so a press on the page still reaches it and, with
+   * `closeOnOutsidePress`, closes the sheet. Its color is `--ouro-backdrop-color` and its strength is
+   * `--ouro-scrim-max`. A modal sheet has its backdrop already, so this does nothing there.
+   * @default false
+   * @claim "With `modal={false}`, draws a light dimming" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with scrim, tints the page lightly, takes no presses, and a press on the page still closes it)
+   */
+  scrim?: boolean | undefined;
   /** The body. It scrolls when it is taller than the sheet. */
   children: ReactNode;
   /** The actions row, stacked full width on phones; primary action last. */
@@ -183,6 +194,7 @@ export function Sheet(props: SheetProps): JSX.Element {
     snapPoints,
     modal,
     closeOnOutsidePress,
+    scrim,
     children,
     footer,
     className,
@@ -236,6 +248,7 @@ export function Sheet(props: SheetProps): JSX.Element {
       snapPoints={snapPoints}
       modal={modal}
       closeOnOutsidePress={closeOnOutsidePress}
+      scrim={scrim}
       className={className}
       trigger={trigger}
       open={open}
@@ -272,6 +285,8 @@ export interface SheetFrameProps {
   modal?: boolean | undefined;
   /** Whether a press outside closes the sheet (`Sheet`'s `closeOnOutsidePress`). @default `modal` */
   closeOnOutsidePress?: boolean | undefined;
+  /** A light dimming layer behind a non-modal sheet (`Sheet`'s `scrim`). @default false */
+  scrim?: boolean | undefined;
   children: ReactNode;
   className?: string | undefined;
   /** The opening element. May come with `open`, when `Dialog` owns the state. */
@@ -313,6 +328,7 @@ export function SheetFrame({
   snapPoint,
   modal = true,
   closeOnOutsidePress = modal,
+  scrim = false,
   children,
   className,
   trigger,
@@ -342,7 +358,7 @@ export function SheetFrame({
     >
       {trigger !== undefined && <SheetTrigger render={trigger} />}
       <SheetPortal keepMounted={keepMounted}>
-        {modal && <SheetBackdrop />}
+        {modal ? <SheetBackdrop /> : scrim && <SheetScrim />}
         <SheetViewport>
           <SheetPopupUnchecked
             className={className}
