@@ -13,6 +13,17 @@ export interface SurfaceDeliveryHint {
   phoneNumber?: string
 }
 
+// ── Digest guard ─────────────────────────────────────────────────
+
+const DIGEST_OPENING = /^\W*(?:good\s+)?(?:morning|overnight|daily|weekly|evening)?\W*(?:summary|digest|roundup|round-up|recap|catch-?up|status update)\b|^\W*(?:morning|good morning)\b[^\n]{0,40}\b(?:summary|digest|recap)\b/iu
+const SIGNAL_MARKER = /\b(ready|is out|are out|is live|released|shipped|merged and live|landed|needs you|needs your|your call|your decision|blocked on you|waiting on you)\b|\bis in[.:]/iu
+
+/** A digest or summary opener with no ready, done or gate item carries nothing Ari needs. */
+export function isSignalessDigest(content: string): boolean {
+  const head = content.slice(0, 240)
+  return DIGEST_OPENING.test(head.trimStart()) && !SIGNAL_MARKER.test(content)
+}
+
 // ── Handler ──────────────────────────────────────────────────────
 
 export interface HandleSurfaceInput {
@@ -87,6 +98,10 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
 
   if (queueItem?.packetId && !delegationId) {
     return `held private return ${queueItem.id} is waiting — call surface with delegationId="${queueItem.id}" so the return is tied to the correct packet`
+  }
+
+  if (!queueItem && isSignalessDigest(content)) {
+    return "not sent — a digest or summary goes out only when it carries a ready, done or gate item; say nothing otherwise"
   }
 
   // Route to target
