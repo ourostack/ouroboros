@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1209",
+      "changes": [
+        "Update the Ouro UI files to Ouro UI v1.3.313."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1208",
       "changes": [
         "Startup never downgrades an installed CLI to an older reachable release: when a lagging mirror or failed GitHub lookup makes the newest reported release older than the installed one, ouro up (including --latest) keeps the installed version and records it as the latest intent; ouro rollback remains the way to go back."
