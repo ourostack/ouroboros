@@ -401,6 +401,11 @@ function argUsage(a: ArgSpec): string {
   return a.required && !a.unless ? shown : `[${shown}]`;
 }
 
+/** A few words in plain English, as a refusal names them: "plan or apply", "read, plan or status". */
+function inWords(values: readonly string[]): string {
+  return values.length > 1 ? `${values.slice(0, -1).join(", ")} or ${values.at(-1)}` : values.join("");
+}
+
 function placeholderOf(name: string, spec: FlagSpec): string {
   if (spec.placeholder) return spec.placeholder;
   if (spec.type === "enum" && spec.values) return spec.values.join("|");
@@ -606,8 +611,10 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
         code: "bad-value",
         exit: usage(cli),
         thing,
-        problem: `<${a.name}> is one of ${a.values.join(", ")}, not "${word}"`,
-        fix: at(positionalAt[k]!, [near ?? a.values.join("|")]),
+        // The words in plain English, never the help's `<action>` or "a|b": the fix is a command the agent can run as
+        // it stands, with the closest word, else the first.
+        problem: `it takes ${inWords(a.values)}, not "${word}"`,
+        fix: at(positionalAt[k]!, [near ?? a.values[0]!]),
       });
     }
     input[a.name] = a.rest === "list" ? given.splice(0) : a.rest ? given.splice(0).join(" ") : given.shift()!;
@@ -666,7 +673,7 @@ function valueOf(cli: Cli, thing: string, name: string, spec: FlagSpec, raw: str
     const values = spec.values ?? [];
     if (!values.includes(raw)) {
       const near = didYouMean(raw, values);
-      throw new AxError({ code: "bad-value", exit: usage(cli), thing, problem: `--${name} is one of ${values.join(", ")}, not ${said}`, fix: fixWith(near ?? values.join("|")) });
+      throw new AxError({ code: "bad-value", exit: usage(cli), thing, problem: `--${name} is one of ${values.join(", ")}, not ${said}`, fix: fixWith(near ?? values[0]!) });
     }
     return raw;
   }
