@@ -85,13 +85,13 @@ export interface SheetBaseProps {
    */
   closeOnOutsidePress?: boolean | undefined;
   /**
-   * With `modal={false}`, draws a light dimming layer over the page behind the sheet, so the
-   * sheet stays set apart from the page it sits beside. The page stays readable and in reach:
-   * the layer passes presses through, so a press on the page still reaches it and, with
-   * `closeOnOutsidePress`, closes the sheet. Its color is `--ouro-backdrop-color` and its strength is
-   * `--ouro-scrim-max`. A modal sheet has its backdrop already, so this does nothing there.
+   * With `modal={false}`, lays a layer over the page behind the sheet that paints nothing and
+   * passes presses through, so a press on the page still reaches it and, with
+   * `closeOnOutsidePress`, closes the sheet. It tints nothing: the page stays in use, and a tint
+   * would lower its text's contrast. The sheet's hairline and shadow set it apart. A modal sheet
+   * has its backdrop already, so this does nothing there.
    * @default false
-   * @claim "With `modal={false}`, draws a light dimming" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with scrim, tints the page lightly, takes no presses, and a press on the page still closes it)
+   * @claim "lays a layer over the page behind the sheet that paints nothing" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with scrim, the page keeps its colours and contrast, the layer takes no presses, and a press on the page still closes it)
    */
   scrim?: boolean | undefined;
   /** The body. It scrolls when it is taller than the sheet. */
@@ -285,7 +285,7 @@ export interface SheetFrameProps {
   modal?: boolean | undefined;
   /** Whether a press outside closes the sheet (`Sheet`'s `closeOnOutsidePress`). @default `modal` */
   closeOnOutsidePress?: boolean | undefined;
-  /** A light dimming layer behind a non-modal sheet (`Sheet`'s `scrim`). @default false */
+  /** A layer over the page beside a non-modal sheet that paints nothing and passes presses through (`Sheet`'s `scrim`). @default false */
   scrim?: boolean | undefined;
   children: ReactNode;
   className?: string | undefined;

@@ -78,13 +78,10 @@ const backdropClass =
   "data-swipe-dismiss:data-ending-style:duration-(--ouro-duration-fast) " +
   iosBackdrop;
 
-// A non-modal sheet's light dimming layer: it lets every press through to the page, so a press outside still dismisses.
-const scrimClass =
-  "pointer-events-none fixed inset-0 z-1000 min-h-dvh bg-(--ouro-backdrop-color) opacity-(--ouro-scrim-max) " +
-  "[transition:opacity_var(--ouro-duration-sheet)_var(--ouro-ease-drawer)] " +
-  "data-starting-style:opacity-0 data-ending-style:opacity-0 " +
-  "data-ending-style:duration-(--ouro-duration-slow) data-ending-style:ease-(--ouro-ease-out) " +
-  iosBackdrop;
+// A non-modal sheet's scrim: it lets every press through to the page, so a press outside still dismisses. It paints
+// nothing: the page beside a non-modal sheet is in use, and any tint over it lowers its text's contrast (a 10% tint
+// took spoonjoy-v2's 4.56:1 "Change look" button to about 4.2:1). The sheet's hairline and shadow set it apart instead.
+const scrimClass = "pointer-events-none fixed inset-0 z-1000 min-h-dvh bg-transparent";
 
 const viewportClasses = {
   bottom: "items-end justify-center",
@@ -294,10 +291,9 @@ export function SheetBackdrop({
 }
 
 /**
- * Part: a light dimming layer for a `modal={false}` sheet (a modal sheet draws its own backdrop). It tints the
- * page behind the sheet with `--ouro-backdrop-color` at `--ouro-scrim-max` (a few percent), so the
- * page stays easy to read, and it passes presses through: a press on the page reaches the page, and
- * closes the sheet when it closes on an outside press. A `ref` reaches its element.
+ * Part: the layer over the page beside a `modal={false}` sheet (a modal sheet draws its own backdrop). It paints
+ * nothing, so the page in use keeps its contrast, and it passes presses through: a press on the page reaches the
+ * page, and closes the sheet when it closes on an outside press. A `ref` reaches its element.
  */
 export function SheetScrim({
   ref,
