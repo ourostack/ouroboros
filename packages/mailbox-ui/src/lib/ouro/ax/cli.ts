@@ -5,6 +5,7 @@ export type { CliIo, RunOptions };
 // first statement, which would take the JSDoc below with it.
 
 import { checksText, isChecksReport } from "./checks.ts";
+import { doctorText, isDoctorReport } from "./doctor.ts";
 import { checkOwner, flagsOf, findCommand, invocation, parse, type ArgSpec, type Cli, type CommandDef, type Input, type InputValue, type Parsed, type RunContext } from "./command.ts";
 import { DRY_RUN_FLAG } from "./effects.ts";
 import { AxError, errorJson, errorLine, errorMessage, isAxError, type AxErrorShape } from "./problem.ts";
@@ -121,7 +122,8 @@ function printResult(
     const style = terminalStyle(io.stdout, env);
     // The --verbose hint is offered only by a command that takes the flag.
     const command = "verbose" in flagsOf(cli, cmd) ? { command: invocation(cli, cmd) } : {};
-    io.stdout.write(render(result, { json, text: (r) => checksText(r, style, { ...command, verbose: input["verbose"] === true }) }));
+    const options = { ...command, verbose: input["verbose"] === true };
+    io.stdout.write(render(result, { json, text: (r) => (isDoctorReport(r) ? doctorText(r, style, options) : checksText(r, style, options)) }));
     if (result.verdict === "passed" && result.counts.passed && !result.counts.skipped) say("healthy");
     return result.exitCode;
   }
