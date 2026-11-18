@@ -36,6 +36,20 @@ npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.
 
 Treat warnings as problems to fix, not background noise. The real-smoke lane is the live external check; keep it ready in CI and run it locally whenever the change touches provider auth, portable capability onboarding, or live verification behavior and you have the sacrificial secrets file available.
 
+## Cancelled Required Checks
+
+The `Recover cancelled required checks` workflow handles completed CI runs, without a schedule. It requests one full rerun only for an open, non-draft PR with auto-merge enabled at the run's current head and a cancelled check required by its target branch, including the required GitHub App identity. A newer run covering that PR/head, any failed job or step, or a failed required check blocks recovery. In particular, a failed release preflight followed by whole-run cancellation is a failed gate, not a recoverable cancellation.
+
+GitHub increments `run_attempt` on rerun; only attempt 1 is eligible. A manual rerun also consumes that lineage's budget. The handler serializes by run id and rechecks the live PR and attempt before requesting a rerun. Disarming auto-merge stops recovery. Cancellation actor identity is not inferred from the original run actor.
+
+Recovery executes only trusted default-branch code, never the triggering PR's code or artifacts. Its dependency-free regression tests run with `node --test .github/scripts/recover-cancelled-checks.node-test.cjs`; the workflow enforces complete coverage for the recovery module. The `node-test` filename keeps Vitest from discovering a suite that belongs to a different runner.
+
+## Dated npm Audit Exceptions
+
+The existing release-preflight policy permits reviewed entries in `docs/audit-exceptions.json` when no patched release exists. A normal repository-reviewed PR and required-check merge authorize an entry; the policy does not name a separate approval role. General `intentional-debt.json` records do not accept npm advisories.
+
+Each audit entry covers exactly its advisory URL and source dependency, with a reason and a valid UTC due date. Preflight stops accepting it on that date, so the release gate reopens without automatic renewal. Other advisories still fail unless independently covered. The picomatch risk remains open in [#1391](https://github.com/ourostack/ouroboros/issues/1391), owned by Ouroboros maintainers, and expires on 2026-11-24; it is not a vulnerability fix.
+
 ## TDD Rule
 
 Use strict red -> green -> refactor.

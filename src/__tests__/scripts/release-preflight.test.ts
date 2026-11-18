@@ -443,8 +443,23 @@ describe("release-preflight", () => {
     expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions, today: "2026-10-02" }))
       .toEqual({ ok: true, message: "root npm audit: pass (accepted by docs/audit-exceptions.json: https://github.com/advisories/GHSA-a)" })
     expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions, today: "2026-11-01" }).ok).toBe(false)
+    expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions, today: "2026-11-02" }).ok).toBe(false)
+    expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a"]), { exceptions: [{ ...exceptions[0], package: "another-package" }], today: "2026-10-02" }).ok).toBe(false)
     expect(runRootDependencyAudit("/tmp/ouro", report(["https://github.com/advisories/GHSA-a", "https://github.com/advisories/GHSA-b"]), { exceptions, today: "2026-10-02" }).ok).toBe(false)
     expect(runRootDependencyAudit("/tmp/ouro", report([]), { exceptions, today: "2026-10-02" }).ok).toBe(false)
+  })
+
+  it("binds an exception to the advisory's source dependency even when npm propagates it to another package", () => {
+    const report = (name: string) => () => {
+      const error = new Error("audit failed") as Error & { stdout: Buffer }
+      error.stdout = Buffer.from(JSON.stringify({ vulnerabilities: {
+        consumer: { severity: "high", via: [{ name, url: "https://github.com/advisories/GHSA-a" }] },
+      } }))
+      throw error
+    }
+    const exceptions = [{ advisory: "https://github.com/advisories/GHSA-a", package: "picomatch", reason: "no patched release", due: "2026-11-24" }]
+    expect(runRootDependencyAudit("/tmp/ouro", report("picomatch"), { exceptions, today: "2026-11-17" }).ok).toBe(true)
+    expect(runRootDependencyAudit("/tmp/ouro", report("other-package"), { exceptions, today: "2026-11-17" }).ok).toBe(false)
   })
 
   it("reads reviewed audit exceptions from the package root and ignores malformed entries", () => {
@@ -463,6 +478,12 @@ describe("release-preflight", () => {
         { advisory: "https://example/b", reason: "r", due: "soon" },
       ] }))
       expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(true)
+      for (const invalid of [{ package: "" }, { package: undefined }, { due: "2026-02-30" }]) {
+        fs.writeFileSync(path.join(root, "docs", "audit-exceptions.json"), JSON.stringify({ items: [
+          { advisory: "(advisory without url)", package: "x", reason: "reviewed", due: "2026-12-01", ...invalid },
+        ] }))
+        expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(false)
+      }
       fs.writeFileSync(path.join(root, "docs", "audit-exceptions.json"), JSON.stringify({}))
       expect(runRootDependencyAudit(root, fail, { today: "2026-10-02" }).ok).toBe(false)
     } finally {
