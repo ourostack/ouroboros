@@ -6,3 +6,4 @@ export * from "./first-run-session.ts";
 export * from "./first-run-detours.ts";
 export * from "./first-run-system.ts";
 export * from "./first-run-windows.ts";
+export * from "./first-run-sso.ts";
