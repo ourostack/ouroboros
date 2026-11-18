@@ -122,34 +122,28 @@ describe("ouro up: CLI update flow", () => {
     expect(deps.writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })
   })
 
-  it("stages and activates an older published target before unpinning a newer runtime", async () => {
-    const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
+  it.each([
+    ["--latest", ["up", "--latest"], { schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.90" } as const],
+    ["a missing intent", ["up"], null],
+  ])("never downgrades an installed version to an older reachable release (%s)", async (_label, argv, intent) => {
     const installCliVersion = vi.fn(async () => {})
-    const validateCliVersionForActivation = vi.fn(() => ({ ok: true, message: "ok" }))
-    const installOuroCommand = vi.fn(successfulLauncherInstall)
-    const writeVersionIntent = vi.fn()
     const activateCliVersion = vi.fn()
+    const writeVersionIntent = vi.fn()
     const deps = makeDeps({
-      readVersionIntent: vi.fn(() => ({ schemaVersion: 1, mode: "pinned", targetVersion: "0.1.0-alpha.90" })),
+      readVersionIntent: vi.fn(() => intent),
       checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.80" })),
       getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.90"),
       installCliVersion,
-      validateCliVersionForActivation,
-      installOuroCommand,
-      writeVersionIntent,
       activateCliVersion,
-      reExecFromNewVersion: reExec,
+      writeVersionIntent,
+      installOuroCommand: vi.fn(successfulLauncherInstall),
     })
 
-    await expect(runOuroCli(["up", "--latest"], deps)).rejects.toThrow("__REEXEC__")
+    await runOuroCli(argv, deps)
 
-    expect(installCliVersion).toHaveBeenCalledWith("0.1.0-alpha.80")
-    expect(validateCliVersionForActivation).toHaveBeenCalledWith("0.1.0-alpha.80")
-    expect(writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.80" })
-    expect(activateCliVersion).toHaveBeenCalledWith("0.1.0-alpha.80")
-    expect(installCliVersion.mock.invocationCallOrder[0]).toBeLessThan(installOuroCommand.mock.invocationCallOrder[0])
-    expect(installOuroCommand.mock.invocationCallOrder[0]).toBeLessThan(writeVersionIntent.mock.invocationCallOrder[0])
-    expect(writeVersionIntent.mock.invocationCallOrder[0]).toBeLessThan(activateCliVersion.mock.invocationCallOrder[0])
+    expect(installCliVersion).not.toHaveBeenCalled()
+    expect(activateCliVersion).not.toHaveBeenCalled()
+    expect(writeVersionIntent).toHaveBeenCalledWith({ schemaVersion: 1, mode: "latest", targetVersion: "0.1.0-alpha.90" })
   })
 
   it("does not mutate latest intent or activation when recovery launcher verification fails", async () => {

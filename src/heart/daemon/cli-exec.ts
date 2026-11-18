@@ -75,7 +75,7 @@ import {
   runBlueBubblesHostAction,
 } from "./bluebubbles-host"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
-import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import { getOuroCliHome, buildChangelogCommand, compareCliVersions } from "../versioning/ouro-version-manager"
 import type { VersionIntent } from "../versioning/version-intent"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { syncNow } from "../sync"
@@ -8357,7 +8357,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
           const targetVersion = updateResult.latestVersion
-          const needsActivation = updateResult.available || linkedVersionBeforeUp !== targetVersion
+          // A reachable source can lag behind what is installed (a stale mirror
+          // or a failed lookup), so startup only ever moves forward. Going back
+          // is `ouro rollback`.
+          const wouldDowngrade = linkedVersionBeforeUp !== null && compareCliVersions(targetVersion, linkedVersionBeforeUp) < 0
+          const needsActivation = !wouldDowngrade && (updateResult.available || linkedVersionBeforeUp !== targetVersion)
+          if (wouldDowngrade) {
+            updateCheckStatus = `up to date (kept ${linkedVersionBeforeUp}; newest reachable release ${targetVersion} is older)`
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.cli_update_downgrade_refused",
+              message: "refused to downgrade to an older published release",
+              meta: { installedVersion: linkedVersionBeforeUp, publishedVersion: targetVersion, explicitLatest: Boolean(command.latest) },
+            })
+          }
           if (needsActivation) {
             await deps.installCliVersion!(targetVersion)
             const validation = deps.validateCliVersionForActivation?.(targetVersion)
@@ -8365,7 +8379,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               throw new Error(`refusing to activate ${targetVersion}: ${validation.message}`)
             }
           }
-          writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "latest", targetVersion })
+          writeVersionIntentWithRecoveryLauncher(deps, { schemaVersion: 1, mode: "latest", targetVersion: wouldDowngrade ? linkedVersionBeforeUp : targetVersion })
           if (needsActivation) {
             deps.activateCliVersion!(targetVersion)
             progress.completePhase("update check", `installed ${targetVersion}`)
