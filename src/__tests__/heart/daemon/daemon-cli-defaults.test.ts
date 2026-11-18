@@ -1896,7 +1896,15 @@ describe("daemon CLI default dependency branches", () => {
     })).rejects.toThrow("mystery failure")
   })
 
-  it("default link command persists external identity on friend record", async () => {
+  it("default link command persists external identity on friend record", async ({ onTestFailed }) => {
+    const started = performance.now()
+    const phaseStartsMs: Record<string, number> = { setup: 0 }
+    onTestFailed(() => {
+      process.stderr.write(`[friend-link-timing] ${JSON.stringify({
+        phaseStartsMs,
+        failedAfterMs: Math.round(performance.now() - started),
+      })}\n`)
+    })
     vi.resetModules()
 
     const tmpBundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-link-defaults-"))
@@ -1936,8 +1944,11 @@ describe("daemon CLI default dependency branches", () => {
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
 
+    phaseStartsMs.import = Math.round(performance.now() - started)
     const { createDefaultOuroCliDeps, runOuroCli } = await import("../../../heart/daemon/daemon-cli")
+    phaseStartsMs.dependencies = Math.round(performance.now() - started)
     const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+    phaseStartsMs.link = Math.round(performance.now() - started)
     const result = await runOuroCli([
       "link",
       "slugger",
@@ -1952,6 +1963,7 @@ describe("daemon CLI default dependency branches", () => {
       writeStdout: vi.fn(),
     })
 
+    phaseStartsMs.readback = Math.round(performance.now() - started)
     expect(result).toContain("linked aad:aad-user-100 to friend-1")
     const saved = JSON.parse(fs.readFileSync(path.join(friendPath, "friend-1.json"), "utf-8")) as {
       externalIds: Array<{ provider: string; externalId: string }>
