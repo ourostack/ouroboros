@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "items": [
     {
+      "advisory": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "owner": "Ouroboros maintainers (Ari Mendelow)",
+      "issue": "https://github.com/ourostack/ouroboros/issues/1391",
+      "reason": "Upstream-unpatched ReDoS, not remediated. Rechecked 2026-11-17: <=4.0.7 affected, no patched version, configured registry latest 4.0.7. Production fast-glob 3.3.3 -> micromatch 4.0.8 -> picomatch 2.3.2 and development Vitest/Vite/typescript-eslint -> tinyglobby -> picomatch 4.0.7 are affected. The agent's glob tool accepts patterns and calls fast-glob synchronously; crafted repeated extglobs can block the whole agent event loop. Agent-mediated input limits exposure but is not a proven mitigation; result caps/timeouts do not prevent this synchronous stall. Avoid untrusted glob syntax and repeated extglobs until patched. Accepted only through normal repository review under the existing dated audit policy; all other audit findings remain gated. Track a compatible upstream fix and remove this entry in #1391; on the due date preflight blocks again without automatic renewal.",
+      "due": "2026-11-24"
+    },
+    {
       "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
       "package": "braces",
       "reason": "Reached only through fast-glob 3.3.3 -> micromatch 4.0.8 -> braces 3.0.3, and no patched braces exists (3.0.3 is the latest; the advisory covers all versions). The risk is stack exhaustion from deeply nested brace patterns; the harness passes glob patterns from its own file tools, so the worst case is a failed tool call in the agent's own process. Re-decide when a patched braces or micromatch ships. Rechecked 2026-11-15: braces 3.0.3 and micromatch 4.0.8 are still the latest; deadline moved two weeks.",
