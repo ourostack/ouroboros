@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1207",
       "changes": [
-        "Name the failed pre-pass step in an error annotation and the job summary before cancelling the shards, so cancelled checks never hide the cause."
+        "Name the failed pre-pass step in an error annotation and the job summary before cancelling the shards, so cancelled checks never hide the cause.",
+        "Update the Ouro UI files to Ouro UI v1.3.312."
       ]
     },
     {
