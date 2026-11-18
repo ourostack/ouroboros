@@ -78,6 +78,14 @@ const backdropClass =
   "data-swipe-dismiss:data-ending-style:duration-(--ouro-duration-fast) " +
   iosBackdrop;
 
+// A non-modal sheet's light dimming layer: it lets every press through to the page, so a press outside still dismisses.
+const scrimClass =
+  "pointer-events-none fixed inset-0 z-1000 min-h-dvh bg-(--ouro-backdrop-color) opacity-(--ouro-scrim-max) " +
+  "[transition:opacity_var(--ouro-duration-sheet)_var(--ouro-ease-drawer)] " +
+  "data-starting-style:opacity-0 data-ending-style:opacity-0 " +
+  "data-ending-style:duration-(--ouro-duration-slow) data-ending-style:ease-(--ouro-ease-out) " +
+  iosBackdrop;
+
 const viewportClasses = {
   bottom: "items-end justify-center",
   top: "items-start justify-center",
@@ -283,6 +291,21 @@ export function SheetBackdrop({
   useSheetPart("SheetBackdrop", "…");
   const anchorRef = useBackdropAnchor(ref);
   return <Drawer.Backdrop {...props} ref={anchorRef} data-ouro="sheet-backdrop" className={backdropClass} />;
+}
+
+/**
+ * Part: a light dimming layer for a `modal={false}` sheet (a modal sheet draws its own backdrop). It tints the
+ * page behind the sheet with `--ouro-backdrop-color` at `--ouro-scrim-max` (a few percent), so the
+ * page stays easy to read, and it passes presses through: a press on the page reaches the page, and
+ * closes the sheet when it closes on an outside press. A `ref` reaches its element.
+ */
+export function SheetScrim({
+  ref,
+  ...props
+}: Omit<Drawer.Backdrop.Props, "className" | "forceRender"> & { ref?: Ref<HTMLDivElement> | undefined }): JSX.Element {
+  useSheetPart("SheetScrim", "…");
+  const anchorRef = useBackdropAnchor(ref);
+  return <Drawer.Backdrop {...props} forceRender ref={anchorRef} aria-hidden="true" data-ouro="sheet-scrim-backdrop" className={scrimClass} />;
 }
 
 /**
