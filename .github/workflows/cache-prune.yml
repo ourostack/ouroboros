@@ -1,0 +1,30 @@
+name: Cache prune
+# Keeps the Actions cache well under GitHub's 10 GB limit, so main's entries stop evicting each other: deletes the
+# caches pull requests saved, and on main keeps the newest of each key family. Docker BuildKit's entries are never
+# deleted. The rules and tests live in ourostack/.github (tools/cache-prune). Runs after main's coverage-gate, hourly,
+# and by hand.
+on:
+  workflow_run:
+    workflows: [coverage-gate]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "List what would be deleted and delete nothing."
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: cache-prune
+  cancel-in-progress: false
+jobs:
+  prune:
+    uses: ourostack/.github/.github/workflows/cache-prune-reusable.yml@main
+    with:
+      skip-prefixes: ""
+      dry-run: ${{ inputs.dry-run || false }}
