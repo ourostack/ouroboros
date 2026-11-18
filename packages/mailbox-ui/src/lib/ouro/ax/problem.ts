@@ -49,9 +49,13 @@ function errorMessage(shape: Pick<AxErrorShape, "thing" | "problem" | "fix">): s
   return shape.fix === null ? head : `${head} Fix: ${sentence(shape.fix)}.`;
 }
 
-/** The one stderr line: `<tool>: <thing>: <problem>. Fix: <fix>.` Line breaks in any part become spaces. */
+/**
+ * The one stderr line: `<tool>: <thing>: <problem>. Fix: <fix>.` Line breaks in any part become spaces. A thing that is
+ * the tool itself (a one-command CLI names its only command after the tool) is not said twice.
+ */
 function errorLine(tool: string, shape: Pick<AxErrorShape, "thing" | "problem" | "fix">): string {
-  return `${tool}: ${errorMessage(shape)}`.replace(/\s*[\r\n]+\s*/g, " ");
+  const message = shape.thing === tool ? errorMessage({ ...shape, thing: "" }).replace(/^: /, "") : errorMessage(shape);
+  return `${tool}: ${message}`.replace(/\s*[\r\n]+\s*/g, " ");
 }
 
 /**

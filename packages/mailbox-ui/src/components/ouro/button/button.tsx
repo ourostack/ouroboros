@@ -78,9 +78,14 @@ export interface ButtonBaseProps {
    * keeps a target at least 24px tall and wide (44px on a coarse pointer). shadcn's `default`
    * is `md`; for an icon-only button, pass the icon as children and an `aria-label`: Button sizes
    * the icon as it sizes `startIcon`, unless the icon has a size class of its own, and makes the
-   * button as wide as it is tall (a circle where the theme's controls are capsules). Any other
+   * button at least as wide as it is tall, so an icon's button is square (a circle where the theme's
+   * controls are capsules). Wider content keeps its width, and a picture whose `width` and `height` differ,
+   * such as a logo, keeps the label's padding. Any other
    * string is a type error whose message names the fix. @default "md"
-   * @claim "as wide as it is tall" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > is as wide as it is tall at size %s, with only an icon and a name)
+   * @claim "at least as wide as it is tall" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > is as wide as it is tall at size %s, with only an icon and a name)
+   * @claim "Wider content keeps its width" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > keeps an image child at its own width, and the button is never narrower than it is tall)
+   * @claim "Wider content keeps its width" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > keeps a wide element child at its full width under its aria-label)
+   * @claim "a picture whose `width` and `height` differ" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::icon-only size > keeps a label's padding around a wide picture such as a logo, and squares a square one or an icon)
    * @claim "are taller on phones" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::appearance > orders sizes sm < md < lg)
    * @claim "are taller on phones" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::className > lets the app's height and padding win at desktop widths too)
    * @claim "it takes the text's size" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::inline size > sits in a line of text at the text's size without moving the line, and keeps a 24px target)
@@ -301,6 +306,10 @@ const iconClass = "size-[1.25em] shrink-0";
 const iconChildClass =
   "[&>[data-ouro-label]>svg:not([class*='size-'])]:size-[1.25em] [&>[data-ouro-label]>svg]:shrink-0";
 
+// An icon-only button drops the label's side padding and is at least as wide as it is tall: the height is a floor,
+// never a width, so an icon sits in a square and a child wider than the height keeps its width.
+const iconOnlyClass = "min-w-(--ouro-button-h) [--ouro-button-px:0px] sm:[--ouro-button-px:0px]";
+
 const buttonTypes = ["button", "submit", "reset"] as const;
 
 function buttonHint(token: string): string {
@@ -492,17 +501,20 @@ export function Button(props: ButtonProps): JSX.Element {
   }, [pressable]);
 
   const buttonRef = useMergedRef((rest as { ref?: Ref<HTMLElement> }).ref, own);
-  // An icon-only button (one element as its whole label, named by aria-label or aria-labelledby) is as wide as it is
-  // tall, as shadcn's icon size is, so a theme whose controls are capsules draws it as a circle.
+  // An icon-only button (one element as its whole label, named by aria-label or aria-labelledby) is at least as wide as
+  // it is tall, so an icon's button is square, as shadcn's icon size is, and a theme whose controls are capsules draws
+  // it as a circle. Its width is a floor, so content that is wider than the height keeps its width.
+  // A picture whose width and height differ, such as a logo, is not an icon: it keeps the label's padding.
   const named = rest as { "aria-label"?: string; "aria-labelledby"?: string };
   const iconOnly =
     size !== "inline" &&
     !StartIcon &&
     !EndIcon &&
-    isValidElement(children) &&
+    isValidElement<{ width?: unknown; height?: unknown }>(children) &&
     children.type !== Fragment &&
+    !(children.type === "img" && children.props.width !== children.props.height) &&
     Boolean(named["aria-label"] || named["aria-labelledby"]);
-  const classes = cn(base, iconChildClass, sizes[size], iconOnly && "w-(--ouro-button-h) px-0", looks[variant][tone], fullWidth && "w-full", className);
+  const classes = cn(base, iconChildClass, sizes[size], iconOnly && iconOnlyClass, looks[variant][tone], fullWidth && "w-full", className);
 
   // The touch target comes first and the label is positioned, so the label paints above
   // the target: the target still enlarges the hit area, and nothing covers the text

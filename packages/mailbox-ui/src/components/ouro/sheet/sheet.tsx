@@ -59,7 +59,7 @@ export interface SheetBaseProps {
    * Whether the sheet shuts off the rest of the page while it is open. `false` makes it a
    * panel beside a page the person keeps using, such as a live preview of a look: no backdrop,
    * no focus trap and no scroll lock, the page stays at full strength and in reach, and a press
-   * or focus on the page leaves the sheet open. Escape, with focus in the sheet, and its close
+   * or focus on the page leaves the sheet open, unless you pass `closeOnOutsidePress`. Escape, with focus in the sheet, and its close
    * button, shown at its top corner, close it. @default true
    * @claim "Whether the sheet shuts off the" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > draws no backdrop and leaves the page at full strength, in reach and scrolling)
    * @claim "Whether the sheet shuts off the" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > is a dialog without aria-modal, lets focus leave it, and stays open when focus or a press goes to the page)
@@ -69,6 +69,20 @@ export interface SheetBaseProps {
    * @claim "Whether the sheet shuts off the" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > stays modal by default, with its backdrop)
    */
   modal?: boolean | undefined;
+  /**
+   * Whether a press outside the sheet closes it. With `modal={false}`, `true` makes the panel
+   * beside the page close when the person presses the page, so a press on another row both closes
+   * it and reaches that row. Focus moving out of it closes it too, by Tab or from your code, so a
+   * keyboard closes it as a press does, and focus stays where it went. Menus, popovers and dialogs
+   * opened from inside the sheet are part of it, so a press in one of them leaves the sheet open.
+   * `false` on a modal sheet keeps it open when its backdrop is pressed.
+   * @default `true` for a modal sheet, `false` with `modal={false}`
+   * @claim "With `modal={false}`, `true` makes the" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with closeOnOutsidePress, closes on a press on the page, and the press still reaches the page)
+   * @claim "Menus, popovers and dialogs opened from" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with closeOnOutsidePress, stays open on a press in a menu or a dialog opened from inside it)
+   * @claim "Focus moving out of it closes" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > with closeOnOutsidePress, closes when focus moves out of it by %s, and leaves focus where it went)
+   * @claim "`false` on a modal sheet keeps it" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::non-modal sheet > closeOnOutsidePress={false} keeps a modal sheet open on a press on its backdrop)
+   */
+  closeOnOutsidePress?: boolean | undefined;
   /** The body. It scrolls when it is taller than the sheet. */
   children: ReactNode;
   /** The actions row, stacked full width on phones; primary action last. */
@@ -120,7 +134,10 @@ export type SheetProps = SheetWithTriggerProps | SheetControlledProps;
  *
  * Use `trigger` for a sheet a button opens, or `open` with `onOpenChange` to
  * control it. Use `Dialog` instead when the content should be a centered
- * dialog on larger screens; it renders this sheet on phones.
+ * dialog on larger screens; it renders this sheet on phones. Use the page itself
+ * (`AuthLayout`) instead for a step the person must take, such as signing in: a
+ * person can always put a Sheet away, and Ouro check's `dismissable-step` fails one
+ * over a blank page, or over a signed-out page with no way to sign in.
  *
  * To close the sheet from an action, control it (`open`/`onOpenChange`) and set
  * `open` to `false` in the handler, or wrap each action in `SheetClose`
@@ -131,11 +148,13 @@ export type SheetProps = SheetWithTriggerProps | SheetControlledProps;
  * ouro-base.css). If your app has fixed bars above z-50, raise it in a `:root` rule
  * of your own after the Ouro tokens, outside any `@layer`: `:root { --ouro-layer: 60; }`.
  * Don't edit the `--ouro-layer: 50` line shadcn wrote; `shadcn add` resets it.
+ * Opened from inside a Sheet, it shows above it.
  *
  * Testing accessibility: in WebKit, Base UI's focus guards take `role="button"`
  * without a name so VoiceOver's cursor stays trapped. Exclude them:
  * `new AxeBuilder({ page }).exclude("[data-base-ui-focus-guard]")`.
  *
+ * @claim "Ouro check's `dismissable-step` fails one" test/check-first-run-in-page.test.ts verify:testExists(test/check-first-run-in-page.test.ts::findFirstRunIssues: dismissable-step > finds a modal dialog that Escape or its close button puts away onto a blank page)
  * @group Overlays
  * @see https://ui.ouroboros.bot/docs/sheet
  *
@@ -147,6 +166,7 @@ export type SheetProps = SheetWithTriggerProps | SheetControlledProps;
  *   <FilterForm />
  * </Sheet>
  * @claim "It stacks above the page at" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::Sheet stacking above the app's fixed bars > stays above a fixed app bar at the same level: a tie, which the portal wins as the last child of body)
+ * @claim "Opened from inside a Sheet, it shows above it" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::sheet in a sheet > shows a Sheet opened from inside a Sheet above it, outer modal %s)
  * @claim "It stacks above the page at" registry/ouro/components/ouro/sheet/sheet.test.tsx verify:testExists(registry/ouro/components/ouro/sheet/sheet.test.tsx::Sheet stacking above the app's fixed bars > puts the portal on the --ouro-layer level, as its own stacking context)
  * @claim "It stacks above the page at" registry/ouro/theme/ouro-base.css verify:fileLine(registry/ouro/theme/ouro-base.css, /^\s+--ouro-layer:\s50;/)
  * @claim "Testing accessibility: in WebKit, Base UI's" test/axe-exclude.test.tsx verify:testExists(test/axe-exclude.test.tsx::matches the open dialog's focus guards, and with them excluded the accessibility gate finds nothing)
@@ -162,6 +182,7 @@ export function Sheet(props: SheetProps): JSX.Element {
     side: sideProp = "bottom",
     snapPoints,
     modal,
+    closeOnOutsidePress,
     children,
     footer,
     className,
@@ -214,6 +235,7 @@ export function Sheet(props: SheetProps): JSX.Element {
       side={side}
       snapPoints={snapPoints}
       modal={modal}
+      closeOnOutsidePress={closeOnOutsidePress}
       className={className}
       trigger={trigger}
       open={open}
@@ -244,6 +266,8 @@ export interface SheetFrameProps {
   snapPoints?: SheetSnapPoint[] | undefined;
   /** `false` leaves the page in use beside the sheet (`Sheet`'s `modal`). @default true */
   modal?: boolean | undefined;
+  /** Whether a press outside closes the sheet (`Sheet`'s `closeOnOutsidePress`). @default `modal` */
+  closeOnOutsidePress?: boolean | undefined;
   children: ReactNode;
   className?: string | undefined;
   /** The opening element. May come with `open`, when `Dialog` owns the state. */
@@ -283,6 +307,7 @@ export function SheetFrame({
   side,
   snapPoints,
   modal = true,
+  closeOnOutsidePress = modal,
   children,
   className,
   trigger,
@@ -305,6 +330,7 @@ export function SheetFrame({
       side={side}
       snapPoints={snapPoints}
       modal={modal}
+      disablePointerDismissal={!closeOnOutsidePress}
       {...(open !== undefined ? { open, onOpenChange: (next: boolean) => onOpenChange!(next) } : {})}
       {...(onOpenChangeComplete ? { onOpenChangeComplete } : {})}
     >

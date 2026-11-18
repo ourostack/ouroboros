@@ -6,5 +6,25 @@
   {
     "rule": "off-scale",
     "summary": "Spacing (a margin, padding or gap) off the theme's spacing scale; each finding names the step to use."
+  },
+  {
+    "rule": "linked-card-dead-zone",
+    "summary": "A card or row that is one link where a click at some spot on it opens nothing, as when the page positions a part of it and the link's layer stops there."
+  },
+  {
+    "rule": "reveal-reflow",
+    "summary": "A card whose hover or keyboard focus reveals a part and moves the card's own box or anything around it."
+  },
+  {
+    "rule": "blank-pane",
+    "summary": "The pane a person looks at (the open modal dialog, else the main landmark) draws nothing to read, nothing to press and no named progress."
+  },
+  {
+    "rule": "dismissable-step",
+    "summary": "A modal dialog a person can put away over a page that would strand them: blank behind it, or signed out with no way to sign in."
+  },
+  {
+    "rule": "signed-out-empty",
+    "summary": "A page marked signed out (data-ouro-session) that shows the empty state a signed-in person would see, such as All caught up."
   }
 ]
