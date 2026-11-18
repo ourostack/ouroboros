@@ -9,6 +9,20 @@ let timer: ReturnType<typeof setTimeout> | undefined;
  */
 const DELAY_MS = 100;
 
+/**
+ * How long a message waits after the action that prompts it, as `announce`'s `delayMs`: the screen reader first says
+ * what the action itself makes it say (a typed key, a control's new state), and VoiceOver drops a polite message that
+ * arrives while it is speaking (ourostack/ouro-ui#2086). It is a fixed time and does not detect when speech ends. Call
+ * `announce` again with each new action, as each typed key does, and the wait starts over, so the message is said once
+ * the person pauses.
+ *
+ * Internal: Ouro UI components use it; apps don't need to.
+ *
+ * @example
+ * useEffect(() => (query ? announce(`${count} matches`, { delayMs: AFTER_ACTION_MS }) : undefined), [query, count]);
+ */
+export const AFTER_ACTION_MS = 1500;
+
 function getRegion(): HTMLElement {
   if (region?.isConnected) return region;
   region = document.createElement("div");
