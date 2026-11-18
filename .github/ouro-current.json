@@ -1,0 +1,13 @@
+{
+  "version": [
+    { "path": "package.json", "pattern": "^  \"version\": \"([^\"]+)\"" },
+    { "path": "package-lock.json", "pattern": "^  \"version\": \"([^\"]+)\"" },
+    { "path": "package-lock.json", "pattern": "^      \"version\": \"([^\"]+)\"" },
+    { "path": "npm-shrinkwrap.json", "pattern": "^  \"version\": \"([^\"]+)\"" },
+    { "path": "npm-shrinkwrap.json", "pattern": "^      \"version\": \"([^\"]+)\"" },
+    { "path": "packages/ouro.bot/package.json", "pattern": "^  \"version\": \"([^\"]+)\"" },
+    { "path": "deploy/unraid/sanctuary.xml", "pattern": "ghcr\\.io/ourostack/ouroboros-butler:([^<]+)</Repository>" },
+    { "path": "deploy/unraid/sanctuary.ouro/bundle-meta.json", "pattern": "^  \"runtimeVersion\": \"([^\"]+)\"" }
+  ],
+  "changelog": { "path": "changelog.json", "json": "versions", "text": "Update the Ouro UI files to {releases}." }
+}
