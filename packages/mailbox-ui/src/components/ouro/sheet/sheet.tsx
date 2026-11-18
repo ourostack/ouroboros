@@ -264,7 +264,11 @@ export interface SheetFrameProps {
   description?: ReactNode;
   side: SheetSide;
   snapPoints?: SheetSnapPoint[] | undefined;
-  /** `false` leaves the page in use beside the sheet (`Sheet`'s `modal`). @default true */
+  /**
+   * The snap point the sheet rests at, held by the caller: `Command` keeps its phone sheet's size this way as results filter.
+   * Passing it makes the Drawer controlled, which Base UI requires to change `snapPoints` after the sheet has opened.
+   */
+  snapPoint?: SheetSnapPoint | undefined;
   modal?: boolean | undefined;
   /** Whether a press outside closes the sheet (`Sheet`'s `closeOnOutsidePress`). @default `modal` */
   closeOnOutsidePress?: boolean | undefined;
@@ -306,6 +310,7 @@ export function SheetFrame({
   description,
   side,
   snapPoints,
+  snapPoint,
   modal = true,
   closeOnOutsidePress = modal,
   children,
@@ -329,6 +334,7 @@ export function SheetFrame({
     <SheetRoot
       side={side}
       snapPoints={snapPoints}
+      snapPoint={snapPoint}
       modal={modal}
       disablePointerDismissal={!closeOnOutsidePress}
       {...(open !== undefined ? { open, onOpenChange: (next: boolean) => onOpenChange!(next) } : {})}

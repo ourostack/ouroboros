@@ -209,7 +209,9 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
         const first = lengths(v).find(({ n, unit }) => unit !== "em" && Math.abs(px(`${n}${unit}`)) >= spacingPx / 2)!;
         const steps = Math.round(Math.abs(px(`${first.n}${first.unit}`)) / spacingPx);
         const prefix = p.startsWith("padding") ? "p" : p.startsWith("margin") ? "m" : "gap";
-        return `calc(var(--spacing) * ${steps}) (${prefix}-${steps})`;
+        // A negative margin keeps its sign, as Tailwind writes it (-m-6): the step alone would push the other way.
+        const sign = first.n < 0 ? "-" : "";
+        return `calc(var(--spacing) * ${sign}${steps}) (${sign}${prefix}-${steps})`;
       },
     },
   ];
