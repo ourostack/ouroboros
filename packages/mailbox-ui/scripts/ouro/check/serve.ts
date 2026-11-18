@@ -6,6 +6,9 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, relative, resolve, sep } from "node:path";
 
+/** A page that only sends the browser on to another, as a static site's redirect does. */
+const REFRESH = /<meta\s+http-equiv="refresh"/i;
+
 // The built-folder side of run.ts: a static server for the folder, as a host would serve it, and the folder's pages.
 
 interface Server {
@@ -76,7 +79,8 @@ function globToRegExp(glob: string): RegExp {
 }
 
 // Every HTML page in a built folder, as the path a browser asks for (/, /docs/, /404.html), sorted; with `glob`, those
-// it matches. Hidden folders and node_modules are left out.
+// it matches. Hidden folders and node_modules are left out, and so is a page that only refreshes to another
+// (`<meta http-equiv="refresh">`): the browser leaves it at once, and the page it goes to is checked as itself.
 async function listPages(folder: string, glob?: string): Promise<string[]> {
   const root = resolve(folder);
   const pages: string[] = [];
@@ -85,7 +89,7 @@ async function listPages(folder: string, glob?: string): Promise<string[]> {
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else if (entry.name.endsWith(".html")) pages.push(`/${relative(root, path).split(sep).join("/")}`.replace(/(^|\/)index\.html$/, "$1"));
+      else if (entry.name.endsWith(".html") && !REFRESH.test(await readFile(path, "utf8"))) pages.push(`/${relative(root, path).split(sep).join("/")}`.replace(/(^|\/)index\.html$/, "$1"));
     }
   };
   await walk(root);
