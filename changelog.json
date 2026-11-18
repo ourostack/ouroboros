@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1208",
+      "changes": [
+        "Startup never downgrades an installed CLI to an older reachable release: when a lagging mirror or failed GitHub lookup makes the newest reported release older than the installed one, ouro up (including --latest) keeps the installed version and records it as the latest intent; ouro rollback remains the way to go back."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1207",
       "changes": [
         "Name the failed pre-pass step in an error annotation and the job summary before cancelling the shards, so cancelled checks never hide the cause.",
