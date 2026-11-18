@@ -42,15 +42,17 @@ jobs:
       # Missing version bumps, wrapper drift and changelog misses fail here,
       # before any coverage shard starts.
       - name: Release preflight (PRs only)
+        id: preflight
         if: github.event_name == 'pull_request'
-        run: npm run release:preflight -- --base-ref "origin/${{ github.base_ref }}"
+        run: npm run release:preflight -- --base-ref "origin/${{ github.base_ref }}" 2>&1 | tee "$RUNNER_TEMP/preflight.log"
 
       - name: Pre-pass
+        id: prepass
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            node .github/scripts/ci-prepass.cjs --base-ref "origin/$BASE_REF"
+            node .github/scripts/ci-prepass.cjs --base-ref "origin/$BASE_REF" 2>&1 | tee "$RUNNER_TEMP/prepass.log"
           else
             node .github/scripts/ci-prepass.cjs
           fi
@@ -58,11 +60,17 @@ jobs:
       # A pull request that fails the pre-pass fails the shards too, so stop the
       # run now: the PR is red (a cancelled required check is not a pass) in a
       # minute instead of after the shards. Never on main, where publish runs.
+      # The failure is written to an annotation and the job summary first, so
+      # the cancelled shards never hide the cause.
       - name: Stop the run early on a failed pre-pass (PRs only)
         if: failure() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || true
+          FAILED_STEP: ${{ steps.preflight.outcome == 'failure' && 'Release preflight' || 'Pre-pass' }}
+          PREPASS_LOG: ${{ steps.preflight.outcome == 'failure' && format('{0}/preflight.log', runner.temp) || format('{0}/prepass.log', runner.temp) }}
+        run: |
+          node .github/scripts/prepass-failure-notice.cjs
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || true
 
   # The vitest coverage suite split across 16 runners (about 2 to 3 minutes of
   # tests each, six runners took 4 to 5 and twelve about 3.5; one runner took 26+). A pull request

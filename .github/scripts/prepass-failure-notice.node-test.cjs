@@ -1,0 +1,43 @@
+const assert = require("node:assert/strict")
+const { mkdtempSync, readFileSync, writeFileSync } = require("node:fs")
+const { tmpdir } = require("node:os")
+const { join } = require("node:path")
+const { test } = require("node:test")
+const { buildNotice, main } = require("./prepass-failure-notice.cjs")
+
+const preflightLog = [
+  "lockfile versions aligned (0.1.0-alpha.1204)",
+  "release preflight: FAIL",
+  "changelog.json must be updated alongside releasable implementation changes: src/a.ts",
+].join("\n")
+
+test("a missing version bump is named with the release-bump fix and says the cancels are a result", () => {
+  const { annotation, summary } = buildNotice({ step: "Release preflight", log: preflightLog })
+  assert.match(annotation, /^::error title=Release preflight failed, so the shards were cancelled::/)
+  assert.match(annotation, /changelog\.json must be updated/)
+  assert.match(annotation, /npm run release:bump/)
+  assert.match(annotation, /not the cause/)
+  assert.match(summary, /^## Release preflight failed/)
+})
+
+test("another failure keeps its own reason and offers no bump hint; empty output says so", () => {
+  const other = buildNotice({ step: "Pre-pass", log: "prepass: pass lint\nprepass: FAIL tsc\nsrc/x.ts(1,1): error TS2322" })
+  assert.match(other.annotation, /error TS2322/)
+  assert.doesNotMatch(other.annotation, /release:bump/)
+  assert.match(buildNotice({ step: "Pre-pass", log: "a\nb\nc\nd" }).annotation, /b; c; d/)
+  assert.match(buildNotice({ step: "Pre-pass", log: "" }).annotation, /no output was captured/)
+})
+
+test("main reads the step log, prints the annotation and appends the summary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "notice-"))
+  const log = join(dir, "step.log")
+  const summary = join(dir, "summary.md")
+  writeFileSync(log, preflightLog)
+  let out = ""
+  main({ PREPASS_LOG: log, FAILED_STEP: "Release preflight", GITHUB_STEP_SUMMARY: summary }, (text) => { out += text })
+  assert.match(out, /^::error /)
+  assert.match(readFileSync(summary, "utf8"), /Release preflight failed/)
+  let bare = ""
+  main({}, (text) => { bare += text })
+  assert.match(bare, /pre-pass failed/)
+})
