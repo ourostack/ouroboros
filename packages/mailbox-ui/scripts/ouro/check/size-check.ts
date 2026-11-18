@@ -137,6 +137,20 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
     const hidden = el.closest('[aria-hidden="true"]');
     return Boolean(hidden) && !modals.some((m) => !m.contains(el) && !hidden!.contains(m));
   };
+  // Text fading out to nothing is leaving the page: a running animation or transition on it, or on an element around it,
+  // ends at no opacity. A page whose words change while the rules run (a line that ticks over) is caught part way through
+  // such a fade, and the line on its way out is no text a person reads.
+  const leaving = (el: Element) => {
+    for (let n: Element | null = el; n && n !== document.documentElement; n = n.parentElement) {
+      for (const animation of n.getAnimations()) {
+        if (animation.playState !== "running") continue;
+        // Every animation getAnimations returns runs a keyframe effect, with its keyframes.
+        const last = (animation.effect as KeyframeEffect).getKeyframes().at(-1)!;
+        if (last["opacity"] !== undefined && Number(last["opacity"]) <= 0.05) return true;
+      }
+    }
+    return false;
+  };
   // What this pass reports, so the box-cut pass below does not report an element twice.
   const cutOwn = new Set<Element>();
   for (const el of document.body.querySelectorAll("*")) {
@@ -147,7 +161,7 @@ async function findSizeIssues({ measures = [], density = Math.min(2, window.devi
     const clipsY = /hidden|clip/.test(s.overflowY);
     const clamp = s.getPropertyValue("-webkit-line-clamp");
     const clamped = clamp !== "" && clamp !== "none";
-    if ((!clipsX && !clipsY && !clamped) || !shown(el)) continue;
+    if ((!clipsX && !clipsY && !clamped) || !shown(el) || leaving(el)) continue;
     const cutX = clipsX && el.scrollWidth > el.clientWidth + 1;
     const cutY = (clipsY || clamped) && el.scrollHeight > el.clientHeight + 2;
     // Truncation on purpose (an ellipsis or a line clamp) passes when the whole text is still there for a person who

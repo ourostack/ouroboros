@@ -80,9 +80,11 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
   probe.style.cssText = "position:fixed;left:-9999px;top:0;width:10px;height:10px;visibility:hidden;pointer-events:none";
   document.body.append(probe);
   const computed = (property: string, value: string) => {
+    // Put back what the probe held, so a value the browser rejects reads the same every time.
+    const before = probe.style.getPropertyValue(property);
     probe.style.setProperty(property, value);
     const out = getComputedStyle(probe).getPropertyValue(property);
-    probe.style.removeProperty(property);
+    probe.style.setProperty(property, before);
     return out;
   };
   const canvas = document.createElement("canvas");
@@ -96,7 +98,8 @@ function findOffThemeIssues({ maxIssues = 40 }: OffThemeOptions = {}): PageIssue
     const [r, g, b, a] = paint.getImageData(0, 0, 1, 1).data;
     return { r: r!, g: g!, b: b!, a: a! / 255 };
   };
-  const px = (length: string) => parseFloat(computed("width", length));
+  // A width can't be negative, so a negative length is measured by its size.
+  const px = (length: string) => parseFloat(computed("width", length.replace(/^-/, "")));
   const tokenColors = colorTokens.map((name) => ({ name, color: rgb(computed("color", `var(--${name})`)) }));
   const radiusValue = (step: string) =>
     defined(`--radius-${step}`) ? `var(--radius-${step})` : radiusFactors[step] === 1 ? "var(--radius)" : `calc(var(--radius) * ${radiusFactors[step]})`;
