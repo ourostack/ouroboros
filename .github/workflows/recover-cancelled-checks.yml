@@ -26,7 +26,7 @@ jobs:
           node --test --experimental-test-coverage
           --test-coverage-include='.github/scripts/recover-cancelled-checks.cjs'
           --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100
-          .github/scripts/recover-cancelled-checks.test.cjs
+          .github/scripts/recover-cancelled-checks.node-test.cjs
 
   recover:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'cancelled'

@@ -42,7 +42,7 @@ The `Recover cancelled required checks` workflow handles completed CI runs, with
 
 GitHub increments `run_attempt` on rerun; only attempt 1 is eligible. A manual rerun also consumes that lineage's budget. The handler serializes by run id and rechecks the live PR and attempt before requesting a rerun. Disarming auto-merge stops recovery. Cancellation actor identity is not inferred from the original run actor.
 
-Recovery executes only trusted default-branch code, never the triggering PR's code or artifacts. Its dependency-free regression tests run with `node --test .github/scripts/recover-cancelled-checks.test.cjs`; the workflow enforces complete coverage for the recovery module.
+Recovery executes only trusted default-branch code, never the triggering PR's code or artifacts. Its dependency-free regression tests run with `node --test .github/scripts/recover-cancelled-checks.node-test.cjs`; the workflow enforces complete coverage for the recovery module. The `node-test` filename keeps Vitest from discovering a suite that belongs to a different runner.
 
 ## Dated npm Audit Exceptions
 
