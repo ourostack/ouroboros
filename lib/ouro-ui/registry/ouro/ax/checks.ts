@@ -6,7 +6,7 @@ export type { CheckDef, CheckFix, CheckResult, CheckRow, CheckState, Checks, Che
 
 import type { NextStep } from "./outcome.ts";
 import { devCommandsIn } from "./dev-commands.ts";
-import { BASE_EXIT_CODES, FINDINGS_EXIT_CODE } from "./exit-codes.ts";
+import { BASE_EXIT_CODES, FINDINGS_EXIT_CODE, type ExitTable } from "./exit-codes.ts";
 import { createProgress, markOf, nextStepsText, paint, terminalStyle, timeText, type ProgressStream, type TerminalStyle, type Timers } from "./terminal.ts";
 
 /**
@@ -53,6 +53,12 @@ interface ChecksDef<C> {
   /** What one check is called in the verdict, singular and plural. Default `["check", "checks"]`. */
   noun?: readonly [string, string];
   checks: readonly CheckDef<C>[];
+  /**
+   * The tool's own exit table (ax-exit-codes), for a tool that gives Ouro AX's findings code another meaning, such as
+   * "not running". A finding then exits with the table's `findings` code, and a check that threw with its `error` code.
+   * Leave it out for Ouro AX's own `findings` and `error` codes.
+   */
+  exits?: ExitTable;
 }
 
 type Verdict = "passed" | "warned" | "failed" | "errored";
@@ -104,7 +110,11 @@ const isCommandFix = (fix: CheckFix): fix is NextStep => "command" in fix;
  * an empty list, a repeated id, an empty label or a `needs` that names no earlier check, and at run time when a warning or failure
  * has no fix, or its fix is the command just run, so a tool's own tests catch both. A fix or a next step that asks for
  * a developer command or a repository path throws too, so a doctor never tells a person to run a repository script.
+ * Given the tool's own exit table as `exits`, a finding exits with that table's `findings` code, and a table without
+ * one is refused, so every code the checks give is one the tool's help documents.
  *
+ * @claim "a finding exits with that table's `findings` code" registry/ouro/ax/checks.test.mts verify:testExists(registry/ouro/ax/checks.test.mts::a tool's own exit table gives a finding its findings code, wherever the table puts it)
+ * @claim "a table without one is refused" registry/ouro/ax/checks.test.mts verify:testExists(registry/ouro/ax/checks.test.mts::a tool's exit table without a findings code is refused, naming the code that took 3)
  * @claim "an empty list, a repeated id, an empty label or a `needs` that names no earlier check" registry/ouro/ax/checks.test.mts verify:testExists(registry/ouro/ax/checks.test.mts::defineChecks refuses an empty list, a repeated id, an empty label and a needs that names no earlier check)
  * @claim "at run time when a warning or failure has no fix, or its fix is the command just run" registry/ouro/ax/checks.test.mts verify:testExists(registry/ouro/ax/checks.test.mts::a warning or failure without a fix, or with the command just run as its fix, fails the run)
  * @claim "A fix or a next step that asks for a developer command or a repository path throws too" registry/ouro/ax/checks.test.mts verify:testExists(registry/ouro/ax/checks.test.mts::a fix or next step that asks for a developer command throws, unless it is marked sourceCheckout)
@@ -117,6 +127,9 @@ const isCommandFix = (fix: CheckFix): fix is NextStep => "command" in fix;
  *   ],
  * });
  * const report = await doctor.run(context, { progress: process.stderr, env: process.env });
+ * // A tool whose exit 3 means "not running" puts findings after its own codes:
+ * const exits = defineExitCodes([...BASE_EXIT_CODES, { code: 3, name: "unavailable", short: "not running", meaning: "not running: open the app" }, { ...FINDINGS_EXIT_CODE, code: 4 }]);
+ * defineChecks({ command: "chat doctor", exits, checks }); // a finding exits 4
  */
 function defineChecks<C>(def: ChecksDef<C>): Checks<C> {
   if (!def.checks.length) throw new Error(`defineChecks: ${def.command} declares no checks. Fix: declare the checks it runs.`);
@@ -127,7 +140,8 @@ function defineChecks<C>(def: ChecksDef<C>): Checks<C> {
     for (const need of check.needs ?? []) if (!seen.has(need)) throw new Error(`defineChecks: ${check.id} needs ${need}, which is not an earlier check. Fix: list ${need} before ${check.id}.`);
     seen.add(check.id);
   }
-  return Object.freeze({ def, run: (context: C, options: ChecksRunOptions = {}) => runChecks(def, context, options) });
+  const exits = exitsOf(def.command, def.exits);
+  return Object.freeze({ def, run: (context: C, options: ChecksRunOptions = {}) => runChecks(def, exits, context, options) });
 }
 
 const wallClock = (): Pick<Timers, "now"> => ({ now: () => Date.now() });
@@ -140,10 +154,21 @@ const wallClock = (): Pick<Timers, "now"> => ({ now: () => Date.now() });
  */
 const EXITS: Readonly<Record<Verdict, number>> = Object.freeze({ passed: 0, warned: 0, failed: FINDINGS_EXIT_CODE.code, errored: BASE_EXIT_CODES[1]!.code });
 
+/** The exit codes under the tool's own table, checked when the checks are declared. */
+function exitsOf(command: string, table: ExitTable | undefined): Readonly<Record<Verdict, number>> {
+  if (!table) return EXITS;
+  if (!table.has(FINDINGS_EXIT_CODE.name)) {
+    const taken = table.codes.find((entry) => entry.code === FINDINGS_EXIT_CODE.code);
+    const clash = taken ? ` Its code ${taken.code} is "${taken.name}", so Ouro AX's findings code can't be used.` : "";
+    throw new Error(`defineChecks: ${command}'s exit table has no "findings" code for a check that finds a problem.${clash} Fix: add { ...FINDINGS_EXIT_CODE, code: ${table.codes.length} } to the table.`);
+  }
+  return Object.freeze({ passed: 0, warned: 0, failed: table.code(FINDINGS_EXIT_CODE.name), errored: table.code(BASE_EXIT_CODES[1]!.name) });
+}
+
 /** What a row records: a check's result, or what it threw. */
 type RowResult = CheckResult | { state: "errored"; detail: string; fix: CheckFix };
 
-async function runChecks<C>(def: ChecksDef<C>, context: C, options: ChecksRunOptions): Promise<ChecksReport> {
+async function runChecks<C>(def: ChecksDef<C>, exits: Readonly<Record<Verdict, number>>, context: C, options: ChecksRunOptions): Promise<ChecksReport> {
   const clock = options.timers ?? wallClock();
   const progress = options.progress
     ? createProgress(options.progress, { env: options.env ?? {}, off: options.off ?? false, ...(options.timers ? { timers: options.timers } : {}) })
@@ -190,7 +215,7 @@ async function runChecks<C>(def: ChecksDef<C>, context: C, options: ChecksRunOpt
   const dev = devCommandsIn(options.next ?? [])[0];
   if (dev) throw new Error(`${def.command}: the next step \`${dev.text}\` asks for ${dev.match}, which only works in a source checkout. Fix: name the command the installed tool runs, or mark the step sourceCheckout: true.`);
   const next = [...fixes, ...(options.next ?? []), ...again].filter((s, i, all) => all.findIndex((t) => t.command === s.command) === i);
-  return { ax: CHECKS_VERSION, verdict, summary: summaryOf(def, rows, counts, verdict, durationMs), durationMs, counts, rows, next, exitCode: EXITS[verdict] };
+  return { ax: CHECKS_VERSION, verdict, summary: summaryOf(def, rows, counts, verdict, durationMs), durationMs, counts, rows, next, exitCode: exits[verdict] };
 }
 
 function rowOf<C>(def: ChecksDef<C>, check: CheckDef<C>, result: RowResult, durationMs: number): CheckRow {
