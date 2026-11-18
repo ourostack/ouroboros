@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1205",
+      "changes": [
+        "Pass --why when reading a session's automation through Shepherd, so Shepherd can go strict on --why."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1204",
       "changes": [
         "Update the Ouro UI files to Ouro UI v1.3.311."

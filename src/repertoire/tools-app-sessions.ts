@@ -166,11 +166,11 @@ export const saveSessionAutomationTool = define(
     clear: { type: "boolean", description: "Remove the session's automation instead." },
   }, ["session_id"], write("schedules wake-ups for an agent session in the owner's Copilot app"), args => {
     const body = bodyOf(args, "session_id")
-    return shepherd(["automation", sessionId(args)], body, body ? because(args.clear === true ? `Ouroboros clears the wake-ups of session ${short(args.session_id)}` : `Ouroboros schedules a wake-up for session ${short(args.session_id)}`, args.prompt) : {})
+    return shepherd(["automation", sessionId(args)], body, because(body ? (args.clear === true ? `Ouroboros clears the wake-ups of session ${short(args.session_id)}` : `Ouroboros schedules a wake-up for session ${short(args.session_id)}`) : `Ouroboros reads the wake-ups of session ${short(args.session_id)}`, args.prompt))
   }, ["session_id"],
 )
 
-export const getSessionAutomationTool = define("get_session_automation", "The automation attached to a session. Read-only.", { session_id: session }, ["session_id"], READ, args => shepherd(["automation", sessionId(args)]), ["session_id"])
+export const getSessionAutomationTool = define("get_session_automation", "The automation attached to a session. Read-only.", { session_id: session }, ["session_id"], READ, args => shepherd(["automation", sessionId(args)], undefined, because(`Ouroboros reads the wake-ups of session ${short(args.session_id)}`)), ["session_id"])
 
 export const listWorkflowsTool = define("list_workflows", "The app's automations (workflows), with their ids and schedules. Read-only.", {}, [], READ, () => shepherd(["workflows"]))
 
