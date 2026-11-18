@@ -118,7 +118,7 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
         if (s.position === "fixed") break;
       }
     }
-    return right - left >= 2 && bottom - top >= 2 ? new DOMRect(left, top, right - left, bottom - top) : null;
+    return new DOMRect(left, top, right - left, bottom - top);
   };
   const shown = (el: Element) => {
     if (el.closest("[hidden], template, .visually-hidden, .sr-only")) return false;
@@ -251,6 +251,26 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
     const r = el.getBoundingClientRect();
     return r.width >= innerWidth * 0.9 && r.height >= innerHeight * 0.9;
   };
+  // A row measured by what its children draw: the union of its shown children's drawn rects and of its text, not the row's
+  // own box. So the row's padding, border and fill are room above its heading, as a padded box's padding is for a heading
+  // in it, and a child pulled up over the padding is drawn there. Hidden children draw nothing, so they count for nothing.
+  // The heading is one of the row's shown children, so the union always holds it.
+  const drawnContent = (row: Element): DOMRect => {
+    let [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const node of row.childNodes) {
+      let box: DOMRect | null = null;
+      if (node instanceof Element) box = shown(node) ? drawnRect(node) : null;
+      else if (node.nodeType === Node.TEXT_NODE && node.textContent!.trim()) {
+        const text = document.createRange();
+        text.selectNodeContents(node);
+        box = text.getBoundingClientRect();
+      }
+      if (!box) continue;
+      [left, top] = [Math.min(left, box.left), Math.min(top, box.top)];
+      [right, bottom] = [Math.max(right, box.right), Math.max(bottom, box.bottom)];
+    }
+    return new DOMRect(left, top, right - left, bottom - top);
+  };
   const blocks = visible.filter((el) => {
     const r = drawnRect(el)!;
     return r.width >= 48 && r.height >= 48 && filled(el) && !windowLayer(el);
@@ -262,7 +282,7 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
     const size = px(getComputedStyle(heading).fontSize);
     const onRow = /flex/.test(ps.display) && !ps.flexDirection.startsWith("column") && [...parent.children].every((c) => c === heading || c.getBoundingClientRect().height <= size * 2.5);
     const row = onRow ? parent : heading;
-    const r = drawnRect(row) ?? drawnRect(heading)!;
+    const r = onRow ? drawnContent(parent) : drawnRect(heading)!;
     let worst: { block: Element; gap: number; need: number } | null = null;
     for (const block of blocks) {
       if (block.contains(row) || row.contains(block)) continue;
