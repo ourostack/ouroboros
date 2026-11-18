@@ -65,9 +65,13 @@ interface ArgSpec {
   /** The problem a missing value reports; defaults to "needs <name>". */
   missing?: string;
   /**
-   * The words it takes when it is one of a few (`today`, `week`): an unknown flag spelt as one of them (`--week`) gets the
-   * word itself as its fix. Help and the input schema don't restrict the argument to them.
+   * The words it takes when it is one of a few (`today`, `week`): a word outside them is refused with the usage exit, and
+   * the fix names the closest one, as an enum flag's value is. An unknown flag spelt as one of them (`--week`) gets the
+   * word itself as its fix. The input schema gives the argument these as its `enum`. A rest argument's text
+   * (`rest: true`) is one string, so its values stay hints, unchecked: use `rest: "list"` to check each word.
    *
+   * @claim "A rest argument's text" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a list argument checks each of its words, and a free-text rest argument keeps its values as unchecked hints)
+   * @claim "a word outside them is refused with the usage exit" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a word outside a required argument's values is refused with the usage exit, naming the word and the values, and the fix names the closest value)
    * @claim "gets the word itself as its fix" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::an unknown flag that is one of an argument's words gets that word as its fix)
    */
   values?: readonly string[];
@@ -591,6 +595,21 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
   const given = [...positional];
   for (const a of args) {
     if (given.length === 0) break;
+    // The words this argument takes start where the ones before it end; a rest argument takes all that are left.
+    const first = positional.length - given.length;
+    const taken = a.rest ? given.length : 1;
+    for (let k = first; a.values && a.rest !== true && k < first + taken; k++) {
+      const word = positional[k]!;
+      if (a.values.includes(word)) continue;
+      const near = didYouMean(word, a.values);
+      throw new AxError({
+        code: "bad-value",
+        exit: usage(cli),
+        thing,
+        problem: `<${a.name}> is one of ${a.values.join(", ")}, not "${word}"`,
+        fix: at(positionalAt[k]!, [near ?? a.values.join("|")]),
+      });
+    }
     input[a.name] = a.rest === "list" ? given.splice(0) : a.rest ? given.splice(0).join(" ") : given.shift()!;
   }
   if (given.length && !command.loose) {
@@ -802,7 +821,8 @@ function inputSchema(cli: Pick<Cli, "globalFlags">, cmd: CommandDef): JsonSchema
   for (const a of cmd.args ?? []) {
     const unless = unlessOf(a);
     const description = a.description + (unless.length ? ` Not needed with ${unless.join(" or ")}.` : "");
-    properties[a.name] = a.rest === "list" ? { type: "array", items: { type: "string" }, description } : { type: "string", description };
+    const enumOf = a.values && a.rest !== true ? { enum: a.values } : {};
+    properties[a.name] = a.rest === "list" ? { type: "array", items: { type: "string", ...enumOf }, description } : { type: "string", ...enumOf, description };
     if (a.required && !unless.length) required.push(a.name);
   }
   for (const [name, spec] of Object.entries(flagsOf(cli, cmd))) {
@@ -859,6 +879,12 @@ function checkInput(cli: Cli, cmd: CommandDef, raw: unknown, thing: string = cmd
     if (s.enum && !s.enum.includes(value as string)) {
       fixed[key] = didYouMean(String(value), s.enum) ?? s.enum[0];
       fail("bad-value", `"${key}" is one of ${s.enum.join(", ")}, not "${String(value)}"`);
+    }
+    const listed = s.items?.enum;
+    const outside = listed && Array.isArray(value) ? (value as string[]).find((v) => !listed.includes(v)) : undefined;
+    if (listed && outside !== undefined) {
+      fixed[key] = (value as string[]).map((v) => (listed.includes(v) ? v : (didYouMean(v, listed) ?? listed[0])));
+      fail("bad-value", `"${key}" is one of ${listed.join(", ")}, not "${outside}"`);
     }
     if (typeof value === "number" && ((s.minimum !== undefined && value < s.minimum) || (s.maximum !== undefined && value > s.maximum))) {
       fixed[key] = s.minimum ?? s.maximum;
