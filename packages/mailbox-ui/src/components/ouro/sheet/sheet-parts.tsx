@@ -264,7 +264,7 @@ export function SheetPortal(props: Omit<Drawer.Portal.Props, "className">): JSX.
       {/* The keyboard's inset, 0px until Base UI sets it on the viewport inside: set there as each sheet opens, it
           changed what the whole sheet inherits and restyled all of it once more in the middle of the press. Under a
           0px of the same name it changes nothing until a keyboard shows. */}
-      <Drawer.Portal {...props} data-ouro="sheet-portal" className="relative isolate z-(--ouro-layer) [--drawer-keyboard-inset:0px]">
+      <Drawer.Portal {...props} data-ouro="sheet-portal" className="relative isolate z-(--ouro-layer) in-[[data-ouro$='-portal']]:z-1001 [--drawer-keyboard-inset:0px]">
         <PortalScope>{props.children}</PortalScope>
       </Drawer.Portal>
     </Drawer.VirtualKeyboardProvider>

@@ -21,6 +21,8 @@ import { findLayoutIssues } from "./layout-check.ts";
 import { findThemeIssues } from "./theme-check.ts";
 import { findOffThemeIssues } from "./token-check.ts";
 import { findInteractionIssues } from "./interaction-check.ts";
+import { findDeadZones, markReveals, movedSince, revealLayout } from "./reach-check.ts";
+import { findFirstRunIssues, type FirstRunOptions } from "./first-run-check.ts";
 import { quietPipes, runCli, defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input, BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE, DEFAULT_OUTCOME_EXITS, outcome, type Outcome, AxError, commandLine, didYouMean, isAxError } from "./run.kit.mts";
 import { findWrapIssues, readHeroArt, type HeroArt } from "./wrap-check.ts";
 
@@ -148,6 +150,9 @@ interface Gate {
   // "/?mock=1#/inbox"), then each state's name and the controls to press in turn to reach it, as Playwright selectors
   // ("text=Launch planning", "[role=tab] >> nth=1"). An app whose views have no address is checked in them this way.
   states?: Record<string, Record<string, string[]>>;
+  // The app's own words for the first-run rules, as regular expressions' sources read without case: a control that signs
+  // in, words that say there is nothing, and words that name progress. Each replaces Ouro's default.
+  firstRun?: Pick<FirstRunOptions, "signIn" | "empty" | "progress">;
 }
 
 interface CheckOptions {
@@ -238,6 +243,11 @@ const LABELS: Record<string, string> = {
   "off-scale": "spacing off the scale",
   "hero-dark-art": "hero without night art",
   "disabled-no-reason": "disabled, no reason",
+  "linked-card-dead-zone": "card link dead zone",
+  "reveal-reflow": "reveal moves the page",
+  "blank-pane": "blank screen",
+  "dismissable-step": "dismissable required step",
+  "signed-out-empty": "empty while signed out",
   "lone-word": "lone last word",
   "tall-heading": "tall heading",
   "one-word-line": "one-word line",
@@ -279,6 +289,11 @@ const HINTS: Record<string, string> = {
   "off-scale": "take the spacing from the step the finding names (its Tailwind class, or a layout component's gap)",
   "hero-dark-art": "pass picture={{ light, dark }}, the same scene by day and at night",
   "disabled-no-reason": "say why beside it and tie the words to it with aria-describedby, or give it a title",
+  "linked-card-dead-zone": "use Ouro's Card, Item or Table, which open from a click anywhere on them; or keep the card's parts unpositioned so the link's layer covers the whole card; or open the link from any click on the card's root and mark the root data-follows-link",
+  "reveal-reflow": "lay the revealed part over the card (absolute, or Card's revealDescription=\"rise\") or keep its room at rest, so revealing it changes no box",
+  "blank-pane": "show what is coming while it comes: a named progress state (Spinner or Progress with a label, or words such as \"Getting your messages…\"), or the way to get it",
+  "dismissable-step": "put a required step on the page (AuthLayout), not in a Dialog or Sheet; or draw the way forward behind it (its progress, or Sign in) before it can be put away",
+  "signed-out-empty": "signed out, replace the empty state with the way in: say the person is signed out and offer Sign in",
   "lone-word": "wrap it with text-wrap: pretty (balance for a heading or centred text), or keep a short phrase together",
   "tall-heading": "say it in fewer words, or draw it a step smaller on this screen",
   "one-word-line": "balance it (text-wrap: balance), and give it the column's full width",
@@ -801,6 +816,33 @@ async function check(options: CheckOptions): Promise<CheckResult> {
       const verb = { "hover": "hovering", open: "opening and closing", scroll: "scrolling", pan: "panning" }[step.kind];
       await record(page, target, { ref: step.ref, rule: "jank", element: `${verb} ${step.element}`, detail: over.join("; "), value: frame, budget: budgets.jank, unit: "ms", samples: runs.map((r) => r.longestFrameMs) }, width, height, theme);
     }
+    // reveal-reflow: each card that reveals a part, hovered and then given keyboard focus, must keep its own box and
+    // move nothing outside it. A page that moves on its own between two readings at rest is not judged.
+    for (const reveal of await page.evaluate(markReveals, WALK_EACH)) {
+      await page.mouse.move(0, 0);
+      // Aimed first, as aiming scrolls the card into view: every reading after it is at the same scroll.
+      const point = await aim(page, reveal.ref);
+      if (!point) continue;
+      await settle();
+      const rest = await page.evaluate(revealLayout, { ref: reveal.ref });
+      await settle();
+      if (movedSince(rest, await page.evaluate(revealLayout, { ref: reveal.ref })) !== 0) continue;
+      await page.mouse.move(point.x, point.y);
+      await settle();
+      const hovered = movedSince(rest, await page.evaluate(revealLayout, { ref: reveal.ref }));
+      await page.mouse.move(0, 0);
+      await settle();
+      await page.evaluate(revealLayout, { ref: reveal.ref, focus: true });
+      await settle();
+      const focused = movedSince(rest, await page.evaluate(revealLayout, { ref: reveal.ref }));
+      await page.evaluate(revealLayout, { ref: reveal.ref, blur: true });
+      // A page that changed shape (it loaded more as it scrolled) is not judged.
+      if (hovered < 0 || focused < 0) continue;
+      const moves = [hovered > 0 ? "hovering it" : "", focused > 0 ? "keyboard focus in it" : ""].filter(Boolean);
+      if (!moves.length) continue;
+      found++;
+      await record(page, target, { ref: reveal.ref, rule: "reveal-reflow", element: reveal.element, detail: `${moves.join(" and ")} moved its own box or the page around it: a reveal must open over the card, not make room` }, width, height, theme);
+    }
     return found;
   };
   // A first content over budget is measured again on a second load in a browser context of its own: one slow load on a
@@ -861,6 +903,9 @@ async function check(options: CheckOptions): Promise<CheckResult> {
       if (inpAt === `${width}x${height} ${theme}`) shown.push(...(await page.evaluate(findOffThemeIssues, { maxIssues: 100000 })));
       shown.push(...(await page.evaluate(findInteractionIssues)));
       shown.push(...(await page.evaluate(findWrapIssues, {})));
+      shown.push(...(await page.evaluate(findFirstRunIssues, config.firstRun ?? {})));
+      // Last, as it scrolls the window to each linked card to hit-test it, and puts the scroll back.
+      shown.push(...(await page.evaluate(findDeadZones)));
       const behind = new Set(await page.evaluate(behindModal, [...new Set(shown.map((issue) => issue.ref))]));
       issues.push(...shown.filter((issue) => !behind.has(issue.ref)));
       // dark-art: light runs before dark at each size, so the dark run compares with the light run's hero art.
@@ -1187,7 +1232,7 @@ interface Args {
 }
 
 const ABOUT = [
-  "ouro-check: checks every page at every screen size, light and dark, for overlap, sideways scroll, clipped text, broken, blurry and stretched pictures and videos, pictures that fade into the page, pages that fail to load or draw, serious accessibility problems, and design problems: a banner where content belongs, a cramped heading, a frame inside a frame, a recording's own corner inside its frame, too many text sizes, weights or shadows, grey text on colour and a heading larger than the one above it; text that leaks a value (undefined, NaN, [object Object], an id, a translation key, TODO) or shows a time no one should read (Invalid Date, 1 January 1970, a raw timestamp); errors and warnings in the console and requests to the page's own server that fail; content the screen cuts off, the same control twice in view and a region that scrolls by a few pixels; a control that shows no keyboard focus and a light surface left on a dark page; a disabled control with no reason given; text that wraps by accident (a lone last word, a tall h1, a one-word line in big text, a heading broken by hand or held narrow) and hero art with no night twin; and long lines only where ouro-check.json declares a measure.",
+  "ouro-check: checks every page at every screen size, light and dark, for overlap, sideways scroll, clipped text, broken, blurry and stretched pictures and videos, pictures that fade into the page, pages that fail to load or draw, serious accessibility problems, and design problems: a banner where content belongs, a cramped heading, a frame inside a frame, a recording's own corner inside its frame, too many text sizes, weights or shadows, grey text on colour and a heading larger than the one above it; text that leaks a value (undefined, NaN, [object Object], an id, a translation key, TODO) or shows a time no one should read (Invalid Date, 1 January 1970, a raw timestamp); errors and warnings in the console and requests to the page's own server that fail; content the screen cuts off, the same control twice in view and a region that scrolls by a few pixels; a control that shows no keyboard focus and a light surface left on a dark page; a disabled control with no reason given; a linked card that a click on some spot of opens nothing, and a card whose revealed part moves the page; a first run's dead ends: a blank screen with no progress, a dialog that can be put away onto a blank or signed-out page, and an empty state shown while signed out; text that wraps by accident (a lone last word, a tall h1, a one-word line in big text, a heading broken by hand or held narrow) and hero art with no night twin; and long lines only where ouro-check.json declares a measure.",
   "A site on the web must move http:// to https:// and ask for HSTS. It measures layout shift, first content, the presses the app lists and jank as it walks each page (hovering cards, opening popups, scrolling and panning) against their budgets, and finds a control the first frames draw that a later frame swaps for another, with no input. It writes report.json, summary.md, a contact sheet per page and a captioned close-up per finding. merge joins the out folders of a sharded run into one.",
 ];
 
@@ -1353,7 +1398,7 @@ async function readJson<T>(file: string): Promise<T> {
 }
 
 // What is wrong with a config's press and state settings, which JSON leaves unchecked: a string would read as its letters.
-function configProblem({ press, pressRepeat, states, waive }: Gate): string | null {
+function configProblem({ press, pressRepeat, states, waive, firstRun }: Gate): string | null {
   const waived = Object.entries(waive ?? {}).find(([, rules]) => Object.hasOwn(Object(rules), "blurry-image"));
   if (waived)
     return `"waive" > "${waived[0]}" waives blurry-image, which cannot be waived: remove it, and give each picture it reports a larger source, or a srcset whose largest file covers its drawn width at 2x.`;
@@ -1363,6 +1408,15 @@ function configProblem({ press, pressRepeat, states, waive }: Gate): string | nu
   const named = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
   if (states !== undefined && !(named(states) && Object.values(states).every((page) => named(page) && Object.values(page).every(listOf))))
     return '"states" takes pages, each with its states\' names and the controls to press to reach them, such as {"/": {"a chat open": ["text=Launch planning"]}}.';
+  const pattern = (source: unknown) => {
+    try {
+      return typeof source === "string" && source.trim() !== "" && Boolean(new RegExp(source, "i"));
+    } catch {
+      return false;
+    }
+  };
+  if (firstRun !== undefined && !(named(firstRun) && Object.entries(firstRun).every(([key, source]) => ["signIn", "empty", "progress"].includes(key) && pattern(source))))
+    return '"firstRun" takes signIn, empty and progress, each a regular expression\'s source, such as {"signIn": "^(sign in|log in)\\\\b", "empty": "nothing new|all caught up"}.';
   return null;
 }
 

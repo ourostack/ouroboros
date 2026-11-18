@@ -7,6 +7,7 @@ export {
   floatingAlign,
   floatingPlacementWarnings,
   floatingPortalClass,
+  floatingPositionMethod,
   floatingMotionClass,
   floatingSurfaceClass,
   floatingHint,
@@ -94,11 +95,25 @@ function floatingPlacementWarnings(
 
 /**
  * The portal: its own stacking context at `--ouro-layer`, the level apps raise with the
- * token, as for Dialog and Sheet.
+ * token, as for Dialog and Sheet. Opened from inside another Ouro UI layer, it renders in that
+ * layer's portal, where the layer's own backdrop and viewport sit at z-1000, so it stacks at
+ * 1001 there; on the page it stays at `--ouro-layer`.
  *
  * @internal
+ * @claim "Opened from inside another Ouro UI" registry/ouro/components/ouro/sheet/sheet-parts.tsx verify:fileLine(registry/ouro/components/ouro/sheet/sheet-parts.tsx, /"fixed inset-0 z-1000 flex overflow-clip touch-none"/)
+ * @claim "Opened from inside another Ouro UI" registry/ouro/lib/ouro/floating.ts verify:fileLine(registry/ouro/lib/ouro/floating.ts, /in-\[\[data-ouro\$='-portal'\]\]:z-1001/)
  */
-const floatingPortalClass = "relative isolate z-(--ouro-layer)";
+const floatingPortalClass = "relative isolate z-(--ouro-layer) in-[[data-ouro$='-portal']]:z-1001";
+
+/**
+ * How a floating layer's positioner places itself: `fixed`, so the first placement is measured in the space the popup
+ * is drawn in. Placed `absolute`, the first frame of a popup in a portal layer far down the page drew offset by that
+ * layer's place (see the first-frame tests).
+ *
+ * @internal
+ * @claim "Placed `absolute`, the first frame of a popup in a portal layer far down the page drew offset by that layer's place" registry/ouro/components/ouro/popover/popover.test.tsx verify:testExists(registry/ouro/components/ouro/popover/popover.test.tsx::Popover first frame > is in place from its first visible frame when its trigger opens it)
+ */
+const floatingPositionMethod = "fixed" satisfies "fixed";
 
 /**
  * Opens with a scale from 0.96 and a fade, from the side of the trigger it grows out of

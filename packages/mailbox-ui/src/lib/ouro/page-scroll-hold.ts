@@ -56,12 +56,16 @@ function unpin(html: HTMLElement) {
 /** Whether the page is held: a trigger was just pressed, or a portal holds a popup Base UI marks open, not one that is closing. */
 const held = () => pressEnds !== undefined || [...portals].some((portal) => portal.querySelector("[data-open]") !== null);
 
-/** Starts listening, from where the page is now, unless a popup or a press already holds it. */
+/**
+ * Holds the page from where it is now, unless a popup or a press already holds it, and starts listening unless it already
+ * listens. A closed popup's portal keeps the listener but holds nothing, so the place is read again here: a scroll whose
+ * event has not come yet, as a script's just before a press, is not taken back to where the page was before it.
+ */
 function start(view: Window) {
-  if (portals.size > 0 || pressEnds !== undefined) return;
+  if (held()) return;
   left = view.scrollX;
   top = view.scrollY;
-  release = listen(view);
+  if (portals.size === 0) release = listen(view);
 }
 
 /**

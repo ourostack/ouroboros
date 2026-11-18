@@ -5,7 +5,7 @@ import { useRef, useState, type JSX, type MouseEvent as ReactMouseEvent, type Re
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
 import { currentHref, samePath } from "@/lib/ouro/current-path";
-import { floatingPortalClass } from "@/lib/ouro/floating";
+import { floatingPortalClass, floatingPositionMethod } from "@/lib/ouro/floating";
 import { RouterLink } from "@/lib/ouro/router-link";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 import { PortalScope, usePortalContainer } from "@/lib/ouro/portal-container";
@@ -395,7 +395,7 @@ export function NavigationMenuView(props: NavigationMenuViewProps): JSX.Element 
       </BaseNavigationMenu.List>
       <BaseNavigationMenu.Portal {...portal} data-ouro="navigation-menu-portal" className={floatingPortalClass}>
         <PortalScope>
-          <BaseNavigationMenu.Positioner sideOffset={8} collisionPadding={16} className={positioner}>
+          <BaseNavigationMenu.Positioner positionMethod={floatingPositionMethod} sideOffset={8} collisionPadding={16} className={positioner}>
             <BaseNavigationMenu.Popup data-ouro="navigation-menu-popup" data-ouro-instant={instant ? "" : undefined} className={popup}>
               <BaseNavigationMenu.Viewport className="relative h-full w-full overflow-hidden rounded-[inherit]" />
             </BaseNavigationMenu.Popup>

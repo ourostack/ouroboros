@@ -9,6 +9,7 @@ import {
   floatingMotionClass,
   floatingPlacementWarnings,
   floatingPortalClass,
+  floatingPositionMethod,
   floatingSide,
   type FloatingAlign,
   type FloatingSide,
@@ -109,7 +110,8 @@ function popupOpen(expanded: unknown, haspopup: unknown): boolean {
  * essential information.
  *
  * It stacks above the page at `--ouro-layer`, a z-index of 50 by default (from
- * ouro-base.css), like Dialog and Sheet.
+ * ouro-base.css), like Dialog and Sheet. Opened from inside a Dialog or a Sheet, it shows
+ * above it.
  *
  * @group Overlays
  * @see https://ui.ouroboros.bot/docs/tooltip
@@ -129,6 +131,7 @@ function popupOpen(expanded: unknown, haspopup: unknown): boolean {
  *   <TextField label="Link" defaultValue={url} readOnly />
  * </Popover>
  * @claim "It stacks above the page at" registry/ouro/components/ouro/tooltip/tooltip.test.tsx verify:testExists(registry/ouro/components/ouro/tooltip/tooltip.test.tsx::Tooltip > portals at the --ouro-layer level, as its own stacking context)
+ * @claim "Opened from inside a Dialog or a Sheet" registry/ouro/components/ouro/tooltip/tooltip.test.tsx verify:testExists(registry/ouro/components/ouro/tooltip/tooltip.test.tsx::Tooltip > shows above a %s it is opened from)
  * @claim "It stacks above the page at" registry/ouro/theme/ouro-base.css verify:fileLine(registry/ouro/theme/ouro-base.css, /^\s+--ouro-layer:\s50;/)
  * @claim "It never opens on touch, and" registry/ouro/components/ouro/tooltip/tooltip.test.tsx verify:testExists(registry/ouro/components/ouro/tooltip/tooltip.test.tsx::Tooltip > never opens after a touch on the trigger, even when the touch focuses it)
  * @claim "It never opens on touch, and" registry/ouro/components/ouro/tooltip/tooltip.test.tsx verify:testExists(registry/ouro/components/ouro/tooltip/tooltip.test.tsx::Tooltip > opens on mouse hover after a touch elsewhere, as on a laptop with a touchscreen)
@@ -334,7 +337,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
       >
         <BaseTooltip.Portal {...portal} data-ouro="tooltip-portal" className={floatingPortalClass}>
           <PortalScope>
-            <BaseTooltip.Positioner anchor={triggerRef} side={side} align={align} sideOffset={6} collisionPadding={8} data-ouro="tooltip-positioner">
+            <BaseTooltip.Positioner anchor={triggerRef} positionMethod={floatingPositionMethod} side={side} align={align} sideOffset={6} collisionPadding={8} data-ouro="tooltip-positioner">
               <BaseTooltip.Popup
                 ref={checkContent}
                 data-ouro="tooltip"

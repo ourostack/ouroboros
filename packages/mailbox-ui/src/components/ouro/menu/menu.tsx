@@ -29,6 +29,7 @@ import {
   floatingHint,
   floatingPlacementWarnings,
   floatingPortalClass,
+  floatingPositionMethod,
   floatingSide,
   type FloatingAlign,
   type FloatingSide,
@@ -477,11 +478,9 @@ function MenuSurface({
           collisionPadding={8}
           // Stryker disable next-line ConditionalExpression: Base UI reads an anchor of undefined as none, as it reads no anchor.
           {...(anchor !== undefined ? { anchor } : {})}
-          // An anchored menu mounts open, and its first placement can come before the layer it renders in is laid out
-          // (WebKit): placed absolutely, it was drawn offset by as far as that layer is down the page, then jumped back a
-          // frame later. Placed fixed, as Base UI places a context menu, it is right from its first frame.
-          // Stryker disable next-line ConditionalExpression: a dropdown placed fixed is placed again as its page scrolls, where one placed absolutely moves with it, so no test can tell them apart.
-          {...(anchor !== undefined ? { positionMethod: "fixed" as const } : {})}
+          // Placed fixed from its first frame, as every floating layer is (see floatingPositionMethod): placed absolutely, a
+          // popup's first frame could be drawn offset by where the portal layer sits on the page, then corrected a frame later.
+          positionMethod={floatingPositionMethod}
           {...(side ? { side } : {})}
           {...(align ? { align } : {})}
         >
@@ -532,7 +531,8 @@ function MenuSurface({
  * text, and `Command` for a searchable list of every action in the app.
  *
  * It stacks above the page at `--ouro-layer`, a z-index of 50 by default (from
- * ouro-base.css), like Dialog and Sheet.
+ * ouro-base.css), like Dialog and Sheet. Opened from inside a Dialog or a Sheet, it shows
+ * above it.
  *
  * A dropdown closes when focus moves anywhere outside it, as it does on a click outside, so Tab
  * goes on from wherever focus went.
@@ -556,6 +556,7 @@ function MenuSurface({
  * @claim "a context menu opens at the pointer at every width" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu context trigger > stays a menu at the pointer on a phone, not a sheet)
  * @claim "A dropdown closes when focus moves" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu focus > closes when focus moves outside it, so a forward Tab from before its trigger goes on to the trigger)
  * @claim "It stacks above the page at" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu stacking > puts the portal on the --ouro-layer level, as its own stacking context)
+ * @claim "Opened from inside a Dialog or a Sheet" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu stacking > shows above a %s it is opened from)
  * @claim "It stacks above the page at" registry/ouro/theme/ouro-base.css verify:fileLine(registry/ouro/theme/ouro-base.css, /^\s+--ouro-layer:\s50;/)
  * @claim "A list of actions that opens" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu dropdown > opens a menu below its trigger, aligned to its start, named by the trigger)
  * @claim "A list of actions that opens" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu context trigger > opens at the pointer on right-click)

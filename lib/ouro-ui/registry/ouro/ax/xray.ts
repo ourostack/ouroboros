@@ -429,7 +429,6 @@ const isExecutableFileSync = (path: string): boolean => {
   }
 };
 
-/** Why a stub is not inside the X-ray's home or the repository, or null when it is. */
 /** The real path of a folder, or null when it does not exist. */
 const realOrNull = (path: string): string | null => {
   try {

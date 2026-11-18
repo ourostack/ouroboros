@@ -127,14 +127,32 @@ function findOverlaps({ slack = 2, maxSteps = 40 }: OverlapOptions = {}): PageIs
   };
   const related = (a: Element, b: Element) => a === b || a.contains(b) || b.contains(a);
   // Whether text sits on a backing of its own over a picture, as a label's chip does: a box between the text and the
-  // picture with a nearly opaque fill. Such a label reads, whatever is under it.
-  const backed = (text: Element, picture: Element) => {
-    for (let node: Element | null = text; node && !node.contains(picture); node = node.parentElement) {
-      // A colour's channels and alpha, in any syntax the browser computes: rgb(r, g, b), rgba(r, g, b, a), oklch(l c h / a).
-      const [, , , alpha = "1"] = getComputedStyle(node).backgroundColor.replace(/^[a-z]+\(|\)$/g, "").split(/[\s,/]+/);
-      if (Number(alpha) >= 0.9) return true;
-    }
-    return false;
+  // picture with a nearly opaque fill, or a glass scrim, a fill of 60% or more with the picture blurred behind it. Such a
+  // label reads, whatever is under it. The box is around the text, or a layer of its own painted between the two where
+  // they meet, as a card's glass band lies under its title.
+  const backing = (node: Element) => {
+    const style = getComputedStyle(node);
+    // A colour's channels and alpha, in any syntax the browser computes: rgb(r, g, b), rgba(r, g, b, a), oklch(l c h / a).
+    const [, , , alpha = "1"] = style.backgroundColor.replace(/^[a-z]+\(|\)$/g, "").split(/[\s,/]+/);
+    return Number(alpha) >= 0.9 || (Number(alpha) >= 0.6 && /blur\(/.test(style.backdropFilter));
+  };
+  const backed = (text: Item, picture: Item) => {
+    for (let node: Element | null = text.el; node && !node.contains(picture.el); node = node.parentElement) if (backing(node)) return true;
+    // Where the two meet on the screen; a layer counts only where it covers all of that.
+    const left = Math.max(text.rect.left, picture.rect.left, 0);
+    const right = Math.min(text.rect.right, picture.rect.right, innerWidth);
+    const top = Math.max(text.rect.top, picture.rect.top, 0);
+    const bottom = Math.min(text.rect.bottom, picture.rect.bottom, innerHeight);
+    if (right <= left || bottom <= top) return false;
+    // What paints there, from the top: the text and what holds it, then any layer of its own, then the picture or what
+    // holds it (a picture no pointer meets is missing from the list, but what holds it is there).
+    const stack = document.elementsFromPoint((left + right) / 2, (top + bottom) / 2);
+    const under = stack.findIndex((node) => node === picture.el || picture.el.contains(node) || node.contains(picture.el));
+    return stack.slice(0, under).some((node) => {
+      if (node === text.el || node.contains(text.el) || text.el.contains(node)) return false;
+      const box = node.getBoundingClientRect();
+      return backing(node) && box.left <= left + slack && box.right >= right - slack && box.top <= top + slack && box.bottom >= bottom - slack;
+    });
   };
   const found = new Map<string, PageIssue>();
   const counter = window as unknown as { __ouroCheckRef?: number };
@@ -153,11 +171,11 @@ function findOverlaps({ slack = 2, maxSteps = 40 }: OverlapOptions = {}): PageIs
         if (a.kind === "image" && b.kind === "image") continue;
         if (a.section !== b.section || related(a.block, b.block) || related(a.el, b.el)) continue;
         if (a.cover !== b.cover) continue;
-        // Text is collected before pictures, so a pair of the two is the text, then the picture.
-        if (b.kind === "image" && backed(a.el, b.el)) continue;
         const x = Math.min(a.rect.right, b.rect.right) - Math.max(a.rect.left, b.rect.left);
         const h = Math.min(a.rect.bottom, b.rect.bottom) - Math.max(a.rect.top, b.rect.top);
         if (x <= slack || h <= slack) continue;
+        // Text is collected before pictures, so a pair of the two is the text, then the picture.
+        if (b.kind === "image" && backed(a, b)) continue;
         const element = `${describe(a.el)} × ${describe(b.el)}`;
         if (found.has(element)) continue;
         counter.__ouroCheckRef = (counter.__ouroCheckRef ?? 0) + 1;

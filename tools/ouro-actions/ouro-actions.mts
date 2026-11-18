@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The generator's version, written into every generated file; it is core's version. */
-export const ACTIONS_VERSION = "0.17.6";
+export const ACTIONS_VERSION = "0.17.7";
 const GENERATOR = `ouro-actions ${ACTIONS_VERSION}`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -74,6 +74,11 @@ interface FieldBase {
 export const STRING_FORMATS = Object.freeze(["date-time", "date", "uri", "email"] as const);
 export interface StringField extends FieldBase {
   kind: "string";
+  /**
+   * Input only: the field is a positional CLI word, not a flag. A required one comes first; an optional one may follow
+   * other optional ones, and no required one may follow it, since a positional can't be skipped. Not for a number,
+   * boolean, list, group or one-of.
+   */
   arg?: boolean;
   /** The longest the string may be, in characters (JSON Schema's `maxLength`). */
   maxLength?: number;
@@ -107,7 +112,13 @@ export interface BooleanField extends FieldBase {
   /** The one value it takes: `const: true` is an explicit confirmation a program must send, such as `confirmNoCover`. */
   const?: true;
 }
-export interface EnumField<V extends string = string> extends FieldBase { kind: "enum"; values: readonly V[] }
+/** An enum takes `arg` as a string does; its `values` ride along in the CLI's args and in the MCP and WebMCP schemas. */
+export interface EnumField<V extends string = string> extends FieldBase {
+  kind: "enum";
+  values: readonly V[];
+  /** Input only: a positional CLI word, with the same placement rules as a string's `arg`. */
+  arg?: boolean;
+}
 /**
  * The structured fields, for an existing MCP tool's inputs that a person's door can't carry: a list of values, a group
  * of named fields, or one of several shapes. They are protocol-only input fields: MCP and WebMCP carry their JSON
@@ -126,7 +137,10 @@ export type Field = StringField | NumberField | BooleanField | EnumField | ListF
 export type Fields = Readonly<Record<string, Field>>;
 
 type Opt = { optional?: boolean };
-/** Field builders; `arg: true` makes a required string field a positional CLI argument instead of a flag (web's arguments are strings). */
+/**
+ * Field builders. `arg: true` makes a string or enum input field a positional CLI word instead of a flag: web's words are
+ * strings, and an enum's values are what the word may be. Required words come before optional ones.
+ */
 export const field = Object.freeze({
   string: <O extends Omit<StringField, "kind">>(o: O) => ({ ...o, kind: "string" as const }),
   number: <O extends Omit<NumberField, "kind">>(o: O) => ({ ...o, kind: "number" as const }),
@@ -143,6 +157,8 @@ export const field = Object.freeze({
 const KINDS = Object.freeze(["string", "number", "integer", "boolean", "enum", "list", "group", "one-of"]);
 const STRUCTURED = Object.freeze(["list", "group", "one-of"]);
 const isStructured = (f: Field) => STRUCTURED.includes(f.kind);
+/** A positional CLI word: a string or enum input field declared `arg: true`. */
+const isArg = (f: Field) => "arg" in f && Boolean(f.arg);
 
 type Nullable<F, T> = F extends { nullable: true } ? T | null : T;
 type ValueOf<F> = Nullable<F, F extends { kind: "string" } ? string
@@ -290,7 +306,8 @@ function checkField(at: string, f: Field, input: boolean, top: boolean): void {
     if (f.entity !== undefined) throw new Error(`${at}: multiline is for typed text, and an entity is picked. Fix: drop entity or multiline.`);
     if (f.protocolOnly) throw new Error(`${at}: multiline is for the person's doors, and a protocol-only field isn't on them. Fix: drop multiline or protocolOnly.`);
   }
-  if ("arg" in f && f.arg && (f.kind !== "string" || f.optional || !input)) throw new Error(`${at}: arg is only for a required string input field, since web's CLI arguments are strings. Fix: drop arg, or make it a required string.`);
+  if (isArg(f) && (!input || (f.kind !== "string" && f.kind !== "enum"))) throw new Error(`${at}: arg is only for an input string or enum field, since a positional is one word on the command line. Fix: drop arg, or make it a string or enum.`);
+  if (isArg(f) && f.nullable) throw new Error(`${at}: a positional arg can't be nullable, since a word can't be null. Fix: drop nullable, or drop arg.`);
   if (f.kind === "string") {
     if (f.maxLength !== undefined && !(Number.isInteger(f.maxLength) && f.maxLength > 0)) throw new Error(`${at}: maxLength is ${JSON.stringify(f.maxLength)}. Fix: a whole number above 0.`);
     if (f.pattern !== undefined) {
@@ -377,7 +394,15 @@ function checkFields(where: string, fields: unknown, input: boolean, top = true)
   }
   if (top && input) {
     const flags = new Map<string, string>();
+    let optionalArg: string | undefined;
     for (const [name, f] of Object.entries(fields as Record<string, Field>)) {
+      if (isArg(f)) {
+        if (!f.optional) {
+          if (optionalArg !== undefined) throw new Error(`${where} "${name}": a required arg comes after the optional arg "${optionalArg}"; a positional can't be skipped. Fix: make "${name}" optional, or put it before "${optionalArg}".`);
+        } else {
+          optionalArg ??= name;
+        }
+      }
       const flag = f.flag ?? flagName(name);
       const other = flags.get(flag);
       if (other !== undefined) throw new Error(`${where}: "${other}" and "${name}" share the CLI flag --${flag}. Fix: give one its own flag.`);
@@ -578,7 +603,8 @@ export interface CommandJson {
   summary: string;
   effect: "private" | "others";
   readOnly?: true;
-  args?: { name: string; description: string; required: true }[];
+  /** Positional words, in order: a required one has `required: true`; an optional one omits it. An enum's values ride along. */
+  args?: { name: string; description: string; required?: true; values?: string[] }[];
   flags?: Record<string, Record<string, Json>>;
   output?: string;
 }
@@ -602,8 +628,13 @@ export function toCommand(a: Action): CommandJson {
   const cmd: CommandJson = { name: a.cliWords, summary: a.agent, effect: effectOf(a) };
   if (a.consent === "read") cmd.readOnly = true;
   const fields = Object.entries(a.input);
-  const args = fields.filter(([, f]) => "arg" in f && f.arg).map(([name, f]) => ({ name, description: f.description, required: true as const }));
-  const flags = Object.fromEntries(fields.filter(([, f]) => !("arg" in f && f.arg)).map(([name, f]) => [f.flag ?? flagName(name), flagSpec(f)]));
+  const args = fields.filter(([, f]) => isArg(f)).map(([name, f]) => ({
+    name,
+    description: f.description,
+    ...(f.optional ? {} : { required: true as const }),
+    ...(f.kind === "enum" ? { values: [...f.values] } : {}),
+  }));
+  const flags = Object.fromEntries(fields.filter(([, f]) => !isArg(f)).map(([name, f]) => [f.flag ?? flagName(name), flagSpec(f)]));
   if (args.length) cmd.args = args;
   if (Object.keys(flags).length) cmd.flags = flags;
   const out = Object.keys(a.output);
@@ -639,7 +670,8 @@ const refusals = (set: ActionSet) => Object.fromEntries(set.actions.filter((a) =
 const lit = (s: string) => JSON.stringify(s);
 
 function twinOf(set: ActionSet, a: Action): string {
-  const args = Object.entries(a.input).filter(([, f]) => "arg" in f && f.arg).map(([name]) => `<${name}>`);
+  // A word the person may leave out is bracketed, as web's usage line shows it: `[<name>]`.
+  const args = Object.entries(a.input).filter(([, f]) => isArg(f)).map(([name, f]) => (f.optional ? `[<${name}>]` : `<${name}>`));
   return [set.tool, a.cliWords, ...args].join(" ");
 }
 
