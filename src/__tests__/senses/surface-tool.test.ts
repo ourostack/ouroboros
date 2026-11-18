@@ -1159,3 +1159,23 @@ describe("surface tool", () => {
     })
   })
 })
+
+describe("surface digest guard", () => {
+  it("blocks a digest with nothing ready, done or gated, and lets signal through", async () => {
+    const { handleSurface, isSignalessDigest } = await import("../../senses/surface-tool")
+    const route = vi.fn(async () => ({ status: "delivered" as const }))
+    const base = { friendId: "ari", queue: [], routeToFriend: route, advanceObligation: vi.fn() }
+
+    const blocked = await handleSurface({ ...base, content: "Morning summary (09:03): the mini is fine, disk at 95 GiB, three PRs open." })
+    expect(blocked).toMatch(/^not sent/)
+    expect(route).not.toHaveBeenCalled()
+
+    expect(isSignalessDigest("Morning. Here's the overnight summary for the mini: disk fell.")).toBe(true)
+    expect(isSignalessDigest("Overnight summary: Tandem v0.2.1 is out.")).toBe(false)
+    expect(isSignalessDigest("Daily digest. Needs you: approve the OKR scope.")).toBe(false)
+    expect(isSignalessDigest("Tandem v0.2.1 is out.")).toBe(false)
+
+    const sent = await handleSurface({ ...base, content: "Overnight summary: Tandem v0.2.1 is out." })
+    expect(sent).toMatch(/^delivered/)
+  })
+})
