@@ -6,7 +6,7 @@ import type { PageIssue } from "./size-check.ts";
 // points at a linked card reaches what it links to, and whether what a card reveals on hover or focus pushes the page:
 //
 //   linked-card-dead-zone  a card or row that is one link (Ouro's data-linked, or a box around a link whose ::after is
-//                          stretched over it) where a click at some spot on it, which no control of its own takes,
+//                          stretched over it, which a link the page positions never is) where a click at some spot on it, which no control of its own takes,
 //                          opens nothing: an app that positions one of its parts (a body laid over the media, a sticky
 //                          cell) keeps the link's layer to that part. Each spot is hit-tested, as a click would be, and
 //                          nothing is clicked, so no app code runs. A card whose root opens its link from any click on it
@@ -41,9 +41,11 @@ function findDeadZones(): PageIssue[] {
   };
   // What takes its own click inside a card: its link, and any control or nested linked row.
   const own = "a, button, input, select, textarea, label, summary, [tabindex]:not([tabindex='-1']), [role=button], [role=link], [contenteditable=true], [data-linked]";
+  // A link the page positions holds its own ::after, which then only widens the link's tap target (ourostack/ouroboros-website's
+  // `.hit`, 44px around a short link): it is no layer stretched over a card, so the box around it is no linked card.
   const stretched = (link: Element) => {
     const after = getComputedStyle(link, "::after");
-    return after.content !== "none" && after.content !== "normal" && after.position === "absolute";
+    return after.content !== "none" && after.content !== "normal" && after.position === "absolute" && getComputedStyle(link).position === "static";
   };
   // Each linked card once: Ouro's data-linked root, or the box a stretched link is meant to cover.
   const cards = new Map<Element, HTMLElement>();
