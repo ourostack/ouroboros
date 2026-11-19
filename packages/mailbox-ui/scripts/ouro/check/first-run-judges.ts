@@ -201,6 +201,25 @@ export function pageIndicator(s: Snapshot): string | null {
   return bar ? `a ${bar.role === "AXBusyIndicator" ? "busy" : "progress"} indicator${bar.words ? ` (${bar.words})` : ""}` : null;
 }
 
+/**
+ * The app's own view, outside the page's web content, saying something is under way: a start view that shows "Signing
+ * in…" while the page under it is still drawing. It applies when the pane is the page (a main landmark or a web area),
+ * since a dialog's pane, or a window with no web area, takes in the whole view already. Gone once that view is gone, so a page
+ * still blank after it fails.
+ * @claim "It applies when the pane is the page" scripts/check/first-run-units.test.mts verify:testExists(scripts/check/first-run-units.test.mts::first-run harness: the judges > a blank page under the app's own view that says it's signing in is in progress; once that view is gone, or the window is one shade, it's blank and a dead end) verify:testExists(scripts/check/first-run-units.test.mts::first-run harness: the judges > a progress bar beside the main landmark, as a sign-in form shows while it checks an account, keeps a page from being a dead end, and without it the page is one (#2351))
+ */
+export function appViewProgress(s: Snapshot, p: Pane, v: Vocabulary): string | null {
+  const win = mainWindow(s);
+  if (!win || (p.kind !== "main" && p.kind !== "web")) return null;
+  const web = new Set(win.nodes.filter((n) => n.role === "AXWebArea").flatMap((n) => subtree(win.nodes, n.i)));
+  // With no web content there is no page under a view: a native pane's neighbours are its chrome (#2351).
+  if (web.size === 0) return null;
+  return progressOf(
+    win.nodes.filter((n) => !web.has(n)),
+    v,
+  );
+}
+
 export type Verdict = { ok: boolean; evidence: string };
 
 /**
@@ -214,6 +233,10 @@ export function judgeNotBlank(s: Snapshot, v: Vocabulary = DEFAULT_VOCABULARY): 
   const progress = progressOf(p.nodes, v);
   const flat = s.pixels && s.pixels.uniform >= UNIFORM_BLANK;
   if (progress) return { ok: true, evidence: `${p.label} shows a progress state: ${progress.slice(0, 80)}`, progress };
+  // A page still drawing under the app's own view, which says it's under way, is in progress, while the window shows more
+  // than one shade.
+  const own = flat ? null : appViewProgress(s, p, v);
+  if (own) return { ok: true, evidence: `${p.label} is still drawing under the app's own view, which shows a progress state: ${own.slice(0, 80)}`, progress: own };
   if (content.length === 0) return { ok: false, evidence: `${p.label} shows nothing to read and no progress state${flat ? ", and draws one shade" : ""}`, progress };
   // One shade over a pane whose tree lists a word or two is a pane that drew nothing yet; a fuller tree is trusted over a
   // picture (a page still painting its card, a screenshot of a window the person can't see).
@@ -241,7 +264,8 @@ export function judgeDeadEnd(s: Snapshot, o: { vocabulary?: Vocabulary; goal?: (
   const forward = forwardActions(s, v);
   if (forward.length) return { ok: true, evidence: `the way forward: ${forward.slice(0, 4).join(", ")}`, place: "forward", forward };
   const p = pane(s);
-  const progress = progressOf(p.nodes, v) ?? (p.kind === "main" ? pageIndicator(s) : null);
+  const flat = s.pixels && s.pixels.uniform >= UNIFORM_BLANK;
+  const progress = progressOf(p.nodes, v) ?? (p.kind === "main" ? pageIndicator(s) : null) ?? (flat ? null : appViewProgress(s, p, v));
   if (progress) return { ok: true, evidence: `under way: ${progress.slice(0, 80)}`, place: "progress", forward };
   // Signed in, a card over the app with nothing of its own to press on (the account card the person opened, Settings) is
   // put away with Escape or a click beside it, and the app behind it is the way on, as the session's own advance treats it
