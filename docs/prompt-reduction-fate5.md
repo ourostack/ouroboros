@@ -5,8 +5,8 @@
 1. The system prompt no longer lists every tool name under `## my tools`. Every provider request already
    carries the full tool schemas, scoped by the relationship envelope, so the list repeated what the model
    already receives. When tools are hard-disabled the prompt still says `none for this observe-only turn`.
-   One sentence in the note-keeping section now names `search_facts`, `consult_diary` and `consult_notes` for
-   recalling saved notes.
+   One sentence in the note-keeping section names the save and recall tools (`save_friend_note`, `diary_write`,
+   `get_friend_note`, `search_facts`, `consult_diary`, `consult_notes`) as routing guidance.
 2. Shorter descriptions for `coding_spawn`, `describe_image`, `diary_write` and `query_session`. The
    contracts stay: complete self-contained delegation with verification and "never delegate understanding";
    targeted questions, re-checking the original image after a wrong answer, and the `attachment_id` /
@@ -25,14 +25,14 @@ comparable. Machine-independent: no model calls.
 
 | channel | prompt before → after | schemas before → after | per turn before → after | saved |
 |---|---|---|---|---|
-| cli | 3585 → 3141 | 16499 → 16366 | 20084 → 19507 | 577 |
-| teams | 3707 → 3167 | 19602 → 19469 | 23309 → 22636 | 673 |
-| bluebubbles | 3770 → 3318 | 16758 → 16625 | 20528 → 19943 | 585 |
-| inner | 4060 → 3621 | 16495 → 16362 | 20555 → 19983 | 572 |
-| mcp | 3611 → 3168 | 16379 → 16246 | 19990 → 19414 | 576 |
+| cli | 3585 → 3168 | 16499 → 16366 | 20084 → 19534 | 550 |
+| teams | 3707 → 3194 | 19602 → 19469 | 23309 → 22663 | 646 |
+| bluebubbles | 3770 → 3345 | 16758 → 16625 | 20528 → 19970 | 558 |
+| inner | 4060 → 3648 | 16495 → 16362 | 20555 → 20010 | 545 |
+| mcp | 3611 → 3195 | 16379 → 16246 | 19990 → 19441 | 549 |
 
 The `## my tools` section went from 457–558 tokens to 0. The four descriptions save 133 tokens per
-channel. The total is about 0.8 of the earlier projection for cli (713) because main had already trimmed some of
+channel. The total is about 0.77 of the earlier projection for cli (713) because main had already trimmed some of
 those descriptions since 7231bef.
 
 ## Scenario pairs
