@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1216",
+      "changes": [
+        "The release gate passes --why when it sends its replay messages, so the CLI gate added in #1321 no longer refuses them and good releases can ship to Sanctuary again."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1215",
       "changes": [
         "The shelf check no longer warns about a book that the books CLI found, added or delivered in the same turn, and it never adds its warning to a reply that apologises for or corrects an earlier warning. When a library lookup ran but matched nothing, the warning now says so instead of claiming nothing was checked.",
