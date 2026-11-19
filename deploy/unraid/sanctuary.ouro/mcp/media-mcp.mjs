@@ -627,6 +627,17 @@ export async function mediaRequestStatus(a) {
   const chain = await chainHealth()
   result.chain = chain
   result.diagnosis = diagnose({ shelf, result, chain, entity, kind })
+  // A title can match more than one tracked item: on 2026-11-19 "holmes" found the old Sherlock Holmes request while the
+  // person meant the Elizabeth Holmes documentary Radarr was waiting on. Name the other matches so the answer can too.
+  if (a.title && !a.tmdb_id && !a.request_id) {
+    const others = (await findLibraryCandidates(a.title).catch(() => []))
+      .filter((c) => !(c.kind === kind && ((c.tmdb_id && c.tmdb_id === result.request.tmdb_id) || (svcId && c.service_id === svcId))))
+      .slice(0, 5)
+    if (others.length) {
+      result.other_library_matches = others
+      result.other_library_matches_note = "The person may mean one of these tracked titles instead of the request above. Weigh them before answering, and name a likely one or ask which."
+    }
+  }
   return result
 }
 

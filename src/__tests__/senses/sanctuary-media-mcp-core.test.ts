@@ -758,6 +758,28 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       expect(out.library_matches.map((c: any) => c.service_id)).toEqual([4, 191])
     })
 
+    // 2026-11-19 on 0.1.0-alpha.1220: "holmes" found the old Sherlock Holmes request, so the answer never saw the tracked
+    // Elizabeth Holmes documentary the person meant.
+    it("media_request_status found by title also names the other tracked titles that match", async () => {
+      movies.push({ id: 555, title: "Sherlock Holmes", year: 2009, tmdbId: 10528, overview: "A detective and his partner." })
+      movies.push({ id: 1061, title: "You Can See Everything", year: 2026, tmdbId: 1765072,
+        overview: "Notorious Silicon Valley founder Elizabeth Holmes invites a film crew to document her every move." })
+      const base = (globalThis as any).fetch
+      vi.stubGlobal("fetch", async (url: string, init: any) => {
+        if (url.startsWith("http://seerr") && url.includes("/search")) return json({ results: [{ id: 10528, mediaType: "movie", mediaInfo: { status: 5 } }] })
+        if (url.startsWith("http://seerr") && url.includes("/movie/10528")) return json({ title: "Sherlock Holmes", mediaInfo: { status: 5, externalServiceId: 555, requests: [{ id: 539, status: 2, createdAt: "2025-04-20T18:50:02.000Z" }] } })
+        if (url.startsWith("http://seerr")) return json({})
+        return base(url, init)
+      })
+      const out = await mod.mediaRequestStatus({ title: "holmes" })
+      expect(out.found).toBe(true)
+      expect(out.request.tmdb_id).toBe(10528)
+      expect(out.other_library_matches.map((c: any) => [c.service_id, c.match])).toEqual([[1061, "subject"]])
+      expect(out.other_library_matches_note).toMatch(/may mean/)
+      const byId = await mod.mediaRequestStatus({ tmdb_id: 10528 })
+      expect(byId).not.toHaveProperty("other_library_matches")
+    })
+
     it("media_search_now resolves the partial title chef to the series", async () => {
       const out = await mod.mediaSearchNow({ kind: "series", title: "chef" })
       expect(out).toMatchObject({ service_id: 191, title: "The Chef Show" })
