@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1225",
       "changes": [
-        "A trial switch (off by default) can send the agent a small core set of tools and let it look the rest up on demand, cutting about 12,500 to 15,500 estimated tokens from each request; nothing changes unless it is turned on."
+        "A trial switch (off by default) can send the agent a small core set of tools and let it look the rest up on demand, cutting about 12,500 to 15,500 estimated tokens from each request; nothing changes unless it is turned on.",
+        "Update the Ouro UI files to Ouro UI v1.3.331."
       ]
     },
     {

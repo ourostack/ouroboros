@@ -4,7 +4,7 @@
     {
       "id": "ourostack-ouro-ui-ax",
       "repository": "ourostack/ouro-ui",
-      "commit": "ac8b87af03427ddaf4ad902f91c673e1ea1458c4",
+      "commit": "3f057478a7a9b7043cb70533228a2fcd4253e828",
       "license": "MIT",
       "files": [
         { "sourcePath": "LICENSE", "generatedPath": "lib/ouro-ui/LICENSE", "sha256": "6515c640c8b25cea05a476e6c5e325a3d9699f16e83a72048b32ecae08fdc4ab" },
@@ -34,7 +34,7 @@
         { "sourcePath": "registry/ouro/ax/wait.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/wait.ts", "sha256": "fed4890771d0ce5d1a43d93e73c7d621818bbcb44b30e88c88be274972a133c7" },
         { "sourcePath": "registry/ouro/ax/work-event.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/work-event.ts", "sha256": "48d58f3357b420a72e6b31a0682bf4710cff530efef4c43c4668392c3639c230" },
         { "sourcePath": "registry/ouro/ax/xray.kit.mts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.kit.mts", "sha256": "318d4a45d22a360e022d9228f669d96f4fd64080141d3dc3fd931b2d0f3e8e07" },
-        { "sourcePath": "registry/ouro/ax/xray.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.ts", "sha256": "f50250cbfcaf54a1e37436b37f29cc4b5db0ce95ce928d23b95838a11ecf83b3" }
+        { "sourcePath": "registry/ouro/ax/xray.ts", "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.ts", "sha256": "7c58e38422e52a9079510adba0fb3c888024f89907e28faceab4f68350639031" }
       ]
     }
   ]
