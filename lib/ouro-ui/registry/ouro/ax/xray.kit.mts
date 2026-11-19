@@ -10,7 +10,7 @@ export { checkWorkEvent } from "#ouro-ax/work-event.ts";
 export { quietPipes, runCli } from "#ouro-ax/cli.ts";
 export { defineCli, defineCommand, parse, type FlagSpec, type Input } from "#ouro-ax/command.ts";
 export { defineExitCodes } from "#ouro-ax/exit-codes.ts";
-export { AxError, isAxError } from "#ouro-ax/problem.ts";
+export { AxError, isAxError, shellWord } from "#ouro-ax/problem.ts";
 
 // The shared Ouro AX files xray.ts runs on, by the package's imports entry (#ouro-ax/*). They are named here, in an .mts
 // file, because the shadcn CLI rewrites a # import in a .ts, .tsx, .js or .jsx file it installs to the app's own path

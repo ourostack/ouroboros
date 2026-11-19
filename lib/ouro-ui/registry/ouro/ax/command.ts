@@ -48,6 +48,15 @@ interface FlagSpec {
    * @claim "A string flag only" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses repeat on a flag that is not a string, or repeat: false, naming the fix)
    */
   repeat?: true;
+  /**
+   * The value the flag takes when it is left out: `run()` gets it in place of the flag, help shows it as `(default: 90)`,
+   * and the input schema carries it. A string for a string flag, one of `values` for an enum, a number for a number flag
+   * (within `min` and `max`), a true or false for a boolean. A required flag, and a list or repeat flag, takes none.
+   *
+   * @claim "gets it in place of the flag" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a default fills the word or flag left out, and a value given still wins)
+   * @claim "A required flag, and a list or repeat flag, takes none" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
+   */
+  default?: string | number | boolean;
 }
 
 interface ArgSpec {
@@ -75,6 +84,15 @@ interface ArgSpec {
    * @claim "gets the word itself as its fix" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::an unknown flag that is one of an argument's words gets that word as its fix)
    */
   values?: readonly string[];
+  /**
+   * The word's value when it is left out, a string (one of `values` when it has them): `run()` gets it in place of the
+   * word, usage shows it as `[<name>=<value>]`, and the input schema carries it. A required word, a word that reads stdin
+   * and a list word take none.
+   *
+   * @claim "gets it in place of the word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a default fills the word or flag left out, and a value given still wins)
+   * @claim "A required word, a word that reads stdin" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
+   */
+  default?: string;
 }
 
 /**
@@ -313,6 +331,35 @@ function flagsOf(cli: Pick<Cli, "globalFlags">, cmd: CommandDef): Record<string,
   return { ...BUILTIN_FLAGS, ...cli.globalFlags, ...whyFlag, ...dryRun, ...cmd.flags, ...(cmd.self ? { agent: AGENT_FLAG } : {}) };
 }
 
+/** Why a word's default does not fit the word, as the refusal's problem reads, or null when it fits. */
+function wordDefaultProblem(a: ArgSpec): string | null {
+  if (a.required) return 'is required, so it takes no default. Fix: remove "default", or leave out "required".';
+  if (a.stdin) return 'reads stdin, so it takes no default. Fix: remove "default", or leave out "stdin".';
+  if (a.rest === "list") return 'is a list of words, and its default is one string. Fix: remove "default".';
+  if (typeof a.default !== "string") return `default is ${JSON.stringify(a.default)}, not a string. Fix: default: "${String(a.default)}".`;
+  if (a.values && !a.values.includes(a.default)) return `default "${a.default}" is not one of ${a.values.join(", ")}. Fix: default: "${didYouMean(a.default, a.values) ?? a.values[0]}".`;
+  return null;
+}
+
+/** Why a flag's default does not fit the flag's kind and range, as the refusal's problem reads, or null when it fits. */
+function flagDefaultProblem(name: string, spec: FlagSpec): string | null {
+  const d = spec.default;
+  if (spec.required) return `--${name} is required, so it takes no default. Fix: remove "default", or leave out "required".`;
+  if (spec.repeat || spec.type === "list") return `--${name} takes a list of values, so it takes no default. Fix: remove "default".`;
+  if (spec.type === "boolean") return typeof d === "boolean" ? null : `--${name} is a flag, so its default is true or false, not ${JSON.stringify(d)}. Fix: default: true or default: false.`;
+  if (spec.type === "number") {
+    if (typeof d !== "number") return `--${name} takes a number, so its default is a number, not ${JSON.stringify(d)}. Fix: default: ${spec.min ?? 1}.`;
+    if ((spec.min !== undefined && d < spec.min) || (spec.max !== undefined && d > spec.max)) return `--${name}'s default ${d} is outside its range. Fix: default: ${spec.max !== undefined && d > spec.max ? spec.max : spec.min}.`;
+    return null;
+  }
+  if (spec.type === "enum") {
+    const values = spec.values ?? [];
+    if (typeof d === "string" && values.includes(d)) return null;
+    return `--${name}'s default ${JSON.stringify(d)} is not one of ${values.join(", ")}. Fix: default: "${didYouMean(String(d), values) ?? values[0]}".`;
+  }
+  return typeof d === "string" ? null : `--${name} takes a string, so its default is a string, not ${JSON.stringify(d)}. Fix: default: "${String(d)}".`;
+}
+
 /** Builds the tool and checks its definitions: unique names, a valid exit table, examples that parse. */
 function defineCli<C extends RunContext = RunContext>(def: CliDef<C>): Cli<C> {
   const hasOne = def.command !== undefined;
@@ -356,12 +403,16 @@ function defineCli<C extends RunContext = RunContext>(def: CliDef<C>): Cli<C> {
     const where = cmd === defaultCommand ? def.name : `${def.name} ${cmd.name}`;
     for (const [name, spec] of Object.entries(flags)) {
       if (spec.repeat !== undefined && (spec.repeat !== true || spec.type !== "string")) throw new Error(`${where}: --${name} takes repeat only as true on a string flag. Fix: type: "string" with repeat: true, or leave repeat out.`);
+      const problem = spec.default === undefined ? null : flagDefaultProblem(name, spec);
+      if (problem) throw new Error(`${where}: ${problem}`);
     }
     if (cmd.self && typeof cmd.self.owner !== "function") throw new Error(`${where}: self needs owner, which says whose item a call names. Fix: self: { owner: (input) => <the agent that owns the item> }.`);
     if (cmd.self?.instead !== undefined && (typeof cmd.self.instead !== "string" || !cmd.self.instead.trim() || /[\r\n]/.test(cmd.self.instead))) throw new Error(`${where}: self.instead needs one line. Fix: instead: "${[...commandWords(cli, cmd), "<agent>", "--agent", "<agent>"].join(" ")}", or leave it out.`);
     args.forEach((a, i) => {
       if (a.rest && i !== args.length - 1) throw new Error(`${where}: <${a.name}> takes the rest of the words, so it must be the last argument. Fix: move it last.`);
       if (Object.hasOwn(flags, a.name)) throw new Error(`${where}: <${a.name}> and --${a.name} share one input key. Fix: rename one.`);
+      const problem = a.default === undefined ? null : wordDefaultProblem(a);
+      if (problem) throw new Error(`${where}: <${a.name}> ${problem}`);
     });
   }
   for (const word of Object.keys(cli.ambiguous)) if (seen.has(word)) throw new Error(`${def.name}: "${word}" is both a command and an ambiguous word. Fix: remove one.`);
@@ -395,9 +446,10 @@ function exampleArgv(tool: string, example: string): string[] | null {
   return pipe === -1 ? after : after.slice(0, pipe);
 }
 
-/** `<name>`, `[<name>]` or `<name...>`, as usage shows an argument. */
+/** `<name>`, `[<name>]`, `[<name>=<value>]` for a word with a default, or `<name...>`, as usage shows an argument. */
 function argUsage(a: ArgSpec): string {
   const shown = `<${a.name}${a.rest ? "..." : ""}>${a.stdin ? "|-" : ""}`;
+  if (a.default !== undefined) return `[<${a.name}${a.rest ? "..." : ""}>=${shellWord(a.default)}]`;
   return a.required && !a.unless ? shown : `[${shown}]`;
 }
 
@@ -427,6 +479,14 @@ function usageOf(cli: Pick<Cli, "globalFlags" | "defaultCommand">, cmd: CommandD
   const required = flags.filter(([, s]) => s.required).map(([n, s]) => flagUsage(n, s));
   const optional = flags.filter(([, s]) => !s.required).map(([n, s]) => `[${flagUsage(n, s)}]`);
   return [...commandWords(cli, cmd), ...(cmd.args ?? []).map(argUsage), ...required, ...optional].join(" ");
+}
+
+/** The input with the defaults of the words and flags left out filled in: what run() receives. */
+function withDefaults(cmd: CommandDef, input: Record<string, InputValue>, flags: Readonly<Record<string, FlagSpec>>): Input {
+  const filled: Record<string, InputValue> = { ...input };
+  for (const a of cmd.args ?? []) if (a.default !== undefined && !Object.hasOwn(filled, a.name)) filled[a.name] = a.default;
+  for (const [name, spec] of Object.entries(flags)) if (spec.default !== undefined && !Object.hasOwn(filled, name)) filled[name] = spec.default;
+  return filled;
 }
 
 interface Parsed {
@@ -652,7 +712,7 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
       fix: commandLine([cli.name, ...words, ...shown, `--${name}`, placeholderOf(name, spec).replace(/^"(.*)"$/, "$1")]),
     });
   }
-  return { kind: "run", command, input, json, unchecked };
+  return { kind: "run", command, input: withDefaults(command, input, flags), json, unchecked };
 }
 
 function valueOf(cli: Cli, thing: string, name: string, spec: FlagSpec, raw: string, fixWith: (replacement: string) => string): InputValue {
@@ -819,6 +879,7 @@ interface JsonSchema {
   properties?: Record<string, JsonSchema>;
   required?: string[];
   additionalProperties?: boolean;
+  default?: string | number | boolean;
 }
 
 /** The command's input as a JSON Schema: its arguments and flags as properties (the MCP tool's inputSchema). */
@@ -829,7 +890,8 @@ function inputSchema(cli: Pick<Cli, "globalFlags">, cmd: CommandDef): JsonSchema
     const unless = unlessOf(a);
     const description = a.description + (unless.length ? ` Not needed with ${unless.join(" or ")}.` : "");
     const enumOf = a.values && a.rest !== true ? { enum: a.values } : {};
-    properties[a.name] = a.rest === "list" ? { type: "array", items: { type: "string", ...enumOf }, description } : { type: "string", ...enumOf, description };
+    const defaultOf = a.default === undefined ? {} : { default: a.default };
+    properties[a.name] = a.rest === "list" ? { type: "array", items: { type: "string", ...enumOf }, description } : { type: "string", ...enumOf, ...defaultOf, description };
     if (a.required && !unless.length) required.push(a.name);
   }
   for (const [name, spec] of Object.entries(flagsOf(cli, cmd))) {
@@ -842,6 +904,7 @@ function inputSchema(cli: Pick<Cli, "globalFlags">, cmd: CommandDef): JsonSchema
     if (spec.max !== undefined) s.maximum = spec.max;
     if (array) s.items = { type: "string" };
     if (spec.values) s.enum = spec.values;
+    if (spec.default !== undefined) s.default = spec.default;
     properties[name] = s;
     if (spec.required && !unlessOf(spec).length) required.push(name);
   }
@@ -918,7 +981,7 @@ function checkInput(cli: Cli, cmd: CommandDef, raw: unknown, thing: string = cmd
       fail(name === WHY_FLAG ? "needs-why" : "missing-arg", `needs "${name}" (or ${unless.map((u) => `"${u}"`).join(", ")})`);
     }
   }
-  return input;
+  return withDefaults(cmd, input, flagsOf(cli, cmd));
 }
 
 /**
