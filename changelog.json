@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1215",
+      "changes": [
+        "The shelf check no longer warns about a book that the books CLI found, added or delivered in the same turn, and it never adds its warning to a reply that apologises for or corrects an earlier warning. When a library lookup ran but matched nothing, the warning now says so instead of claiming nothing was checked."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1214",
       "changes": [
         "Update the Ouro UI files to Ouro UI v1.3.318."

@@ -14,6 +14,11 @@ const NOT_A_CLAIM = /\bnot\b|n['’]t\b|\bno\s+longer\b|\bnever\b|\bif\b|\bwheth
 const DENIAL_REACH_WORDS = 4
 const LIBRARY_LOOKUP_TOOLS = new Set(["media_search", "sanctuary_search_media_catalog"])
 const MIN_TITLE_LENGTH = 3
+/** The bundle's books CLI reading or changing the house book library: `./books get … --deliver`, `books library find …`. */
+const BOOKS_COMMAND = /(?:^|[\s;&|(])(?:[\w.~/-]*\/)?books\s+(?:get|deliver|library\s+(?:find|add))\b/
+/** A reply about the gate's own line ("sorry, that note was wrong"): it corrects a disclosure, so it gets none of its own. */
+const APOLOGY = /\b(?:sorry|apolog\w*|my\s+(?:mistake|bad)|ignore|disregard)\b|\bwas\s+wrong\b/i
+const DISCLOSURE_REF = /\bha(?:ve|d)n['’]?t\s+checked\s+the\s+library\b|\bcan['’]?t\s+promise\s+it['’]?s\s+on\s+the\s+shelf\b|\b(?:that|the|this)\s+(?:line|note|disclaimer|disclosure|warning)\b/i
 
 function normalize(text: string): string {
   return ` ${text.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/&/g, " and ").replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `
@@ -44,11 +49,27 @@ function titlesFrom(records: readonly TurnToolRecord[]): { onShelf: Title[]; off
   return { onShelf, offShelf: offShelf.filter((title) => !onShelf.some((found) => found.key === title.key)) }
 }
 
+/** True when a books CLI run this turn succeeded and, if it was a search, found something: the book library backs the claim. */
+function bookLibraryBacked(records: readonly TurnToolRecord[]): boolean {
+  return records.some((record) => {
+    if (record.name !== "shell" || !BOOKS_COMMAND.test(record.args.command ?? "") || /^error:/i.test(record.result.trim())) return false
+    let parsed: unknown
+    try { parsed = JSON.parse(record.result) } catch { return record.result.trim().length > 0 }
+    if (!parsed || typeof parsed !== "object") return true
+    const fields = parsed as Record<string, unknown>
+    if (fields.ok === false) return false
+    const lists = ["results", "items", "books", "matches"].map((key) => fields[key]).filter(Array.isArray)
+    return lists.length === 0 || lists.some((list) => list.length > 0)
+  })
+}
+
 /** Null when the reply's shelf claims are backed; otherwise the titles this turn's lookup showed missing (empty: nothing found). */
 function unbackedClaim(answer: string, tools: readonly TurnToolRecord[]): { missing: string[] } | null {
   const clauses = answer.split(/[.!?,;\n]+/)
   const denied = (clause: string): boolean => NOT_A_CLAIM.test(clause.slice(0, clause.search(SHELF_CLAIM)).trim().split(/\s+/).slice(-DENIAL_REACH_WORDS).join(" "))
   if (!clauses.some((clause) => SHELF_CLAIM.test(clause) && !denied(clause))) return null
+  if (APOLOGY.test(answer) && DISCLOSURE_REF.test(answer)) return null
+  if (bookLibraryBacked(tools)) return null
   // Titles count from everything but the denials, so "Dune isn't on the shelf" never reads as a claim about Dune.
   const said = normalize(clauses.filter((clause) => !SHELF_CLAIM.test(clause) || !denied(clause)).join(" "))
   const { onShelf, offShelf } = titlesFrom(tools)
@@ -70,9 +91,12 @@ export function shelfClaimError(answer: string, tools: readonly TurnToolRecord[]
   return `you said something is on the shelf, but ${why}. say "on the shelf" only for a title a lookup in this turn found there. otherwise say it plainly, like "I can check if we have it", or look it up first.`
 }
 
-/** An unbacked shelf claim that survived its retry goes out with the truth in front: what the lookup showed missing, or that nothing was checked. */
+/** An unbacked shelf claim that survived its retry goes out with the truth in front: what the lookup showed missing, that it found no match, or that nothing was checked. */
 export function withShelfDisclosure(answer: string, tools: readonly TurnToolRecord[]): string {
   const { missing } = unbackedClaim(answer, tools)!
-  const note = missing.length > 0 ? `My lookup shows ${missing.join(", ")} isn't on the shelf.` : "I haven't checked the library for that yet, so I can't promise it's on the shelf."
+  const looked = tools.some((record) => LIBRARY_LOOKUP_TOOLS.has(record.name))
+  const note = missing.length > 0 ? `My lookup shows ${missing.join(", ")} isn't on the shelf.`
+    : looked ? "My library lookup didn't find that, so I can't promise it's on the shelf."
+      : "I haven't checked the library for that yet, so I can't promise it's on the shelf."
   return `${note}\n\n${answer}`
 }
