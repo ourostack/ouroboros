@@ -62,4 +62,45 @@ describe("shelfClaimError", () => {
     expect(shelfClaimError("Up is on the shelf.", tools)).not.toBeNull()
     expect(shelfClaimError("Cars is on the shelf.", tools)).not.toBeNull()
   })
+
+  // 2026-11-19, Telegram: the Butler added a book with the bundle's books CLI and said it "is in the library", and the
+  // gate told Ari it hadn't checked. The book library backs a book claim; a failed or empty run does not.
+  const shell = (command: string, result: unknown) => ({ name: "shell", args: { command }, result: typeof result === "string" ? result : JSON.stringify(result) })
+  const BOOK_REPLY = "How to Win Friends and Influence People is in the library and on its way to your PocketBook."
+  it("passes a book claim this turn's books CLI backs", () => {
+    for (const tools of [
+      [shell("./books get 'How to Win Friends and Influence People' --deliver", { ok: true, title: "How to Win Friends and Influence People" })],
+      [shell("cd ~/bundle && ./books library find 'How to Win Friends'", { ok: true, results: [{ title: "How to Win Friends and Influence People" }] })],
+      [shell("books library add ~/Downloads/how-to-win.epub", "added: How to Win Friends and Influence People (id 42)")],
+      [shell("./books deliver 42", { ok: true })],
+      [shell("./books library add book.epub", "42")],
+    ]) expect(shelfClaimError(BOOK_REPLY, tools), tools[0].args.command).toBeNull()
+  })
+
+  it("does not count a books run that failed or found nothing", () => {
+    for (const tools of [
+      [shell("./books get 'How to Win Friends' --deliver", { ok: false, error: "no match" })],
+      [shell("./books library find 'How to Win Friends'", { ok: true, results: [] })],
+      [shell("./books get 'How to Win Friends' --deliver", "error: Command failed: exit 1")],
+      [shell("ls books", "books")],
+      [{ name: "shell", args: {}, result: "ok" }],
+      [shell("./books library add book.epub", "  ")],
+    ]) expect(shelfClaimError(BOOK_REPLY, tools), tools[0].args.command).not.toBeNull()
+  })
+
+  // The next turn the Butler apologised for that line, and the gate put it in front of the apology too.
+  it("never gates a reply that apologises for or corrects an earlier disclosure", () => {
+    for (const reply of [
+      "Sorry about that line saying I hadn't checked the library. The book is in the library and on its way.",
+      "Ignore the note above, my mistake: it's in our library.",
+      "Apologies, the \"can't promise it's on the shelf\" line was wrong. It's in the library.",
+    ]) expect(shelfClaimError(reply, []), reply).toBeNull()
+    // Saying sorry is not enough on its own: the reply has to be about the disclosure.
+    expect(shelfClaimError("Sorry for the wait! Dune is on the shelf.", [])).not.toBeNull()
+  })
+
+  it("does not say it hasn't checked when a lookup ran and found nothing to match", () => {
+    expect(withShelfDisclosure("It's in the library.", [search({ items: [{ title: "Dune", on_shelf: false }] })]))
+      .toBe("My library lookup didn't find that, so I can't promise it's on the shelf.\n\nIt's in the library.")
+  })
 })
