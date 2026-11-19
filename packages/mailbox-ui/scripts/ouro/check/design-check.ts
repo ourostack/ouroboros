@@ -22,6 +22,9 @@ import type { PageIssue } from "./size-check.ts";
 //   baked-corner       (readCorners) a picture or video whose own pixels draw a corner of another colour, such as a
 //                      screen recording of a window with its dark corner, inside the page's frame
 //   type-scale         more text sizes, or more font weights in running text or in headings, than a type scale holds
+//   giant-text         the size most of the page's running text is drawn at (by characters, outside headings) is over
+//                      `readingPx`, as when an app grows its root type with the screen: on a 4K display at 1x the words
+//                      read larger than they would at arm's length on a laptop
 //   shadow-scale       more distinct shadows than an elevation scale holds
 //   grey-on-colour     grey text on a coloured background, which reads washed out: use a shade of the background's hue
 //   heading-hierarchy  a heading drawn larger than the heading it sits under, each at the largest size its text is drawn
@@ -46,6 +49,8 @@ interface DesignOptions {
   maxWeights?: number;
   /** The limit on a page's distinct shadows. */
   maxShadows?: number;
+  /** The cap, in CSS pixels, on the page's reading size: the size that carries its running text. */
+  readingPx?: number;
 }
 
 interface CornerMedia {
@@ -71,7 +76,7 @@ interface CornerReading {
   corners: string[];
 }
 
-function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin = 240, headingRoom = 0.5, hugPx = 6, maxSizes = 10, maxWeights = 3, maxShadows = 5 }: DesignOptions = {}): PageIssue[] {
+function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin = 240, headingRoom = 0.5, hugPx = 6, maxSizes = 10, maxWeights = 3, maxShadows = 5, readingPx = 24 }: DesignOptions = {}): PageIssue[] {
   const issues: PageIssue[] = [];
   const counter = window as unknown as { __ouroCheckRef?: number };
   const ref = (el: Element) => {
@@ -382,6 +387,22 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
     const rarestWeight = [...weights].sort((a, b) => a[1] - b[1])[0]![0];
     issues.push({ ref: ref(texts.find((el) => role(el) && Number(getComputedStyle(el).fontWeight) === rarestWeight)!), rule: "type-scale", element: heading ? "the page's heading weights" : "the page's font weights", detail: `${list.length} weights (${list.join(", ")}); keep to ${maxWeights}` });
   }
+  // giant-text: the size that carries most of the page's running text, counted by its own characters, outside headings.
+  // A page with little running text (a splash, a sign-in) has no reading size to judge.
+  const reading = new Map<number, { chars: number; first: Element }>();
+  for (const el of texts) {
+    if (isHeading(el) || optedOut(el, "giant-text")) continue;
+    const chars = [...el.childNodes].reduce((n, node) => n + (node.nodeType === 3 ? node.textContent!.trim().length : 0), 0);
+    const size = Math.round(px(getComputedStyle(el).fontSize) * 2) / 2;
+    const seen = reading.get(size);
+    if (seen) seen.chars += chars;
+    else reading.set(size, { chars, first: el });
+  }
+  const [main] = [...reading].sort((a, b) => b[1].chars - a[1].chars);
+  if (main && main[1].chars >= 120 && main[0] > readingPx) {
+    issues.push({ ref: ref(main[1].first), rule: "giant-text", element: "the page's running text", detail: `most of it is drawn at ${main[0]}px (${main[1].chars} characters); keep reading text to ${readingPx}px or under at every screen size` });
+  }
+
   const shadowed = visible.filter((el) => getComputedStyle(el).boxShadow !== "none" && frameOf(el) === null);
   const shadows = count(shadowed.map((el) => getComputedStyle(el).boxShadow));
   if (shadows.size > maxShadows && !optedOut(document.body, "shadow-scale")) {

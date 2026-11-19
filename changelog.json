@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1214",
+      "changes": [
+        "Update the Ouro UI files to Ouro UI v1.3.318."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1213",
       "changes": [
         "Drop the tool-name list from the system prompt, since every request already carries the full tool schemas, and shorten the coding_spawn, describe_image, diary_write and query_session descriptions. This saves about 570 to 670 tokens per turn on every channel."
