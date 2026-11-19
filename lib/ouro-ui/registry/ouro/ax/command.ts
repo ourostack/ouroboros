@@ -658,6 +658,17 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
   }
   const args = command.args ?? [];
   const given = [...positional];
+  // A required flag left out, and the refusal that names it; --why's refusal comes before a word outside its values,
+  // so an action other people see is asked for its reason first.
+  const missingFlag = (name: string, spec: FlagSpec) =>
+    new AxError({
+      code: name === WHY_FLAG ? "needs-why" : "missing-flag",
+      exit: usage(cli),
+      thing,
+      problem: name === WHY_FLAG ? whyProblem(command, "--why") : `needs --${name}: ${spec.description.replace(/[.\s]+$/, "")}`,
+      fix: commandLine([cli.name, ...words, ...shown, `--${name}`, placeholderOf(name, spec).replace(/^"(.*)"$/, "$1")]),
+    });
+  const left = (name: string, spec: FlagSpec | undefined) => spec?.required === true && !Object.hasOwn(input, name) && !unlessOf(spec).some((u) => Object.hasOwn(input, u));
   for (const a of args) {
     if (given.length === 0) break;
     // The words this argument takes start where the ones before it end; a rest argument takes all that are left.
@@ -666,6 +677,7 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
     for (let k = first; a.values && a.rest !== true && k < first + taken; k++) {
       const word = positional[k]!;
       if (a.values.includes(word)) continue;
+      if (left(WHY_FLAG, flags[WHY_FLAG])) throw missingFlag(WHY_FLAG, flags[WHY_FLAG]!);
       const near = didYouMean(word, a.values);
       throw new AxError({
         code: "bad-value",
@@ -702,16 +714,7 @@ function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
       fix: a.source ? `${cli.name} ${a.source}, then ${filled}` : filled,
     });
   }
-  for (const [name, spec] of Object.entries(flags)) {
-    if (!spec.required || Object.hasOwn(input, name) || unlessOf(spec).some((u) => Object.hasOwn(input, u))) continue;
-    throw new AxError({
-      code: name === WHY_FLAG ? "needs-why" : "missing-flag",
-      exit: usage(cli),
-      thing,
-      problem: name === WHY_FLAG ? whyProblem(command, "--why") : `needs --${name}: ${spec.description.replace(/[.\s]+$/, "")}`,
-      fix: commandLine([cli.name, ...words, ...shown, `--${name}`, placeholderOf(name, spec).replace(/^"(.*)"$/, "$1")]),
-    });
-  }
+  for (const [name, spec] of Object.entries(flags)) if (left(name, spec)) throw missingFlag(name, spec);
   return { kind: "run", command, input: withDefaults(command, input, flags), json, unchecked };
 }
 
