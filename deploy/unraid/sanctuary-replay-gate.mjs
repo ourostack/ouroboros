@@ -1871,7 +1871,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       }
     },
     async send({ who, text, delegated, context }) {
-      const args = ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--identity-file", identityFor(who), "--json", ...(delegated ? ["--delegated"] : [])]
+      const args = ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "message", "--to", card, "--text", text, "--context", context, "--why", `release gate replay: case context ${context}, sent as ${who}`, "--identity-file", identityFor(who), "--json", ...(delegated ? ["--delegated"] : [])]
       try {
         const out = exec("docker", args, { timeout: MESSAGE_TIMEOUT_MS })
         const parsed = JSON.parse(out.trim().split("\n").at(-1))

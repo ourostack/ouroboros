@@ -2177,6 +2177,8 @@ describe("provision and the real host", () => {
     const sent = execCalls.find((c) => c.includes("message"))!
     expect(sent).toEqual(expect.arrayContaining(["--to", "http://card", "--context", "c9", "--delegated", "--json"]))
     expect(sent[sent.indexOf("--identity-file") + 1]).toMatch(/\/stranger\.json$/)
+    // `ouro a2a message` reaches another agent, so the CLI gate refuses it without --why (#1321).
+    expect(sent[sent.indexOf("--why") + 1]).toMatch(/release gate replay/)
     host.closeWindow()
     for (const [out, expected] of [
       [JSON.stringify({ "friend-1": true, "friend-2": false, "friend-3": true }), { ok: false, detail: "the Butler's own view of state/replay does not open the window for: friend-2 (the directory or window.json is not root-owned and read-only to the Butler)" }],
