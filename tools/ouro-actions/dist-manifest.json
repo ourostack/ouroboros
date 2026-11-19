@@ -1,19 +1,19 @@
 {
-  "coreTag": "v1.0.0",
+  "coreTag": "v1.1.0",
   "files": {
-    "dist/a2ui/ouro-a2ui-catalog.mts": "bc241cf9711eb0c019607d7a727a02a4c6c8599eb268b05e2953c52a1ddd36cd",
-    "dist/a2ui/ouro-a2ui.mts": "57bb4038955de4a953bd4d12582caa4223fe8f921b9738e231428ce5100e0e34",
+    "dist/a2ui/ouro-a2ui-catalog.mts": "69a12ba3afbe81a8de0dbf048912d3059f7e170f40d624743f76d4410a89943c",
+    "dist/a2ui/ouro-a2ui.mts": "e77db180bc0e9b33e4f09543e5c93b79df0246a7b0325260b75ed2361189345b",
     "dist/actions/ouro-actions-android.mts": "3e3da5a8d4cea41ca9f8b4e5fa1cf330a47ac5c13f64bffe94b3d66c5e8cd423",
     "dist/actions/ouro-actions-windows.mts": "ec86d842a11b1fe67bb821cdd38d0c0d4c9119c82df93aaf5db2ff02714d9c28",
-    "dist/actions/ouro-actions.mts": "667d5828606e2b51bfd9300b52c89a000270da18317f4c293e3acb8a67ddbad8",
-    "dist/android/OuroTokens.kt": "71083d637555facb75b7505c327afd583ec604bfc7fa764047d15f347a9c7c32",
-    "dist/apple/OuroTokens.swift": "eb90731c5678ba4d782aeb1bc3759254024bfca2e42a9a68d204738ed5760838",
+    "dist/actions/ouro-actions.mts": "be03f4d1d35e741b4fca692ab7d6a1dce57bc666a6c46a7a440f94cb99e4f5c8",
+    "dist/android/OuroTokens.kt": "046641935d35b67a7354f5f7f6aba45caf68ae85f9f698f51fd484f899c81ac1",
+    "dist/apple/OuroTokens.swift": "fb2baf32b43c16e160cf94d35152e3205a42aa6976f5cb3e7b6ac9223d07cf41",
     "dist/ax/actions.claims.json": "944f48be5f9409dd70e0774dfe4976fef9cc3ba3f4ab4b9231df428700523f1a",
     "dist/ax/apple.claims.json": "4216bfdce2983fb95a722b208cdb944315e87d5b8b5b7d0056b8edcb2208254d",
-    "dist/composed/ouro-composed.mts": "50b1b5c290816f0e9698fa6514eab023df38e11c559921133254cad963aa606a",
+    "dist/composed/ouro-composed.mts": "8952a3dcc19cb2d2b571b1631c66d43ab51e373b19c8dab5277ed9829c07ce74",
     "dist/composed/ouro-mcp-app.mts": "9b61d5d000f09cfd7cfcb13d057fb1bb1f0bea9bcedda5eb54a80ba8a11cac33",
     "dist/feel/feel.spec.json": "83b434d8f1628bd39e27f6325ad563c5e129ebd2bbbdee44ebb18f82e46781ef",
-    "dist/hx/a2ui/catalog.json": "0bf8645f5179d078776ffbcd3f6ed9599a09b7fc099af1d19e9a59dc9edb03ed",
+    "dist/hx/a2ui/catalog.json": "f7a4e702834fb93b475125277e65df6fbb73bb4872776389162c791d6a80ab29",
     "dist/hx/components.claims.json": "67648917e86d330556f6221d449f14bf339331ce168c6fff0df379ba59cfc160",
     "dist/hx/components/avatar.spec.json": "466333297f1c2cb6ab97e18e46466130a18b200a2d8f8e43a0ea62b7fe062449",
     "dist/hx/components/badge.spec.json": "e22b1cd393ffcce5aecb6cbd2dec46151b13b3d96aa95a47159e01230965d43c",
@@ -31,7 +31,7 @@
     "dist/hx/components/spinner.spec.json": "23e4e33382b82add0e7f67ce79517373b139bab934617b715e617fd86919c67a",
     "dist/hx/components/sync-status.spec.json": "02d8a83e542c544224e7a869acfe72ceb8934213dafb74e4f78344a463d1dd36",
     "dist/hx/components/text-field.spec.json": "afb911bd7e1cefcd2acadc19eed9378b972da12987b90a627c04113e4fbe991f",
-    "dist/swatches.html": "9f8c21c3a288e0a94f3b54e92cf32c2f94baf7dfce654f640d4e56b4e10c216a",
+    "dist/swatches.html": "50305966ac7e29a7e10727b94208cbf0a009c260e5623e6f6ae55ba01923f946",
     "dist/web/ouro-base.css": "da8242c18d250c0f034209bacc8ef28d75c0c0b414b4fbea9d35e3e36c6ffb92",
     "dist/web/ouro-theme.css": "7d63d50f253b5d3c3007c89e346e0efb7f92d9da4c9427d49c2bc4d7da534141",
     "dist/web/plain/ouro-base.css": "d65483484f45986f68973fc90f8f544e171956d23030e94f4ff616f5df60cd9c",
@@ -43,7 +43,7 @@
     "dist/web/themes/cookbook.css": "2d7717e8def30f2be4ffdbd1e6ff937eeb66f9ea81b1eb6509f8d71d3f5c9bd3",
     "dist/web/themes/coral.css": "aeba81da6c7d96edabcf77bc82d9812f15ec5b6bbcdd26d54d649a4036f6ba41",
     "dist/web/themes/pearl.css": "269c92d93fb1b170bd26f30fb41492c24bf8ab76e2cd9882b65d38fc12fdd694",
-    "dist/windows/OuroTokens.cs": "edde6abd92511284df82ca9f82c1379e44ac25f20fa64cf0c4c9419373e2cf6b",
-    "dist/windows/OuroTokens.xaml": "3a1e777caadfefe9164016c82737a0d0ba3aa1bd686a9aad474d6db94029374a"
+    "dist/windows/OuroTokens.cs": "e001c207d99cacebf69f79a1e6101566f3a10e541787269caf8338621f191e3d",
+    "dist/windows/OuroTokens.xaml": "62c9925cfb45afb29621e8da965fbf20e35d60015adb8a804e2c41fc2e0cbb44"
   }
 }
