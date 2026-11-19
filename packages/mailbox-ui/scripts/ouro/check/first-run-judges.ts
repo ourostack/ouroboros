@@ -183,6 +183,24 @@ export function progressOf(nodes: AxNode[], v: Vocabulary): string | null {
   return bar ? `a ${bar.role === "AXBusyIndicator" ? "busy" : "progress"} indicator${bar.words ? ` (${bar.words})` : ""}` : null;
 }
 
+/**
+ * A progress or busy indicator on screen anywhere in the page's web area, for a page that shows one beside its main landmark
+ * rather than in it: a sign-in form's "Please wait" bar that sits next to `<main>` while the account is checked (#2351).
+ * Only an indicator counts here, not words: words outside the main pane are often the page's chrome.
+ */
+export function pageIndicator(s: Snapshot): string | null {
+  const win = mainWindow(s);
+  if (!win) return null;
+  const web = win.nodes.filter((n) => n.role === "AXWebArea" && visible(n)).sort((a, b) => b.w! * b.h! - a.w! * a.h!)[0];
+  if (!web) return null;
+  const onScreen = (n: AxNode) => {
+    const r = rectOf(n);
+    return r.x < win.x + win.w && r.x + r.w > win.x && r.y < win.y + win.h && r.y + r.h > win.y;
+  };
+  const bar = subtree(win.nodes, web.i).find((n) => PROGRESS_ROLES.has(n.role) && visible(n) && onScreen(n));
+  return bar ? `a ${bar.role === "AXBusyIndicator" ? "busy" : "progress"} indicator${bar.words ? ` (${bar.words})` : ""}` : null;
+}
+
 export type Verdict = { ok: boolean; evidence: string };
 
 /**
@@ -222,8 +240,14 @@ export function judgeDeadEnd(s: Snapshot, o: { vocabulary?: Vocabulary; goal?: (
   if (o.goal?.(s)) return { ok: true, evidence: "the goal: signed in and synced", place: "goal", forward: [] };
   const forward = forwardActions(s, v);
   if (forward.length) return { ok: true, evidence: `the way forward: ${forward.slice(0, 4).join(", ")}`, place: "forward", forward };
-  const progress = progressOf(pane(s).nodes, v);
+  const p = pane(s);
+  const progress = progressOf(p.nodes, v) ?? (p.kind === "main" ? pageIndicator(s) : null);
   if (progress) return { ok: true, evidence: `under way: ${progress.slice(0, 80)}`, place: "progress", forward };
+  // Signed in, a card over the app with nothing of its own to press on (the account card the person opened, Settings) is
+  // put away with Escape or a click beside it, and the app behind it is the way on, as the session's own advance treats it
+  // (#2359). Signed out or unknown, a card with no way forward is still a dead end.
+  const top = dialogs(s).at(-1);
+  if (s.signedIn === true && top) return { ok: true, evidence: `signed in, a card over the app ("${dialogLabel(top.nodes)}"), put away with Escape`, place: "forward", forward };
   const offered = (mainWindow(s)?.nodes ?? []).filter((n) => PRESSABLE.has(n.role) && n.enabled && visible(n) && n.words).map((n) => n.words!.split(" | ")[0]!);
   return { ok: false, evidence: `a dead end: no enabled control moves the person forward and nothing is under way (the controls here: ${[...new Set(offered)].slice(0, 8).join(", ") || "none"})`, place: "dead-end", forward };
 }
