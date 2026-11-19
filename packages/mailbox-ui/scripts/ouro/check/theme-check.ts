@@ -19,7 +19,10 @@ import type { PageIssue } from "./size-check.ts";
 //               `light` (relative luminance) or lighter, with no more than `chroma` of colour, the white, grey or cream
 //               a light theme fills with. Left out: a control's fill, which is an accent (a light primary button on a
 //               dark page is on purpose); a saturated fill, also an accent; a fill in the page's own text colour, an
-//               inversion on purpose (a chip in the foreground colour); and a surface drawn over a picture, video or
+//               inversion on purpose (a chip in the foreground colour); a fill from a theme token the theme gives a
+//               dark value of its own (declared under a selector that names dark, such as shadcn's .dark, or inside
+//               @media (prefers-color-scheme: dark)), as nova's near-white dark primary is: the theme chose it for
+//               dark; and a surface drawn over a picture, video or
 //               canvas, such as a speech bubble on a comic's art, which is part of the picture. Pictures, video,
 //               canvases and frames are their own colours. A page whose own background is light is left alone, in
 //               either theme: one with no dark theme at all is a choice, not a miss
@@ -187,6 +190,62 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
     }
     return false;
   };
+  // The theme's own dark values: the custom properties a rule in a dark context declares, and every rule, so a fill can be
+  // traced to the tokens it reads. A stylesheet from another origin can't be read, and is left out.
+  const darkTokens = new Set<string>();
+  const styleRules: CSSStyleRule[] = [];
+  const refsOf = new Map<string, Set<string>>();
+  const varNames = (value: string) => [...value.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]!);
+  const declare = (style: CSSStyleDeclaration, dark: boolean) => {
+    for (const name of style) {
+      if (!name.startsWith("--")) continue;
+      if (dark) darkTokens.add(name);
+      const refs = refsOf.get(name) ?? new Set<string>();
+      for (const ref of varNames(style.getPropertyValue(name))) refs.add(ref);
+      refsOf.set(name, refs);
+    }
+  };
+  const walk = (rules: CSSRuleList, dark: boolean) => {
+    for (const rule of rules) {
+      if (rule instanceof CSSStyleRule) {
+        const inDark = dark || /dark/i.test(rule.selectorText);
+        styleRules.push(rule);
+        declare(rule.style, inDark);
+        if (rule.cssRules.length) walk(rule.cssRules, inDark);
+      } else if (rule instanceof CSSMediaRule) walk(rule.cssRules, dark || /prefers-color-scheme\s*:\s*dark/.test(rule.conditionText));
+      else if (rule instanceof CSSGroupingRule) walk(rule.cssRules, dark);
+      // Declarations nested in a query inside a style rule are a rule of their own (CSSNestedDeclarations), under that rule's
+      // selector.
+      else if ("style" in rule) declare((rule as CSSStyleRule).style, dark);
+    }
+  };
+  for (const sheet of document.styleSheets) {
+    try {
+      walk(sheet.cssRules, false);
+    } catch {
+      // Another origin's stylesheet.
+    }
+  }
+  const darkToken = (names: string[], seen = new Set<string>()): boolean =>
+    names.some((name) => !seen.has(name) && (seen.add(name), darkTokens.has(name) || darkToken([...(refsOf.get(name) ?? [])], seen)));
+  const matching = (el: Element, selector: string) => {
+    try {
+      return el.matches(selector);
+    } catch /* istanbul ignore next @preserve -- no selector a stylesheet accepts is known to make matches() throw; a guard so one never stops the check */ {
+      return false;
+    }
+  };
+  // Whether the element's background is set from a token with a dark value, by its own style or a rule that matches it.
+  const themedFill = (el: Element) => {
+    const fills = (style: CSSStyleDeclaration) => varNames(`${style.getPropertyValue("background-color")} ${style.getPropertyValue("background")}`);
+    if (darkToken(fills((el as HTMLElement).style))) return true;
+    for (const rule of styleRules) {
+      const names = fills(rule.style);
+      if (!names.length) continue;
+      if (matching(el, rule.selectorText) && darkToken(names)) return true;
+    }
+    return false;
+  };
   const light_: Element[] = [];
   for (const el of document.body.querySelectorAll("*")) {
     if (el.matches(own) || el.closest(own) || light_.some((outer) => outer.contains(el))) continue;
@@ -194,7 +253,7 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
     const c = rgba(s.backgroundColor);
     if (c.a < 0.9 || luminance(c) < light || (Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b)) / 255 > chroma || /url\(/.test(s.backgroundImage) || el.matches(control) || near(c, text)) continue;
     const r = el.getBoundingClientRect();
-    if (r.width < minWidth || r.height < minHeight || optedOut(el, "dark-miss") || !drawn(el) || onPicture(el, r)) continue;
+    if (r.width < minWidth || r.height < minHeight || optedOut(el, "dark-miss") || !drawn(el) || onPicture(el, r) || themedFill(el)) continue;
     light_.push(el);
     issues.push({ ref: ref(el), rule: "dark-miss", element: describe(el), detail: `filled ${hex(c)} on a dark page filled ${hex(page)}` });
   }

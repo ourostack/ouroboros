@@ -24,7 +24,8 @@ import type { PageIssue } from "./size-check.ts";
 //   type-scale         more text sizes, or more font weights in running text or in headings, than a type scale holds
 //   giant-text         the size most of the page's running text is drawn at (by characters, outside headings) is over
 //                      `readingPx`, as when an app grows its root type with the screen: on a 4K display at 1x the words
-//                      read larger than they would at arm's length on a laptop
+//                      read larger than they would at arm's length on a laptop. Emoji are pictures, not words: an
+//                      emoji picker's grid, drawn large on purpose, is no running text
 //   shadow-scale       more distinct shadows than an elevation scale holds
 //   grey-on-colour     grey text on a coloured background, which reads washed out: use a shade of the background's hue
 //   heading-hierarchy  a heading drawn larger than the heading it sits under, each at the largest size its text is drawn
@@ -388,11 +389,13 @@ function findDesignIssues({ pictureShare = 0.55, pictureRatio = 1.25, pictureMin
     issues.push({ ref: ref(texts.find((el) => role(el) && Number(getComputedStyle(el).fontWeight) === rarestWeight)!), rule: "type-scale", element: heading ? "the page's heading weights" : "the page's font weights", detail: `${list.length} weights (${list.join(", ")}); keep to ${maxWeights}` });
   }
   // giant-text: the size that carries most of the page's running text, counted by its own characters, outside headings.
-  // A page with little running text (a splash, a sign-in) has no reading size to judge.
+  // A page with little running text (a splash, a sign-in) has no reading size to judge. Emoji count for nothing: they are
+  // pictures set in a font, and a picker draws its grid of them large on purpose.
+  const emoji = /\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\u200d|\ufe0f|\u20e3/gu;
   const reading = new Map<number, { chars: number; first: Element }>();
   for (const el of texts) {
     if (isHeading(el) || optedOut(el, "giant-text")) continue;
-    const chars = [...el.childNodes].reduce((n, node) => n + (node.nodeType === 3 ? node.textContent!.trim().length : 0), 0);
+    const chars = [...el.childNodes].reduce((n, node) => n + (node.nodeType === 3 ? node.textContent!.replace(emoji, "").trim().length : 0), 0);
     const size = Math.round(px(getComputedStyle(el).fontSize) * 2) / 2;
     const seen = reading.get(size);
     if (seen) seen.chars += chars;
