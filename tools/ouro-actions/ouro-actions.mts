@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The generator's version, written into every generated file; it is core's version. */
-export const ACTIONS_VERSION = "0.19.0";
+export const ACTIONS_VERSION = "0.20.0";
 const GENERATOR = `ouro-actions ${ACTIONS_VERSION}`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -105,12 +105,25 @@ export interface StringField extends FieldBase {
    * name there uses the resolver alone.
    */
   shownAs?: string;
+  /**
+   * Input only, and optional: the value the field takes when the person or program leaves it out, typed as the field's
+   * value. It is written into the JSON Schema, the CLI's args or flags and the usage line; the handler applies it.
+   */
+  default?: string;
 }
-export interface NumberField extends FieldBase { kind: "number" | "integer"; min?: number; max?: number }
+export interface NumberField extends FieldBase {
+  kind: "number" | "integer";
+  min?: number;
+  max?: number;
+  /** Input only, and optional: the value left out takes; within `min` and `max`, and a whole number for an integer. */
+  default?: number;
+}
 export interface BooleanField extends FieldBase {
   kind: "boolean";
   /** The one value it takes: `const: true` is an explicit confirmation a program must send, such as `confirmNoCover`. */
   const?: true;
+  /** Input only, and optional: the value left out takes, a boolean (true when `const` is true). */
+  default?: boolean;
 }
 /** An enum takes `arg` as a string does; its `values` ride along in the CLI's args and in the MCP and WebMCP schemas. */
 export interface EnumField<V extends string = string> extends FieldBase {
@@ -118,6 +131,8 @@ export interface EnumField<V extends string = string> extends FieldBase {
   values: readonly V[];
   /** Input only: a positional CLI word, with the same placement rules as a string's `arg`. */
   arg?: boolean;
+  /** Input only, and optional: the value left out takes, one of `values`. */
+  default?: V;
 }
 /**
  * The structured fields, for an existing MCP tool's inputs that a person's door can't carry: a list of values, a group
@@ -126,13 +141,13 @@ export interface EnumField<V extends string = string> extends FieldBase {
  * group without `fields`, is free-form: any JSON array, or any JSON object, for an existing MCP tool's input that takes one
  * without a shape.
  */
-export interface ListField extends FieldBase { kind: "list"; of?: Field; minItems?: number; maxItems?: number }
-export interface GroupField extends FieldBase { kind: "group"; fields?: Fields }
+export interface ListField extends FieldBase { kind: "list"; of?: Field; minItems?: number; maxItems?: number; default?: never }
+export interface GroupField extends FieldBase { kind: "group"; fields?: Fields; default?: never }
 /**
  * `combinator` is JSON Schema's `oneOf` (the default: exactly one option matches) or `anyOf` (one or more match; the
  * options take the field's description, and their own are left out).
  */
-export interface OneOfField extends FieldBase { kind: "one-of"; options: readonly Field[]; combinator?: "oneOf" | "anyOf" }
+export interface OneOfField extends FieldBase { kind: "one-of"; options: readonly Field[]; combinator?: "oneOf" | "anyOf"; default?: never }
 export type Field = StringField | NumberField | BooleanField | EnumField | ListField | GroupField | OneOfField;
 export type Fields = Readonly<Record<string, Field>>;
 
@@ -269,6 +284,35 @@ export function names(id: string): Names {
   return { kebab: parts.join("-"), camel: parts[0] + parts.slice(1).map(cap).join(""), pascal: parts.map(cap).join("") };
 }
 
+/**
+ * A field's default: the value it takes when left out. Refused where "left out" has no value to stand for (an output,
+ * a required, structured, entity or protocol-only field) and where the value doesn't fit the field's type, values,
+ * range, length, pattern or const.
+ */
+function checkDefault(at: string, f: Field, input: boolean): void {
+  const v: unknown = f.default;
+  if (!input) throw new Error(`${at}: default is for an input field, and an output has no value to leave out. Fix: drop default.`);
+  if (isStructured(f)) throw new Error(`${at}: a ${f.kind} field takes no default, since its value is a whole list, object or shape. Fix: drop default.`);
+  if (f.protocolOnly) throw new Error(`${at}: a protocol-only field takes no default, since the person's doors don't carry it. Fix: drop default, or drop protocolOnly.`);
+  if ("entity" in f && f.entity !== undefined) throw new Error(`${at}: an entity takes no default, since the person picks it. Fix: drop default, or drop entity.`);
+  if (!f.optional) throw new Error(`${at}: a default on a required field, which every call sends. Fix: make it optional: true, or drop the default.`);
+  if (f.kind === "enum") {
+    if (!(f.values as readonly unknown[]).includes(v)) throw new Error(`${at}: default ${JSON.stringify(v)} is not one of its values. Fix: one of ${f.values.map((x) => JSON.stringify(x)).join(", ")}, or drop default.`);
+  } else if (f.kind === "string") {
+    if (typeof v !== "string") throw new Error(`${at}: default ${JSON.stringify(v)} is not a string. Fix: a string, or drop default.`);
+    if (f.maxLength !== undefined && [...v].length > f.maxLength) throw new Error(`${at}: default is ${[...v].length} characters, over maxLength ${f.maxLength}. Fix: a shorter default, or a larger maxLength.`);
+    if (f.pattern !== undefined && !new RegExp(f.pattern, "u").test(v)) throw new Error(`${at}: default ${JSON.stringify(v)} doesn't match pattern ${f.pattern}. Fix: a default that matches, or drop pattern.`);
+  } else if (f.kind === "boolean") {
+    if (typeof v !== "boolean") throw new Error(`${at}: default ${JSON.stringify(v)} is not a boolean. Fix: true or false, or drop default.`);
+    if (f.const !== undefined && v !== f.const) throw new Error(`${at}: default ${v} is not the one value const allows, true. Fix: default: true, or drop default.`);
+  } else if (f.kind === "number" || f.kind === "integer") {
+    const whole = f.kind === "integer";
+    if (typeof v !== "number" || !Number.isFinite(v) || (whole && !Number.isInteger(v))) throw new Error(`${at}: default ${JSON.stringify(v)} is not ${whole ? "a whole number" : "a number"}. Fix: ${whole ? "a whole number" : "a number"} within min and max, or drop default.`);
+    if (f.min !== undefined && v < f.min) throw new Error(`${at}: default ${v} is below min ${f.min}. Fix: a default of ${f.min} or more, or a lower min.`);
+    if (f.max !== undefined && v > f.max) throw new Error(`${at}: default ${v} is above max ${f.max}. Fix: a default of ${f.max} or less, or a higher max.`);
+  }
+}
+
 /** Checks one field, wherever it sits: `top` is an action's input or output field; otherwise it is inside a list, group or one-of. */
 function checkField(at: string, f: Field, input: boolean, top: boolean): void {
   if (!KINDS.includes(f?.kind)) throw new Error(`${at}: has no kind. Fix: build it with field.string, field.number, field.integer, field.boolean, field.enum, field.list, field.group or field.oneOf.`);
@@ -333,8 +377,10 @@ function checkField(at: string, f: Field, input: boolean, top: boolean): void {
       cases.set(caseName(v), v);
     }
   }
+  if (f.default !== undefined) checkDefault(at, f, input);
   if (f.kind === "list" && f.of !== undefined) {
     if (f.of?.optional) throw new Error(`${at} item: an item can't be optional. Fix: drop optional from of.`);
+    if (f.of?.default !== undefined) throw new Error(`${at} item: an item takes no default, since each value is sent. Fix: drop default from of.`);
     for (const bound of ["minItems", "maxItems"] as const) {
       const v = f[bound];
       if (v !== undefined && !(Number.isInteger(v) && v >= 0)) throw new Error(`${at}: ${bound} is ${JSON.stringify(v)}. Fix: a whole number of 0 or more.`);
@@ -351,6 +397,7 @@ function checkField(at: string, f: Field, input: boolean, top: boolean): void {
     f.options.forEach((o, i) => {
       if (o?.optional) throw new Error(`${at} option ${i + 1}: an option can't be optional. Fix: drop optional from the option; make the one-of field optional instead.`);
       if (o?.nullable) throw new Error(`${at} option ${i + 1}: an option can't be nullable. Fix: make the one-of field nullable instead.`);
+      if (o?.default !== undefined) throw new Error(`${at} option ${i + 1}: an option takes no default, since the value itself picks the option. Fix: drop default from the option.`);
       checkField(`${at} option ${i + 1}`, o, input, false);
       const shape = o?.kind === "enum" ? "string" : o?.kind === "integer" ? "number" : o?.kind;
       const other = shapes.get(shape);
@@ -563,6 +610,7 @@ function fieldSchema(f: Field): Record<string, Json> {
   if (f.kind === "string" && f.pattern !== undefined) s["pattern"] = f.pattern;
   if (f.kind === "string" && f.format !== undefined) s["format"] = f.format;
   if (f.kind === "boolean" && f.const !== undefined) s["const"] = f.const;
+  if (f.default !== undefined) s["default"] = f.default;
   if (f.kind === "list" && f.of !== undefined) s["items"] = fieldSchema(f.of);
   if (f.kind === "list" && f.minItems !== undefined) s["minItems"] = f.minItems;
   if (f.kind === "list" && f.maxItems !== undefined) s["maxItems"] = f.maxItems;
@@ -603,8 +651,11 @@ export interface CommandJson {
   summary: string;
   effect: "private" | "others";
   readOnly?: true;
-  /** Positional words, in order: a required one has `required: true`; an optional one omits it. An enum's values ride along. */
-  args?: { name: string; description: string; required?: true; values?: string[] }[];
+  /**
+   * Positional words, in order: a required one has `required: true`; an optional one omits it. An enum's values ride along,
+   * and a default is typed JSON, as the field's type says.
+   */
+  args?: { name: string; description: string; required?: true; values?: string[]; default?: string | number | boolean }[];
   flags?: Record<string, Record<string, Json>>;
   output?: string;
 }
@@ -618,6 +669,7 @@ function flagSpec(f: Field): Record<string, Json> {
     if (f.min !== undefined) s["min"] = f.min;
     if (f.max !== undefined) s["max"] = f.max;
   }
+  if (f.default !== undefined) s["default"] = f.default;
   if (!f.optional) s["required"] = true;
   return s;
 }
@@ -633,6 +685,7 @@ export function toCommand(a: Action): CommandJson {
     description: f.description,
     ...(f.optional ? {} : { required: true as const }),
     ...(f.kind === "enum" ? { values: [...f.values] } : {}),
+    ...(f.default !== undefined ? { default: f.default } : {}),
   }));
   const flags = Object.fromEntries(fields.filter(([, f]) => !isArg(f)).map(([name, f]) => [f.flag ?? flagName(name), flagSpec(f)]));
   if (args.length) cmd.args = args;
@@ -670,8 +723,9 @@ const refusals = (set: ActionSet) => Object.fromEntries(set.actions.filter((a) =
 const lit = (s: string) => JSON.stringify(s);
 
 function twinOf(set: ActionSet, a: Action): string {
-  // A word the person may leave out is bracketed, as web's usage line shows it: `[<name>]`.
-  const args = Object.entries(a.input).filter(([, f]) => isArg(f)).map(([name, f]) => (f.optional ? `[<${name}>]` : `<${name}>`));
+  // A word the person may leave out is bracketed, as web's usage line shows it: `[<name>]`, or `[<name>=<default>]` when
+  // it has a default.
+  const args = Object.entries(a.input).filter(([, f]) => isArg(f)).map(([name, f]) => (f.optional ? `[<${name}>${f.default === undefined ? "" : `=${f.default}`}]` : `<${name}>`));
   return [set.tool, a.cliWords, ...args].join(" ");
 }
 
