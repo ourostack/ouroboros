@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1222",
       "changes": [
-        "When the Butler looks up a request by title, a found request also names the other tracked titles that match, so asking about the new Holmes documentary shows You Can See Everything next to the old Sherlock Holmes request."
+        "When the Butler looks up a request by title, a found request also names the other tracked titles that match, so asking about the new Holmes documentary shows You Can See Everything next to the old Sherlock Holmes request.",
+        "Update the Ouro UI files to Ouro UI v1.3.327."
       ]
     },
     {
