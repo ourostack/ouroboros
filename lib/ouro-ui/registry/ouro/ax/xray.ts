@@ -1492,9 +1492,12 @@ async function checkHttp(ctx: Context) {
 
 interface RpcReply {
   id?: unknown;
-  result?: { tools?: unknown; content?: { text?: string }[]; isError?: boolean };
+  result?: { tools?: unknown; supportedVersions?: unknown; content?: { text?: string }[]; isError?: boolean };
   error?: { message?: string; data?: unknown };
 }
+
+const MCP_MODERN = "2026-07-28";
+const MCP_LEGACY = "2025-06-18";
 
 async function checkMcp(ctx: Context) {
   const { rec, opts } = ctx;
@@ -1522,9 +1525,12 @@ async function checkMcp(ctx: Context) {
   child.stdin.on("error", () => undefined);
   /* node:coverage enable */
   let id = 0;
+  // MCP 2026-07-28 has no handshake: each request names its version in _meta. A server that does not answer server/discover with it gets initialize, as before.
+  let meta: Record<string, unknown> | null = null;
   const request = (method: string, params: unknown) =>
     new Promise<RpcReply>((done) => {
       const my = ++id;
+      if (meta && method !== "initialize") params = { ...(params as Record<string, unknown>), _meta: meta };
       const t = setTimeout(() => {
         waiting.delete(my);
         done({ error: { message: `no answer to ${method} in ${opts.timeoutMs} ms` } });
@@ -1537,18 +1543,28 @@ async function checkMcp(ctx: Context) {
     });
   const textOf = (r: RpcReply) => (r.error ? JSON.stringify(r.error) : (r.result?.content ?? []).map((c) => c.text ?? "").join(" "));
   const refused = (r: RpcReply) => Boolean(r.error) || r.result?.isError === true;
+  const modern = { "io.modelcontextprotocol/protocolVersion": MCP_MODERN, "io.modelcontextprotocol/clientCapabilities": {} };
+  let revision = MCP_LEGACY;
   try {
-    const init = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "ax-xray", version: XRAY_VERSION } });
-    if (init.error) {
-      rec.add("mcp.tools-list", "initialize", "fail", textOf(init));
-      return { tools: 0 };
+    meta = modern;
+    const discovered = await request("server/discover", {});
+    const versions = discovered.result?.supportedVersions;
+    if (!discovered.error && Array.isArray(versions) && versions.includes(MCP_MODERN)) {
+      revision = MCP_MODERN;
+    } else {
+      meta = null;
+      const init = await request("initialize", { protocolVersion: MCP_LEGACY, capabilities: {}, clientInfo: { name: "ax-xray", version: XRAY_VERSION } });
+      if (init.error) {
+        rec.add("mcp.tools-list", "initialize", "fail", textOf(init));
+        return { tools: 0, revision: MCP_LEGACY };
+      }
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
     }
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
     const list = await request("tools/list", {});
     const tools = Array.isArray(list.result?.tools) ? list.result.tools.filter(isRecord) : null;
     if (!tools) {
       rec.add("mcp.tools-list", "tools/list", "fail", textOf(list) || "no tools array");
-      return { tools: 0 };
+      return { tools: 0, revision };
     }
     recordInventory(rec, "mcp.inventory", ctx.inventory?.mcp ? compareInventory(ctx.inventory.mcp, tools.map((t) => String(t["name"]))) : null, "tools/list");
     for (const t of tools) {
@@ -1572,7 +1588,7 @@ async function checkMcp(ctx: Context) {
     const ut = textOf(u);
     const ok = refused(u) && (ut.includes("tools/list") || tools.some((t) => ut.includes(String(t["name"]))));
     rec.add("mcp.unknown-tool", "ax_xray_no_such_tool", ok ? "pass" : "fail", `${refused(u) ? "refused" : "ran"}: ${clip(ut || "(no text)")}`);
-    return { tools: tools.length };
+    return { tools: tools.length, revision };
   } finally {
     child.kill();
   }
@@ -1592,7 +1608,7 @@ interface Report {
   checker: { version: string };
   claimSet: { version: string; hash: string };
   at: string;
-  target: { commit: string | null; app?: { name: string }; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number } };
+  target: { commit: string | null; app?: { name: string }; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number; revision: string } };
   safety: Safety;
   inventory: { given: boolean; surfaces: ClaimSurface[] };
   effects: { surface: string; note: string }[];
@@ -1634,7 +1650,7 @@ function summarize(results: readonly CheckResult[], parts: Pick<Report, "target"
 }
 
 const targetLine = (t: Report["target"]) =>
-  [t.commit && `at ${t.commit}`, t.cli && `CLI \`${t.cli.name}\` (${t.cli.commands} commands, ${t.cli.calls} calls)`, t.http && `HTTP ${t.http.origin} (${t.http.routes} routes in the manifest, ${t.http.requests} requests)`, t.mcp && `MCP (${t.mcp.tools} tools)`].filter(Boolean).join("; ");
+  [t.commit && `at ${t.commit}`, t.cli && `CLI \`${t.cli.name}\` (${t.cli.commands} commands, ${t.cli.calls} calls)`, t.http && `HTTP ${t.http.origin} (${t.http.routes} routes in the manifest, ${t.http.requests} requests)`, t.mcp && `MCP ${t.mcp.revision} (${t.mcp.tools} tools)`].filter(Boolean).join("; ");
 const order = (claims: readonly ClaimSummary[]) => [...claims].sort((a, b) => Number(a.holds) - Number(b.holds) || (a.tier === b.tier ? 0 : a.tier === "must" ? -1 : 1) || b.fail - a.fail);
 const mark = (c: ClaimSummary) => (c.holds ? "✓" : c.fail ? "✗" : "–");
 const pinLine = (r: Report) => `Ouro AX claim set ${r.claimSet.version} (sha256 ${r.claimSet.hash}), checked by ax-xray ${r.checker.version} at ${r.at}.`;
