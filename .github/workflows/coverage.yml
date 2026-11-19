@@ -658,7 +658,12 @@ jobs:
             deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
 
             while :; do
-              actual=$(npm view "$package_ref" version 2>/dev/null || echo "")
+              # Keep npm's own error so a failure says why (E404 vs network vs auth),
+              # not just "missing".
+              npm_err=$(mktemp)
+              actual=$(npm view "$package_ref" version 2>"$npm_err" || echo "")
+              last_error=$(grep -m1 -E 'npm (error|warn)' "$npm_err" || true)
+              rm -f "$npm_err"
               if [ "$actual" = "$expected" ]; then
                 echo "${package_ref} verified at ${expected} after $(( $(date +%s) - started ))s"
                 return 0
@@ -668,11 +673,11 @@ jobs:
                 break
               fi
 
-              echo "${package_ref} serves ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
+              echo "${package_ref} serves ${actual:-missing}, expected ${expected}${last_error:+ (${last_error})}; retrying after npm propagation delay"
               sleep 15
             done
 
-            echo "::error::${package_ref} serves ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s"
+            echo "::error::${package_ref} serves ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s${last_error:+ (${last_error})}"
             return 1
           }
 
