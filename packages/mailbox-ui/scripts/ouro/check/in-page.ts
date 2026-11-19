@@ -1,4 +1,4 @@
-export { ALIASES, behindModal, boxOf, decodeImages, isReady, listAllowances, listenForReady, outline, runAxe };
+export { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, outline, runAxe };
 export type { Allowance, AxeIssue, Box };
 
 import type { PageIssue } from "./size-check.ts";
@@ -149,4 +149,33 @@ function listAllowances(aliases: Record<string, string>): Allowance[] {
     }
   }
   return found;
+}
+
+// fragment-focus: a page with stylesheets and no fragmentFocusScript after them (lib/ouro/fragment-focus-script.ts).
+// Opened at a place on it (#install), Safari jumps back there as later stylesheets load, and takes focus with it. The
+// script records whether it ran as the page was parsed and which element it is: a copy a script added later (next/script,
+// say) ran too late to hold the parser. Allowed with a reason on <html> or <body>.
+function findFragmentFocusIssues(): PageIssue[] {
+  const sheets = [...document.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"]')].filter((sheet) => sheet.getAttribute("href"));
+  if (!sheets.length) return [];
+  for (const el of [document.documentElement, document.body]) {
+    const rules = (el.getAttribute("data-ouro-allow") ?? "").trim().split(/\s+/);
+    if ((rules.includes("fragment-focus") || rules.includes("all")) && (el.getAttribute("data-ouro-allow-why") ?? "").trim()) return [];
+  }
+  const ran = (window as unknown as { __ouroFragmentFocus?: { parsed?: boolean; script?: Element | null } }).__ouroFragmentFocus;
+  // A stylesheet in <head> after the script: the page can finish parsing while it loads. A script the page has since
+  // taken out (an app that renders into <body>) did its work as it ran.
+  const script = ran?.script;
+  const after = ran?.parsed && script?.isConnected ? sheets.find((sheet) => sheet.closest("head") && script.compareDocumentPosition(sheet) & Node.DOCUMENT_POSITION_FOLLOWING) : undefined;
+  if (ran?.parsed && !after) return [];
+  const counter = window as unknown as { __ouroCheckRef?: number };
+  counter.__ouroCheckRef = (counter.__ouroCheckRef ?? 0) + 1;
+  const ref = `f${counter.__ouroCheckRef}`;
+  document.body.setAttribute("data-ouro-check-ref", `${document.body.getAttribute("data-ouro-check-ref") ?? ""} ${ref}`.trim());
+  const detail = after
+    ? `fragmentFocusScript comes before the stylesheet ${after.getAttribute("href")}, so Safari can still take focus as stylesheets load`
+    : ran
+      ? "fragmentFocusScript ran after the page was parsed, too late to hold it: render it as a plain inline <script>, not one a script adds"
+      : "Safari takes focus as stylesheets load, on this page opened at a place on it, without fragmentFocusScript";
+  return [{ ref, rule: "fragment-focus", element: "the page", detail }];
 }

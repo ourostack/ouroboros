@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Browser, BrowserType, Page, Request } from "playwright";
 import { findDesignIssues, listCornerMedia, mediaDrawn, readCorners, shownCorners, type CornerReading } from "./design-check.ts";
 import { findImageFades } from "./fade-check.ts";
-import { ALIASES, behindModal, boxOf, decodeImages, isReady, listAllowances, listenForReady, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
+import { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
 import { findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint } from "./measure.ts";
 import { findRepaints, listenForMotion, markWalkables, readMotion, resetMotion, type MotionReading } from "./motion-check.ts";
 import { findOverlaps } from "./overlap-check.ts";
@@ -255,6 +255,7 @@ const LABELS: Record<string, string> = {
   "hard-break": "hard break in a heading",
   "narrow-heading": "narrow heading",
   "dark-art": "no dark art",
+  "fragment-focus": "focus lost to a link's place",
   https: "no HTTPS",
 };
 const RULES = Object.keys(LABELS);
@@ -300,6 +301,7 @@ const HINTS: Record<string, string> = {
   "tall-heading": "say it in fewer words, or draw it a step smaller on this screen",
   "one-word-line": "balance it (text-wrap: balance), and give it the column's full width",
   "hard-break": "take out the <br> or the block-level line spans, and let text-wrap: balance break it",
+  "fragment-focus": "add fragmentFocusScript() (the item lib-fragment-focus-script) as an inline script first in <body>, after every stylesheet",
   "narrow-heading": "take off the max-width, and let the heading span its column and balance",
   "dark-art": "give the picture a night twin for the dark theme, as Hero's picture={{ light, dark }} does",
   https: "answer http:// with a 301 to https://, and send Strict-Transport-Security with max-age of a year or more",
@@ -903,6 +905,8 @@ async function check(options: CheckOptions): Promise<CheckResult> {
       // is reported, not the first 40 (close-ups have their own limit), so the findings an update records as known are
       // all of them, and fixing one never brings an unrecorded one into view.
       if (inpAt === `${width}x${height} ${theme}`) shown.push(...(await page.evaluate(findOffThemeIssues, { maxIssues: 100000 })));
+      // fragment-focus reads the page's stylesheets and scripts, the same at every size and theme: at one, inp's.
+      if (inpAt === `${width}x${height} ${theme}`) issues.push(...(await page.evaluate(findFragmentFocusIssues)));
       shown.push(...(await page.evaluate(findInteractionIssues)));
       shown.push(...(await page.evaluate(findWrapIssues, {})));
       shown.push(...(await page.evaluate(findFirstRunIssues, config.firstRun ?? {})));
