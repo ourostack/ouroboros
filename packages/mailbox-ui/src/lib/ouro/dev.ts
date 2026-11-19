@@ -99,7 +99,7 @@ export function checkTheme(): void {
       devWarn(
         "theme",
         "ouro-base is not in this page's CSS (--ouro-layer is unset), so overlays have no backdrop, layer or motion and fields have no border",
-        "npx shadcn@latest add ourostack/ouro-ui/ouro-base#v1.3.347",
+        "npx shadcn@latest add ourostack/ouro-ui/ouro-base#v1.3.348",
       );
     };
     if (document.readyState === "complete") check();
