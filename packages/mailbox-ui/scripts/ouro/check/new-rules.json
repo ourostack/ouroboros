@@ -34,5 +34,9 @@
   {
     "rule": "fragment-focus",
     "summary": "A page with stylesheets and no fragmentFocusScript after them, where Safari takes focus as later stylesheets load on the page opened at a place on it."
+  },
+  {
+    "rule": "narrow-text",
+    "summary": "Prose that wraps at a reading measure well under the column it sits in, held by a max-width; the fix is to let text use its column, or declare the measure in ouro-check.json."
   }
 ]
