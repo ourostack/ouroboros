@@ -129,7 +129,7 @@ jobs:
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=butler-${{ matrix.arch }}
-          cache-to: type=gha,scope=butler-${{ matrix.arch }},mode=max
+          cache-to: type=gha,scope=butler-${{ matrix.arch }},mode=max,ignore-error=true
 
       - name: Retry only a GHCR authorization denial (attempt 2 of 3)
         if: steps.release-gate.outputs.publish == 'true' && steps.build-1.outcome == 'failure'
@@ -167,6 +167,18 @@ jobs:
         id: build-3
         uses: docker/build-push-action@v6
         with: *build-push-inputs
+
+      # ignore-error=true on cache-to drops only a failed cache export (the GitHub Actions cache service can
+      # answer "internal"); a failed push, attestation or solve still fails the build above. Say so when the
+      # cache export failed. This runs only after a successful build, so it never hides a failure.
+      - name: Warn if the build cache export failed
+        if: steps.release-gate.outputs.publish == 'true'
+        run: |
+          if docker buildx history logs --progress plain >"$RUNNER_TEMP/build-log.txt" 2>&1; then
+            scripts/container-cache-export-warning.sh "$RUNNER_TEMP/build-log.txt"
+          else
+            echo "::warning::Could not read the build log, so whether the build cache export succeeded is unknown."
+          fi
 
       - name: Keep the digest for the join job
         if: steps.release-gate.outputs.publish == 'true'
