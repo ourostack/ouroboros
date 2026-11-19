@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1225",
+      "changes": [
+        "A trial switch (off by default) can send the agent a small core set of tools and let it look the rest up on demand, cutting about 12,500 to 15,500 estimated tokens from each request; nothing changes unless it is turned on."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1224",
       "changes": [
         "The shelf-claims answer gate no longer reads a promise about later, like 'I'll tell you when it's ready to watch', as a claim that something is on the shelf now."
