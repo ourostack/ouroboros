@@ -8,8 +8,11 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { TurnToolRecord } from "./source-grounding"
 
 const SHELF_CLAIM = /\b(?:on\s+(?:the|our)\s+shelf|shelf[- ]ready|ready\s+to\s+(?:play|watch)|in\s+(?:the|our)\s+(?:library|jellyfin))\b/i
-/** "isn't on the shelf", "check if it's in our library": the same words, but not a claim that something is there. */
-const NOT_A_CLAIM = /\bnot\b|n['’]t\b|\bno\s+longer\b|\bnever\b|\bif\b|\bwhether\b/i
+/**
+ * "isn't on the shelf", "check if it's in our library", "I'll tell you when it's ready to watch": the same words, but a
+ * denial, an offer or a promise about later, not a claim that something is there now.
+ */
+const NOT_A_CLAIM = /\bnot\b|n['’]t\b|\bno\s+longer\b|\bnever\b|\bif\b|\bwhether\b|\bwhen\b|\bonce\b|\buntil\b|\bwill\b|['’]ll\b|\bshould\b|\bsoon\b/i
 /** How far before a claim a denial word still governs it ("Dune isn't on the shelf"; not "No worries, Dune is on the shelf"). */
 const DENIAL_REACH_WORDS = 4
 const LIBRARY_LOOKUP_TOOLS = new Set(["media_search", "sanctuary_search_media_catalog"])

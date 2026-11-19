@@ -19,6 +19,20 @@ describe("shelfClaimError", () => {
       expect(shelfClaimError(reply, []), reply).not.toBeNull()
   })
 
+  // 2026-11-19 on 0.1.0-alpha.1222: "i'll tell you when it's ready to watch" got "My lookup shows You Can See Everything
+  // isn't on the shelf." stuck in front of a reply that already said so.
+  it("does not read a promise about later as a claim", () => {
+    const tools = [search({ items: [{ title: "You Can See Everything", on_shelf: false }] })]
+    for (const reply of [
+      "You Can See Everything isn't here yet. i'm checking twice a day and will tell you when it's ready to watch",
+      "I'll ping you once it's on the shelf.",
+      "It should be in the library by Friday.",
+      "Nothing to do until it's ready to play.",
+      "It will be on the shelf as soon as a real copy is out.",
+    ]) expect(shelfClaimError(reply, tools), reply).toBeNull()
+    expect(shelfClaimError("You Can See Everything is ready to watch.", tools)).not.toBeNull()
+  })
+
   it("puts the truth in front of an unbacked claim: what the lookup showed missing, or that nothing was checked", () => {
     expect(withShelfDisclosure("all on the shelf.", [])).toBe("I haven't checked the library for that yet, so I can't promise it's on the shelf.\n\nall on the shelf.")
     const tools = [search({ items: [{ title: "Hot Tub Time Machine", on_shelf: false }] })]
