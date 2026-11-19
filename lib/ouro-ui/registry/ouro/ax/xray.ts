@@ -1,4 +1,4 @@
-export { audienceWho, checkSafety, claimSetHash, compareInventory, harvest, main, misspell, parseArgs, refsOf, refusalVerdict, renderHtml, renderMarkdown, renderText, requiredWords, splitCommand, stateDelta, summarize, usageWords, xray, XRAY_VERSION };
+export { audienceWho, checkSafety, claimSetHash, compareInventory, harvest, main, misspell, parseArgs, refsOf, refusalVerdict, renderHtml, renderMarkdown, renderText, requiredWords, splitCommand, stateDelta, summarize, usageWords, wordProblems, xray, XRAY_VERSION };
 export type { CheckResult, Inventory, InventoryCompare, Report, Safety, Verdict, XrayOptions };
 
 // The export list comes first because the shadcn CLI drops comments before a file's
@@ -10,7 +10,7 @@ import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileS
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface, isChecksReport, type ChecksReport, isReservedPersonOnly, type UiEntry, devCommandIn, devCommandsIn, sourceCheckoutTexts, checkFailureCopyAllow, vagueFailureIn, vagueFailuresIn, type FailureCopyAllow, isGenericAudience, isOutcome, validateOutcome, hasAnsi, stripAnsi, isWait, validateWait, checkWorkEvent, quietPipes, runCli, defineCli, defineCommand, parse, type FlagSpec, type Input, defineExitCodes, AxError, isAxError } from "./xray.kit.mts";
+import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface, isChecksReport, type ChecksReport, isReservedPersonOnly, type UiEntry, devCommandIn, devCommandsIn, sourceCheckoutTexts, checkFailureCopyAllow, vagueFailureIn, vagueFailuresIn, type FailureCopyAllow, isGenericAudience, isOutcome, validateOutcome, hasAnsi, stripAnsi, isWait, validateWait, checkWorkEvent, quietPipes, runCli, defineCli, defineCommand, parse, type FlagSpec, type Input, defineExitCodes, AxError, isAxError, shellWord as typedWord } from "./xray.kit.mts";
 
 /**
  * The Ouro AX conformance checker: it calls a CLI, an HTTP API or an MCP server the way an agent would, and reports
@@ -23,7 +23,7 @@ import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface, isChecksReport,
  * @claim "never by importing the interface's code" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::the kit's example tool conforms, and the X-ray acts on nothing)
  * @claim "only against a target that proves it is a mock" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::without proof of a mock, nothing other people see is called, and it does not conform)
  */
-const XRAY_VERSION = "1.6.0";
+const XRAY_VERSION = "1.7.0";
 
 type Verdict = "pass" | "fail" | "skip";
 
@@ -211,6 +211,56 @@ function requiredWords(usage: string): string[] {
     u = u.replace(/\[[^[\]]*\]/g, " ");
   } while (u !== prev);
   return usageWords(u);
+}
+
+/** Why a word's schema default is wrong, as one line with its fix; null when it is right. */
+function defaultProblemOf(command: string, word: string, optional: boolean, prop: Record<string, unknown>, value: unknown): string | null {
+  const at = `${command}: <${word}>`;
+  if (!optional) return `${at} is required, so it takes no default. Fix: remove "default" from its schema.`;
+  if (prop["type"] !== undefined && prop["type"] !== "string") return `${at} is typed ${String(prop["type"])}, not a string, so it takes no string default. Fix: remove "default" from its schema.`;
+  if (typeof value !== "string") return `${at}'s default is ${JSON.stringify(value)}, not a string. Fix: give "default" as a string, such as "${String(value)}".`;
+  const values = Array.isArray(prop["enum"]) ? prop["enum"].map(String) : null;
+  if (values && !values.includes(value)) return `${at}'s default "${value}" is not one of ${values.join(", ")}. Fix: use one of them, such as "${values[0]}".`;
+  return null;
+}
+
+/**
+ * Returns the problems with a command's words, as lines with their fixes, and the count of words in its busiest usage
+ * line. Words come in the order the command reads them: an optional word, bracketed in usage, comes after the required
+ * ones. A schema default is a string of the word's values, not on a required word, and usage shows it as `[<name>=<value>]`.
+ */
+function wordProblems(cmd: CliCommand): { words: number; problems: string[] } {
+  const schema: Record<string, unknown> = isRecord(cmd.inputSchema) ? cmd.inputSchema : {};
+  const props: Record<string, unknown> = isRecord(schema["properties"]) ? schema["properties"] : {};
+  const required = Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
+  const problems = new Set<string>();
+  let words = 0;
+  for (const u of cmd.usage) {
+    // A default's value is no word: it leaves the line first, and the words end at the first flag.
+    const bare = u.replace(/=(?:"[^"]*"|'[^']*'|[^\]\s]*)/g, "");
+    const cut = bare.search(/(?:^| |\[)--/);
+    const found = [...(cut === -1 ? bare : bare.slice(0, cut)).matchAll(/(\[)?<([^<>]+?)>/g)].map((m) => ({ name: m[2]!.replace(/\.\.\.$/, ""), optional: m[1] !== undefined }));
+    words = Math.max(words, found.length);
+    const at = found.findIndex((w) => w.optional);
+    const late = at === -1 ? undefined : found.slice(at + 1).find((w) => !w.optional);
+    if (at !== -1 && late) problems.add(`${cmd.name}: <${found[at]!.name}> is optional but comes before <${late.name}>, which is required. Fix: put <${late.name}> before <${found[at]!.name}>.`);
+    for (const w of found) {
+      const raw = props[w.name];
+      const prop = Object.hasOwn(props, w.name) && isRecord(raw) ? raw : null;
+      if (prop && required.includes(w.name) && w.optional) problems.add(`${cmd.name}: <${w.name}> is required, but its usage brackets it. Fix: write <${w.name}> without brackets.`);
+      if (prop && !required.includes(w.name) && !w.optional) problems.add(`${cmd.name}: <${w.name}> is optional, but its usage shows it bare. Fix: write [<${w.name}>].`);
+      const value = prop?.["default"];
+      const hasDefault = prop !== null && value !== undefined;
+      const usageDefault = new RegExp(`\\[<${escapeRe(w.name)}(?:\\.\\.\\.)?>=`);
+      if (hasDefault) {
+        const shown = typedWord(String(value));
+        const problem = defaultProblemOf(cmd.name, w.name, w.optional, prop, value);
+        if (problem) problems.add(problem);
+        else if (!new RegExp(`\\[<${escapeRe(w.name)}(?:\\.\\.\\.)?>=${escapeRe(shown)}\\]`).test(u)) problems.add(`${cmd.name}: the usage line does not show <${w.name}>'s default. Fix: write [<${w.name}>=${shown}].`);
+      } else if (usageDefault.test(u)) problems.add(`${cmd.name}: the usage line shows a default for <${w.name}>, which its schema does not give. Fix: give "${w.name}" a "default" in its schema, or leave it out of usage.`);
+    }
+  }
+  return { words, problems: [...problems] };
 }
 
 /**
@@ -520,6 +570,8 @@ interface CliCommand {
   usage: string[];
   /** `"self"` when the command runs only on the calling agent's own item. */
   scope: string | null;
+  /** The command's input as JSON Schema (help JSON `inputSchema`): its words and flags, with any defaults, or null when help lacks it. */
+  inputSchema: unknown;
 }
 
 interface Context {
@@ -539,7 +591,7 @@ function commandsOf(help: Record<string, unknown>, name: string): CliCommand[] {
     const cmd = String(c["name"]);
     const raw = Array.isArray(c["usage"]) ? c["usage"].map(String) : typeof c["usage"] === "string" ? [c["usage"]] : [cmd];
     const usage = raw.map((u) => (u.startsWith(`${name} `) ? u.slice(name.length + 1) : u));
-    return { name: cmd, protocol: c["protocol"] === true, words: c["single"] === true ? [] : cmd.split(" "), effect: typeof c["effect"] === "string" ? c["effect"] : null, readOnly: typeof c["readOnly"] === "boolean" ? c["readOnly"] : null, usage, scope: typeof c["scope"] === "string" ? c["scope"] : null };
+    return { name: cmd, protocol: c["protocol"] === true, words: c["single"] === true ? [] : cmd.split(" "), effect: typeof c["effect"] === "string" ? c["effect"] : null, readOnly: typeof c["readOnly"] === "boolean" ? c["readOnly"] : null, usage, scope: typeof c["scope"] === "string" ? c["scope"] : null, inputSchema: c["inputSchema"] ?? null };
   });
 }
 
@@ -605,7 +657,7 @@ async function checkCli(ctx: Context) {
     // Without help JSON, commands come from the text: an indented word, two spaces, then words.
     for (const l of overviewLines) {
       const m = /^ {2,4}([a-z][\w-]*):? {2,}\S/.exec(l);
-      if (m?.[1]) commands.push({ name: m[1], protocol: false, words: [m[1]], effect: null, readOnly: null, usage: [m[1]], scope: null });
+      if (m?.[1]) commands.push({ name: m[1], protocol: false, words: [m[1]], effect: null, readOnly: null, usage: [m[1]], scope: null, inputSchema: null });
     }
   }
   const names = commands.map((c) => c.name);
@@ -624,6 +676,11 @@ async function checkCli(ctx: Context) {
       else rec.add("cli.help-effects", c.name, "fail", `help --json gives ${c.name} no effect (private or others)`);
     }
   } else rec.add("cli.help-effects", "help", "fail", "no help JSON, so no command says who sees it");
+
+  // Words: the required ones first, optional ones bracketed in usage with their defaults as the schema types them.
+  const worded = commands.map((c) => ({ name: c.name, ...wordProblems(c) })).filter((w) => w.words > 0);
+  if (!worded.length) rec.add("cli.optional-args", "all commands", "skip", "no command takes a word");
+  for (const w of worded) rec.add("cli.optional-args", w.name, w.problems.length ? "fail" : "pass", w.problems.length ? w.problems.join(" ") : "the optional words come last and are bracketed in usage, with their defaults");
 
   // Exit codes, documented.
   let documented: Set<number> | null = null;

@@ -6,6 +6,7 @@ export type { CommandManifest, OverviewOptions };
 
 import { argUsage, BUILTIN_FLAGS, flagsOf, flagUsage, inputSchema, invocation, usageOf, type Cli, type CommandDef, type JsonSchema } from "./command.ts";
 import { DRY_RUN_FLAG, WHY_FLAG } from "./effects.ts";
+import { shellWord } from "./problem.ts";
 import { voiceLines } from "./voice.ts";
 
 /**
@@ -122,7 +123,7 @@ function columns(left: string, text: string, width: number): string[] {
 function flagLines(cli: Cli, cmd: CommandDef, width: number = DEFAULT_WIDTH): string[] {
   return Object.entries(flagsOf(cli, cmd))
     .filter(([name]) => !(name in BUILTIN_FLAGS) && !(name in cli.globalFlags))
-    .flatMap(([name, spec]) => columns(flagUsage(name, spec), `${spec.description}${spec.required ? (spec.unless === undefined ? " Required." : ` Required unless ${(typeof spec.unless === "string" ? [spec.unless] : spec.unless).map((u) => `--${u}`).join(" or ")}.`) : ""}${spec.repeat ? " Repeat it for each value." : ""}${spec.stdin ? ' "-" reads it from stdin.' : ""}`, width));
+    .flatMap(([name, spec]) => columns(flagUsage(name, spec), `${spec.description}${spec.default === undefined ? "" : ` (default: ${typeof spec.default === "string" ? shellWord(spec.default) : String(spec.default)})`}${spec.required ? (spec.unless === undefined ? " Required." : ` Required unless ${(typeof spec.unless === "string" ? [spec.unless] : spec.unless).map((u) => `--${u}`).join(" or ")}.`) : ""}${spec.repeat ? " Repeat it for each value." : ""}${spec.stdin ? ' "-" reads it from stdin.' : ""}`, width));
 }
 
 /** One line per argument: its usage on the left, what it is on the right. */
