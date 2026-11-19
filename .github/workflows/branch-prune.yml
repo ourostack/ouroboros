@@ -1,0 +1,28 @@
+name: Branch prune
+# Deletes stale branches once a day: a branch fully merged into main, or one whose most recent pull request merged or
+# closed unmerged at least 3 days ago and that still points at that pull request's head. It never touches main, a
+# protected or release branch, a branch with an open pull request, or one pushed to in the last 3 days. The rule and
+# its tests: ourostack/.github's tools/branch-prune. Run it by hand with dry-run to list what it would delete.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "List what would be deleted and delete nothing."
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: branch-prune
+  cancel-in-progress: false
+jobs:
+  prune:
+    uses: ourostack/.github/.github/workflows/branch-prune-reusable.yml@main
+    permissions:
+      contents: write
+      pull-requests: read
+    with:
+      dry-run: ${{ inputs.dry-run || false }}
+      min-age-days: 3
