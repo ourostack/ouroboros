@@ -1619,7 +1619,6 @@ export async function runAgent(
         ...options,
         relationshipContextScopes: options?.toolContext?.relationshipAuthorization?.authorizedContextScopes,
         relationshipProfileId: options?.toolContext?.relationshipAuthorization?.profileId,
-        relationshipToolNames: options?.toolContext?.relationshipAuthorization?.advertisedToolNames,
         orientationFrame: turnOrientationFrame,
         ...(options?.toolContext?.delegatedCommand ? { delegatedCommand: options.toolContext.delegatedCommand } : {}),
         resumePriorWork: options?.resumePriorWork === true,

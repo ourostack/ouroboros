@@ -10052,6 +10052,21 @@ describe("confirmation system", () => {
     expect(mockStore.get).toHaveBeenCalledWith("uuid-1")
   })
 
+  it("sends the full tool set as provider schemas while the system prompt lists no tool inventory", async () => {
+    mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {}, onModelStreamStart: () => {}, onTextChunk: () => {}, onReasoningChunk: () => {},
+      onToolStart: () => {}, onToolEnd: () => {}, onError: () => {},
+    }
+    await runAgent([{ role: "user", content: "hello" }] as any, callbacks, "cli")
+    const request = mockCreate.mock.calls[0][0]
+    const names = request.tools.map((tool: any) => tool.function.name)
+    expect(names).toEqual(expect.arrayContaining(["read_file", "shell", "ponder", "settle"]))
+    for (const tool of request.tools) expect(tool.function.description).toBeTruthy()
+    const system = request.messages.find((m: any) => m.role === "system")
+    expect(JSON.stringify(system.content)).not.toContain("## my tools\n")
+  })
+
   it("advertises only tools in the relationship capability envelope", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
     const callbacks: ChannelCallbacks = {

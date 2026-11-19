@@ -245,7 +245,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "diary_write",
         description:
-          "Write an entry in my diary -- something I learned, noticed, or concluded that I want available later. Use 'about' to tag the entry to a person, topic, or context. Write for my future self: include enough context that the entry makes sense without the surrounding conversation. Prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
+          "Write a diary entry: something I learned, noticed, or concluded that I want later. Use 'about' to tag a person, topic, or context. Write for my future self, with enough context to stand alone; prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
         parameters: {
           type: "object",
           properties: {

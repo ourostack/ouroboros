@@ -857,13 +857,12 @@ describe("query_session tool", () => {
       enum: ["transcript", "status", "search"],
     })
     expect(modeProperty.description.toLowerCase()).toContain("deprecated")
-    expect(modeProperty.description).toContain("search_facts")
-    expect(modeProperty.description).toContain("consult_diary")
-    expect(modeProperty.description).toContain("consult_notes")
     expect(queryProperty.description.toLowerCase()).toContain("deprecated")
-    expect(queryProperty.description).toContain("search_facts")
-    expect(queryProperty.description).toContain("consult_diary")
-    expect(queryProperty.description).toContain("consult_notes")
+    // the migration targets are stated once, in the main description
+    const all = JSON.stringify(tool.tool.function)
+    for (const name of ["search_facts", "consult_diary", "consult_notes"]) {
+      expect(all.split(name).length - 1).toBe(1)
+    }
   })
 
   it("keeps status mode working while the search mode enum is deprecated", async () => {

@@ -18,10 +18,10 @@ const MATERIALIZE_ATTACHMENT_DESCRIPTION =
   "size and format into a VLM-safe image before retrying."
 
 const DESCRIBE_IMAGE_DESCRIPTION =
-  "Use this to inspect an image attachment with a targeted question, or to re-interrogate an image after a wrong first answer. " +
-  "The harness materializes the original attachment, normalizes it into a VLM-safe image when needed, and sends it through the vision-language model. " +
+  "Inspect an image attachment with a targeted question, or re-check the original image after a wrong first answer. " +
+  "The harness normalizes it into a VLM-safe image and sends it through the vision-language model. " +
   "Prefer specific prompts like 'what is the confirmation number?' over 'describe this image'. " +
-  "Pass attachment_id when you have it; attachment_guid is accepted as a compatibility alias."
+  "Pass attachment_id; attachment_guid is a compatibility alias."
 
 function trimArg(value: string | undefined): string {
   return value?.trim() ?? ""
@@ -220,11 +220,11 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
           properties: {
             attachment_id: {
               type: "string",
-              description: "Stable attachment id for the image you want to inspect.",
+              description: "Stable attachment id of the image.",
             },
             attachment_guid: {
               type: "string",
-              description: "Compatibility alias for older callers. Prefer attachment_id.",
+              description: "Alias for attachment_id.",
             },
             prompt: {
               type: "string",
