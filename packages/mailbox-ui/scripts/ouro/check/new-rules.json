@@ -26,5 +26,9 @@
   {
     "rule": "signed-out-empty",
     "summary": "A page marked signed out (data-ouro-session) that shows the empty state a signed-in person would see, such as All caught up."
+  },
+  {
+    "rule": "giant-text",
+    "summary": "Running text drawn too large to read: the size most of a page's running text is drawn at is over 24px, as when an app grows its root type with the screen."
   }
 ]
