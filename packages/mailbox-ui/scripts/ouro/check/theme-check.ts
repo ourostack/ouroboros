@@ -226,8 +226,6 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
       // Another origin's stylesheet.
     }
   }
-  const darkToken = (names: string[], seen = new Set<string>()): boolean =>
-    names.some((name) => !seen.has(name) && (seen.add(name), darkTokens.has(name) || darkToken([...(refsOf.get(name) ?? [])], seen)));
   const matching = (el: Element, selector: string) => {
     try {
       return el.matches(selector);
@@ -236,13 +234,26 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
     }
   };
   // Whether the element's background is set from a token with a dark value, by its own style or a rule that matches it.
+  // A token an element's own style declares (Message's article sets --ouro-bubble to var(--primary)) holds for it and
+  // everything inside it, so a name is read from the nearest such declaration, from where it is declared; only a name no
+  // element's style declares is read from the stylesheets.
+  const scopedDark = (from: Element, names: string[], seen = new Set<string>()): boolean =>
+    names.some((name) => {
+      if (seen.has(name)) return false;
+      seen.add(name);
+      for (let at: Element | null = from; at; at = at.parentElement) {
+        const value = (at as HTMLElement).style.getPropertyValue(name);
+        if (value) return scopedDark(at, varNames(value), seen);
+      }
+      return darkTokens.has(name) || scopedDark(from, [...(refsOf.get(name) ?? [])], seen);
+    });
   const themedFill = (el: Element) => {
     const fills = (style: CSSStyleDeclaration) => varNames(`${style.getPropertyValue("background-color")} ${style.getPropertyValue("background")}`);
-    if (darkToken(fills((el as HTMLElement).style))) return true;
+    if (scopedDark(el, fills((el as HTMLElement).style))) return true;
     for (const rule of styleRules) {
       const names = fills(rule.style);
       if (!names.length) continue;
-      if (matching(el, rule.selectorText) && darkToken(names)) return true;
+      if (matching(el, rule.selectorText) && scopedDark(el, names)) return true;
     }
     return false;
   };
