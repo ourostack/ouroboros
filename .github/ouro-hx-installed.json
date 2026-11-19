@@ -73,6 +73,7 @@
     "packages/mailbox-ui/src/lib/ouro/dev.ts": "a2f9c1a8663e90a1f6a2252857b7ecc1a569e42692940a1492e219a38d36595d",
     "packages/mailbox-ui/src/lib/ouro/env.d.ts": "b9b1f9fbff01e0acecd2452110007846804d4d30e159a302f56312d2771fe90c",
     "packages/mailbox-ui/src/lib/ouro/floating.ts": "4c723c3a6c385e516f649b9ebbdcf6cb6302fd95d3f0cc782d33ba5f9172a7a1",
+    "packages/mailbox-ui/src/lib/ouro/fragment-focus-script.ts": "ff725ffb57e7abc0d244cf651537649b22ba0b1d81501c9a5dcb2237a41ece46",
     "packages/mailbox-ui/src/lib/ouro/key-shortcuts.ts": "fd2d1311d04ac773de046112b2c0455769360eaab37f26d2c2e483ff6bd894ee",
     "packages/mailbox-ui/src/lib/ouro/last-input.ts": "460c8da8aefbedefaa9eff1761635af9b1f020cd4e1baaac14509fbb86f43327",
     "packages/mailbox-ui/src/lib/ouro/open-mode.ts": "f39f0c2c5f38b3a5ae17c4e17bcf92b28871ee4a5a376314bd92ea5e8a1a1d36",
