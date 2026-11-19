@@ -30,5 +30,9 @@
   {
     "rule": "giant-text",
     "summary": "Running text drawn too large to read: the size most of a page's running text is drawn at is over 24px, as when an app grows its root type with the screen."
+  },
+  {
+    "rule": "fragment-focus",
+    "summary": "A page with stylesheets and no fragmentFocusScript after them, where Safari takes focus as later stylesheets load on the page opened at a place on it."
   }
 ]
