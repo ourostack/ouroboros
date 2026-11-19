@@ -730,7 +730,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "inspect another session. use transcript for recent context or status for self/private-runtime progress. deprecated search invocations should use search_facts, consult_diary, or consult_notes instead.",
+        description: "inspect another session. use transcript for recent context or status for self/private-runtime progress. mode=search is deprecated: use search_facts, consult_diary, or consult_notes instead.",
         parameters: {
           type: "object",
           properties: {
@@ -741,9 +741,9 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             mode: {
               type: "string",
               enum: ["transcript", "status", "search"],
-              description: "transcript (default), lightweight status for self/private-runtime checks, or deprecated search; use search_facts, consult_diary, or consult_notes instead",
+              description: "transcript (default), status (self/private-runtime), or deprecated search",
             },
-            query: { type: "string", description: "deprecated when mode=search; use search_facts, consult_diary, or consult_notes instead" },
+            query: { type: "string", description: "deprecated; only read with mode=search" },
           },
           required: ["friendId", "channel"],
         },

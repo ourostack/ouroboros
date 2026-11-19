@@ -1318,18 +1318,30 @@ describe("buildSystem", () => {
     expect(result).toMatch(/current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]{2,5}/)
   })
 
-  it("includes tools section with tool names", async () => {
+  it("does not repeat the tool-name inventory the provider schemas already carry", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem())
-    expect(result).toContain("## my tools")
-    expect(result).toMatch(/## my tools\n[^\n]*\bread_file\b/)
-    expect(result).toMatch(/## my tools\n[^\n]*\bshell\b/)
-    expect(result).toMatch(/## my tools\n[^\n]*\bweb_search\b/)
+    for (const channel of ["cli", "teams", "bluebubbles", "inner", "mcp"] as const) {
+      const result = flattenSystemPrompt(await buildSystem(channel))
+      expect(result).not.toContain("## my tools\n")
+      expect(result).not.toContain("arrive with its schema")
+      expect(result).not.toMatch(/read_file, [a-z_]+, [a-z_]+, [a-z_]+/)
+    }
+  })
+
+  it("keeps the observe-only no-tools statement when tools are hard-disabled", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("cli", { hardDisableTools: true }))
+    expect(result).toContain("## my tools\nnone for this observe-only turn")
   })
 
   it("includes desk section with the desk-vocab body", async () => {
@@ -1644,7 +1656,7 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
     expect(result).not.toContain("## tool behavior")
     expect(result).not.toContain("tool_choice is set to \"required\"")
-    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
+    expect(result).not.toContain("## my tools\n")
   })
 
   it("includes tool behavior section when options is undefined (defaults on)", async () => {
@@ -1725,7 +1737,7 @@ describe("buildSystem", () => {
     expect(result).toMatch(/nothing calls for words.*observe/i)
   })
 
-  it("toolsSection includes settle in tool list when options undefined (defaults on)", async () => {
+  it("tool behavior still tells the agent to call settle when no inventory is listed", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1733,22 +1745,9 @@ describe("buildSystem", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
-    // The tools section should list settle when defaults on
-    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
+    expect(result).not.toContain("## my tools\n")
+    expect(result).toContain("I call `settle`")
   })
-
-  it("toolsSection still includes flow tools when toolChoiceRequired is false", async () => {
-    setupReadFileSync()
-    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
-    resetPsycheCache()
-    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
-    expect(result).toMatch(/## my tools\n[^\n]*\bponder\b/)
-    expect(result).toMatch(/## my tools\n[^\n]*\bsettle\b/)
-  })
-
   it("private runtime tool behavior guides agent to use rest/ponder for internal state, not surface", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1765,7 +1764,7 @@ describe("buildSystem", () => {
     expect(result).not.toContain("surface progress")
   })
 
-  it("toolsSection keeps flow tools when a custom tool subset is provided", async () => {
+  it("custom tool subsets are carried by the schemas, not named in the prompt", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1779,10 +1778,8 @@ describe("buildSystem", () => {
         function: { name: "custom_lookup", description: "custom lookup", parameters: { type: "object", properties: {} } },
       } as any],
     }))
-    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bcustom_lookup\b/)
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bponder\b/)
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bsettle\b/)
+    expect(result).not.toContain("## my tools\n")
+    expect(result).not.toContain("custom_lookup")
   })
 
   it("does not export flagsSection (removed)", async () => {
@@ -3256,8 +3253,7 @@ describe("buildSystem with context", () => {
     }
 
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx))
-    expect(result).toMatch(/## my tools\n[^\n]*\bread_file\b/)
-    expect(result).toMatch(/## my tools\n[^\n]*\bshell\b/)
+    expect(result).not.toContain("## my tools\n")
   })
 
   it("omits context section when context is undefined", async () => {
@@ -3326,7 +3322,7 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("## runtime")
-    expect(result).toContain("## my tools")
+    expect(result).not.toContain("## my tools\n")
     expect(result).toContain("## my desk")
     expect(result).toContain("## my skills")
     expect(result).toContain("search_facts")
@@ -3434,7 +3430,6 @@ describe("buildSystem with context", () => {
     }
     const result = flattenSystemPrompt(await buildSystem("telegram", {
       relationshipContextScopes: ["household.status", "own_requests"],
-      relationshipToolNames: ["unraid_get_system", "settle", "speak"],
       tools: [{ type: "function", function: { name: "unraid_get_system", description: "Read household server status", parameters: { type: "object", properties: {} } } }],
       startOfTurnPacket: "PRIVATE_PACKET_ARI",
       pendingMessages: [{ from: "Ari", content: "PRIVATE_PENDING_ARI" }],
@@ -3465,7 +3460,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("friend: Maya")
     expect(result).toContain("witty, funny, competent chaos monkey")
     expect(result).toContain("likes concise answers")
-    expect(result).toContain("unraid_get_system")
+    expect(result).not.toContain("unraid_get_system")
     for (const privateText of ["PRIVATE_PACKET_ARI", "PRIVATE_PENDING_ARI", "PRIVATE_BRIDGE_ARI", "PRIVATE_OBLIGATION_ARI", "PRIVATE_WORK_ARI", "PRIVATE_BRIDGE_ID", "PRIVATE_BRIDGE_SUMMARY", "secret-provider", "secret-model", "private-provider-revision"]) {
       expect(result).not.toContain(privateText)
     }
@@ -3559,7 +3554,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("repeated heartbeat/test pokes do not mean i am failing")
   })
 
-  it("buildSystem('inner') advertises the canonical private tool set without an ungranted send_message", async () => {
+  it("buildSystem('inner') keeps the private-runtime delivery rules without an inventory", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3567,13 +3562,7 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bsurface\b/)
-    expect(toolsBlock).not.toMatch(/## my tools\n[^\n]*\bsend_message\b/)
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\brest\b/)
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bponder\b/)
-    expect(toolsBlock).not.toMatch(/## my tools\n[^\n]*\bsettle\b/)
+    expect(result).not.toContain("## my tools\n")
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
     expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
@@ -3581,12 +3570,6 @@ describe("buildSystem with context", () => {
     expect(result).toContain("I do not call `settle` from a private-runtime turn")
     expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
-
-    const duplicateResult = flattenSystemPrompt(await buildSystem("inner", {
-      tools: [{ type: "function", function: { name: "rest", description: "duplicate rest" } } as any],
-    }))
-    const duplicateToolsBlock = duplicateResult.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(duplicateToolsBlock.match(/\brest\b/g)).toHaveLength(1)
   })
 
   it("buildSystem('cli') does NOT include metacognitive framing", async () => {
@@ -4168,11 +4151,11 @@ describe("groupChatParticipationSection", () => {
     }
     const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx as any))
     expect(result).toContain("observe")
-    expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toMatch(/## my tools\n[^\n]*\bobserve\b/)
+    expect(result).not.toContain("## my tools\n")
     expect(result).toMatch(/reaction|tapback/i)
   })
 
-  it("buildSystem includes observe in the tools list for reaction signal turns", async () => {
+  it("buildSystem for reaction signal turns keeps observe out of a prompt inventory", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -4185,8 +4168,7 @@ describe("groupChatParticipationSection", () => {
       isGroupChat: false,
     }
     const result = flattenSystemPrompt(await buildSystem("teams", { isReactionSignal: true }, ctx as any))
-    const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
-    expect(toolsBlock).toMatch(/## my tools\n[^\n]*\bobserve\b/)
+    expect(result).not.toContain("## my tools\n")
   })
 })
 
