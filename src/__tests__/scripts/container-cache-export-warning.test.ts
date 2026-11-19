@@ -58,7 +58,7 @@ describe("container publish cache boundary", () => {
 
   it("ignores only the cache export error and keeps every build attempt otherwise fatal", () => {
     expect(workflow.match(/cache-to: .*ignore-error=true/gu)).toHaveLength(1)
-    expect(workflow.match(/^\s+(?!#).*ignore-error/gmu)).toHaveLength(1)
+    expect(workflow.split("\n").filter((line) => !line.trim().startsWith("#") && line.includes("ignore-error"))).toHaveLength(1)
     const lastAttempt = workflow.slice(workflow.indexOf("(attempt 3 of 3)\n        if: steps.retry-3.outcome"))
     expect(lastAttempt.slice(0, lastAttempt.indexOf("uses: docker/build-push-action@v6"))).not.toContain("continue-on-error")
     expect(workflow).toContain("scripts/container-cache-export-warning.sh")
