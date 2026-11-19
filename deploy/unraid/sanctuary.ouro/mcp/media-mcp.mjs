@@ -222,7 +222,32 @@ function rankCandidates(term, items) {
 }
 
 const libraryCandidate = (kind, i) => ({ kind, source: kind === "series" ? "sonarr" : "radarr", service_id: i.id, title: i.title,
-  year: i.year ?? null, tmdb_id: i.tmdbId ?? null, tvdb_id: i.tvdbId ?? null, in_library: true })
+  year: i.year ?? null, tmdb_id: i.tmdbId ?? null, tvdb_id: i.tvdbId ?? null, in_library: true,
+  overview: typeof i.overview === "string" ? i.overview : null })
+
+// Subject matching. People name a film by what it is about as often as by its title: on 2026-11-19 Ari asked for
+// "that new holmes documentary", which was Radarr 1061, You Can See Everything, and a title-only search said it had
+// never been requested. So after the title matches come tracked items whose overview contains every distinctive
+// word of the query. They are labelled match "subject" with the overview text, and nothing acts on one by itself.
+const SUBJECT_STOP = new Set(["new", "newest", "latest", "recent", "old", "documentary", "documentaries", "doc", "docu",
+  "docuseries", "film", "films", "movie", "movies", "show", "shows", "series", "season", "episode", "that", "this",
+  "about", "with", "from", "asked", "wanted", "requested", "thing", "your", "mine"])
+
+function subjectTokens(term) {
+  return normalizeTitle(term).split(" ").filter((t) => t.length >= 4 && !SUBJECT_STOP.has(t))
+}
+
+const candidateKey = (c) => `${c.kind}:${c.service_id ?? c.jellyfin_id ?? c.title}`
+
+function subjectMatches(term, items, titled) {
+  const tokens = subjectTokens(term)
+  if (!tokens.length) return []
+  const taken = new Set(titled.map(candidateKey))
+  return items
+    .filter((i) => i.overview && !taken.has(candidateKey(i)))
+    .filter((i) => { const words = new Set(normalizeTitle(i.overview).split(" ")); return tokens.every((t) => words.has(t)) })
+    .map((i) => ({ ...i, match: "subject", matched_overview: i.overview.slice(0, 240) }))
+}
 
 // Every library item whose title matches, best first. Sonarr and Radarr are the
 // source of truth for what is tracked; Jellyfin (when configured) adds what is
@@ -253,7 +278,8 @@ export async function findLibraryCandidates(term, kind = "any") {
       notes.push(`jellyfin_unavailable: ${e.message}`)
     }
   }
-  const ranked = rankCandidates(term, items)
+  const titled = rankCandidates(term, items)
+  const ranked = [...titled, ...subjectMatches(term, items, titled)].map(({ overview, ...c }) => c)
   if (notes.length) Object.defineProperty(ranked, "notes", { value: notes, enumerable: false })
   return ranked
 }
@@ -348,7 +374,7 @@ export async function mediaSearch(a) {
     ...(resolution ? { library_matches: resolution.library_matches.slice(0, 10), lookup_candidates: resolution.lookup_candidates, notes: resolution.notes } : {}),
     applied_filters: { kind, year_range: a.year_range ?? null, genres: a.genres ?? [], keywords: a.keywords ?? [], on_shelf: onShelf ?? "any" },
     // So the agent never claims something is missing when the filter caused it:
-    note: resolution?.library_matches.length ? "library_matches lists items already tracked in Sonarr/Radarr (or on the Jellyfin shelf) whose titles match, best first. Offer these before anything else."
+    note: resolution?.library_matches.length ? "library_matches lists items already tracked in Sonarr/Radarr (or on the Jellyfin shelf) whose titles match, best first, then any whose overview names what was asked (match: subject, with matched_overview). Offer these before anything else; a subject match is a guess to confirm with the person, not a certainty."
       : items.length === 0 && resolution?.lookup_candidates.length ? "Nothing in the library matches; lookup_candidates are TVDB/TMDB titles that are not in the library."
       : items.length === 0 ? "No matches for these filters. Loosen year_range/genres/keywords before concluding the shelf lacks it." : null,
   }
@@ -906,7 +932,7 @@ async function resolveLibraryItem(a) {
   let candidates
   if ((a.service_id !== undefined && a.service_id !== null) || a.tmdb_id) {
     const list = await arrFor(a.kind)(a.kind === "series" ? "/series" : "/movie")
-    const items = (Array.isArray(list) ? list : []).map((i) => libraryCandidate(a.kind, i))
+    const items = (Array.isArray(list) ? list : []).map((i) => { const { overview, ...c } = libraryCandidate(a.kind, i); return c })
     const hit = items.filter((i) => (a.service_id !== undefined && a.service_id !== null ? i.service_id === Number(a.service_id) : i.tmdb_id === Number(a.tmdb_id)))
     if (hit.length === 1) return { item: { id: hit[0].service_id, title: hit[0].title } }
     candidates = hit
@@ -915,7 +941,7 @@ async function resolveLibraryItem(a) {
     // Act only when the best tier holds exactly one item and it is not merely a
     // typo-distance match; otherwise name the candidates and let the caller pick.
     const bestTier = ranked.filter((c) => c.match === ranked[0]?.match)
-    if (bestTier.length === 1 && bestTier[0].match !== "fuzzy") return { item: { id: bestTier[0].service_id, title: bestTier[0].title } }
+    if (bestTier.length === 1 && bestTier[0].match !== "fuzzy" && bestTier[0].match !== "subject") return { item: { id: bestTier[0].service_id, title: bestTier[0].title } }
     if (!ranked.length) {
       const lookup = (await lookupCandidates(a.title, a.kind)).filter((c) => !c.in_library).map((c) => ({ ...c, not_in_library: true }))
       return { result: "not_found", candidates: lookup }

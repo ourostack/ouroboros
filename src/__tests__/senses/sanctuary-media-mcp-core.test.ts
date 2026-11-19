@@ -694,6 +694,22 @@ describe("media MCP — search_now and blocklist_stalled", () => {
       expect(calls.some((c) => c.url.includes("lookup") && c.url.includes("term=chef"))).toBe(false)
     })
 
+    // 2026-11-19: Ari asked for "that new holmes documentary". It was Radarr 1061, You Can See Everything, whose title
+    // does not say Holmes, so a title-only search told him it was never requested.
+    it("finds a tracked film by its subject when the title does not name it", async () => {
+      movies.push({ id: 1061, title: "You Can See Everything", year: 2026, tmdbId: 1765072,
+        overview: "Thirty-four days before she's sent to prison, notorious Silicon Valley founder Elizabeth Holmes invites a skeptical film crew to document her every move." })
+      movies.push({ id: 555, title: "Sherlock Holmes", year: 2009, tmdbId: 10528, overview: "A detective and his partner take on a lord." })
+      const r = await mod.resolveTitle("new holmes documentary")
+      expect(r.library_matches.map((c: any) => [c.service_id, c.match])).toEqual([[1061, "subject"]])
+      expect(r.library_matches[0].matched_overview).toContain("Elizabeth Holmes")
+      expect(r.not_in_library).toBe(false)
+      const both = await mod.resolveTitle("holmes")
+      expect(both.library_matches.map((c: any) => [c.service_id, c.match])).toEqual([[555, "token"], [1061, "subject"]])
+      expect((await mod.resolveTitle("documentary")).library_matches).toEqual([])
+      expect((await mod.resolveTitle("chef")).library_matches.every((c: any) => c.match !== "subject")).toBe(true)
+    })
+
     it("does not match an unrelated short query", async () => {
       expect(mod.matchKind("xq", "The Chef Show")).toBeNull()
       expect(mod.matchKind("chess", "Chef")).toBeNull()

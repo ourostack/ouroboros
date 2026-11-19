@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1220",
+      "changes": [
+        "The Butler finds a tracked film by what it is about, not only by its title: asking for the new Holmes documentary now finds You Can See Everything, labelled as a subject match to confirm."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1219",
       "changes": [
         "Update the Ouro UI files to Ouro UI v1.3.324."
