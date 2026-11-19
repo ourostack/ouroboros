@@ -1898,7 +1898,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
     async outbox(who, args) {
       const identity = identityFor(who)
       try {
-        const out = exec("docker", ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--identity-file", identity, "--json"], { timeout: 60_000 })
+        const out = exec("docker", ["exec", "-u", "0", CONTAINER, "node", CLI_ENTRY, "a2a", "outbox", args[0], "--to", card, ...args.slice(1), "--why", `release gate replay: outbox probe as ${who}`, "--identity-file", identity, "--json"], { timeout: 60_000 })
         return { ok: true, value: JSON.parse(out.trim().split("\n").at(-1)) }
       } catch (error) {
         return { ok: false, error: `${error.stderr ?? ""} ${error.message ?? ""}`.replace(/\s+/g, " ").trim() }

@@ -2269,7 +2269,7 @@ describe("escalation, outbox and the act path", () => {
       expect(seeded.id).toMatch(/^\d{13}-[0-9a-f]{6}$/)
       expect(fs.statSync(path.join(bundle, "state/outbox/e")).mode & 0o777).toBe(0o700)
       expect(await host.outbox("stranger", ["ack", "--ids", seeded.id])).toEqual({ ok: true, value: { acked: ["x"], unknown: [] } })
-      expect(calls.at(-1)).toEqual(["exec", "-u", "0", "ouro-butler", "node", gate.CLI_ENTRY, "a2a", "outbox", "ack", "--to", "http://card", "--ids", seeded.id, "--identity-file", `${stage.dirs[0]}/stranger.json`, "--json"])
+      expect(calls.at(-1)).toEqual(["exec", "-u", "0", "ouro-butler", "node", gate.CLI_ENTRY, "a2a", "outbox", "ack", "--to", "http://card", "--ids", seeded.id, "--why", "release gate replay: outbox probe as stranger", "--identity-file", `${stage.dirs[0]}/stranger.json`, "--json"])
       expect(await host.outbox("stranger", ["ack", "--ids", "boom"])).toEqual({ ok: false, error: expect.stringContaining("-32003") })
       const observed = await host.observe()
       expect(observed.outbox).toEqual({ e: [seeded.id] })
