@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Deterministic prompt-size measurement; no model calls. Builds the real system prompt for each channel against a
 // fixed throwaway agent bundle and prints estimated tokens (the harness's own chars/4 estimator) per section.
-// Usage: npm run build && node scripts/measure-prompt.cjs [--sections] [--tools] [--json]
+// Usage: npm run build && node scripts/measure-prompt.cjs [--sections] [--tools] [--json] [--deferred]
+// --deferred measures the OURO_DEFERRED_TOOLS trial beside the baseline: first-request tool schemas with only the
+// core tools and find_tools. Sizes are the registry's OpenAI-format schemas (JSON bytes), not provider wire payloads.
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
@@ -47,6 +49,7 @@ async function main() {
   const { buildSystem } = require(path.join(distRoot, "mind", "prompt.js"))
   const { getToolsForChannel } = require(path.join(distRoot, "repertoire", "tools.js"))
   const { getChannelCapabilities } = require("@ouro.bot/friends")
+  const { partitionTools } = require(path.join(distRoot, "repertoire", "deferred-tools.js"))
   const channels = ["cli", "teams", "bluebubbles", "inner", "mcp"]
   const args = process.argv.slice(2)
   const report = {}
@@ -60,7 +63,16 @@ async function main() {
       for (const t of perTool.sort((a, b) => b.tokens - a.tokens)) console.log(`${String(t.tokens).padStart(6)}  ${t.name}`)
       console.log()
     }
-    report[channel] = { prompt: tokens(text), toolSchemas, perTurn: tokens(text) + toolSchemas, sections: sectionsOf(text) }
+    const all = getToolsForChannel(getChannelCapabilities(channel))
+    const deferredActive = partitionTools(all).active
+    const bytes = JSON.stringify(all).length
+    const deferredBytes = JSON.stringify(deferredActive).length
+    const deferredToolSchemas = tokens(JSON.stringify(deferredActive))
+    report[channel] = {
+      prompt: tokens(text), toolSchemas, perTurn: tokens(text) + toolSchemas, sections: sectionsOf(text),
+      toolCount: all.length, schemaBytes: bytes,
+      deferred: { toolCount: deferredActive.length, schemaBytes: deferredBytes, toolSchemas: deferredToolSchemas, perTurn: tokens(text) + deferredToolSchemas },
+    }
   }
   if (args.includes("--json")) {
     console.log(JSON.stringify(report, null, 2))
@@ -69,6 +81,13 @@ async function main() {
   console.log("channel        prompt  tool-schemas  per-turn")
   for (const [channel, r] of Object.entries(report)) {
     console.log(`${channel.padEnd(13)} ${String(r.prompt).padStart(7)} ${String(r.toolSchemas).padStart(13)} ${String(r.perTurn).padStart(9)}`)
+  }
+  if (args.includes("--deferred")) {
+    console.log("\nchannel        tools bytes  | deferred: tools bytes  schema-tokens  per-turn  saved")
+    for (const [channel, r] of Object.entries(report)) {
+      const d = r.deferred
+      console.log(`${channel.padEnd(13)} ${String(r.toolCount).padStart(5)} ${String(r.schemaBytes).padStart(6)}  | ${String(d.toolCount).padStart(14)} ${String(d.schemaBytes).padStart(6)} ${String(d.toolSchemas).padStart(13)} ${String(d.perTurn).padStart(9)} ${String(r.perTurn - d.perTurn).padStart(6)}`)
+    }
   }
   if (args.includes("--sections")) {
     for (const [channel, r] of Object.entries(report)) {

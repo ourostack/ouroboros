@@ -7,6 +7,7 @@ import { learnContextWindow } from "./model-limits";
 import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
 import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
+import { FIND_TOOLS_NAME, deferredNamesCalledInHistory, deferredToolLoadingEnabled, formatFindToolsResult, partitionTools, recordDeferredToolsLoaded, searchDeferredTools } from "../repertoire/deferred-tools";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
@@ -1939,6 +1940,7 @@ export async function runAgent(
   // This prevents stale provider caches from replaying prior-turn context.
   providerRuntime.resetTurnState(messages);
 
+  const loadedDeferredTools: string[] = []
     while (!done) {
     // Channel-based tool filtering:
     // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
@@ -1953,9 +1955,18 @@ export async function runAgent(
         ...baseTools,
         ...toolSelection.engine,
       ];
-    const ordinaryActiveTools = relationshipToolNames
+    const scopedOrdinaryActiveTools = relationshipToolNames
       ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
       : unscopedOrdinaryActiveTools
+    // Deferred loading narrows only what is advertised; the scoped list above is still the authority on what may exist.
+    const deferralPossible = deferredToolLoadingEnabled() && !options?.hardDisableTools && options?.toolProfile !== "sanctuary-health-private"
+    const deferralKeep = new Set(requiredToolCallNames)
+    for (const effect of unresolvedHistoricalEffects) deferralKeep.add(effect.name)
+    const deferralPool = deferralPossible ? partitionTools(scopedOrdinaryActiveTools, [], deferralKeep).deferred : []
+    const deferralHistory = deferralPossible ? deferredNamesCalledInHistory(messages, deferralPool) : []
+    const ordinaryActiveTools = deferralPossible
+      ? partitionTools(scopedOrdinaryActiveTools, [...new Set([...loadedDeferredTools, ...deferralHistory])], deferralKeep).active
+      : scopedOrdinaryActiveTools
     const candidateActiveTools = options?.hardDisableTools
       ? []
       : options?.toolProfile === "sanctuary-health-private"
@@ -2496,6 +2507,7 @@ export async function runAgent(
         ]))
         const preflightRejections = new Map<string, string>()
         for (const entry of validCalls) {
+          if (entry.call.name === FIND_TOOLS_NAME) continue
           if (!relationship && !toolSelection.engine.some((tool) => tool.function.name === entry.call.name)) continue
           const prepared = await preflightToolCall(entry.call.name, validatedCallArguments.get(entry.call)!, augmentedToolContext)
           if (prepared.kind !== "ready") preflightRejections.set(entry.call.id, prepared.text)
@@ -2944,6 +2956,20 @@ export async function runAgent(
           const currentEffectFingerprint = effectFingerprint(tc.name, tc.arguments, toolSelection)
           if (tc.name === "send_message" && args.friendId === "self") {
             sawSendMessageSelf = true;
+          }
+          if (tc.name === FIND_TOOLS_NAME) {
+            // The pre-batch schema gate guarantees a string query.
+            const query = args.query as string
+            callbacks.onToolStart(FIND_TOOLS_NAME, { query })
+            const matched = searchDeferredTools(deferralPool, query)
+            for (const tool of matched) if (!loadedDeferredTools.includes(tool.function.name)) loadedDeferredTools.push(tool.function.name)
+            const found = formatFindToolsResult(matched)
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: found })
+            providerRuntime.appendToolOutput(tc.id, found)
+            if (matched.length > 0) lastIterationMadeProgress = true
+            callbacks.onToolEnd(FIND_TOOLS_NAME, query, matched.length > 0)
+            recordDeferredToolsLoaded(query, matched)
+            continue
           }
           if (tc.name === "speak") {
             // The canonical pre-batch schema gate guarantees a required string.

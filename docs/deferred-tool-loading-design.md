@@ -1,4 +1,4 @@
-# Deferred tool loading: design note (not implemented)
+# Deferred tool loading: design note (implemented behind `OURO_DEFERRED_TOOLS`, off by default; results in deferred-tool-loading-report.md)
 
 ## Problem
 
