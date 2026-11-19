@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useState, type JSX, type MouseEvent, type ReactElement, type ReactNode, type Ref } from "react";
+import { isValidElement, useId, useRef, useState, type JSX, type MouseEvent, type ReactElement, type ReactNode, type Ref } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
 import { currentHref } from "@/lib/ouro/current-path";
@@ -29,8 +29,10 @@ interface SidebarItemBase {
    */
   icon?: ReactNode;
   /**
-   * A short count or tag after the label: `badge: 12`, `badge: "New"`. It is read as part of
-   * the item's name, and hidden from sight when the sidebar is collapsed.
+   * A short count or tag after the label: `badge: 12`, `badge: "New"`, drawn as a muted tag. An
+   * element (`badge: <Badge tone="warning">Busy</Badge>`) is drawn as it is, with no tag around it.
+   * It is read as part of the item's name, and hidden from sight when the sidebar is collapsed.
+   * @claim "element (`badge: <Badge" registry/ouro/components/ouro/sidebar/sidebar.test.tsx verify:testExists(registry/ouro/components/ouro/sidebar/sidebar.test.tsx::Sidebar items > draws a badge given as an element as it is, with no muted tag around it, at the row's end)
    */
   badge?: ReactNode;
 }
@@ -155,6 +157,10 @@ const column =
 // A count or tag at the row's end. Its muted text is mixed 20% toward the foreground, so it keeps
 // 4.5:1 on the muted tag under shadcn's stock values too (plain text-muted-foreground is 4.34:1).
 const badgeClass = "ms-auto shrink-0 rounded-ouro-sm bg-muted px-1.5 text-xs leading-5 font-medium text-[color-mix(in_oklab,var(--muted-foreground)_80%,var(--foreground))] tabular-nums";
+// A badge given as an element (`badge: <Badge>Idle</Badge>`) brings its own look, so it sits bare at the row's end (the label
+// takes the room before it):
+// the muted tag drawn around it too would be a frame in a frame, its corners off by the inner radius.
+const badgeSlot = (badge: ReactNode) => (isValidElement(badge) ? undefined : badgeClass);
 
 // A row: 44px with 16px text on a coarse pointer at every width, 36px with 14px text with a
 // fine one. A full-width row highlights while pressed instead of scaling.
@@ -307,7 +313,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
       {item.badge !== undefined && (
         <>
           {" "}
-          <span data-ouro-sidebar-badge="" className={rail ? "sr-only" : badgeClass}>
+          <span data-ouro-sidebar-badge="" className={rail ? "sr-only" : badgeSlot(item.badge)}>
             {item.badge}
           </span>
         </>
@@ -399,7 +405,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                         {child.badge !== undefined && (
                           <>
                             {" "}
-                            <span className={cn(badgeClass, "ms-2")}>{child.badge}</span>
+                            <span className={cn(badgeSlot(child.badge), "ms-2")}>{child.badge}</span>
                           </>
                         )}
                       </MenuItem>
