@@ -544,6 +544,15 @@ body {
       font-size: 112.5%;
     }
   }
+  [data-ouro="message-list"] :is([data-ouro], [role="heading"]) {
+    text-wrap-style: auto;
+  }
+  [data-ouro] :is(h1, h2, h3, h4, h5, h6, [role="heading"]), :is(h1, h2, h3, h4, h5, h6, [role="heading"])[data-ouro] {
+    text-wrap-style: balance;
+  }
+  [data-ouro] {
+    text-wrap-style: pretty;
+  }
 }
 
 @supports not (corner-shape: squircle) {

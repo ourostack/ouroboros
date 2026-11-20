@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The generator's version, written into every generated file; it is core's version. */
-export const ACTIONS_VERSION = "1.1.0";
+export const ACTIONS_VERSION = "1.4.1";
 const GENERATOR = `ouro-actions ${ACTIONS_VERSION}`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -209,8 +209,14 @@ export interface ActionDef<I extends Fields = Fields, O extends Fields = Fields>
   label: string;
   /** The person's one sentence: the control's hint, the component AX summary. */
   description: string;
-  /** The agent's description: the MCP and WebMCP description, the CLI summary, the App Intent's description. One line. */
+  /** The agent's description: the MCP and WebMCP description, the CLI summary. One line. */
   agent: string;
+  /**
+   * Only for `consequential`: the one question the person is asked before it acts, word for word on every surface that
+   * asks (the confirm sheet, the A2UI and MCP Apps card, the App Intent's prompt). One line of at most 200 characters.
+   * Left out, it is the `description`.
+   */
+  confirm?: string;
   input: I;
   output: O;
   /** Exactly when `consent` is `person-only`. */
@@ -247,6 +253,28 @@ export interface ActionSet {
   /** The CLI tool's name, which twins start with, such as `shop`. */
   readonly tool: string;
   readonly actions: readonly Action[];
+}
+
+/** The longest `confirm`, so a phone's prompt, an App Intent's dialog and a card's sheet all show it whole. */
+export const CONFIRM_MAX = 200;
+
+/**
+ * The words a person meets for one action, which every surface takes from here and never writes for itself: `label` is
+ * the name, `description` the person's sentence, `agent` the model's, and `confirm` the question before a consequential
+ * action acts (the declared `confirm`, else the `description`; absent for any other consent). Person-facing surfaces
+ * (the control, the confirm sheet, a card, the App Intent, a Windows App Action) show `label`, `description` and
+ * `confirm`; model-facing ones (MCP, WebMCP, the CLI summary, an AppFunction's instruction) read `agent`, and carry
+ * `confirm` too where the protocol has a place for it.
+ */
+export interface ActionText {
+  label: string;
+  description: string;
+  agent: string;
+  confirm?: string;
+}
+
+export function actionText(a: Pick<Action, "label" | "description" | "agent" | "consent" | "confirm">): ActionText {
+  return { label: a.label, description: a.description, agent: a.agent, ...(a.consent === "consequential" ? { confirm: a.confirm ?? a.description } : {}) };
 }
 
 export interface Names {
@@ -466,6 +494,10 @@ export function defineAction<const I extends Fields, const O extends Fields>(def
   if (!(CONSENTS as readonly string[]).includes(def.consent)) throw new Error(`${at}: consent is ${JSON.stringify(def.consent)}. Fix: one of ${CONSENTS.join(", ")}.`);
   for (const key of ["label", "description", "agent"] as const) {
     if (!oneLine(def[key])) throw new Error(`${at}: ${key} is empty or more than one line. Fix: write it in one line.`);
+  }
+  if (def.confirm !== undefined) {
+    if (def.consent !== "consequential") throw new Error(`${at}: confirm is only for consent "consequential", the one that asks. Fix: drop confirm, or make the consent "consequential".`);
+    if (!oneLine(def.confirm) || def.confirm.length > CONFIRM_MAX) throw new Error(`${at}: confirm is empty, more than one line or over ${CONFIRM_MAX} characters. Fix: ask the person in one short line.`);
   }
   if (def.consent === "person-only") {
     if (!def.personOnly || !oneLine(def.personOnly.reason) || !oneLine(def.personOnly.how)) {
@@ -702,18 +734,26 @@ export interface McpTool {
   inputSchema: ReturnType<typeof objectSchema>;
   outputSchema?: ReturnType<typeof objectSchema>;
   annotations: McpAnnotations;
+  /** A consequential action's confirm question, under `CONFIRM_META`; MCP has no field of its own for it. */
+  _meta?: Record<string, string>;
 }
+
+/** The key under which an MCP tool's `_meta` carries the question the person is asked before it acts. */
+export const CONFIRM_META = "ouro.bot/confirm";
 
 /** The MCP tool. */
 export function toMcpTool(a: Action): McpTool {
   const tool: McpTool = { name: a.id, title: a.label, description: a.agent, inputSchema: inputSchema(a), annotations: annotationsOf(a) };
+  const confirm = actionText(a).confirm;
+  if (confirm !== undefined) tool._meta = { [CONFIRM_META]: confirm };
   if (Object.keys(a.output).length) tool.outputSchema = outputSchema(a);
   return tool;
 }
 
 /** The WebMCP tool descriptor, for `registerTool`, with the hints WebMCP defines. */
 export function toWebMcpTool(a: Action) {
-  return { name: a.id, description: a.agent, inputSchema: inputSchema(a), annotations: { readOnlyHint: a.consent === "read", consequentialHint: a.consent === "consequential" } };
+  const confirm = actionText(a).confirm;
+  return { name: a.id, title: a.label, description: a.agent, inputSchema: inputSchema(a), annotations: { readOnlyHint: a.consent === "read", consequentialHint: a.consent === "consequential" }, ...(confirm === undefined ? {} : { _meta: { [CONFIRM_META]: confirm } }) };
 }
 
 const header = (set: ActionSet) => ({ generator: GENERATOR, set: set.name });
@@ -746,7 +786,7 @@ function renderWeb(set: ActionSet): string {
     return structured.length ? [`  ${lit(a.names.kebab)}: [${structured.join(", ")}],`] : [];
   });
   const controls = set.actions.map((a) =>
-    `  ${lit(a.names.kebab)}: { label: ${lit(a.label)}, description: ${lit(a.description)}, consent: ${lit(a.consent)}, props: { "data-ax-action": ${lit(a.names.kebab)} } },`,
+    `  ${lit(a.names.kebab)}: { label: ${lit(a.label)}, description: ${lit(a.description)}, consent: ${lit(a.consent)},${actionText(a).confirm === undefined ? "" : ` confirm: ${lit(actionText(a).confirm!)},`} props: { "data-ax-action": ${lit(a.names.kebab)} } },`,
   );
   return [
     comment,
@@ -910,7 +950,9 @@ function renderSwift(set: ActionSet): string {
     L.push(`    /// The app's handler; every door calls it.`);
     L.push(`    public static var perform: (@MainActor @Sendable (${P}Input) async throws -> ${P}Output)?`);
     if (agentDoor && a.consent === "consequential") {
-      L.push("    /// How the intent asks the person before it acts. Unset, the system asks. A test sets it: return to");
+      L.push(`    /// The question the person is asked, the declaration's confirm: the same words as the confirm sheet and the card.`);
+      L.push(`    public static let confirmation: LocalizedStringResource = ${swiftLit(actionText(a).confirm!)}`);
+      L.push("    /// How the intent asks the person before it acts. Unset, it asks `confirmation`. A test sets it: return to");
       L.push("    /// confirm, or throw to cancel, and the handler never runs. The app can also set it to ask in its own way.");
       L.push(`    public static var confirm: (@MainActor @Sendable (${P}Input) async throws -> Void)?`);
     }
@@ -928,7 +970,7 @@ function renderSwift(set: ActionSet): string {
     if (agentDoor) {
       L.push(`public struct ${P}Intent: AppIntent {`);
       L.push(`    public static let title: LocalizedStringResource = ${swiftLit(a.label)}`);
-      L.push(`    public static let description = IntentDescription(${swiftLit(a.agent)})`, "");
+      L.push(`    public static let description = IntentDescription(${swiftLit(a.description)})`, "");
       if (a.opensApp) L.push("    public static let openAppWhenRun = true", "");
       const entityOf = (f: Field) => (f.kind === "string" ? f.entity : undefined);
       for (const [n, f] of fields) {
@@ -952,7 +994,7 @@ function renderSwift(set: ActionSet): string {
       const returned = Object.entries(a.output).find(([, f]) => f.returned);
       const returns = ["IntentResult", ...(returned ? [`ReturnsValue<${swiftType(a, returned[0], returned[1])}>`] : []), "ProvidesDialog"].join(" & ");
       L.push("    @MainActor", `    public func perform() async throws -> some ${returns} {`);
-      if (a.consent === "consequential") L.push("        // Consequential: the person says yes before it acts.", `        if let confirm = ${P}Action.confirm { try await confirm(self.input) } else { try await requestConfirmation() }`);
+      if (a.consent === "consequential") L.push("        // Consequential: the person says yes before it acts.", `        if let confirm = ${P}Action.confirm { try await confirm(self.input) } else { try await requestConfirmation(result: .result(dialog: IntentDialog(${P}Action.confirmation))) }`);
       L.push("        let input = self.input", `        let result: Result<${P}Output, any Error>`);
       L.push(`        do { result = .success(try await ${P}Action.run(input)) } catch { result = .failure(error) }`);
       if (returned) {
@@ -1047,10 +1089,12 @@ export function checkGenerated(set: ActionSet, found: ReadonlyMap<string, string
       continue;
     }
     if (have === text || unstamped(have) === unstamped(text)) continue;
+    // The first line that differs once the stamps are set aside, so a file an older ouro-actions stamped is reported where
+    // it really drifted, not at its generator line (#123). Line numbers are the same either way: the stamp is within one line.
     const a = text.split("\n");
     const b = have.split("\n");
     let i = 0;
-    while (i < a.length && a[i] === b[i]) i++;
+    while (i < a.length && b[i] !== undefined && unstamped(a[i]!) === unstamped(b[i]!)) i++;
     problems.push(`${path}:${i + 1}: drifted from its declaration: expected ${JSON.stringify(a[i] ?? "<end of file>")}, found ${JSON.stringify(b[i] ?? "<end of file>")}. Fix: change the declaration and run generate; never edit a generated file.`);
   }
   for (const path of found.keys()) if (!expected.has(path)) problems.push(`${path}: not generated from any declaration. Fix: delete it, or declare what it holds.`);
@@ -1175,7 +1219,7 @@ export function actionsReport(set: ActionSet, found: ReadonlyMap<string, string>
           ...(hintsOf(mcp, a.id)?.["destructiveHint"] === true ? [] : [`${a.id}: mcp.json does not mark it destructive. Fix: run generate.`]),
           ...(hintsOf(webmcp, a.id)?.["consequentialHint"] === true ? [] : [`${a.id}: webmcp.json does not mark it consequential. Fix: run generate.`]),
           ...(commandOf(a)?.["effect"] === "others" ? [] : [`${a.id}: commands.json does not give "${a.cliWords}" the effect "others", so the CLI does not ask for --why. Fix: run generate.`]),
-          ...(swiftIntent === null || swiftIntent.includes("requestConfirmation()") ? [] : [`${a.id}: its App Intent does not call requestConfirmation. Fix: run generate.`]),
+          ...(swiftIntent === null || swiftIntent.includes("requestConfirmation(") ? [] : [`${a.id}: its App Intent does not call requestConfirmation. Fix: run generate.`]),
         ];
       }),
     "action.agent-description": () => set.actions.filter((a) => !a.agent?.trim()).map((a) => `${a.id}: has no agent description. Fix: write one line for a model in agent.`),
