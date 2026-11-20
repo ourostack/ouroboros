@@ -740,7 +740,8 @@ describe("turn-owned realtime selection", () => {
       const view = await manager.start(owner, { owned: { command: "fixture-a" } })
       const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => timing === "ready" ? view : pending.promise)
       fixture = await startToolSelectionVoice(outputDir, transport)
-      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      // The delayed path only publishes after the 250ms bootstrap timeout, so a loaded shard can outrun the 1s default.
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
       if (timing === "delayed") {
         expect(fixture.publications().flat().map((tool) => tool.name)).not.toContain("owned_status")
         pending.resolve(view)
