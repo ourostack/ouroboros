@@ -38,5 +38,9 @@
   {
     "rule": "narrow-text",
     "summary": "Prose that wraps at a reading measure well under the column it sits in, held by a max-width; the fix is to let text use its column, or declare the measure in ouro-check.json."
+  },
+  {
+    "rule": "popup-first-frame",
+    "summary": "A popup drawn, on a frame after it opens, somewhere other than where it settles, as one measured against the viewport and drawn inside a layer further down the page is; the fix is to place it where it settles from its first frame (position: fixed)."
   }
 ]
