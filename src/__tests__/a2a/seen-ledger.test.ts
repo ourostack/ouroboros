@@ -167,8 +167,14 @@ describe("durable a2a SeenLedger (replay defense, restart-safe)", () => {
     expect(fs.existsSync(path.join(seenDir, "old.json"))).toBe(false)
     for (const kept of ["edge", "undated", "garbled"]) expect(ledger.isSeen(kept)).toBe(true)
     expect(ledger.size).toBe(3)
-    // Nothing stale: nothing is pruned, and the default clock is used.
-    expect(new FileA2ASeenLedger(tmp.agentRoot).size).toBe(3)
+    // Nothing stale: nothing is pruned, and the default clock is used (pinned to the fixture's instant).
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(now)
+      expect(new FileA2ASeenLedger(tmp.agentRoot).size).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("prunes expired entries while the agent runs, on a new mark and at most once an hour", () => {
