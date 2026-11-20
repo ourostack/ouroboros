@@ -423,7 +423,7 @@ export function getContextConfig(model?: string): ContextConfig {
   return {
     maxTokens: override ?? (modelId ? getLearnedContextWindow(modelId) ?? getModelCapabilities(modelId).contextWindowTokens : undefined) ?? defaults.maxTokens,
     contextMargin: typeof agentContext?.contextMargin === "number" ? agentContext.contextMargin : defaults.contextMargin,
-    ...(Number.isInteger(agentContext?.maxStepsPerTurn) && agentContext!.maxStepsPerTurn! > 0 ? { maxStepsPerTurn: agentContext!.maxStepsPerTurn } : {}),
+    ...(Number.isInteger(agentContext?.maxStepsPerTurn) ? { maxStepsPerTurn: agentContext!.maxStepsPerTurn } : {}),
   }
 }
 
