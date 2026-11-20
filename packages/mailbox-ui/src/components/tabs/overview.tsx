@@ -211,9 +211,10 @@ export function OverviewTab({ view, deskPrefs, refreshGeneration }: { view: Mail
       </div>
 
       {/* Orientation — resume handle and primary obligation */}
-      {orientation === null && <div aria-hidden="true" className="min-h-40" />}
+      {/* The loaded card keeps the placeholder's minimum height, so an empty orientation does not shrink the page under the cards below. */}
+      {orientation === null && <div aria-hidden="true" className="min-h-40" data-testid="orientation-loading" />}
       {orientation && (
-        <div className="rounded-xl bg-ouro-moss/10 p-4 ring-1 ring-ouro-glow/8">
+        <div className="min-h-40 rounded-xl bg-ouro-moss/10 p-4 ring-1 ring-ouro-glow/8" data-testid="orientation-loaded">
           <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-ouro-glow">Orientation</p>
           {(() => {
             const currentSession = orientation.currentSession
