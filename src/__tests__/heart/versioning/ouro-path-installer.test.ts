@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as path from "path"
 import { installOuroCommand, diagnoseOuroPath, type OuroPathInstallerDeps } from "../../../heart/versioning/ouro-path-installer"
-import { OURO_RECOVERY_LAUNCHER_SCRIPT } from "../../../heart/versioning/ouro-recovery-launcher"
+import { OURO_RECOVERY_LAUNCHER_SCRIPT, OURO_WRAPPER_SCRIPT } from "../../../heart/versioning/ouro-recovery-launcher"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../nerves/runtime", () => ({
@@ -45,19 +45,7 @@ describe("installOuroCommand", () => {
     }
   }
 
-  const CORRECT_CONTENT = `#!/bin/sh
-# Check for dev mode — if dev-config.json exists, dispatch to the dev repo.
-# Skip dev dispatch for "up" command (explicitly returns to production).
-DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
-if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
-  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
-  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
-  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
-    exec node "$DEV_ENTRY" "$@"
-  fi
-fi
-exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
-`
+  const CORRECT_CONTENT = OURO_WRAPPER_SCRIPT
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -70,7 +58,7 @@ exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
     expect(result.installed).toBe(true)
     expect(result.scriptPath).toBe("/home/test/.ouro-cli/bin/ouro")
     expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain("#!/bin/sh")
-    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"')
+    expect(written["/home/test/.ouro-cli/bin/ouro"]).toContain('exec "$OURO_NODE" "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"')
     expect(written["/home/test/.ouro-cli/bin/ouro-launcher.js"]).toContain("version-intent.json")
     expect(chmoded["/home/test/.ouro-cli/bin/ouro"]).toBe(0o755)
     expect(mkdirCalls).toContain("/home/test/.ouro-cli/bin")
@@ -605,19 +593,7 @@ describe("installOuroCommand — versioned CLI layout", () => {
   let mkdirCalls: string[]
   let ensureCliLayoutCalls: number
 
-  const CORRECT_CONTENT = `#!/bin/sh
-# Check for dev mode — if dev-config.json exists, dispatch to the dev repo.
-# Skip dev dispatch for "up" command (explicitly returns to production).
-DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
-if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
-  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
-  DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
-  if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
-    exec node "$DEV_ENTRY" "$@"
-  fi
-fi
-exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
-`
+  const CORRECT_CONTENT = OURO_WRAPPER_SCRIPT
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
