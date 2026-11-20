@@ -1,4 +1,4 @@
-export { blank, BUDGETS, inSweepOrder, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, parseArgs, placeOf, RULES, runScript, SIZES, summary, transportIssues };
+export { blank, BUDGETS, inSweepOrder, goTo, caption, check, dprAt, EXIT, group, HINTS, imagesReport, LABELS, main, merge, needsAPerson, parseArgs, placeOf, RULES, runScript, SIZES, summary, transportIssues };
 export type { Budgets, CheckOptions, CheckResult, Finding, Gate, ImageEntry, MergeOptions, Report };
 
 import { spawn } from "node:child_process";
@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Browser, BrowserType, Page, Request } from "playwright";
 import { findDesignIssues, listCornerMedia, mediaDrawn, readCorners, shownCorners, type CornerReading } from "./design-check.ts";
 import { findImageFades } from "./fade-check.ts";
-import { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
+import { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, listPersonSignals, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
 import { findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint } from "./measure.ts";
 import { findRepaints, listenForMotion, markWalkables, readMotion, resetMotion, type MotionReading } from "./motion-check.ts";
 import { findOverlaps } from "./overlap-check.ts";
@@ -104,6 +104,8 @@ interface PageRef {
   site: string;
   page: string;
   name: string;
+  // What the page holds that only a person can judge (destructive, form, sends), read once from its components.
+  asks?: string[];
 }
 
 interface Report {
@@ -925,6 +927,10 @@ async function check(options: CheckOptions): Promise<CheckResult> {
       const cornersBehind = new Set(await page.evaluate(behindModal, [...new Set(corners.map((issue) => issue.ref))]));
       issues.push(...corners.filter((issue) => !cornersBehind.has(issue.ref)));
       issues.push(...runtime());
+      if (inpAt === `${width}x${height} ${theme}`) {
+        const ref = report.pages.find((p) => p.site === target.site && p.page === target.page);
+        if (ref) ref.asks = await page.evaluate(listPersonSignals);
+      }
       for (const a of await page.evaluate(listAllowances, ALIASES)) {
         const key = JSON.stringify([target.site, target.page, a.rules, a.element, a.reason]);
         if (allowed.has(key)) continue;
@@ -1207,7 +1213,8 @@ function summary({ findings, fixed, pages, sizes, themes, shard, allowances }: R
     const count = (rule: string) => mine.filter((r) => r.rule === rule).length || "";
     lines.push(`| ${!mine.length ? "✓" : mine.some((r) => r.gated) ? "✗" : "·"} | \`${pageOf(ref)}\` | ${RULES.map(count).join(" | ")} |`);
   }
-  lines.push("", "✗ fails; · is waived, or known, in ouro-check.json. Each finding has a captioned close-up in `findings/`, and each page a contact sheet in `sheets/`.", "");
+  lines.push("", "This check proves the floor: states, focus, names, contrast, targets and motion work as measured. It can't tell you the screen is good for a person.", "");
+  lines.push("✗ fails; · is waived, or known, in ouro-check.json. Each finding has a captioned close-up in `findings/`, and each page a contact sheet in `sheets/`.", "");
   if (fixed.length) lines.push(`Fixed since the earlier report: ${fixed.length}, each with a before and after in \`pairs/\`.`, "");
   if (allowances.length) lines.push(`Opted out on purpose: ${allowances.length}, each with its reason in \`report.json\` (\`allowances\`).`, "");
   if (rows.length) {
@@ -1219,7 +1226,28 @@ function summary({ findings, fixed, pages, sizes, themes, shard, allowances }: R
     }
     lines.push("", "</details>");
   }
+  lines.push("", "#### Needs a person", "");
+  for (const ref of pages) for (const ask of needsAPerson(ref.asks ?? [])) lines.push(`- \`${pageOf(ref)}\`: ${ask}`);
+  lines.push(...NEEDS_A_PERSON.map((line) => `- ${line}`));
   return `${lines.join("\n")}\n`;
+}
+
+const NEEDS_A_PERSON = [
+  "Whether a person finishes the task without help, and how long it takes them.",
+  "Whether the words on labels and buttons mean to them what they mean to you.",
+  "Whether they trust what the screen tells them, and notice what it hides.",
+  "Whether it works with the device, the assistive technology and the network they actually use.",
+];
+
+// The questions a page's components raise that a check can't answer, by what the page was found to hold.
+const ASKS: Record<string, string> = {
+  destructive: "Do they know what will be lost before they confirm?",
+  form: "Do they know it saved?",
+  sends: "Does the confirmation say who will see it?",
+};
+
+function needsAPerson(signals: string[]): string[] {
+  return signals.flatMap((signal) => (Object.hasOwn(ASKS, signal) ? [ASKS[signal]!] : []));
 }
 
 interface Args {
