@@ -12,6 +12,22 @@ const adapterPath = path.join(assetRoot, "emit-usenet-event.sh")
 const producerPath = path.join(assetRoot, "emit-event.mjs")
 const installerPath = path.join(assetRoot, "install-usenet-guard.sh")
 
+// A bare "Command failed" hides why the guard exited non-zero; surface its exit status, stderr and log.
+function runGuardWithEvidence(args: string[], options: { env: NodeJS.ProcessEnv }): void {
+  try {
+    execFileSync(guardPath, args, options)
+  } catch (error) {
+    const failure = error as { status?: number | null; signal?: string | null; code?: string; stderr?: Buffer | string }
+    const logIndex = args.indexOf("--log")
+    const logPath = logIndex >= 0 ? args[logIndex + 1] : undefined
+    const logText = logPath && fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").slice(-2000) : "(no guard log)"
+    throw new Error(
+      `usenet guard exited non-zero: status=${failure.status} signal=${failure.signal} code=${failure.code}\nstderr: ${String(failure.stderr ?? "").slice(-2000)}\nguard.log tail:\n${logText}`,
+      { cause: error },
+    )
+  }
+}
+
 function root(): string {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-usenet-cutover-"))
   roots.push(value)
@@ -181,7 +197,7 @@ esac
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "adapter"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    runGuardWithEvidence( ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
 
     expect(fs.readFileSync(argv, "utf8")).not.toContain(secret)
     expect(fs.readFileSync(configs, "utf8")).toContain(`apikey=${secret}`)
@@ -248,7 +264,7 @@ esac
 printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 `, { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", producer, "--adapter", adapter], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, USENET_CASE: scenario } })
+    runGuardWithEvidence( ["--sab-ini", ini, "--log", log, "--producer", producer, "--adapter", adapter], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, USENET_CASE: scenario } })
 
     const emitted = fs.readFileSync(calls, "utf8").trim().split("\n")
     expect(emitted).toHaveLength(1)
@@ -279,7 +295,7 @@ esac
 printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 `, { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    runGuardWithEvidence( ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
 
     expect(fs.existsSync(calls)).toBe(false)
     expect(fs.readFileSync(log, "utf8")).toContain("not yet whole-path recovery")
@@ -327,7 +343,7 @@ esac
 printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 `, { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GUARD_TRIED: String(tried), GUARD_OKAY: String(okay), GUARD_HISTORICAL_AUTH: pausedAfter ? "0" : "1", GUARD_SERVER_SHAPE: serverShape } })
+    runGuardWithEvidence( ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GUARD_TRIED: String(tried), GUARD_OKAY: String(okay), GUARD_HISTORICAL_AUTH: pausedAfter ? "0" : "1", GUARD_SERVER_SHAPE: serverShape } })
 
     const emitted = fs.existsSync(calls) ? fs.readFileSync(calls, "utf8") : ""
     if (expected) expect(emitted).toContain(expected)
@@ -449,11 +465,11 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 `, { mode: 0o700 })
     const args = ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state]
 
-    execFileSync(guardPath, args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    runGuardWithEvidence( args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
     expect(fs.existsSync(calls)).toBe(false)
     expect(JSON.parse(fs.readFileSync(state, "utf8"))).toMatchObject({ tried: 0, okay: 0 })
     fs.writeFileSync(runCount, "1\n")
-    execFileSync(guardPath, args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    runGuardWithEvidence( args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
     expect(fs.readFileSync(calls, "utf8")).toContain("sabnzbd.pause")
     expect(fs.readFileSync(paused, "utf8").trim()).toBe("true")
     expect(JSON.parse(fs.readFileSync(state, "utf8"))).toMatchObject({ tried: 60000, okay: 4200 })
@@ -495,7 +511,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    runGuardWithEvidence( ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
 
     const emitted = fs.readFileSync(calls, "utf8")
     expect(emitted).toContain("sabnzbd.pause spend-guard")
