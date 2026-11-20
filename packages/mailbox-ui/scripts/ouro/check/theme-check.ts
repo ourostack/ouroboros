@@ -150,6 +150,12 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
     settle(el);
     const before = looks(el);
     el.focus({ preventScroll: true, focusVisible: true } as FocusOptions);
+    // Ouro's tracker marks focus that lands after a press, and the elements around it, and its rings hide on those marks; this
+    // judges keyboard focus, so the marks come off.
+    if (document.activeElement === el) {
+      el.removeAttribute("data-ouro-pressed-focus");
+      for (const n of around(el)) n.removeAttribute("data-ouro-pressed-within");
+    }
     // Focus went elsewhere (the control hands it on) or the browser doesn't show it as keyboard focus: nothing to judge.
     const judged = document.activeElement === el && el.matches(":focus-visible");
     const after = judged ? (settle(el), looks(el)) : before;

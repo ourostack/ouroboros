@@ -658,3 +658,15 @@ body {
   --ouro-bd: var(--ring);
   border-color: var(--ring);
 }
+
+@supports selector(:focus-visible) {
+  :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"])[data-ouro-pressed-focus]:focus-visible,
+  :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"])[data-ouro-pressed-within]:has(> :is(input, textarea):focus-visible),
+  :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"])[data-ouro-pressed-within]:has(> * > :is(input, textarea):focus-visible) {
+    outline-style: none;
+  }
+  .ouro-field-cue[data-ouro-pressed-within]:not([aria-invalid="true"]):not(:has([aria-invalid="true"])) {
+    --ouro-bd: var(--ring);
+    border-color: var(--ring);
+  }
+}
