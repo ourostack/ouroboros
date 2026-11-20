@@ -2141,6 +2141,23 @@ describe("runAgent tool loop guard", () => {
       expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS_CEILING + 1)
     })
 
+    it("lets agent.json raise the ceiling past the built-in one for long hands-on work", async () => {
+      const { MAX_PROVIDER_ITERATIONS_CEILING } = await import("../../heart/core")
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      const raised = MAX_PROVIDER_ITERATIONS_CEILING + 4
+      patchRuntimeConfig({ context: { maxStepsPerTurn: raised } } as any)
+      try {
+        for (let i = 1; i <= raised; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
+        mockCreate.mockReturnValueOnce(settleCall("raised report"))
+        const result = await run(vi.fn().mockResolvedValue("ok"))
+        expect(result.error?.message).toBeUndefined()
+        expect(result.outcome).toBe("settled")
+        expect(mockCreate).toHaveBeenCalledTimes(raised + 1)
+      } finally {
+        resetConfigCache()
+      }
+    })
+
     it("delivers a sole settle at the budget boundary instead of treating it as exhausted", async () => {
       const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
       for (let i = 1; i < MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "same"))

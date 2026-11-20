@@ -116,6 +116,7 @@ export interface AgentConfig {
   context?: {
     maxTokens?: number
     contextMargin?: number
+    maxStepsPerTurn?: number
   }
   habitPaidTurnsPerDay?: number
   logging?: {
