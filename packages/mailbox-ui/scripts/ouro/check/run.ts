@@ -12,6 +12,7 @@ import { findDesignIssues, listCornerMedia, mediaDrawn, readCorners, shownCorner
 import { findImageFades } from "./fade-check.ts";
 import { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, listPersonSignals, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
 import { findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint } from "./measure.ts";
+import { findPopupJumps, watchPopups } from "./popup-check.ts";
 import { findRepaints, listenForMotion, markWalkables, readMotion, resetMotion, type MotionReading } from "./motion-check.ts";
 import { findOverlaps } from "./overlap-check.ts";
 import { globToRegExp, listPages, serve } from "./serve.ts";
@@ -269,6 +270,7 @@ const LABELS: Record<string, string> = {
   "narrow-heading": "narrow heading",
   "dark-art": "no dark art",
   "fragment-focus": "focus lost to a link's place",
+  "popup-first-frame": "popup drawn away from where it settles",
   https: "no HTTPS",
 };
 const RULES = Object.keys(LABELS);
@@ -314,6 +316,7 @@ const HINTS: Record<string, string> = {
   "tall-heading": "say it in fewer words, or draw it a step smaller on this screen",
   "one-word-line": "balance it (text-wrap: balance), and give it the column's full width",
   "hard-break": "take out the <br> or the block-level line spans, and let text-wrap: balance break it",
+  "popup-first-frame": "place the popup where it settles from its first frame: position: fixed for a popup measured against the viewport, and no layer further down the page between the popup and its anchor",
   "fragment-focus": "add fragmentFocusScript() (the item lib-fragment-focus-script) as an inline script first in <body>, after every stylesheet",
   "narrow-heading": "take off the max-width, and let the heading span its column and balance",
   "dark-art": "give the picture a night twin for the dark theme, as Hero's picture={{ light, dark }} does",
@@ -784,6 +787,7 @@ async function check(options: CheckOptions): Promise<CheckResult> {
   };
   const walk = async (page: Page, target: Target, width: number, height: number, theme: string) => {
     let found = 0;
+    const jumped = new Set<string>();
     // At rest first, before anything is hovered or opened.
     for (const issue of await page.evaluate(findRepaints)) {
       found++;
@@ -803,8 +807,16 @@ async function check(options: CheckOptions): Promise<CheckResult> {
         // Straight to the target in one move, so the pointer's path hovers nothing else on the way.
         if (step.kind === "hover") await page.mouse.move(point.x, point.y);
         else if (step.kind === "open") {
+          await page.evaluate(watchPopups);
           await page.mouse.click(point.x, point.y);
           await settle();
+          // One finding a step: the same jump in each run is the same finding.
+          for (const issue of await page.evaluate(findPopupJumps)) {
+            if (n > 0 || jumped.has(step.ref)) continue;
+            jumped.add(step.ref);
+            found++;
+            await record(page, target, issue, width, height, theme);
+          }
           await page.keyboard.press("Escape");
         } else if (step.kind === "pan") {
           await page.mouse.move(point.x, point.y);
