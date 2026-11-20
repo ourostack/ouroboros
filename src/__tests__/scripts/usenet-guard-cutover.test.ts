@@ -13,9 +13,9 @@ const producerPath = path.join(assetRoot, "emit-event.mjs")
 const installerPath = path.join(assetRoot, "install-usenet-guard.sh")
 
 // A bare "Command failed" hides why the guard exited non-zero; surface its exit status, stderr and log.
-function runGuardWithEvidence(args: string[], options: { env: NodeJS.ProcessEnv }): void {
+function runGuardWithEvidence(args: string[], options: { env: NodeJS.ProcessEnv }, script: string = guardPath): void {
   try {
-    execFileSync(guardPath, args, options)
+    execFileSync(script, args, options)
   } catch (error) {
     const failure = error as { status?: number | null; signal?: string | null; code?: string; stderr?: Buffer | string }
     const logIndex = args.indexOf("--log")
@@ -271,6 +271,29 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(emitted[0]).toContain(`usenet.observe provider-health ${transition}`)
     const queried = fs.readFileSync(curlCalls, "utf8")
     expect(queried).not.toMatch(/9696|Prowlarr|api\/v1\/indexer/iu)
+  })
+
+  it("reports exit status, stderr and log tail while preserving the original error when the guard fails", () => {
+    const temp = root()
+    const log = path.join(temp, "guard.log")
+    const failing = path.join(temp, "failing-guard")
+    fs.writeFileSync(failing, `#!/bin/bash
+echo "synthetic-log-line" >> ${JSON.stringify(log)}
+echo "synthetic-stderr-line" >&2
+exit 3
+`, { mode: 0o700 })
+
+    let thrown: unknown
+    try {
+      runGuardWithEvidence(["--log", log], { env: process.env }, failing)
+    } catch (error) {
+      thrown = error
+    }
+    const message = (thrown as Error).message
+    expect(message).toContain("status=3")
+    expect(message).toContain("synthetic-stderr-line")
+    expect(message).toContain("synthetic-log-line")
+    expect(((thrown as Error).cause as { status?: number }).status).toBe(3)
   })
 
   it("does not claim recovery when authentication clears but no recent download completed", () => {
