@@ -263,6 +263,7 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
 
 function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebSocket) => void) {
   const openaiMessages: Record<string, unknown>[] = []
+  const openaiMessageTimes: number[] = []
   const openaiSockets: WebSocket[] = []
   const openaiRequests: Array<{ input: string; body: string; auth: string | null; at: number }> = []
   const openaiServer = new WebSocketServer({ port: 0 })
@@ -273,6 +274,7 @@ function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebS
     expect(request.url).toContain(`call_id=${expectedCallId}`)
     expect(request.headers.authorization).toBe("Bearer openai-secret")
     ws.on("message", (raw) => {
+      openaiMessageTimes.push(Date.now())
       openaiMessages.push(JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>)
     })
     onConnection?.(ws)
@@ -290,6 +292,7 @@ function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebS
   return {
     websocketBaseUrl: `ws://127.0.0.1:${address.port}/v1/realtime`,
     openaiMessages,
+    openaiMessageTimes,
     openaiSockets,
     openaiRequests,
     openaiFetch,
@@ -746,11 +749,11 @@ describe("turn-owned realtime selection", () => {
       try {
         await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
       } catch (error) {
-        // Boundary timings so a recurrence shows whether the bootstrap timeout, SIP accept or publication was late.
+        // Failure-only boundary times for the SIP accept request and each OpenAI socket message; the bootstrap timeout firing is not observed directly.
         throw new Error(`no publication: ${JSON.stringify({
           startMs: startedMs, sinceStartMs: Date.now() - startedAt, sockets: fixture.mock.openaiSockets.length,
           requests: fixture.mock.openaiRequests.map((request) => ({ input: request.input, atMs: request.at - startedAt })),
-          messages: fixture.mock.openaiMessages.map((event) => event.type),
+          messages: fixture.mock.openaiMessages.map((event, index) => ({ type: event.type, atMs: fixture!.mock.openaiMessageTimes[index]! - startedAt })),
         })}`, { cause: error })
       }
       if (timing === "delayed") {
