@@ -670,3 +670,7 @@ body {
     border-color: var(--ring);
   }
 }
+
+@utility rounded-ouro-inner {
+  border-radius: max(var(--radius-ouro-sm), calc(var(--ouro-fr, var(--radius-ouro-md)) - var(--ouro-fi, 0px)));
+}
