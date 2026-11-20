@@ -443,9 +443,23 @@ export class FirstRunSession {
     if (!this.app.accountButton) return;
     const pid = await this.app.pid();
     this.app.activate();
-    const before = await this.look(`${phase}, before the account button`);
-    if (before && mainWindow(before) && this.app.signInPage(this.app.checkpoint(before))) return this.step(`${phase}-account`, true, "the window is already on the sign-in page, where the account button leads");
-    if (!(await this.eyes.press(pid, this.app.accountButton)).ok) return this.step(`${phase}-account`, false, "there was no enabled account button to press");
+    let before = await this.look(`${phase}, before the account button`);
+    const onSignIn = (x: Snapshot | null) => !!x && mainWindow(x) !== null && this.app.signInPage(this.app.checkpoint(x));
+    if (onSignIn(before)) return this.step(`${phase}-account`, true, "the window is already on the sign-in page, where the account button leads");
+    // A window still starting, its own progress state up (a start cover's "Starting…" on a cold machine), hasn't drawn its
+    // account button yet: it is pressed once that state is gone, within the progress limit gate-not-stuck holds a start to.
+    const starting = (x: Snapshot | null) => (x && mainWindow(x) ? judgeNotBlank(x, this.v).progress : null);
+    const t1 = this.report.at();
+    const waited = starting(before);
+    let pressed = (await this.eyes.press(pid, this.app.accountButton)).ok;
+    while (!pressed && starting(before) && this.report.at() - t1 < this.limits.progressWithinMs) {
+      await this.sys.sleep(1000);
+      before = await this.look(`${phase}, before the account button`);
+      if (onSignIn(before)) return this.step(`${phase}-account`, true, `the window is on the sign-in page, where the account button leads, after ${secs(this.report.at() - t1)} s of "${waited}"`);
+      pressed = (await this.eyes.press(pid, this.app.accountButton)).ok;
+    }
+    const after = waited ? ` (after ${secs(this.report.at() - t1)} s of "${waited}"${starting(before) ? ", still under way" : ""})` : "";
+    if (!pressed) return this.step(`${phase}-account`, false, `there was no enabled account button to press${after}`);
     const was = before ? this.watch.key(before).key : "";
     const offered = new Set(before ? forwardActions(before, this.v) : []);
     // Offline, a window that already offers its way forward (Try Again) isn't stranded by an account button that waits for it.
