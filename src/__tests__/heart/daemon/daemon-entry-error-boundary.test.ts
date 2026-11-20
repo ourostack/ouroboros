@@ -19,13 +19,19 @@ vi.mock("../../../heart/daemon/agent-config-check", async () => {
 })
 
 // Startup refreshes runtime credentials per agent; keep the real vault/bw path out of this isolation test.
-vi.mock("../../../heart/runtime-credentials", async () => {
-  const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+const { refreshRuntimeCredentialConfigMock, refreshMachineRuntimeCredentialConfigMock } = vi.hoisted(() => {
   const unavailable = { ok: false, reason: "missing", itemPath: "test", error: "stubbed" }
   return {
+    refreshRuntimeCredentialConfigMock: vi.fn(async (..._args: unknown[]) => unavailable),
+    refreshMachineRuntimeCredentialConfigMock: vi.fn(async (..._args: unknown[]) => unavailable),
+  }
+})
+vi.mock("../../../heart/runtime-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+  return {
     ...actual,
-    refreshRuntimeCredentialConfig: vi.fn(async () => unavailable),
-    refreshMachineRuntimeCredentialConfig: vi.fn(async () => unavailable),
+    refreshRuntimeCredentialConfig: refreshRuntimeCredentialConfigMock,
+    refreshMachineRuntimeCredentialConfig: refreshMachineRuntimeCredentialConfigMock,
   }
 })
 
@@ -407,6 +413,8 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
   it("all non-failing agents still get their habit schedulers started when multiple agents fail", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["a1", "a2", "a3", "a4"])
+    refreshRuntimeCredentialConfigMock.mockClear()
+    refreshMachineRuntimeCredentialConfigMock.mockClear()
 
     // a2 migration fails
     migrateHabitsFromTaskSystemMock.mockImplementation((bundleRoot: string) => {
@@ -441,6 +449,10 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       (call) => call[0].event === "daemon.habit_setup_error",
     )
     expect(errorEvents).toHaveLength(2)
+
+    // Startup credential reads went through the stubs, never the real vault store.
+    expect(refreshRuntimeCredentialConfigMock).toHaveBeenCalled()
+    expect(refreshMachineRuntimeCredentialConfigMock).toHaveBeenCalled()
 
     // process.exit should NOT have been called
     expect(process.exit).not.toHaveBeenCalled()
