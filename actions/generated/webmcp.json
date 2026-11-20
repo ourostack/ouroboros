@@ -1,9 +1,10 @@
 {
-  "generator": "ouro-actions 0.16.0",
+  "generator": "ouro-actions 1.4.1",
   "set": "ouro",
   "tools": [
     {
       "name": "list_friends",
+      "title": "Friends",
       "description": "List the friends this agent knows, with their ids and trust levels. Read only.",
       "inputSchema": {
         "type": "object",
@@ -18,6 +19,7 @@
     },
     {
       "name": "list_habits",
+      "title": "Habits",
       "description": "List the agent's habits, with their cadence. Read only.",
       "inputSchema": {
         "type": "object",
@@ -32,6 +34,7 @@
     },
     {
       "name": "list_sessions",
+      "title": "Sessions",
       "description": "List the agent's sessions, newest first. Read only.",
       "inputSchema": {
         "type": "object",
