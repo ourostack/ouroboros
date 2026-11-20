@@ -14,10 +14,12 @@ import type {
   Ref,
   SVGProps,
 } from "react";
+import { Tooltip } from "@/components/ouro/tooltip/tooltip";
 import { announce } from "@/lib/ouro/announce";
 import { fontFor, radiusFor, sizeFor, toneFor } from "@/lib/ouro/appearance-hints";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
+import { useDisabledReason } from "@/lib/ouro/disabled-reason";
 import { holdPageAtPress } from "@/lib/ouro/page-scroll-hold";
 import { useMergedRef } from "@/lib/ouro/refs";
 import { RouterLink } from "@/lib/ouro/router-link";
@@ -173,6 +175,8 @@ export type ButtonLinkProps = ButtonBaseProps &
     type?: never;
     /** A link cannot be disabled. Remove `href` to render a disabled button, or don't render the link. */
     disabled?: never;
+    /** Only a button takes a reason. Remove `href` to render a button, or don't render the link. */
+    disabledReason?: never;
     /** A dialog's default action is a button. Remove `href`: `<Button default onClick={start}>`. */
     default?: never;
     ref?: Ref<HTMLAnchorElement> | undefined;
@@ -191,6 +195,18 @@ export type ButtonButtonProps = ButtonBaseProps &
      * @claim "never submits a form by accident" registry/ouro/components/ouro/button/button.test.tsx verify:testExists(registry/ouro/components/ouro/button/button.test.tsx::button branch > renders a native button with type=button and data-ouro)
      */
     type?: "button" | "submit" | "reset" | (string & { 'Use "button", "submit" or "reset"; for looks use tone and variant': never }) | undefined;
+    /**
+     * Why the button can't be pressed now. Passing a reason turns the button off without
+     * removing it from the tab order: it takes `aria-disabled`, a press does nothing, keyboard
+     * focus still reaches it, and the reason shows as its tooltip on hover and focus and is read
+     * as its description. Plain `disabled` stays as it is, removed from the tab order and silent.
+     * Pass `undefined` while the button is available, so it keeps its place and focus as it turns
+     * off and on. Use it whenever a button is off and a person would ask why; a loading button
+     * needs no reason, since `loading` says what is happening.
+     * @example
+     * <Button disabledReason={cart.length === 0 ? "Add an item first" : undefined}>Check out</Button>
+     */
+    disabledReason?: string | undefined;
     /**
      * The dialog's default action, as on a Mac: Return presses it from anywhere in the dialog
      * around it, unless focus is in a multi-line field (where Command or Control Return presses
@@ -498,7 +514,7 @@ export function Button(props: ButtonProps): JSX.Element {
   useEffect(() => {
     press.current = onClick;
   });
-  const pressable = isDefault && rest.href === undefined && !(rest as { disabled?: boolean }).disabled && !loading;
+  const pressable = isDefault && rest.href === undefined && !(rest as { disabled?: boolean }).disabled && !(rest as { disabledReason?: string }).disabledReason && !loading;
   useEffect(() => {
     const root = pressable ? own.current!.closest("[role=dialog],[role=alertdialog]") : null;
     if (!root) return undefined;
@@ -514,6 +530,7 @@ export function Button(props: ButtonProps): JSX.Element {
     return () => root.ownerDocument.removeEventListener("keydown", onKeyDown);
   }, [pressable]);
 
+  const reason = useDisabledReason(rest as { disabledReason?: string }, (rest as { "aria-describedby"?: string })["aria-describedby"]);
   const buttonRef = useMergedRef((rest as { ref?: Ref<HTMLElement> }).ref, own);
   // An icon-only button (one element as its whole label, named by aria-label or aria-labelledby) is at least as wide as
   // it is tall, so an icon's button is square, as shadcn's icon size is, and a theme whose controls are capsules draws
@@ -579,7 +596,7 @@ export function Button(props: ButtonProps): JSX.Element {
   }
 
   // Stryker disable next-line StringLiteral: a type that is not a button type renders "button", so "" does too.
-  const { ref: _ref, disabled, type: typeProp = "button", ...buttonProps } = rest as Omit<ButtonButtonProps, keyof ButtonBaseProps>;
+  const { ref: _ref, disabled, disabledReason: _reason, type: typeProp = "button", ...buttonProps } = rest as Omit<ButtonButtonProps, keyof ButtonBaseProps>;
   // A button that opens a dialog (its own, or a component's trigger) holds the page from the press,
   // so a release during a smooth scroll lands on it and its click opens the dialog.
   const holdsPage =
@@ -597,7 +614,7 @@ export function Button(props: ButtonProps): JSX.Element {
       : {};
   // A type that is not a button type would submit forms (the browser's default), so it renders "button".
   const type = buttonTypes.includes(typeProp as (typeof buttonTypes)[number]) ? (typeProp as (typeof buttonTypes)[number]) : "button";
-  return (
+  const button = (
     <BaseButton
       data-ouro-control="button"
       data-ouro-part="root"
@@ -605,8 +622,8 @@ export function Button(props: ButtonProps): JSX.Element {
       {...holdsPage}
       ref={buttonRef}
       type={type}
-      disabled={Boolean(disabled || loading)}
-      focusableWhenDisabled={Boolean(loading && !disabled)}
+      disabled={Boolean(disabled || loading || reason.off)}
+      focusableWhenDisabled={Boolean(reason.off || (loading && !disabled))}
       className={classes}
       data-ouro="button"
       data-ouro-squircle=""
@@ -616,8 +633,17 @@ export function Button(props: ButtonProps): JSX.Element {
       data-default={isDefault ? "" : undefined}
       aria-keyshortcuts={isDefault ? "Enter" : buttonProps["aria-keyshortcuts"]}
       aria-busy={loading || buttonProps["aria-busy"]}
+      aria-describedby={reason.describedBy}
     >
-      {content}
+      {reason.note ? (
+        <>
+          {content}
+          {reason.note}
+        </>
+      ) : (
+        content
+      )}
     </BaseButton>
   );
+  return reason.wrapped ? <Tooltip content={reason.reason}>{button}</Tooltip> : button;
 }

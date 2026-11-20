@@ -18,6 +18,8 @@ import {
   type TouchEvent,
 } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
+import { useDisabledReason } from "@/lib/ouro/disabled-reason";
+import { Tooltip } from "@/components/ouro/tooltip/tooltip";
 import { cn } from "@/lib/ouro/cn";
 import { PageDirection } from "@/lib/ouro/page-direction";
 import { devThrow } from "@/lib/ouro/dev";
@@ -83,6 +85,14 @@ export interface MenuItemEntry {
   tone?: "destructive" | undefined;
   /** Shown, but cannot be chosen. */
   disabled?: boolean | undefined;
+  /**
+   * Why the item can't be chosen now, as `MenuItem`'s `disabledReason`: the item stays reachable
+   * with the arrow keys, shows the reason as its tooltip and description, and choosing it does
+   * nothing and leaves the menu open. It wins over `disabled`.
+   * @example
+   * { label: "Paste", onClick: paste, disabledReason: clipboardEmpty ? "Nothing copied yet" : undefined }
+   */
+  disabledReason?: string | undefined;
   /**
    * The id of the agent action this item performs, set as `data-ax-action` on it, so the component
    * that declares the action finds its control: `axAction: "mute"`.
@@ -385,6 +395,7 @@ function renderEntries(entries: readonly MenuEntry[]): ReactNode {
             shortcut={entry.shortcut}
             tone={entry.tone}
             disabled={entry.disabled}
+            {...("disabledReason" in entry ? { disabledReason: entry.disabledReason } : {})}
             axAction={entry.axAction}
           >
             {entry.icon !== undefined && (
@@ -886,6 +897,16 @@ export interface MenuItemProps {
   /** Shown, but cannot be chosen. */
   disabled?: boolean | undefined;
   /**
+   * Why the item can't be chosen now. Passing a reason keeps the item in the arrow keys' reach
+   * with `aria-disabled`, shows the reason as its tooltip on hover and focus and as its
+   * description, and choosing it does nothing and leaves the menu open. It wins over `disabled`.
+   * `undefined` leaves the item on and keeps its place. A link cannot be disabled, so with a
+   * reason `href` is dropped. Use `disabled` alone when the reason is obvious.
+   * @example
+   * <MenuItem onClick={paste} disabledReason={clipboardEmpty ? "Nothing copied yet" : undefined}>Paste</MenuItem>
+   */
+  disabledReason?: string | undefined;
+  /**
    * The id of the agent action the item performs, set as `data-ax-action` on it, so the component
    * that declares the action finds its control: `<MenuItem axAction="mute">`.
    */
@@ -948,6 +969,7 @@ function ItemBody({ children, shortcut }: { children: ReactNode; shortcut: MenuS
 export function MenuItem(props: MenuItemProps): JSX.Element {
   const { children, onClick, href, current, shortcut, tone: toneProp, disabled, axAction, onSelect, variant, asChild, checked } = props;
   const platform = usePlatform();
+  const reason = useDisabledReason(props, undefined);
   useMenuPart("MenuItem", "<MenuItem>Edit</MenuItem>");
   const tone = toneProp === "destructive" ? "destructive" : undefined;
   useDevWarnings(
@@ -966,21 +988,29 @@ export function MenuItem(props: MenuItemProps): JSX.Element {
         ]
       : /* istanbul ignore next @preserve -- production only */ undefined,
   );
-  const shared = { className: menuItemClass, "data-ouro-control": "menu", "data-ouro-part": "item", "data-tone": tone, "data-ax-action": axAction, ...keyShortcutProps(shortcut, platform), ...(onClick ? { onClick: (event: MouseEvent<HTMLElement>) => onClick(event) } : {}) };
-  const body = <ItemBody shortcut={shortcut}>{children}</ItemBody>;
+  const shared = { className: menuItemClass, ...(reason.off ? { style: { pointerEvents: "auto" as const } } : {}), "data-ouro-control": "menu", "data-ouro-part": "item", "data-tone": tone, "data-ax-action": axAction, ...keyShortcutProps(shortcut, platform), ...(onClick && !reason.off ? { onClick: (event: MouseEvent<HTMLElement>) => onClick(event) } : {}) };
+  const body = (
+    <>
+      <ItemBody shortcut={shortcut}>{children}</ItemBody>
+      {reason.note}
+    </>
+  );
   // A disabled link is a disabled item: nothing to follow.
-  if (href !== undefined && !disabled) {
-    return (
+  const item =
+    href !== undefined && !disabled && !reason.off ? (
       <BaseMenu.LinkItem {...shared} aria-current={current ? "page" : undefined} closeOnClick render={<RouterLink href={href} />}>
         {body}
       </BaseMenu.LinkItem>
+    ) : (
+      <BaseMenu.Item
+        {...shared}
+        {...(reason.wrapped ? { "aria-describedby": reason.describedBy, closeOnClick: !reason.off } : {})}
+        disabled={Boolean(disabled || reason.off)}
+      >
+        {body}
+      </BaseMenu.Item>
     );
-  }
-  return (
-    <BaseMenu.Item {...shared} disabled={disabled}>
-      {body}
-    </BaseMenu.Item>
-  );
+  return reason.wrapped ? <Tooltip content={reason.reason}>{item}</Tooltip> : item;
 }
 
 /** A check mark, for checkbox and radio items. */
