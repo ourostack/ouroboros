@@ -18,6 +18,17 @@ vi.mock("../../../heart/daemon/agent-config-check", async () => {
   return { ...actual, checkAgentConfigWithProviderHealth: vi.fn(async () => ({ ok: true })) }
 })
 
+// Startup refreshes runtime credentials per agent; keep the real vault/bw path out of this isolation test.
+vi.mock("../../../heart/runtime-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+  const unavailable = { ok: false, reason: "missing", itemPath: "test", error: "stubbed" }
+  return {
+    ...actual,
+    refreshRuntimeCredentialConfig: vi.fn(async () => unavailable),
+    refreshMachineRuntimeCredentialConfig: vi.fn(async () => unavailable),
+  }
+})
+
 const {
   habitSchedulerStartMock,
   habitSchedulerStopMock,
