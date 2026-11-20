@@ -263,8 +263,9 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
 
 function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebSocket) => void) {
   const openaiMessages: Record<string, unknown>[] = []
+  const openaiMessageTimes: number[] = []
   const openaiSockets: WebSocket[] = []
-  const openaiRequests: Array<{ input: string; body: string; auth: string | null }> = []
+  const openaiRequests: Array<{ input: string; body: string; auth: string | null; at: number }> = []
   const openaiServer = new WebSocketServer({ port: 0 })
   const address = openaiServer.address()
   if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
@@ -273,6 +274,7 @@ function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebS
     expect(request.url).toContain(`call_id=${expectedCallId}`)
     expect(request.headers.authorization).toBe("Bearer openai-secret")
     ws.on("message", (raw) => {
+      openaiMessageTimes.push(Date.now())
       openaiMessages.push(JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>)
     })
     onConnection?.(ws)
@@ -283,12 +285,14 @@ function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebS
       input: String(input),
       body: String(init?.body ?? ""),
       auth: headers.get("authorization"),
+      at: Date.now(),
     })
     return new Response("", { status: 200 })
   })
   return {
     websocketBaseUrl: `ws://127.0.0.1:${address.port}/v1/realtime`,
     openaiMessages,
+    openaiMessageTimes,
     openaiSockets,
     openaiRequests,
     openaiFetch,
@@ -739,9 +743,19 @@ describe("turn-owned realtime selection", () => {
     try {
       const view = await manager.start(owner, { owned: { command: "fixture-a" } })
       const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => timing === "ready" ? view : pending.promise)
+      const startedAt = Date.now()
       fixture = await startToolSelectionVoice(outputDir, transport)
-      // The delayed path only publishes after the 250ms bootstrap timeout, so a loaded shard can outrun the 1s default.
-      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
+      const startedMs = Date.now() - startedAt
+      try {
+        await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
+      } catch (error) {
+        // Failure-only boundary times for the SIP accept request and each OpenAI socket message; the bootstrap timeout firing is not observed directly.
+        throw new Error(`no publication: ${JSON.stringify({
+          startMs: startedMs, sinceStartMs: Date.now() - startedAt, sockets: fixture.mock.openaiSockets.length,
+          requests: fixture.mock.openaiRequests.map((request) => ({ input: request.input, atMs: request.at - startedAt })),
+          messages: fixture.mock.openaiMessages.map((event, index) => ({ type: event.type, atMs: fixture!.mock.openaiMessageTimes[index]! - startedAt })),
+        })}`, { cause: error })
+      }
       if (timing === "delayed") {
         expect(fixture.publications().flat().map((tool) => tool.name)).not.toContain("owned_status")
         pending.resolve(view)
