@@ -178,9 +178,12 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
       return { friendId: awaitFile.filed_for_friend_id, channel: "a2a", key: awaitFile.filed_from_key, requestId: null }
     }
     // The agent's own awaits: filed from its private runtime, the CLI, or with no session at all. No relationship to honour.
-    const isSystemAwait = awaitFile.filed_from === "inner" || (awaitFile.filed_for_friend_id === null
+    // A reminder the agent set for itself from any other session (teams, bluebubbles, mcp, ...) carries no request
+    // to answer, so it too has no relationship to honour; only a Telegram await without a request is truly legacy.
+    const isSelfReminder = awaitFile.filed_from !== null && awaitFile.filed_from !== "telegram" && awaitFile.filed_from !== "a2a" && awaitFile.filed_from !== "external-event"
+    const isSystemAwait = isSelfReminder || (awaitFile.filed_for_friend_id === null
       && awaitFile.filed_from_key === null
-      && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli"))
+      && awaitFile.filed_from === null)
     if (isSystemAwait) return null
     throw new InvalidRelationshipAwaitProvenanceError("Relationship await provenance is incomplete or legacy")
   }

@@ -2886,6 +2886,14 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
   })
 
+  it("keeps a reminder the agent set for itself from a human-facing session instead of cancelling it as legacy", async () => {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "close-terminals.md"), "---\ncondition: close leftover Terminal windows\ncadence: 5m\nstatus: pending\nfiled_from: mcp\nfiled_for_friend_id: ari\nfiled_from_key: session-1\nrequest_id: null\n---\n", "utf8")
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "close-terminals", now: () => new Date("2026-08-30T17:00:00.000Z") })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", "close-terminals.md"))).toBe(true)
+  })
+
   it.each(["missing", "revoked", "profile-missing", "registry-profile-missing", "resolve-denied", "legacy", "obligation-missing", "fulfilled", "expired"] as const)("fails closed before the model for a %s relationship await", async (state) => {
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: state === "resolve-denied" ? [] : ["await_condition", "resolve_await"], effectScopes: ["telegram.request_return"] },
