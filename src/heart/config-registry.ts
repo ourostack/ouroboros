@@ -238,6 +238,15 @@ const registryData: ConfigRegistryEntry[] = [
     validate: validateInteger(0, 100),
   },
   {
+    path: "context.maxStepsPerTurn",
+    tier: "self",
+    description: "Hard ceiling on provider calls in one turn.",
+    default: 24,
+    effects: "A turn starts at 8 calls and earns 4 more each time its tools make progress, up to this ceiling. Raise it for long hands-on work so a turn is not cut off mid-task.",
+    topics: ["context", "turn", "steps", "limit", "performance"],
+    validate: validateInteger(8, 200),
+  },
+  {
     path: "phrases.thinking",
     tier: "self",
     description: "Array of phrases displayed while the agent is thinking.",
