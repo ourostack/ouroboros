@@ -71,6 +71,9 @@ const RESTART_DELAY_CAP_SECONDS = 600
 const STABLE_RUN_SECONDS = 600
 /** The circuit breaker: this many crashes inside the window stops respawning. */
 const BREAKER_CRASHES = 5
+/** The daemon's stdout log is rotated past this size (5 MB), keeping one older copy, so a small disk never fills with it. */
+const LOG_MAX_BYTES = 5 * 1024 * 1024
+const LOG_CHECK_SECONDS = 300
 const BREAKER_WINDOW_SECONDS = 600
 /** How often a supervisor waiting for memory checks MemAvailable again. */
 const MEMORY_RECHECK_SECONDS = 30
@@ -127,6 +130,15 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
     "  echo \"$(date -u +%Y-%m-%dT%H:%M:%SZ) ouro-service: $*\" >>\"$LOG_DIR/ouro-service.log\"",
     "}",
     "",
+    "# The daemon's stdout log would otherwise grow until the disk is full: keep one rotated copy.",
+    "# Copy then truncate in place, because the daemon holds the file open for appending.",
+    "rotate_log() {",
+    "  file=\"$LOG_DIR/ouro-daemon-stdout.log\"",
+    "  size=$(wc -c <\"$file\" 2>/dev/null)",
+    `  [ "\${size:-0}" -gt ${LOG_MAX_BYTES} ] || return 0`,
+    "  cp \"$file\" \"$file.1\" && : >\"$file\"",
+    "}",
+    "",
     "mem_available_kb() {",
     "  while read -r key value unit; do",
     "    if [ \"$key\" = \"MemAvailable:\" ]; then echo \"$value\"; return; fi",
@@ -156,9 +168,12 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
     `  delay=${RESTART_DELAY_FIRST_SECONDS}`,
     "  crashes=",
     "  trap 'stopping=1; [ -n \"$child\" ] && kill \"$child\" 2>/dev/null' TERM INT",
+    `  ( while sleep ${LOG_CHECK_SECONDS}; do rotate_log; done ) &`,
+    "  rotator=$!",
     "  while [ \"$stopping\" -eq 0 ]; do",
     "    wait_for_memory",
     "    [ \"$stopping\" -eq 1 ] && break",
+    "    rotate_log",
     "    started=$(date +%s)",
     "    # The subshell sets oom_score_adj and then becomes node, so the daemon and its workers inherit it.",
     "    (",
@@ -189,6 +204,7 @@ export function generateSysvInitScript(options: LinuxServiceOptions): string {
     "    delay=$((delay * 2))",
     `    [ "$delay" -gt ${RESTART_DELAY_CAP_SECONDS} ] && delay=${RESTART_DELAY_CAP_SECONDS}`,
     "  done",
+    "  kill \"$rotator\" 2>/dev/null",
     "  rm -f \"$PIDFILE\"",
     "}",
     "",
