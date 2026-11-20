@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const nerves = vi.hoisted(() => ({ emit: vi.fn() }))
@@ -82,6 +86,32 @@ describe("linux service", () => {
     expect(script).toContain(`echo "$OOM_SCORE_ADJ" >/proc/self/oom_score_adj`)
     for (const verb of ["start)", "stop)", "restart)", "status)"]) expect(script).toContain(verb)
     expect(generateSysvInitScript({ ...OPTIONS, envPath: undefined })).not.toContain("export PATH")
+  })
+
+  it("rotates the daemon's stdout log in place once it passes its cap, keeping one older copy", () => {
+    const script = generateSysvInitScript(OPTIONS)
+    const rotate = /rotate_log\(\) \{\n[\s\S]*?\n\}\n/u.exec(script)![0]
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-rotate-"))
+    try {
+      const log = path.join(dir, "ouro-daemon-stdout.log")
+      const run = () => execFileSync("sh", ["-c", `LOG_DIR='${dir}'\n${rotate}\nrotate_log`])
+      fs.writeFileSync(log, "x".repeat(1024))
+      run()
+      expect(fs.existsSync(`${log}.1`)).toBe(false)
+      fs.writeFileSync(log, "y".repeat(5 * 1024 * 1024 + 1))
+      run()
+      expect(fs.statSync(log).size).toBe(0)
+      expect(fs.statSync(`${log}.1`).size).toBe(5 * 1024 * 1024 + 1)
+      fs.rmSync(log)
+      run()
+      expect(fs.existsSync(log)).toBe(false)
+      const scriptFile = path.join(dir, "S99ouro")
+      fs.writeFileSync(scriptFile, script)
+      execFileSync("sh", ["-n", scriptFile])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(script).toContain("while sleep 300; do rotate_log; done")
   })
 
   it("bakes the supervision settings into the init script", () => {

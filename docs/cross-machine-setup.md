@@ -233,6 +233,8 @@ For a small host, add any of these to `ouro service install`:
 
 For example, on a 1 GB appliance: `ouro service install --init sysv --min-mem-available-mb 250 --max-old-space-size 160 --oom-score-adj 900`. After installing, `ouro up` starts the daemon through the service. Add `--print` to see the file without installing it, or `--path <file>` to write it elsewhere (the SysV default is `/etc/init.d/S99ouro`, which BusyBox and Buildroot run at boot). `ouro service uninstall` removes it.
 
+The SysV script keeps the daemon's stdout log (`~/.ouro-cli/daemon/logs/ouro-daemon-stdout.log`) under about 5 MB: it checks before each start and every 5 minutes, and past 5 MB copies the log to `ouro-daemon-stdout.log.1` and empties it in place, so at most about 10 MB is kept. Re-run `ouro service install` to pick this up on an installed service.
+
 `ouro doctor` has a Memory section on Linux: it reports `MemAvailable` from `/proc/meminfo` and warns below the installed SysV service's `--min-mem-available-mb` floor, or 250 MB when no floor is set.
 
 `ouro` commands keep Node's compile cache in `~/.ouro-cli/cache/node-compile` (not the OS temp directory, which is RAM-backed on small devices), so a command does not recompile the harness on every run. Set `NODE_COMPILE_CACHE` to put it elsewhere or `NODE_DISABLE_COMPILE_CACHE=1` to turn it off. The daemon and agent processes don't use it: they start once, and a code cache would cost them more resident memory than it saves.
