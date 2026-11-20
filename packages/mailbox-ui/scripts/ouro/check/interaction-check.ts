@@ -10,7 +10,9 @@ import type { PageIssue } from "./size-check.ts";
 //                       gives no reason for: no title, no aria-description and no aria-describedby text, on it or its
 //                       disabled fieldset. Two cases explain themselves and pass: a control that moves one way (Previous,
 //                       Next, Back, Earlier, Later, Increase, Zoom out, Undo) at its end, and a control beside an empty
-//                       field in its form or group, such as Send under an empty message, which waits for the field
+//                       field in its form or group, such as Send under an empty message, which waits for the field.
+//                       A control that is busy (aria-busy="true", a loading Button) is in its own state, which its
+//                       label already says, so it passes too
 //
 // An element opts out of a rule with data-ouro-allow="<rule ids>" and a reason in data-ouro-allow-why, as the other rules
 // do. `element` names the control by its words, the same at every size.
@@ -70,7 +72,7 @@ function findInteractionIssues(): PageIssue[] {
     const set = el.closest("fieldset[disabled]");
     const off = (el as HTMLButtonElement).disabled || el.getAttribute("aria-disabled") === "true" || Boolean(set);
     if (!off || optedOut(el, "disabled-no-reason") || !drawn(el)) continue;
-    if (reasoned(el) || reasoned(set) || oneWay.test(nameOf(el)) || waits(el)) continue;
+    if (el.getAttribute("aria-busy") === "true" || reasoned(el) || reasoned(set) || oneWay.test(nameOf(el)) || waits(el)) continue;
     issues.push({ ref: ref(el), rule: "disabled-no-reason", element: describe(el), detail: "disabled, and nothing on the page says why: give it a title, or tie the words that say why to it with aria-describedby" });
   }
   return issues;
