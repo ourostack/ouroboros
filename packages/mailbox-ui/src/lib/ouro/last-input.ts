@@ -1,5 +1,14 @@
 export { lastInput };
 
+const modifierKeys = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
+
+// Written to <html> only when it changes, and only after the first press or key: the server HTML and the
+// first client render carry no attribute, so hydration never differs, and reading it forces no layout.
+function modality(next: "keyboard" | "pointer"): void {
+  const root = document.documentElement;
+  if (root.getAttribute("data-ouro-modality") !== next) root.setAttribute("data-ouro-modality", next);
+}
+
 // The pointer type of the last `pointerdown` (or mouse or pen `pointermove`) on the document, or "keyboard" after a later key press.
 let input = "";
 
@@ -10,6 +19,10 @@ let input = "";
  * Overlays read it when they open: a controlled `Dialog` focuses its popup rather
  * than its first input after a tap (the app's own button opened it, so Dialog never
  * saw the press), and a `Tooltip` never opens after a touch.
+ *
+ * The same listeners keep `data-ouro-modality="keyboard"` or `"pointer"` on `<html>` for `ouro-base`'s
+ * keyboard-only focus rings: `pointer` after a press and `keyboard` after a key other than a lone modifier. Before either, the
+ * attribute is absent and the browser's own `:focus-visible` decides. Moving the mouse changes neither.
  *
  * Internal: Ouro UI components use it; apps don't need to.
  *
@@ -27,8 +40,23 @@ function lastInput(): string {
 // capture phase means nothing can stop it.
 /* istanbul ignore else @preserve -- the else path is server rendering, which has no document */
 if (typeof document !== "undefined") {
-  document.addEventListener("pointerdown", (event) => (input = event.pointerType), true);
-  document.addEventListener("keydown", () => (input = "keyboard"), true);
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      input = event.pointerType;
+      modality("pointer");
+    },
+    true,
+  );
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      input = "keyboard";
+      // A modifier alone (Shift held for a range select with the mouse) is no sign the keyboard is in use.
+      if (!modifierKeys.has(event.key)) modality("keyboard");
+    },
+    true,
+  );
   // A moving mouse or pen is in use again, so a device with both a touchscreen and a
   // trackpad gets its hover back after a tap. Touch moves only during a press.
   document.addEventListener(

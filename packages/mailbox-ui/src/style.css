@@ -649,3 +649,12 @@ body {
   border-radius: var(--ouro-check-radius, calc(var(--radius) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1) * 0.6));
   corner-shape: var(--ouro-check-corner-shape, var(--ouro-corner-shape));
 }
+
+:root[data-ouro-modality="pointer"] :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"]):focus-visible, :root[data-ouro-modality="pointer"] :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"]):has(> :is(input, textarea):focus-visible), :root[data-ouro-modality="pointer"] :is([data-ouro], [data-ouro-control], [data-ouro-part], [data-ouro-input-group], [data-ouro-composer-frame], [data-ouro-number-field-group]):not([data-variant="plain"]):has(> * > :is(input, textarea):focus-visible) {
+  outline-style: none;
+}
+
+:root[data-ouro-modality="pointer"] .ouro-field-cue:focus-within:not([aria-invalid="true"]):not(:has([aria-invalid="true"])) {
+  --ouro-bd: var(--ring);
+  border-color: var(--ring);
+}
