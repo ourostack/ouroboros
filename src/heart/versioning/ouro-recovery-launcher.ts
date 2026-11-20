@@ -48,17 +48,39 @@ process.exit(result.status == null ? 1 : result.status);
 `
 
 export const OURO_WRAPPER_SCRIPT = `#!/bin/sh
+# @ouro.bot/cli needs Node 22 or newer, so pick the first node on PATH that
+# qualifies instead of running whatever comes first.
+OURO_MIN_NODE_MAJOR=22
+OURO_NODE=""
+OURO_NODE_SEEN=""
+OLD_IFS="$IFS"
+IFS=:
+for dir in $PATH; do
+  candidate="\${dir:-.}/node"
+  [ -x "$candidate" ] || continue
+  major=$("$candidate" -p 'process.versions.node.split(".")[0]' 2>/dev/null)
+  if [ -z "$OURO_NODE_SEEN" ]; then OURO_NODE_SEEN="$candidate (Node \${major:-unknown})"; fi
+  if [ -n "$major" ] && [ "$major" -ge "$OURO_MIN_NODE_MAJOR" ] 2>/dev/null; then
+    OURO_NODE="$candidate"
+    break
+  fi
+done
+IFS="$OLD_IFS"
+if [ -z "$OURO_NODE" ]; then
+  echo "ouro needs Node $OURO_MIN_NODE_MAJOR or newer, but found: \${OURO_NODE_SEEN:-no node on PATH}. Install Node $OURO_MIN_NODE_MAJOR+ or put it first on PATH." >&2
+  exit 1
+fi
 # Check for dev mode — if dev-config.json exists, dispatch to the dev repo.
 # Skip dev dispatch for "up" command (explicitly returns to production).
 DEV_CONFIG="$HOME/.ouro-cli/dev-config.json"
 if [ -f "$DEV_CONFIG" ] && [ "$1" != "up" ]; then
-  DEV_REPO=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
+  DEV_REPO=$("$OURO_NODE" -e "try{console.log(JSON.parse(require('fs').readFileSync('$DEV_CONFIG','utf-8')).repoPath)}catch{}" 2>/dev/null)
   DEV_ENTRY="$DEV_REPO/dist/heart/daemon/ouro-entry.js"
   if [ -n "$DEV_REPO" ] && [ -e "$DEV_ENTRY" ]; then
-    exec node "$DEV_ENTRY" "$@"
+    exec "$OURO_NODE" "$DEV_ENTRY" "$@"
   fi
 fi
-exec node "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
+exec "$OURO_NODE" "$HOME/.ouro-cli/bin/ouro-launcher.js" "$@"
 `
 
 export function resolveOuroRecoveryLauncherAssets(): {
