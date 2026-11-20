@@ -264,7 +264,7 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
 function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebSocket) => void) {
   const openaiMessages: Record<string, unknown>[] = []
   const openaiSockets: WebSocket[] = []
-  const openaiRequests: Array<{ input: string; body: string; auth: string | null }> = []
+  const openaiRequests: Array<{ input: string; body: string; auth: string | null; at: number }> = []
   const openaiServer = new WebSocketServer({ port: 0 })
   const address = openaiServer.address()
   if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
@@ -283,6 +283,7 @@ function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebS
       input: String(input),
       body: String(init?.body ?? ""),
       auth: headers.get("authorization"),
+      at: Date.now(),
     })
     return new Response("", { status: 200 })
   })
@@ -739,9 +740,19 @@ describe("turn-owned realtime selection", () => {
     try {
       const view = await manager.start(owner, { owned: { command: "fixture-a" } })
       const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => timing === "ready" ? view : pending.promise)
+      const startedAt = Date.now()
       fixture = await startToolSelectionVoice(outputDir, transport)
-      // The delayed path only publishes after the 250ms bootstrap timeout, so a loaded shard can outrun the 1s default.
-      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
+      const startedMs = Date.now() - startedAt
+      try {
+        await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0), { timeout: 5_000 })
+      } catch (error) {
+        // Boundary timings so a recurrence shows whether the bootstrap timeout, SIP accept or publication was late.
+        throw new Error(`no publication: ${JSON.stringify({
+          startMs: startedMs, sinceStartMs: Date.now() - startedAt, sockets: fixture.mock.openaiSockets.length,
+          requests: fixture.mock.openaiRequests.map((request) => ({ input: request.input, atMs: request.at - startedAt })),
+          messages: fixture.mock.openaiMessages.map((event) => event.type),
+        })}`, { cause: error })
+      }
       if (timing === "delayed") {
         expect(fixture.publications().flat().map((tool) => tool.name)).not.toContain("owned_status")
         pending.resolve(view)
