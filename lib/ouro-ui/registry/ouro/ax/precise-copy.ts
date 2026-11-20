@@ -1,4 +1,4 @@
-export { BARE_FAILURE, CAUSE_MARKER, checkFailureCopyAllow, FAILURE_KEYS, LEAD_FAILURE, NOT_A_CAUSE, NOT_BARE_LEADS, statesCause, VAGUE_FAILURE_PHRASES, vagueFailureIn, vagueFailuresIn };
+export { BARE_FAILURE, CAUSE_MARKER, checkFailureCopyAllow, FAILURE_KEYS, LEAD_FAILURE, NOT_A_CAUSE, NOT_BARE_LEADS, statesCause, VAGUE_CAUSE, VAGUE_FAILURE_PHRASES, vagueFailureIn, vagueFailuresIn };
 export type { FailureCopyAllow, VagueFailureFinding, VagueFailuresOptions };
 
 // The export list comes first because the shadcn CLI drops comments before a file's
@@ -72,6 +72,15 @@ const CAUSE_MARKER = /:|\s[—–-]\s|\bbecause\b/iu;
  */
 const NOT_A_CAUSE: readonly string[] = Object.freeze(["try", "please", "retry", "contact", "see", "error", "errors", "unknown", "failed", "failure"]);
 
+/**
+ * A cause that names nothing: the whole of it is "it broke", "it didn't work", "there was a problem", "an issue occurred"
+ * and the like, so it says neither what failed nor why. A cause that goes on ("it failed because the disk is full") names
+ * something and passes.
+ *
+ * @claim "A cause that names nothing" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::finds each vague phrase and a bare failure, and lets precise copy and allowed text through)
+ */
+const VAGUE_CAUSE = /^[^\p{L}\p{N}]*(?:(?:it|this|that|something)\s+(?:broke|failed|crashed|errored|stopped(?:\s+working)?|went\s+wrong|(?:didn[’']?t|did\s+not|doesn[’']?t|does\s+not)\s+work|(?:isn[’']?t|is\s+not)\s+working)|there\s+(?:was|is)\s+(?:an?\s+)?(?:problem|issue|error)|an?\s+(?:problem|issue|error)\s+(?:has\s+)?(?:occurred|happened))[^\p{L}\p{N}]*$/iu;
+
 /** A failure that leads the text ("Error: …", "Upload failed - …"), held to the same test as a phrase; the group is the marker. */
 const LEAD_FAILURE = /^[^\p{L}\p{N}]*(?:\p{L}[\p{L}'’-]*\s+){0,2}(?:error|errors|failed|failure)\s*(:|\s[—–-]\s)/iu;
 
@@ -115,7 +124,8 @@ const wordsOf = (text: string) => text.toLowerCase().match(WORD) ?? [];
 
 /**
  * Whether the text after a failure phrase states the cause in the same sentence: after a colon, a dash or "because", a
- * substitution (`${…}`) or at least two words whose first is not in {@link NOT_A_CAUSE}, with no vague phrase in it.
+ * substitution (`${…}`) or at least two words whose first is not in {@link NOT_A_CAUSE}, that are not a cause naming nothing
+ * ({@link VAGUE_CAUSE}), with no vague phrase in it.
  *
  * @claim "at least two words whose first is not in" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::finds each vague phrase and a bare failure, and lets precise copy and allowed text through)
  *
@@ -130,7 +140,7 @@ function statesCause(rest: string): boolean {
   const cause = sentence.slice(marker.index + marker[0].length);
   if (cause.includes("${…}")) return true;
   const words = wordsOf(cause);
-  return words.length >= 2 && !NOT_A_CAUSE.includes(words[0]!) && !VAGUE_FAILURE_PHRASES.some(([, pattern]) => pattern.test(cause));
+  return words.length >= 2 && !NOT_A_CAUSE.includes(words[0]!) && !VAGUE_CAUSE.test(cause) && !VAGUE_FAILURE_PHRASES.some(([, pattern]) => pattern.test(cause));
 }
 
 function phraseIn(text: string): string | null {
