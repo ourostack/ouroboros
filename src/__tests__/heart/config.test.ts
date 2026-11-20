@@ -463,6 +463,7 @@ describe("getContextConfig", () => {
       context: {
         maxTokens: 100000,
         contextMargin: 25,
+        maxStepsPerTurn: 40,
       },
       phrases: {
         thinking: ["working"],
@@ -485,6 +486,7 @@ describe("getContextConfig", () => {
 
     expect(ctx.maxTokens).toBe(100000)
     expect(ctx.contextMargin).toBe(25)
+    expect(ctx.maxStepsPerTurn).toBe(40)
   })
 
   it("returns defaults when not configured", async () => {
