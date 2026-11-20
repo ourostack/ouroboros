@@ -1,6 +1,6 @@
 {
-  "tag": "v1.3.376",
-  "tagCommit": "d6d1559aaac89f0a3ad533096111eb090e60a4f3",
+  "tag": "v1.3.377",
+  "tagCommit": "f4f1547392d1cac93ece5c02cc6993099a3dbb72",
   "files": {
     "packages/mailbox-ui/scripts/ouro/check/ax-hooks.ts": "5e83546160a532c0477e759212c79fdae07b98d7b519cfcb38dd309f3cd10d81",
     "packages/mailbox-ui/scripts/ouro/check/check.ts": "ad67f5da8e910f1abe47a03575b08fc1ebcc0c170279e5a5334662caa0902811",
@@ -14,7 +14,7 @@
     "packages/mailbox-ui/scripts/ouro/check/first-run-judges.ts": "4a3826f4bd5dd1dca3db1d6324709b0a8514d548c17f99334f1b062297c1cf78",
     "packages/mailbox-ui/scripts/ouro/check/first-run-machine.ts": "e1f02f448ec2aeb5d75c6f8e9ed5dfc7b2d516a38c488b12192f3ceff35778fe",
     "packages/mailbox-ui/scripts/ouro/check/first-run-network.ts": "12ec93cfa09f2899b394561f3ceb3774eb084629ace2feb9f7c95eed436e6e22",
-    "packages/mailbox-ui/scripts/ouro/check/first-run-session.ts": "41743b8d3297968bf219edce3c00997ea3eb1c5804a51d4301944024cb01e545",
+    "packages/mailbox-ui/scripts/ouro/check/first-run-session.ts": "0b3782ba9ce5159252c01fdbbd87e590bac409da28bbce00a0c4075359e3dbc2",
     "packages/mailbox-ui/scripts/ouro/check/first-run-sso-serve.ts": "b6159627b28ef80de3fbfd9af5130a84d8921088779a9abdcce9f56558b1df86",
     "packages/mailbox-ui/scripts/ouro/check/first-run-sso.ts": "3e8b5729bd0e17725df872b38c7668d1601587f3dbe016cd56280fafd2774ae3",
     "packages/mailbox-ui/scripts/ouro/check/first-run-system.ts": "533dd07f6bc9e4fd47a06dddb5ade8dc34076fbdc009daeb3a7a089d3b38d4f6",
@@ -70,7 +70,7 @@
     "packages/mailbox-ui/src/lib/ouro/class-name-check.ts": "600bc22afbe0b7dd47451277ad893ff0f240a2a1c76c42c8e7e9e36320515cfc",
     "packages/mailbox-ui/src/lib/ouro/cn.ts": "df32c7d3dc69c7d70cf39bd63b63583397a2868134dc16bc3e55ab774bd6401b",
     "packages/mailbox-ui/src/lib/ouro/current-path.ts": "bbb63ed157c7458ddec1d11ccf615da1f0978a5f224eeffb7c8fe0ab7a2cc3f6",
-    "packages/mailbox-ui/src/lib/ouro/dev.ts": "e8b539589a5b28ddc6814e9204161e0a250d73ec98c388bc75c91de73b46b826",
+    "packages/mailbox-ui/src/lib/ouro/dev.ts": "0c1cf13a0055c06c407f048658ef6159ecafc4b2f0e8a1513adeb0f92a420d16",
     "packages/mailbox-ui/src/lib/ouro/env.d.ts": "b9b1f9fbff01e0acecd2452110007846804d4d30e159a302f56312d2771fe90c",
     "packages/mailbox-ui/src/lib/ouro/floating.ts": "4c723c3a6c385e516f649b9ebbdcf6cb6302fd95d3f0cc782d33ba5f9172a7a1",
     "packages/mailbox-ui/src/lib/ouro/fragment-focus-script.ts": "ff725ffb57e7abc0d244cf651537649b22ba0b1d81501c9a5dcb2237a41ece46",
