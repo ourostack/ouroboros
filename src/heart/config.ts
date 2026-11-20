@@ -85,6 +85,8 @@ export interface OAuthConfig {
 export interface ContextConfig {
   maxTokens: number
   contextMargin: number
+  /** Per-turn provider-call ceiling from agent.json `context.maxStepsPerTurn`; absent means the built-in ceiling. */
+  maxStepsPerTurn?: number
 }
 
 export interface TeamsChannelConfig {
@@ -421,6 +423,7 @@ export function getContextConfig(model?: string): ContextConfig {
   return {
     maxTokens: override ?? (modelId ? getLearnedContextWindow(modelId) ?? getModelCapabilities(modelId).contextWindowTokens : undefined) ?? defaults.maxTokens,
     contextMargin: typeof agentContext?.contextMargin === "number" ? agentContext.contextMargin : defaults.contextMargin,
+    ...(Number.isInteger(agentContext?.maxStepsPerTurn) ? { maxStepsPerTurn: agentContext!.maxStepsPerTurn } : {}),
   }
 }
 

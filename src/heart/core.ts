@@ -1722,6 +1722,7 @@ export async function runAgent(
   let providerIterations = 0;
   // Adaptive step budget: starts at the base, grows while tool calls make progress.
   let stepBudget = MAX_PROVIDER_ITERATIONS;
+  const stepBudgetCeiling = Math.max(MAX_PROVIDER_ITERATIONS, getContextConfig().maxStepsPerTurn ?? MAX_PROVIDER_ITERATIONS_CEILING)
   let lastIterationMadeProgress = false;
   let stepReportIteration: number | null = null;
   // The one tool a turn may call after its step budget is used up: settle for conversations, rest for private turns.
@@ -1730,8 +1731,8 @@ export async function runAgent(
   const requiredDispatchRejectionCounts = new Map<string, number>();
   const budgetExhausted = (): boolean => {
     if (providerIterations < stepBudget) return false
-    if (lastIterationMadeProgress && stepBudget < MAX_PROVIDER_ITERATIONS_CEILING) {
-      stepBudget = Math.min(MAX_PROVIDER_ITERATIONS_CEILING, stepBudget + STEP_BUDGET_EXTENSION)
+    if (lastIterationMadeProgress && stepBudget < stepBudgetCeiling) {
+      stepBudget = Math.min(stepBudgetCeiling, stepBudget + STEP_BUDGET_EXTENSION)
       emitNervesEvent({ component: "engine", event: "engine.step_budget_extended", message: "tool progress extended the per-turn step budget", meta: { stepBudget } })
       return providerIterations >= stepBudget
     }
