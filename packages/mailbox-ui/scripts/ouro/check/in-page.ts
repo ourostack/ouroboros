@@ -1,4 +1,4 @@
-export { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, outline, runAxe };
+export { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, listPersonSignals, outline, runAxe };
 export type { Allowance, AxeIssue, Box };
 
 import type { PageIssue } from "./size-check.ts";
@@ -125,6 +125,15 @@ async function runAxe(): Promise<AxeIssue[]> {
       for (const el of [...document.querySelectorAll(target)].slice(0, 1)) el.setAttribute("data-ouro-check-ref", `${el.getAttribute("data-ouro-check-ref") ?? ""} ${ref}`.trim());
       return { ref, rule: "axe", impact: v.impact!, element: `${v.id}: ${target}`, detail: `${v.impact}: ${v.help}${v.nodes.length > 1 ? ` (${v.nodes.length} elements)` : ""}` };
     });
+}
+
+// What the page holds that only a person can judge: a destructive control, a form, a control that sends something to others.
+function listPersonSignals(): string[] {
+  const signals: string[] = [];
+  if (document.querySelector("button[data-tone='destructive'], a[data-tone='destructive'], [role='menuitem'][data-tone='destructive']")) signals.push("destructive");
+  if (document.querySelector("form, [data-ouro='form']")) signals.push("form");
+  if (document.querySelector("[data-ouro='share-button'], [data-ouro='composer']")) signals.push("sends");
+  return signals;
 }
 
 // Every element the page opts out of a rule, with its reason, for the report: data-ouro-allow with data-ouro-allow-why,
