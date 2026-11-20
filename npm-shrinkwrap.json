@@ -1,12 +1,12 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1244",
+  "version": "0.1.0-alpha.1245",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@ouro.bot/cli",
-      "version": "0.1.0-alpha.1244",
+      "version": "0.1.0-alpha.1245",
       "bundleDependencies": [
         "@ouro.bot/friends"
       ],

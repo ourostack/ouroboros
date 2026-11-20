@@ -104,7 +104,8 @@ const menuItemClass =
   "text-start text-base leading-5 pointer-fine:text-sm text-popover-foreground no-underline select-none " +
   "outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
   "[-webkit-tap-highlight-color:transparent] " +
-  "data-highlighted:bg-accent data-highlighted:text-accent-foreground active:bg-accent active:text-accent-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground " +
+  // Stryker disable next-line StringLiteral: a class string in a class position; test/state-hovers.test.tsx reads its tokens, outside this file's tests
+  "data-highlighted:bg-[color-mix(in_oklab,var(--foreground)_var(--ouro-state-hover,6%),var(--popover))] data-highlighted:text-accent-foreground active:bg-[color-mix(in_oklab,var(--foreground)_var(--ouro-state-pressed,12%),var(--popover))] active:text-accent-foreground data-popup-open:bg-[color-mix(in_oklab,var(--foreground)_var(--ouro-state-hover,6%),var(--popover))] data-popup-open:text-accent-foreground " +
   // Forced colours drop the fill, so the highlight (and an open submenu's trigger) takes the system's pair.
   "forced-colors:data-highlighted:bg-[Highlight] forced-colors:data-highlighted:text-[HighlightText] forced-colors:data-popup-open:bg-[Highlight] forced-colors:data-popup-open:text-[HighlightText] " +
   // The current page is marked by weight and a bar at the start edge, so it differs from the highlight without relying on color.
@@ -163,7 +164,8 @@ const menuBarTriggerClass =
   "relative m-0 box-border inline-flex h-11 pointer-fine:h-8 items-center rounded-ouro-md border-0 bg-transparent px-3 " +
   "font-[inherit] text-base pointer-fine:text-sm leading-5 font-medium text-foreground cursor-default select-none " +
   "[-webkit-tap-highlight-color:transparent] outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
-  "pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground active:bg-accent active:text-accent-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground " +
+  // Stryker disable next-line StringLiteral: a class string in a class position; test/state-hovers.test.tsx reads its tokens, outside this file's tests
+  "pointer-fine:hover:bg-[var(--ouro-row-hover,var(--accent))] pointer-fine:hover:text-accent-foreground active:bg-[var(--ouro-row-pressed,var(--accent))] active:text-accent-foreground data-popup-open:bg-[var(--ouro-row-hover,var(--accent))] data-popup-open:text-accent-foreground " +
   "data-disabled:opacity-50";
 
 /**
