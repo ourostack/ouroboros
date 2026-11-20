@@ -603,6 +603,7 @@ body {
     inset: 0;
     border-radius: 0;
     overflow: visible;
+    --ouro-card-backdrop-inset: 0;
   }
 }
 
