@@ -409,6 +409,34 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(shape(loaded!)).toEqual(held)
   })
 
+  it("keeps the orientation placeholder's minimum height on the loaded card", async () => {
+    let release: (value: Response) => void = () => {}
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/needs-me")) return jsonResponse({ items: [] })
+      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.endsWith("/continuity")) return jsonResponse({ presence: { self: null, peers: [] }, cares: { activeCount: 0, items: [] }, episodes: { recentCount: 0, items: [] } })
+      if (url.endsWith("/orientation")) return new Promise<Response>((resolve) => { release = resolve })
+      if (url.endsWith("/changes")) return jsonResponse({ changeCount: 0, items: [], snapshotAge: null, formatted: "none" })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <OverviewTab view={makeAgentView()} refreshGeneration={0} deskPrefs={null} />
+      </NavigationContext.Provider>
+    )
+    const held = (await ui.findByTestId("orientation-loading")).className.split(" ")
+    expect(held).toContain("min-h-40")
+
+    await act(async () => {
+      release(jsonResponse({ currentSession: null, centerOfGravity: "steady", primaryObligation: null, resumeHandle: null, otherActiveSessions: [] }))
+    })
+    const loaded = (await ui.findByTestId("orientation-loaded")).className.split(" ")
+    expect(loaded).toContain("min-h-40")
+  })
+
   it("re-fetches overview deep data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
