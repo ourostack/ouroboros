@@ -1,6 +1,7 @@
 export { lastInput };
 
-const modifierKeys = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
+// The keys that move focus, as in Fluent's keyborg. Shift+Tab is Tab with a modifier.
+const focusKeys = new Set(["Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 
 // Written to <html> only when it changes, and only after the first press or key: the server HTML and the
 // first client render carry no attribute, so hydration never differs, and reading it forces no layout.
@@ -21,7 +22,7 @@ let input = "";
  * saw the press), and a `Tooltip` never opens after a touch.
  *
  * The same listeners keep `data-ouro-modality="keyboard"` or `"pointer"` on `<html>` for `ouro-base`'s
- * keyboard-only focus rings: `pointer` after a press and `keyboard` after a key other than a lone modifier. Before either, the
+ * keyboard-only focus rings: `pointer` after a press and `keyboard` after a key that moves focus (Tab and Shift+Tab, the arrows, Home, End, Page Up, Page Down), as in Fluent's keyborg; Escape, Enter, a shortcut or a typed character leaves it as it was. Before either, the
  * attribute is absent and the browser's own `:focus-visible` decides. Moving the mouse changes neither.
  *
  * Internal: Ouro UI components use it; apps don't need to.
@@ -52,8 +53,8 @@ if (typeof document !== "undefined") {
     "keydown",
     (event) => {
       input = "keyboard";
-      // A modifier alone (Shift held for a range select with the mouse) is no sign the keyboard is in use.
-      if (!modifierKeys.has(event.key)) modality("keyboard");
+      // Only a key that moves focus shows the keyboard is steering: Escape, Enter, a shortcut such as ⌘K or a typed character is not.
+      if (focusKeys.has(event.key)) modality("keyboard");
     },
     true,
   );

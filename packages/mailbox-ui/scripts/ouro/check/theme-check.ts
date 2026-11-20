@@ -133,6 +133,9 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
   };
   const focusable = "button, a[href], input:not([type=hidden]), select, textarea, summary, [tabindex]:not([tabindex='-1']), [contenteditable=''], [contenteditable=true]";
   const was = document.activeElement as HTMLElement | null;
+  // A screen reached by clicks leaves the page in pointer modality, where Ouro draws no ring; this judges keyboard focus, so it sets keyboard modality and puts it back.
+  const modality = document.documentElement.getAttribute("data-ouro-modality");
+  document.documentElement.setAttribute("data-ouro-modality", "keyboard");
   // One control of a kind: a sidebar's hundred links share one look, so judging one judges them all, and the budget
   // reaches the rest of the page.
   const kinds = new Set<string>();
@@ -154,6 +157,8 @@ function findThemeIssues({ maxControls = 60, minWidth = 48, minHeight = 24, ligh
     if (!judged) continue;
     if (before === after) issues.push({ ref: ref(el), rule: "focus-ring", element: describe(el), detail: "nothing a person can see changes when it gets keyboard focus" });
   }
+  if (modality === null) document.documentElement.removeAttribute("data-ouro-modality");
+  else document.documentElement.setAttribute("data-ouro-modality", modality);
   // Focus goes back where it was, or nowhere.
   if (was && was !== document.body) was.focus({ preventScroll: true });
 
