@@ -35,6 +35,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # The stylesheet against ouro-base at the Ouro UI release .github/ouro-hx-installed.json pins: an old copy of an
+      # ouro-base rule, or an override .github/ouro-base-overrides.json doesn't name, fails this job.
+      - name: Check the stylesheet against ouro-base at the pinned Ouro UI release
+        run: node scripts/ouro/check/base-check.ts
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 

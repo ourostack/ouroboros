@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1296",
+      "changes": [
+        "Mailbox UI: in Safari, rounded corners shrink with Ouro's squircle fallback factor, side sheets get the thin edge line Ouro added, and CI fails when the stylesheet drifts from the pinned ouro-base."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1295",
       "changes": [
         "Update the Ouro UI files to Ouro UI v1.3.417.",
