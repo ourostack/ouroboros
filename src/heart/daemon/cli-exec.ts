@@ -2394,7 +2394,7 @@ function ensureVaultSecretPrompt(
     return async () => secret
   }
   if (promptSecret) return promptSecret
-  throw new Error(`vault ${action} requires an interactive secret prompt that does not echo the vault unlock secret`)
+  throw needsTerminal(`vault ${action} requires an interactive secret prompt that does not echo the vault unlock secret`)
 }
 
 function rejectGeneratedVaultUnlockSecret(action: "create" | "replace" | "recover"): never {
@@ -3152,7 +3152,7 @@ async function promptRuntimeConfigValue(
   if (command.valueFile !== undefined) return readSecretValueFile("--value-file", command.valueFile)
   if (isSensitiveRuntimeConfigKey(command.key)) {
     if (!deps.promptSecret) {
-      throw new Error("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
+      throw needsTerminal("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
     }
     return deps.promptSecret(`Value for ${command.key}: `)
   }
@@ -3720,14 +3720,19 @@ async function executeDnsWorkflow(
   return message
 }
 
+/** A step that has to prompt the person, run where there is no terminal: the `needs-terminal` error the cards name. */
+function needsTerminal(message: string): Error {
+  return Object.assign(new Error(message), { code: "needs-terminal" })
+}
+
 function requirePromptSecret(deps: OuroCliDeps, purpose: string): (question: string) => Promise<string> {
   if (deps.promptSecret) return deps.promptSecret
-  throw new Error(`${purpose} requires an interactive terminal so the secret can be hidden.`)
+  throw needsTerminal(`${purpose} requires an interactive terminal so the secret can be hidden.`)
 }
 
 function requirePromptInput(deps: OuroCliDeps, purpose: string): (question: string) => Promise<string> {
   if (deps.promptInput) return deps.promptInput
-  throw new Error(`${purpose} requires an interactive terminal.`)
+  throw needsTerminal(`${purpose} requires an interactive terminal.`)
 }
 
 function parseOptionalPort(value: string, fallback: number, label: string): number {
