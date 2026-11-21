@@ -3,7 +3,7 @@ import type { ChannelCallbacks } from "../../heart/core"
 import {
   createProgramStatusReporter,
   formatProgramStatus,
-  lastAssistantText,
+  assistantTextSince,
   programStatusText,
   terminalReadsProgramStatus,
 } from "../../senses/program-status"
@@ -216,30 +216,84 @@ describe("createProgramStatusReporter", () => {
   })
 })
 
-describe("lastAssistantText", () => {
+describe("turnEnded", () => {
+  function endState(end: Parameters<ReturnType<typeof createProgramStatusReporter>["turnEnded"]>[0]) {
+    const { reporter, reports } = orcaReporter()
+    reporter.working()
+    reporter.turnEnded(end)
+    const last = reports().at(-1)!
+    return { state: last.state, kind: last.kind, msg: last.msg }
+  }
+
+  it("is done with the first line of the reply when the turn settled", () => {
+    expect(endState({ outcome: "settled", aborted: false, reply: "\nBooked the noon flight.\nDetails below." }))
+      .toEqual({ state: "done", kind: undefined, msg: "Booked the noon flight." })
+  })
+
+  it("is done for a turn with no named outcome that replied, as on the legacy path", () => {
+    expect(endState({ aborted: false, reply: "Hi." })).toEqual({ state: "done", kind: undefined, msg: "Hi." })
+  })
+
+  it("is an error when the turn errored, even though the reply callbacks saw no terminal error", () => {
+    expect(endState({ outcome: "errored", aborted: false })).toEqual({ state: "error", kind: undefined, msg: "The turn failed." })
+    expect(endState({ outcome: "errored", aborted: false, reply: "Provider unavailable." }))
+      .toEqual({ state: "error", kind: undefined, msg: "Provider unavailable." })
+  })
+
+  it("is an error when the engine failed closed", () => {
+    expect(endState({ outcome: "blocked", aborted: false, reply: "I can't finish that safely." }))
+      .toEqual({ state: "error", kind: undefined, msg: "I can't finish that safely." })
+    expect(endState({ outcome: "blocked", aborted: false })).toEqual({ state: "error", kind: undefined, msg: "The turn was blocked." })
+  })
+
+  it("waits on the person when the turn is suspended for an approval", () => {
+    expect(endState({ outcome: "suspended", aborted: false }))
+      .toEqual({ state: "blocked", kind: "permission", msg: "Waiting for your approval." })
+    expect(endState({ outcome: "suspended", aborted: false, reply: "Approve sending the invoice?" }))
+      .toEqual({ state: "blocked", kind: "permission", msg: "Approve sending the invoice?" })
+  })
+
+  it("rests when the person interrupted the turn", () => {
+    expect(endState({ outcome: "settled", aborted: true, reply: "partial" }).state).toBe("idle")
+    expect(endState({ outcome: "aborted", aborted: false }).state).toBe("idle")
+  })
+
+  it("rests when the turn was declined or said nothing", () => {
+    expect(endState({ aborted: false }).state).toBe("idle")
+    expect(endState({ outcome: "settled", aborted: false, reply: " \n " }).state).toBe("idle")
+  })
+})
+
+describe("assistantTextSince", () => {
   it("is the newest assistant text of the turn", () => {
-    expect(lastAssistantText([
+    expect(assistantTextSince([
       { role: "user", content: "book it" },
       { role: "assistant", content: "Looking." },
       { role: "tool", content: "ok" },
       { role: "assistant", content: "" },
       { role: "assistant", content: "Booked." },
-    ])).toBe("Booked.")
+    ], 0)).toBe("Booked.")
   })
 
   it("skips assistant messages without text", () => {
-    expect(lastAssistantText([
+    expect(assistantTextSince([
       { role: "user", content: "book it" },
       { role: "assistant", content: "Booked." },
       { role: "assistant", content: null },
-    ])).toBe("Booked.")
+    ], 0)).toBe("Booked.")
   })
 
   it("never reaches back past the person's message to an earlier turn", () => {
-    expect(lastAssistantText([
+    expect(assistantTextSince([
       { role: "assistant", content: "Old reply." },
       { role: "user", content: "and now?" },
-    ])).toBeUndefined()
-    expect(lastAssistantText([])).toBeUndefined()
+    ], 0)).toBeUndefined()
+    expect(assistantTextSince([], 0)).toBeUndefined()
+  })
+
+  it("never reaches back before the turn began, as when a declined turn added no message", () => {
+    const messages = [{ role: "user", content: "earlier" }, { role: "assistant", content: "Old reply." }]
+    expect(assistantTextSince(messages, messages.length)).toBeUndefined()
+    expect(assistantTextSince([{ role: "assistant", content: "Greeting." }], -3)).toBe("Greeting.")
   })
 })

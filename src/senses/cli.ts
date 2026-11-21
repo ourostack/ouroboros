@@ -22,7 +22,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import { acquireSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
-import { createProgramStatusReporter, lastAssistantText, type ProgramStatusReporter } from "./program-status"
+import { assistantTextSince, createProgramStatusReporter, type ProgramStatusReporter } from "./program-status"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/versioning/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { agentConfigV2Hook } from "../heart/daemon/hooks/agent-config-v2"
@@ -740,9 +740,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 
   const programStatus = options.programStatus ?? createProgramStatusReporter({ agentName: options.agentName })
   cliCallbacks = programStatus.wrap(cliCallbacks)
-  const reportTurnEnd = (aborted: boolean): void => {
-    if (aborted) programStatus.idle()
-    else programStatus.done(lastAssistantText(messages))
+  let turnStartLength = messages.length
+  const reportTurnStart = (): void => {
+    turnStartLength = messages.length
+    programStatus.working()
+  }
+  const reportTurnEnd = (aborted: boolean, outcome: string | undefined): void => {
+    programStatus.turnEnded({ outcome, aborted, reply: assistantTextSince(messages, turnStartLength) })
   }
 
   // Display helpers: route to TUI store or imperative stderr/stdout
@@ -812,10 +816,11 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   // speaks first (e.g. specialist greeting). Only triggers when explicitly opted in.
   if (options.autoFirstTurn && messages.length > 0 && messages[messages.length - 1]?.role === "user") {
     currentAbort = new AbortController()
-    programStatus.working()
+    // The person's message is already in place, so the reply comes after it.
+    reportTurnStart()
     const traceId = createTraceId()
     display.suppressInput()
-    let result: { usage?: UsageData } | undefined
+    let result: { usage?: UsageData; outcome?: string } | undefined
     try {
       result = await runAgent(messages, cliCallbacks, options.skipSystemPromptRefresh ? undefined : "cli", currentAbort.signal, {
         toolChoiceRequired: getEffectiveToolChoiceRequired(),
@@ -832,7 +837,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
     cliCallbacks.flushMarkdown()
     display.restoreInput()
-    reportTurnEnd(currentAbort.signal.aborted)
+    reportTurnEnd(currentAbort.signal.aborted, result?.outcome)
     currentAbort = null
 
     if (exitToolFired) {
@@ -908,7 +913,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (tuiStore) tuiStore.addUserMessage(input)
 
       currentAbort = new AbortController()
-      programStatus.working()
+      reportTurnStart()
       if (tuiStore) tuiStore.suppressInput()
       inputCtrl?.suppress(() => { currentAbort?.abort() })
 
@@ -920,7 +925,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
         pendingImages = null
       }
 
-      let result: { usage?: UsageData; turnOutcome?: string; commandAction?: string } | undefined
+      let result: { usage?: UsageData; turnOutcome?: string; outcome?: string; commandAction?: string } | undefined
       try {
         if (options.runTurn) {
           // Pipeline-based turn: the runTurn callback handles user message assembly,
@@ -966,7 +971,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (!tuiStore) process.stdout.write("\n") // ensure response ends with newline before prompt (imperative only)
       if (tuiStore) tuiStore.restoreInput()
       inputCtrl?.restore()
-      reportTurnEnd(currentAbort.signal.aborted)
+      reportTurnEnd(currentAbort.signal.aborted, result?.turnOutcome ?? result?.outcome)
       currentAbort = null
 
       // Check if exit tool was fired during this turn

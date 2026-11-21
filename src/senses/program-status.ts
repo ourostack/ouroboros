@@ -67,10 +67,23 @@ export interface ProgramStatusReporter {
   done(reply?: string): void
   /** The turn failed. */
   error(msg: string): void
+  /** Waiting on the person, such as for an approval. */
+  blocked(kind: ProgramStatusKind, msg: string): void
   /** The chat is closing: remove its row. */
   clear(): void
+  /** Reports how a turn ended, from its outcome and the reply it added. */
+  turnEnded(end: ProgramStatusTurnEnd): void
   /** The same callbacks, reporting tool use and failures as they happen. */
   wrap<T extends ChannelCallbacks>(callbacks: T): T
+}
+
+export interface ProgramStatusTurnEnd {
+  /** The turn's outcome, as `runAgent` or the pipeline names it; undefined when none was given. */
+  outcome?: string
+  /** Whether the person interrupted the turn. */
+  aborted: boolean
+  /** What the agent said in this turn, if anything. */
+  reply?: string
 }
 
 export interface ProgramStatusReporterOptions {
@@ -130,7 +143,19 @@ export function createProgramStatusReporter(options: ProgramStatusReporterOption
     working: (msg) => report({ state: "working", msg }),
     done: (reply) => report({ state: "done", msg: reply }),
     error: (msg) => report({ state: "error", msg }),
+    blocked: (kind, msg) => report({ state: "blocked", kind, msg }),
     clear: () => report({ state: "clear" }),
+    turnEnded: ({ outcome, aborted, reply }) => {
+      const line = firstLine(reply)
+      if (aborted || outcome === "aborted") return reporter.idle()
+      if (outcome === "errored") return reporter.error(line ?? "The turn failed.")
+      // The engine failed closed and said why.
+      if (outcome === "blocked") return reporter.error(line ?? "The turn was blocked.")
+      if (outcome === "suspended") return reporter.blocked("permission", line ?? "Waiting for your approval.")
+      // A turn that was declined, or produced no reply, has nothing to show.
+      if (line === undefined) return reporter.idle()
+      reporter.done(line)
+    },
     wrap: (callbacks) => {
       if (!enabled) return callbacks
       return {
@@ -149,9 +174,14 @@ export function createProgramStatusReporter(options: ProgramStatusReporterOption
   return reporter
 }
 
-/** The text of the last assistant message, if it has any. */
-export function lastAssistantText(messages: ReadonlyArray<{ role: string; content?: unknown }>): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+/** The first line of text that has something on it. */
+function firstLine(text: string | undefined): string | undefined {
+  return text?.split(/\r?\n/).find((line) => line.trim())
+}
+
+/** The newest assistant text among the messages from `since` on, so a turn never shows an earlier turn's reply. */
+export function assistantTextSince(messages: ReadonlyArray<{ role: string; content?: unknown }>, since: number): string | undefined {
+  for (let index = messages.length - 1; index >= Math.max(0, since); index -= 1) {
     const message = messages[index]
     if (message.role === "user") return undefined
     if (message.role === "assistant" && typeof message.content === "string" && message.content.trim()) {
