@@ -218,6 +218,9 @@ function currentStewardPolicy(agentRoot: string): ReturnType<typeof readStewardP
   return lastGoodPolicy.get(agentRoot) ?? null
 }
 
+/** The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, "on the shelf" to what a library lookup found, and a brevity request is honored. */
+export const SANCTUARY_ANSWER_GATES = { sourceGrounding: true, brevity: true, shelfClaims: true } as const
+
 export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary" | "answerGates"> {
   emitNervesEvent({
     component: "senses",
@@ -267,8 +270,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   })
   return {
     agentRoot,
-    // The Sanctuary profile opts in to the settle-time checks: replies about a work are held to what the turn looked up, "on the shelf" to what a library lookup found, and a brevity request is honored.
-    answerGates: { sourceGrounding: true, brevity: true, shelfClaims: true },
+    answerGates: SANCTUARY_ANSWER_GATES,
     sanctuary: {
       // The model-facing list carries the steward policy's desired state beside docker's: a container kept stopped on purpose is not a fault. The restart path reads the plain list.
       listContainers: acceptanceRead("unraid_list_containers", async (signal?: AbortSignal) => annotateContainers(signal ? await reads.listContainers(signal) : await reads.listContainers(), currentStewardPolicy(agentRoot), Date.now(), serviceContainers(readSanctuaryHouse(agentRoot)))),
