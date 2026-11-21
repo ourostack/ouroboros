@@ -53,6 +53,7 @@
     {"id": "diagnostics", "when": "Inspect, audit, evaluate or repair saved sessions, nerves events and evaluation suites offline, outside the daemon."},
     {"id": "turn-files", "when": "Read, find and change files in the agent's home: open one, list a folder, search names or text, write or edit."},
     {"id": "turn-shell", "when": "Run commands on the agent's machine: one shell line now, or a long one in the background you check and tail."},
-    {"id": "turn-web", "when": "Read the public web: search for pages on a subject, or fetch one page by its address as plain text."}
+    {"id": "turn-web", "when": "Read the public web: search for pages on a subject, or fetch one page by its address as plain text."},
+    {"id": "turn-coding", "when": "Hand coding work to a separate claude or codex worker, then watch it, answer it or stop it."}
   ]
 }

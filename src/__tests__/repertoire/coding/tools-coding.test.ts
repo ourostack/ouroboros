@@ -1517,4 +1517,36 @@ describe("coding tool contracts", () => {
   it("summarizeArgs handles unknown tools with empty args", () => {
     expect(summarizeArgs("totally_unknown", {})).toBe("")
   })
+
+  it("gives each coding tool an Ouro AX card, with reads backed by a profile that changes nothing", async () => {
+    const { codingToolDefinitions } = await import("../../../repertoire/coding/tools")
+    for (const def of codingToolDefinitions) {
+      expect(def.ax?.id).toBe(`tool:${def.tool.function.name}`)
+      expect(def.ax?.group).toBe("turn-coding")
+    }
+    for (const name of ["coding_status", "coding_tail"]) {
+      const def = codingToolDefinitions.find((d) => d.tool.function.name === name)!
+      expect(def.ax?.effect).toBe("read")
+      expect(def.riskProfile).toEqual({ mutates: "none", risk: "low" })
+    }
+  })
+
+  it("ends each coding tool refusal with the code its card names", async () => {
+    expect(await execTool("coding_spawn", { runner: "gpt", workdir: "/w", prompt: "p", taskRef: "t" })).toBe("invalid runner: gpt (code: invalid-runner)")
+    expect(await execTool("coding_spawn", { runner: "claude", workdir: "/w", prompt: "p", taskRef: " " })).toBe("taskRef is required (code: missing-argument)")
+    expect(await execTool("coding_tail", {})).toBe("sessionId is required (code: missing-argument)")
+    expect(await execTool("coding_send_input", { sessionId: "coding-001" })).toBe("input is required (code: missing-argument)")
+    expect(await execTool("coding_kill", {})).toBe("sessionId is required (code: missing-argument)")
+    manager.getSession.mockReturnValueOnce(null)
+    expect(await execTool("coding_status", { sessionId: "coding-missing" })).toBe("session not found: coding-missing (code: session-not-found)")
+    manager.getSession.mockReturnValueOnce(null)
+    expect(await execTool("coding_tail", { sessionId: "coding-missing" })).toBe("session not found: coding-missing (code: session-not-found)")
+
+    manager.sendInput.mockReturnValueOnce({ ok: false, message: "session not found: coding-gone" })
+    expect(JSON.parse(await execTool("coding_send_input", { sessionId: "coding-gone", input: "go" }))).toEqual({ ok: false, message: "session not found: coding-gone", code: "session-not-found" })
+    manager.killSession.mockReturnValueOnce({ ok: false, message: "session not found: coding-gone" })
+    expect(JSON.parse(await execTool("coding_kill", { sessionId: "coding-gone" }))).toEqual({ ok: false, message: "session not found: coding-gone", code: "session-not-found" })
+    manager.killSession.mockReturnValueOnce({ ok: false, message: "kill queued for coding-1 but not confirmed" })
+    expect(JSON.parse(await execTool("coding_kill", { sessionId: "coding-1" }))).toEqual({ ok: false, message: "kill queued for coding-1 but not confirmed" })
+  })
 })

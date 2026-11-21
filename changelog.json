@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1309",
+      "changes": [
+        "coding_spawn, coding_status, coding_tail, coding_send_input and coding_kill have Ouro AX cards; their failures end with a code (missing-argument, invalid-runner, session-not-found), and coding_status and coding_tail state a low-risk profile."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1308",
       "changes": [
         "shell, shell_status, shell_tail and fetch_url have Ouro AX cards, with shell's approval prompt declared; their failures end with a code (command-failed, command-timed-out, command-not-started, process-not-found, invalid-url, private-address, http-error, fetch-failed), and shell_status, shell_tail and fetch_url state a low-risk profile."
