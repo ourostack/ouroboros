@@ -262,12 +262,12 @@ export function Badge(props: BadgeProps): JSX.Element {
   const look = looks[variant][tone];
   // The icon and the label go in as siblings of the surface, not in a fragment, which would be a component of its own.
   const icon = Icon && <Icon aria-hidden="true" className="relative -ms-0.5 size-3.5 shrink-0" />;
-  const statusDot = dot && <span data-ouro-dot="" aria-hidden="true" className="relative size-1.5 shrink-0 rounded-full bg-current" />;
+  const statusDot = dot && <span data-slot="badge-dot" data-ouro-dot="" aria-hidden="true" className="relative size-1.5 shrink-0 rounded-full bg-current" />;
 
   if (rest.href !== undefined) {
     const { type: _type, disabled: _disabled, ...anchorProps } = rest as Omit<BadgeLinkProps, keyof BadgeBaseProps>;
     return (
-      <RouterLink data-ouro-control="badge" data-ouro-part="root" {...anchorProps} onClick={onClick} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
+      <RouterLink data-ouro-control="badge" data-ouro-part="root" data-slot="badge" {...anchorProps} onClick={onClick} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
         <TouchTarget />
         <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
         {statusDot}
@@ -279,7 +279,7 @@ export function Badge(props: BadgeProps): JSX.Element {
   const { ref, type = "button", disabled, ...buttonProps } = rest as Omit<BadgeButtonProps, keyof BadgeBaseProps>;
   if (onClick !== undefined) {
     return (
-      <BaseButton data-ouro-control="badge" data-ouro-part="root" {...buttonProps} onClick={onClick} disabled={disabled} ref={ref as Ref<HTMLElement> | undefined} type={type} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
+      <BaseButton data-ouro-control="badge" data-ouro-part="root" data-slot="badge" {...buttonProps} onClick={onClick} disabled={disabled} ref={ref as Ref<HTMLElement> | undefined} type={type} data-ouro="badge" data-ouro-squircle="" className={cn(base, interactive, look, className)}>
         <TouchTarget />
         <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
         {statusDot}
@@ -291,7 +291,7 @@ export function Badge(props: BadgeProps): JSX.Element {
   // A static Badge is a <span>, not a button: the button's own attributes are dropped.
   const { name: _name, value: _value, form: _form, ...spanProps } = buttonProps;
   return (
-    <span {...(spanProps as HTMLAttributes<HTMLSpanElement>)} ref={ref} data-ouro="badge" data-ouro-squircle="" className={cn(base, look, className)}>
+    <span data-slot="badge" {...(spanProps as HTMLAttributes<HTMLSpanElement>)} ref={ref} data-ouro="badge" data-ouro-squircle="" className={cn(base, look, className)}>
       <span data-ouro-surface="" aria-hidden="true" style={{ zIndex: -1 }} />
       {statusDot}
       {icon}

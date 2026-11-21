@@ -364,6 +364,7 @@ function sizeWarning(size: string): readonly [string, string] {
 function Spinner({ fadeIn }: { fadeIn: boolean }): JSX.Element {
   return (
     <span
+      data-slot="button-spinner"
       aria-hidden="true"
       className={cn(
         "absolute inset-0 flex items-center justify-center transition-opacity duration-(--ouro-duration-base) ease-(--ouro-ease-out)",
@@ -371,6 +372,7 @@ function Spinner({ fadeIn }: { fadeIn: boolean }): JSX.Element {
       )}
     >
       <svg
+        data-slot="button-spinner-icon"
         data-ouro-spinner=""
         viewBox="0 0 24 24"
         fill="none"
@@ -557,6 +559,7 @@ export function Button(props: ButtonProps): JSX.Element {
       <TouchTarget />
       <span data-ouro-surface="" aria-hidden="true" />
       <span
+        data-slot="button-label"
         data-ouro-label=""
         // The label takes the room a wider button has, aligned as the button aligns it (centred, or the app's
         // justify-start), so an end icon after it sits at the end.
@@ -619,6 +622,7 @@ export function Button(props: ButtonProps): JSX.Element {
     <BaseButton
       data-ouro-control="button"
       data-ouro-part="root"
+      data-slot="button"
       {...buttonProps}
       {...holdsPage}
       ref={buttonRef}

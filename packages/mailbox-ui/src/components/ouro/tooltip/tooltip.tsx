@@ -336,10 +336,11 @@ export function Tooltip(props: TooltipProps): JSX.Element {
         // Base UI asks only to close a tooltip it holds no trigger for: on Escape or a press outside it.
         onOpenChange={close}
       >
-        <BaseTooltip.Portal {...portal} data-ouro="tooltip-portal" className={floatingPortalClass}>
+        <BaseTooltip.Portal data-slot="tooltip-portal" {...portal} data-ouro="tooltip-portal" className={floatingPortalClass}>
           <PortalScope>
             <BaseTooltip.Positioner anchor={triggerRef} positionMethod={floatingPositionMethod} side={side} align={align} sideOffset={6} collisionPadding={8} data-ouro="tooltip-positioner">
               <BaseTooltip.Popup
+                data-slot="tooltip-content"
                 ref={checkContent}
                 data-ouro="tooltip"
                 // Opened by keyboard focus, or at once beside one already shown: no entrance, as Base UI does.
