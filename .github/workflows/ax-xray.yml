@@ -2,7 +2,8 @@ name: ax-xray
 
 # The Ouro AX X-ray checks the ouro CLI the way an agent calls it, against a loopback mock with made-up data, and the
 # action claims check the declarations in actions/, and the census (.github/scripts/ax-census) counts the agent doors
-# the code has, declared or not. They write reports to artifacts named `xray`, `actions-xray` and `ax-census`.
+# the code has, declared or not. They write reports to artifacts named `xray`, `xray-mcp`, `actions-xray` and
+# `ax-census`.
 # The X-ray gates with --conformance: the job fails unless the CLI conforms.
 
 on:
@@ -65,7 +66,8 @@ jobs:
           fi
           node .github/scripts/ax-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
             --base-baseline "$base_baseline" --base-config "$base_config" \
-            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" --out ax-census/census.json 2>&1 | tee ax-census/census.txt
+            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" --out ax-census/census.json \
+            --inventory ax-census/inventory.json 2>&1 | tee ax-census/census.txt
 
       - name: Upload the census
         if: always()
@@ -111,6 +113,30 @@ jobs:
           path: |
             xray/
             inventory.json
+          if-no-files-found: warn
+
+      # The same X-ray over `ouro mcp-serve`, the way a coding tool calls it, with the census's declared tools as the
+      # inventory: every served tool must be declared, and the declared ones must behave (annotations, bad calls that
+      # name the argument, an unknown tool that names a real one).
+      - name: Ouro AX X-ray over mcp-serve
+        run: |
+          mkdir -p xray-mcp
+          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+            --mcp "node dist/heart/daemon/ouro-entry.js mcp-serve --agent ax-xray" --name ouro \
+            --inventory ax-census/inventory.json \
+            --conformance \
+            --home "$RUNNER_TEMP/xray-mcp-home" \
+            --env "TOOL_URL=http://127.0.0.1:$MOCK_PORT/" \
+            --mock "http://127.0.0.1:$MOCK_PORT/ mock=ouroboros-ax-xray" \
+            --commit "$GITHUB_SHA" \
+            --json --md xray-mcp/xray.md > xray-mcp/report.json
+
+      - name: Upload the mcp-serve X-ray
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray-mcp
+          path: xray-mcp/
           if-no-files-found: warn
 
   actions:

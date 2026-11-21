@@ -1,4 +1,5 @@
 // Built stand-in for mcp-card.ts.
+exports.serverErrors = [{ code: "unknown-door", means: "No tool has that name.", fix: "Call the tool the message names." }];
 exports.getToolSchemas = () => [
   {
     name: "ask",

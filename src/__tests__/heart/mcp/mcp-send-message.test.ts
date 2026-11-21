@@ -638,6 +638,6 @@ describe("MCP send_message tool", () => {
 
     const response = parseResponse(output)
     expect(response.result.isError).toBe(true)
-    expect(response.result.content[0].text).toContain("daemon is not running")
+    expect(response.result.content[0].text).toContain("The Ouro daemon isn't running")
   })
 })
