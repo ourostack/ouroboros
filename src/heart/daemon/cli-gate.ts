@@ -99,11 +99,35 @@ function editDistance(a: string, b: string): number {
   return row[b.length]!;
 }
 
-function matchCommand(args: string[]): CommandShape | null {
-  const found = SHAPES.filter((shape) => shape.words.every((word, index) => args[index] === word)).sort(
+/**
+ * Where a command line's words sit: every token that isn't a flag, skipping the value after a global flag such as
+ * --agent. Parsers strip those flags wherever they appear, so `a2a --agent x message` names `a2a message`.
+ */
+export function commandWordIndexes(args: readonly string[]): number[] {
+  const indexes: number[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index]!;
+    if (GLOBAL_VALUE_FLAGS.includes(token)) index++;
+    else if (!token.startsWith("-")) indexes.push(index);
+  }
+  return indexes;
+}
+
+/** The words of a command line, without its flags and global flag values (see commandWordIndexes). */
+export function commandWords(args: readonly string[]): string[] {
+  return commandWordIndexes(args).map((index) => args[index]!);
+}
+
+function matchCommand(args: string[]): { shape: CommandShape; rest: string[] } | null {
+  const indexes = commandWordIndexes(args);
+  const words = indexes.map((index) => args[index]);
+  const found = SHAPES.filter((shape) => shape.words.every((word, index) => words[index] === word)).sort(
     (a, b) => b.words.length - a.words.length,
   );
-  return found.length > 0 ? found[0]! : null;
+  if (found.length === 0) return null;
+  const shape = found[0]!;
+  const matched = new Set(indexes.slice(0, shape.words.length));
+  return { shape, rest: args.filter((_, index) => !matched.has(index)) };
 }
 
 function refuse(name: string, code: GateRefusal, message: string): GateResult {
@@ -119,13 +143,13 @@ function refuse(name: string, code: GateRefusal, message: string): GateResult {
 
 /** Checks a command line against its declaration; a pass returns the words the legacy dispatcher should read. */
 export function gateCommandArgs(args: string[]): GateResult {
-  const shape = matchCommand(args);
-  if (!shape) return { kind: "pass", args };
-  const { declaration, words, flags } = shape;
+  const match = matchCommand(args);
+  if (!match) return { kind: "pass", args };
+  const { shape, rest } = match;
+  const { declaration, flags } = shape;
   const name = declaration.name;
   const others = declaration.effect === "others";
   const known = [...new Set([...PARSER_FLAGS, ...GLOBAL_FLAGS, ...flags.keys()])];
-  const rest = args.slice(words.length);
 
   if (others && rest.includes("--help")) {
     const text = [
