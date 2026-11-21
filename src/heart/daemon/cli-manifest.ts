@@ -1,5 +1,6 @@
 // The commands of the ouro CLI, declared once: the names `ouro help --json` lists and the X-ray's inventory reads.
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getRepoRoot } from "../identity"
 import { LIFECYCLE_COMMANDS } from "./cli-commands/lifecycle"
 import { PROVIDERS_COMMANDS } from "./cli-commands/providers"
 import { VAULT_COMMANDS } from "./cli-commands/vault"
@@ -118,13 +119,25 @@ export function helpEntry(command: CliCommandDeclaration, usage: string = `ouro 
   }
 }
 
-/** An entry point's help: its usage is its own command line, not an ouro command. */
-export function entryPointHelp(entry: CliCommandDeclaration): Record<string, unknown> {
-  return helpEntry(entry, entry.name)
+/** Every string in a help value, with each `node dist/` made `node <root>/dist/`. */
+function withPackageRoot(value: unknown, root: string): unknown {
+  if (typeof value === "string") return value.split("node dist/").join(`node ${root}/dist/`)
+  if (Array.isArray(value)) return value.map((item) => withPackageRoot(item, root))
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withPackageRoot(item, root)]))
+  return value
+}
+
+/**
+ * An entry point's help: its usage is its own command line, not an ouro command. The cards say `node dist/...`, which
+ * runs only from the package folder; the help gives the installed package's absolute path, which an agent can run from
+ * anywhere (and which the X-ray doesn't take for a developer's source-checkout command).
+ */
+export function entryPointHelp(entry: CliCommandDeclaration, root: string = getRepoRoot()): Record<string, unknown> {
+  return withPackageRoot(helpEntry(entry, entry.name), root) as Record<string, unknown>
 }
 
 /** The help as data: every declared command and entry point with its effect and card, and the exit codes. */
-export function cliHelpJson(): string {
+export function cliHelpJson(root: string = getRepoRoot()): string {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.cli_help_json",
@@ -135,7 +148,7 @@ export function cliHelpJson(): string {
     {
       tool: "ouro",
       commands: CLI_COMMANDS.map((command) => helpEntry(command)),
-      entryPoints: CLI_ENTRY_POINTS.map(entryPointHelp),
+      entryPoints: CLI_ENTRY_POINTS.map((entry) => entryPointHelp(entry, root)),
       exitCodes: CLI_EXIT_CODES,
       errors: serverErrors,
     },
