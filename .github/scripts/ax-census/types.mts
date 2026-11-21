@@ -42,12 +42,16 @@ export interface DoorEvidence {
   approval?: boolean;
   /** The card's error codes that appear as literals in the door's handler file outside any card; absent when the walker can't tell. */
   raises?: string[];
+  /** CLI: whether running the parser over the path returned a kind its parent path doesn't (false: it never returned). */
+  confirmed?: boolean;
+  /** CLI: the command kinds the path reaches. */
+  kinds?: string[];
 }
 
 /** One door a walker found. `file` and `line` point at source, never at built output; `line` is null when the name isn't a literal. */
 export interface Door {
   id: string;
-  kind: "mcp";
+  kind: "mcp" | "cli";
   product: string;
   name: string;
   description: string;
@@ -55,6 +59,10 @@ export interface Door {
   line: number | null;
   card: DoorCard | null;
   evidence: DoorEvidence;
+  /** Other names that reach the same door, such as `down` for `stop`; not doors of their own. */
+  aliases?: string[];
+  /** The walker that found the door; the child sets it. */
+  walker?: string;
 }
 
 /** A door that counts against zero, as the report lists it. */
@@ -81,6 +89,7 @@ export interface ProductReport {
   byKind: Record<string, Counts>;
   undeclared: Gap[];
   weak: Gap[];
+  unwalked: Gap[];
   excluded: { hit: string; category: string }[];
 }
 
@@ -97,6 +106,8 @@ export interface CensusReport {
 export interface WalkResult {
   doors: Door[];
   errors: string[];
+  /** Code the walker saw but couldn't walk to a door, such as a command kind no walked path returns. Each counts against zero. */
+  unwalked?: Gap[];
 }
 
 /** Where a walker reads from, as one source in `ax/census.config.json` names it. */
@@ -105,6 +116,12 @@ export interface WalkerOptions {
   module: string;
   source: string;
   root: string;
+  /** ts-parser: the parser function's name, exported by `module` and declared in `source`. */
+  parser?: string;
+  /** ts-parser: the command type to cross-check, as `<file>#<type alias>`. */
+  kinds?: string;
+  /** argv-entries: entry modules another walker covers, each with the parser source it must import. */
+  claims?: { entry: string; parser: string }[];
 }
 
 export type Walker = (options: WalkerOptions) => Promise<WalkResult>;

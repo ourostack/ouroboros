@@ -1,20 +1,16 @@
 // The census child: `node --import ./guard.mjs child.mts <config>` runs every walker the config names and prints
-// exactly one JSON line, `{ "doors": Door[], "errors": string[] }`. The parent starts it with an empty HOME and
+// exactly one JSON line, `{ "doors": Door[], "errors": string[], "unwalked": Gap[] }`. The parent starts it with an empty HOME and
 // TMPDIR and no credentials; the guard keeps it off the network. Anything a product's modules print while they load
 // goes to stderr, so stdout carries only the result.
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
-import type { Door, Walker } from "./types.mts";
+import type { Door, Gap, Walker, WalkerOptions } from "./types.mts";
 import { WALKERS } from "./walkers/registry.mts";
 
 const BUILT_IN: Readonly<Record<string, Walker>> = Object.fromEntries(Object.entries(WALKERS).map(([name, w]) => [name, w.walk]));
 
-interface Source {
-  walker: string;
-  module: string;
-  source: string;
-}
+type Source = Omit<WalkerOptions, "product" | "root"> & { walker: string };
 
 export async function runChild(configPath: string, walkers: Readonly<Record<string, Walker>> = BUILT_IN): Promise<void> {
   const config = JSON.parse(await readFile(configPath, "utf8")) as { product: string; sources: Source[] };
@@ -22,6 +18,7 @@ export async function runChild(configPath: string, walkers: Readonly<Record<stri
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
   const doors: Door[] = [];
   const errors: string[] = [];
+  const unwalked: Gap[] = [];
   try {
     for (const source of config.sources) {
       const walker = walkers[source.walker];
@@ -29,14 +26,16 @@ export async function runChild(configPath: string, walkers: Readonly<Record<stri
         errors.push(`${source.walker}: no such walker`);
         continue;
       }
-      const result = await walker({ product: config.product, module: source.module, source: source.source, root: process.cwd() });
-      doors.push(...result.doors);
+      const { walker: name, ...where } = source;
+      const result = await walker({ ...where, product: config.product, root: process.cwd() });
+      doors.push(...result.doors.map((d) => ({ ...d, walker: name })));
       errors.push(...result.errors);
+      unwalked.push(...(result.unwalked ?? []));
     }
   } finally {
     process.stdout.write = write;
   }
-  process.stdout.write(`${JSON.stringify({ doors, errors })}\n`);
+  process.stdout.write(`${JSON.stringify({ doors, errors, unwalked })}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

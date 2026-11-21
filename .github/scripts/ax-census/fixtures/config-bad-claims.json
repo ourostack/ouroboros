@@ -1,0 +1,1 @@
+{ "product": "harness", "sources": [{ "walker": "argv-entries", "module": "dist", "source": "walkers/fixtures/entries/src", "claims": "ouro-entry" }], "groups": [] }
