@@ -5,9 +5,12 @@ import { getAgentRoot } from "../heart/identity";
 import { fileStateCache } from "../mind/file-state";
 import { trackModifiedFile, getModifiedFileCount, getPostImplementationScrutiny } from "../mind/scrutiny";
 import type { ToolDefinition } from "./tools-base";
-import { editFileReadTracker, type ToolContext } from "./tools-base";
+import { editFileReadTracker, withCode, type ToolContext } from "./tools-base";
 import { psycheEditNote, psycheFileClass } from "./guardrails";
 import { SKIP_DIRS, TOOL_MAX_CHARS, TOOL_MAX_LINES, cutNotice, looksBinary } from "./tool-limits";
+
+/** The profile of a file tool that only reads, so a card can say `read`; it is the dispatcher's own default. */
+const READS_ONLY = { mutates: "none", risk: "low" } as const
 
 const LIST_CAP = 500
 const GREP_MAX_MATCHES = 100
@@ -137,6 +140,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return `${text}\n${cutNotice("read_file", `[lines ${start + 1}-${last} of ${lines.length} shown; read on with offset=${last + 1}]`, { path: resolvedPath })}`
     },
     summaryKeys: ["path"],
+    riskProfile: READS_ONLY,
+    ax: { id: "tool:read_file", group: "turn-files", when: "Pick this to see a file's exact text before you quote or change it; to find which file holds something, grep or glob first.", effect: "read", idempotent: true, errors: [
+      { code: "guardrail-blocked", means: "The path is inside the folder holding the sync key, which no tool may read, or the path can't be resolved (a link loop or a folder you can't open).", fix: "Read a file outside that folder; for a path that won't resolve, check it with ls first." },
+      { code: "invalid-arguments", means: "path is missing, or offset, limit or char_offset isn't a number.", fix: "Call read_file again with path as text and offset, limit and char_offset as numbers." },
+    ] },
   },
   {
     tool: {
@@ -163,6 +171,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes file contents" },
+    ax: { id: "tool:write_file", group: "turn-files", when: "Pick this to create a new file or replace one whole; for a change to part of an existing file, edit_file is safer and smaller.", effect: "write", destructive: true, idempotent: true, errors: [
+      { code: "guardrail-blocked", means: "The path is protected (such as agent.json, state/policy, .git, friends/, product/ or a psyche file), or this person may only have you write inside your home.", fix: "Pass an absolute path under your home that isn't protected; a psyche file changes only when your owner asks in your own chat." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so writes wait until you know what the person meant.", fix: "Call orientation_get, settle the correction, then write the file if it is still right." },
+      { code: "invalid-arguments", means: "path or content is missing or isn't text.", fix: "Call write_file again with path and the whole new content as text." },
+    ] },
   },
   {
     tool: {
@@ -185,7 +198,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     handler: (a, ctx) => {
       const resolvedPath = resolveLocalToolPath(a.path, ctx)
       if (!editFileReadTracker.has(resolvedPath)) {
-        return `error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`
+        return withCode(`error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`, "read-first")
       }
 
       // Check staleness before editing
@@ -209,11 +222,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
       }
 
       if (occurrences.length === 0) {
-        return `error: old_string not found in ${a.path}`
+        return withCode(`error: old_string not found in ${a.path}`, "no-match")
       }
 
       if (occurrences.length > 1) {
-        return `error: old_string is ambiguous -- found ${occurrences.length} matches in ${a.path}. provide more context to make the match unique.`
+        return withCode(`error: old_string is ambiguous -- found ${occurrences.length} matches in ${a.path}. provide more context to make the match unique.`, "ambiguous-match")
       }
 
       // Single unique match -- replace
@@ -255,6 +268,13 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },
+    ax: { id: "tool:edit_file", group: "turn-files", when: "Pick this to change one exact passage of a file you have read; write_file is for new files and full rewrites.", effect: "write", errors: [
+      { code: "read-first", means: "You haven't read this file with read_file yet, so the edit was refused.", fix: "Call read_file on the same path, then send the edit again." },
+      { code: "no-match", means: "old_string appears nowhere in the file, often because whitespace or an earlier edit differs.", fix: "Read the file again and copy old_string from it exactly, indentation included." },
+      { code: "ambiguous-match", means: "old_string appears more than once, so the edit can't tell which place you mean.", fix: "Add surrounding lines to old_string until it matches one place only." },
+      { code: "guardrail-blocked", means: "The path is protected (such as agent.json, state/policy, .git or a psyche file), or this person may only have you edit inside your home.", fix: "Pass an absolute path under your home that isn't protected; a psyche file changes only when your owner asks in your own chat." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so edits wait until you know what the person meant.", fix: "Call orientation_get, settle the correction, then make the edit if it is still right." },
+    ] },
   },
   {
     tool: {
@@ -276,6 +296,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return lines.length > 0 ? lines.join("\n") : "(empty)"
     },
     summaryKeys: ["path"],
+    riskProfile: READS_ONLY,
+    ax: { id: "tool:ls", group: "turn-files", when: "Pick this to see what one folder holds, with sizes; to find files by name pattern across many folders, glob is faster.", effect: "read", idempotent: true, errors: [
+      { code: "guardrail-blocked", means: "That folder holds the sync key, which no tool may list, or the path can't be resolved.", fix: "List a different folder; nothing in that one is meant for you." },
+      { code: "invalid-arguments", means: "path isn't text.", fix: "Call ls again with path as a folder name, or with no path to list your home." },
+    ] },
   },
   {
     tool: {
@@ -304,6 +329,11 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return [...matches.slice(0, LIST_CAP), cutNotice("glob", `[${LIST_CAP} of ${matches.length} matches shown; narrow the pattern or cwd]`, { pattern: a.pattern }), ...note].join("\n")
     },
     summaryKeys: ["pattern", "cwd"],
+    riskProfile: READS_ONLY,
+    ax: { id: "tool:glob", group: "turn-files", when: "Pick this to find files by name pattern, such as every Markdown file under notes; to search inside files, use grep.", effect: "read", idempotent: true, errors: [
+      { code: "guardrail-blocked", means: "The pattern or cwd reaches into the folder holding the sync key, or cwd can't be resolved.", fix: "Narrow cwd or the pattern so the search stays out of that folder." },
+      { code: "invalid-arguments", means: "pattern is missing, or cwd isn't text.", fix: "Call glob again with pattern set, such as **/*.md, and cwd as a folder name if you want one." },
+    ] },
   },
   {
     tool: {
@@ -433,5 +463,10 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return results.join("\n")
     },
     summaryKeys: ["pattern", "path", "include"],
+    riskProfile: READS_ONLY,
+    ax: { id: "tool:grep", group: "turn-files", when: "Pick this to learn which files and lines contain some text or regex; then read_file shows a match in full.", effect: "read", idempotent: true, errors: [
+      { code: "guardrail-blocked", means: "The search path is, or contains, the folder holding the sync key, or it can't be resolved.", fix: "Pass a narrower path that leaves that folder out." },
+      { code: "invalid-arguments", means: "pattern is missing, or context_lines, ignore_case or files_only has the wrong type.", fix: "Call grep again with pattern as text, context_lines as a number and the flags as true or false." },
+    ] },
   },
 ]

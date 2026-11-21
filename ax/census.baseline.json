@@ -68,7 +68,6 @@
     "tool:credential_store",
     "tool:describe_image",
     "tool:diary_write",
-    "tool:edit_file",
     "tool:evolution_capture",
     "tool:evolution_case",
     "tool:evolution_close",
@@ -92,12 +91,10 @@
     "tool:get_session",
     "tool:get_session_automation",
     "tool:get_sessions_status",
-    "tool:glob",
     "tool:graph_docs",
     "tool:graph_mutate",
     "tool:graph_profile",
     "tool:graph_query",
-    "tool:grep",
     "tool:habit_cancel",
     "tool:house_digest_send",
     "tool:house_sweep",
@@ -111,7 +108,6 @@
     "tool:list_skills",
     "tool:list_workflows",
     "tool:load_skill",
-    "tool:ls",
     "tool:mail_access_log",
     "tool:mail_body",
     "tool:mail_compose",
@@ -138,7 +134,6 @@
     "tool:query_session",
     "tool:react",
     "tool:read_config",
-    "tool:read_file",
     "tool:report_failure",
     "tool:resolve_await",
     "tool:respond_to_session_plan_v2",
@@ -217,7 +212,6 @@
     "tool:voice_join_local_audio",
     "tool:voice_play_audio",
     "tool:weather_lookup",
-    "tool:web_search",
-    "tool:write_file"
+    "tool:web_search"
   ]
 }

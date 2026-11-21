@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1306",
+      "changes": [
+        "The six file tools (read_file, write_file, edit_file, ls, glob, grep) have Ouro AX cards, and edit_file's refusals end with a code: read-first, no-match or ambiguous-match. read_file, ls, glob and grep now state a low-risk profile, so a turn's tool receipt no longer counts a successful call to them as a side effect."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1305",
       "changes": [
         "When the harness refuses a tool call before it runs (an unknown tool, bad arguments, a relationship or guardrail block, an orientation hold, a changed tool, missing commerce authority), the refusal now ends with a code, such as (code: invalid-arguments), that the tool's Ouro AX card can explain."
