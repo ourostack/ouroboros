@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1310",
+      "changes": [
+        "The chat, voice-call and Telegram contact tools now carry Ouro AX cards, and their refusals end with a code the card names."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1309",
       "changes": [
         "coding_spawn, coding_status, coding_tail, coding_send_input and coding_kill have Ouro AX cards; their failures end with a code (missing-argument, invalid-runner, session-not-found), and coding_status and coding_tail state a low-risk profile."
