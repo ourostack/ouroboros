@@ -450,6 +450,43 @@ describe("createStreamChannel", () => {
     expect(await runtime.streamTurn(request(recordingCallbacks([])))).toEqual(RESULT)
   })
 
+  it("drops a line longer than the limit, even one that never ends, and reads on from the next line", async () => {
+    const input = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, new PassThrough(), 32).onMessage((msg) => received.push(msg))
+    const hello = JSON.stringify({ type: "hello" })
+    input.write(`${"x".repeat(40)}\n${hello}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    input.write("y".repeat(40))
+    await new Promise((resolve) => setImmediate(resolve))
+    input.write("still the same line")
+    await new Promise((resolve) => setImmediate(resolve))
+    input.write(`\n${hello}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received).toEqual([
+      { type: "invalid", reason: "line too long" }, { type: "hello" }, { type: "invalid", reason: "line too long" }, { type: "hello" },
+    ])
+  })
+
+  it("aborts the host's call and fails the guest's turn when the other side goes away", async () => {
+    const hostToGuest = new PassThrough()
+    const guestToHost = new PassThrough()
+    const guest = createStreamChannel(hostToGuest, guestToHost)
+    const host = createStreamChannel(guestToHost, hostToGuest)
+    let hostSignal: AbortSignal | undefined
+    serveProxyRuntime(host, hostRuntime([], (req) => new Promise((_resolve, reject) => {
+      hostSignal = req.signal
+      req.signal!.addEventListener("abort", () => reject(new Error("aborted")))
+    })), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const pending = runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    await new Promise((resolve) => setImmediate(resolve))
+    guestToHost.end()
+    hostToGuest.end()
+    expect(await pending).toMatchObject({ reason: "channel", message: "proxy channel failed: input closed" })
+    expect(hostSignal!.aborted).toBe(true)
+  })
+
   it("reports a failed stream as a broken channel rather than an unhandled error", async () => {
     const input = new PassThrough()
     const output = new PassThrough()

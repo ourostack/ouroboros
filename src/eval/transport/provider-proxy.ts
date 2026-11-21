@@ -35,6 +35,8 @@ export type ProxyMessage =
   | { type: "abort"; turn: number }
   /** Never sent: a channel delivers it when a line is not a message or a stream fails. */
   | { type: "invalid"; reason: string }
+  /** Never sent: a channel delivers it once when the other side has gone away. */
+  | { type: "closed" }
 
 export type ProxyChannel = { send(msg: ProxyMessage): void; onMessage(fn: (msg: ProxyMessage) => void): void }
 
@@ -91,8 +93,11 @@ function parseLine(line: string): ProxyMessage {
   return { type: "invalid", reason: `not a proxy message: ${line.slice(0, 80)}` }
 }
 
+/** Far above any real turn's transcript; past it a line is dropped, so a guest cannot grow the host's buffer without bound. */
+const MAX_LINE_LENGTH = 64 * 1024 * 1024
+
 /** Newline-delimited JSON over a pair of byte streams, such as a container's stdin and stdout. */
-export function createStreamChannel(input: Readable, output: Writable): ProxyChannel {
+export function createStreamChannel(input: Readable, output: Writable, maxLineLength = MAX_LINE_LENGTH): ProxyChannel {
   const listeners: Array<(msg: ProxyMessage) => void> = []
   const deliver = (msg: ProxyMessage): void => {
     for (const listener of listeners) {
@@ -104,14 +109,32 @@ export function createStreamChannel(input: Readable, output: Writable): ProxyCha
       }
     }
   }
+  const tooLong: ProxyMessage = { type: "invalid", reason: "line too long" }
   let buffered = ""
+  let discarding = false
+  let closed = false
   input.setEncoding("utf8")
   input.on("data", (chunk: string) => {
-    buffered += chunk
+    let text = chunk
+    if (discarding) {
+      const newline = text.indexOf("\n")
+      if (newline < 0) return
+      text = text.slice(newline + 1)
+      discarding = false
+    }
+    buffered += text
     const lines = buffered.split("\n")
     buffered = lines.pop()!
-    for (const line of lines.filter(Boolean)) deliver(parseLine(line))
+    for (const line of lines.filter(Boolean)) deliver(line.length > maxLineLength ? tooLong : parseLine(line))
+    if (buffered.length > maxLineLength) {
+      buffered = ""
+      discarding = true
+      deliver(tooLong)
+    }
   })
+  const close = (): void => { if (!closed) { closed = true; deliver({ type: "closed" }) } }
+  input.on("end", close)
+  input.on("close", close)
   input.on("error", (error: Error) => deliver({ type: "invalid", reason: `input failed: ${error.message}` }))
   output.on("error", (error: Error) => deliver({ type: "invalid", reason: `output failed: ${error.message}` }))
   return {
@@ -160,10 +183,11 @@ export function createProxyRuntime(channel: ProxyChannel): Promise<ProviderRunti
         })
         return
       }
-      if (msg.type === "invalid") {
+      if (msg.type === "invalid" || msg.type === "closed") {
+        const why = msg.type === "closed" ? "input closed" : msg.reason
         for (const [turn, pending] of [...turns]) {
           channel.send({ type: "abort", turn })
-          pending.reject(new ProxiedProviderError({ message: `proxy channel failed: ${msg.reason}`, classification: "unknown", reason: "channel" }))
+          pending.reject(new ProxiedProviderError({ message: `proxy channel failed: ${why}`, classification: "unknown", reason: "channel" }))
         }
         return
       }
@@ -203,7 +227,10 @@ export function serveProxyRuntime(channel: ProxyChannel, runtime: ProviderRuntim
   const aborts = new Map<number, AbortController>()
   let stopped: WireError | undefined
   channel.onMessage((msg) => {
-    if (msg.type === "invalid") {
+    if (msg.type === "closed") {
+      // The guest has gone away: its turn's call is wasted, so stop it.
+      for (const abort of aborts.values()) abort.abort()
+    } else if (msg.type === "invalid") {
       emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_channel_error", message: "ignored a line from the guest that is not a proxy message", meta: { reason: msg.reason } })
     } else if (msg.type === "hello") {
       channel.send({
