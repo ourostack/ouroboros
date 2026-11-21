@@ -49,7 +49,8 @@ jobs:
             '.github/scripts/ax-census/**/*.node-test.mts'
 
       # The census counts every agent door it walks and fails when one without a valid card isn't on
-      # ax/census.baseline.json, or when this pull request adds to the baseline. There is no override.
+      # ax/census.baseline.json, when this pull request adds to the baseline, or when it drops a walker source. It
+      # compares with the base branch's tip, which main's up-to-date rule makes the merge base. There is no override.
       - name: Ouro AX census
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -59,12 +60,12 @@ jobs:
           base_baseline=none; base_config=absent
           if [ -n "$BASE_REF" ]; then
             git fetch --depth=1 origin "$BASE_REF"
-            if git cat-file -e FETCH_HEAD:ax/census.config.json 2>/dev/null; then base_config=present; fi
+            if git show FETCH_HEAD:ax/census.config.json > "$RUNNER_TEMP/base-config.json" 2>/dev/null; then base_config="$RUNNER_TEMP/base-config.json"; fi
             if git show FETCH_HEAD:ax/census.baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then base_baseline="$RUNNER_TEMP/base-baseline.json"; fi
           fi
           node .github/scripts/ax-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
             --base-baseline "$base_baseline" --base-config "$base_config" \
-            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --out ax-census/census.json | tee ax-census/census.txt
+            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" --out ax-census/census.json 2>&1 | tee ax-census/census.txt
 
       - name: Upload the census
         if: always()

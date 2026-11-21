@@ -48,6 +48,11 @@ test("the guard refuses a non-loopback connection", async () => {
   ok(fetched.status !== 0);
   ok(fetched.stderr.includes("ax-census: refused a connection to example.com"), fetched.stderr);
 
+  const lookalike = probe("net", "127.attacker.example", "443");
+  ok(lookalike.stderr.includes("ax-census: refused a connection to 127.attacker.example"), lookalike.stderr);
+  const lookup = probe("lookup", "localhost", "443");
+  ok(lookup.stderr.includes("ax-census: refused a connection to localhost (custom lookup)"), lookup.stderr);
+
   for (const mode of ["dgram", "dgram-connect"]) {
     const sent = probe(mode, "93.184.216.34", "53");
     ok(sent.status !== 0, mode);
@@ -140,6 +145,20 @@ test("a child that hangs fails after 10 seconds", async () => {
   }
 });
 
+test("a child whose grandchild holds its pipes still fails at the timeout", async () => {
+  const dir = scratch();
+  try {
+    const { err, io } = capture();
+    const started = Date.now();
+    const code = await run({ argv: args("config-fixture.json", baselineFile(dir, [])), io, root: here, childScript: join(fixtures, "child-grandchild.mts"), timeoutMs: 500 });
+    equal(code, 1);
+    ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+    ok(err.includes("ax-census: the walkers didn't finish within 0.5 seconds"), err.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a census over the mcp-ok fixture writes the report and the text", async () => {
   const dir = scratch();
   try {
@@ -194,7 +213,7 @@ test("the pull request's base decides whether the baseline may grow", async () =
   try {
     const { err, io } = capture();
     const gaps = ["mcp:ask", "mcp:status", "mcp:catchup"];
-    const argv = ["--config", join(fixtures, "config-ok.json"), "--baseline", baselineFile(dir, gaps), "--base-baseline", baselineFile(dir, ["mcp:ask"], "base.json"), "--base-config", "present"];
+    const argv = ["--config", join(fixtures, "config-ok.json"), "--baseline", baselineFile(dir, gaps), "--base-baseline", baselineFile(dir, ["mcp:ask"], "base.json"), "--base-config", join(fixtures, "config-ok.json")];
     equal(await run({ argv, io, root: here }), 1);
     ok(err.includes("mcp:status: added to the baseline. Fix: declare the door instead; the baseline only shrinks."), err.join("\n"));
   } finally {
@@ -205,7 +224,7 @@ test("the pull request's base decides whether the baseline may grow", async () =
 test("a usage error exits 2", async () => {
   const { err, io } = capture();
   equal(await run({ argv: ["--config"], io, root: here }), 2);
-  equal(await run({ argv: ["--config", "a", "--baseline", "b", "--base-baseline", "none", "--base-config", "maybe"], io, root: here }), 2);
+  equal(await run({ argv: ["--config", "a", "--baseline", "b", "--base-baseline", "none", "--base-config"], io, root: here }), 2);
   equal(await run({ argv: ["--nope", "x"], io, root: here }), 2);
   equal(await run({ argv: ["--config", "a", "--baseline", "b"], io, root: here }), 2);
   ok(err.includes("ax-census: missing --base-baseline"), err.join("\n"));
@@ -350,6 +369,33 @@ test("a door whose name isn't a literal is counted as weak with its reason", asy
     equal(await run({ argv: args("config-computed.json", baselineFile(dir, ["mcp:ask", "mcp:check_response"])), io, root: here }), 0);
     ok(out.includes("harness: 2 found, 0 declared, 2 weak, 0 undeclared (mcp 2)"), out.join("\n"));
     ok(out.includes("walkers/fixtures/mcp-computed.ts:? mcp:ask (weak: name: not a literal; card: none declared)"), out.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a walker source the base has and this branch lacks fails", async () => {
+  const dir = scratch();
+  try {
+    const { err, io } = capture();
+    const gaps = ["mcp:ask", "mcp:status", "mcp:catchup", "mcp:delegate"];
+    const argv = ["--config", join(fixtures, "config-ok.json"), "--baseline", baselineFile(dir, gaps.slice(0, 3)), "--base-baseline", baselineFile(dir, gaps, "base.json"), "--base-config", join(fixtures, "config-four.json")];
+    equal(await run({ argv, io, root: here }), 1);
+    ok(err.some((e) => e.startsWith("mcp-schemas walkers/fixtures/mcp-four.cjs walkers/fixtures/mcp-four.ts: a walker source on the base branch is missing here.")), err.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed card is weak, not a crash, and the report names the repository", async () => {
+  const dir = scratch();
+  try {
+    const { out, err, io } = capture();
+    const file = join(dir, "census.json");
+    const code = await run({ argv: args("config-malformed.json", baselineFile(dir, ["mcp:ask"]), ["--out", file, "--repo", "ourostack/ouroboros"]), io, root: here });
+    equal(code, 0, err.join("\n"));
+    ok(out.some((l) => l.includes("mcp:ask (weak: card: malformed")), out.join("\n"));
+    equal(JSON.parse(readFileSync(file, "utf8")).target.repo, "ourostack/ouroboros");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

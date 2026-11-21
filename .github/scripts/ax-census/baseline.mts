@@ -54,3 +54,22 @@ export function checkBaseline(input: BaselineInput): string[] {
   }
   return problems;
 }
+
+export interface WalkerSource {
+  walker: string;
+  module: string;
+  source: string;
+}
+
+/**
+ * The walker sources the base branch's config has that this branch's config lacks. Removing or narrowing a source
+ * would make its doors vanish from the count, so it fails like a growing baseline does; adding one is fine.
+ */
+export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
+  if (!baseSources) return [];
+  const key = (s: WalkerSource) => `${s.walker} ${s.module} ${s.source}`;
+  const here = new Set(sources.map(key));
+  return baseSources
+    .filter((s) => !here.has(key(s)))
+    .map((s) => `${key(s)}: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.`);
+}

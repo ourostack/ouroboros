@@ -1,5 +1,6 @@
 // Run under --import guard.mjs: `net <host> <port>` opens a socket, `fetch <url>` fetches, `dgram <host> <port>`
-// sends one datagram and `dgram-connect <host> <port>` connects a datagram socket.
+// sends one datagram, `dgram-connect <host> <port>` connects a datagram socket and `lookup <host> <port>` connects
+// with a custom lookup.
 import dgram from "node:dgram";
 import net from "node:net";
 
@@ -13,6 +14,8 @@ if (mode === "net") {
   socket.on("error", (error) => {
     console.log(`not refused by the guard: ${error.code}`);
   });
+} else if (mode === "lookup") {
+  net.connect({ host: target, port: Number(port), lookup: (_host, _options, callback) => callback(null, "93.184.216.34", 4) });
 } else if (mode === "dgram" || mode === "dgram-connect") {
   const socket = dgram.createSocket("udp4");
   const done = () => {

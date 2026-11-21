@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { deepEqual, ok } from "node:assert/strict";
-import { checkBaseline } from "./baseline.mts";
+import { checkBaseline, checkSources } from "./baseline.mts";
 
 const kinds = ["mcp"];
 const noBase = { baseline: ["mcp:ask"], hasConfig: true };
@@ -52,4 +52,14 @@ test("order doesn't matter", () => {
 
 test("outside a pull request the growth check is skipped", () => {
   deepEqual(checkBaseline({ gaps: ["mcp:ask", "mcp:new"], baseline: ["mcp:ask", "mcp:new"], base: null, kinds }), []);
+});
+
+test("walker sources may be added but not removed", () => {
+  const mcp = { walker: "mcp-schemas", module: "dist/a.js", source: "src/a.ts" };
+  const other = { walker: "mcp-schemas", module: "dist/b.js", source: "src/b.ts" };
+  deepEqual(checkSources([mcp, other], [mcp]), []);
+  deepEqual(checkSources([mcp], null), []);
+  deepEqual(checkSources([other], [mcp]), [
+    "mcp-schemas dist/a.js src/a.ts: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.",
+  ]);
 });

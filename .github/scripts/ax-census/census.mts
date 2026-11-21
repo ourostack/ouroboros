@@ -2,7 +2,7 @@
 // Design: the AX census design (ouroboros-agent-harness desk). Slice 1 walks `ouro mcp-serve`'s tools only.
 //
 //   node census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
-//     --base-baseline <file|none> --base-config <present|absent> [--out census.json] [--commit <sha>] [--ref <ref>]
+//     --base-baseline <file|none> --base-config <file|absent> [--out census.json] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]
 //
 // The walkers run in one child process with an empty HOME and TMPDIR, no credentials and a loopback-only socket
 // guard. The census never calls a door; it reads code and lists. Exit 0 when nothing is wrong, 1 when the census or
@@ -13,10 +13,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkBaseline } from "./baseline.mts";
+import { checkBaseline, checkSources } from "./baseline.mts";
 import { checkCard } from "./cards.mts";
 import { buildProductReport, renderText } from "./report.mts";
 import type { CensusReport, Door, GroupCard, WalkResult } from "./types.mts";
+import { WALKERS } from "./walkers/registry.mts";
 
 export const CENSUS_VERSION = "0.1.0";
 
@@ -24,12 +25,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CHILD = join(HERE, "child.mts");
 const GUARD = join(HERE, "guard.mjs");
 /** The files whose hash is the checker's identity; the ledger compares it with a released manifest. */
-const CHECKER_FILES = ["baseline.mts", "cards.mts", "census.mts", "child.mts", "guard.mjs", "report.mts", "types.mts", "walkers/mcp-schemas.mts"];
-/** The door kind each walker finds. */
-const KIND_OF_WALKER: Readonly<Record<string, string>> = { "mcp-schemas": "mcp" };
+const CHECKER_FILES = ["baseline.mts", "cards.mts", "census.mts", "child.mts", "guard.mjs", "report.mts", "types.mts", "walkers/mcp-schemas.mts", "walkers/registry.mts"];
 const TIMEOUT_MS = 10_000;
 
-const USAGE = "usage: node census.mts --config <file> --baseline <file> --base-baseline <file|none> --base-config <present|absent> [--out <file>] [--commit <sha>] [--ref <ref>]";
+const USAGE = "usage: node census.mts --config <file> --baseline <file> --base-baseline <file|none> --base-config <file|absent> [--out <file>] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]";
 
 export interface Io {
   out(s: string): void;
@@ -88,21 +87,35 @@ export async function runWalkers(options: { config: string; root: string; timeou
       cwd: options.root,
       env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: home },
       stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group, so a timeout kills anything it started too, and a grandchild holding the pipes can't
+      // keep the census waiting.
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d));
     child.stderr.on("data", (d: Buffer) => (stderr += d));
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, timeoutMs);
-    const exit = await new Promise<{ code: number | null; signal: string | null }>((done) => {
+    const killGroup = () => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        // The group is already gone.
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exit = await new Promise<{ code: number | null; signal: string | null } | "timeout">((done) => {
       child.on("close", (code, signal) => done({ code, signal }));
+      timer = setTimeout(() => {
+        killGroup();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        done("timeout");
+      }, timeoutMs);
     });
     clearTimeout(timer);
-    if (timedOut) throw new CensusFailure(`ax-census: the walkers didn't finish within ${timeoutMs / 1000} seconds`);
+    // Nothing the walkers started outlives them.
+    killGroup();
+    if (exit === "timeout") throw new CensusFailure(`ax-census: the walkers didn't finish within ${timeoutMs / 1000} seconds`);
     if (exit.code !== 0) {
       throw new CensusFailure(`ax-census: the walkers failed (${exit.signal ? `signal ${exit.signal}` : `exit ${exit.code}`}); their stderr ends:\n${tail(stderr)}`);
     }
@@ -139,7 +152,12 @@ function weakDoors(doors: readonly Door[], groups: readonly GroupCard[]): Map<st
   const weak = new Map<string, string[]>();
   for (const door of doors) {
     if (door.card) {
-      const reasons = checkCard(door, { groups, others: doors });
+      let reasons: string[];
+      try {
+        reasons = checkCard(door, { groups, others: doors });
+      } catch (error) {
+        reasons = [`card: malformed (${(error as Error).message})`];
+      }
       if (reasons.length > 0) weak.set(door.id, reasons);
     } else if (door.line === null) {
       weak.set(door.id, ["name: not a literal", "card: none declared"]);
@@ -152,10 +170,12 @@ interface Flags {
   config: string;
   baseline: string;
   baseBaseline: string;
-  baseConfig: "present" | "absent";
+  /** The base branch's config file, or `absent` when the base doesn't run the census. */
+  baseConfig: string;
   out?: string;
   commit?: string;
   ref?: string;
+  repo?: string;
 }
 
 const FLAG_NAMES: Readonly<Record<string, keyof Flags>> = {
@@ -166,6 +186,7 @@ const FLAG_NAMES: Readonly<Record<string, keyof Flags>> = {
   "--out": "out",
   "--commit": "commit",
   "--ref": "ref",
+  "--repo": "repo",
 };
 
 function parseFlags(argv: readonly string[]): Flags | string {
@@ -180,7 +201,6 @@ function parseFlags(argv: readonly string[]): Flags | string {
   for (const required of ["config", "baseline", "baseBaseline", "baseConfig"] as const) {
     if (flags[required] === undefined) return `missing --${required.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
   }
-  if (flags.baseConfig !== "present" && flags.baseConfig !== "absent") return "--base-config is present or absent";
   return flags as Flags;
 }
 
@@ -197,6 +217,7 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
     const config = await readConfig(flags.config);
     const baseline = await readBaseline(flags.baseline);
     const baseBaseline = flags.baseBaseline === "none" ? null : await readBaseline(flags.baseBaseline);
+    const baseConfig = flags.baseConfig === "absent" ? null : await readConfig(flags.baseConfig);
     const { doors, errors } = await runWalkers({ config: flags.config, root, timeoutMs: options.timeoutMs, childScript: options.childScript });
     if (doors.length === 0 && errors.length === 0) {
       throw new CensusFailure("ax-census: the walkers found no doors; a census that counts nothing is broken, not clean");
@@ -204,17 +225,18 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
 
     const weak = weakDoors(doors, config.groups);
     const gaps = doors.filter((d) => !d.card || weak.has(d.id)).map((d) => d.id);
-    const kinds = [...new Set(config.sources.map((s) => KIND_OF_WALKER[s.walker]).filter((k): k is string => k !== undefined))];
+    const kinds = [...new Set(config.sources.map((s) => WALKERS[s.walker]?.kind).filter((k): k is string => k !== undefined))];
     const problems = [
       ...errors,
-      ...checkBaseline({ gaps, baseline, base: { baseline: baseBaseline, hasConfig: flags.baseConfig === "present" }, kinds }),
+      ...checkBaseline({ gaps, baseline, base: { baseline: baseBaseline, hasConfig: baseConfig !== null }, kinds }),
+      ...checkSources(config.sources, baseConfig?.sources ?? null),
     ];
 
     const report: CensusReport = {
       ax: "census/1",
       tool: "ouro-census",
       checker: { version: CENSUS_VERSION, sha256: await checkerHash() },
-      target: { repo: null, ref: flags.ref ?? null, commit: flags.commit ?? null },
+      target: { repo: flags.repo ?? null, ref: flags.ref ?? null, commit: flags.commit ?? null },
       at: new Date().toISOString(),
       products: [buildProductReport(config.product, doors, weak, new Set(baseline).size, { kinds, finders: [] })],
     };

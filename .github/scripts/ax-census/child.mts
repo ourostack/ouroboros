@@ -6,10 +6,9 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import type { Door, Walker } from "./types.mts";
-import { walkMcpSchemas } from "./walkers/mcp-schemas.mts";
+import { WALKERS } from "./walkers/registry.mts";
 
-/** The walkers a config may name. Closed on purpose: a config can't bring its own. */
-export const WALKERS: Readonly<Record<string, Walker>> = { "mcp-schemas": walkMcpSchemas };
+const BUILT_IN: Readonly<Record<string, Walker>> = Object.fromEntries(Object.entries(WALKERS).map(([name, w]) => [name, w.walk]));
 
 interface Source {
   walker: string;
@@ -17,7 +16,7 @@ interface Source {
   source: string;
 }
 
-export async function runChild(configPath: string, walkers: Readonly<Record<string, Walker>> = WALKERS): Promise<void> {
+export async function runChild(configPath: string, walkers: Readonly<Record<string, Walker>> = BUILT_IN): Promise<void> {
   const config = JSON.parse(await readFile(configPath, "utf8")) as { product: string; sources: Source[] };
   const write = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;

@@ -1,8 +1,6 @@
 // The census report (design section 4): one ProductReport per product, and the short text table CI prints.
 import type { CensusReport, Counts, Door, Gap, ProductReport } from "./types.mts";
-
-/** The walker that finds each kind of door, as the report names it. */
-const WALKER_OF_KIND: Readonly<Record<string, string>> = { mcp: "mcp-schemas" };
+import { walkerOfKind } from "./walkers/registry.mts";
 
 /**
  * `weak` maps a door id to its reasons; a door with a card and no entry is declared, and a door without a card and no
@@ -31,7 +29,7 @@ export function buildProductReport(
       declared += 1;
     } else {
       counts.undeclared += 1;
-      undeclared.push({ id: door.id, kind: door.kind, file: door.file, line: door.line, walker: WALKER_OF_KIND[door.kind] ?? door.kind });
+      undeclared.push({ id: door.id, kind: door.kind, file: door.file, line: door.line, walker: walkerOfKind(door.kind) });
     }
   }
   return {
