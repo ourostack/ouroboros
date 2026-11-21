@@ -41,3 +41,21 @@ export function daemonDown(name: string): CliErrorCard {
     fix: `Start it with ouro up, then run ouro ${name} again.`,
   }
 }
+
+/** A group's own words, which only print its usage: the subcommand is missing or unknown. */
+export function needsSubcommand(name: string, subcommands: string): CliErrorCard {
+  return {
+    code: "usage",
+    means: `ouro ${name} on its own runs nothing; it needs one of its subcommands: ${subcommands}.`,
+    fix: `Pick the subcommand for the job and run ouro ${name} <subcommand> --help for its flags.`,
+  }
+}
+
+/** The command prompts the person (often for a hidden secret), and this shell has no terminal. */
+export function needsTerminal(name: string, fix: string): CliErrorCard {
+  return {
+    code: "needs-terminal",
+    means: `ouro ${name} has to ask the person at a prompt, and this shell has no interactive terminal.`,
+    fix,
+  }
+}

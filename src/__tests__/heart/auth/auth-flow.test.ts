@@ -852,7 +852,7 @@ describe("runtime auth flow", () => {
     await expect(collectRuntimeAuthCredentials(
       { agentName: "Zed", provider: "openai-compatible" },
       {},
-    )).rejects.toThrow("interactive terminal")
+    )).rejects.toMatchObject({ message: expect.stringContaining("interactive terminal"), code: "needs-terminal" })
 
     await expect(collectRuntimeAuthCredentials(
       {

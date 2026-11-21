@@ -5992,6 +5992,9 @@ describe("provider CLI command execution", () => {
     }))).rejects.toThrow("SerpentGuide does not have a persistent credential vault")
     await expect(runOuroCli(["vault", "unlock", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
       .rejects.toThrow("vault unlock requires an interactive secret prompt")
+    // The code its Ouro AX card names, so an agent knows to hand the step to the person.
+    await expect(runOuroCli(["vault", "unlock", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toMatchObject({ code: "needs-terminal" })
   })
 
   it("vault create writes vault locator, stores unlock material, and handles existing accounts", async () => {
@@ -7571,6 +7574,10 @@ describe("provider CLI command execution", () => {
       ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("Vault item secret entry requires an interactive terminal")
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toMatchObject({ code: "needs-terminal" })
 
     await expect(runOuroCli(
       ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
@@ -8752,6 +8759,10 @@ describe("provider CLI command execution", () => {
       ["connect", "bluebubbles", "--agent", "Slugger"],
       makeCliDeps(homeDir, bundlesRoot, { promptSecret: async () => "bb-password" }),
     )).rejects.toThrow("BlueBubbles setup requires an interactive terminal")
+    await expect(runOuroCli(
+      ["connect", "bluebubbles", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot, { promptSecret: async () => "bb-password" }),
+    )).rejects.toMatchObject({ code: "needs-terminal" })
   })
 
   it("rejects blank Perplexity API keys", async () => {

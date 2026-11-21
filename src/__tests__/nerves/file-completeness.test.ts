@@ -123,6 +123,15 @@ const cache = new Map()
       expect(result.status).toBe("fail")
     })
 
+    it("exempts the ouro commands' card files, whose prose can read like code, but not the router beside them", () => {
+      const cards = ["vault", "desk"].map(name => `src/heart/daemon/cli-commands/${name}.ts`)
+      const router = "src/heart/daemon/cli-exec.ts"
+      const source = 'export const CARDS = [\n  { when: "Leave --store out to let it choose." },\n]'
+      const result = checkFileCompleteness(new Map(), new Map([...cards, router].map(file => [file, source])))
+      expect(result.exempt).toEqual([...cards].sort())
+      expect(result.missing).toEqual([router])
+    })
+
     it("passes for file with emitNervesEvent call", () => {
       const files = new Map<string, string[]>([
         ["src/engine/core.ts", ["engine:engine.turn_start"]],

@@ -61,8 +61,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "daemon/cli-render",
   "daemon/cli-help",
   "daemon/vault-items",
-  // The error-card builders the ouro commands' Ouro AX cards share: pure data, read by cli-manifest.
-  "daemon/cli-commands/cards",
+  // The ouro commands' Ouro AX cards and the error-card builders they share: pure data, read by
+  // cli-manifest, with cli-exec as the router that emits. Card prose such as "let it choose" would
+  // otherwise read as code to isTypeOnlyFile.
+  "daemon/cli-commands/",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
   "heart/mail-import-discovery",
