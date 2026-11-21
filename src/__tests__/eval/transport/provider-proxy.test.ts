@@ -132,8 +132,7 @@ describe("provider proxy", () => {
     const runtime = await createProxyRuntime(guest)
     const failure = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toBe("budget exhausted")
-    expect((failure as Error & { retryable: boolean }).retryable).toBe(false)
+    expect(failure).toMatchObject({ message: "budget exhausted", reason: "budget", retryable: false })
     expect(runtime.classifyError(failure as Error)).toBe("usage-limit")
     expect(log).toEqual([])
   })
@@ -148,9 +147,10 @@ describe("provider proxy", () => {
     const runtime = await createProxyRuntime(guest)
     const first = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
     expect(runtime.classifyError(first as Error)).toBe("rate-limit")
-    expect(first).toMatchObject({ message: "too many requests", status: 429, retryable: false })
+    expect(first).toMatchObject({ message: "too many requests", status: 429, reason: "provider", retryable: false })
     const second = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
-    expect(second).toMatchObject({ message: "too many requests", status: 429, retryable: false })
+    expect(second).toMatchObject({ message: "the provider stopped this run earlier: too many requests", status: 429, reason: "stopped", retryable: false })
+    expect(runtime.classifyError(second as Error)).toBe("rate-limit")
     expect(calls).toBe(1)
   })
 
@@ -170,12 +170,12 @@ describe("provider proxy", () => {
     const runtime = await createProxyRuntime(guest)
     await runtime.streamTurn(request(recordingCallbacks([]))).catch(() => undefined)
     const second = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
-    expect(second).toMatchObject({ message: "quota spent", retryable: false })
+    expect(second).toMatchObject({ message: "the provider stopped this run earlier: quota spent", reason: "stopped", retryable: false })
     expect("status" in (second as object)).toBe(false)
     expect(calls).toBe(1)
   })
 
-  it("passes other host errors through with their retry flag, and keeps serving later turns", async () => {
+  it("passes other host errors through, never retryable, and keeps serving later turns", async () => {
     const { guest, host } = channelPair()
     let calls = 0
     serveProxyRuntime(host, hostRuntime([], async () => {
@@ -187,9 +187,9 @@ describe("provider proxy", () => {
     }), unlimited)
     const runtime = await createProxyRuntime(guest)
     const turn = () => runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
-    expect(await turn()).toMatchObject({ message: "bad gateway", status: 502, retryable: true })
+    expect(await turn()).toMatchObject({ message: "bad gateway", status: 502, reason: "provider", retryable: false })
     expect(await turn()).toMatchObject({ message: "malformed", retryable: false })
-    expect(await turn()).toMatchObject({ message: "not an error object", retryable: true })
+    expect(await turn()).toMatchObject({ message: "not an error object", retryable: false })
     expect(await turn()).toEqual(RESULT)
     expect(runtime.classifyError(new Error("local"))).toBe("unknown")
   })
@@ -211,6 +211,91 @@ describe("provider proxy", () => {
     const turnMessage = wire.find((msg) => msg.type === "streamTurn")!
     expect(JSON.stringify(turnMessage)).not.toContain("signal")
     expect(wire.some((msg) => msg.type === "abort")).toBe(true)
+  })
+
+  it("fails a turn whose signal is already aborted without reaching the host or spending budget", async () => {
+    const { guest, host, wire } = channelPair()
+    const log: HostLog = []
+    let units = 0
+    serveProxyRuntime(host, hostRuntime(log), { take: () => { units += 1; return true } })
+    const runtime = await createProxyRuntime(guest)
+    const failure = await runtime.streamTurn(request(recordingCallbacks([]), { signal: AbortSignal.abort() })).catch((error: Error) => error)
+    expect(failure).toMatchObject({ message: "aborted before the provider call", retryable: false })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(log).toEqual([])
+    expect(units).toBe(0)
+    expect(wire.some((msg) => msg.type === "streamTurn")).toBe(false)
+  })
+
+  it("stops listening to a turn's signal once the turn is over", async () => {
+    const { guest, host, wire } = channelPair()
+    serveProxyRuntime(host, hostRuntime([]), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const controller = new AbortController()
+    await runtime.streamTurn(request(recordingCallbacks([]), { signal: controller.signal }))
+    controller.abort()
+    expect(wire.some((msg) => msg.type === "abort")).toBe(false)
+  })
+
+  it("fails the turn when a guest callback throws, tells the host to stop, and drops the callbacks after it", async () => {
+    const { guest, host, wire } = channelPair()
+    let hostSignal: AbortSignal | undefined
+    serveProxyRuntime(host, hostRuntime([], async (req) => {
+      hostSignal = req.signal
+      req.callbacks.onTextChunk("one")
+      req.callbacks.onTextChunk("two")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      return RESULT
+    }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const events: unknown[][] = []
+    const failure = await runtime.streamTurn(request(recordingCallbacks(events, {
+      onTextChunk: (text) => { events.push(["onTextChunk", text]); throw new Error("display failed") },
+    }))).catch((error: Error) => error)
+    expect(failure).toMatchObject({ message: "display failed", retryable: false })
+    expect(events).toEqual([["onTextChunk", "one"]])
+    expect(wire.filter((msg) => msg.type === "abort")).toHaveLength(1)
+    expect(hostSignal!.aborted).toBe(true)
+  })
+
+  it("fails with the callback's own failure when the host then reports an error, and wraps a thrown value that is not an Error", async () => {
+    const { guest, host } = channelPair()
+    serveProxyRuntime(host, hostRuntime([], (req) => new Promise((_resolve, reject) => {
+      req.callbacks.onTextChunk("one")
+      req.signal!.addEventListener("abort", () => reject(new Error("aborted")))
+    })), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const failure = await runtime.streamTurn(request(recordingCallbacks([], {
+      onTextChunk: () => { throw "render broke" },
+    }))).catch((error: Error) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).toMatchObject({ message: "render broke", retryable: false })
+  })
+
+  it("refuses a second turn while one is in flight, without calling the host for it", async () => {
+    const { guest, host } = channelPair()
+    let calls = 0
+    let finish: (result: TurnResult) => void = () => undefined
+    serveProxyRuntime(host, hostRuntime([], () => { calls += 1; return new Promise((resolve) => { finish = resolve }) }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const first = runtime.streamTurn(request(recordingCallbacks([])))
+    const second = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(second).toMatchObject({ reason: "busy", retryable: false })
+    finish(RESULT)
+    expect(await first).toEqual(RESULT)
+    expect(calls).toBe(1)
+  })
+
+  it("carries a host onError whose value is not an Error", async () => {
+    const { guest, host } = channelPair()
+    serveProxyRuntime(host, hostRuntime([], async (req) => {
+      ;(req.callbacks.onError as (error: unknown, severity: string) => void)("plain text", "terminal")
+      return RESULT
+    }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const events: unknown[][] = []
+    await runtime.streamTurn(request(recordingCallbacks(events)))
+    expect(events).toEqual([["onError", "plain text", "terminal"]])
   })
 
   it("ignores messages for turns it does not know, messages meant for the other side, callback events outside the provider set, and an abort for a finished turn", async () => {
@@ -255,5 +340,43 @@ describe("createStreamChannel", () => {
     input.write(`${line.slice(5)}\n\n${JSON.stringify({ type: "abort", turn: 3 })}\n`)
     await new Promise((resolve) => setImmediate(resolve))
     expect(received).toEqual([{ type: "hello" }, { type: "abort", turn: 3 }])
+  })
+
+  it("keeps a character whose bytes are split across chunks", async () => {
+    const input = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, new PassThrough()).onMessage((msg) => received.push(msg))
+    const bytes = Buffer.from(`${JSON.stringify({ type: "appendToolOutput", callId: "c", output: "Ålmanac — ✓" })}\n`, "utf8")
+    const cut = bytes.indexOf(Buffer.from("✓", "utf8")) + 1
+    input.write(bytes.subarray(0, cut))
+    input.write(bytes.subarray(cut))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received).toEqual([{ type: "appendToolOutput", callId: "c", output: "Ålmanac — ✓" }])
+  })
+
+  it("never throws on a line that is not a message: the host keeps serving, and the guest's turn fails", async () => {
+    const hostToGuest = new PassThrough()
+    const guestToHost = new PassThrough()
+    const guest = createStreamChannel(hostToGuest, guestToHost)
+    const host = createStreamChannel(guestToHost, hostToGuest)
+    let release: () => void = () => undefined
+    serveProxyRuntime(host, hostRuntime([], async () => { await new Promise<void>((resolve) => { release = resolve }); return RESULT }), unlimited)
+    guestToHost.write("npm warn something\n42\n{\"no\":\"type\"}\n")
+    const runtime = await createProxyRuntime(guest)
+    const pending = runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    await new Promise((resolve) => setImmediate(resolve))
+    hostToGuest.write("Traceback (most recent call last)\n")
+    expect(await pending).toMatchObject({ reason: "channel", retryable: false, message: expect.stringContaining("Traceback") })
+    release()
+  })
+
+  it("reports a failed stream as a broken channel rather than an unhandled error", async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, output).onMessage((msg) => received.push(msg))
+    output.emit("error", new Error("EPIPE"))
+    input.emit("error", new Error("closed"))
+    expect(received).toEqual([{ type: "invalid", reason: "output failed: EPIPE" }, { type: "invalid", reason: "input failed: closed" }])
   })
 })

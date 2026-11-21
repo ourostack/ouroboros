@@ -6,8 +6,12 @@
  * The guest asks for the runtime's identity and capabilities before the first turn, because the system prompt reads
  * them before the first call. Turn requests, `appendToolOutput` and `resetTurnState` go to the host in order with
  * their exact arguments; streamed callback events come back in order. An abort signal does not cross the wire: the
- * guest sends `abort` instead. Every turn takes one unit of the host's budget first, and the first 402 or 429 stops
- * the run: that call and every later one reject without a retry.
+ * guest sends `abort` instead, and a signal already aborted fails the turn without reaching the host. Every turn takes
+ * one unit of the host's budget first, and the first 402 or 429 stops the run: that call and every later one reject.
+ * Every proxied error is marked not retryable, because a retry inside the sandbox would rebuild a provider from the
+ * guest's own config; its `reason` says whether the provider, the budget, an earlier stop, a second turn in flight or
+ * a broken channel ended it. A line on the wire that is not a message fails the guest's turns and never throws.
+ * The guest answers `ping` itself and has no `fetchContextWindow`, so context limits come from the model table.
  */
 import type { Readable, Writable } from "node:stream"
 import type { ChannelCallbacks, ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../../heart/core"
@@ -16,7 +20,8 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 type CallbackEvent = Exclude<keyof ChannelCallbacks, "settleOutputMode">
 type WireRequest = Omit<ProviderTurnRequest, "callbacks" | "signal"> & { settleOutputMode?: ChannelCallbacks["settleOutputMode"] }
-type WireError = { message: string; classification: ProviderErrorClassification; status?: number; retryable: boolean }
+export type ProxyStopReason = "provider" | "budget" | "stopped" | "busy" | "channel"
+type WireError = { message: string; classification: ProviderErrorClassification; status?: number; reason: ProxyStopReason }
 
 export type ProxyMessage =
   | { type: "hello" }
@@ -28,6 +33,8 @@ export type ProxyMessage =
   | { type: "resetTurnState"; messages: ProviderTurnRequest["messages"] }
   | { type: "error"; turn: number; error: WireError }
   | { type: "abort"; turn: number }
+  /** Never sent: a channel delivers it when a line is not a message or a stream fails. */
+  | { type: "invalid"; reason: string }
 
 export type ProxyChannel = { send(msg: ProxyMessage): void; onMessage(fn: (msg: ProxyMessage) => void): void }
 
@@ -43,30 +50,45 @@ const STOPPING_CLASSIFICATION = new Set<ProviderErrorClassification>(["usage-lim
 class ProxiedProviderError extends Error {
   readonly classification: ProviderErrorClassification
   declare readonly status?: number
-  readonly retryable: boolean
+  readonly reason: ProxyStopReason
+  readonly retryable = false
   constructor(error: WireError) {
     super(error.message)
     this.name = "ProxiedProviderError"
     this.classification = error.classification
     if (error.status !== undefined) this.status = error.status
-    this.retryable = error.retryable
+    this.reason = error.reason
   }
+}
+
+function isMessage(value: unknown): value is ProxyMessage {
+  return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string"
+}
+
+function parseLine(line: string): ProxyMessage {
+  try {
+    const value: unknown = JSON.parse(line)
+    if (isMessage(value)) return value
+  } catch {
+    // Not JSON: reported below like any other line that is not a message.
+  }
+  return { type: "invalid", reason: `not a proxy message: ${line.slice(0, 80)}` }
 }
 
 /** Newline-delimited JSON over a pair of byte streams, such as a container's stdin and stdout. */
 export function createStreamChannel(input: Readable, output: Writable): ProxyChannel {
   const listeners: Array<(msg: ProxyMessage) => void> = []
+  const deliver = (msg: ProxyMessage): void => { for (const listener of listeners) listener(msg) }
   let buffered = ""
   input.setEncoding("utf8")
   input.on("data", (chunk: string) => {
     buffered += chunk
     const lines = buffered.split("\n")
     buffered = lines.pop()!
-    for (const line of lines.filter(Boolean)) {
-      const msg = JSON.parse(line) as ProxyMessage
-      for (const listener of listeners) listener(msg)
-    }
+    for (const line of lines.filter(Boolean)) deliver(parseLine(line))
   })
+  input.on("error", (error: Error) => deliver({ type: "invalid", reason: `input failed: ${error.message}` }))
+  output.on("error", (error: Error) => deliver({ type: "invalid", reason: `output failed: ${error.message}` }))
   return {
     send: (msg) => { output.write(`${JSON.stringify(msg)}\n`) },
     onMessage: (fn) => { listeners.push(fn) },
@@ -75,7 +97,8 @@ export function createStreamChannel(input: Readable, output: Writable): ProxyCha
 
 /** Guest side: a runtime whose every call is served by the host. Resolves once the host has said what it is. */
 export function createProxyRuntime(channel: ProxyChannel): Promise<ProviderRuntime> {
-  const turns = new Map<number, { request: ProviderTurnRequest; resolve(result: TurnResult): void; reject(error: Error): void }>()
+  type Pending = { request: ProviderTurnRequest; resolve(result: TurnResult): void; reject(error: Error): void; callbackError?: Error }
+  const turns = new Map<number, Pending>()
   let nextTurn = 1
   return new Promise((resolveRuntime) => {
     channel.onMessage((msg) => {
@@ -89,10 +112,21 @@ export function createProxyRuntime(channel: ProxyChannel): Promise<ProviderRunti
           ...(msg.supportedReasoningEfforts ? { supportedReasoningEfforts: msg.supportedReasoningEfforts } : {}),
           streamTurn: (request) => new Promise((resolve, reject) => {
             const turn = nextTurn++
-            turns.set(turn, { request, resolve, reject })
             const { callbacks, signal, ...wire } = request
+            if (signal?.aborted) {
+              emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_guest_turn_error", message: "proxied turn aborted before it started", meta: { turn, reason: "aborted" } })
+              return reject(Object.assign(new Error("aborted before the provider call"), { retryable: false }))
+            }
+            emitNervesEvent({ component: "eval", event: "eval.proxy_guest_turn_start", message: "sending a turn to the host provider", meta: { turn } })
+            const onAbort = (): void => channel.send({ type: "abort", turn })
+            const settle = (): void => { turns.delete(turn); signal?.removeEventListener("abort", onAbort) }
+            turns.set(turn, {
+              request,
+              resolve: (result) => { settle(); emitNervesEvent({ component: "eval", event: "eval.proxy_guest_turn_end", message: "host provider turn finished", meta: { turn } }); resolve(result) },
+              reject: (error) => { settle(); emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_guest_turn_error", message: "host provider turn failed", meta: { turn, error: error.message } }); reject(error) },
+            })
             channel.send({ type: "streamTurn", turn, request: { ...wire, ...(callbacks.settleOutputMode ? { settleOutputMode: callbacks.settleOutputMode } : {}) } })
-            signal?.addEventListener("abort", () => channel.send({ type: "abort", turn }), { once: true })
+            signal?.addEventListener("abort", onAbort, { once: true })
           }),
           appendToolOutput: (callId, output) => channel.send({ type: "appendToolOutput", callId, output }),
           resetTurnState: (messages) => channel.send({ type: "resetTurnState", messages }),
@@ -101,17 +135,27 @@ export function createProxyRuntime(channel: ProxyChannel): Promise<ProviderRunti
         })
         return
       }
+      if (msg.type === "invalid") {
+        for (const pending of [...turns.values()]) pending.reject(new ProxiedProviderError({ message: `proxy channel failed: ${msg.reason}`, classification: "unknown", reason: "channel" }))
+        return
+      }
       const pending = "turn" in msg ? turns.get(msg.turn) : undefined
       if (!pending) return
       if (msg.type === "callback" && CALLBACK_EVENTS.has(msg.event)) {
+        if (pending.callbackError) return
         const args = msg.event === "onError" ? [new Error(String(msg.args[0])), msg.args[1]] : msg.args
-        ;(pending.request.callbacks[msg.event] as ((...values: unknown[]) => void) | undefined)?.(...args)
+        try {
+          ;(pending.request.callbacks[msg.event] as ((...values: unknown[]) => void) | undefined)?.(...args)
+        } catch (caught) {
+          // In-process, a throwing callback fails the turn; here the host is told to stop, and the turn fails with it.
+          pending.callbackError = Object.assign(caught instanceof Error ? caught : new Error(String(caught)), { retryable: false })
+          channel.send({ type: "abort", turn: msg.turn })
+        }
       } else if (msg.type === "turnResult") {
-        turns.delete(msg.turn)
-        pending.resolve(msg.result)
+        if (pending.callbackError) pending.reject(pending.callbackError)
+        else pending.resolve(msg.result)
       } else if (msg.type === "error") {
-        turns.delete(msg.turn)
-        pending.reject(new ProxiedProviderError(msg.error))
+        pending.reject(pending.callbackError ?? new ProxiedProviderError(msg.error))
       }
     })
     channel.send({ type: "hello" })
@@ -120,7 +164,7 @@ export function createProxyRuntime(channel: ProxyChannel): Promise<ProviderRunti
 
 function streamingCallbacks(channel: ProxyChannel, turn: number, settleOutputMode: WireRequest["settleOutputMode"]): ChannelCallbacks {
   const forward = (event: CallbackEvent) => (...args: unknown[]): void => {
-    channel.send({ type: "callback", turn, event, args: event === "onError" ? [(args[0] as Error).message, args[1]] : args })
+    channel.send({ type: "callback", turn, event, args: event === "onError" ? [args[0] instanceof Error ? args[0].message : String(args[0]), args[1]] : args })
   }
   const callbacks = Object.fromEntries([...CALLBACK_EVENTS].map((event) => [event, forward(event as CallbackEvent)])) as unknown as ChannelCallbacks
   return settleOutputMode ? { ...callbacks, settleOutputMode } : callbacks
@@ -131,7 +175,9 @@ export function serveProxyRuntime(channel: ProxyChannel, runtime: ProviderRuntim
   const aborts = new Map<number, AbortController>()
   let stopped: WireError | undefined
   channel.onMessage((msg) => {
-    if (msg.type === "hello") {
+    if (msg.type === "invalid") {
+      emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_channel_error", message: "ignored a line from the guest that is not a proxy message", meta: { reason: msg.reason } })
+    } else if (msg.type === "hello") {
       channel.send({
         type: "capabilities", id: runtime.id, model: runtime.model, capabilities: [...runtime.capabilities],
         ...(runtime.supportedReasoningEfforts ? { supportedReasoningEfforts: [...runtime.supportedReasoningEfforts] } : {}),
@@ -147,12 +193,16 @@ export function serveProxyRuntime(channel: ProxyChannel, runtime: ProviderRuntim
     }
   })
 
+  function refuse(turn: number, error: WireError): void {
+    emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_turn_error", message: "proxy turn refused without calling the provider", meta: { turn, reason: error.reason } })
+    channel.send({ type: "error", turn, error })
+  }
+
   async function serveTurn(turn: number, request: WireRequest): Promise<void> {
-    if (stopped) return channel.send({ type: "error", turn, error: stopped })
-    if (!budget.take()) {
-      emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_turn_error", message: "proxy turn refused: budget exhausted", meta: { turn, reason: "budget" } })
-      return channel.send({ type: "error", turn, error: { message: "budget exhausted", classification: "usage-limit", retryable: false } })
-    }
+    if (stopped) return refuse(turn, { ...stopped, message: `the provider stopped this run earlier: ${stopped.message}`, reason: "stopped" })
+    // One runtime keeps one turn's provider state, so a second turn in flight would corrupt the first.
+    if (aborts.size > 0) return refuse(turn, { message: "another turn is still in flight", classification: "unknown", reason: "busy" })
+    if (!budget.take()) return refuse(turn, { message: "budget exhausted", classification: "usage-limit", reason: "budget" })
     emitNervesEvent({ component: "eval", event: "eval.proxy_turn_start", message: "serving a proxied provider turn", meta: { turn, provider: runtime.id, model: runtime.model } })
     const abort = new AbortController()
     aborts.set(turn, abort)
@@ -165,15 +215,10 @@ export function serveProxyRuntime(channel: ProxyChannel, runtime: ProviderRuntim
       const error = caught instanceof Error ? caught : new Error(String(caught))
       const classification = runtime.classifyError(error)
       const status = (error as Error & { status?: unknown }).status
-      const wire: WireError = {
-        message: error.message, classification, retryable: (error as Error & { retryable?: unknown }).retryable !== false,
-        ...(typeof status === "number" ? { status } : {}),
-      }
-      if ((typeof status === "number" && STOPPING_STATUS.has(status)) || STOPPING_CLASSIFICATION.has(classification)) {
-        stopped = { ...wire, retryable: false }
-      }
+      const wire: WireError = { message: error.message, classification, reason: "provider", ...(typeof status === "number" ? { status } : {}) }
+      if ((typeof status === "number" && STOPPING_STATUS.has(status)) || STOPPING_CLASSIFICATION.has(classification)) stopped = wire
       emitNervesEvent({ component: "eval", level: "error", event: "eval.proxy_turn_error", message: "proxied provider turn failed", meta: { turn, classification, status: wire.status ?? null, stopped: Boolean(stopped) } })
-      channel.send({ type: "error", turn, error: stopped ?? wire })
+      channel.send({ type: "error", turn, error: wire })
     } finally {
       aborts.delete(turn)
     }
