@@ -475,7 +475,9 @@ describe("execTool", () => {
     expect(shellRiskProfile({ command: "ouro check --agent slugger --lane inner" })).toMatchObject({ risk: "low" })
     expect(shellRiskProfile({ command: "ouro --version" })).toMatchObject({ risk: "low" })
     expect(shellRiskProfile({ command: "ouro mcp call --server x --tool y" })).toMatchObject({ risk: "high" })
-    expect(shellRiskProfile({ command: "ouro mcp" })).toMatchObject({ risk: "high" })
+    // A group on its own only prints its usage; an unknown word after it names no declared command.
+    expect(shellRiskProfile({ command: "ouro mcp" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro mcp frobnicate" })).toMatchObject({ risk: "high" })
     expect(shellRiskProfile({ command: "ouro no-such-command" })).toMatchObject({ risk: "high" })
     // auth is a group (auth verify sits under it): a word after it names no declared command.
     expect(shellRiskProfile({ command: "ouro auth verify --agent slugger" })).toMatchObject({ risk: "low" })
