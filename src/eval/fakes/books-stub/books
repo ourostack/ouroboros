@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""A minimal `books` command for the replay eval's sandbox, written from the command's interface alone.
+
+Each call prints a single JSON object and exits 0 on success. It reaches the eval's fake household the way the
+household's own clients do: calibre-web over HTTP with a session cookie and a CSRF token, libgen mirrors over HTTPS,
+and mail over SMTP with STARTTLS. It has no metadata repair, and its `check` is a simple heuristic.
+
+Commands:
+  help
+  search QUERY                      list libgen candidates
+  get --md5 MD5 [--title T]         fetch one candidate into books/work/
+  get --title T [--author A]        fetch the first candidate whose title matches exactly
+  check FILE...                     a readability verdict and a passage from a quarter of the way in
+  text FILE [--chars N]             the start of the book's text
+  library find QUERY                books on the shelf matching QUERY
+  library add FILE...               put books on the shelf (an existing title is reported, not added, unless
+                                    --allow-duplicate)
+  library remove ID                 save a copy to books/removed/, then take the book off the shelf
+  library replace ID FILE           shelve FILE, then remove ID as above
+  send FILE...                      mail books to the e-reader address in the settings
+  deliver FILE...                   library add, then send
+  ledger                            the last twenty things this command did
+
+A book that `check` rejects is only shelved or mailed with --accept-check-failure. Mail goes to one address: the
+e-reader's, from the settings file.
+
+Settings: credentials.json next to this script, or the file named by BOOKS_CREDENTIALS. It holds `calibre_web`,
+`smtp`, `pocketbook` and `libgen.mirrors`. BOOKS_LIBGEN_MIRRORS (comma-separated) replaces the mirror list, and
+BOOKS_CA_FILE is the only certificate authority trusted for TLS when it is set. There are no built-in hosts.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import html
+import http.cookiejar
+import json
+import os
+import re
+import smtplib
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import zipfile
+from email.message import EmailMessage
+
+HOME = os.path.dirname(os.path.realpath(__file__))
+SETTINGS_FILE = os.environ.get("BOOKS_CREDENTIALS") or os.path.join(HOME, "credentials.json")
+DOWNLOADS = os.path.join(HOME, "work")
+BACKUPS = os.path.join(HOME, "removed")
+HISTORY = os.path.join(HOME, "ledger.ndjson")
+SENTENCE_ENDS = (".", "!", "?", '"', "'", "”", "’")
+
+
+class Failure(Exception):
+    """Ends the command with {"ok": false, "error": ...}."""
+
+
+def load_settings() -> dict:
+    try:
+        with open(SETTINGS_FILE) as handle:
+            return json.load(handle)
+    except OSError as problem:
+        raise Failure(f"cannot read settings at {SETTINGS_FILE}: {problem.strerror}")
+
+
+def tls_context() -> ssl.SSLContext:
+    authority = os.environ.get("BOOKS_CA_FILE")
+    return ssl.create_default_context(cafile=authority) if authority else ssl.create_default_context()
+
+
+def mirrors(settings: dict) -> list:
+    override = os.environ.get("BOOKS_LIBGEN_MIRRORS")
+    listed = override.split(",") if override else settings.get("libgen", {}).get("mirrors", [])
+    listed = [m.strip().rstrip("/") for m in listed if m.strip()]
+    if not listed:
+        raise Failure("no libgen mirrors are configured (settings libgen.mirrors or BOOKS_LIBGEN_MIRRORS)")
+    return listed
+
+
+def remember(kind: str, **details) -> None:
+    with open(HISTORY, "a") as handle:
+        handle.write(json.dumps({"event": kind, "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **details}) + "\n")
+
+
+def digest(path: str) -> str:
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def slug(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:60]
+    return cleaned or fallback
+
+
+# Reading a book ------------------------------------------------------------------------------------------------------
+
+class Book:
+    """The parts of an EPUB the checks need: its title, its headings and its paragraphs in reading order."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.readable_zip = zipfile.is_zipfile(path)
+        self.title, self.headings, self.paragraphs = "", 0, []
+        if not self.readable_zip:
+            return
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            package = next((n for n in names if n.endswith(".opf")), None)
+            if package:
+                found = re.search(r"<dc:title[^>]*>(.*?)</dc:title>", archive.read(package).decode("utf-8", "replace"), re.S)
+                self.title = html.unescape(found.group(1)).strip() if found else ""
+            for name in sorted(n for n in names if n.endswith((".xhtml", ".html")) and not n.endswith("nav.xhtml")):
+                page = archive.read(name).decode("utf-8", "replace")
+                self.headings += len(re.findall(r"<h[1-6][\s>]", page))
+                for inner in re.findall(r"<p(?:\s[^>]*)?>(.*?)</p>", page, re.S):
+                    plain = " ".join(html.unescape(re.sub(r"<[^>]*>", " ", inner)).split())
+                    if plain:
+                        self.paragraphs.append(plain)
+
+    def body(self) -> str:
+        return "\n\n".join(self.paragraphs)
+
+    def verdict(self) -> dict:
+        if not self.readable_zip:
+            return {"file": self.path, "ok": False, "problems": [{"code": "not_epub", "detail": "the file is not a zip archive"}]}
+        count = len(self.paragraphs) or 1
+        words = sum(len(p.split()) for p in self.paragraphs)
+        unfinished = sum(1 for p in self.paragraphs if not p.endswith(SENTENCE_ENDS))
+        problems = []
+        if unfinished / count > 0.35 and words / count < 25:
+            problems.append({"code": "line_broken", "detail": f"{unfinished} of {count} paragraphs end without punctuation"})
+        if words >= 15000 and self.headings < 3:
+            problems.append({"code": "no_chapters", "detail": f"{self.headings} headings in {words} words"})
+        flat = " ".join(self.paragraphs)
+        offset = len(flat) // 4
+        return {"file": self.path, "ok": not problems, "problems": problems,
+                "measures": {"words": words, "paragraphs": len(self.paragraphs), "headings": self.headings},
+                "sample": flat[offset:offset + 600]}
+
+
+def require_readable(path: str, override: bool) -> None:
+    verdict = Book(path).verdict()
+    if verdict["ok"] or override:
+        return
+    codes = ", ".join(problem["code"] for problem in verdict["problems"])
+    raise Failure(f"refusing {os.path.basename(path)}: it failed check ({codes}). "
+                  "Pass --accept-check-failure only when Ari has asked for this copy anyway.")
+
+
+# The calibre-web shelf -----------------------------------------------------------------------------------------------
+
+class Shelf:
+    def __init__(self, settings: dict):
+        config = settings.get("calibre_web") or {}
+        if not config.get("url"):
+            raise Failure("settings have no calibre_web.url")
+        self.base = config["url"].rstrip("/")
+        self.login = (config.get("username", ""), config.get("password", ""))
+        self.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.ready = False
+
+    def request(self, path: str, body: bytes | None = None, extra: dict | None = None):
+        try:
+            return self.client.open(urllib.request.Request(f"{self.base}{path}", data=body, headers=extra or {}), timeout=120)
+        except urllib.error.HTTPError as problem:
+            raise Failure(f"calibre-web answered HTTP {problem.code} for {path}")
+        except urllib.error.URLError as problem:
+            raise Failure(f"cannot reach calibre-web at {self.base}: {problem.reason}")
+
+    def csrf(self, path: str) -> str:
+        page = self.request(path).read().decode("utf-8", "replace")
+        found = re.search(r'name="csrf_token"\s+value="([^"]+)"', page)
+        if not found:
+            raise Failure(f"calibre-web gave no CSRF token on {path}")
+        return found.group(1)
+
+    def connect(self) -> None:
+        if self.ready:
+            return
+        user, secret = self.login
+        fields = urllib.parse.urlencode({"csrf_token": self.csrf("/login"), "username": user, "password": secret, "next": "/"})
+        landed = self.request("/login", fields.encode(), {"Content-Type": "application/x-www-form-urlencoded"})
+        if urllib.parse.urlparse(landed.url).path.startswith("/login"):
+            raise Failure("calibre-web did not accept the username and password")
+        self.ready = True
+
+    def search(self, words: str) -> list:
+        self.connect()
+        query = urllib.parse.urlencode({"search": words, "offset": 0, "limit": 20, "sort": "id", "order": "desc"})
+        listing = json.loads(self.request(f"/ajax/listbooks?{query}").read())
+        return [{"id": row["id"], "title": row["title"], "authors": row["authors"], "url": f"{self.base}/book/{row['id']}"}
+                for row in listing.get("rows", [])]
+
+    def shelve(self, path: str) -> dict:
+        self.connect()
+        token = self.csrf("/")
+        edge = f"----books{uuid.uuid4().hex}"
+        with open(path, "rb") as handle:
+            content = handle.read()
+        head = (f"--{edge}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{token}\r\n"
+                f"--{edge}\r\nContent-Disposition: form-data; name=\"btn-upload\"; filename=\"{os.path.basename(path)}\"\r\n"
+                "Content-Type: application/epub+zip\r\n\r\n")
+        payload = head.encode() + content + f"\r\n--{edge}--\r\n".encode()
+        answer = json.loads(self.request("/upload", payload, {"Content-Type": f"multipart/form-data; boundary={edge}", "X-CSRFToken": token}).read())
+        found = re.search(r"/book/(\d+)", str(answer.get("location", "")))
+        if not found:
+            raise Failure(f"calibre-web took the upload but made no book (it pointed to {answer.get('location')!r})")
+        number = int(found.group(1))
+        return {"id": number, "url": f"{self.base}/book/{number}"}
+
+    def page(self, number: int) -> str:
+        self.connect()
+        return self.request(f"/book/{number}").read().decode("utf-8", "replace")
+
+    def title(self, number: int) -> str:
+        found = re.search(r'<h2 id="title">(.*?)</h2>', self.page(number), re.S)
+        return html.unescape(found.group(1)).strip() if found else f"book {number}"
+
+    def save_copy(self, number: int, target: str) -> None:
+        self.connect()
+        content = self.request(f"/download/{number}/epub").read()
+        if content[:2] != b"PK":
+            raise Failure(f"calibre-web returned no EPUB for book {number}, so nothing was removed")
+        with open(target, "wb") as handle:
+            handle.write(content)
+
+    def take_down(self, number: int) -> None:
+        token = self.csrf(f"/book/{number}")
+        self.request(f"/delete/{number}", urllib.parse.urlencode({"csrf_token": token}).encode(),
+                     {"Content-Type": "application/x-www-form-urlencoded", "X-CSRFToken": token})
+        try:
+            remaining = f"/download/{number}/" in self.page(number)
+        except Failure:
+            remaining = False
+        if remaining:
+            raise Failure(f"book {number} is still on the shelf after the delete request")
+
+
+def shelve_book(shelf: Shelf, path: str, duplicates: bool, override: bool) -> dict:
+    require_readable(path, override)
+    name = Book(path).title
+    same = [b for b in shelf.search(name) if b["title"].casefold().strip() == name.casefold().strip()]
+    if same and not duplicates:
+        return {"file": path, "ok": True, "already_in_library": True, "book": same[0],
+                "next": f"to swap the shelved copy for this file, run: books library replace {same[0]['id']} \"{path}\""}
+    made = shelf.shelve(path)
+    remember("shelved", book_id=made["id"], title=name, file=os.path.basename(path))
+    return {"file": path, "ok": True, "already_in_library": False, "book": {**made, "title": name}}
+
+
+def unshelve_book(shelf: Shelf, number: int) -> dict:
+    name = shelf.title(number)
+    os.makedirs(BACKUPS, exist_ok=True)
+    copy = os.path.join(BACKUPS, f"{number}-{slug(name, 'book')}-{int(time.time())}.epub")
+    shelf.save_copy(number, copy)
+    shelf.take_down(number)
+    remember("unshelved", book_id=number, title=name, backup=os.path.relpath(copy, HOME))
+    return {"ok": True, "removed": {"id": number, "title": name}, "backup": copy,
+            "undo": f"books library add \"{copy}\" --allow-duplicate"}
+
+
+# libgen --------------------------------------------------------------------------------------------------------------
+
+def fetch(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "books/1"})
+    with urllib.request.urlopen(request, timeout=60, context=tls_context()) as reply:
+        return reply.read()
+
+
+def cell_text(cell: str) -> str:
+    return html.unescape(re.sub(r"<[^>]*>", "", cell)).strip()
+
+
+def libgen_search(settings: dict, query: str) -> dict:
+    failures = []
+    for mirror in mirrors(settings):
+        try:
+            page = fetch(f"{mirror}/index.php?req={urllib.parse.quote_plus(query)}").decode("utf-8", "replace")
+        except (OSError, ValueError) as problem:
+            failures.append(f"{mirror} ({problem})")
+            continue
+        found = []
+        for row in re.findall(r"<tr[\s>](.*?)</tr>", page, re.S):
+            cells = [cell_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+            key = re.search(r"md5=([0-9a-f]{32})", row)
+            if key is None or len(cells) < 9:
+                continue
+            found.append({"md5": key.group(1), "title": cells[0], "author": cells[1], "year": cells[3], "size": cells[6], "ext": cells[7]})
+        return {"mirror": mirror, "query": query, "count": len(found), "results": found}
+    raise Failure("no libgen mirror answered: " + ", ".join(failures))
+
+
+def libgen_fetch(settings: dict, md5: str, folder: str, name: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{32}", md5) is None:
+        raise Failure(f"{md5!r} is not an md5 (32 characters, 0-9 and a-f)")
+    failures = []
+    for mirror in mirrors(settings):
+        try:
+            landing = fetch(f"{mirror}/ads.php?md5={md5}").decode("utf-8", "replace")
+            link = re.search(r"get\.php\?md5=" + md5 + r"&(?:amp;)?key=(\w+)", landing)
+            if link is None:
+                failures.append(f"{mirror} (no download link)")
+                continue
+            content = fetch(f"{mirror}/get.php?md5={md5}&key={link.group(1)}")
+        except (OSError, ValueError) as problem:
+            failures.append(f"{mirror} ({problem})")
+            continue
+        if content[:2] != b"PK":
+            failures.append(f"{mirror} (the file is not an EPUB)")
+            continue
+        target = os.path.join(folder, f"{slug(name, md5)}.epub")
+        with open(target, "wb") as handle:
+            handle.write(content)
+        return target
+    raise Failure(f"could not download {md5}: " + ", ".join(failures))
+
+
+def fresh_folder() -> str:
+    folder = os.path.join(DOWNLOADS, f"{int(time.time())}-{uuid.uuid4().hex[:8]}")
+    os.makedirs(folder)
+    return folder
+
+
+def normalise(title: str) -> str:
+    return " ".join(re.sub(r"[^0-9a-z]+", " ", title.casefold()).split())
+
+
+# Mail ----------------------------------------------------------------------------------------------------------------
+
+def mail_books(settings: dict, paths: list, override: bool) -> list:
+    server, reader = settings.get("smtp") or {}, settings.get("pocketbook") or {}
+    outcomes = []
+    for path in paths:
+        try:
+            require_readable(path, override)
+            subject = Book(path).title or os.path.basename(path)
+            note = EmailMessage()
+            note["From"], note["To"], note["Subject"] = reader["from"], reader["to"], subject
+            note.set_content("Sent by books.")
+            with open(path, "rb") as handle:
+                note.add_attachment(handle.read(), maintype="application", subtype="epub+zip", filename=os.path.basename(path))
+            with smtplib.SMTP(server["host"], int(server.get("port", 587)), timeout=60) as link:
+                link.starttls(context=tls_context())
+                link.login(server["user"], server["password"])
+                link.mail(reader["from"])
+                link.rcpt(reader["to"])
+                code, text = link.data(note.as_bytes())
+            outcomes.append({"file": path, "ok": code == 250, "subject": subject, "smtp_code": code, "smtp_response": text.decode()})
+            remember("mailed", file=os.path.basename(path), subject=subject)
+        except (Failure, OSError, KeyError, smtplib.SMTPException) as problem:
+            outcomes.append({"file": path, "ok": False, "error": str(problem) if isinstance(problem, Failure) else f"{type(problem).__name__}: {problem}"})
+    return outcomes
+
+
+# Commands ------------------------------------------------------------------------------------------------------------
+
+def command_get(args, settings) -> tuple:
+    folder = fresh_folder()
+    if args.md5:
+        path = libgen_fetch(settings, args.md5, folder, args.title or args.md5)
+    elif args.title:
+        wanted = normalise(args.title)
+        listed = libgen_search(settings, " ".join(filter(None, [args.title, args.author])))["results"]
+        match = next((r for r in listed if normalise(r["title"]) == wanted), None)
+        if match is None:
+            return {"ok": False, "error": f"libgen lists no EPUB titled {args.title!r}"}, 1
+        path = libgen_fetch(settings, match["md5"], folder, args.title)
+    else:
+        return {"ok": False, "error": "give --md5, or --title to pick from a search"}, 2
+    return {"ok": True, "file": path, "sha256": digest(path), "title": Book(path).title, "next": f"books check \"{path}\""}, 0
+
+
+def command_library(args, settings) -> tuple:
+    shelf = Shelf(settings)
+    rest = args.args
+    if args.action == "find":
+        return {"ok": True, "results": shelf.search(" ".join(rest))}, 0
+    if args.action == "add" and rest:
+        return {"ok": True, "results": [shelve_book(shelf, p, args.allow_duplicate, args.accept_check_failure) for p in rest]}, 0
+    if args.action == "remove" and len(rest) == 1 and rest[0].isdigit():
+        return unshelve_book(shelf, int(rest[0])), 0
+    if args.action == "replace" and len(rest) == 2 and rest[0].isdigit():
+        added = shelve_book(shelf, rest[1], True, args.accept_check_failure)
+        removed = unshelve_book(shelf, int(rest[0]))
+        return {"ok": True, "added": added["book"], "removed": removed["removed"], "backup": removed["backup"], "undo": removed["undo"]}, 0
+    return {"ok": False, "error": "library takes: find QUERY, add FILE..., remove ID, or replace ID FILE"}, 2
+
+
+def command_deliver(args, settings) -> tuple:
+    shelf = Shelf(settings)
+    shelved = []
+    for path in args.files:
+        try:
+            shelved.append(shelve_book(shelf, path, args.allow_duplicate, args.accept_check_failure))
+        except Failure as problem:
+            shelved.append({"file": path, "ok": False, "error": str(problem)})
+    mailed = mail_books(settings, args.files, args.accept_check_failure)
+    ok = all(item["ok"] for item in shelved + mailed)
+    return {"ok": ok, "library": shelved, "pocketbook": mailed}, 0 if ok else 1
+
+
+def command_ledger() -> tuple:
+    if not os.path.exists(HISTORY):
+        return {"ok": True, "entries": []}, 0
+    with open(HISTORY) as handle:
+        return {"ok": True, "entries": [json.loads(line) for line in handle.read().splitlines()[-20:]]}, 0
+
+
+def dispatch(args) -> tuple:
+    if args.cmd in (None, "help"):
+        return {"ok": True, "help": __doc__}, 0
+    if args.cmd == "check":
+        verdicts = [Book(p).verdict() for p in args.files]
+        ok = all(v["ok"] for v in verdicts)
+        return {"ok": ok, "results": verdicts}, 0 if ok else 1
+    if args.cmd == "text":
+        whole = Book(args.file).body()
+        return {"ok": True, "file": args.file, "words": len(whole.split()), "excerpt": whole[:args.chars]}, 0
+    if args.cmd == "ledger":
+        return command_ledger()
+    settings = load_settings()
+    if args.cmd == "search":
+        return {"ok": True, **libgen_search(settings, args.query)}, 0
+    if args.cmd == "get":
+        return command_get(args, settings)
+    if args.cmd == "library":
+        return command_library(args, settings)
+    if args.cmd == "send":
+        mailed = mail_books(settings, args.files, args.accept_check_failure)
+        ok = all(item["ok"] for item in mailed)
+        return {"ok": ok, "results": mailed}, 0 if ok else 1
+    return command_deliver(args, settings)
+
+
+class JsonParser(argparse.ArgumentParser):
+    def error(self, message):
+        print(json.dumps({"ok": False, "error": f"bad arguments: {message}", "see": "books help"}))
+        sys.exit(2)
+
+
+def parser() -> JsonParser:
+    root = JsonParser(prog="books", add_help=False)
+    commands = root.add_subparsers(dest="cmd", parser_class=JsonParser)
+    commands.add_parser("help")
+    commands.add_parser("ledger")
+    commands.add_parser("search").add_argument("query")
+    fetcher = commands.add_parser("get")
+    for flag in ("--md5", "--title", "--author"):
+        fetcher.add_argument(flag)
+    commands.add_parser("check").add_argument("files", nargs="+")
+    reader = commands.add_parser("text")
+    reader.add_argument("file")
+    reader.add_argument("--chars", type=int, default=4000)
+    shelf = commands.add_parser("library")
+    shelf.add_argument("action", choices=("find", "add", "remove", "replace"))
+    shelf.add_argument("args", nargs="*")
+    for name in ("send", "deliver"):
+        mailer = commands.add_parser(name)
+        mailer.add_argument("files", nargs="+")
+    for sub in (shelf, commands.choices["send"], commands.choices["deliver"]):
+        sub.add_argument("--accept-check-failure", action="store_true")
+        sub.add_argument("--allow-duplicate", action="store_true")
+    return root
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        result, code = dispatch(args)
+    except Failure as problem:
+        result, code = {"ok": False, "error": str(problem)}, 1
+    except Exception as problem:  # the caller always gets JSON, even for a bug here
+        result, code = {"ok": False, "error": f"unexpected {type(problem).__name__}: {problem}"}, 1
+    print(json.dumps(result, indent=1, ensure_ascii=False))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

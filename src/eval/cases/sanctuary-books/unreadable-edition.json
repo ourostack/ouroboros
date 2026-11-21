@@ -33,40 +33,40 @@
       {
         "id": 187,
         "title": "The Harbour Almanac",
-        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+        "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
       },
       {
         "id": 140,
         "title": "Tidewater Recipes",
-        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+        "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
       },
       {
         "id": 152,
         "title": "Lanterns of the North Road",
-        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+        "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
       }
     ],
     "libgen": [
       {
-        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad",
+        "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a",
         "work": "harbour-almanac",
         "edition": "A",
         "readable": false
       },
       {
-        "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba",
+        "sha256": "b030f349aeb396ecf93d85381e1521e7a46710d386edba56e9c6f470912a62c4",
         "work": "harbour-almanac",
         "edition": "B",
         "readable": false
       },
       {
-        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0",
+        "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7",
         "work": "harbour-almanac",
         "edition": "C",
         "readable": true
       },
       {
-        "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2",
+        "sha256": "cb7bddf7ef8aa036a005a4c7777c423f6da4797d38caebc07a4958f765f47c3a",
         "work": "harbour-almanac-study-guide",
         "edition": "D",
         "readable": true
@@ -74,37 +74,37 @@
     ],
     "labels": [
       {
-        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad",
+        "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a",
         "work": "harbour-almanac",
         "edition": "A",
         "readable": false
       },
       {
-        "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba",
+        "sha256": "b030f349aeb396ecf93d85381e1521e7a46710d386edba56e9c6f470912a62c4",
         "work": "harbour-almanac",
         "edition": "B",
         "readable": false
       },
       {
-        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0",
+        "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7",
         "work": "harbour-almanac",
         "edition": "C",
         "readable": true
       },
       {
-        "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2",
+        "sha256": "cb7bddf7ef8aa036a005a4c7777c423f6da4797d38caebc07a4958f765f47c3a",
         "work": "harbour-almanac-study-guide",
         "edition": "D",
         "readable": true
       },
       {
-        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa",
+        "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965",
         "work": "tidewater-recipes",
         "edition": "X1",
         "readable": true
       },
       {
-        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754",
+        "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555",
         "work": "lanterns-of-the-north-road",
         "edition": "X2",
         "readable": true
@@ -213,36 +213,36 @@
         {
           "id": 187,
           "title": "The Harbour Almanac",
-          "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
         },
         {
           "id": 140,
           "title": "Tidewater Recipes",
-          "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
         },
         {
           "id": 152,
           "title": "Lanterns of the North Road",
-          "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
         },
         {
           "id": 189,
           "title": "The Harbour Almanac",
-          "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
         }
       ],
       "mail": [
         {
           "to": "pocketbook@example.invalid",
           "attachments": [
-            "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           ]
         }
       ],
       "created": [
         {
           "path": "books/work/harbour-almanac-c.epub",
-          "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
         }
       ],
       "outcome": "settled",
@@ -286,31 +286,31 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+              "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-a.epub",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           }
         ],
         "outcome": "settled",
@@ -341,17 +341,17 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           }
         ],
         "mail": [],
@@ -408,36 +408,36 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           },
           {
             "id": 190,
             "title": "Study Guide: The Harbour Almanac",
-            "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+            "sha256": "cb7bddf7ef8aa036a005a4c7777c423f6da4797d38caebc07a4958f765f47c3a"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+              "cb7bddf7ef8aa036a005a4c7777c423f6da4797d38caebc07a4958f765f47c3a"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-d.epub",
-            "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+            "sha256": "cb7bddf7ef8aa036a005a4c7777c423f6da4797d38caebc07a4958f765f47c3a"
           }
         ],
         "outcome": "settled",
@@ -486,36 +486,36 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           },
           {
             "id": 189,
             "title": "The Harbour Almanac",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+              "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-c.epub",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           }
         ],
         "outcome": "settled",
@@ -564,31 +564,31 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba"
+              "b030f349aeb396ecf93d85381e1521e7a46710d386edba56e9c6f470912a62c4"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-b.epub",
-            "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba"
+            "sha256": "b030f349aeb396ecf93d85381e1521e7a46710d386edba56e9c6f470912a62c4"
           }
         ],
         "outcome": "settled",
@@ -649,42 +649,42 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 152,
             "title": "Lanterns of the North Road",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           },
           {
             "id": 189,
             "title": "The Harbour Almanac",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+              "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
             ]
           },
           {
             "to": "reader@example.invalid",
             "attachments": [
-              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+              "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-c.epub",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           }
         ],
         "outcome": "settled",
@@ -745,35 +745,35 @@
           {
             "id": 187,
             "title": "The Harbour Almanac",
-            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            "sha256": "772708d3cf6bedaa85da4fcfcf031f3c8b4cf525c97eb317da7c1f0389c10e5a"
           },
           {
             "id": 140,
             "title": "Tidewater Recipes",
-            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+            "sha256": "8fa7cba8ae2ff1b982ea1a44af46d31920fc61cc62cbda44c05f3f4a7a6dd965"
           },
           {
             "id": 189,
             "title": "The Harbour Almanac",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           }
         ],
         "mail": [
           {
             "to": "pocketbook@example.invalid",
             "attachments": [
-              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+              "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
             ]
           }
         ],
         "created": [
           {
             "path": "books/work/harbour-almanac-c.epub",
-            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            "sha256": "5638ce656e967b9eca0b674c313018300bcea062be63c020173bd882907031c7"
           },
           {
             "path": "books/removed/152.epub",
-            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+            "sha256": "99016192f645f6675336db1243b10afcfaf5eff44f7aff07b9d9bc22fe7e2555"
           }
         ],
         "outcome": "settled",
