@@ -165,16 +165,16 @@ const badgeSlot = (badge: ReactNode) => (isValidElement(badge) ? undefined : bad
 // A row: 44px with 16px text on a coarse pointer at every width, 36px with 14px text with a
 // fine one. A full-width row highlights while pressed instead of scaling.
 const row =
-  "relative m-0 box-border flex w-full min-h-11 pointer-fine:min-h-9 cursor-pointer items-center gap-3 rounded-ouro-md border-0 forced-colors:border forced-colors:border-solid bg-transparent px-3 py-2 " +
+  "relative m-0 box-border flex w-full min-h-ouro-11 pointer-fine:min-h-9 cursor-pointer items-center gap-3 rounded-ouro-md border-0 forced-colors:border forced-colors:border-solid bg-transparent px-3 py-2 " +
   "text-start font-[inherit] text-base pointer-fine:text-sm leading-5 font-medium text-muted-foreground no-underline select-none touch-manipulation " +
   "[-webkit-tap-highlight-color:transparent] transition-colors duration-(--ouro-duration-fast) ease-[ease] " +
   "pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground active:bg-accent active:text-accent-foreground " +
   "aria-[current=page]:font-semibold aria-[current=page]:text-foreground " +
-  "aria-[current=page]:before:absolute aria-[current=page]:before:inset-y-2 aria-[current=page]:before:start-0 aria-[current=page]:before:w-0.5 aria-[current=page]:before:rounded-full aria-[current=page]:before:bg-current aria-[current=page]:before:content-[''] " +
+  "aria-[current=page]:before:absolute aria-[current=page]:before:inset-y-2 aria-[current=page]:before:start-0 aria-[current=page]:before:w-ouro-0_5 aria-[current=page]:before:rounded-full aria-[current=page]:before:bg-current aria-[current=page]:before:content-[''] " +
   "forced-colors:aria-[current=page]:before:border-s-2 forced-colors:aria-[current=page]:before:border-solid forced-colors:aria-[current=page]:before:border-current " +
   "outline-ring -outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid";
 const railRow = "justify-center px-0";
-const iconSlot = "flex size-5 shrink-0 items-center justify-center text-sm [&_svg]:size-5 [&_svg]:shrink-0";
+const iconSlot = "flex size-ouro-5 shrink-0 items-center justify-center text-sm [&_svg]:size-ouro-5 [&_svg]:shrink-0";
 const list = "m-0 grid list-none gap-1 p-0";
 const example = '<Sidebar label="Main" sections={[{ items: [{ label: "Recipes", href: "/recipes" }] }]}';
 
@@ -437,7 +437,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className={cn("size-4 shrink-0 rtl:-scale-x-100", item.badge === undefined && "ms-auto", open && "rotate-90 rtl:-rotate-90")}
+                    className={cn("size-ouro-4 shrink-0 rtl:-scale-x-100", open && "rotate-90 rtl:-rotate-90")}
                   >
                     <path d="m6 4 4 4-4 4" />
                   </svg>
@@ -470,9 +470,9 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         aria-haspopup={wide ? undefined : "dialog"}
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        className="w-11 px-0 sm:hidden"
+      className="w-ouro-11 px-0 sm:hidden"
       >
-        <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="size-5">
+      <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="size-ouro-5">
           <path d="M3 5.5h14M3 10h14M3 14.5h14" />
         </svg>
       </Button>
