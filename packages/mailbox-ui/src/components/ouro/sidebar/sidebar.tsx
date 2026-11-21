@@ -175,7 +175,7 @@ const row =
   "outline-ring -outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid";
 const railRow = "justify-center px-0";
 const iconSlot = "flex size-ouro-5 shrink-0 items-center justify-center text-sm [&_svg]:size-ouro-5 [&_svg]:shrink-0";
-const list = "m-0 grid list-none gap-1 p-0";
+const list = "m-0 grid grid-cols-1 list-none gap-1 p-0";
 const example = '<Sidebar label="Main" sections={[{ items: [{ label: "Recipes", href: "/recipes" }] }]}';
 
 /**
@@ -373,7 +373,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   const renderSections = (place: string, rail: boolean, onNavigate?: () => void) =>
     sections.map((section, index) => (
       // A rule above every section after the first, so a section's label reads as the start of a group.
-      <div key={index} className={cn("grid gap-1", index > 0 && "border-0 border-t border-solid border-border pt-4")}>
+      <div key={index} className={cn("grid grid-cols-1 gap-1", index > 0 && "border-0 border-t border-solid border-border pt-4")}>
         {section.label !== undefined && (
           <p id={`${id}${place}${index}`} className={rail ? "sr-only" : "m-0 px-3 py-1 text-sm leading-5 font-semibold text-foreground"}>
             {section.label}
@@ -479,7 +479,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
       {wide && (
         <nav aria-label={label} data-collapsed={collapsed ? "" : undefined} className={column}>
           {header !== undefined && <div className="flex min-h-14 shrink-0 items-center overflow-hidden px-3 py-2">{header}</div>}
-          <div data-ouro-sidebar-scroll="" className="grid min-h-0 flex-1 content-start gap-6 overflow-y-auto overscroll-contain p-2">
+          <div data-ouro-sidebar-scroll="" className="grid grid-cols-1 min-h-0 flex-1 content-start gap-6 overflow-y-auto overscroll-contain p-2">
             {renderSections("c", collapsed)}
           </div>
           {collapsible && (

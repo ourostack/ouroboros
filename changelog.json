@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1306",
       "changes": [
-        "The six file tools (read_file, write_file, edit_file, ls, glob, grep) have Ouro AX cards, and edit_file's refusals end with a code: read-first, no-match or ambiguous-match. read_file, ls, glob and grep now state a low-risk profile, so a turn's tool receipt no longer counts a successful call to them as a side effect."
+        "The six file tools (read_file, write_file, edit_file, ls, glob, grep) have Ouro AX cards, and edit_file's refusals end with a code: read-first, no-match or ambiguous-match. read_file, ls, glob and grep now state a low-risk profile, so a turn's tool receipt no longer counts a successful call to them as a side effect.",
+        "Update the Ouro UI files to Ouro UI v1.3.427."
       ]
     },
     {
