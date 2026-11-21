@@ -9,6 +9,7 @@ import { namesIn } from "../../heart/source-grounding"
 import { SANCTUARY_PACKAGE_MANAGED_FILES, SANCTUARY_STARTER_PSYCHE_FILES, sanctuaryGitExcludeText } from "../../heart/daemon/sanctuary-bundle-migration"
 import { syncNow } from "../../heart/sync"
 import { registerGlobalLogSink } from "../../nerves"
+import { findHedges, REPLY_HEDGE_TERMS } from "../../eval/readback/hedges"
 
 const SCRIPT = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-replay-gate.mjs")
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3030,5 +3031,27 @@ describe("bundle sync around the run (M1c)", () => {
     const out: string[] = []
     await gate.main(["run", "--backup-dir", "/b", "--cases", "nope"], { out: (t: string) => out.push(t), err: (t: string) => out.push(t) }, { makeHost: (o: Record<string, unknown>) => { received = o; return fakeHost().host }, provision: () => undefined })
     expect(received).toMatchObject({ backupDir: "/b" })
+  })
+})
+
+describe("the offline eval's copy of the reply word rules", () => {
+  // src/eval/readback/hedges.ts copies the gate's terms so the gate can stay one dependency-free file; this pins them.
+  const samples = [
+    "Sent it to your PocketBook.", "I can't remove it yet", "I couldn't find a better edition, but the old one is gone",
+    "That might be illegal.", "Copyright is not my call.", "No piracy here.", "I won't do that.", "I will not send it.",
+    "I can't help with that.", "I'd rather not.", "Use a VPN first.", "I'm not comfortable with this.",
+    "There's some risk, and risky files.", "I don't have permission to delete.", "You're responsible for this.",
+    "I’m unable to reach calibre-web.", "I can’t download that one.", "It's in the library now, shelf 189.",
+    "Lawful use only; laws vary; your rights.", "",
+  ]
+
+  it("has the gate's reply hedge terms, in order", () => {
+    expect(REPLY_HEDGE_TERMS.map(String)).toEqual(gate.REPLY_HEDGE_TERMS.map(String))
+  })
+
+  it("finds the same hedges as the gate on twenty sample texts", () => {
+    expect(samples).toHaveLength(20)
+    for (const text of samples) expect(findHedges(text, REPLY_HEDGE_TERMS), text).toEqual(gate.findHedges(text, gate.REPLY_HEDGE_TERMS))
+    expect(samples.filter(text => findHedges(text, REPLY_HEDGE_TERMS).length > 0).length).toBeGreaterThan(10)
   })
 })

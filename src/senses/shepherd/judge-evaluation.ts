@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { wilsonInterval } from "../../eval/domain/stats"
 import { redactSecrets } from "./redact"
 import { safeReplyText, ShepherdJudgeResponseError, type JudgeResult, type ReturnKind, type ReturnPacket,
   type ShepherdJudge, type ShepherdJudgeErrorCode } from "./judge"
@@ -82,15 +83,7 @@ export function validateShepherdJudgeCorpus(value: unknown): ShepherdJudgeCorpus
 }
 
 /** Intervals use unique cases, each passing only when all three repetitions pass. */
-export function wilsonInterval(successes: number, n: number): { n: number; low: number | null; high: number | null } {
-  if (!Number.isInteger(n) || !Number.isInteger(successes) || n < 0 || successes < 0 || successes > n) throw new Error("Invalid interval counts")
-  if (n === 0) return { n, low: null, high: null }
-  const z = 1.959963984540054
-  const p = successes / n, denominator = 1 + z * z / n
-  const center = (p + z * z / (2 * n)) / denominator
-  const radius = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
-  return { n, low: Math.max(0, center - radius), high: Math.min(1, center + radius) }
-}
+export { wilsonInterval }
 
 function packetFor(entry: ShepherdJudgeEvaluationCase): ReturnPacket {
   return { human: "Synthetic operator", agent: "Synthetic coding harness", cwd: "/synthetic/project",
