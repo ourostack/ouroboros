@@ -71,6 +71,9 @@ export interface WalkerSource {
   claims?: readonly { entry: string; parser: string }[];
   cards?: string;
   handlers?: readonly string[];
+  passthrough?: readonly string[];
+  approvals?: readonly string[];
+  reshape?: readonly string[];
 }
 
 /**
@@ -79,11 +82,20 @@ export interface WalkerSource {
  */
 export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
   if (!baseSources) return [];
-  // A changed parser or kinds type, or an added claim, can hide doors as surely as a removed source.
+  // A changed parser or kinds type, an added claim or passthrough, or a dropped approvals resolver can hide doors as
+  // surely as a removed source.
   const key = (s: WalkerSource) =>
-    [s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`)].join(" ");
-  const here = new Set(sources.map(key));
-  return baseSources
-    .filter((s) => !here.has(key(s)))
-    .map((s) => `${key(s)}: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.`);
+    [
+      s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`),
+      ...(s.cards ? [`cards ${s.cards}`] : []), ...(s.passthrough ?? []).map((p) => `passthrough ${p}`), ...(s.approvals ?? []).map((a) => `approvals ${a}`),
+      ...(s.reshape ?? []).map((r) => `reshape ${r}`),
+    ].join(" ");
+  const here = new Map(sources.map((s) => [key(s), s]));
+  return baseSources.flatMap((s) => {
+    const mine = here.get(key(s));
+    if (!mine) return [`${key(s)}: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.`];
+    // Dropping a handlers file only makes codes harder to count as raised; adding one can make them all count.
+    return (mine.handlers ?? []).filter((h) => !(s.handlers ?? []).includes(h))
+      .map((h) => `${key(s)}: handlers ${h} is new here. Fix: raise each code where the door handles it; a new handlers file can make any card's codes count as raised.`);
+  });
 }

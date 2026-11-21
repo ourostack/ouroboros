@@ -1,0 +1,1 @@
+{ "product": "harness", "sources": [{ "walker": "tool-schemas", "module": "dist", "source": "src", "passthrough": "src/m.ts#schema" }] }

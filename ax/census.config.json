@@ -20,6 +20,15 @@
         {"entry": "src/heart/daemon/ouro-bot-entry.ts", "parser": "src/heart/daemon/cli-parse.ts"}
       ],
       "cards": "dist/heart/daemon/cli-manifest.js#CLI_ENTRY_POINTS"
+    },
+    {
+      "walker": "tool-schemas",
+      "module": "dist",
+      "source": "src",
+      "handlers": ["src/repertoire/tools.ts"],
+      "passthrough": ["src/repertoire/mcp-tools.ts#mcpToolSchema"],
+      "approvals": ["src/repertoire/tools.ts#classifyApprovalForInvocation"],
+      "reshape": ["src/heart/streaming.ts#toResponsesTools", "src/senses/voice/realtime-tool-schema.ts#realtimeToolsFromDefinitions"]
     }
   ],
   "groups": [

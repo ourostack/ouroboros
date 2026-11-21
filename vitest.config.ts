@@ -51,6 +51,8 @@ export default defineConfig({
       // The AX census's walker fixtures include fake test files, to prove the walkers skip them.
       ".github/scripts/ax-census/**/fixtures/**",
       "src/__tests__/integration/**",
+      // Needs Docker; `npm run test:eval-sandbox` runs it.
+      "src/__tests__/eval/e2e.integration.test.ts",
       "src/__tests__/senses/cli/*.tsx",
     ],
     maxWorkers: 1,

@@ -296,8 +296,35 @@ export type ToolApprovalPolicy =
 
 export type ToolApprovalPolicyResolver = (args: Record<string, unknown>) => ToolApprovalPolicy
 
+/** What can go wrong at a tool, as the model reads it: the census's `ErrorCard`. */
+export interface ToolErrorCard {
+  code: string;
+  means: string;
+  fix: string;
+}
+
+/**
+ * A tool's Ouro AX declaration: the census's `DoorCard`, with the tool's id `tool:<name>`. `when` says when a model
+ * should pick this tool over its neighbours; `effect` is its consent class, and `consequential` is for exactly the
+ * tools with an `approvalPolicy`, whose `confirm` is the approval question. A bare schema with no definition (an
+ * engine tool) keeps its card in its module's exported `toolCards` list instead.
+ */
+export interface ToolDoorCard {
+  id: `tool:${string}`;
+  group: string;
+  when: string;
+  effect: "read" | "write" | "consequential" | "person-only";
+  errors: readonly ToolErrorCard[];
+  destructive?: true;
+  idempotent?: true;
+  confirm?: string;
+  eager?: true;
+}
+
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
+  /** The tool's Ouro AX card, which the AX census checks (ax/census.config.json). */
+  ax?: ToolDoorCard;
   handler: ToolHandler;
   integration?: Integration;
   requiredCapability?: import("../heart/core").ProviderCapability;

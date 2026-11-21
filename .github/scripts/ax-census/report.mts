@@ -12,13 +12,14 @@ export function buildProductReport(
   baselineSize: number,
   walked: { kinds: string[]; finders: string[] },
   unwalked: readonly Gap[] = [],
+  excluded: readonly { hit: string; category: string }[] = [],
 ): ProductReport {
   const byKind: Record<string, Counts> = {};
   const undeclared: Gap[] = [];
   const weakGaps: Gap[] = [];
   let declared = 0;
   for (const door of doors) {
-    const counts = (byKind[door.kind] ??= { found: 0, declared: 0, weak: 0, undeclared: 0 });
+    const counts = (byKind[door.kind] ??= { found: 0, declared: 0, weak: 0, undeclared: 0, unwalked: 0 });
     counts.found += 1;
     const reasons = weak.get(door.id);
     if (reasons) {
@@ -32,15 +33,16 @@ export function buildProductReport(
       undeclared.push({ id: door.id, kind: door.kind, file: door.file, line: door.line, ...(door.walker ? { walker: door.walker } : {}) });
     }
   }
+  for (const gap of unwalked) (byKind[gap.kind] ??= { found: 0, declared: 0, weak: 0, undeclared: 0, unwalked: 0 }).unwalked += 1;
   return {
     product,
     walked,
-    summary: { found: doors.length, declared, weak: weakGaps.length, undeclared: undeclared.length, unwalked: unwalked.length, stale: 0, excluded: 0, baseline: baselineSize },
+    summary: { found: doors.length, declared, weak: weakGaps.length, undeclared: undeclared.length, unwalked: unwalked.length, stale: 0, excluded: excluded.length, baseline: baselineSize },
     byKind,
     undeclared,
     weak: weakGaps,
     unwalked: [...unwalked],
-    excluded: [],
+    excluded: [...excluded],
   };
 }
 
