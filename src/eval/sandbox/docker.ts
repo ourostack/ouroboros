@@ -2,7 +2,8 @@
  * Runs one case in the two-container sandbox and reads back what happened.
  *
  * Each run makes a fresh `docker network create --internal` network (no route off the host) and two containers on
- * it, both `--rm --log-driver none --read-only --cap-drop ALL`:
+ * it, both `--rm --log-driver none --read-only --cap-drop ALL` with capped memory, CPU, processes and file size, each
+ * from its own image (deploy/eval/Dockerfile) so the agent's holds none of the eval's grading code:
  * - the household sidecar (`household.py`, uid 10002), answering as `calibre-web`, `smtp` and the libgen mirror
  *   names over TLS signed by a test authority made for the run, whose key is deleted once it has signed. Its state
  *   folder is a host folder the agent container never mounts, and its admin port listens on its own loopback only.
@@ -11,11 +12,13 @@
  *   places the turn and the books CLI write: `books/work`, `books/removed`, `books/ledger.ndjson`, `state`,
  *   `friends` and `arc`. The test authority replaces the system trust store, and `books/credentials.json` is
  *   synthetic. Its provider is the host's runtime, served over the container's stdin and stdout, so no credential
- *   enters the container.
+ *   enters the container. Its `node` is execute-only, which leaves the guest undumpable: the shell the model runs
+ *   cannot reach the guest's stdio, memory or trace, so it cannot speak on that channel.
  *
  * When the guest reports its turn done (or the deadline passes, or it exits), the host removes the agent container,
- * which ends every process the turn started, and only then reads the household's state file and hashes the files
- * that appeared in the writable mounts. The containers, the network and the run's folder are removed afterwards,
+ * which ends every process the turn started, then the household, and only then reads the household's state file and
+ * hashes the files that appeared in the writable mounts. A run whose files cannot be read back within the limits ends
+ * as a sandbox error, which fails it. The containers, the network and the run's folder are removed afterwards,
  * whatever happened. Every name the run creates starts with `ouro-eval-`.
  */
 import { spawn } from "node:child_process"
@@ -30,16 +33,22 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { projectBundle } from "./projection"
-import { assembleObservation, createdSince, readHouseholdState, snapshotFiles, type GuestTurn } from "./readback"
+import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn } from "./readback"
 
 export const SANDBOX_IMAGE = "ouro-eval-sandbox:local"
+export const HOUSEHOLD_IMAGE = "ouro-eval-household:local"
+export type SandboxImages = { agent: string; household: string }
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
 const BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
 /** What the turn and the books CLI write; everything else in the bundle is read-only. */
 export const WRITABLE = ["books/work", "books/removed", "books/ledger.ndjson", "state", "friends", "arc"]
-const HARDENING = ["--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512"]
+const HARDENING = [
+  "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
+  "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--ulimit", `fsize=${SNAPSHOT_LIMITS.bytes}`,
+]
+
 
 export type DockerProcess = { stdin: Writable; stdout: Readable; exited: Promise<number>; stderr(): string }
 export type Docker = {
@@ -75,12 +84,14 @@ export function dockerCli(command = "docker"): Docker {
   }
 }
 
-/** Builds the eval image from a built checkout (`npm run build` first): the harness `dist/`, its runtime dependencies and the fakes. */
-export async function buildSandboxImage(input: { repoRoot: string; tag?: string; docker: Docker }): Promise<void> {
-  const tag = input.tag ?? SANDBOX_IMAGE
-  emitNervesEvent({ component: "eval", event: "eval.sandbox_image_start", message: "building the eval sandbox image", meta: { tag } })
-  await input.docker.run(["build", "--file", path.join(input.repoRoot, "deploy/eval/Dockerfile"), "--tag", tag, input.repoRoot])
-  emitNervesEvent({ component: "eval", event: "eval.sandbox_image_end", message: "built the eval sandbox image", meta: { tag } })
+/** Builds both eval images from a built checkout (`npm run build` first): the agent's (the harness `dist/` and its runtime dependencies) and the household's (the fakes). */
+export async function buildSandboxImage(input: { repoRoot: string; images?: SandboxImages; docker: Docker }): Promise<void> {
+  const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
+  emitNervesEvent({ component: "eval", event: "eval.sandbox_image_start", message: "building the eval sandbox images", meta: images })
+  for (const target of ["agent", "household"] as const) {
+    await input.docker.run(["build", "--file", path.join(input.repoRoot, "deploy/eval/Dockerfile"), "--target", target, "--tag", images[target], input.repoRoot])
+  }
+  emitNervesEvent({ component: "eval", event: "eval.sandbox_image_end", message: "built the eval sandbox images", meta: images })
 }
 
 export type SandboxInput = {
@@ -92,7 +103,7 @@ export type SandboxInput = {
   budget: { take(): boolean }
   /** The public seed bundle the package-managed files come from. */
   seedBundleDir: string
-  image?: string
+  images?: SandboxImages
   docker?: Docker
   /** Where the run's private folder is made; the system temp folder by default. */
   workRoot?: string
@@ -100,6 +111,8 @@ export type SandboxInput = {
   oracle?: (file: string) => Promise<boolean>
   turnTimeoutMs?: number
   readyTimeoutMs?: number
+  /** How long to wait for a removed container's `docker run` to end before going on without it; 30 s by default. */
+  exitGraceMs?: number
 }
 
 /** Synthetic settings for the books CLI, pointing at the fake household and nothing else. */
@@ -168,6 +181,11 @@ function waitForGuest(agent: DockerProcess, onDone: (listen: (outcome: GuestOutc
   })
 }
 
+const settle = (exited: Promise<number>, graceMs: number): Promise<unknown> => new Promise((resolve) => {
+  const timer = setTimeout(resolve, graceMs)
+  void exited.then(() => { clearTimeout(timer); resolve(undefined) })
+})
+
 function guestTurn(outcome: GuestOutcome): GuestTurn {
   if (!outcome.ok) return { timeline: [], finalReply: "", outcome: `sandbox-error: ${outcome.error}` }
   const result = outcome.result as Partial<GuestTurn> | null
@@ -179,7 +197,7 @@ function guestTurn(outcome: GuestOutcome): GuestTurn {
 
 export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[] }> {
   const docker = input.docker ?? dockerCli()
-  const image = input.image ?? SANDBOX_IMAGE
+  const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   const runId = `ouro-eval-${crypto.randomBytes(4).toString("hex")}`
   const last = input.case.prefix.at(-1)
   if (last?.role !== "user") throw new Error(`case ${input.case.id}: the prefix must end with the owner's message`)
@@ -202,7 +220,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     reclaimed = true
     await docker.run([
       "run", "--rm", "--network", "none", "--log-driver", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
-      "--user", "0:0", "-v", `${work}:/work`, image, "sh", "-c", `chown -R ${self} /work && chmod -R u+rwX /work`,
+      "--user", "0:0", "-v", `${work}:/work`, images.household, "sh", "-c", `chown -R ${self} /work && chmod -R u+rwX /work`,
     ])
   }
   try {
@@ -210,14 +228,18 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     fs.writeFileSync(path.join(bundle, "books/credentials.json"), `${JSON.stringify(booksSettings(), null, 1)}\n`)
     for (const dir of [fixtures, tls, household]) fs.mkdirSync(dir)
     const helper = ["run", "--rm", "--network", "none", "--user", self, ...HARDENING]
-    const labels = JSON.parse(await docker.run([...helper, "-v", `${fixtures}:/out`, image, "python3", "/opt/eval/fakes/fixtures.py", "build", "/out"])) as Record<string, string>
-    for (const sha256 of input.case.seed.disk) {
+    const labels = JSON.parse(await docker.run([...helper, "-v", `${fixtures}:/out`, images.household, "python3", "/opt/eval/fakes/fixtures.py", "build", "/out"])) as Record<string, string>
+    // A seeded file sits where an earlier `books get` would have left it, so its place does not mark it as seeded.
+    const earlier = Math.floor(Date.now() / 1000) - 86_400
+    input.case.seed.disk.forEach((sha256, index) => {
       const name = Object.keys(labels).find((label) => labels[label] === sha256)
       if (!name) throw new Error(`case ${input.case.id} seeds ${sha256} on disk, which is no fixture`)
-      fs.mkdirSync(path.join(bundle, "books/work/seeded"), { recursive: true })
-      fs.copyFileSync(path.join(fixtures, `${name}.epub`), path.join(bundle, "books/work/seeded", `${name}.epub`))
-    }
-    await docker.run([...helper, "-v", `${tls}:/out`, image, "sh", "-c", tlsScript()])
+      const work = input.case.seed.labels.find((label) => label.sha256 === sha256)?.work ?? "book"
+      const folder = path.join(bundle, "books/work", `${earlier + index}-${crypto.randomBytes(4).toString("hex")}`)
+      fs.mkdirSync(folder)
+      fs.copyFileSync(path.join(fixtures, `${name}.epub`), path.join(folder, `${work}.epub`))
+    })
+    await docker.run([...helper, "-v", `${tls}:/out`, images.household, "sh", "-c", tlsScript()])
     fs.chmodSync(path.join(tls, "server.key"), 0o644)
     const seedFile = path.join(work, "seed.json")
     fs.writeFileSync(seedFile, JSON.stringify({ ...input.case.seed, calibreWeb: { username: "butler", password: "eval-password" }, smtp: { user: "eval", password: "eval-password" } }))
@@ -229,42 +251,52 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     await docker.run(["network", "create", "--internal", "--label", "ouro-eval", runId])
     networkMade = true
     started.push(sidecarName)
+    // From here a container's user may own files in the run's folder.
+    reclaimed = false
     const sidecar = docker.start([
       "run", "--rm", "--name", sidecarName, "--network", runId, ...ALIASES.flatMap((alias) => ["--network-alias", alias]),
-      "--user", "10002:10002", ...HARDENING, "--tmpfs", "/tmp",
+      "--user", "10002:10002", ...HARDENING, "--tmpfs", "/tmp:rw,size=64m",
       "-v", `${fixtures}:/eval/fixtures:ro`, "-v", `${seedFile}:/eval/seed.json:ro`,
       "-v", `${tls}/server.pem:/eval/tls/server.pem:ro`, "-v", `${tls}/server.key:/eval/tls/server.key:ro`, "-v", `${household}:/eval/state`,
-      image, "python3", "/opt/eval/fakes/household.py", "--seed", "/eval/seed.json", "--fixtures", "/eval/fixtures", "--state", "/eval/state",
+      images.household, "python3", "/opt/eval/fakes/household.py", "--seed", "/eval/seed.json", "--fixtures", "/eval/fixtures", "--state", "/eval/state",
       "--tls-cert", "/eval/tls/server.pem", "--tls-key", "/eval/tls/server.key",
     ])
     await waitForReady(sidecar, input.readyTimeoutMs ?? 60_000)
 
     const before = snapshotFiles(bundle, WRITABLE)
     started.push(agentName)
-    reclaimed = false
     const agent = docker.start([
       "run", "-i", "--rm", "--name", agentName, "--network", runId, "--user", "10001:10001", ...HARDENING,
-      "--tmpfs", "/tmp:rw,mode=1777", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700", "--env", "HOME=/home/ouro",
+      "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      image, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary", "--turn", "/eval/turn.json",
+      images.agent, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary", "--turn", "/eval/turn.json",
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)
     const channel = createStreamChannel(agent.stdout, agent.stdin)
     serveProxyRuntime(channel, recorded.runtime, input.budget)
     const outcome = await waitForGuest(agent, (listen) => channel.onMessage((msg) => { if (msg.type === "done") listen(msg.outcome) }), input.turnTimeoutMs ?? 600_000)
-    // Ends every process the turn started before anything is read back.
+    // Ends every process the turn started, then the household, before anything is read back.
     await docker.run(["rm", "--force", agentName]).catch(() => "")
-    await agent.exited
+    const graceMs = input.exitGraceMs ?? 30_000
+    await settle(agent.exited, graceMs)
+    await docker.run(["rm", "--force", sidecarName]).catch(() => "")
+    await settle(sidecar.exited, graceMs)
     await reclaim()
 
-    const created = createdSince(before, snapshotFiles(bundle, WRITABLE))
+    let turn = guestTurn(outcome)
+    let created: Observation["created"] = []
+    try {
+      created = createdSince(before, snapshotFiles(bundle, WRITABLE))
+    } catch (error) {
+      turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${(error as Error).message}` }
+    }
     const state = readHouseholdState(path.join(household, "state.json"))
     const bytes = new Map<string, string>(created.map((file) => [file.sha256, path.join(bundle, file.path)]))
     for (const book of state.library) bytes.set(book.sha256, path.join(household, "library", `${book.id}.epub`))
     const observation = await assembleObservation({
-      seed: input.case.seed, turn: guestTurn(outcome), hostCalls, steps: recorded.steps(), household: state, created, bytes,
+      seed: input.case.seed, turn, hostCalls, steps: recorded.steps(), household: state, created, bytes,
       ...(input.oracle ? { oracle: input.oracle } : {}),
     })
     emitNervesEvent({ component: "eval", event: "eval.sandbox_run_end", message: "finished a sandboxed eval run", meta: { caseId: input.case.id, runId, outcome: observation.outcome } })

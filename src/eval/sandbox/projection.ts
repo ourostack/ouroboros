@@ -27,15 +27,26 @@ function refuse(include: string, why: string): never {
   throw new Error(`cannot include ${include}: ${why}`)
 }
 
+// Compared in lower case: on a case-insensitive disk, `Friends` is the friends folder.
+const isGit = (relative: string): boolean => relative.toLowerCase().split("/").includes(".git")
+const isHouseholds = (relative: string): boolean => {
+  const lower = relative.toLowerCase()
+  return PRIVATE.some((p) => lower === p || lower.startsWith(`${p}/`))
+}
+const isPrivate = (relative: string): boolean => isGit(relative) || isHouseholds(relative)
+
 function checkInclude(include: string): void {
   const normal = path.posix.normalize(include)
   if (path.isAbsolute(include) || normal !== include || normal.startsWith("..")) refuse(include, "it is not a plain path inside the bundle")
-  if (normal.split("/").includes(".git")) refuse(include, "Git metadata is never projected")
-  if (PRIVATE.some((p) => normal === p || normal.startsWith(`${p}/`))) refuse(include, "it holds the household's private state")
+  if (isGit(normal)) refuse(include, "Git metadata is never projected")
+  if (isHouseholds(normal)) refuse(include, "it holds the household's private state")
 }
 
-const isPrivate = (relative: string): boolean =>
-  relative.split("/").includes(".git") || PRIVATE.some((p) => relative === p || relative.startsWith(`${p}/`))
+/** The first folder above `relative` that is a symbolic link, if any. */
+function linkedAncestor(root: string, relative: string): string | undefined {
+  const parts = relative.split("/").slice(0, -1)
+  return parts.map((_part, index) => parts.slice(0, index + 1).join("/")).find((dir) => fs.lstatSync(path.join(root, dir), { throwIfNoEntry: false })?.isSymbolicLink())
+}
 
 /** Copies `relative` from `from` to `to`, skipping private paths and symbolic links, each link reported as a gap. */
 function copyTree(from: string, to: string, relative: string, gaps: string[]): void {
@@ -68,7 +79,9 @@ export function projectBundle(input: ProjectionInput): { gaps: string[] } {
   fs.mkdirSync(input.out, { recursive: true, mode: 0o755 })
   const gaps: string[] = []
   for (const include of input.include) {
-    if (!fs.existsSync(path.join(input.bundleDir, include))) gaps.push(`${include}: not in the bundle under test`)
+    const linked = linkedAncestor(input.bundleDir, include)
+    if (linked) gaps.push(`${include}: under a symbolic link (${linked}), left out`)
+    else if (!fs.existsSync(path.join(input.bundleDir, include))) gaps.push(`${include}: not in the bundle under test`)
     else copyTree(input.bundleDir, input.out, include, gaps)
   }
   for (const seeded of FROM_SEED) {

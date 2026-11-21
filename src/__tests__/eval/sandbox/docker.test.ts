@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
-import { buildSandboxImage, dockerCli, runSandboxed, SANDBOX_IMAGE, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, runSandboxed, SANDBOX_IMAGE, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
 import { runGuest } from "../../../eval/sandbox/guest"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
@@ -61,6 +61,8 @@ type Behaviour = {
   runTurn?: typeof runTelegramTurn
   failRemovals?: boolean
   failReclaim?: boolean
+  /** The agent's `docker run` never ends, even once the container is removed. */
+  agentHangs?: boolean
   onNetwork?: () => void
   state?: object
 }
@@ -72,7 +74,7 @@ type Behaviour = {
 function fakeDocker(behaviour: Behaviour = {}) {
   const calls: string[][] = []
   const work = { bundle: "", household: "" }
-  let endAgent: (code: number) => void = () => undefined
+  const ends = new Map<string, (code: number) => void>()
   const docker: Docker = {
     run: async (args) => {
       calls.push(args)
@@ -88,10 +90,14 @@ function fakeDocker(behaviour: Behaviour = {}) {
       }
       if (args[0] === "network" && args[1] === "create") behaviour.onNetwork?.()
       if (args[0] === "rm" || args[0] === "network" && args[1] === "rm") {
-        if (args[0] === "rm" && args[2]!.endsWith("-agent")) endAgent(137)
+        if (args[0] === "rm" && !(behaviour.agentHangs && args[2]!.endsWith("-agent"))) ends.get(args[2]!)?.(137)
         if (behaviour.failRemovals) throw new Error("no such container")
       }
-      if (args.at(-1)?.startsWith("chown -R") && behaviour.failReclaim) throw new Error("reclaim failed")
+      if (args.at(-1)?.startsWith("chown -R")) {
+        if (behaviour.failReclaim) throw new Error("reclaim failed")
+        // The household's user owns its shelf; handing the folder back is what lets the host delete it.
+        fs.chmodSync(path.join(at.get("/work")!, "household", "library"), 0o700)
+      }
       return ""
     },
     start: (args): DockerProcess => {
@@ -101,20 +107,23 @@ function fakeDocker(behaviour: Behaviour = {}) {
       const stdout = new PassThrough()
       let exit!: (code: number) => void
       const exited = new Promise<number>((resolve) => { exit = resolve })
-      if (args[args.indexOf("--name") + 1]!.endsWith("-household")) {
+      const name = args[args.indexOf("--name") + 1]!
+      if (name.endsWith("-household")) {
+        ends.set(name, exit)
         work.household = at.get("/eval/state")!
         fs.writeFileSync(path.join(work.household, "state.json"), JSON.stringify(behaviour.state ?? {
           library: [{ id: 189, title: "The Harbour Almanac", sha256: sha("C") }], mail: [], events: [{ service: "calibre-web" }],
         }))
         fs.mkdirSync(path.join(work.household, "library"))
         fs.writeFileSync(path.join(work.household, "library", "189.epub"), "C")
+        fs.chmodSync(path.join(work.household, "library"), 0o500)
         if (behaviour.sidecar === "exit") setImmediate(() => exit(2))
         else if (behaviour.sidecar !== "silent") setImmediate(() => { stdout.write("starting\n"); stdout.write("{\"ready\": true, \"ports\": {}}\n") })
         return { stdin, stdout, exited, stderr: () => "address in use" }
       }
       if (behaviour.agent === "throw") throw new Error("docker is not installed")
       work.bundle = at.get(BUNDLE)!
-      endAgent = exit
+      ends.set(name, exit)
       if (behaviour.agent === "exit") setImmediate(() => exit(1))
       else if (behaviour.agent === "null-result") stdout.write(`${JSON.stringify({ type: "done", outcome: { ok: true, result: null } })}\n`)
       else if (behaviour.agent !== "silent") {
@@ -179,7 +188,7 @@ describe("runSandboxed", () => {
     expect(obs.library).toEqual([{ id: 189, title: "The Harbour Almanac", sha256: sha("C") }])
     expect(obs.created).toContainEqual({ path: "books/removed/187-the-harbour-almanac.epub", sha256: sha("A") })
     // The seeded download was on disk before the turn, so it is not something the turn made.
-    expect(obs.created.map((file) => file.path)).not.toContain("books/work/seeded/A0.epub")
+    expect(obs.created.map((file) => file.path).filter((file) => file.startsWith("books/work"))).toEqual([])
     // C is unlabelled in this case, so the oracle grades the household's shelved copy.
     expect(obs.oracle).toEqual({ [sha("C")]: true })
     expect(seenPaths).toEqual([path.join(work.household, "library", "189.epub")])
@@ -190,11 +199,16 @@ describe("runSandboxed", () => {
     const runId = network.at(-1)!
 
     const sidecar = named(calls, "-household")
-    expect(sidecar).toEqual(expect.arrayContaining(["--rm", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--user", "10002:10002", "--network", runId]))
+    const limits = ["--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--pids-limit", "512", "--ulimit", `fsize=${256 * 1024 * 1024}`]
+    expect(sidecar).toEqual(expect.arrayContaining(["--rm", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--user", "10002:10002", "--network", runId, ...limits]))
+    expect(sidecar).toContain(HOUSEHOLD_IMAGE)
     for (const alias of ["calibre-web", "smtp", "libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]) expect(sidecar.join(" ")).toContain(`--network-alias ${alias}`)
 
     const agent = named(calls, "-agent")
-    expect(agent).toEqual(expect.arrayContaining(["-i", "--rm", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--user", "10001:10001", "--env", "HOME=/home/ouro", "--network", runId]))
+    expect(agent).toEqual(expect.arrayContaining(["-i", "--rm", "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--user", "10001:10001", "--env", "HOME=/home/ouro", "--network", runId, ...limits]))
+    expect(agent).toEqual(expect.arrayContaining(["--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m"]))
+    // The helpers that build the fixtures and the test authority, and hand the folder back, use the household's image.
+    for (const helper of calls.filter((args) => args[0] === "run" && !args.includes("--name"))) expect(helper).toContain(HOUSEHOLD_IMAGE)
     expect(agent.slice(-7)).toEqual([SANDBOX_IMAGE, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary", "--turn", "/eval/turn.json"])
     const agentMounts = agent.flatMap((arg, index) => agent[index - 1] === "-v" ? [arg] : [])
     expect(agentMounts).toContainEqual(expect.stringMatching(new RegExp(`:${BUNDLE}:ro$`)))
@@ -205,10 +219,11 @@ describe("runSandboxed", () => {
     // The household's state, the TLS key and the seed never reach the agent container.
     expect(agentMounts.join(" ")).not.toMatch(/household|server\.key|seed\.json|fixtures/)
 
-    // The agent goes first, then the household and the network, and the run's folder is gone.
-    const removals = calls.filter((args) => args[0] === "rm" || (args[0] === "network" && args[1] === "rm")).map((args) => args.at(-1)!)
-    expect(removals).toEqual([`${runId}-agent`, `${runId}-agent`, `${runId}-household`, runId])
-    expect(calls.findIndex((args) => args.at(-1)?.startsWith("chown -R"))).toBeGreaterThan(calls.findIndex((args) => args[0] === "rm"))
+    // The agent goes first, then the household, both before the folder is handed back and read; then the network,
+    // and the run's folder is gone.
+    const steps = calls.filter((args) => args[0] === "rm" || (args[0] === "network" && args[1] === "rm") || args.at(-1)?.startsWith("chown -R"))
+      .map((args) => args[0] === "run" ? "reclaim" : args.at(-1)!)
+    expect(steps).toEqual([`${runId}-agent`, `${runId}-household`, "reclaim", `${runId}-agent`, `${runId}-household`, runId])
     expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
   })
 
@@ -222,7 +237,7 @@ describe("runSandboxed", () => {
           settings: JSON.parse(fs.readFileSync(path.join(bundle, "books/credentials.json"), "utf8")),
           turn: JSON.parse(fs.readFileSync(path.join(root, work, "turn.json"), "utf8")),
           modes: Object.fromEntries(["books/work", "books/ledger.ndjson", "state", "friends", "arc", "agent.json"].map((entry) => [entry, fs.statSync(path.join(bundle, entry)).mode & 0o777])),
-          seeded: fs.readFileSync(path.join(bundle, "books/work/seeded/A0.epub"), "utf8"),
+          seeded: fs.readdirSync(path.join(bundle, "books/work"), { recursive: true }).map(String).sort().join(" "),
         }
         return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
       },
@@ -236,7 +251,23 @@ describe("runSandboxed", () => {
     })
     expect(seen!.turn).toEqual({ prefix: testCase().prefix.slice(0, 2), userText: "take 187 off" })
     expect(seen!.modes).toEqual({ "books/work": 0o777, "books/ledger.ndjson": 0o666, state: 0o777, friends: 0o777, arc: 0o777, "agent.json": 0o644 })
-    expect(seen!.seeded).toBe("A0")
+    // Where an earlier `books get` would have left it: a time-and-id folder, named for the work.
+    expect(seen!.seeded).toMatch(/^(\d{10}-[0-9a-f]{8}) \1\/harbour-almanac\.epub$/)
+  })
+
+  it("names a seeded file that no label covers for no work in particular", async () => {
+    let seeded = ""
+    const { docker } = fakeDocker({
+      runTurn: async () => {
+        const work = fs.readdirSync(root).find((name) => name.startsWith("ouro-eval-"))!
+        seeded = fs.readdirSync(path.join(root, work, "bundle/books/work"), { recursive: true }).map(String).sort().join(" ")
+        return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
+      },
+    })
+    const c = testCase()
+    c.seed.labels = c.seed.labels.filter((label) => label.sha256 !== sha("A0"))
+    await runSandboxed({ ...input(docker), case: c })
+    expect(seeded).toMatch(/\/book\.epub$/)
   })
 
   it("refuses a case whose prefix does not end with the owner's message, before touching Docker", async () => {
@@ -264,6 +295,8 @@ describe("runSandboxed", () => {
     const removals = calls.filter((args) => args[0] === "rm" || args[0] === "network" && args[1] === "rm").map((args) => args.at(-1)!)
     expect(removals).toHaveLength(2)
     expect(removals[0]).toMatch(/-household$/)
+    // The household had shelved its books as its own user; the folder is handed back and removed all the same.
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
   })
 
   it("reports an agent container that exits before its turn is done as a sandbox error, not a pass", async () => {
@@ -299,10 +332,32 @@ describe("runSandboxed", () => {
     expect((await runSandboxed(input(docker))).outcome).toBe("trace-mismatch")
   })
 
+  it("stops waiting for an agent container that does not end once removed", async () => {
+    const { docker } = fakeDocker({ agentHangs: true, agent: "silent" })
+    const obs = await runSandboxed(input(docker, { turnTimeoutMs: 20, exitGraceMs: 20 }))
+    expect(obs.outcome).toBe("sandbox-error: the turn did not finish within 20 ms")
+  })
+
+  it("fails a run that leaves more in its writable places than can be read back", async () => {
+    const { docker } = fakeDocker({
+      runTurn: async () => {
+        const work = fs.readdirSync(root).find((name) => name.startsWith("ouro-eval-"))!
+        fs.mkdirSync(path.join(root, work, "bundle/books/work", ...Array.from({ length: 40 }, () => "d")), { recursive: true })
+        return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
+      },
+    })
+    const obs = await runSandboxed(input(docker))
+    expect(obs.outcome).toMatch(/^sandbox-error: the turn left folders more than 32 deep at books\/work\/d/)
+    expect(obs.created).toEqual([])
+  })
+
   it("hands the folder back and still cleans up when the agent container cannot start or the removals fail", async () => {
     const { docker, calls } = fakeDocker({ agent: "throw", failRemovals: true, failReclaim: true })
     await expect(runSandboxed(input(docker))).rejects.toThrow(/docker is not installed/)
     expect(calls.some((args) => args.at(-1)?.startsWith("chown -R"))).toBe(true)
+    // With the hand-back failing too, the household's shelf stays where the host cannot delete it, and is reported.
+    const [left] = fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))
+    fs.chmodSync(path.join(root, left!, "household", "library"), 0o700)
   })
 
   it("finishes a run whose containers were already gone when it removed them", async () => {
@@ -357,13 +412,12 @@ describe("dockerCli", () => {
     expect(await dockerCli(fake).start(["die"]).exited).toBe(-1)
   })
 
-  it("builds the sandbox image from the checkout's eval Dockerfile", async () => {
+  it("builds the agent's and the household's images from the checkout's eval Dockerfile", async () => {
     const calls: string[][] = []
-    await buildSandboxImage({ repoRoot: "/repo", docker: { run: async (args) => { calls.push(args); return "" }, start: () => { throw new Error("unused") } } })
-    await buildSandboxImage({ repoRoot: "/repo", tag: "ouro-eval-other:1", docker: { run: async (args) => { calls.push(args); return "" }, start: () => { throw new Error("unused") } } })
-    expect(calls).toEqual([
-      ["build", "--file", "/repo/deploy/eval/Dockerfile", "--tag", SANDBOX_IMAGE, "/repo"],
-      ["build", "--file", "/repo/deploy/eval/Dockerfile", "--tag", "ouro-eval-other:1", "/repo"],
-    ])
+    const docker: Docker = { run: async (args) => { calls.push(args); return "" }, start: () => { throw new Error("unused") } }
+    await buildSandboxImage({ repoRoot: "/repo", docker })
+    await buildSandboxImage({ repoRoot: "/repo", images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1" }, docker })
+    const build = (target: string, tag: string) => ["build", "--file", "/repo/deploy/eval/Dockerfile", "--target", target, "--tag", tag, "/repo"]
+    expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
   })
 })

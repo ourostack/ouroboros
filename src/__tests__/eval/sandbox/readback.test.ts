@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
@@ -63,8 +64,21 @@ describe("sandbox readback", () => {
       fs.mkdirSync(path.join(root, "books/work"), { recursive: true })
       fs.symlinkSync(outside, path.join(root, "books/work/link.epub"))
       fs.symlinkSync(root, path.join(root, "books/work/loop"))
+      execFileSync("mkfifo", [path.join(root, "books/work/pipe.epub")])
       const snapshot = snapshotFiles(root, ["books/work", "missing"])
       expect([...snapshot.keys()]).toEqual([])
+    })
+
+    it("refuses to read back more files, deeper folders or a larger file than its limits", () => {
+      const limits = { files: 3, depth: 2, bytes: 4 }
+      fs.mkdirSync(path.join(root, "work/a/b"), { recursive: true })
+      fs.writeFileSync(path.join(root, "work/a/b/ok"), "1234")
+      expect([...snapshotFiles(root, ["work"], { ...limits, files: 4 }).keys()]).toEqual(["work/a/b/ok"])
+      expect(() => snapshotFiles(root, ["work"], limits)).toThrow("the turn left more than 3 files to read back")
+      fs.mkdirSync(path.join(root, "work/a/b/c"))
+      expect(() => snapshotFiles(root, ["work"], { ...limits, files: 10 })).toThrow("the turn left folders more than 2 deep at work/a/b/c")
+      fs.writeFileSync(path.join(root, "work/big"), "12345")
+      expect(() => snapshotFiles(root, ["work/big"], limits)).toThrow("work/big is larger than 4 bytes")
     })
   })
 
@@ -177,6 +191,17 @@ describe("sandbox readback", () => {
       expect(obs.oracle).toEqual({})
       expect(obs.outcome).toBe("trace-mismatch")
       expect(obs.timeline).toEqual([])
+    })
+
+    it("keeps a sandbox error as the outcome even though its empty trace disagrees with the host's calls", async () => {
+      const obs = await assembleObservation({
+        seed: seedWith([]),
+        turn: { timeline: [], finalReply: "", outcome: "sandbox-error: the turn did not finish within 50 ms" },
+        hostCalls: [{ kind: "call", name: "shell", args: "{}", result: "" }],
+        steps: 1, household: { library: [], mail: [], events: 0 }, created: [], bytes: new Map(),
+      })
+      expect(obs.outcome).toBe("sandbox-error: the turn did not finish within 50 ms")
+      expect(obs.timeline).toEqual([{ kind: "call", name: "shell", args: "{}", result: "" }])
     })
   })
 })

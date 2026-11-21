@@ -211,7 +211,13 @@ export const ASSERTIONS: Record<string, Assertion> = {
   },
 }
 
-/** Runs every assertion the case names against one observation. Throws on a name not in the vocabulary. */
+/** Outcomes that mean the observation cannot be trusted: the sandbox did not finish the run, or the guest's trace disagreed with the host's. */
+const untrusted = (outcome: string): boolean => outcome === "trace-mismatch" || outcome.startsWith("sandbox-error")
+
+/**
+ * Runs every assertion the case names against one observation, and fails a run whose observation cannot be trusted
+ * (check `run.trusted`). Throws on a name not in the vocabulary.
+ */
 export function evaluate(c: Case, obs: Observation): { passed: boolean; checks: Check[] } {
   emitNervesEvent({ component: "eval", event: "eval.evaluate_start", message: "grading one observation", meta: { caseId: c.id } })
   const checks = c.assertions.map(ref => {
@@ -222,6 +228,7 @@ export function evaluate(c: Case, obs: Observation): { passed: boolean; checks: 
     }
     return ASSERTIONS[ref.name]!(c.seed, obs, ref.args ?? {})
   })
+  if (untrusted(obs.outcome)) checks.push(check("run.trusted", false, `the run cannot be graded: ${obs.outcome}`))
   const passed = checks.every(entry => entry.ok)
   emitNervesEvent({ component: "eval", event: "eval.evaluate_end", message: "graded one observation",
     meta: { caseId: c.id, passed, failed: checks.filter(entry => !entry.ok).map(entry => entry.name) } })

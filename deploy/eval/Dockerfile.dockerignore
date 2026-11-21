@@ -3,5 +3,5 @@
 !package.json
 !npm-shrinkwrap.json
 !dist/
-!src/eval/fakes/
-src/eval/fakes/__pycache__/
+!src/eval/fakes/household.py
+!src/eval/fakes/fixtures.py

@@ -17,10 +17,17 @@ import type { Observation, Seed, SeedBook, TraceCall } from "../domain/case"
 export type HouseholdState = { library: SeedBook[]; mail: Observation["mail"]; events: number }
 export type GuestTurn = Pick<Observation, "timeline" | "finalReply" | "outcome">
 
+/**
+ * What a snapshot will read. The containers cannot write a file over `bytes` (their `fsize` limit), and a turn that
+ * leaves more files or deeper folders than this cannot be read back, which fails the run rather than stalling the host.
+ */
+export const SNAPSHOT_LIMITS = { files: 20_000, depth: 32, bytes: 256 * 1024 * 1024 }
+
 /** Path relative to `root` → SHA-256, for every regular file under each of `entries` (folders or single files). */
-export function snapshotFiles(root: string, entries: string[]): Map<string, string> {
+export function snapshotFiles(root: string, entries: string[], limits = SNAPSHOT_LIMITS): Map<string, string> {
   const found = new Map<string, string>()
-  const visit = (relative: string): void => {
+  let seen = 0
+  const visit = (relative: string, depth: number): void => {
     const full = path.join(root, relative)
     let stat: fs.Stats
     try {
@@ -28,13 +35,17 @@ export function snapshotFiles(root: string, entries: string[]): Map<string, stri
     } catch {
       return
     }
+    seen += 1
+    if (seen > limits.files) throw new Error(`the turn left more than ${limits.files} files to read back`)
     if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(full)) visit(path.posix.join(relative, name))
+      if (depth > limits.depth) throw new Error(`the turn left folders more than ${limits.depth} deep at ${relative}`)
+      for (const name of fs.readdirSync(full)) visit(path.posix.join(relative, name), depth + 1)
     } else if (stat.isFile()) {
+      if (stat.size > limits.bytes) throw new Error(`${relative} is larger than ${limits.bytes} bytes`)
       found.set(relative, crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex"))
     }
   }
-  for (const entry of entries) visit(entry)
+  for (const entry of entries) visit(entry, 0)
   return found
 }
 
@@ -122,7 +133,8 @@ export async function assembleObservation(input: AssembleInput): Promise<Observa
     library: input.household.library,
     mail: input.household.mail,
     created: input.created,
-    outcome: merged.mismatch ? "trace-mismatch" : input.turn.outcome,
+    // A run the sandbox could not finish keeps its reason; otherwise a guest trace that disagrees with the host's wins.
+    outcome: input.turn.outcome.startsWith("sandbox-error") || !merged.mismatch ? input.turn.outcome : "trace-mismatch",
     steps: input.steps,
     oracle,
   }

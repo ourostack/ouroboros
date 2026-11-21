@@ -88,8 +88,8 @@ describe("projectBundle", () => {
   it("reports an included path the bundle does not have, and a package-managed file the seed does not have", () => {
     fs.rmSync(path.join(bundleDir, "skills"), { recursive: true })
     fs.rmSync(path.join(seedBundleDir, "habits"), { recursive: true })
-    const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["agent.json", "skills"], out })
-    expect(gaps).toEqual(expect.arrayContaining(["skills: not in the bundle under test", "habits: not in the seed bundle"]))
+    const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["agent.json", "skills", "skills/deeper/note.md"], out })
+    expect(gaps).toEqual(expect.arrayContaining(["skills: not in the bundle under test", "skills/deeper/note.md: not in the bundle under test", "habits: not in the seed bundle"]))
     expect(fs.existsSync(path.join(out, "skills"))).toBe(false)
     expect(fs.existsSync(path.join(out, "habits"))).toBe(false)
   })
@@ -103,7 +103,22 @@ describe("projectBundle", () => {
     expect(gaps).toEqual(expect.arrayContaining(["skills/linked.md: a symbolic link, left out", "psyche/friends-link: a symbolic link, left out"]))
   })
 
+  it("never follows a symbolic link above an included path", () => {
+    fs.symlinkSync(path.join(root, "seed"), path.join(bundleDir, "outside"))
+    const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["outside/psyche/SOUL.md"], out })
+    expect(fs.existsSync(path.join(out, "outside"))).toBe(false)
+    expect(gaps).toContain("outside/psyche/SOUL.md: under a symbolic link (outside), left out")
+  })
+
+  it("leaves out a private path in any letter case, inside an included folder", () => {
+    write(bundleDir, "Friends/ari.json")
+    write(bundleDir, "books/Credentials.json")
+    projectBundle({ bundleDir, seedBundleDir, include: ["books"], out })
+    expect(fs.existsSync(path.join(out, "books/Credentials.json"))).toBe(false)
+  })
+
   it.each([
+    ["Friends"], ["STATE/x"], ["books/Credentials.json"], ["Books/Work"], [".Git"],
     ["friends"], ["state"], ["desk"], ["books/credentials.json"], ["books/work"], ["books/removed"], ["books/ledger.ndjson"],
     ["../outside"], ["/etc"], [".git"], ["psyche/../friends"],
   ])("refuses to include %s", (include) => {
