@@ -211,7 +211,7 @@ describe("runSandboxed", () => {
     expect(agent).toEqual(expect.arrayContaining(["--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m"]))
     // The helpers that build the fixtures and the test authority, and hand the folder back, use the household's image.
     for (const helper of calls.filter((args) => args[0] === "run" && !args.includes("--name"))) expect(helper).toContain(HOUSEHOLD_IMAGE)
-    expect(agent.slice(-7)).toEqual([SANDBOX_IMAGE, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary", "--turn", "/eval/turn.json"])
+    expect(agent.slice(-5)).toEqual([SANDBOX_IMAGE, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"])
     const agentMounts = agent.flatMap((arg, index) => agent[index - 1] === "-v" ? [arg] : [])
     expect(agentMounts).toContainEqual(expect.stringMatching(new RegExp(`:${BUNDLE}:ro$`)))
     for (const writable of ["books/work", "books/removed", "books/ledger.ndjson", "state", "friends", "arc"]) {

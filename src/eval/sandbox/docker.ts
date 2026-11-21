@@ -271,7 +271,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      images.agent, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary", "--turn", "/eval/turn.json",
+      images.agent, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary",
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)

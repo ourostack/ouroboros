@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1302",
+      "changes": [
+        "Eval runs a case's turn in a two-container sandbox: the agent gets a read-only copy of the public bundle on an internal network, a fake household plays the library, mail and libgen, and the host reads the results back."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1301",
       "changes": [
         "Every node entry point the harness ships has an Ouro AX card, and each prints a code an agent can act on when it fails.",

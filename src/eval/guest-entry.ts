@@ -1,14 +1,13 @@
 /**
- * The agent container's command: `node dist/eval/guest-entry.js --agent sanctuary --turn <file>`. It runs one
- * Telegram turn whose provider is served by the host over stdin and stdout, then exits (see `sandbox/guest.ts`).
+ * The agent container's command, `node dist/eval/guest-entry.js`, run only inside the eval sandbox: one Telegram turn
+ * read from the turn file the sandbox mounts at `/eval/turn.json`, with its provider served by the host over stdin
+ * and stdout (see `sandbox/guest.ts`). It takes no arguments, so it is no command an agent's shell is offered.
  */
 import { emitNervesEvent } from "../nerves/runtime"
 import { runGuest } from "./sandbox/guest"
 import { runTelegramTurn } from "./transport/telegram-turn"
 
-const turnFile = process.argv[process.argv.indexOf("--turn") + 1] ?? "/eval/turn.json"
-
-void runGuest({ stdin: process.stdin, stdout: process.stdout, turnFile, runTurn: runTelegramTurn }).then((outcome) => {
+void runGuest({ stdin: process.stdin, stdout: process.stdout, turnFile: "/eval/turn.json", runTurn: runTelegramTurn }).then((outcome) => {
   process.exit(outcome.ok ? 0 : 1)
 }).catch((error: unknown) => {
   emitNervesEvent({ component: "eval", level: "error", event: "eval.guest_entry_error", message: "sandbox guest failed outside its turn", meta: { error: String(error) } })
