@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "./tools-base"
+import { withCode, type ToolDefinition } from "./tools-base"
 import {
   getWeather,
   getWeatherByCity,
@@ -45,13 +45,19 @@ export const travelToolDefinitions: ToolDefinition[] = [
           return JSON.stringify(data, null, 2)
         }
 
-        return "Please provide either a city name or lat/lon coordinates."
+        return withCode("Please provide either a city name or lat/lon coordinates.", "missing-location")
       } catch (err) {
         /* v8 ignore next -- defensive: callers throw Error instances @preserve */
-        return `Weather lookup error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Weather lookup error: ${err instanceof Error ? err.message : String(err)}`, "weather-lookup-failed")
       }
     },
     summaryKeys: ["city", "lat", "lon"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads public weather data" },
+    ax: { id: "tool:weather_lookup", group: "turn-travel", when: "Pick this for conditions at one place right now and today's high and low, such as what to wear; it has no later forecast.", effect: "read", errors: [
+      { code: "guardrail-blocked", means: "The person asking isn't a trusted friend, so the weather lookup didn't run.", fix: "Tell them a trusted friend of the agent has to ask; don't call it again in this conversation." },
+      { code: "missing-location", means: "Neither city nor both lat and lon were given, so nothing was looked up.", fix: "Call again with city, or with lat and lon together (geocode_search finds them)." },
+      { code: "weather-lookup-failed", means: "The weather service failed or found no such city; the text before the code says which.", fix: "Check the city's spelling or pass lat and lon from geocode_search, then call again." },
+    ] },
   },
 
   {
@@ -86,10 +92,15 @@ export const travelToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(data, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive: callers throw Error instances @preserve */
-        return `Travel advisory error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Travel advisory error: ${err instanceof Error ? err.message : String(err)}`, "advisory-lookup-failed")
       }
     },
     summaryKeys: ["country_code"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads a public travel advisory" },
+    ax: { id: "tool:travel_advisory", group: "turn-travel", when: "Pick this to check how risky a country is to visit before suggesting or booking a trip there.", effect: "read", errors: [
+      { code: "advisory-lookup-failed", means: "The advisory service failed, or has no advisory for that code; the text before the code says which.", fix: "If no advisory was found, pass a two-letter ISO code such as FR or JP, not a name; if the service failed, say it's unavailable." },
+      { code: "guardrail-blocked", means: "The person asking isn't a trusted friend, so no advisory was looked up.", fix: "Tell them a trusted friend of the agent has to ask; don't retry the advisory in this conversation." },
+    ] },
   },
 
   {
@@ -135,9 +146,14 @@ export const travelToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(data, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive: callers throw Error instances @preserve */
-        return `Geocode error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Geocode error: ${err instanceof Error ? err.message : String(err)}`, "geocode-failed")
       }
     },
     summaryKeys: ["query"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads public map data" },
+    ax: { id: "tool:geocode_search", group: "turn-travel", when: "Pick this to turn a place or address into coordinates, or to find places near a point, before weather_lookup or advice on getting around.", effect: "read", errors: [
+      { code: "geocode-failed", means: "The map service failed to answer; the text before the code says how.", fix: "Wait a moment and call again, or shorten the query to a place name and city." },
+      { code: "guardrail-blocked", means: "The person asking isn't a trusted friend, so no place was searched.", fix: "Tell them a trusted friend of the agent has to ask; don't search again in this conversation." },
+    ] },
   },
 ]

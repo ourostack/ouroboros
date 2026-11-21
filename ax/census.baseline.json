@@ -75,7 +75,7 @@
     "tool:flight_hold",
     "tool:flight_search",
     "tool:friend_link_code",
-    "tool:geocode_search",
+
     "tool:get_session",
     "tool:get_session_automation",
     "tool:get_sessions_status",
@@ -125,8 +125,6 @@
     "tool:rest",
     "tool:restart_runtime",
     "tool:revive_sense",
-    "tool:rsvp_query",
-    "tool:rsvp_summary",
     "tool:run_workflow",
     "tool:sanctuary_get_download_queue",
     "tool:sanctuary_get_install_state",
@@ -159,7 +157,7 @@
     "tool:stripe_list_cards",
     "tool:surface",
     "tool:teams_send_message",
-    "tool:travel_advisory",
+
     "tool:trip_attach_evidence",
     "tool:trip_calendar",
     "tool:trip_ensure_ledger",
@@ -184,8 +182,7 @@
     "tool:user_profile_delete",
     "tool:user_profile_get",
     "tool:user_profile_store",
-    "tool:vault_setup",
-    "tool:voice_join_local_audio",
-    "tool:weather_lookup"
+    "tool:voice_join_local_audio"
+
   ]
 }
