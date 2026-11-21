@@ -261,6 +261,8 @@ describe("ouro bluebubbles host CLI", () => {
     const me = os.userInfo().username
     await expect(runOuroCli(["bluebubbles", "host", action], deps()))
       .rejects.toThrow(`BlueBubbles host setup refused for macOS account "${me}"`)
+    // The code the host cards name: the person has to declare the account first.
+    await expect(runOuroCli(["bluebubbles", "host", action], deps())).rejects.toMatchObject({ code: "not-imessage-host" })
     expect(hostMocks.runAction).not.toHaveBeenCalled()
   })
 

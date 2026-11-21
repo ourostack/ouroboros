@@ -8219,7 +8219,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Only an account some agent declares as its iMessage host may get a BlueBubbles server.
       const targetUsername = command.target?.username ?? currentOsAccount().username
       const hostCheck = checkBlueBubblesHostTarget(targetUsername, declaredBlueBubblesHosts(deps.bundlesRoot ?? getAgentBundlesRoot()))
-      if (!hostCheck.ok) throw new Error(hostCheck.message)
+      if (!hostCheck.ok) throw Object.assign(new Error(hostCheck.message), { code: "not-imessage-host" })
     }
     if (command.target) {
       installBlueBubblesHostSharedHelper({

@@ -403,9 +403,11 @@ describe("ouro desk CLI execution (daemon-routed)", () => {
     sendCommand.mockRejectedValue(new Error("ECONNREFUSED"))
     const deps = createMockDeps({ sendCommand })
 
-    const result = await runOuroCli(["desk", "task", "list"], deps)
-
-    expect(result).toContain("daemon unavailable")
+    // A failure, exit 1, with the code the desk cards name.
+    await expect(runOuroCli(["desk", "task", "list"], deps)).rejects.toMatchObject({
+      code: "daemon-down",
+      message: expect.stringContaining("daemon unavailable"),
+    })
   })
 
   it("'desk' surfaces daemon-returned error", async () => {
@@ -534,6 +536,6 @@ describe("deskUsage()", () => {
     const usage = deskUsage()
     expect(usage).toContain("ouro desk task list")
     expect(usage).toContain("ouro desk friction add")
-    expect(usage).toContain("ouro task ...")
+    expect(usage).toContain("ouro task list|new|done|archive|show ...")
   })
 })

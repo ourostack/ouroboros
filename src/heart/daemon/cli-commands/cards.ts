@@ -59,3 +59,12 @@ export function needsTerminal(name: string, fix: string): CliErrorCard {
     fix,
   }
 }
+
+/** The gate's refusal of a command other people see when no `--why` is given. */
+export function needsWhy(name: string, reaches: string): CliErrorCard {
+  return {
+    code: "needs-why",
+    means: `ouro ${name} ${reaches}, so the gate wants a one-line reason it can record.`,
+    fix: `Add --why "<reason>" saying why, then run it again.`,
+  }
+}
