@@ -1,6 +1,7 @@
 // The mcp-serve walker: the doors are exactly what the built server's getToolSchemas() returns, and each door's line
 // comes from its `name: "<literal>"` in the TypeScript source, found in the syntax tree (never a regex over text).
-// A name with no literal in source is still a door, with `line: null`. Every other string literal outside a card (an
+// A name with no literal in source is still a door, with `line: null`. Read-only evidence is the served
+// `readOnlyHint`: from `listTools()` when the module exports it (what tools/list answers), else on the schema. Every other string literal outside a card (an
 // `ax` property or the `serverErrors` declaration) is a code the handler may raise: a card's error code counts as
 // raised only when one of these matches it. A server that declares any tool card must export `serverErrors` with an
 // `unknown-door` card, the answer to a tool name it doesn't have, and raise that code too.
@@ -57,11 +58,13 @@ export async function walkMcpSchemas(opts: WalkerOptions): Promise<WalkResult> {
   const sourcePath = resolve(opts.root, opts.source);
   const file = relative(opts.root, sourcePath);
   const require = createRequire(join(opts.root, "package.json"));
-  const loaded = require(resolve(opts.root, opts.module)) as { getToolSchemas?: unknown; serverErrors?: unknown };
+  const loaded = require(resolve(opts.root, opts.module)) as { getToolSchemas?: unknown; listTools?: unknown; serverErrors?: unknown };
   if (typeof loaded.getToolSchemas !== "function") {
     return { doors: [], errors: [`${opts.module}: exports no getToolSchemas function`] };
   }
   const schemas = (loaded.getToolSchemas as () => Schema[])();
+  // A server that serves a projection of its schemas (`listTools()`, what tools/list answers) has its annotations there.
+  const served = new Map((typeof loaded.listTools === "function" ? (loaded.listTools as () => Schema[])() : []).map((t) => [t.name, t]));
   const { lines, literals } = readSource(sourcePath, await readFile(sourcePath, "utf8"));
   const doors: Door[] = [];
   const errors: string[] = [];
@@ -91,7 +94,7 @@ export async function walkMcpSchemas(opts: WalkerOptions): Promise<WalkResult> {
       line: found[0] ?? null,
       card: schema.ax ?? null,
       evidence: {
-        ...(schema.annotations?.readOnlyHint === true ? { readOnly: true } : {}),
+        ...((served.get(name) ?? schema).annotations?.readOnlyHint === true ? { readOnly: true } : {}),
         ...(Array.isArray(schema.ax?.errors) ? { raises: schema.ax.errors.map((e) => e?.code).filter((code) => literals.has(code)) } : {}),
       },
     });
