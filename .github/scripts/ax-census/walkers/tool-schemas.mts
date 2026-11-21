@@ -103,24 +103,57 @@ function factoryOf(node: ts.Node, name: string): { fn: Fn; index: number } | nul
   return null;
 }
 
-/** Every name a function binds: its parameters, its locals, and those of the callbacks inside it. */
-function declaredIn(fn: Fn): Set<string> {
-  const names = new Set<string>();
-  const bind = (b: ts.BindingName): void => {
-    if (ts.isIdentifier(b)) names.add(b.text);
-    else for (const e of b.elements) if (!ts.isOmittedExpression(e)) bind(e.name);
-  };
-  const visit = (n: ts.Node): void => {
-    if (ts.isParameter(n) || ts.isVariableDeclaration(n)) bind(n.name);
-    ts.forEachChild(n, visit);
-  };
-  visit(fn);
-  return names;
-}
-
 /** Whether a string literal appears anywhere in an expression (a template's own text doesn't count). */
 function holdsLiteral(expr: ts.Node): boolean {
   return isText(expr) || ts.forEachChild(expr, (c) => (holdsLiteral(c) ? true : undefined)) === true;
+}
+
+/**
+ * Why an expression isn't built only from the parameters of the functions around it (through locals and loop
+ * variables built the same way): the name it reads that isn't, with `local` when that name is a local; null when it is.
+ */
+function impureRead(expr: ts.Node, seen = new Set<ts.Node>()): { name: string; local: boolean } | null {
+  if (holdsLiteral(expr)) return { name: "a literal", local: false };
+  const ids: ts.Identifier[] = [];
+  const collect = (n: ts.Node): void => {
+    if (ts.isIdentifier(n)) {
+      const parent = n.parent;
+      const isName = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent) || ts.isBindingElement(parent) || ts.isParameter(parent)) && parent.name === n;
+      if (!isName && !(ts.isBindingElement(parent) && parent.propertyName === n)) ids.push(n);
+      return;
+    }
+    ts.forEachChild(n, collect);
+  };
+  collect(expr);
+  for (const id of ids) {
+    const decl = declarationOf(id);
+    if (!decl) return { name: id.text, local: false };
+    if (ts.isParameter(decl) || seen.has(decl)) continue;
+    seen.add(decl);
+    const loop = decl.parent?.parent;
+    const source = loop && ts.isForOfStatement(loop) ? loop.expression : decl.initializer;
+    if (!source || impureRead(source, seen)) return { name: id.text, local: true };
+  }
+  return null;
+}
+
+/** The parameter or local variable an identifier reads, from the functions around it; null at module scope. */
+function declarationOf(id: ts.Identifier): ts.ParameterDeclaration | ts.VariableDeclaration | null {
+  const binds = (b: ts.BindingName): boolean => (ts.isIdentifier(b) ? b.text === id.text : b.elements.some((e) => !ts.isOmittedExpression(e) && binds(e.name)));
+  for (let n: ts.Node | undefined = id.parent; n; n = n.parent) {
+    if (!isFn(n)) continue;
+    const param = n.parameters.find((p) => binds(p.name));
+    if (param) return param;
+    let local: ts.VariableDeclaration | null = null;
+    const find = (c: ts.Node): void => {
+      if (local || (c !== n && isFn(c))) return;
+      if (ts.isVariableDeclaration(c) && binds(c.name)) local = c;
+      else ts.forEachChild(c, find);
+    };
+    if (n.body) find(n.body);
+    if (local) return local;
+  }
+  return null;
 }
 
 /** Whether a function can be imported from its file: exported where it's declared, or by an `export { name }`. */
@@ -316,14 +349,30 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
     if (approvalLine !== undefined) unwalked.push({ id: `approval:${file}#${collapse(expr)}`, kind: "approval", file, line: approvalLine, reasons: [reason] });
   };
   const sources = sourceFiles(dir);
+  // Files that look like they hold tools, whose built modules' exports must all match a found schema.
+  const candidates = new Set<string>();
+  const entryPoints = new Set<string>();
+  /** Each file's imports of `fn` from the file at `target`: the local names, and whether each is a namespace. */
+  const importsOf = (target: string, fn: string): { path: string; sf: ts.SourceFile; local: string; namespace: boolean }[] =>
+    sources.filter((path) => path !== target).flatMap((path) => {
+      const sf = parse(path);
+      return sf.statements.flatMap((st): { path: string; sf: ts.SourceFile; local: string; namespace: boolean }[] => {
+        if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !resolvesTo(path, st.moduleSpecifier.text, target)) return [];
+        const named = st.importClause?.namedBindings;
+        if (named && ts.isNamespaceImport(named)) return [{ path, sf, local: named.name.text, namespace: true }];
+        return named && ts.isNamedImports(named) ? named.elements.filter((el) => (el.propertyName ?? el.name).text === fn).map((el) => ({ path, sf, local: el.name.text, namespace: false })) : [];
+      });
+    });
 
   for (const path of sources) {
     const sf = parse(path);
     const file = relative(opts.root, path);
     const lineOf = (n: ts.Node): number => lineIn(sf, n);
-    const typeText = (o: ts.ObjectLiteralExpression): string | null => {
+    // The type's text; undefined when there's no `type`, null when the census can't read it.
+    const typeText = (o: ts.ObjectLiteralExpression): string | null | undefined => {
       const t = propOf(o, "type");
-      if (!t || !ts.isPropertyAssignment(t)) return null;
+      if (!t) return undefined;
+      if (!ts.isPropertyAssignment(t)) return null;
       const v = unwrap(t.initializer);
       return isText(v) ? v.text : ts.isIdentifier(v) ? constText(sf, v.text) : null;
     };
@@ -335,9 +384,14 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
     const prove = (spec: Spec, node: ts.Node): void => {
       proved.set(spec.spec, [...(proved.get(spec.spec) ?? []), `${file}:${lineOf(node)}`]);
     };
+    // A file that reads argv is an entry point: loading its build would run it.
+    let entryPoint = false;
     const visit = (node: ts.Node): void => {
       ts.forEachChild(node, visit);
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "process" && node.name.text === "argv") entryPoint = true;
+      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === "ToolDefinition") candidates.add(file);
       if (!ts.isObjectLiteralExpression(node)) return;
+      if (propOf(node, "tool")) candidates.add(file);
       const fnProp = propOf(node, "function");
       const isFunctionType = typeText(node) === "function";
       // The flat shape (Responses and Realtime APIs): `{ type: "function", name, parameters }`.
@@ -351,15 +405,21 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
         const spec = enclosing(node, reshape);
         const text = expr ? expr.getText(sf) : "name";
         if (!spec) return gapAt(file, lineOf(node), text, "name: a flat schema whose name isn't a literal, outside any configured re-encoding");
-        const own = declaredIn(findFunction(sf, spec.fn)!);
-        const outside = expr ? readsOf(expr).filter((r) => !own.has(r)) : [];
-        if (expr && !holdsLiteral(expr) && outside.length === 0) return prove(spec, node);
-        return gapAt(file, lineOf(node), text, `name: in re-encoding ${spec.spec}, but it ${outside.length ? `reads ${outside.join(", ")}` : "holds a literal"}, so it isn't only a tool the census already counts`);
+        const bad = expr ? impureRead(expr) : { name: "a literal", local: false };
+        if (!bad) return prove(spec, node);
+        const why = bad.name === "a literal" ? "holds a literal" : bad.local ? `reads ${bad.name}, a local that isn't only the tools it re-encodes` : `reads ${bad.name}`;
+        return gapAt(file, lineOf(node), text, `name: in re-encoding ${spec.spec}, but it ${why}, so it isn't only a tool the census already counts`);
       }
       if (!fnProp) return;
+      if (file) candidates.add(file);
+      const fnLiteral = ts.isPropertyAssignment(fnProp) && ts.isObjectLiteralExpression(unwrap(fnProp.initializer)) ? (unwrap(fnProp.initializer) as ts.ObjectLiteralExpression) : null;
+      // A tool call a model made carries its arguments; a tool doesn't.
+      if (fnLiteral && propOf(fnLiteral, "arguments")) return;
+      if (typeText(node) === null && fnLiteral && propOf(fnLiteral, "name")) {
+        return gapAt(file, lineOf(node), `type: ${(propOf(node, "type") as ts.PropertyAssignment).initializer.getText(sf)}`, "type: not a literal the census can read");
+      }
       // A spread may carry the type; a `function` object with a name beside a spread is a schema all the same.
-      const spreadType = !propOf(node, "type") && node.properties.some(ts.isSpreadAssignment) && ts.isPropertyAssignment(fnProp)
-        && ts.isObjectLiteralExpression(unwrap(fnProp.initializer)) && !!propOf(unwrap(fnProp.initializer) as ts.ObjectLiteralExpression, "name");
+      const spreadType = !propOf(node, "type") && node.properties.some(ts.isSpreadAssignment) && !!fnLiteral && !!propOf(fnLiteral, "name");
       if (!isFunctionType && !spreadType) return;
       const definition = definitionOf(node);
       const policy = definition && propOf(definition, "approvalPolicy");
@@ -411,6 +471,7 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
       gap(node, expr.getText(sf), "name: not a literal, a const holding one, or a factory parameter called with one");
     };
     visit(sf);
+    if (entryPoint) entryPoints.add(file);
   }
 
   // A factory's doors are its calls with a literal name, in its own file and in each file that imports it; a use of
@@ -422,25 +483,28 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
       gapAt(f.file, lineIn(f.sf, f.at), f.param, `name: the parameter ${f.param} of an unnamed function, which is never called with a literal`, f.approvalLine);
       continue;
     }
-    const sites: { sf: ts.SourceFile; file: string; local: string }[] = [{ sf: f.sf, file: f.file, local: called }];
+    const sites: { sf: ts.SourceFile; file: string; local: string; namespace: boolean }[] = [{ sf: f.sf, file: f.file, local: called, namespace: false }];
     if (isExported(f.fn, f.sf, called)) {
+      sites.push(...importsOf(f.path, called).map((i) => ({ ...i, file: relative(opts.root, i.path) })));
+      // A re-export hands the factory on under a module the census doesn't follow.
       for (const path of sources) {
-        if (path === f.path) continue;
         const sf = parse(path);
         for (const st of sf.statements) {
-          if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !resolvesTo(path, st.moduleSpecifier.text, f.path)) continue;
-          const named = st.importClause?.namedBindings;
-          if (named && ts.isNamedImports(named)) {
-            for (const el of named.elements) if ((el.propertyName ?? el.name).text === called) sites.push({ sf, file: relative(opts.root, path), local: el.name.text });
-          }
+          if (!ts.isExportDeclaration(st) || !st.moduleSpecifier || !ts.isStringLiteral(st.moduleSpecifier) || !resolvesTo(path, st.moduleSpecifier.text, f.path)) continue;
+          if (st.exportClause && ts.isNamedExports(st.exportClause) && !st.exportClause.elements.some((e) => (e.propertyName ?? e.name).text === called)) continue;
+          gapAt(relative(opts.root, path), lineIn(sf, st), called, `name: the factory ${called} is re-exported here, and the census follows only direct imports`, f.approvalLine);
         }
       }
     }
     let calls = 0;
     for (const site of sites) {
-      const visit = (n: ts.Node): void => {
-        ts.forEachChild(n, visit);
-        if (!ts.isIdentifier(n) || n.text !== site.local) return;
+      const visit = (node: ts.Node): void => {
+        ts.forEachChild(node, visit);
+        // Through a namespace import the factory is `ns.define`; otherwise it's the identifier itself.
+        const n = site.namespace
+          ? ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === site.local && node.name.text === called ? node : null
+          : ts.isIdentifier(node) && node.text === site.local ? node : null;
+        if (!n) return;
         const parent = n.parent;
         if (ts.isCallExpression(parent) && parent.expression === n) {
           calls += 1;
@@ -464,17 +528,24 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
   }
 
   // A passthrough called with a literal can make any name; a function holding two schemas is not one forwarder.
+  // Its calls are found under its own name, an import alias, or a namespace; each argument must be built only from
+  // the caller's parameters.
   for (const p of passthrough) {
-    for (const [path, sf] of files) {
+    const target = resolve(opts.root, p.file);
+    const aliases = new Map<string, Set<string>>();
+    for (const i of importsOf(target, p.fn)) if (!i.namespace) aliases.set(i.path, new Set([...(aliases.get(i.path) ?? []), i.local]));
+    for (const path of sources) {
+      const sf = parse(path);
+      const names = new Set([p.fn, ...(aliases.get(path) ?? [])]);
       const visit = (n: ts.Node): void => {
         ts.forEachChild(n, visit);
         if (!ts.isCallExpression(n)) return;
-        const callee = ts.isIdentifier(n.expression) ? n.expression.text : ts.isPropertyAccessExpression(n.expression) ? n.expression.name.text : null;
-        if (callee === p.fn && n.arguments.some(holdsLiteral)) {
-          gapAt(relative(opts.root, path), lineIn(sf, n), n.getText(sf), `name: passthrough ${p.spec} is called here with a literal, so its name may not come from a connected server`);
-        }
+        const callee = ts.isIdentifier(n.expression) ? names.has(n.expression.text) : ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === p.fn;
+        if (!callee) return;
+        const why = n.arguments.some(holdsLiteral) ? "a literal" : n.arguments.some((a) => impureRead(a)) ? "what isn't only the caller's parameters" : null;
+        if (why) gapAt(relative(opts.root, path), lineIn(sf, n), n.getText(sf), `name: passthrough ${p.spec} is called here with ${why}, so its name may not come from a connected server`);
       };
-      if (sources.includes(path)) visit(sf);
+      visit(sf);
     }
   }
   for (const [option, specs, category, what] of [["passthrough", passthrough, "third-party-passthrough", "schema built only from its parameters"], ["reshape", reshape, "re-encoding", "flat schema built only from its own names"]] as const) {
@@ -541,6 +612,7 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
   }
 
   // Every tool a built module exports must have a schema the census found, so a name built some other way still shows.
+  for (const file of candidates) if (!entryPoints.has(file)) builtFor(file);
   for (const [file, loaded] of built) {
     if (typeof loaded === "string") continue;
     for (const name of loaded.byName.keys()) {
@@ -568,18 +640,22 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
       doors.push({ id: `approval:${tool.name} via ${a.fn}`, kind: "approval", product: opts.product, name: tool.name, description: owner.description, file: relative(opts.root, path), line: lineIn(sf, side), card: owner.card, evidence: { approval: true }, declaredBy: owner.id });
     };
     // A list the resolver checks the name against: an array literal, or a same-file const holding one or a Set of one.
-    const listOf = (e: ts.Expression): readonly ts.Expression[] => {
+    const param = fn.parameters[0] && ts.isIdentifier(fn.parameters[0].name) ? fn.parameters[0].name.text : null;
+    const unreadable = (verb: string, what: ts.Node): void => {
+      errors.push(`tool-schemas: approvals ${a.spec} ${verb} ${what.getText(sf)}, which the census can't read. Fix: check it against a literal list in the same file.`);
+    };
+    const listOf = (e: ts.Expression): readonly ts.Expression[] | null => {
       const v = unwrap(e);
       if (ts.isArrayLiteralExpression(v)) return v.elements;
       if (ts.isNewExpression(v) && v.arguments?.[0]) return listOf(v.arguments[0]);
-      if (!ts.isIdentifier(v)) return [];
+      if (!ts.isIdentifier(v)) return null;
       let init: ts.Expression | undefined;
       const find = (n: ts.Node): void => {
         if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === v.text && n.initializer) init = n.initializer;
         else ts.forEachChild(n, find);
       };
       find(sf);
-      return init && !ts.isIdentifier(unwrap(init)) ? listOf(init) : [];
+      return init && !ts.isIdentifier(unwrap(init)) ? listOf(init) : null;
     };
     const visit = (n: ts.Node): void => {
       if (ts.isBinaryExpression(n) && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(n.operatorToken.kind)) {
@@ -587,9 +663,13 @@ export async function walkToolSchemas(opts: WalkerOptions): Promise<WalkResult> 
         consider(n.right);
       }
       if (ts.isCaseClause(n)) consider(n.expression);
+      const isName = (x: ts.Expression | undefined): boolean => !!x && ts.isIdentifier(unwrap(x)) && (unwrap(x) as ts.Identifier).text === param;
       if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ["has", "includes"].includes(n.expression.name.text)) {
-        for (const item of listOf(n.expression.expression)) consider(item);
+        const list = listOf(n.expression.expression);
+        if (list) for (const item of list) consider(item);
+        else if (isName(n.arguments[0])) unreadable("checks the name against", n.expression.expression);
       }
+      if (ts.isElementAccessExpression(n) && isName(n.argumentExpression)) unreadable("looks the name up in", n.expression);
       ts.forEachChild(n, visit);
     };
     visit(fn);

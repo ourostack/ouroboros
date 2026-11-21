@@ -216,3 +216,27 @@ test("a tool the census can't name that asks for approval is unwalked under both
   const { unwalked = [] } = await walk({ handlers: [] }, dir);
   deepEqual(unwalked.map((g) => [g.id, g.kind]), [["tool:src/b.ts#no name", "tool"], ["approval:src/b.ts#no name", "approval"]]);
 });
+
+const tricks2 = join(fixtures, "tools-tricks2");
+const walkTricks2 = () =>
+  walk({ handlers: [], passthrough: ["src/a.ts#mcpSchema"], reshape: ["src/a.ts#reshapeIt", "src/a.ts#reshapeLoop"], approvals: ["src/a.ts#resolver"] }, tricks2);
+
+test("a second round of hiding: an unreadable type, a namespace import, a re-export, a lonely built export, impure passthrough and re-encoding names", async () => {
+  const { doors, unwalked = [], excluded = [], errors } = await walkTricks2();
+  deepEqual(doors.filter((d) => d.kind === "tool").map((d) => [d.name, d.file]), [["direct_one", "src/a.ts"], ["namespace_tool", "src/b.ts"]]);
+  deepEqual(unwalked.map((g) => [g.id, g.reasons]).sort(), [
+    ["tool:src/a.ts#d.function.name || sneaky", ["name: in re-encoding src/a.ts#reshapeIt, but it reads sneaky, a local that isn't only the tools it re-encodes, so it isn't only a tool the census already counts"]],
+    ["tool:src/a.ts#mcpSchema({ server: entry() }, SHELL)", ["name: passthrough src/a.ts#mcpSchema is called here with what isn't only the caller's parameters, so its name may not come from a connected server"]],
+    ["tool:src/a.ts#type: K.fn", ["type: not a literal the census can read"]],
+    ["tool:src/b.ts#m({ server: \"s\" }, { name: \"alias_lit\" })", ["name: passthrough src/a.ts#mcpSchema is called here with a literal, so its name may not come from a connected server"]],
+    ["tool:src/b.ts#readDef", ["name: the factory readDef is re-exported here, and the census follows only direct imports"]],
+    ["tool:src/d.ts#lonely_hidden", ["name: the built module exports lonely_hidden, but the census found no schema for it in the source"]],
+  ].sort());
+  // The re-encoding in a loop over a parameter is proved; an entry point is never loaded (it would exit).
+  deepEqual(excluded.map((e) => e.category), ["third-party-passthrough", "re-encoding"]);
+  deepEqual(errors, [
+    "tool-schemas: reshape src/a.ts#reshapeIt holds no flat schema built only from its own names. Fix: remove it from the config.",
+    "tool-schemas: approvals src/a.ts#resolver checks the name against imported, which the census can't read. Fix: check it against a literal list in the same file.",
+    "tool-schemas: approvals src/a.ts#resolver looks the name up in GRANTS, which the census can't read. Fix: check it against a literal list in the same file.",
+  ]);
+});
