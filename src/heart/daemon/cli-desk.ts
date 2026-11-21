@@ -69,7 +69,7 @@ export function deskUsage(): string {
     "  (each takes --gateway <url> --trust-gateway to manage a Hosted Desk other than desk.ouro.bot)",
     "",
     "Alias:",
-    "  ouro task ...    (routes through ouro desk task ...)",
+    "  ouro task list|new|done|archive|show ...    (routes through ouro desk task ...)",
   ].join("\n")
 }
 
@@ -310,9 +310,7 @@ export async function executeDeskCommand(
   try {
     response = await deps.sendCommand(deps.socketPath, daemonCommand)
   } catch {
-    const message = "daemon unavailable — start with `ouro up` first"
-    deps.writeStdout(message)
-    return message
+    throw Object.assign(new Error("daemon unavailable — start with `ouro up` first"), { code: "daemon-down" })
   }
 
   if (!response.ok) {

@@ -33,6 +33,8 @@
     {"id": "coding-tools", "when": "Connect coding tools to agents: MCP servers they serve or call, editor hooks and plugins."}
   ,
     {"id": "a2a", "when": "Let an agent work with other agents: publish its card, onboard peers, message them, and grant them trust."},
+    {"id": "desk", "when": "Keep an agent's work records: tasks, tracks, lessons and friction in its desk, plus Hosted Desk accounts."},
+    {"id": "presence", "when": "Place an agent across machines and channels: rosters and failover, voice calls, and its iMessage host."},
     {"id": "habits", "when": "Schedule, test and look back at the recurring jobs an agent runs on its own, and wake it early."}
   ]
 }

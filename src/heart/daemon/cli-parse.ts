@@ -20,7 +20,7 @@ import { suggestCommand } from "./cli-help"
 import { parseShepherdOperation, SHEPHERD_UUID } from "../shepherd/operations"
 import { parseNotifySession } from "../../senses/voice/local-audio-control"
 import type { LocalAudioJoinRequest } from "../../senses/voice/local-audio-transport"
-import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
+import { deskUsage, parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import { isHabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import type { HabitSummaryWhich } from "../habits/habit-session-summary"
@@ -345,7 +345,8 @@ export function usage(): string {
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro bluebubbles context-smoke [--agent <name>] --message-guid <guid> [--persist] [--json]",
-    "  ouro bluebubbles host <install|status|repair|remove|collect> [--username <name> --uid <uid> --home <path>] [--request-id <id>] [--json]",
+    "  ouro bluebubbles host install|status|repair|remove [--username <name> --uid <uid> --home <path>] [--json]",
+    "  ouro bluebubbles host collect --request-id <id> [--json]",
     "  ouro rsvp <doctor|incident|cutover|legacy-render|replay|config|habit|import-legacy|refresh|compare|smoke> ...",
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
@@ -383,6 +384,12 @@ export function usage(): string {
     "  ouro voice join --agent <name> [--friend <id>] [--participants <text>] [--occasion <text>] [--mode conversation] [--owner-alone] [--owner-name <name>] [--silent-consent <statement>]",
     "  ouro voice leave --agent <name>",
     "  ouro voice status --agent <name>",
+    "  ouro presence join --agent <name> [--role <role>] [--name <machine name>]",
+    "  ouro presence handoff <sense> <machine> --agent <name>",
+    "  ouro presence status --agent <name> [--json]",
+    "  ouro presence failover take|release <sense> --agent <name> [--reason <why>]",
+    "  ouro presence location <place>",
+    "  ouro move <agent> here",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
     "  ouro mcp call <server> <tool> [--args '{...}']",
@@ -395,6 +402,7 @@ export function usage(): string {
     "  ouro clone <remote> [--agent <name>]",
     "  ouro sync [--agent <name>]",
     "  ouro doctor",
+    ...deskUsage().split("\n").filter((line) => line.startsWith("  ouro ")),
   ].join("\n")
 }
 
