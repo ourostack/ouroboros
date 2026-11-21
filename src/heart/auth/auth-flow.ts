@@ -400,7 +400,8 @@ export async function collectRuntimeAuthCredentials(
   const now = deps.now ?? (() => new Date())
 
   if (input.provider === "openai-compatible" || input.provider === "openai-compatible-gemini") {
-    if (!input.promptSecret) throw new Error(`${input.provider} API key entry requires an interactive terminal so the secret can be hidden.`)
+    // needs-terminal is the code the ouro auth card names for this refusal.
+    if (!input.promptSecret) throw Object.assign(new Error(`${input.provider} API key entry requires an interactive terminal so the secret can be hidden.`), { code: "needs-terminal" })
     const apiKey = (await input.promptSecret(`${input.provider === "openai-compatible" ? "Z.ai" : "Gemini"} API key: `)).trim()
     if (!apiKey) throw new Error(`${input.provider} API key is required.`)
     return {
