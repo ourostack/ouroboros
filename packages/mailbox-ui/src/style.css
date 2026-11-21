@@ -170,6 +170,40 @@ body {
   --radius-ouro-2xl: calc(var(--radius) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1) * 1.8);
   --radius-ouro-3xl: calc(var(--radius) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1) * 2.2);
   --radius-ouro-4xl: calc(var(--radius) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1) * 2.6);
+  --spacing-ouro-0_5: var(--ouro-size-0_5);
+  --spacing-ouro-1: var(--ouro-size-1);
+  --spacing-ouro-1_5: var(--ouro-size-1_5);
+  --spacing-ouro-2: var(--ouro-size-2);
+  --spacing-ouro-2_5: var(--ouro-size-2_5);
+  --spacing-ouro-3: var(--ouro-size-3);
+  --spacing-ouro-3_5: var(--ouro-size-3_5);
+  --spacing-ouro-4: var(--ouro-size-4);
+  --spacing-ouro-5: var(--ouro-size-5);
+  --spacing-ouro-5_5: var(--ouro-size-5_5);
+  --spacing-ouro-6: var(--ouro-size-6);
+  --spacing-ouro-7: var(--ouro-size-7);
+  --spacing-ouro-8: var(--ouro-size-8);
+  --spacing-ouro-9: var(--ouro-size-9);
+  --spacing-ouro-10: var(--ouro-size-10);
+  --spacing-ouro-11: var(--ouro-size-11);
+  --spacing-ouro-12: var(--ouro-size-12);
+  --spacing-ouro-13: var(--ouro-size-13);
+  --spacing-ouro-14: var(--ouro-size-14);
+  --spacing-ouro-16: var(--ouro-size-16);
+  --spacing-ouro-17: var(--ouro-size-17);
+  --spacing-ouro-18: var(--ouro-size-18);
+  --spacing-ouro-20: var(--ouro-size-20);
+  --spacing-ouro-24: var(--ouro-size-24);
+  --spacing-ouro-28: var(--ouro-size-28);
+  --spacing-ouro-32: var(--ouro-size-32);
+  --spacing-ouro-40: var(--ouro-size-40);
+  --spacing-ouro-48: var(--ouro-size-48);
+  --spacing-ouro-56: var(--ouro-size-56);
+  --spacing-ouro-64: var(--ouro-size-64);
+  --spacing-ouro-72: var(--ouro-size-72);
+  --spacing-ouro-80: var(--ouro-size-80);
+  --spacing-ouro-96: var(--ouro-size-96);
+  --spacing-ouro-144: var(--ouro-size-144);
 }
 
 :root {
