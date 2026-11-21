@@ -48,6 +48,8 @@ export default defineConfig({
       "node_modules/**",
       "packages/**",
       ".claude/**",
+      // The AX census's walker fixtures include fake test files, to prove the walkers skip them.
+      ".github/scripts/ax-census/**/fixtures/**",
       "src/__tests__/integration/**",
       "src/__tests__/senses/cli/*.tsx",
     ],
