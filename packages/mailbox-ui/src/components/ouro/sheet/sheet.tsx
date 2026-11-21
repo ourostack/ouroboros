@@ -370,7 +370,7 @@ export function SheetFrame({
             {side === "bottom" && <SheetHandle />}
             {showHeader ? (
               // The end padding keeps the title clear of the close button in the corner.
-              <div data-ouro-sheet-header="" className="grid min-h-12 shrink-0 gap-1 ps-5 pe-14 pt-3 pb-2">
+              <div data-slot="sheet-header" data-ouro-sheet-header="" className="grid min-h-12 shrink-0 gap-1 ps-5 pe-14 pt-3 pb-2">
                 {titleNode}
                 {description !== undefined && <SheetDescription>{description}</SheetDescription>}
               </div>
@@ -379,7 +379,7 @@ export function SheetFrame({
             )}
             <SheetContent>{children}</SheetContent>
             {footer !== undefined && (
-              <div data-ouro-footer="" className={footerClass}>
+              <div data-slot="sheet-footer" data-ouro-footer="" className={footerClass}>
                 {footer}
               </div>
             )}
@@ -391,10 +391,10 @@ export function SheetFrame({
               className={`${closeClass} ${side === "bottom" && showHeader ? "top-8.25" : "top-3"}`}
             >
               <TouchTarget />
-              <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-4">
+              <svg data-slot="sheet-close-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-4">
                 <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
-              <span className="sr-only">{closeLabel}</span>
+              <span data-slot="sheet-close-label" className="sr-only">{closeLabel}</span>
             </SheetClose>
           </SheetPopupUnchecked>
         </SheetViewport>

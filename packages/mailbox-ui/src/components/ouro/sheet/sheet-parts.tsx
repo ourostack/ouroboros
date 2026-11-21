@@ -238,6 +238,7 @@ export function SheetTrigger({ onPointerDown, onKeyDown, ...props }: Drawer.Trig
   useSheetPart("SheetTrigger", "…");
   return (
     <Drawer.Trigger
+      data-slot="sheet-trigger"
       {...(props.render === undefined ? { className: "forced-colors:border forced-colors:border-solid", "data-ouro-control": "sheet", "data-ouro-part": "trigger" } : {})}
       {...props}
       onPointerDown={(event) => {
@@ -269,7 +270,7 @@ export function SheetPortal(props: Omit<Drawer.Portal.Props, "className">): JSX.
       {/* The keyboard's inset, 0px until Base UI sets it on the viewport inside: set there as each sheet opens, it
           changed what the whole sheet inherits and restyled all of it once more in the middle of the press. Under a
           0px of the same name it changes nothing until a keyboard shows. */}
-      <Drawer.Portal {...props} data-ouro="sheet-portal" className="relative isolate z-(--ouro-layer) in-[[data-ouro$='-portal']]:z-1001 [--drawer-keyboard-inset:0px]">
+      <Drawer.Portal data-slot="sheet-portal" {...props} data-ouro="sheet-portal" className="relative isolate z-(--ouro-layer) in-[[data-ouro$='-portal']]:z-1001 [--drawer-keyboard-inset:0px]">
         <PortalScope>{props.children}</PortalScope>
       </Drawer.Portal>
     </Drawer.VirtualKeyboardProvider>
@@ -287,7 +288,7 @@ export function SheetBackdrop({
 }: Omit<Drawer.Backdrop.Props, "className"> & { ref?: Ref<HTMLDivElement> | undefined }): JSX.Element {
   useSheetPart("SheetBackdrop", "…");
   const anchorRef = useBackdropAnchor(ref);
-  return <Drawer.Backdrop {...props} ref={anchorRef} data-ouro="sheet-backdrop" className={backdropClass} />;
+  return <Drawer.Backdrop data-slot="sheet-overlay" {...props} ref={anchorRef} data-ouro="sheet-backdrop" className={backdropClass} />;
 }
 
 /**
@@ -301,7 +302,7 @@ export function SheetScrim({
 }: Omit<Drawer.Backdrop.Props, "className" | "forceRender"> & { ref?: Ref<HTMLDivElement> | undefined }): JSX.Element {
   useSheetPart("SheetScrim", "…");
   const anchorRef = useBackdropAnchor(ref);
-  return <Drawer.Backdrop {...props} forceRender ref={anchorRef} aria-hidden="true" data-ouro="sheet-scrim-backdrop" className={scrimClass} />;
+  return <Drawer.Backdrop data-slot="sheet-scrim" {...props} forceRender ref={anchorRef} aria-hidden="true" data-ouro="sheet-scrim-backdrop" className={scrimClass} />;
 }
 
 /**
@@ -365,6 +366,7 @@ export function SheetViewport({
   const viewportRef = useMergedRef(ref, useGrabOffset(side));
   return (
     <Drawer.Viewport
+      data-slot="sheet-viewport"
       {...props}
       ref={viewportRef}
       data-ouro="sheet-viewport"
@@ -402,6 +404,7 @@ export function SheetPopupUnchecked({ className, ...props }: SheetPopupProps): J
   const { side, snap, modal } = useSheetPart("SheetPopup", "…");
   return (
     <Drawer.Popup
+      data-slot="sheet-content"
       {...props}
       className={cn(
         popupBase,
@@ -426,11 +429,12 @@ export function SheetHandle(): JSX.Element | null {
   if (side === "left" || side === "right") return null;
   return (
     <div
+      data-slot="sheet-handle"
       aria-hidden="true"
       data-ouro-sheet-handle=""
       className="flex shrink-0 justify-center py-2 touch-none"
     >
-      <div className="h-1.25 w-9 rounded-full bg-border" />
+      <div data-slot="sheet-handle-bar" className="h-1.25 w-9 rounded-full bg-border" />
     </div>
   );
 }
@@ -450,6 +454,7 @@ export function SheetTitle({ visuallyHidden, ...props }: SheetTitleProps): JSX.E
   useSheetPart("SheetTitle", "<SheetTitle>…</SheetTitle>…");
   return (
     <Drawer.Title
+      data-slot="sheet-title"
       {...props}
       data-ouro-sheet-title=""
       className={
@@ -466,6 +471,7 @@ export function SheetDescription(props: Omit<Drawer.Description.Props, "classNam
   useSheetPart("SheetDescription", "<SheetDescription>…</SheetDescription>…");
   return (
     <Drawer.Description
+      data-slot="sheet-description"
       {...props}
       data-ouro-sheet-description=""
       className="m-0 text-sm leading-5 text-muted-foreground"
@@ -496,8 +502,9 @@ export function SheetContent({ className, ref, ...props }: SheetContentProps): J
   // The wrapper takes the body's place in the sheet's column; the scroller fills it. Its focus ring is a sibling drawn
   // over the scroller, so content that sticks to an edge inside the body never covers it.
   return (
-    <div className="relative box-border flex min-h-0 flex-1 flex-col">
+    <div data-slot="sheet-body" className="relative box-border flex min-h-0 flex-1 flex-col">
       <Drawer.Content
+        data-slot="sheet-scroller"
         data-ouro-control="sheet"
         data-ouro-part="content"
         {...props}
@@ -512,6 +519,7 @@ export function SheetContent({ className, ref, ...props }: SheetContentProps): J
       />
       <span
         aria-hidden="true"
+        data-slot="sheet-focus-ring"
         data-sheet-focus-ring=""
         className="pointer-events-none absolute inset-0 hidden rounded-[inherit] outline-ring -outline-offset-2 peer-focus-visible:block peer-focus-visible:outline-2 peer-focus-visible:outline-solid"
       />
@@ -523,5 +531,5 @@ export function SheetContent({ className, ref, ...props }: SheetContentProps): J
 /** Part: closes the sheet. Pass your button as `render={<Button>Done</Button>}`. */
 export function SheetClose(props: Drawer.Close.Props): JSX.Element {
   useSheetPart("SheetClose", "<SheetContent><SheetClose>…</SheetClose></SheetContent>");
-  return <Drawer.Close {...(props.render === undefined ? { className: "forced-colors:border forced-colors:border-solid", "data-ouro-control": "sheet", "data-ouro-part": "close" } : {})} {...props} />;
+  return <Drawer.Close data-slot="sheet-close" {...(props.render === undefined ? { className: "forced-colors:border forced-colors:border-solid", "data-ouro-control": "sheet", "data-ouro-part": "close" } : {})} {...props} />;
 }
