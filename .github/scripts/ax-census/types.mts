@@ -40,6 +40,8 @@ export interface DoorEvidence {
   readOnly?: boolean;
   mutates?: string;
   approval?: boolean;
+  /** The card's error codes that appear as literals in the door's handler file outside any card; absent when the walker can't tell. */
+  raises?: string[];
 }
 
 /** One door a walker found. `file` and `line` point at source, never at built output; `line` is null when the name isn't a literal. */

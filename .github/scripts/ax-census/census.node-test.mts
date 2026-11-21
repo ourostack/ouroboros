@@ -313,7 +313,7 @@ test("a door with a weak card is a gap with its reasons", async () => {
     const code = await run({ argv: args("config-card.json", baselineFile(dir, ["mcp:ask"])), io, root: here });
     equal(code, 0);
     ok(out.includes("harness: 1 found, 0 declared, 1 weak, 0 undeclared (mcp 1)"), out.join("\n"));
-    ok(out.some((l) => l.startsWith("walkers/fixtures/mcp-card.ts:5 mcp:ask (weak: ") && l.includes("errors: none declared")), out.join("\n"));
+    ok(out.some((l) => l.startsWith("walkers/fixtures/mcp-card.ts:7 mcp:ask (weak: ") && l.includes("errors: none declared")), out.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -396,6 +396,19 @@ test("a malformed card is weak, not a crash, and the report names the repository
     equal(code, 0, err.join("\n"));
     ok(out.some((l) => l.includes("mcp:ask (weak: card: malformed")), out.join("\n"));
     equal(JSON.parse(readFileSync(file, "utf8")).target.repo, "ourostack/ouroboros");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--inventory writes the declared doors only, in the X-ray's inventory shape", async () => {
+  const dir = scratch();
+  try {
+    const { err, io } = capture();
+    const file = join(dir, "inventory.json");
+    const code = await run({ argv: args("config-declared.json", baselineFile(dir, ["mcp:status"]), ["--inventory", file]), io, root: here });
+    equal(code, 0, err.join("\n"));
+    deepEqual(JSON.parse(readFileSync(file, "utf8")), { mcp: ["ask"] });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

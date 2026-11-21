@@ -1,0 +1,1 @@
+{ "product": "harness", "sources": [{ "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-declared.cjs", "source": "walkers/fixtures/mcp-declared.ts" }], "groups": [{ "id": "agent", "when": "Talk to and steer a running Ouro agent from a coding tool." }] }

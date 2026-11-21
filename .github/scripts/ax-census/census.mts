@@ -2,7 +2,10 @@
 // Design: the AX census design (ouroboros-agent-harness desk). Slice 1 walks `ouro mcp-serve`'s tools only.
 //
 //   node census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
-//     --base-baseline <file|none> --base-config <file|absent> [--out census.json] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]
+//     --base-baseline <file|none> --base-config <file|absent> [--out census.json] [--inventory inventory.json] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]
+//
+// --inventory writes the declared doors in the X-ray's inventory shape ({ "mcp": [names] }), so the X-ray checks how
+// they behave; the census owns the undeclared ones.
 //
 // The walkers run in one child process with an empty HOME and TMPDIR, no credentials and a loopback-only socket
 // guard. The census never calls a door; it reads code and lists. Exit 0 when nothing is wrong, 1 when the census or
@@ -28,7 +31,7 @@ const GUARD = join(HERE, "guard.mjs");
 const CHECKER_FILES = ["baseline.mts", "cards.mts", "census.mts", "child.mts", "guard.mjs", "report.mts", "types.mts", "walkers/mcp-schemas.mts", "walkers/registry.mts"];
 const TIMEOUT_MS = 10_000;
 
-const USAGE = "usage: node census.mts --config <file> --baseline <file> --base-baseline <file|none> --base-config <file|absent> [--out <file>] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]";
+const USAGE = "usage: node census.mts --config <file> --baseline <file> --base-baseline <file|none> --base-config <file|absent> [--out <file>] [--inventory <file>] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]";
 
 export interface Io {
   out(s: string): void;
@@ -173,6 +176,7 @@ interface Flags {
   /** The base branch's config file, or `absent` when the base doesn't run the census. */
   baseConfig: string;
   out?: string;
+  inventory?: string;
   commit?: string;
   ref?: string;
   repo?: string;
@@ -184,6 +188,7 @@ const FLAG_NAMES: Readonly<Record<string, keyof Flags>> = {
   "--base-baseline": "baseBaseline",
   "--base-config": "baseConfig",
   "--out": "out",
+  "--inventory": "inventory",
   "--commit": "commit",
   "--ref": "ref",
   "--repo": "repo",
@@ -243,6 +248,12 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
     if (flags.out) {
       await mkdir(dirname(resolve(flags.out)), { recursive: true });
       await writeFile(flags.out, `${JSON.stringify(report, null, 2)}\n`);
+    }
+    if (flags.inventory) {
+      const inventory: Record<string, string[]> = {};
+      for (const door of doors) if (door.card && !weak.has(door.id)) (inventory[door.kind] ??= []).push(door.name);
+      await mkdir(dirname(resolve(flags.inventory)), { recursive: true });
+      await writeFile(flags.inventory, `${JSON.stringify(inventory, null, 2)}\n`);
     }
     for (const line of renderText(report).split("\n")) io.out(line);
     for (const problem of problems) io.err(problem);
