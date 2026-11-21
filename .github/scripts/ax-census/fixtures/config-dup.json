@@ -1,0 +1,1 @@
+{ "product": "harness", "sources": [{ "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-dup.cjs", "source": "walkers/fixtures/mcp-dup.ts" }], "groups": [] }

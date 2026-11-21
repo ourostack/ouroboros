@@ -100,3 +100,18 @@ test("consequential without confirm is weak", () => {
 test("a card whose id differs from the door's is weak", () => {
   ok(checkCard(door({}, { id: "mcp:other" }), ctx).includes("id: card says mcp:other"));
 });
+
+test("a write card on a door the code calls read-only is weak", () => {
+  ok(checkCard(door({}, { effect: "write" }), ctx).includes("effect: write, but the code says read-only"));
+});
+
+test("an effect outside the consent classes is weak", () => {
+  ok(checkCard(door({}, { effect: "maybe" as never }), ctx).includes("effect: not one of read, write, consequential, person-only"));
+});
+
+test("error sets compare whatever order their cards are in", () => {
+  const a = { code: "agent-unreachable", means: "The agent's daemon isn't running.", fix: "Run ouro up, then ask again." };
+  const b = { code: "bad-question", means: "The question was empty.", fix: "Ask with a question." };
+  const four = ["ask", "status", "catchup", "delegate"].map((name, i) => door({ id: `mcp:${name}`, name }, { errors: i % 2 ? [a, b] : [b, a] }));
+  ok(checkCard(four[0]!, { groups, others: four }).includes("errors: same set as 3 other doors"));
+});

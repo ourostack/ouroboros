@@ -60,3 +60,15 @@ test("the real harness server lists 17 tools", { skip: existsSync(built) ? false
   equal(ask.file, "src/heart/mcp/mcp-server.ts");
   ok(doors.every((d) => typeof d.line === "number"));
 });
+
+test("a module without getToolSchemas is a census error", async () => {
+  const { doors, errors } = await walkMcpSchemas({ product: "harness", module: "mcp-none.cjs", source: "mcp-ok.ts", root: fixtures });
+  deepEqual(doors, []);
+  deepEqual(errors, ["mcp-none.cjs: exports no getToolSchemas function"]);
+});
+
+test("a tool without a name is a census error", async () => {
+  const { doors, errors } = await walk("mcp-noname");
+  deepEqual(doors, []);
+  deepEqual(errors, ["mcp-noname.cjs: getToolSchemas returned a tool without a name"]);
+});
