@@ -789,7 +789,7 @@ function parseCli(argv: string[]): { mode: "run" | "stop" | "recover" | "finaliz
     throw Object.assign(new Error((error as Error).message), { code: "usage" })
   }
   if (argv[0] === "finalize") {
-    if (argv.length !== 13 || argv[9] !== "--owner-image-after" || argv[11] !== "--owner-container-after") throw Object.assign(new Error("Sanctuary health acceptance finalize coordinates are invalid"), { code: "usage" })
+    if (argv.length !== 13 || argv[9] !== "--owner-image-after" || argv[11] !== "--owner-container-after" || !SHA256.test(argv[10]!) || !SHA256.test(argv[12]!)) throw Object.assign(new Error("Sanctuary health acceptance finalize coordinates are invalid"), { code: "usage" })
     return { mode: argv[0], input, after: { ownerImageDigest: argv[10]!, ownerContainerDigest: argv[12]! } }
   }
   if (argv.length !== 9) throw Object.assign(new Error("Sanctuary health acceptance probe coordinates are invalid"), { code: "usage" })

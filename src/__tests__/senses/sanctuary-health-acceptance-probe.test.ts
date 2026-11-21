@@ -238,6 +238,10 @@ describe("packaged Sanctuary health acceptance probe", () => {
       await expect(runSanctuaryHealthAcceptanceProbeCli([...cliArguments(fixture.input), "x", "y", "z", "q"], { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/coordinates are invalid/u) })
       await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input, "finalize"), { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/finalize coordinates are invalid/u) })
       await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments({ ...fixture.input, scenarioHandleDigest: "bad" }), { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/input is invalid/u) })
+      for (const after of [["bad", "d".repeat(64)], ["d".repeat(64), "bad"]]) {
+        await expect(runSanctuaryHealthAcceptanceProbeCli([...cliArguments(fixture.input, "finalize"), "--owner-image-after", after[0]!, "--owner-container-after", after[1]!], { dependencies: fixture.deps }))
+          .rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/finalize coordinates are invalid/u) })
+      }
       await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input), { host: { pid: 4321, once: vi.fn(), removeListener: vi.fn(), signalSelf: vi.fn() } })).rejects.toThrow()
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })

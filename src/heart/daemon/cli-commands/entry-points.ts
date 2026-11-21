@@ -49,11 +49,11 @@ function repairUnfinished(step: string): CliErrorCard[] {
     {
       code: "not-applied",
       means: `${REDACTION} ${step} stopped before it changed the session; the file is as it was.`,
-      fix: `Read the JSON detail, fix what it names, then run ${step} again with the same manifest.`,
+      fix: `Its write didn't land and the session is unchanged; run ${step} again with the same manifest.`,
     },
     {
       code: "indeterminate",
-      means: `${REDACTION} ${step} couldn't read back whether the session changed, so its state is unknown.`,
+      means: `${REDACTION} ${step} found the session at neither its preimage nor its postimage (it changed underneath), or couldn't read it back.`,
       fix: "Stop, and compare the session with the manifest and preimage by hand before any other step.",
     },
   ]
@@ -94,12 +94,13 @@ export const ENTRY_POINT_COMMANDS: readonly CliCommandDeclaration[] = [
     { code: "needs-root", means: `${ROOT_LIFECYCLE} runs only as root (uid and gid 0) on the Sanctuary host, whatever the step.`, fix: "Run boot, vault, repin-execution, upgrade or upgrade-rollback from the host's root job, not from the agent's shell." },
   ] } },
   { name: `${ROOT_LIFECYCLE} vault`, effect: "private", summary: "Move the Sanctuary authority's vault items.", ax: { id: `cli:${ROOT_LIFECYCLE} vault`, group: "sanctuary-host", effect: "consequential", confirm: "Vault restore and remove change which token the Butler's Telegram front door can reach.", when: "Inside the authority install transaction only: snapshot, restore or remove the root-held vault items, one verb at a time.", errors: [
+    rootUsage("vault", "one verb: snapshot, presence, remove or restore"),
     rootOnly("vault"),
     { code: "outside-install", means: `${ROOT_LIFECYCLE} vault remove was run outside the authority install transaction, which could strand the Butler.`, fix: "Run docker-man-template-transaction.mjs authority-install, which removes it safely." },
   ] } },
   { name: `${ROOT_LIFECYCLE} repin-execution`, effect: "private", summary: "Repin the authority's prlimit and setsid.", ax: { id: `cli:${ROOT_LIFECYCLE} repin-execution`, group: "sanctuary-host", effect: "consequential", confirm: "The authority will launch only prlimit and setsid binaries with these digests; wrong ones stop the Butler starting.", when: "After the host's prlimit or setsid binary changes: record their new sha256 digests so the authority keeps launching.", errors: [rootUsage("repin-execution", "the prlimit and setsid sha256 digests"), rootOnly("repin-execution"), notActive("repin-execution")] } },
   { name: `${ROOT_LIFECYCLE} upgrade`, effect: "private", summary: "Upgrade the Sanctuary authority's image.", ax: { id: `cli:${ROOT_LIFECYCLE} upgrade`, group: "sanctuary-host", effect: "consequential", confirm: "The live Butler moves to the target image; upgrade-rollback is the way back.", when: "Move the installed authority to a target image id and reference, waiting out a boot in flight.", errors: [rootUsage("upgrade", "a target image id and image reference, then optionally --fail-after <step> or --hold-commit"), rootOnly("upgrade"), notActive("upgrade")] } },
-  { name: `${ROOT_LIFECYCLE} upgrade-rollback`, effect: "private", summary: "Roll the Sanctuary authority's upgrade back.", ax: { id: `cli:${ROOT_LIFECYCLE} upgrade-rollback`, group: "sanctuary-host", effect: "consequential", confirm: "The Butler goes back to the image it ran before the last upgrade.", when: "When an upgraded authority misbehaves: return it to the image it ran before, from the root job.", errors: [rootOnly("upgrade-rollback"), notActive("upgrade-rollback")] } },
+  { name: `${ROOT_LIFECYCLE} upgrade-rollback`, effect: "private", summary: "Roll the Sanctuary authority's upgrade back.", ax: { id: `cli:${ROOT_LIFECYCLE} upgrade-rollback`, group: "sanctuary-host", effect: "consequential", confirm: "The Butler goes back to the image it ran before the last upgrade.", when: "When an upgraded authority misbehaves: return it to the image it ran before, from the root job.", errors: [rootUsage("upgrade-rollback", "no further words"), rootOnly("upgrade-rollback"), notActive("upgrade-rollback")] } },
   { name: `${ROOT_LIFECYCLE} boot`, effect: "private", summary: "Boot the Sanctuary authority.", ax: { id: `cli:${ROOT_LIFECYCLE} boot`, group: "sanctuary-host", effect: "write", when: "The host keeper retries it at start-up; it brings an installed authority up and does nothing when none is active.", errors: [rootUsage("boot", "no further words"), rootOnly("boot")] } },
   { name: "node dist/heart/daemon/sanctuary-host-supervisor-entry.js", effect: "private", summary: "Supervise one Sanctuary host job.", ax: { id: "cli:node dist/heart/daemon/sanctuary-host-supervisor-entry.js", group: "sanctuary-host", effect: "write", when: "The host runs it with a job's --spec file to launch and watch that job under a lock; agents don't start it.", errors: [
     { code: "missing-spec", means: "The Sanctuary host supervisor needs --spec <path> naming the job it supervises.", fix: "Pass the job's spec file with --spec." },
@@ -158,7 +159,7 @@ export const ENTRY_POINT_COMMANDS: readonly CliCommandDeclaration[] = [
   { name: `${PROBE} finalize`, effect: "private", summary: "Finish a health acceptance scenario.", ax: { id: `cli:${PROBE} finalize`, group: "sanctuary-host", effect: "write", when: "Close a scenario by proving the owner image and container after it, then clear the probe's workspace.", errors: [probeUsage("finalize")] } },
   { name: "node dist/senses/shepherd/judge-evaluation-entry.js", effect: "private", summary: "Evaluate Shepherd's judge on its cases.", ax: { id: "cli:node dist/senses/shepherd/judge-evaluation-entry.js", group: "diagnostics", effect: "write", when: "Measure how Shepherd's judge classifies its evaluation cases, writing a report; it never qualifies v1 on its own.", errors: [
     { code: "not-passed", means: "The Shepherd judge evaluation finished, but its classification didn't pass or its report couldn't be closed.", fix: "Read the JSON summary on stdout and the report for the failing cases." },
-    { code: "evaluation-error", means: "The Shepherd judge evaluation couldn't run: bad arguments, an output that exists already, no judge for the agent, or a bad case corpus.", fix: "Read the error in the JSON on stdout, fix it, and run again with a new --output path." },
+    { code: "evaluation-error", means: "The Shepherd judge evaluation couldn't run (bad arguments, an output that exists already, no judge for the agent, or a bad case corpus), or its report couldn't be written.", fix: "Read the error in the JSON on stdout, fix it, and run again with a new --output path." },
     { code: "evaluation-crashed", means: "The Shepherd judge evaluation stopped on an unexpected error before it finished.", fix: "Read the error in the JSON on stderr, fix its cause, and run it again." },
   ] } },
   { name: "node dist/senses/shepherd-entry.js", effect: "private", summary: "Run an agent's Shepherd sense.", ax: { id: "cli:node dist/senses/shepherd-entry.js", group: "entry-points", effect: "write", when: "The daemon starts it so Shepherd can drive the agent's coding sessions; use ouro shepherd for the actions.", errors: [missingAgent("dist/senses/shepherd-entry.js")] } },
@@ -167,7 +168,7 @@ export const ENTRY_POINT_COMMANDS: readonly CliCommandDeclaration[] = [
   { name: "node dist/senses/voice-entry.js", effect: "private", summary: "Run an agent's voice sense.", ax: { id: "cli:node dist/senses/voice-entry.js", group: "entry-points", effect: "write", when: "The daemon starts it to run the voice transports attached on this machine, such as phone calls.", errors: [missingAgent("dist/senses/voice-entry.js")] } },
   { name: "node dist/senses/voice-realtime-eval-entry.js", effect: "private", readOnly: true, summary: "Grade the voice realtime evaluation suite.", ax: { id: "cli:node dist/senses/voice-realtime-eval-entry.js", group: "diagnostics", effect: "read", when: "Check voice behaviour offline: run the built-in scenarios, and grade recorded call traces passed with --trace.", errors: [
     { code: "eval-error", means: "The voice evaluation couldn't run: an unknown argument, or a --trace file it couldn't read.", fix: "Pass only --trace <file> pairs, pointing at trace files that exist." },
-    { code: "eval-failed", means: "The voice evaluation ran and a scenario or trace didn't match what it expects.", fix: "Read summary.failedScenarioIds for the built-in scenarios and traceSummary.mismatchedScenarioIds for the traces in the JSON." },
+    { code: "eval-failed", means: "The voice evaluation ran and a scenario or trace didn't match what it expects.", fix: "Read expectedKnownBadFailed and happyPathPassed for the built-ins, and traceSummary.mismatchedScenarioIds for traces." },
   ] } },
   { name: "node dist/senses/voice-twilio-entry.js", effect: "private", summary: "Run a standalone Twilio phone bridge.", ax: { id: "cli:node dist/senses/voice-twilio-entry.js", group: "entry-points", effect: "write", when: "For local voice testing only: bridge Twilio calls to the agent through a tunnel given as --public-url.", errors: [missingAgent("dist/senses/voice-twilio-entry.js")] } },
 ]
