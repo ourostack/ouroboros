@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1293",
       "changes": [
-        "The replay eval has a fake household: calibre-web, libgen mirrors and an SMTP sink that record every request, a hand-written books command that talks to them, and deterministic synthetic fixture editions, so the book cases can run with no real library, mirror or mail server."
+        "The replay eval has a fake household: calibre-web, libgen mirrors and an SMTP sink that record every request, a hand-written books command that talks to them, and deterministic synthetic fixture editions, so the book cases can run with no real library, mirror or mail server.",
+        "Update the Ouro UI files to Ouro UI v1.3.417."
       ]
     },
     {
