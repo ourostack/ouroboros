@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import { resetConfigCache } from "../../../heart/config"
 import { resetIdentity } from "../../../heart/identity"
+import { createProxyRuntime, serveProxyRuntime, type ProxyChannel, type ProxyMessage } from "../../../eval/transport/provider-proxy"
 import { recordModelTraffic, runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
 function scriptedRuntime(steps: Array<{ name: string; arguments: Record<string, string> }>, seen: ProviderTurnRequest[]): ProviderRuntime {
@@ -144,6 +145,26 @@ describe("runTelegramTurn", () => {
     await expect(run()).rejects.toThrow("precommitted ingress")
   }, 60_000)
 
+
+  it("runs the same turn with the provider on the far side of the proxy, taking one budget unit per model call", async () => {
+    const pair = { toGuest: [] as Array<(msg: ProxyMessage) => void>, toHost: [] as Array<(msg: ProxyMessage) => void> }
+    const lines: string[] = []
+    const end = (listeners: Array<(msg: ProxyMessage) => void>, peer: Array<(msg: ProxyMessage) => void>): ProxyChannel => ({
+      send: (msg) => { const line = JSON.stringify(msg); lines.push(line); queueMicrotask(() => peer.forEach((fn) => fn(JSON.parse(line) as ProxyMessage))) },
+      onMessage: (fn) => { listeners.push(fn) },
+    })
+    let units = 0
+    serveProxyRuntime(end(pair.toHost, pair.toGuest), scriptedRuntime([
+      { name: "shell", arguments: { command: "echo hi" } },
+      { name: "settle", arguments: { answer: "done", intent: "complete" } },
+    ], []), { take: () => { units += 1; return true } })
+    const result = await runTelegramTurn({ agentRoot, prefix: [], userText: "Say hi from the shell, please.", providerRuntime: await createProxyRuntime(end(pair.toGuest, pair.toHost)) })
+    expect(result.outcome).toBe("settled")
+    expect(result.finalReply).toBe("done")
+    expect(result.timeline[0]).toMatchObject({ kind: "call", name: "shell" })
+    expect(units).toBe(2)
+    expect(lines.some((line) => line.includes('"type":"appendToolOutput"'))).toBe(true)
+  }, 60_000)
 
   it("refuses a bundle that is not where the agent's own turn would look for it", async () => {
     await expect(runTelegramTurn({

@@ -1,0 +1,259 @@
+import { PassThrough } from "node:stream"
+import { describe, expect, it } from "vitest"
+import type { ChannelCallbacks, ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
+import type { TurnResult } from "../../../heart/streaming"
+import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type ProxyChannel, type ProxyMessage } from "../../../eval/transport/provider-proxy"
+
+/** Two in-memory channel ends; each message is cloned and delivered on a later microtask, as over a pipe. */
+function channelPair(): { guest: ProxyChannel; host: ProxyChannel; wire: ProxyMessage[] } {
+  const toGuest: Array<(msg: ProxyMessage) => void> = []
+  const toHost: Array<(msg: ProxyMessage) => void> = []
+  const wire: ProxyMessage[] = []
+  const deliver = (listeners: typeof toGuest) => (msg: ProxyMessage) => {
+    wire.push(msg)
+    const copy = structuredClone(msg)
+    queueMicrotask(() => { for (const listener of listeners) listener(copy) })
+  }
+  return {
+    guest: { send: deliver(toHost), onMessage: (fn) => { toGuest.push(fn) } },
+    host: { send: deliver(toGuest), onMessage: (fn) => { toHost.push(fn) } },
+    wire,
+  }
+}
+
+const RESULT: TurnResult = { content: "hello there", toolCalls: [{ id: "c1", name: "settle", arguments: "{}" }], outputItems: [] }
+
+type HostLog = Array<[string, ...unknown[]]>
+
+function hostRuntime(log: HostLog, streamTurn?: ProviderRuntime["streamTurn"], extra: Partial<ProviderRuntime> = {}): ProviderRuntime {
+  return {
+    id: "github-copilot", model: "host-model", client: { secret: "never crosses" }, capabilities: new Set(["reasoning-effort"]),
+    supportedReasoningEfforts: ["low", "high"],
+    streamTurn: streamTurn ?? (async (request) => {
+      log.push(["streamTurn", request.messages, request.activeTools, request.reasoningEffort])
+      request.callbacks.onModelStreamStart()
+      request.callbacks.onTextChunk("hello ")
+      request.callbacks.onTextChunk("there")
+      return RESULT
+    }),
+    appendToolOutput: (callId, output) => { log.push(["appendToolOutput", callId, output]) },
+    resetTurnState: (messages) => { log.push(["resetTurnState", messages]) },
+    ping: async () => undefined,
+    classifyError: (error) => (error as Error & { status?: number }).status === 429 ? "rate-limit" : "unknown",
+    ...extra,
+  }
+}
+
+function recordingCallbacks(events: unknown[][], extra: Partial<ChannelCallbacks> = {}): ChannelCallbacks {
+  const record = (name: string) => (...args: unknown[]) => { events.push([name, ...args]) }
+  return {
+    onModelStart: record("onModelStart"), onModelStreamStart: record("onModelStreamStart"), onTextChunk: record("onTextChunk"),
+    onReasoningChunk: record("onReasoningChunk"), onToolStart: record("onToolStart"), onToolEnd: record("onToolEnd"),
+    onError: (error, severity) => { events.push(["onError", error.message, severity]) },
+    ...extra,
+  }
+}
+
+function request(callbacks: ChannelCallbacks, extra: Partial<ProviderTurnRequest> = {}): ProviderTurnRequest {
+  return { messages: [{ role: "user", content: "hi" }], activeTools: [], callbacks, ...extra }
+}
+
+const unlimited = { take: () => true }
+
+describe("provider proxy", () => {
+  it("knows the host runtime's identity, capabilities and reasoning efforts before the first turn", async () => {
+    const { guest, host, wire } = channelPair()
+    serveProxyRuntime(host, hostRuntime([]), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    expect(wire.map((msg) => msg.type)).toEqual(["hello", "capabilities"])
+    expect(runtime.id).toBe("github-copilot")
+    expect(runtime.model).toBe("host-model")
+    expect([...runtime.capabilities]).toEqual(["reasoning-effort"])
+    expect(runtime.supportedReasoningEfforts).toEqual(["low", "high"])
+    expect(runtime.client).toBeNull()
+    await expect(runtime.ping()).resolves.toBeUndefined()
+  })
+
+  it("leaves reasoning efforts unset when the host runtime has none", async () => {
+    const { guest, host } = channelPair()
+    serveProxyRuntime(host, hostRuntime([], undefined, { supportedReasoningEfforts: undefined }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    expect("supportedReasoningEfforts" in runtime).toBe(false)
+  })
+
+  it("streams the host's callback events to the guest in order and resolves with the host's result", async () => {
+    const { guest, host, wire } = channelPair()
+    const log: HostLog = []
+    serveProxyRuntime(host, hostRuntime(log), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const events: unknown[][] = []
+    const messages = [{ role: "user" as const, content: "find the book" }]
+    const result = await runtime.streamTurn(request(recordingCallbacks(events), { messages, reasoningEffort: "high" }))
+    expect(result).toEqual(RESULT)
+    expect(events).toEqual([["onModelStreamStart"], ["onTextChunk", "hello "], ["onTextChunk", "there"]])
+    expect(log).toEqual([["streamTurn", messages, [], "high"]])
+    expect(JSON.stringify(wire)).not.toContain("never crosses")
+  })
+
+  it("passes the settle output mode through, and carries a host onError back as an Error", async () => {
+    const { guest, host } = channelPair()
+    let seenMode: unknown
+    serveProxyRuntime(host, hostRuntime([], async (req) => {
+      seenMode = req.callbacks.settleOutputMode
+      req.callbacks.onError(new Error("slow down"), "transient")
+      return RESULT
+    }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const events: unknown[][] = []
+    await runtime.streamTurn(request(recordingCallbacks(events, { settleOutputMode: "retractable_buffer" })))
+    expect(seenMode).toBe("retractable_buffer")
+    expect(events).toEqual([["onError", "slow down", "transient"]])
+  })
+
+  it("sends appendToolOutput and resetTurnState to the host in order with identical arguments", async () => {
+    const { guest, host } = channelPair()
+    const log: HostLog = []
+    serveProxyRuntime(host, hostRuntime(log), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const reset = [{ role: "system" as const, content: "s" }, { role: "user" as const, content: "u" }]
+    runtime.resetTurnState(reset)
+    runtime.appendToolOutput("call-1", "first")
+    runtime.appendToolOutput("call-2", "second")
+    await runtime.streamTurn(request(recordingCallbacks([])))
+    expect(log.map(([name]) => name)).toEqual(["resetTurnState", "appendToolOutput", "appendToolOutput", "streamTurn"])
+    expect(log[0]).toEqual(["resetTurnState", reset])
+    expect(log.slice(1, 3)).toEqual([["appendToolOutput", "call-1", "first"], ["appendToolOutput", "call-2", "second"]])
+  })
+
+  it("refuses a turn the budget cannot pay for, without calling the host runtime or allowing a retry", async () => {
+    const { guest, host } = channelPair()
+    const log: HostLog = []
+    serveProxyRuntime(host, hostRuntime(log), { take: () => false })
+    const runtime = await createProxyRuntime(guest)
+    const failure = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe("budget exhausted")
+    expect((failure as Error & { retryable: boolean }).retryable).toBe(false)
+    expect(runtime.classifyError(failure as Error)).toBe("usage-limit")
+    expect(log).toEqual([])
+  })
+
+  it("rejects with the host's classification on a 429, and stops every later turn without calling the host", async () => {
+    const { guest, host } = channelPair()
+    let calls = 0
+    serveProxyRuntime(host, hostRuntime([], async () => {
+      calls += 1
+      throw Object.assign(new Error("too many requests"), { status: 429 })
+    }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const first = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(runtime.classifyError(first as Error)).toBe("rate-limit")
+    expect(first).toMatchObject({ message: "too many requests", status: 429, retryable: false })
+    const second = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(second).toMatchObject({ message: "too many requests", status: 429, retryable: false })
+    expect(calls).toBe(1)
+  })
+
+  it("stops on a 402 even when the host runtime does not classify it", async () => {
+    const { guest, host } = channelPair()
+    serveProxyRuntime(host, hostRuntime([], async () => { throw Object.assign(new Error("payment required"), { status: 402 }) }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const failure = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(failure).toMatchObject({ status: 402, retryable: false })
+    expect(runtime.classifyError(failure as Error)).toBe("unknown")
+  })
+
+  it("stops on a usage-limit classification that carries no status", async () => {
+    const { guest, host } = channelPair()
+    let calls = 0
+    serveProxyRuntime(host, hostRuntime([], async () => { calls += 1; throw new Error("quota spent") }, { classifyError: () => "usage-limit" }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    await runtime.streamTurn(request(recordingCallbacks([]))).catch(() => undefined)
+    const second = await runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(second).toMatchObject({ message: "quota spent", retryable: false })
+    expect("status" in (second as object)).toBe(false)
+    expect(calls).toBe(1)
+  })
+
+  it("passes other host errors through with their retry flag, and keeps serving later turns", async () => {
+    const { guest, host } = channelPair()
+    let calls = 0
+    serveProxyRuntime(host, hostRuntime([], async () => {
+      calls += 1
+      if (calls === 1) throw Object.assign(new Error("bad gateway"), { status: 502 })
+      if (calls === 2) throw Object.assign(new Error("malformed"), { retryable: false })
+      if (calls === 3) throw "not an error object"
+      return RESULT
+    }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const turn = () => runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
+    expect(await turn()).toMatchObject({ message: "bad gateway", status: 502, retryable: true })
+    expect(await turn()).toMatchObject({ message: "malformed", retryable: false })
+    expect(await turn()).toMatchObject({ message: "not an error object", retryable: true })
+    expect(await turn()).toEqual(RESULT)
+    expect(runtime.classifyError(new Error("local"))).toBe("unknown")
+  })
+
+  it("sends an abort instead of the signal, and the host's runtime sees its own signal abort", async () => {
+    const { guest, host, wire } = channelPair()
+    let hostSignal: AbortSignal | undefined
+    serveProxyRuntime(host, hostRuntime([], (req) => new Promise((_resolve, reject) => {
+      hostSignal = req.signal
+      req.signal!.addEventListener("abort", () => reject(new Error("aborted")))
+    })), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const controller = new AbortController()
+    const pending = runtime.streamTurn(request(recordingCallbacks([]), { signal: controller.signal })).catch((error: Error) => error)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    controller.abort()
+    expect(await pending).toMatchObject({ message: "aborted" })
+    expect(hostSignal!.aborted).toBe(true)
+    const turnMessage = wire.find((msg) => msg.type === "streamTurn")!
+    expect(JSON.stringify(turnMessage)).not.toContain("signal")
+    expect(wire.some((msg) => msg.type === "abort")).toBe(true)
+  })
+
+  it("ignores messages for turns it does not know, messages meant for the other side, callback events outside the provider set, and an abort for a finished turn", async () => {
+    const { guest, host } = channelPair()
+    const log: HostLog = []
+    serveProxyRuntime(host, hostRuntime(log), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const events: unknown[][] = []
+    host.send({ type: "turnResult", turn: 99, result: RESULT })
+    host.send({ type: "callback", turn: 99, event: "onTextChunk", args: ["stray"] })
+    guest.send({ type: "abort", turn: 99 })
+    host.send({ type: "hello" })
+    guest.send({ type: "turnResult", turn: 1, result: RESULT })
+    const pending = runtime.streamTurn(request(recordingCallbacks(events)))
+    host.send({ type: "callback", turn: 1, event: "flushNow", args: [] })
+    host.send({ type: "callback", turn: 1, event: "onKick", args: [] })
+    await pending
+    expect(events).toEqual([["onModelStreamStart"], ["onTextChunk", "hello "], ["onTextChunk", "there"]])
+  })
+})
+
+describe("createStreamChannel", () => {
+  it("carries messages as newline-delimited JSON, across chunk boundaries and blank lines", async () => {
+    const hostToGuest = new PassThrough()
+    const guestToHost = new PassThrough()
+    const guest = createStreamChannel(hostToGuest, guestToHost)
+    const host = createStreamChannel(guestToHost, hostToGuest)
+    const log: HostLog = []
+    serveProxyRuntime(host, hostRuntime(log), unlimited)
+    const ready = createProxyRuntime(guest)
+    const runtime = await ready
+    const events: unknown[][] = []
+    const result = await runtime.streamTurn(request(recordingCallbacks(events)))
+    expect(result).toEqual(RESULT)
+    expect(events).toHaveLength(3)
+
+    const input = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, new PassThrough()).onMessage((msg) => received.push(msg))
+    const line = JSON.stringify({ type: "hello" })
+    input.write(line.slice(0, 5))
+    input.write(`${line.slice(5)}\n\n${JSON.stringify({ type: "abort", turn: 3 })}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received).toEqual([{ type: "hello" }, { type: "abort", turn: 3 }])
+  })
+})
