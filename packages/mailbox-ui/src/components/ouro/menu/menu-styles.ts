@@ -44,10 +44,10 @@ const menuSheetPositionerClass =
  * @claim "It opens instantly and closes with" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu motion > opens instantly and closes with a quick scale and fade from its origin)
  */
 const menuPopupClass =
-  "box-border min-w-48 max-w-(--available-width) max-h-(--available-height) overflow-y-auto overscroll-contain p-1 " +
+  "box-border min-w-ouro-48 max-w-(--available-width) max-h-(--available-height) overflow-y-auto overscroll-contain p-1 " +
   "rounded-ouro-lg bg-popover text-popover-foreground outline-none " +
   "ring-1 ring-border/60 shadow-(--shadow-lg) " +
-  "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:1.5rem] " +
+  "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:var(--ouro-size-6)] " +
   "origin-(--transform-origin) " +
   "[transition:transform_var(--ouro-duration-fast)_var(--ouro-ease-out),opacity_var(--ouro-duration-fast)_var(--ouro-ease-out)] " +
   "data-ending-style:[transform:scale(0.96)] data-ending-style:opacity-0 " +
@@ -68,7 +68,7 @@ const menuSheetPopupClass =
   "px-2 pt-2 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)] " +
   "rounded-t-ouro-xl bg-popover text-popover-foreground outline-none " +
   "[box-shadow:var(--ouro-shadow-sheet-bottom)] " +
-  "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:1.5rem] " +
+  "has-[[data-ouro-menu-indicator]]:[--ouro-menu-inset:var(--ouro-size-6)] " +
   "[transition:transform_var(--ouro-duration-sheet)_var(--ouro-ease-drawer),opacity_var(--ouro-duration-fast)_var(--ouro-ease-out)] " +
   "data-starting-style:[transform:translateY(100%)] data-ending-style:[transform:translateY(100%)] " +
   "data-ending-style:duration-(--ouro-duration-base) " +
@@ -99,7 +99,7 @@ const menuBackdropClass =
  * @claim "Highlighted by keyboard or pointer, dimmed" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu items > paints tone destructive in the destructive color)
  */
 const menuItemClass =
-  "relative m-0 box-border flex w-full min-h-11 pointer-fine:min-h-8 cursor-default items-center gap-3 " +
+  "relative m-0 box-border flex w-full min-h-ouro-11 pointer-fine:min-h-8 cursor-default items-center gap-3 " +
   "rounded-ouro-md py-1.5 pe-2 ps-[calc(0.5rem+var(--ouro-menu-inset,0px))] " +
   "text-start text-base leading-5 pointer-fine:text-sm text-popover-foreground no-underline select-none " +
   "outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
@@ -114,14 +114,14 @@ const menuItemClass =
   "data-[tone=destructive]:text-[color-mix(in_oklab,var(--destructive)_80%,var(--foreground))] " +
   "data-[tone=destructive]:data-highlighted:bg-destructive/10 " +
   "data-disabled:pointer-events-none data-disabled:opacity-50 " +
-  "[&_svg]:size-4 [&_svg]:shrink-0";
+  "[&_svg]:size-ouro-4 [&_svg]:shrink-0";
 
 /**
  * The slot at the start of a checkbox or radio item that holds its mark.
  *
  * @internal
  */
-const menuIndicatorClass = "absolute start-2 top-1/2 flex size-4 -translate-y-1/2 items-center justify-center";
+const menuIndicatorClass = "absolute start-ouro-2 top-1/2 flex size-ouro-4 -translate-y-1/2 items-center justify-center";
 
 /**
  * A group's label: small and muted, lined up with the item labels.
@@ -161,7 +161,7 @@ const menuGuardsClass = "absolute";
  * @claim "A menubar's menu button: 44px tall" registry/ouro/components/ouro/menu/menu.touch.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.touch.test.tsx::Menu on a phone > gives menubar buttons a 44px height)
  */
 const menuBarTriggerClass =
-  "relative m-0 box-border inline-flex h-11 pointer-fine:h-8 items-center rounded-ouro-md border-0 bg-transparent px-3 " +
+  "relative m-0 box-border inline-flex h-ouro-11 pointer-fine:h-8 items-center rounded-ouro-md border-0 bg-transparent px-3 " +
   "font-[inherit] text-base pointer-fine:text-sm leading-5 font-medium text-foreground cursor-default select-none " +
   "[-webkit-tap-highlight-color:transparent] outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
   // Stryker disable next-line StringLiteral: a class string in a class position; test/state-hovers.test.tsx reads its tokens, outside this file's tests
