@@ -431,8 +431,6 @@ export function usage(): string {
     "  ouro self-update disable|status",
     "  ouro service install --init sysv|systemd [--path <file>] [--print] [--min-mem-available-mb <mb>] [--max-old-space-size <mb>] [--oom-score-adj <-1000..1000>] [--alert-file <file>]",
     "  ouro service uninstall",
-    "  ouro git install [--force]",
-    "  ouro git status",
     "  ouro sanctuary git-exclude --print",
     "  ouro setup --tool claude-code|codex [--agent <name>]",
     "  ouro hook <event> --agent <name>",

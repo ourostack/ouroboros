@@ -1,6 +1,9 @@
 {
   "census": "census/1",
   "gaps": [
+    "cli:git",
+    "cli:git install",
+    "cli:git status",
     "cli:node dist/heart/agent-entry.js",
     "cli:node dist/heart/daemon/container-healthcheck.js",
     "cli:node dist/heart/daemon/container-spec-auditor-main.js",
