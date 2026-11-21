@@ -20,6 +20,7 @@ import {
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import { verifySanctuarySchedulerLivenessReceiptMac, type SanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
 import { readOrCreateTelegramIdentityKey } from "./telegram"
+import { failureCodeLine } from "../heart/daemon/cli-commands/failure-code"
 
 const SHA256 = /^[0-9a-f]{64}$/u
 /** The probe faults the household's Books endpoint, else its first public endpoint. */
@@ -768,18 +769,30 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
   return { recovered: true }
 }
 
+/** The probe's usage line, which a malformed command line gets back. */
+export const SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE = "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]"
+
+/** Whether a word is one of the probe's steps: run, stop, recover or finalize. */
+export function isSanctuaryHealthAcceptanceProbeMode(word: string | undefined): boolean {
+  return word === "run" || word === "stop" || word === "recover" || word === "finalize"
+}
+
 function parseCli(argv: string[]): { mode: "run" | "stop" | "recover" | "finalize"; input: SanctuaryHealthAcceptanceProbeInput; after?: { ownerImageDigest: string; ownerContainerDigest: string } } {
   if ((argv.length !== 9 && argv.length !== 13) || (argv[0] !== "run" && argv[0] !== "stop" && argv[0] !== "recover" && argv[0] !== "finalize")
     || argv[1] !== "--label" || argv[3] !== "--scenario" || argv[5] !== "--owner-image" || argv[7] !== "--owner-container") {
-    throw new Error("usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]")
+    throw Object.assign(new Error(SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE), { code: "usage" })
   }
   const input = { label: argv[2] as SanctuaryHealthAcceptanceProbeLabel, scenarioHandleDigest: argv[4]!, ownerImageDigest: argv[6]!, ownerContainerDigest: argv[8]! }
-  canonicalInput(input)
+  try {
+    canonicalInput(input)
+  } catch (error) {
+    throw Object.assign(new Error((error as Error).message), { code: "usage" })
+  }
   if (argv[0] === "finalize") {
-    if (argv.length !== 13 || argv[9] !== "--owner-image-after" || argv[11] !== "--owner-container-after") throw new Error("Sanctuary health acceptance finalize coordinates are invalid")
+    if (argv.length !== 13 || argv[9] !== "--owner-image-after" || argv[11] !== "--owner-container-after" || !SHA256.test(argv[10]!) || !SHA256.test(argv[12]!)) throw Object.assign(new Error("Sanctuary health acceptance finalize coordinates are invalid"), { code: "usage" })
     return { mode: argv[0], input, after: { ownerImageDigest: argv[10]!, ownerContainerDigest: argv[12]! } }
   }
-  if (argv.length !== 9) throw new Error("Sanctuary health acceptance probe coordinates are invalid")
+  if (argv.length !== 9) throw Object.assign(new Error("Sanctuary health acceptance probe coordinates are invalid"), { code: "usage" })
   return { mode: argv[0], input }
 }
 
@@ -846,13 +859,16 @@ export function createSanctuaryHealthAcceptanceProbeCliOutput(target: Pick<NodeJ
   }
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["usage"]
+
 export function startSanctuaryHealthAcceptanceProbeCli(
   argv: string[],
   output: SanctuaryHealthAcceptanceProbeCliOutput,
   options: Parameters<typeof runSanctuaryHealthAcceptanceProbeCli>[1] = {},
 ): void {
   void runSanctuaryHealthAcceptanceProbeCli(argv, options).catch((error) => {
-    output.writeError(`${error instanceof Error ? error.message : String(error)}\n`)
+    output.writeError(`${error instanceof Error ? error.message : String(error)}\n${failureCodeLine(error, CARD_CODES)}`)
     output.setExitCode(1)
   })
 }

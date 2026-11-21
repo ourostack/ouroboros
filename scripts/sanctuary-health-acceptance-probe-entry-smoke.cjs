@@ -1,7 +1,7 @@
 const { spawnSync } = require("node:child_process")
 const path = require("node:path")
 
-const EXPECTED_USAGE = "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]\n"
+const EXPECTED_USAGE = "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]\ncode: missing-mode\n"
 
 function runSanctuaryHealthAcceptanceProbeEntrySmoke(repoRoot, deps = defaultDeps()) {
   const entry = deps.join(repoRoot, "dist", "senses", "sanctuary-health-acceptance-probe-entry.js")

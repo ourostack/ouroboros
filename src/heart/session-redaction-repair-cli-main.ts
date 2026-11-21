@@ -14,12 +14,15 @@ async function main(): Promise<void> {
     } else if (args.length === 5 && args[0] === "rollback" && args[1] === "--manifest-sha256") {
       result = await rollbackA003SessionRepair({ manifestSha256: args[2]!, manifestPath: args[3]!, preimagePath: args[4]! })
     } else {
-      throw new Error("expected fixed inspect, apply, or rollback arguments")
+      throw Object.assign(new Error("expected fixed inspect, apply, or rollback arguments"), { code: "usage" })
     }
-    process.stdout.write(`${JSON.stringify(result)}\n`)
-    process.exitCode = result.status === "indeterminate" || result.status === "not_applied" ? 1 : 0
+    // A step that didn't finish says so in its code: not-applied left the session as it was, indeterminate can't tell.
+    const unfinished = result.status === "indeterminate" ? "indeterminate" : result.status === "not_applied" ? "not-applied" : undefined
+    process.stdout.write(`${JSON.stringify(unfinished ? { ...result, code: unfinished } : result)}\n`)
+    process.exitCode = unfinished ? 1 : 0
   } catch (error) {
-    process.stdout.write(`${JSON.stringify({ status: "refused", error: (error instanceof Error ? error.message : String(error)).slice(0, 512) })}\n`)
+    const code = (error as { code?: unknown } | null)?.code === "usage" ? "usage" : "repair-refused"
+    process.stdout.write(`${JSON.stringify({ status: "refused", code, error: (error instanceof Error ? error.message : String(error)).slice(0, 512) })}\n`)
     process.exitCode = 2
   }
 }

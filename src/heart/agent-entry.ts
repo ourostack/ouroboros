@@ -1,10 +1,11 @@
 // Unified agent runtime entrypoint.
 // Requires --agent before importing runtime modules that rely on identity.
+const MISSING_AGENT = "missing-agent"
 const agentArgIndex = process.argv.indexOf("--agent")
 const parsedAgentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
 if (!parsedAgentName) {
   // eslint-disable-next-line no-console -- pre-boot guard
-  console.error("Missing required --agent <name> argument.\nUsage: node dist/heart/agent-entry.js --agent ouroboros")
+  console.error(`Missing required --agent <name> argument.\nUsage: node dist/heart/agent-entry.js --agent ouroboros\ncode: ${MISSING_AGENT}`)
   process.exit(1)
 }
 const agentName = parsedAgentName

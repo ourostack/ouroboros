@@ -1,11 +1,12 @@
 // Thin entrypoint for `node dist/senses/a2a-entry.js --agent <name>`.
 export {}
 
+const MISSING_AGENT = "missing-agent"
 const agentArgIndex = process.argv.indexOf("--agent")
 const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
 if (!agentName) {
   // eslint-disable-next-line no-console -- pre-boot guard: --agent check before imports
-  console.error("Missing required --agent <name> argument.\nUsage: node dist/senses/a2a-entry.js --agent ouroboros [--port 18920] [--base-url https://agent.example]")
+  console.error(`Missing required --agent <name> argument.\nUsage: node dist/senses/a2a-entry.js --agent ouroboros [--port 18920] [--base-url https://agent.example]\ncode: ${MISSING_AGENT}`)
   process.exit(1)
 }
 

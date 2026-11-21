@@ -66,10 +66,10 @@ describe("mailroom entry", () => {
       httpPort: 8080,
       host: "0.0.0.0",
     }))
-    expect(() => parseMailroomEntryArgs(["--store", "/tmp/store"])).toThrow("Missing --registry or --registry-base64")
-    expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json"])).toThrow("Missing --store or --azure-account-url")
+    expect(() => parseMailroomEntryArgs(["--store", "/tmp/store"])).toThrow(expect.objectContaining({ code: "missing-registry", message: "Missing --registry or --registry-base64" }))
+    expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json"])).toThrow(expect.objectContaining({ code: "missing-store", message: "Missing --store or --azure-account-url" }))
     expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json", "--store", "/tmp/store", "--smtp-port", "nope"]))
-      .toThrow("--smtp-port must be a TCP port")
+      .toThrow(expect.objectContaining({ code: "bad-port", message: "--smtp-port must be a TCP port" }))
     expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json", "--store", "/tmp/store", "--smtp-port"]))
       .toThrow("--smtp-port must be a TCP port")
   })

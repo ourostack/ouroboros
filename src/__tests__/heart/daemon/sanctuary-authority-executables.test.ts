@@ -9,8 +9,8 @@ vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 afterEach(() => { process.argv = argv; process.exitCode = exitCode; vi.restoreAllMocks(); vi.resetModules() })
 
 it.each([
-  ["sanctuary-authority-root-lifecycle", "Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.\n"],
-  ["sanctuary-telegram-authority-entry", "Sanctuary Telegram authority requires --config\n"],
+  ["sanctuary-authority-root-lifecycle", "Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.\ncode: needs-root\n"],
+  ["sanctuary-telegram-authority-entry", "Sanctuary Telegram authority requires --config\ncode: missing-config\n"],
 ])("runs the canonical %s executable and does not expose private failure details", async (name, message) => {
   const source = path.resolve(`src/heart/daemon/${name}.ts`)
   const output = vi.spyOn(process.stderr, "write").mockReturnValue(true)

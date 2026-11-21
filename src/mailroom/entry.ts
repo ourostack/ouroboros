@@ -7,6 +7,7 @@ import { FileMailroomStore } from "./file-store"
 import type { MailroomStore } from "./file-store"
 import { startMailroomIngress, type MailroomIngressServers } from "./smtp-ingress"
 import type { MailroomRegistry } from "./core"
+import { failureCodeLine } from "../heart/daemon/cli-commands/failure-code"
 
 interface MailroomEntryArgs {
   registryPath?: string
@@ -59,7 +60,7 @@ function optionalNumber(args: string[], flag: string, fallback: number): number 
   if (index === -1) return fallback
   const value = Number.parseInt(args[index + 1] ?? "", 10)
   if (!Number.isInteger(value) || value < 0 || value > 65535) {
-    throw new Error(`${flag} must be a TCP port`)
+    throw Object.assign(new Error(`${flag} must be a TCP port`), { code: "bad-port" })
   }
   return value
 }
@@ -73,12 +74,12 @@ export function parseMailroomEntryArgs(args: string[]): MailroomEntryArgs {
   const storePath = optionalValue(expanded, "--store")
   const azureAccountUrl = optionalValue(expanded, "--azure-account-url")
   if (!storePath && !azureAccountUrl) {
-    throw new Error("Missing --store or --azure-account-url")
+    throw Object.assign(new Error("Missing --store or --azure-account-url"), { code: "missing-store" })
   }
   const registryPath = optionalValue(expanded, "--registry")
   const registryBase64 = optionalValue(expanded, "--registry-base64")
   if (!registryPath && !registryBase64) {
-    throw new Error("Missing --registry or --registry-base64")
+    throw Object.assign(new Error("Missing --registry or --registry-base64"), { code: "missing-registry" })
   }
   const parsed = {
     ...(registryPath ? { registryPath } : {}),
@@ -139,8 +140,16 @@ export function runMailroomEntry(args: string[] = process.argv.slice(2)): Mailro
   return servers
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-store", "missing-registry", "bad-port"]
+
 /* v8 ignore start -- exercised by packaged/container entrypoint smoke rather than in-process unit tests. @preserve */
 if (require.main === module) {
-  runMailroomEntry()
+  try {
+    runMailroomEntry()
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${failureCodeLine(error, CARD_CODES)}`)
+    process.exit(1)
+  }
 }
 /* v8 ignore stop */

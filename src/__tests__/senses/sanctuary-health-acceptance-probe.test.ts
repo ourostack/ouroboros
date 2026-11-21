@@ -19,6 +19,7 @@ import {
   recoverSanctuaryHealthAcceptanceProbe,
   runSanctuaryHealthAcceptanceProbeCli,
   startSanctuaryHealthAcceptanceProbeCli,
+  isSanctuaryHealthAcceptanceProbeMode,
   runSanctuaryHealthAcceptanceProbe,
   stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
@@ -199,7 +200,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
     const setExitCode = vi.fn()
     startSanctuaryHealthAcceptanceProbeCli([], { writeError, setExitCode })
     await new Promise<void>((resolve) => { queueMicrotask(resolve) })
-    expect(writeError).toHaveBeenCalledWith(expect.stringContaining("usage:"))
+    expect(writeError).toHaveBeenCalledWith(expect.stringMatching(/^usage:.*\ncode: usage\n$/u))
     expect(setExitCode).toHaveBeenCalledWith(1)
 
     const fixture = setup("unit-16f-cron-fingerprint")
@@ -210,6 +211,11 @@ describe("packaged Sanctuary health acceptance probe", () => {
         host,
       })
       await vi.waitFor(() => { expect(writeError).toHaveBeenCalledWith("non-error failure\n") })
+      startSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input), { writeError, setExitCode }, {
+        dependencies: { ...fixture.deps, waitForSchedulerReceipt: async () => { throw Object.assign(new Error("no receipt file"), { code: "ENOENT" }) } },
+        host,
+      })
+      await vi.waitFor(() => { expect(writeError).toHaveBeenCalledWith("no receipt file\n") })
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
@@ -218,14 +224,24 @@ describe("packaged Sanctuary health acceptance probe", () => {
     { argv: ["bad", "--label", "unit-16f-cron-fingerprint", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64)] },
     { argv: ["run", "--wrong", "unit-16f-cron-fingerprint", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64)] },
   ])("rejects malformed CLI coordinates %#", async ({ argv }) => {
-    await expect(runSanctuaryHealthAcceptanceProbeCli(argv)).rejects.toThrow(/usage/u)
+    await expect(runSanctuaryHealthAcceptanceProbeCli(argv)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/usage/u) })
+  })
+
+  it("knows its four steps by name, so the entry can refuse any other word before the probe starts", () => {
+    expect(["run", "stop", "recover", "finalize"].every(isSanctuaryHealthAcceptanceProbeMode)).toBe(true)
+    expect([undefined, "", "bogus", "RUN"].some(isSanctuaryHealthAcceptanceProbeMode)).toBe(false)
   })
 
   it("rejects extra non-finalize coordinates and incomplete finalize coordinates", async () => {
     const fixture = setup("unit-16f-cron-fingerprint")
     try {
-      await expect(runSanctuaryHealthAcceptanceProbeCli([...cliArguments(fixture.input), "x", "y", "z", "q"], { dependencies: fixture.deps })).rejects.toThrow(/coordinates are invalid/u)
-      await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input, "finalize"), { dependencies: fixture.deps })).rejects.toThrow(/finalize coordinates are invalid/u)
+      await expect(runSanctuaryHealthAcceptanceProbeCli([...cliArguments(fixture.input), "x", "y", "z", "q"], { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/coordinates are invalid/u) })
+      await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input, "finalize"), { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/finalize coordinates are invalid/u) })
+      await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments({ ...fixture.input, scenarioHandleDigest: "bad" }), { dependencies: fixture.deps })).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/input is invalid/u) })
+      for (const after of [["bad", "d".repeat(64)], ["d".repeat(64), "bad"]]) {
+        await expect(runSanctuaryHealthAcceptanceProbeCli([...cliArguments(fixture.input, "finalize"), "--owner-image-after", after[0]!, "--owner-container-after", after[1]!], { dependencies: fixture.deps }))
+          .rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/finalize coordinates are invalid/u) })
+      }
       await expect(runSanctuaryHealthAcceptanceProbeCli(cliArguments(fixture.input), { host: { pid: 4321, once: vi.fn(), removeListener: vi.fn(), signalSelf: vi.fn() } })).rejects.toThrow()
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })

@@ -293,7 +293,7 @@ describe("Sanctuary owner-turn test driver entry", () => {
 
     const quiet = await runSanctuaryTelegramTestDriverCli({ argv: ["--config", configPath, "log"], expectedUid: process.getuid!(), write: () => undefined })
     expect(quiet).toHaveLength(1)
-    await expect(runSanctuaryTelegramTestDriverCli({ argv: ["log"] })).rejects.toThrow(/usage/u)
+    await expect(runSanctuaryTelegramTestDriverCli({ argv: ["log"] })).rejects.toMatchObject({ code: "missing-config", message: expect.stringMatching(/usage/u) })
   })
 
   it("defaults to the process arguments, root ownership and the real Telegram client", async () => {

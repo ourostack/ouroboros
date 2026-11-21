@@ -669,7 +669,7 @@ describe("Sanctuary Telegram authority process", () => {
   })
 
   it("runs the CLI contract and closes on either termination signal", async () => {
-    await expect(runSanctuaryTelegramAuthorityCli({ argv: ["node", "entry"] })).rejects.toThrow(/--config/u)
+    await expect(runSanctuaryTelegramAuthorityCli({ argv: ["node", "entry"] })).rejects.toMatchObject({ code: "missing-config", message: expect.stringMatching(/--config/u) })
     const originalArgv = process.argv
     process.argv = ["node", "entry"]
     await expect(runSanctuaryTelegramAuthorityCli()).rejects.toThrow(/--config/u)

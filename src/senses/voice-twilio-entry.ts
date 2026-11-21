@@ -2,11 +2,13 @@
 // `node dist/senses/voice-twilio-entry.js --agent <name> --public-url https://<tunnel>`
 export {}
 
+const MISSING_AGENT = "missing-agent"
+
 function readRequiredAgentName(): string {
   const agentArgIndex = process.argv.indexOf("--agent")
   const value = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
   if (value) return value
-  process.stderr.write("Missing required --agent <name> argument.\nUsage: node dist/senses/voice-twilio-entry.js --agent ouroboros --public-url https://<tunnel>\n")
+  process.stderr.write(`Missing required --agent <name> argument.\nUsage: node dist/senses/voice-twilio-entry.js --agent ouroboros --public-url https://<tunnel>\ncode: ${MISSING_AGENT}\n`)
   process.exit(1)
 }
 

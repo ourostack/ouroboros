@@ -12,7 +12,7 @@ describe("compiled Sanctuary health acceptance probe entry smoke", () => {
       signal: null,
       error: undefined,
       stdout: "",
-      stderr: "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]\n",
+      stderr: "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]\ncode: missing-mode\n",
     }))
     const writeStderr = vi.fn()
 

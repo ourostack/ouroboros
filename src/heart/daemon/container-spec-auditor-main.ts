@@ -59,7 +59,7 @@ export function runContainerSpecAuditorCli(rawArgs: string[], deps: ContainerSpe
   const sourceEffective = sourceContract === "legacy-alpha742" ? sourceCandidate : null
   const selectedEffective = effective ?? sourceEffective
   if (!sync || (!staged && !persistent && !selectedEffective)) {
-    write(JSON.stringify({ ok: false, error: "usage: all modes require --mount-contract canonical-pre-gateway|canonical-gateway and accept --sync-enabled true|false; staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
+    write(JSON.stringify({ ok: false, code: "usage", error: "usage: all modes require --mount-contract canonical-pre-gateway|canonical-gateway and accept --sync-enabled true|false; staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",

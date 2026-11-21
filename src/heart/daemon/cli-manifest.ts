@@ -1,5 +1,6 @@
 // The commands of the ouro CLI, declared once: the names `ouro help --json` lists and the X-ray's inventory reads.
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getRepoRoot } from "../identity"
 import { LIFECYCLE_COMMANDS } from "./cli-commands/lifecycle"
 import { PROVIDERS_COMMANDS } from "./cli-commands/providers"
 import { VAULT_COMMANDS } from "./cli-commands/vault"
@@ -14,6 +15,7 @@ import { PRESENCE_COMMANDS } from "./cli-commands/presence"
 import { SHEPHERD_COMMANDS } from "./cli-commands/shepherd"
 import { RSVP_COMMANDS } from "./cli-commands/rsvp"
 import { DNS_COMMANDS } from "./cli-commands/dns"
+import { ENTRY_POINT_COMMANDS } from "./cli-commands/entry-points"
 
 // Each command says who sees its effect: only the person ("private") or other people ("others"). A command moves onto
 // the Ouro AX kit's definitions one at a time; until then it is declared in cli-commands/ and dispatched by cli-exec.
@@ -85,7 +87,7 @@ export const CLI_COMMANDS: readonly CliCommandDeclaration[] = [
  * The census finds them by their `process.argv` reads; each is declared here with its card. `help --json` lists them
  * as `entryPoints`, apart from the commands, because they don't start with `ouro`.
  */
-export const CLI_ENTRY_POINTS: readonly CliCommandDeclaration[] = [];
+export const CLI_ENTRY_POINTS: readonly CliCommandDeclaration[] = ENTRY_POINT_COMMANDS;
 
 export const CLI_EXIT_CODES = [
   { code: 0, name: "ok", meaning: "The command did what it was asked." },
@@ -117,13 +119,25 @@ export function helpEntry(command: CliCommandDeclaration, usage: string = `ouro 
   }
 }
 
-/** An entry point's help: its usage is its own command line, not an ouro command. */
-export function entryPointHelp(entry: CliCommandDeclaration): Record<string, unknown> {
-  return helpEntry(entry, entry.name)
+/** Every string in a help value, with each `node dist/` made `node <root>/dist/`. */
+function withPackageRoot(value: unknown, root: string): unknown {
+  if (typeof value === "string") return value.split("node dist/").join(`node ${root}/dist/`)
+  if (Array.isArray(value)) return value.map((item) => withPackageRoot(item, root))
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, withPackageRoot(item, root)]))
+  return value
+}
+
+/**
+ * An entry point's help: its usage is its own command line, not an ouro command. The cards say `node dist/...`, which
+ * runs only from the package folder; the help gives the installed package's absolute path, which an agent can run from
+ * anywhere (and which the X-ray doesn't take for a developer's source-checkout command).
+ */
+export function entryPointHelp(entry: CliCommandDeclaration, root: string = getRepoRoot()): Record<string, unknown> {
+  return withPackageRoot(helpEntry(entry, entry.name), root) as Record<string, unknown>
 }
 
 /** The help as data: every declared command and entry point with its effect and card, and the exit codes. */
-export function cliHelpJson(): string {
+export function cliHelpJson(root: string = getRepoRoot()): string {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.cli_help_json",
@@ -134,7 +148,7 @@ export function cliHelpJson(): string {
     {
       tool: "ouro",
       commands: CLI_COMMANDS.map((command) => helpEntry(command)),
-      entryPoints: CLI_ENTRY_POINTS.map(entryPointHelp),
+      entryPoints: CLI_ENTRY_POINTS.map((entry) => entryPointHelp(entry, root)),
       exitCodes: CLI_EXIT_CODES,
       errors: serverErrors,
     },

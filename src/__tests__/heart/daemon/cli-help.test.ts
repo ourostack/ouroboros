@@ -11,7 +11,8 @@ import {
 } from "../../../heart/daemon/cli-help"
 import { parseOuroCommand, usage } from "../../../heart/daemon/cli-parse"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
-import { CLI_COMMANDS, CLI_ENTRY_POINTS, entryPointHelp, helpEntry } from "../../../heart/daemon/cli-manifest"
+import { CLI_COMMANDS, CLI_ENTRY_POINTS, cliHelpJson, entryPointHelp, helpEntry } from "../../../heart/daemon/cli-manifest"
+import { getRepoRoot } from "../../../heart/identity"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
 // ── Unit 0a: Command metadata registry ──
@@ -532,14 +533,50 @@ describe("runOuroCli help execution", () => {
     expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])
   })
 
+  it("ouro help --json lists every declared command and every entry point by name, each entry point with its card", async () => {
+    const help = JSON.parse(await runOuroCli(["help", "--json"], makeDeps())) as {
+      commands: Array<{ name: string }>
+      entryPoints: Array<{ name: string; usage: string[]; group?: string; errors?: Array<{ code: string }> }>
+    }
+    expect(new Set(help.commands.map((command) => command.name))).toEqual(new Set(CLI_COMMANDS.map((command) => command.name)))
+    expect(help.entryPoints.map((entry) => entry.name)).toEqual(CLI_ENTRY_POINTS.map((entry) => entry.name.replace("node dist/", `node ${getRepoRoot()}/dist/`)))
+    expect(help.entryPoints.length).toBeGreaterThan(0)
+    for (const entry of help.entryPoints) {
+      expect(entry.name.startsWith(`node ${getRepoRoot()}/dist/`)).toBe(true)
+      expect(entry.usage).toEqual([entry.name])
+      expect(entry.group).toEqual(expect.any(String))
+      expect(entry.errors?.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("renders each entry point's command line with the installed package's absolute path, never a relative node dist/", () => {
+    const entry = {
+      name: "node dist/x.js", effect: "private" as const, summary: "Run x.",
+      ax: { id: "cli:node dist/x.js", group: "entry-points", when: "Start node dist/x.js by hand.", effect: "write" as const,
+        errors: [{ code: "usage", means: "node dist/x.js needs a flag.", fix: "Run node dist/x.js --flag." }] },
+    }
+    expect(entryPointHelp(entry, "/opt/ouro")).toMatchObject({
+      name: "node /opt/ouro/dist/x.js", usage: ["node /opt/ouro/dist/x.js"], when: "Start node /opt/ouro/dist/x.js by hand.",
+      errors: [{ code: "usage", means: "node /opt/ouro/dist/x.js needs a flag.", fix: "Run node /opt/ouro/dist/x.js --flag." }],
+    })
+    // The card itself keeps its source text and id; only the rendered help changes.
+    expect(entry.name).toBe("node dist/x.js")
+    expect(entry.ax.errors[0]!.fix).toBe("Run node dist/x.js --flag.")
+    const help = JSON.parse(cliHelpJson("/opt/ouro")) as { entryPoints: Array<{ name: string }> }
+    expect(JSON.stringify(help.entryPoints)).not.toContain("node dist/")
+    expect(help.entryPoints.every((e) => e.name.startsWith("node /opt/ouro/dist/"))).toBe(true)
+    // By default the root is the running package's own.
+    expect((JSON.parse(cliHelpJson()) as { entryPoints: Array<{ name: string }> }).entryPoints[0]!.name.startsWith(`node ${getRepoRoot()}/dist/`)).toBe(true)
+  })
+
   it("tags the parser's refusals with the codes the cards name: usage for bad words, unknown-door for no command", async () => {
     await expect(runOuroCli(["check"], makeDeps())).rejects.toMatchObject({ code: "usage" })
     await expect(runOuroCli(["xyzzy-no-such-command"], makeDeps())).rejects.toMatchObject({ code: "unknown-door" })
   })
 
   it("describes an entry point by its own command line, and a command with no card by its name alone", () => {
-    expect(entryPointHelp({ name: "node dist/x.js", effect: "private", summary: "Run x." })).toEqual({
-      name: "node dist/x.js", effect: "private", summary: "Run x.", usage: ["node dist/x.js"],
+    expect(entryPointHelp({ name: "node dist/x.js", effect: "private", summary: "Run x." }, "/opt/ouro")).toEqual({
+      name: "node /opt/ouro/dist/x.js", effect: "private", summary: "Run x.", usage: ["node /opt/ouro/dist/x.js"],
     })
   })
 

@@ -9,6 +9,7 @@ import { verifyAuthorityPayload, type SignedAuthorityPayload } from "./sanctuary
 import { LinuxSanctuaryHostSupervisorKernel } from "./sanctuary-host-linux-kernel"
 import { KernelSanctuaryHostSupervisor } from "./sanctuary-host-supervisor"
 import type { SanctuaryHostSupervisorKernel } from "./sanctuary-host-supervisor"
+import { failureCodeLine } from "./cli-commands/failure-code"
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u
 
@@ -209,14 +210,17 @@ export async function runSanctuaryHostSupervisorCli(
 ): Promise<void> {
   const index = argv.indexOf("--spec")
   const specPath = index >= 0 ? argv[index + 1] : undefined
-  if (!specPath) throw new Error("Sanctuary host supervisor requires --spec")
+  if (!specPath) throw Object.assign(new Error("Sanctuary host supervisor requires --spec"), { code: "missing-spec" })
   await run(specPath)
 }
+
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-spec"]
 
 /* v8 ignore next 6 -- executable guard delegates to the tested CLI runner @preserve */
 if (require.main === module) {
   void runSanctuaryHostSupervisorCli().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary host supervisor failed"}\n`)
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary host supervisor failed"}\n${failureCodeLine(error, CARD_CODES)}`)
     process.exitCode = 1
   })
 }

@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, predecessorHasBundleSync, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, predecessorExpectsPsycheMount, predecessorHasBundleSync, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli, sanctuaryRootLifecycleFailureText } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -383,12 +383,12 @@ describe("fixed root installation effects", () => {
   })
   it("dispatches root-only CLI vault operations through private stdin/stdout and refuses all other arguments", async () => {
     vi.spyOn(process, "getuid").mockReturnValue(10001)
-    await expect(runSanctuaryAuthorityRootCli(["vault", "snapshot"])).rejects.toThrow(/root/u)
+    await expect(runSanctuaryAuthorityRootCli(["vault", "snapshot"])).rejects.toMatchObject({ code: "needs-root" })
     vi.mocked(process.getuid!).mockReturnValue(0)
     vi.spyOn(process, "getgid").mockReturnValue(10001)
     await expect(runSanctuaryAuthorityRootCli(["vault", "snapshot"])).rejects.toThrow(/root/u)
     vi.mocked(process.getgid!).mockReturnValue(0)
-    for (const args of [[], ["unexpected"], ["boot", "extra"], ["other", "two"], ["repin-execution"], ["repin-execution", digest("one")], ["repin-execution", digest("one"), digest("two"), "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
+    for (const args of [[], ["unexpected"], ["boot", "extra"], ["other", "two"], ["repin-execution"], ["repin-execution", digest("one")], ["repin-execution", digest("one"), digest("two"), "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/Usage/u) })
     const output = vi.spyOn(process.stdout, "write").mockReturnValue(true)
     vault.mockResolvedValue({ tokenPresent: false })
     await runSanctuaryAuthorityRootCli(["vault", "presence"])
@@ -406,7 +406,7 @@ describe("fixed root installation effects", () => {
     const previous = process.env.OURO_AUTHORITY_REMOVE_INTERLOCK
     delete process.env.OURO_AUTHORITY_REMOVE_INTERLOCK
     try {
-      await expect(runSanctuaryAuthorityRootCli(["vault", "remove"], () => undefined)).rejects.toThrow(/only inside the authority install transaction/u)
+      await expect(runSanctuaryAuthorityRootCli(["vault", "remove"], () => undefined)).rejects.toMatchObject({ code: "outside-install", message: expect.stringMatching(/only inside the authority install transaction/u) })
       expect(vault).not.toHaveBeenCalledWith("remove", undefined)
 
       process.env.OURO_AUTHORITY_REMOVE_INTERLOCK = "epoch-under-test"
@@ -429,7 +429,7 @@ describe("fixed root installation effects", () => {
     const exists = fs.existsSync
     const existsMock = vi.spyOn(fs, "existsSync").mockImplementation((file) => String(file) === `${rootPath}/activation.json` ? false : exists(file))
     await runSanctuaryAuthorityRootCli(["boot"])
-    await expect(runSanctuaryAuthorityRootCli(["repin-execution", digest("prlimit"), digest("setsid")])).rejects.toThrow(/not active/u)
+    await expect(runSanctuaryAuthorityRootCli(["repin-execution", digest("prlimit"), digest("setsid")])).rejects.toMatchObject({ code: "not-active", message: expect.stringMatching(/not active/u) })
     expect(boot).not.toHaveBeenCalled()
     existsMock.mockRestore()
     f.write(`${rootPath}/activation.json`, f.transaction)
@@ -1895,5 +1895,12 @@ describe("root lifecycle failure detail", () => {
     expect(text).toContain(" plain failure\n")
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
     expect(recordSanctuaryRootLifecycleFailure(new Error("x"), path.join(directory, "missing", "log"))).toBe("")
+  })
+  it("ends a failure's generic stderr with its code when the failure has one", () => {
+    const generic = "Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary. Details"
+    expect(sanctuaryRootLifecycleFailureText(Object.assign(new Error("private bytes"), { code: "needs-root" }), " Details")).toBe(`${generic}\ncode: needs-root\n`)
+    expect(sanctuaryRootLifecycleFailureText(new Error("private bytes"), " Details")).toBe(`${generic}\n`)
+    // A Node code such as ENOENT isn't on the card and could say something private about the host: stay generic.
+    expect(sanctuaryRootLifecycleFailureText(Object.assign(new Error("private bytes"), { code: "ENOENT" }), " Details")).toBe(`${generic}\n`)
   })
 })

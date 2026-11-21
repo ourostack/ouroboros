@@ -401,6 +401,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     ], { readFile, write: (text) => output.push(text) })).toBe(2)
     expect(readFile).not.toHaveBeenCalled()
     expect(JSON.parse(output.join("")).error).toContain("usage:")
+    expect(JSON.parse(output.join("")).code).toBe("usage")
   })
 
   it.each([
