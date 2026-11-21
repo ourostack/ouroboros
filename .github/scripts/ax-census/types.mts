@@ -120,6 +120,10 @@ export interface WalkerOptions {
   parser?: string;
   /** ts-parser: the command type to cross-check, as `<file>#<type alias>`. */
   kinds?: string;
+  /** CLI walkers: the built declarations that hold the doors' cards, as `<module>#<export>`. */
+  cards?: string;
+  /** CLI walkers: files that raise error codes for every command (the dispatcher, the gate), beside each door's own. */
+  handlers?: string[];
   /** argv-entries: entry modules another walker covers, each with the parser source it must import. */
   claims?: { entry: string; parser: string }[];
 }

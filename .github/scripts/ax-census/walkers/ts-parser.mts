@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type { Door, Gap, WalkerOptions, WalkResult } from "../types.mts";
+import { applyCards, loadCards, Raises, serverErrorsCheck } from "./cli-cards.mts";
 import { type Comparison, expand, inside, nextWords, type Scope, Sources } from "./ts-argv.mts";
 
 const MAX_DEPTH = 6;
@@ -177,7 +178,8 @@ export async function walkTsParser(opts: WalkerOptions): Promise<WalkResult> {
         }
       }
       if (!candidate.returned) {
-        for (const s of own) for (const k of s.context.kinds) if (inside(s.region, k.at) && kinds.has(k.kind)) candidate.branchKinds.add(k.kind);
+        // A region several words share holds their kinds together, so it reaches none of them for this word.
+        for (const s of own) if (!s.shared) for (const k of s.context.kinds) if (inside(s.region, k.at) && kinds.has(k.kind)) candidate.branchKinds.add(k.kind);
       }
       candidates.set(id, candidate);
       queue.push({ path: p, scopes: narrowed });
@@ -229,11 +231,37 @@ export async function walkTsParser(opts: WalkerOptions): Promise<WalkResult> {
       ...(aliases.length > 0 ? { aliases } : {}),
     });
   }
+  // Cards, and the kinds each declaration's example reaches: a kind behind values no test argv has (an id, a table).
+  const errors: string[] = [];
+  const cards = loadCards(opts.root, opts.cards);
+  if (cards) {
+    errors.push(...cards.errors);
+    const raises = new Raises(sources, opts.root, opts.handlers ?? []);
+    errors.push(...applyCards(doors, cards, raises, opts.cards!));
+    for (const d of cards.declarations) {
+      const door = doors.find((x) => x.name === d.name);
+      if (typeof d.example !== "string" || !door) continue;
+      const words = d.example.trim().split(/\s+/);
+      if (d.name.split(" ").some((w, i) => words[i] !== w)) {
+        errors.push(`cli:${d.name}: its example \`${d.example}\` doesn't start with its words.`);
+        continue;
+      }
+      const o = outcome(words);
+      if (!o.kind) {
+        errors.push(`cli:${d.name}: its example \`${d.example}\` doesn't parse (${o.text}). Fix: give an example the parser accepts.`);
+        continue;
+      }
+      door.evidence.confirmed = true;
+      door.evidence.kinds = [...new Set([...(door.evidence.kinds ?? []), o.kind])].sort();
+      reached.add(o.kind);
+    }
+    errors.push(...serverErrorsCheck(doors, cards, raises, opts.root));
+  }
   const unwalked: Gap[] = [...kinds]
     .filter(([kind]) => !reached.has(kind))
     .map(([kind, at]): Gap => ({ id: `cli:kind ${kind}`, kind: "cli", file: relative(opts.root, at.file), line: at.line, walker: "ts-parser", reasons: ["no walked path returns this kind"] }));
   for (const u of unread) {
     unwalked.push({ id: `cli:type ${u.text}`, kind: "cli", file: relative(opts.root, u.file), line: u.line, walker: "ts-parser", reasons: ["the kind cross-check can't read this member's kind as string literals"] });
   }
-  return { doors, errors: [], unwalked };
+  return { doors, errors, unwalked };
 }

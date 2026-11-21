@@ -418,8 +418,8 @@ const CLI_GAPS = [
   "mcp:ask", "mcp:status", "mcp:catchup",
   "cli:connect", "cli:friend", "cli:friend list", "cli:friend show", "cli:lock", "cli:mode", "cli:mode live", "cli:mode shadow",
   "cli:secret", "cli:secret rotate", "cli:stop", "cli:tool", "cli:tool run", "cli:unlock", "cli:up", "cli:work", "cli:work card", "cli:work gauntlet",
-  "cli:pause", "cli:resume",
-  "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>',
+  "cli:pause", "cli:resume", "cli:seal", "cli:key", "cli:key acme", "cli:key acme add", "cli:key acme show",
+  "cli:kind seal", "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>',
   "cli:node dist/alias-entry.js", "cli:node dist/bracket-entry.js", "cli:node dist/global-entry.js",
   "cli:node dist/daemon-entry.js", "cli:node dist/ouro-entry.mjs rescue", "cli:node dist/lone-entry.js", "cli:node dist/stats-main.js", "cli:node dist/stats-main.js summary", "cli:node dist/stats-main.js export",
 ];
@@ -433,13 +433,13 @@ test("a census with the CLI walkers walks both kinds, and counts unwalked kinds 
     equal(code, 0, err.join("\n"));
     const product = JSON.parse(readFileSync(file, "utf8")).products[0];
     deepEqual(product.walked.kinds, ["mcp", "cli"]);
-    equal(product.summary.unwalked, 5);
-    deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>']);
-    deepEqual(product.byKind.cli, { found: 29, declared: 0, weak: 0, undeclared: 29 });
+    equal(product.summary.unwalked, 6);
+    deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind seal", "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>']);
+    deepEqual(product.byKind.cli, { found: 34, declared: 0, weak: 0, undeclared: 34 });
     // Each gap names the walker that found it, even where two walkers find one kind.
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:up").walker, "ts-parser");
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:node dist/lone-entry.js").walker, "argv-entries");
-    ok(out.includes("harness: 32 found, 0 declared, 0 weak, 32 undeclared, 5 unwalked (mcp 3, cli 29)"), out.join("\n"));
+    ok(out.includes("harness: 37 found, 0 declared, 0 weak, 37 undeclared, 6 unwalked (mcp 3, cli 34)"), out.join("\n"));
     ok(out.includes("walkers/fixtures/cli/cli-types.ts:" + lineIn("walkers/fixtures/cli/cli-types.ts", '"hidden"') + " cli:kind hidden (unwalked: no walked path returns this kind)"), out.join("\n"));
 
     // An unwalked kind off the baseline fails like any other gap.
@@ -455,6 +455,7 @@ test("a source's claims must be a list of entry and parser paths", async () => {
   const dir = scratch();
   try {
     await failsWith(args("config-bad-claims.json", baselineFile(dir, [])), "parser, kinds and claims");
+    await failsWith(args("config-bad-handlers.json", baselineFile(dir, [])), "cards must be a string and its handlers a list of paths");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -474,6 +475,33 @@ test("the pull request that starts walking CLI doors seeds their baseline agains
     const more = ["--config", join(fixtures, "config-cli.json"), "--baseline", baselineFile(dir, CLI_GAPS, "b2.json"), "--base-baseline", baselineFile(dir, CLI_GAPS.slice(0, 2), "base2.json"), "--base-config", join(fixtures, "config-ok.json")];
     equal(await run({ argv: more, io: grown.io, root: here }), 1);
     ok(grown.err.includes("mcp:catchup: added to the baseline. Fix: declare the door instead; the baseline only shrinks."), grown.err.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI doors carry their declarations' cards: declared, weak with reasons, and in the inventory", async () => {
+  const dir = scratch();
+  try {
+    const gaps = [
+      "cli:friend show", "cli:work card", "cli:work gauntlet", "cli:mode live", "cli:mode shadow", "cli:pause", "cli:resume", "cli:friend", "cli:connect",
+      "cli:work", "cli:mode", "cli:lock", "cli:unlock", "cli:tool", "cli:seal", "cli:secret", "cli:secret rotate", "cli:tool run",
+      "cli:key", "cli:key acme", "cli:key acme add", "cli:key acme show",
+      "cli:kind extra", "cli:kind resume.all", "cli:kind hidden", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>',
+    ];
+    const { out, err, io } = capture();
+    const file = join(dir, "census.json");
+    const inventory = join(dir, "inventory.json");
+    const code = await run({ argv: args("config-cli-cards.json", baselineFile(dir, gaps), ["--out", file, "--inventory", inventory]), io, root: here });
+    equal(code, 0, err.join("\n"));
+    const product = JSON.parse(readFileSync(file, "utf8")).products[0];
+    deepEqual(product.byKind.cli, { found: 25, declared: 3, weak: 1, undeclared: 21 });
+    deepEqual(product.weak.find((g: { id: string }) => g.id === "cli:secret rotate").reasons, [
+      "errors[0]: code bad-hex is never raised in walkers/fixtures/cli/cli-parse.ts",
+      "effect: read, but the code mutates (others)",
+    ]);
+    deepEqual(JSON.parse(readFileSync(inventory, "utf8")), { cli: ["up", "stop", "friend list"] });
+    ok(out[0]!.startsWith("harness: 25 found, 3 declared, 1 weak, 21 undeclared, 5 unwalked"), out.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

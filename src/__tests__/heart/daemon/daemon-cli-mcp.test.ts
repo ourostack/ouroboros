@@ -251,18 +251,20 @@ describe("ouro mcp CLI execution (daemon-routed)", () => {
     sendCommand.mockRejectedValue(new Error("connect ENOENT"))
     const deps = createMockDeps({ sendCommand })
 
-    const result = await runOuroCli(["mcp", "list"], deps)
-
-    expect(result).toContain("daemon unavailable")
-    expect(result).toContain("ouro up")
+    // A failure, exit 1, with the code the mcp list card names.
+    await expect(runOuroCli(["mcp", "list"], deps)).rejects.toMatchObject({
+      code: "daemon-down",
+      message: expect.stringContaining("ouro up"),
+    })
   })
 
   it("'mcp call' when daemon unavailable shows startup hint", async () => {
     sendCommand.mockRejectedValue(new Error("connect ENOENT"))
     const deps = createMockDeps({ sendCommand })
 
-    const result = await runOuroCli(["mcp", "call", "ado", "get_items"], deps)
-
-    expect(result).toContain("daemon unavailable")
+    await expect(runOuroCli(["mcp", "call", "ado", "get_items"], deps)).rejects.toMatchObject({
+      code: "daemon-down",
+      message: expect.stringContaining("daemon unavailable"),
+    })
   })
 })

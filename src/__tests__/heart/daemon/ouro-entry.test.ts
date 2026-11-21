@@ -34,6 +34,8 @@ describe("ouro CLI entrypoint", () => {
     await Promise.resolve()
     expect(runOuroCli).not.toHaveBeenCalled()
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("needs --why"))
+    // The last line is the code the command's Ouro AX card names, so an agent can find its fix.
+    expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/\ncode: needs-why\n$/))
     expect(process.exitCode).toBe(1)
     process.exitCode = exitCode
   })
@@ -123,6 +125,32 @@ describe("ouro CLI entrypoint", () => {
     expect(stderrSpy).toHaveBeenCalledWith("fail\n")
     expect(exitSpy).toHaveBeenCalledWith(1)
 
+    argvSpy.mockRestore()
+  })
+
+  it("ends a failure that carries a code with that code, and records it", async () => {
+    vi.resetModules()
+    const runOuroCli = vi.fn(async () => {
+      throw Object.assign(new Error("daemon unavailable"), { code: "daemon-down" })
+    })
+    const emitNervesEvent = vi.fn()
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "mailbox"])
+
+    await import("../../../heart/daemon/ouro-entry")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(stderrSpy).toHaveBeenCalledWith("daemon unavailable\ncode: daemon-down\n")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.cli_entry_error",
+      meta: { error: "daemon unavailable", code: "daemon-down" },
+    }))
+    expect(exitSpy).toHaveBeenCalledWith(1)
     argvSpy.mockRestore()
   })
 

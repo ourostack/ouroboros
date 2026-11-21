@@ -50,6 +50,18 @@ function parseToolCommand(args) {
   }
   throw new Error("Usage: tool run --name <name>");
 }
+const SEAL = { kind: "seal" };
+function parseSeal(args) {
+  if (!/^[0-9]{6}$/.test(args[0] ?? "")) throw new Error("Usage: seal <6 digits>");
+  return { kind: SEAL.kind, code: args[0] };
+}
+function parseKey(args) {
+  const vendor = args[0];
+  const action = args[1];
+  if (vendor !== "acme") throw new Error("Usage: key acme add|show");
+  if (action !== "add" && action !== "show") throw new Error("Usage: key acme add|show");
+  return action === "add" ? { kind: "key.add" } : { kind: "key.show" };
+}
 const PAUSE = "pause";
 
 function parseCommand(args) {
@@ -66,6 +78,8 @@ function parseCommand(args) {
   if (head === "mode") return parseMode(args.slice(1));
   if (["lock", "unlock"].includes(head)) return parseVault(head, args.slice(1));
   if (head === "tool") return parseToolCommand(args.slice(1));
+  if (head === "seal") return parseSeal(args.slice(1));
+  if (head === "key") return parseKey(args.slice(1));
   if (head === "secret") {
     if (args[1] === "rotate") {
       if (!/^[a-f0-9]{64}$/.test(args[2] ?? "")) throw new Error("Usage: secret rotate <64 hex>");

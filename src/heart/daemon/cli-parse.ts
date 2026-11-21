@@ -296,10 +296,14 @@ export function usage(): string {
     "  ouro stop|down|status|logs|hatch",
     "  ouro status --agent <name>",
     "  ouro use [--agent <name>] --lane outward|inner --provider <provider> --model <model> [--force]",
+    "  ouro config model [--agent <name>] <model-name>",
+    "  ouro config models [--agent <name>]",
     "  ouro check [--agent <name>] --lane outward|inner",
     "  ouro repair [--agent <name>]",
     "  ouro provider refresh [--agent <name>]",
     "  ouro mailbox [--json]",
+    "  ouro help [<command>] [--json]",
+    "  ouro changelog [--from <version>]",
     "  ouro -v|--version",
     "  ouro auth [--agent <name>] [--provider <provider>]",
     "  ouro auth --agent <name> --provider anthropic --api-key-file <path> [--base-url <url>]",
@@ -3155,5 +3159,6 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
 
   const suggestion = suggestCommand(head)
   const hint = suggestion ? ` Did you mean '${suggestion}'?` : ""
-  throw new Error(`Unknown command '${args.join(" ")}'.${hint}\n${usage()}`)
+  // The CLI's unknown-door card (cli-manifest.ts serverErrors) names this answer.
+  throw Object.assign(new Error(`Unknown command '${args.join(" ")}'.${hint}\n${usage()}`), { code: "unknown-door" })
 }

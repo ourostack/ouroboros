@@ -1,5 +1,5 @@
 // The command union the ts-parser walker cross-checks.
-import type { ToolCommand } from "./cli-tool"
+import type { KeyCommand, SealCommand, ToolCommand } from "./cli-tool"
 
 // An interface member, and one that inherits its kind.
 interface PauseCommand {
@@ -25,6 +25,8 @@ export type Command =
   | { kind: "vault.lock" }
   | { kind: "vault.unlock" }
   | ToolCommand
+  | SealCommand
+  | KeyCommand
   | ({ kind: "secret.rotate" } & { id?: string })
   | { kind: "hidden" }
   | import("./cli-extra").Extra

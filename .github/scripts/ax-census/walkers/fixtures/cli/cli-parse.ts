@@ -1,6 +1,6 @@
 // A small legacy parser in the harness's style, for the ts-parser walker's tests. cli-parse.cjs is its built form.
 import type { Command } from "./cli-types"
-import { parseToolCommand } from "./cli-tool"
+import { parseKey, parseSeal, parseToolCommand } from "./cli-tool"
 
 function extractAgent(args: string[]): { agent?: string; rest: string[] } {
   const at = args.indexOf("--agent")
@@ -72,6 +72,8 @@ export function parseCommand(args: string[]): Command {
   if (head === "mode") return parseMode(args.slice(1))
   if (["lock", "unlock"].includes(head)) return parseVault(head, args.slice(1))
   if (head === "tool") return parseToolCommand(args.slice(1))
+  if (head === "seal") return parseSeal(args.slice(1))
+  if (head === "key") return parseKey(args.slice(1))
   if (head === "secret") {
     if (args[1] === "rotate") {
       if (!/^[a-f0-9]{64}$/.test(args[2] ?? "")) throw new Error("Usage: secret rotate <64 hex>")

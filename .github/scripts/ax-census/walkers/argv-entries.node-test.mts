@@ -60,6 +60,21 @@ test("a claim on a module that isn't an entry, or one that doesn't import its pa
   ]);
 });
 
+test("an entry point's card and evidence come from its declaration, and a stale declaration is a census error", async () => {
+  const { doors, errors } = await walkArgvEntries({ product: "harness", module: "dist", source: "src", root: fixtures, claims: [CLAIM], cards: "entry-points.cjs#ENTRY_POINTS" });
+  deepEqual(errors, []);
+  const summary = doors.find((d) => d.id === "cli:node dist/stats-main.js summary")!;
+  equal(summary.card!.effect, "read");
+  equal(summary.description, "Summarise the stats.");
+  // no-stats is a literal in stats.ts, the file the summary word is compared in.
+  deepEqual(summary.evidence, { confirmed: false, kinds: [], readOnly: true, raises: ["no-stats"] });
+  equal(doors.find((d) => d.id === "cli:node dist/lone-entry.js")!.card, null);
+  const stale = await walkArgvEntries({ product: "harness", module: "dist", source: "src", root: fixtures, claims: [CLAIM], cards: "entry-points.cjs#STALE" });
+  deepEqual(stale.errors, ["cli:node dist/gone.js: declared in entry-points.cjs#STALE, but no walked path reaches it. Fix: remove the declaration, or make the parser accept its words."]);
+  const bad = await walkArgvEntries({ product: "harness", module: "dist", source: "src", root: fixtures, claims: [CLAIM], cards: "entry-points.cjs" });
+  deepEqual(bad.errors, ["cards entry-points.cjs: give it as <module>#<export>."]);
+});
+
 test("the real harness: the four hand-written CLIs are doors and the ouro entry points are claimed", { skip: existsSync(join(repo, "src")) ? false : "no harness source" }, async () => {
   const { doors, errors } = await walkArgvEntries({
     product: "harness",

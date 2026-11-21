@@ -458,6 +458,41 @@ describe("execTool", () => {
     await expect(execTool("shell", { command: "ouro vault item list --agent slugger" }, ctx)).resolves.toBe("ran ouro vault item list --agent slugger\n")
   })
 
+  it("treats exactly the commands whose Ouro AX card says read as safe ouro shell commands", async () => {
+    const { readOnlyOuroShellCommands, shellRiskProfile } = await import("../../repertoire/tools")
+    const { CLI_COMMANDS } = await import("../../heart/daemon/cli-manifest")
+    const reads = CLI_COMMANDS.filter((command) => command.ax?.effect === "read").map((command) => command.name)
+    expect([...readOnlyOuroShellCommands()].sort()).toEqual([...reads, "-h", "--help", "-v", "--version"].sort())
+    for (const name of reads) expect(shellRiskProfile({ command: `ouro ${name} --json` })).toMatchObject({ risk: "low" })
+    for (const command of CLI_COMMANDS.filter((c) => c.ax && c.ax.effect !== "read")) {
+      expect(shellRiskProfile({ command: `ouro ${command.name}` })).toMatchObject({ risk: "high" })
+    }
+  })
+
+  it("reads an ouro command line by its longest declared words, and an unknown word after a group as risky", async () => {
+    const { shellRiskProfile } = await import("../../repertoire/tools")
+    expect(shellRiskProfile({ command: "ouro vault item list --agent slugger" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro check --agent slugger --lane inner" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro --version" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro mcp call --server x --tool y" })).toMatchObject({ risk: "high" })
+    expect(shellRiskProfile({ command: "ouro mcp" })).toMatchObject({ risk: "high" })
+    expect(shellRiskProfile({ command: "ouro no-such-command" })).toMatchObject({ risk: "high" })
+    // auth is a group (auth verify sits under it): a word after it names no declared command.
+    expect(shellRiskProfile({ command: "ouro auth verify --agent slugger" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro auth verifyy" })).toMatchObject({ risk: "high" })
+    expect(shellRiskProfile({ command: "ouro auth --agent slugger" })).toMatchObject({ risk: "high" })
+  })
+
+  it("treats a shell line that runs ouro beside another command as risky, whatever the first command is", async () => {
+    const { shellRiskProfile } = await import("../../repertoire/tools")
+    for (const command of ["ouro status && ouro down", "ouro status; ouro down", "ouro status || ouro down", "ouro status | sh", "ouro status $(ouro down)", "ouro status `ouro down`", "ouro status\nouro down", "ls && ouro down", "echo hi; ouro status"]) {
+      expect(shellRiskProfile({ command })).toMatchObject({ risk: "high", reason: expect.stringContaining("run each ouro command alone") })
+    }
+    // A pipe or && that never runs ouro is judged as before.
+    expect(shellRiskProfile({ command: "cat notes.md | grep ouro" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro status --json" })).toMatchObject({ risk: "low" })
+  })
+
   it("orientation hold blocks first-class MCP tools before external calls run", async () => {
     const tools = await import("../../repertoire/tools")
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })

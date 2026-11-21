@@ -1,0 +1,10 @@
+{
+  "product": "harness",
+  "sources": [
+    { "walker": "ts-parser", "module": "walkers/fixtures/cli/cli-parse.cjs", "source": "walkers/fixtures/cli/cli-parse.ts", "parser": "parseCommand", "kinds": "walkers/fixtures/cli/cli-types.ts#Command", "cards": "walkers/fixtures/cli/cli-manifest.cjs#COMMANDS", "handlers": ["walkers/fixtures/cli/cli-handler.ts"] }
+  ],
+  "groups": [
+    { "id": "life", "when": "Start, stop and look after the fixture's background runtime on this machine." },
+    { "id": "people", "when": "Look up and change the people the fixture agent knows and trusts." }
+  ]
+}

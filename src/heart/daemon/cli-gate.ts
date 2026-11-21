@@ -36,9 +36,12 @@ export const PARSER_FLAGS: readonly string[] = [
   "--verify", "--version", "--web", "--which", "--workbench-mcp", "--yes",
 ];
 
+/** The error codes the gate raises, as the commands' Ouro AX cards name them. */
+export type GateRefusal = "unknown-flag" | "extra-words" | "needs-why";
+
 export type GateResult =
   | { kind: "pass"; args: string[] }
-  | { kind: "refuse"; message: string }
+  | { kind: "refuse"; code: GateRefusal; message: string }
   | { kind: "preview"; text: string }
   | { kind: "help"; text: string };
 
@@ -103,15 +106,15 @@ function matchCommand(args: string[]): CommandShape | null {
   return found.length > 0 ? found[0]! : null;
 }
 
-function refuse(name: string, message: string): GateResult {
+function refuse(name: string, code: GateRefusal, message: string): GateResult {
   emitNervesEvent({
     level: "warn",
     component: "daemon",
     event: "daemon.cli_flag_gate_refused",
     message: "the flag gate refused a command",
-    meta: { command: name },
+    meta: { command: name, code },
   });
-  return { kind: "refuse", message };
+  return { kind: "refuse", code, message };
 }
 
 /** Checks a command line against its declaration; a pass returns the words the legacy dispatcher should read. */
@@ -146,7 +149,7 @@ export function gateCommandArgs(args: string[]): GateResult {
     const fix = suggestion
       ? `use ${suggestion}`
       : `drop ${token}; \`ouro ${name} --help\` lists its flags`;
-    return refuse(name, `Unknown flag ${token} for "ouro ${name}". Fix: ${fix}.`);
+    return refuse(name, "unknown-flag", `Unknown flag ${token} for "ouro ${name}". Fix: ${fix}.`);
   }
 
   if (others) {
@@ -163,12 +166,14 @@ export function gateCommandArgs(args: string[]): GateResult {
     if (shape.positionals === 0 && extra > 0) {
       return refuse(
         name,
+        "extra-words",
         `"ouro ${name}" takes no words after its command. Fix: run \`ouro ${name} --help\` and drop the extra words.`,
       );
     }
     if (!rest.includes("--why") && !rest.includes("--why-file")) {
       return refuse(
         name,
+        "needs-why",
         `ouro ${name} needs --why: other people will see this, so say who asked you and what they said. Fix: add --why "<who asked you, and what they said>" to the command.`,
       );
     }

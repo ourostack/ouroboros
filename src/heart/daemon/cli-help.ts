@@ -124,6 +124,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro doctor",
     example: "ouro doctor",
   },
+  help: {
+    category: "Lifecycle",
+    description: "Show the commands, or one command's help; --json lists each with its card",
+    usage: "ouro help [<command>] [--json]",
+    example: "ouro help --json",
+  },
   mailbox: {
     category: "Agents",
     description: "Show the agent's current mailbox overview",

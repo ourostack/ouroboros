@@ -4,12 +4,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { walkTsParser } from "./ts-parser.mts";
+import { Sources } from "./ts-argv.mts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures", "cli");
 const repo = resolve(here, "../../../..");
 
-function walk(overrides: Partial<{ module: string; source: string; parser: string; kinds: string }> = {}) {
+function walk(overrides: Partial<{ module: string; source: string; parser: string; kinds: string; cards: string; handlers: string[] }> = {}) {
   return walkTsParser({ product: "harness", module: "cli-parse.cjs", source: "cli-parse.ts", parser: "parseCommand", kinds: "cli-types.ts#Command", root: fixtures, ...overrides });
 }
 
@@ -26,12 +27,17 @@ test("finds every word path the parser dispatches on, each at the line of its co
     "cli:friend",
     "cli:friend list",
     "cli:friend show",
+    "cli:key",
+    "cli:key acme",
+    "cli:key acme add",
+    "cli:key acme show",
     "cli:lock",
     "cli:mode",
     "cli:mode live",
     "cli:mode shadow",
     "cli:pause",
     "cli:resume",
+    "cli:seal",
     "cli:secret",
     "cli:secret rotate",
     "cli:stop",
@@ -54,6 +60,9 @@ test("finds every word path the parser dispatches on, each at the line of its co
   // A sub-parser in another file reports its own file and line.
   equal(at("cli:tool run").file, "cli-tool.ts");
   equal(at("cli:tool run").line, lineOf("cli-tool.ts", 'sub === "run"'));
+  // A word a throwing guard checks with !== leads to the words read after the guard.
+  equal(at("cli:key acme add").line, lineOf("cli-tool.ts", 'action !== "add"'));
+  deepEqual(at("cli:key acme show").evidence, { confirmed: true, kinds: ["key.show"] });
   for (const door of doors) {
     equal(door.kind, "cli");
     equal(door.product, "harness");
@@ -95,6 +104,7 @@ test("two words in one `||` that always parse the same are one door with an alia
 test("every kind of the command type that no walked path reaches is an unwalked gap at its line in the type", async () => {
   const { unwalked } = await walk();
   deepEqual((unwalked ?? []).filter((g) => g.id.startsWith("cli:kind ")), [
+    { id: "cli:kind seal", kind: "cli", file: "cli-tool.ts", line: lineOf("cli-tool.ts", '{ kind: "seal"; code'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
     { id: "cli:kind hidden", kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", '"hidden"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
     { id: "cli:kind extra", kind: "cli", file: "cli-extra.ts", line: lineOf("cli-extra.ts", '"extra"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
     { id: "cli:kind resume.all", kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", '"resume.all"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
@@ -120,6 +130,63 @@ test("a module without the parser, a source without it, or a type without kinds 
   deepEqual(noKinds.errors, ["cli-types.ts#Missing: no type alias with kind literals"]);
   const noSpec = await walk({ kinds: "" });
   deepEqual(noSpec.errors, ["ts-parser needs parser and kinds (<file>#<type>) in its source"]);
+});
+
+function cards(spec = "cli-manifest.cjs#COMMANDS") {
+  return walk({ cards: spec, handlers: ["cli-handler.ts"] });
+}
+
+test("a door's card, summary and effect evidence come from its declaration", async () => {
+  const { doors, errors } = await cards();
+  deepEqual(errors, []);
+  const at = (id: string) => doors.find((d) => d.id === id)!;
+  equal(at("cli:up").card!.when, "Pick this first on a fresh machine, before anything that needs the background runtime.");
+  // The summary is the door's description, so a `when` line that only repeats it is weak.
+  equal(at("cli:up").description, "Start the fixture daemon.");
+  deepEqual(at("cli:friend list").evidence, { confirmed: true, kinds: ["friend.list"], readOnly: true, raises: ["no-friend"] });
+  // A command other people see is evidence of mutation, so its card can't say read.
+  equal(at("cli:secret rotate").evidence.mutates, "others");
+  // A door with no declaration, or a declaration without a card, stays undeclared.
+  equal(at("cli:work card").card, null);
+  equal(at("cli:seal").card, null);
+});
+
+test("an error code counts as raised only where it is a literal outside a card, in the door's file or a handler", async () => {
+  const { doors } = await cards();
+  deepEqual(doors.find((d) => d.id === "cli:up")!.evidence.raises, ["daemon-down"]);
+  // bad-hex is only in its card.
+  deepEqual(doors.find((d) => d.id === "cli:secret rotate")!.evidence.raises, []);
+  const unhandled = await walk({ cards: "cli-manifest.cjs#COMMANDS" });
+  deepEqual(unhandled.doors.find((d) => d.id === "cli:up")!.evidence.raises, []);
+});
+
+test("an alias's declaration needs no card, and an example reaches the kind it parses to", async () => {
+  const { doors, unwalked, errors } = await cards();
+  deepEqual(errors, []);
+  ok(!doors.some((d) => d.id === "cli:down"));
+  deepEqual(doors.find((d) => d.id === "cli:seal")!.evidence, { confirmed: true, kinds: ["seal"] });
+  deepEqual(doors.find((d) => d.id === "cli:secret rotate")!.evidence.confirmed, true);
+  ok(!(unwalked ?? []).some((g) => g.id === "cli:kind seal"));
+  ok((unwalked ?? []).some((g) => g.id === "cli:kind hidden"));
+});
+
+test("a stale declaration, an alias's own card, a bad example and a name declared twice are census errors", async () => {
+  deepEqual((await cards("cli-manifest.cjs#STALE")).errors, ["cli:nope: declared in cli-manifest.cjs#STALE, but no walked path reaches it. Fix: remove the declaration, or make the parser accept its words."]);
+  deepEqual((await cards("cli-manifest.cjs#BAD")).errors, [
+    "cli:up: declared twice in cli-manifest.cjs#BAD.",
+    "cli:down: an alias of cli:stop has a card of its own. Fix: list down in cli:stop's card aliases and drop this card.",
+    "cli:seal: its example `seal now` doesn't parse (throws Usage: seal <6 digits>). Fix: give an example the parser accepts.",
+    "cli:tool run: its example `up --name x` doesn't start with its words.",
+  ]);
+  deepEqual((await cards("cli-manifest.cjs#NOT_A_LIST")).errors, ["cli-manifest.cjs#NOT_A_LIST: not a list of declarations with names."]);
+  deepEqual((await cards("cli-manifest.cjs")).errors, ["cards cli-manifest.cjs: give it as <module>#<export>."]);
+});
+
+test("a CLI that declares cards must export serverErrors with an unknown-door card, and raise it", async () => {
+  const none = await walk({ cards: "cli-manifest.cjs#COMMANDS", module: "cli-parse.cjs", handlers: [] });
+  deepEqual(none.errors, ["cli-manifest.cjs: the CLI declares cards but unknown-door is never raised in its handler files."]);
+  const bare = await cards("cli-manifest-bare.cjs#COMMANDS");
+  deepEqual(bare.errors, ["cli-manifest-bare.cjs: the CLI declares cards but exports no serverErrors with an unknown-door card, the answer to an unknown command."]);
 });
 
 const built = join(repo, "dist/heart/daemon/cli-parse.js");
@@ -150,4 +217,23 @@ test("the real harness parser: the 21 missing first words with lines, and every 
   ok(source.includes("export type OuroCliCommand"));
   for (const gap of unwalked ?? []) ok(!reached.has(gap.id.slice("cli:kind ".length)), gap.id);
   ok(reached.size + (unwalked ?? []).length >= 133, `${reached.size} reached, ${(unwalked ?? []).length} reported`);
+});
+
+test("a !== check leads on below its if only when the if exits and checks nothing but that word", () => {
+  const sources = new Sources();
+  const file = join(fixtures, "guards.ts");
+  const read = (fn: string) => sources.read(file, sources.functionIn(file, fn)!, [{ arr: 0 }]).comparisons;
+  const below = (fn: string, text: string) => {
+    const c = read(fn).find((x) => x.text === text)!;
+    return { below: c.region !== null && c.region[0] > c.at, shared: c.shared === true };
+  };
+  deepEqual(below("guarded", "solo"), { below: true, shared: false });
+  // Several words below one guard share its region, so none of them claims the kinds in it.
+  deepEqual(below("chained", "one"), { below: true, shared: true });
+  deepEqual(below("chained", "two"), { below: true, shared: true });
+  // Another conjunct, a branch that falls through, an else, or a || keeps the check's own branch.
+  deepEqual(below("mixed", "loud"), { below: false, shared: false });
+  deepEqual(below("fallsThrough", "open"), { below: false, shared: false });
+  deepEqual(below("withElse", "shut"), { below: false, shared: false });
+  deepEqual(below("either", "left"), { below: false, shared: false });
 });

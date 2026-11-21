@@ -32,6 +32,7 @@ import { authorizeRoutineActionRequester } from "./relationship-authorization";
 import { ApprovalExecutionFailedError } from "../heart/tool-approval";
 import { localAudioToolGate, voiceLocalAudioToolDefinition } from "./tools-voice-local";
 import { authorizeRootHostToolInvocation, rootHostToolDefinition, selectRootHostTool, type RootHostSelectionContext } from "./tools-sanctuary-host";
+import { CLI_COMMANDS } from "../heart/daemon/cli-manifest";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -296,46 +297,55 @@ export async function approvalPolicyForInvocation(name: string, args: Record<str
 
 const findDefinition = resolveToolDefinition
 
-const READ_ONLY_OURO_SHELL_COMMANDS = new Set([
-  "help",
-  "-h",
-  "--help",
-  "-v",
-  "--version",
-  "status",
-  "whoami",
-  "versions",
-  "changelog",
-  "mailbox",
-  "inner",
-  "thoughts",
-  "check",
-  "session list",
-  "mcp list",
-  "config models",
-  "auth verify",
-  "vault status",
-  "vault config status",
-  "vault item status",
-  "vault item list",
-])
+/** The flags that print ouro's help or version, which run nothing. */
+const OURO_INFO_FLAGS = ["-h", "--help", "-v", "--version"]
+
+/**
+ * The ouro commands a shell may run without an approval: those whose Ouro AX card in cli-manifest says
+ * `effect: "read"`, and the help and version flags. Generated from the cards, never kept by hand.
+ */
+export function readOnlyOuroShellCommands(): ReadonlySet<string> {
+  return new Set([...CLI_COMMANDS.filter((command) => command.ax?.effect === "read").map((command) => command.name), ...OURO_INFO_FLAGS])
+}
+
+const READ_ONLY_OURO_SHELL_COMMANDS = readOnlyOuroShellCommands()
+const DECLARED_OURO_COMMANDS = CLI_COMMANDS.map((command) => command.name)
 
 function shellTokens(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean)
 }
 
+/**
+ * The declared command a shell line names: the longest declaration whose words start it, as the CLI's gate reads it.
+ * A group's declaration (one with longer declarations under it) followed by another word names no command, since
+ * that word is an undeclared one under the group.
+ */
+function declaredOuroCommand(words: readonly string[]): string | null {
+  for (let length = words.length; length > 0; length--) {
+    const name = words.slice(0, length).join(" ")
+    if (!DECLARED_OURO_COMMANDS.includes(name) && !OURO_INFO_FLAGS.includes(name)) continue
+    const next = words[length]
+    const isGroup = DECLARED_OURO_COMMANDS.some((other) => other.startsWith(`${name} `))
+    return next !== undefined && !next.startsWith("-") && isGroup ? null : name
+  }
+  return null
+}
+
+/** Where a shell line starts another command: its start, after an operator, or inside a substitution. */
+const OURO_AT_COMMAND_POSITION = /(^|&&|\|\||[;|`\n(])\s*ouro(\s|$)/
+const SHELL_CHAINING = /&&|\|\||[;|`\n]|\$\(/
+
 function ouroShellRiskReason(command: string): string | null {
+  // The read-only check below judges one ouro command; a line that also runs something else isn't one.
+  if (OURO_AT_COMMAND_POSITION.test(command) && SHELL_CHAINING.test(command)) {
+    return "shell line runs ouro beside other commands; run each ouro command alone so its own card decides."
+  }
   const tokens = shellTokens(command)
   if (tokens[0] !== "ouro") return null
 
   const first = tokens[1] ?? ""
-  const second = tokens[2] ?? ""
-  const third = tokens[3] ?? ""
-  const twoWord = second ? `${first} ${second}` : first
-  const threeWord = third ? `${twoWord} ${third}` : twoWord
-  if (READ_ONLY_OURO_SHELL_COMMANDS.has(threeWord)
-    || READ_ONLY_OURO_SHELL_COMMANDS.has(twoWord)
-    || READ_ONLY_OURO_SHELL_COMMANDS.has(first)) {
+  const declared = declaredOuroCommand(tokens.slice(1))
+  if (declared && READ_ONLY_OURO_SHELL_COMMANDS.has(declared)) {
     return null
   }
 

@@ -11,7 +11,7 @@ import {
 } from "../../../heart/daemon/cli-help"
 import { parseOuroCommand, usage } from "../../../heart/daemon/cli-parse"
 import { runOuroCli } from "../../../heart/daemon/cli-exec"
-import { CLI_COMMANDS } from "../../../heart/daemon/cli-manifest"
+import { CLI_COMMANDS, CLI_ENTRY_POINTS, entryPointHelp, helpEntry } from "../../../heart/daemon/cli-manifest"
 import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
 // ── Unit 0a: Command metadata registry ──
@@ -518,14 +518,41 @@ describe("runOuroCli help execution", () => {
     expect(help.exitCodes.map((exit) => exit.code)).toEqual([0, 1])
   })
 
+  it("ouro help --json serves each command's Ouro AX card, the entry points, and the unknown-command card", async () => {
+    const help = JSON.parse(await runOuroCli(["help", "--json"], makeDeps())) as {
+      commands: Array<Record<string, unknown>>
+      entryPoints: unknown[]
+      errors: Array<{ code: string }>
+    }
+    const mailbox = help.commands.find((command) => command.name === "mailbox")!
+    expect(mailbox).toMatchObject({ readOnly: true, group: "mail", consent: "read", aliases: ["outlook"] })
+    expect((mailbox.errors as Array<{ code: string }>).map((error) => error.code)).toEqual(["unknown-flag", "daemon-down"])
+    expect(help.commands.find((command) => command.name === "check")).toMatchObject({ example: "ouro check --lane inner" })
+    expect(help.entryPoints).toHaveLength(CLI_ENTRY_POINTS.length)
+    expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])
+  })
+
+  it("tags the parser's refusals with the codes the cards name: usage for bad words, unknown-door for no command", async () => {
+    await expect(runOuroCli(["check"], makeDeps())).rejects.toMatchObject({ code: "usage" })
+    await expect(runOuroCli(["xyzzy-no-such-command"], makeDeps())).rejects.toMatchObject({ code: "unknown-door" })
+  })
+
+  it("describes an entry point by its own command line, and a command with no card by its name alone", () => {
+    expect(entryPointHelp({ name: "node dist/x.js", effect: "private", summary: "Run x." })).toEqual({
+      name: "node dist/x.js", effect: "private", summary: "Run x.", usage: ["node dist/x.js"],
+    })
+  })
+
   it.each([["--help"], ["-h"]])("%s --json prints the same help as data", async (flag) => {
     const result = await runOuroCli([flag, "--json"], makeDeps())
     expect(JSON.parse(result)).toMatchObject({ tool: "ouro" })
   })
 
-  it("every declared command is one the usage text lists", () => {
+  it("every declared command is one the usage text lists, except a hidden legacy spelling", () => {
     const lines = usage().split("\n")
-    for (const command of CLI_COMMANDS) {
+    expect(CLI_COMMANDS.filter((command) => command.hidden).map((command) => command.name)).toEqual(["inner"])
+    expect(helpEntry(CLI_COMMANDS.find((command) => command.hidden)!)).toMatchObject({ hidden: true })
+    for (const command of CLI_COMMANDS.filter((declared) => !declared.hidden)) {
       const words = command.name.split(" ")
       const last = words.pop()!
       const prefix = `  ouro ${[...words, ""].join(" ")}`
@@ -625,6 +652,7 @@ describe("parseOuroCommand typo suggestions", () => {
 
   it("does NOT include 'Did you mean' for distant unknown command", () => {
     expect(() => parseOuroCommand(["xyzzy"])).toThrow(/Unknown command/)
+    expect(() => parseOuroCommand(["xyzzy"])).toThrow(expect.objectContaining({ code: "unknown-door" }))
     try {
       parseOuroCommand(["xyzzy"])
     } catch (e: unknown) {

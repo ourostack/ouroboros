@@ -110,6 +110,9 @@ export function checkCard(door: Door, ctx: { groups: readonly GroupCard[]; other
       }
     }
   }
+  for (const alias of door.aliases ?? []) {
+    if (!Array.isArray(card.aliases) || !card.aliases.includes(alias)) reasons.push(`aliases: the code also accepts ${alias}; list it on the card`);
+  }
   reasons.push(...groupReasons(card, ctx.groups));
   reasons.push(...errorReasons(door, ctx.others));
   reasons.push(...effectReasons(door));
