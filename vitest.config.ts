@@ -65,6 +65,7 @@ export default defineConfig({
         "src/**/*.tsx",
         "src/senses/cli/**",
         "src/senses/*-entry.ts",
+        "src/eval/*-entry.ts",
         "src/senses/voice/index.ts",
         "src/senses/voice/types.ts",
         "src/senses/ingress-evidence.ts",

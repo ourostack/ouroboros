@@ -1,0 +1,7 @@
+# Only what deploy/eval/Dockerfile copies.
+*
+!package.json
+!npm-shrinkwrap.json
+!dist/
+!src/eval/fakes/
+src/eval/fakes/__pycache__/

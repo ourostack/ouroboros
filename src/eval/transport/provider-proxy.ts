@@ -33,10 +33,14 @@ export type ProxyMessage =
   | { type: "resetTurnState"; messages: ProviderTurnRequest["messages"] }
   | { type: "error"; turn: number; error: WireError }
   | { type: "abort"; turn: number }
+  /** The guest's last message: the turn's result, or why it could not run. The proxy itself ignores it. */
+  | { type: "done"; outcome: GuestOutcome }
   /** Never sent: a channel delivers it when a line is not a message or a stream fails. */
   | { type: "invalid"; reason: string }
   /** Never sent: a channel delivers it once when the other side has gone away. */
   | { type: "closed" }
+
+export type GuestOutcome = { ok: true; result: unknown } | { ok: false; error: string }
 
 export type ProxyChannel = { send(msg: ProxyMessage): void; onMessage(fn: (msg: ProxyMessage) => void): void }
 
@@ -77,6 +81,7 @@ const SHAPES: Record<string, (msg: Record<string, unknown>) => boolean> = {
   resetTurnState: (msg) => Array.isArray(msg.messages),
   error: (msg) => isTurn(msg.turn) && isObject(msg.error) && typeof msg.error.message === "string",
   abort: (msg) => isTurn(msg.turn),
+  done: (msg) => isObject(msg.outcome) && typeof msg.outcome.ok === "boolean",
 }
 
 function isMessage(value: unknown): value is ProxyMessage {

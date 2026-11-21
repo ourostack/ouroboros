@@ -372,6 +372,16 @@ describe("createStreamChannel", () => {
     expect(received).toEqual([{ type: "hello" }, { type: "abort", turn: 3 }])
   })
 
+  it("carries the guest's done message, and treats a done message without an outcome as a broken line", async () => {
+    const input = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, new PassThrough()).onMessage((msg) => received.push(msg))
+    input.write(`${JSON.stringify({ type: "done", outcome: { ok: false, error: "no turn file" } })}\n${JSON.stringify({ type: "done", outcome: { ok: "yes" } })}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received[0]).toEqual({ type: "done", outcome: { ok: false, error: "no turn file" } })
+    expect(received[1]).toMatchObject({ type: "invalid" })
+  })
+
   it("keeps a character whose bytes are split across chunks", async () => {
     const input = new PassThrough()
     const received: ProxyMessage[] = []
