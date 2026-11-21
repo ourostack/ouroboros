@@ -740,13 +740,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
 
   const programStatus = options.programStatus ?? createProgramStatusReporter({ agentName: options.agentName })
   cliCallbacks = programStatus.wrap(cliCallbacks)
-  let turnStartLength = messages.length
+  let messagesBeforeTurn: ReadonlySet<object> = new Set()
   const reportTurnStart = (): void => {
-    turnStartLength = messages.length
+    messagesBeforeTurn = new Set(messages)
     programStatus.working()
   }
   const reportTurnEnd = (aborted: boolean, outcome: string | undefined): void => {
-    programStatus.turnEnded({ outcome, aborted, reply: assistantTextSince(messages, turnStartLength) })
+    programStatus.turnEnded({ outcome, aborted, reply: assistantTextSince(messages, messagesBeforeTurn) })
   }
 
   // Display helpers: route to TUI store or imperative stderr/stdout

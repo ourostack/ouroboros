@@ -148,7 +148,8 @@ export function createProgramStatusReporter(options: ProgramStatusReporterOption
     turnEnded: ({ outcome, aborted, reply }) => {
       const line = firstLine(reply)
       if (aborted || outcome === "aborted") return reporter.idle()
-      if (outcome === "errored") return reporter.error(line ?? "The turn failed.")
+      // Keep the more specific error a terminal onError already reported for this turn.
+      if (outcome === "errored") return lastState === "error" ? undefined : reporter.error(line ?? "The turn failed.")
       // The engine failed closed and said why.
       if (outcome === "blocked") return reporter.error(line ?? "The turn was blocked.")
       if (outcome === "suspended") return reporter.blocked("permission", line ?? "Waiting for your approval.")
@@ -179,11 +180,15 @@ function firstLine(text: string | undefined): string | undefined {
   return text?.split(/\r?\n/).find((line) => line.trim())
 }
 
-/** The newest assistant text among the messages from `since` on, so a turn never shows an earlier turn's reply. */
-export function assistantTextSince(messages: ReadonlyArray<{ role: string; content?: unknown }>, since: number): string | undefined {
-  for (let index = messages.length - 1; index >= Math.max(0, since); index -= 1) {
+/** The newest assistant text added since the turn began, so a turn never shows an earlier turn's reply.
+ *  `before` holds the messages present when it began; identity, not position, because trimming rewrites the array. */
+export function assistantTextSince(
+  messages: ReadonlyArray<{ role: string; content?: unknown }>,
+  before: ReadonlySet<object>,
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message.role === "user") return undefined
+    if (before.has(message) || message.role === "user") return undefined
     if (message.role === "assistant" && typeof message.content === "string" && message.content.trim()) {
       return message.content
     }

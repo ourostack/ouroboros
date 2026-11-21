@@ -234,6 +234,14 @@ describe("turnEnded", () => {
     expect(endState({ aborted: false, reply: "Hi." })).toEqual({ state: "done", kind: undefined, msg: "Hi." })
   })
 
+  it("keeps the specific error a terminal onError already reported for the turn", () => {
+    const { reporter, reports } = orcaReporter()
+    reporter.working()
+    reporter.wrap(fakeCallbacks()).onError(new Error("Rate limited by the provider."), "terminal")
+    reporter.turnEnded({ outcome: "errored", aborted: false })
+    expect(reports().at(-1)).toMatchObject({ state: "error", msg: "Rate limited by the provider." })
+  })
+
   it("is an error when the turn errored, even though the reply callbacks saw no terminal error", () => {
     expect(endState({ outcome: "errored", aborted: false })).toEqual({ state: "error", kind: undefined, msg: "The turn failed." })
     expect(endState({ outcome: "errored", aborted: false, reply: "Provider unavailable." }))
@@ -265,6 +273,8 @@ describe("turnEnded", () => {
 })
 
 describe("assistantTextSince", () => {
+  const none = new Set<object>()
+
   it("is the newest assistant text of the turn", () => {
     expect(assistantTextSince([
       { role: "user", content: "book it" },
@@ -272,7 +282,7 @@ describe("assistantTextSince", () => {
       { role: "tool", content: "ok" },
       { role: "assistant", content: "" },
       { role: "assistant", content: "Booked." },
-    ], 0)).toBe("Booked.")
+    ], none)).toBe("Booked.")
   })
 
   it("skips assistant messages without text", () => {
@@ -280,20 +290,30 @@ describe("assistantTextSince", () => {
       { role: "user", content: "book it" },
       { role: "assistant", content: "Booked." },
       { role: "assistant", content: null },
-    ], 0)).toBe("Booked.")
+    ], none)).toBe("Booked.")
   })
 
   it("never reaches back past the person's message to an earlier turn", () => {
     expect(assistantTextSince([
       { role: "assistant", content: "Old reply." },
       { role: "user", content: "and now?" },
-    ], 0)).toBeUndefined()
-    expect(assistantTextSince([], 0)).toBeUndefined()
+    ], none)).toBeUndefined()
+    expect(assistantTextSince([], none)).toBeUndefined()
   })
 
-  it("never reaches back before the turn began, as when a declined turn added no message", () => {
+  it("never reports a message that was there before the turn, as when a declined turn added nothing", () => {
     const messages = [{ role: "user", content: "earlier" }, { role: "assistant", content: "Old reply." }]
-    expect(assistantTextSince(messages, messages.length)).toBeUndefined()
-    expect(assistantTextSince([{ role: "assistant", content: "Greeting." }], -3)).toBe("Greeting.")
+    expect(assistantTextSince(messages, new Set(messages))).toBeUndefined()
+  })
+
+  it("finds the reply after trimming shortened the array below its length at turn start", () => {
+    const old = Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: `old ${index}` }))
+    const before = new Set<object>(old)
+    const user = { role: "user", content: "book it" }
+    const reply = { role: "assistant", content: "Booked." }
+    // Trimming keeps the newest messages and drops the rest, in place.
+    const trimmed = [old[9], user, reply]
+    expect(trimmed.length).toBeLessThan(before.size)
+    expect(assistantTextSince(trimmed, before)).toBe("Booked.")
   })
 })
