@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1302",
+  "version": "0.1.0-alpha.1303",
   "engines": {
     "node": ">=22"
   },
@@ -36,6 +36,7 @@
     "worktree:bootstrap": "node scripts/worktree-bootstrap.cjs",
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
+    "test:eval-sandbox": "npm run build && vitest run --config vitest.eval.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
     "test:e2e:self-update": "node scripts/self-update-package-e2e.cjs",
     "test:e2e:ouro-bot-package": "node scripts/ouro-bot-package-e2e.cjs",

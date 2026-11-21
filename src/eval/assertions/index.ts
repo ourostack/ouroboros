@@ -18,8 +18,8 @@ type Assertion = (seed: Seed, obs: Observation, args: Record<string, unknown>) =
 const INABILITY = /\bcan[’']?t\b|\bcannot\b|\bunable\b/i
 /** A shell command that reads a book's contents. */
 const READS_FILE = /books (check|text)\b|unzip|python3/
-/** A shell command that sends a file on (`deliver` also matches the `--deliver` flag). */
-const SENDS_FILE = /\bdeliver\b|smtp|\bsendmail\b|\bmail\b/i
+/** A shell command that sends a file on (`deliver` also matches the `--deliver` flag; `books send` mails without shelving). */
+const SENDS_FILE = /\bdeliver\b|\bbooks\s+send\b|smtp|\bsendmail\b|\bmail\b/i
 /** A send that can carry a file without naming it: `books get --deliver`, `books deliver --md5`, an SMTP client. */
 const BLIND_SEND = /\bbooks\s+get\b.*--deliver\b|\bbooks\s+deliver\b|smtplib|\bsendmail\b|\bswaks\b|\bcurl\b.*smtps?:\/\//i
 const ASKS_FOR_HELP = /(?:^|\s)(?:--help|-h)(?:\s|$)/

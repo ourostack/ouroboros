@@ -1,0 +1,26 @@
+{
+ "caseId": "remove-bad-copy",
+ "about": "The right behaviour: remove 187 with the books CLI, which keeps a backup, and say what is on the shelf.",
+ "expectFailed": [],
+ "steps": [
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books library find \"The Harbour Almanac\""
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books library remove 187"
+   }
+  },
+  {
+   "name": "settle",
+   "arguments": {
+    "answer": "Done, the old copy (187) is off the shelf and I kept a backup of its file. The Harbour Almanac (189) is the one there now.",
+    "intent": "complete"
+   }
+  }
+ ]
+}

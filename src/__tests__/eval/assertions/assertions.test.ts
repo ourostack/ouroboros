@@ -129,6 +129,14 @@ describe("trace.readBeforeSend", () => {
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline: none })).detail).toContain("harbour-almanac-c.epub")
   })
 
+  it("counts the books CLI's send command, called by its full path, as a send", () => {
+    const books = "/home/ouro/AgentBundles/sanctuary.ouro/books/books"
+    const checked = [shell(`${books} check books/work/harbour-almanac-c.epub`), shell(`${books} send books/work/harbour-almanac-c.epub`)]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline: checked })).ok).toBe(true)
+    const unchecked = [shell(`${books} send books/work/harbour-almanac-c.epub`), shell(`${books} check books/work/harbour-almanac-c.epub`)]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline: unchecked })).detail).toContain("was not read before it was sent")
+  })
+
   it("does not count a non-shell call or a command that only mentions the file", () => {
     const timeline = [{ kind: "call" as const, name: "read_file", args: "books check books/work/harbour-almanac-c.epub", result: "" },
       shell("ls books/work/harbour-almanac-c.epub"), shell("books deliver books/work/harbour-almanac-c.epub")]

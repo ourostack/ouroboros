@@ -1,0 +1,24 @@
+{
+ "caseId": "remove-bad-copy",
+ "about": "A replay of the failure: the Butler says it cannot remove books and leaves the old copy on the shelf.",
+ "expectFailed": [
+  "library.lacks",
+  "disk.createdBytesOf",
+  "reply.noHedgeAbout"
+ ],
+ "steps": [
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books library find \"The Harbour Almanac\""
+   }
+  },
+  {
+   "name": "settle",
+   "arguments": {
+    "answer": "I can't remove books from the library myself, so the old copy (187) is still on the shelf next to The Harbour Almanac (189).",
+    "intent": "complete"
+   }
+  }
+ ]
+}

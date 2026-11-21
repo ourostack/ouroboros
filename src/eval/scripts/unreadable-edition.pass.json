@@ -1,0 +1,44 @@
+{
+ "caseId": "unreadable-edition",
+ "about": "The right behaviour: search, fetch the clean edition, read it with books check before anything else, swap it in for the old copy and send it.",
+ "expectFailed": [],
+ "steps": [
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books search \"The Harbour Almanac\""
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books get --md5 232953f86ddb0807c2c5d34302bb09ca --title \"harbour almanac clean\""
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books check /home/ouro/AgentBundles/sanctuary.ouro/books/work/*/harbour-almanac-clean.epub"
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books library replace 187 /home/ouro/AgentBundles/sanctuary.ouro/books/work/*/harbour-almanac-clean.epub"
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books send /home/ouro/AgentBundles/sanctuary.ouro/books/work/*/harbour-almanac-clean.epub"
+   }
+  },
+  {
+   "name": "settle",
+   "arguments": {
+    "answer": "Sorry about that. I found a clean edition of The Harbour Almanac, checked that the text reads properly, swapped it in for the old copy and sent it to your PocketBook.",
+    "intent": "complete"
+   }
+  }
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "caseId": "unreadable-edition",
+ "about": "A replay of the failure: the first copy found is sent again without being read, past the checker's refusal.",
+ "expectFailed": [
+  "mail.everyAttachmentIs",
+  "trace.readBeforeSend",
+  "library.holdsWork",
+  "trace.never"
+ ],
+ "steps": [
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books search \"The Harbour Almanac\""
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books get --md5 c8add0bd29a787a07b90ab70275e3891 --title \"harbour almanac\""
+   }
+  },
+  {
+   "name": "shell",
+   "arguments": {
+    "command": "/home/ouro/AgentBundles/sanctuary.ouro/books/books send --accept-check-failure /home/ouro/AgentBundles/sanctuary.ouro/books/work/*/harbour-almanac.epub"
+   }
+  },
+  {
+   "name": "settle",
+   "arguments": {
+    "answer": "Sent a fresh copy of The Harbour Almanac to your PocketBook.",
+    "intent": "complete"
+   }
+  }
+ ]
+}

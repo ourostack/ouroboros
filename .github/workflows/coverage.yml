@@ -201,7 +201,7 @@ jobs:
           path: ${{ env.COVERAGE_ARTIFACT_ROOT }}
           if-no-files-found: ignore
 
-  integration:
+  integration-hermetic:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -221,6 +221,54 @@ jobs:
 
       - name: Run Hermetic Integration Lane
         run: npm run test:integration
+
+  # The replay eval's book cases, each pass and fail script run through the real
+  # two-container sandbox with a scripted provider (no model is called), and the
+  # household fake's own Python tests. Pinned to ubuntu-24.04 for its Docker engine.
+  integration-eval-sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Household fake tests
+        run: python3 -m unittest discover -s src/eval/fakes -v
+
+      - name: Sandboxed book cases
+        run: npm run test:eval-sandbox
+
+      - name: Remove what the run left
+        if: ${{ always() }}
+        run: |
+          docker ps -aq --filter name=ouro-eval- | xargs -r docker rm --force
+          docker network ls -q --filter name=ouro-eval- | xargs -r docker network rm
+          docker image rm --force ouro-eval-sandbox:local ouro-eval-household:local 2>/dev/null || true
+
+  # `integration` is the required check and stands for both lanes; it runs even
+  # when a lane failed or was cancelled, so it reports a failure instead of being
+  # skipped (a skipped required check counts as passing).
+  integration:
+    needs:
+      - integration-hermetic
+      - integration-eval-sandbox
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both integration lanes
+        run: |
+          test "${{ needs.integration-hermetic.result }}" = success
+          test "${{ needs.integration-eval-sandbox.result }}" = success
 
   # The package end-to-end lane is two jobs that run side by side, because one job
   # took 5 to 7 minutes and a pull request waits for it. `package-e2e` below is the
