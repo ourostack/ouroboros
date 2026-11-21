@@ -39,6 +39,7 @@ describe("Sanctuary tool cards", () => {
     expect(withCardCode({ ok: false, error: { code: "not_found", message: "container 'x' was not found", degraded: true } }))
       .toEqual({ ok: false, error: { code: "not_found", message: "container 'x' was not found (code: not-found)", degraded: true } })
     expect(withCardCode({ ok: false, error: { code: "invalid_response", message: "bad" } })).toEqual({ ok: false, error: { code: "invalid_response", message: "bad (code: invalid-response)" } })
+    expect(withCardCode({ ok: false, error: { code: "unavailable", message: "Media service is unavailable" } })).toEqual({ ok: false, error: { code: "unavailable", message: "Media service is unavailable (code: unavailable)" } })
   })
 
   it("leaves every other result as it is", () => {
@@ -53,6 +54,12 @@ describe("Sanctuary tool cards", () => {
     expect(withCardCode(noMessage)).toBe(noMessage)
     const noError = { ok: false }
     expect(withCardCode(noError)).toBe(noError)
+  })
+
+  it("tags a failed media catalog search with its code", async () => {
+    const search = named("sanctuary_search_media_catalog")
+    const sanctuary = { searchMediaCatalog: async () => ({ ok: false, error: { code: "invalid_response", message: "Media catalog query is too long", degraded: true } }) }
+    expect(JSON.parse(await search.handler({ query: "x" }, { sanctuary } as never)).error.message).toBe("Media catalog query is too long (code: invalid-response)")
   })
 
   it("tags a restart refused for want of a grant with routine-action-denied", async () => {

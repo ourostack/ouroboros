@@ -145,11 +145,11 @@ export const rootHostToolDefinition: ToolDefinition = freezeToolValue({
   ax: {
     id: "tool:sanctuary_host_execute", group: "turn-sanctuary", effect: "consequential", destructive: true,
     when: "Pick this only when the owner asks, in their own Telegram chat, for a root command on the house server that no typed Sanctuary tool covers.",
-    confirm: "OURO ROOT HOST APPROVAL. Effect: unrestricted root, potentially destructive and persistent. Target: <targetHost> / <targetResource>",
+    confirm: "OURO ROOT HOST APPROVAL. Effect: unrestricted root, potentially destructive and persistent. Namespaces: real Sanctuary host namespaces. Target: <host> / <resource>. Executable: <executable>",
     errors: [
-      { code: "root-host-denied", means: "This turn isn't the owner's own live Telegram request, or the host authority's pins don't match.", fix: "Run nothing; tell the owner a root command needs their direct request in their Telegram chat." },
+      { code: "root-host-denied", means: "This turn doesn't carry the owner's current, verified Telegram request, or the host authority's pins or profile don't match.", fix: "Run nothing; tell the owner a root command needs a fresh request from them in their Telegram chat." },
       { code: "root-host-unavailable", means: "The root host authority isn't answering, so no approval can be asked.", fix: "Tell the owner the root approval service is down; don't retry until they say it's back." },
-      { code: "resident-execution-forbidden", means: "The command was sent to run in the agent's own process, which never runs host commands.", fix: "Propose it again in the owner's Telegram turn, where the root approval path takes it." },
+      { code: "resident-execution-forbidden", means: "The command reached the agent's own process, which never runs host commands; nothing ran.", fix: "Don't retry; tell the owner the root approval path is broken, as a harness bug." },
     ],
   },
   requiredCapability: "approval-continuation",

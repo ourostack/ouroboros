@@ -78,7 +78,7 @@ export const houseSweepToolDefinition: ToolDefinition = {
     return JSON.stringify(report)
   },
   ax: {
-    id: "tool:house_sweep", group: "turn-sanctuary", effect: "read",
+    id: "tool:house_sweep", group: "turn-sanctuary", effect: "write",
     when: "Pick this for a whole-house check in one call, on the daily await or when asked; for one area, the unraid_ and sanctuary_ reads go deeper.",
     errors: [{ code: "sweep-runtime-missing", means: "This turn has no agent bundle, so there's no house to sweep.", fix: "Tell the owner the sweep can't run in this turn; don't send a digest." }],
   },
@@ -174,7 +174,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
   },
   ax: {
     id: "tool:house_digest_send", group: "turn-sanctuary", effect: "write",
-    when: "Pick this right after house_sweep, and only when its fresh findings need the owner to decide something; otherwise stay quiet.",
+    when: "Pick this after house_sweep for the fresh findings no tool could settle, so the owner hears each once; never for old news.",
     errors: [
       { code: "no-sweep-yet", means: "No house_sweep has run in this process, so there are no findings to send.", fix: "Call house_sweep, then send its fresh finding ids." },
       { code: "unknown-finding", means: "A finding id isn't in the latest sweep.", fix: "Copy the ids exactly from the latest house_sweep result." },
