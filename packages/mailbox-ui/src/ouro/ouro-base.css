@@ -386,18 +386,23 @@
    --ouro-control-radius and --ouro-control-corner-shape (9999px and round make capsules), and its checks with
    --ouro-check-radius and --ouro-check-corner-shape. Unset, they are Ouro's lg and md steps (rounded-ouro-lg,
    rounded-ouro-md) and the sm step in the theme's corner shape. --ouro-control-r is the radius, for a part that
-   rounds to match (a stepper inside a field); --ouro-sq-r is the squircle surface's radius where corner-shape is missing. */
+   rounds to match (a stepper inside a field); --ouro-sq-r is the squircle surface's radius where corner-shape is missing.
+   Both stop at half the control's height (--ouro-control-cap, from the height variable the control sets), so a capsule's
+   ends are squircles that meet: corner-shape draws the same at that radius, and where it is missing the surface's clip
+   stops there and the element's own circular corner, which its outline follows, is 0.7 of it, never a half circle. */
 @utility rounded-ouro-control {
-  --ouro-control-r: calc(var(--ouro-control-radius, var(--radius)) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1));
-  --ouro-sq-r: calc(var(--ouro-control-radius, var(--radius)) * var(--ouro-radius-scale, 1));
+  --ouro-control-cap: calc(var(--ouro-control-h, var(--ouro-button-h, var(--ouro-toggle-h, var(--ouro-segmented-h, 19998px)))) / 2);
+  --ouro-sq-r: min(calc(var(--ouro-control-radius, var(--radius)) * var(--ouro-radius-scale, 1)), var(--ouro-control-cap));
+  --ouro-control-r: calc(var(--ouro-sq-r) * var(--ouro-corner-fallback, 1));
   --corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
   border-radius: var(--ouro-control-r);
   corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
 }
 
 @utility rounded-ouro-control-md {
-  --ouro-control-r: calc(var(--ouro-control-radius, var(--radius) * 0.8) * var(--ouro-radius-scale, 1) * var(--ouro-corner-fallback, 1));
-  --ouro-sq-r: calc(var(--ouro-control-radius, var(--radius) * 0.8) * var(--ouro-radius-scale, 1));
+  --ouro-control-cap: calc(var(--ouro-control-h, var(--ouro-button-h, var(--ouro-toggle-h, var(--ouro-segmented-h, 19998px)))) / 2);
+  --ouro-sq-r: min(calc(var(--ouro-control-radius, var(--radius) * 0.8) * var(--ouro-radius-scale, 1)), var(--ouro-control-cap));
+  --ouro-control-r: calc(var(--ouro-sq-r) * var(--ouro-corner-fallback, 1));
   --corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));
   border-radius: var(--ouro-control-r);
   corner-shape: var(--ouro-control-corner-shape, var(--ouro-corner-shape));

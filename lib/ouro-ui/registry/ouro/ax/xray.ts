@@ -1302,10 +1302,10 @@ async function checkCli(ctx: Context) {
       const say = (where: string, match: string, text: string) => {
         if (!exempt.includes(match) && !found.has(match)) found.set(match, `\`${clip(c.shown, 80)}\` ${where}: ${JSON.stringify(clip(text, 120))} asks for \`${match}\``);
       };
-      if (j.ok) for (const f of devCommandsIn(j.value, { messagesOnly: !isHelp })) say(f.where, f.match, f.text);
+      if (j.ok) for (const f of devCommandsIn(j.value, { messagesOnly: !isHelp, own: name })) say(f.where, f.match, f.text);
       const text = [c.stderr, ...(!j.ok && (isHelp || c.code !== 0) ? [c.stdout] : [])];
       for (const line of lines(text.join("\n"))) {
-        const f = devCommandIn(line);
+        const f = devCommandIn(line, false, name);
         if (f) say("prints", f.match, line.trim());
       }
     }
