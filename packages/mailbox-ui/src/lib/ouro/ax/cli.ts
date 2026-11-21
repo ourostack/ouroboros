@@ -131,7 +131,10 @@ function printResult(
   const text = own ? (r: unknown) => own.call(cmd, r, input) : isWait(result) ? () => waitText(result) : undefined;
   const exit = isWait(result) ? waitExit(result, cli.exits, cli.waitExits) : dataExit(cli, cmd, result, input);
   io.stdout.write(render(result, { json, ...(text ? { text } : {}) }));
-  if (isWait(result)) return exit;
+  if (isWait(result)) {
+    if (result.state === "satisfied") say("waited");
+    return exit;
+  }
   if (isEmptyResult(result)) say("empty");
   else if (cmd.summarizes) say("summary");
   return exit;

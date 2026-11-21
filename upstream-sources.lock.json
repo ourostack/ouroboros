@@ -4,7 +4,7 @@
     {
       "id": "ourostack-ouro-ui-ax",
       "repository": "ourostack/ouro-ui",
-      "commit": "84226a2e7ca5287d564ded5d2961859625954624",
+      "commit": "fa031373a4d91cb00422a0d6f71df01926ac4ee2",
       "license": "MIT",
       "files": [
         {
@@ -25,7 +25,7 @@
         {
           "sourcePath": "registry/ouro/ax/cli.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/cli.ts",
-          "sha256": "3931376968b3b5a56c1bffa1b9d945c74b1764243e6ba0261b0449cd55037ba1"
+          "sha256": "b3581e0b89b0746dc8131eca036ed562845139e8a2123224519fcf3fc28226d5"
         },
         {
           "sourcePath": "registry/ouro/ax/ax-command.ts",
@@ -125,7 +125,7 @@
         {
           "sourcePath": "registry/ouro/ax/voice.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/voice.ts",
-          "sha256": "b92512692f13f2fbd3ee45407b876d6a18ac164f8c35a33524ac5d7c88a015b5"
+          "sha256": "cd56f3b4694fb7df2622747c703ab94c6c747ed09fce5867c9778630a1066a88"
         },
         {
           "sourcePath": "registry/ouro/ax/wait.ts",

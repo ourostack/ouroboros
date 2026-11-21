@@ -463,7 +463,7 @@
 @keyframes ouro-scroll-fade-left {
   from {
     animation-timing-function: linear;
-    mask-image: var(--ouro-scroll-fade-ramps);
+    mask-image: var(--ouro-scroll-fade-ramps); /* fade-ok: fades a scrolling row of text or controls, not a picture */
     mask-repeat: no-repeat;
     mask-composite: intersect;
     mask-position:
@@ -471,7 +471,7 @@
       0 0;
   }
   to {
-    mask-image: var(--ouro-scroll-fade-ramps);
+    mask-image: var(--ouro-scroll-fade-ramps); /* fade-ok: fades a scrolling row of text or controls, not a picture */
     mask-repeat: no-repeat;
     mask-composite: intersect;
     mask-position:
