@@ -332,6 +332,14 @@ function spawnLifecycleChild(input: {
   return { child, completion }
 }
 
+/** Fails with the child's exit code and the tail of its output, which a bare `{ code: 1 }` mismatch hides. */
+async function expectChildExitedCleanly(label: string, completion: Promise<{ code: number | null; stdout: string; stderr: string }>): Promise<void> {
+  const result = await completion
+  if (result.code === 0) return
+  const tail = (text: string) => text.slice(-2_000)
+  throw new Error(`${label} exited ${result.code}\nstderr tail:\n${tail(result.stderr)}\nstdout tail:\n${tail(result.stdout)}`)
+}
+
 afterEach(async () => {
   const liveChildren = [...ACTIVE_CHILDREN].filter((child) => child.exitCode === null && child.signalCode === null)
   const closed = liveChildren.map((child) => new Promise<void>((resolve) => child.once("close", () => resolve())))
@@ -1170,8 +1178,8 @@ describe("habit lifecycle filesystem protocol", () => {
     }).owner)).toBe(true)
     fs.writeFileSync(contentionRelease, "release\n", "utf8")
 
-    expect(await contention.completion).toMatchObject({ code: 0 })
-    expect(await holder.completion).toMatchObject({ code: 0 })
+    await expectChildExitedCleanly("coordination contender", contention.completion)
+    await expectChildExitedCleanly("lock holder", holder.completion)
   }, 20_000)
 
   it("writes journal and definition bytes in temp-fsync-rename-directory-fsync order", async () => {
