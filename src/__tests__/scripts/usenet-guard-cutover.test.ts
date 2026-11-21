@@ -245,6 +245,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
 printf '{}\n'
 `, { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *valid_count*) echo true ;;
   *@tsv*) [ "$USENET_CASE" = recovery ] && printf '100\t100\t0\n' || printf '0\t0\t0\n' ;;
@@ -306,6 +307,7 @@ exit 3
     fs.writeFileSync(ini, "api_key = test-only\n")
     fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *queue.status*) echo Downloading ;;
   *queue.noofslots*) echo 1 ;;
@@ -435,6 +437,7 @@ case "$*" in
 esac
 `, { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *@tsv*) exit 1 ;;
   *) exec ${JSON.stringify(realJq)} "$@" ;;
@@ -530,7 +533,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const local = new Date()
     fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
-    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncase "$*" in\n  *valid_count*) echo true ;;\n  *@tsv*) printf '50000\\t0\\t1000000000\\n' ;;\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncat >/dev/null\ncase "$*" in\n  *valid_count*) echo true ;;\n  *@tsv*) printf '50000\\t0\\t1000000000\\n' ;;\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o700 })
 
