@@ -50,11 +50,15 @@ function parseToolCommand(args) {
   }
   throw new Error("Usage: tool run --name <name>");
 }
+const PAUSE = "pause";
+
 function parseCommand(args) {
   const [head, second] = args;
   if (!head) return { kind: "up" };
   if (head === "--agent" && second) return parseCommand(args.slice(2));
   if (head === "up") return { kind: "up" };
+  if (head === PAUSE) return { kind: "pause" };
+  if (head === "resume") return { kind: "resume" };
   if (head === "stop" || head === "down") return { kind: "stop" };
   if (head === "friend") return parseFriend(args.slice(1));
   if (head === "connect") return parseConnect(args.slice(1));

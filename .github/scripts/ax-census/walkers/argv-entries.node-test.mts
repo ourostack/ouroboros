@@ -24,8 +24,12 @@ test("every module that reads process.argv and runs on load is a door, named as 
   deepEqual(
     doors.map((d) => [d.id, d.file, d.line]),
     [
+      ["cli:node dist/alias-entry.js", "src/alias-entry.ts", lineOf("src/alias-entry.ts", "= process")],
+      ["cli:node dist/bracket-entry.js", "src/bracket-entry.ts", lineOf("src/bracket-entry.ts", 'process["argv"]')],
       ["cli:node dist/daemon-entry.js", "src/daemon-entry.ts", lineOf("src/daemon-entry.ts", "= process.argv")],
+      ["cli:node dist/global-entry.js", "src/global-entry.ts", lineOf("src/global-entry.ts", "(globalThis")],
       ["cli:node dist/lone-entry.js", "src/lone-entry.ts", lineOf("src/lone-entry.ts", "(process.argv")],
+      ["cli:node dist/ouro-entry.mjs rescue", "src/ouro-entry.mts", lineOf("src/ouro-entry.mts", '=== "rescue"')],
       ["cli:node dist/stats-main.js", "src/stats-main.ts", lineOf("src/stats-main.ts", "(process.argv")],
       ["cli:node dist/stats-main.js summary", "src/stats.ts", lineOf("src/stats.ts", '"summary"')],
       ["cli:node dist/stats-main.js export", "src/stats.ts", lineOf("src/stats.ts", '"export"')],
@@ -38,9 +42,12 @@ test("every module that reads process.argv and runs on load is a door, named as 
   }
 });
 
-test("a claimed entry that reaches its parser is left to that parser's walker", async () => {
+test("a claimed entry that reaches its parser is left to that parser's walker, except words the parser never mentions", async () => {
   const { doors } = await walk();
-  ok(!doors.some((d) => d.id.includes("ouro-entry")));
+  deepEqual(
+    doors.filter((d) => d.id.includes("ouro-entry")).map((d) => [d.id, d.file, d.line]),
+    [["cli:node dist/ouro-entry.mjs rescue", "src/ouro-entry.mts", lineOf("src/ouro-entry.mts", '=== "rescue"')]],
+  );
   const unclaimed = await walk([]);
   ok(unclaimed.doors.some((d) => d.id === "cli:node dist/ouro-entry.mjs"));
 });

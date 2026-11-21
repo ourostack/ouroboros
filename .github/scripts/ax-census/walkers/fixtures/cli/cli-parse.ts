@@ -56,11 +56,15 @@ function parseVault(verb: string, args: string[]): Command {
   throw new Error("vault unlock needs --yes")
 }
 
+const PAUSE = "pause"
+
 export function parseCommand(args: string[]): Command {
   const [head, second] = args
   if (!head) return { kind: "up" }
   if (head === "--agent" && second) return parseCommand(args.slice(2))
   if (head === "up") return { kind: "up" }
+  if (head === PAUSE) return { kind: "pause" }
+  if (head === "resume") return { kind: "resume" }
   if (head === "stop" || head === "down") return { kind: "stop" }
   if (head === "friend") return parseFriend(args.slice(1))
   if (head === "connect") return parseConnect(args.slice(1))

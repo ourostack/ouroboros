@@ -418,8 +418,10 @@ const CLI_GAPS = [
   "mcp:ask", "mcp:status", "mcp:catchup",
   "cli:connect", "cli:friend", "cli:friend list", "cli:friend show", "cli:lock", "cli:mode", "cli:mode live", "cli:mode shadow",
   "cli:secret", "cli:secret rotate", "cli:stop", "cli:tool", "cli:tool run", "cli:unlock", "cli:up", "cli:work", "cli:work card", "cli:work gauntlet",
-  "cli:kind hidden", "cli:kind extra",
-  "cli:node dist/daemon-entry.js", "cli:node dist/lone-entry.js", "cli:node dist/stats-main.js", "cli:node dist/stats-main.js summary", "cli:node dist/stats-main.js export",
+  "cli:pause", "cli:resume",
+  "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>',
+  "cli:node dist/alias-entry.js", "cli:node dist/bracket-entry.js", "cli:node dist/global-entry.js",
+  "cli:node dist/daemon-entry.js", "cli:node dist/ouro-entry.mjs rescue", "cli:node dist/lone-entry.js", "cli:node dist/stats-main.js", "cli:node dist/stats-main.js summary", "cli:node dist/stats-main.js export",
 ];
 
 test("a census with the CLI walkers walks both kinds, and counts unwalked kinds against zero", async () => {
@@ -431,13 +433,13 @@ test("a census with the CLI walkers walks both kinds, and counts unwalked kinds 
     equal(code, 0, err.join("\n"));
     const product = JSON.parse(readFileSync(file, "utf8")).products[0];
     deepEqual(product.walked.kinds, ["mcp", "cli"]);
-    equal(product.summary.unwalked, 2);
-    deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind hidden", "cli:kind extra"]);
-    deepEqual(product.byKind.cli, { found: 23, declared: 0, weak: 0, undeclared: 23 });
+    equal(product.summary.unwalked, 5);
+    deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>']);
+    deepEqual(product.byKind.cli, { found: 29, declared: 0, weak: 0, undeclared: 29 });
     // Each gap names the walker that found it, even where two walkers find one kind.
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:up").walker, "ts-parser");
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:node dist/lone-entry.js").walker, "argv-entries");
-    ok(out.includes("harness: 26 found, 0 declared, 0 weak, 26 undeclared, 2 unwalked (mcp 3, cli 23)"), out.join("\n"));
+    ok(out.includes("harness: 32 found, 0 declared, 0 weak, 32 undeclared, 5 unwalked (mcp 3, cli 29)"), out.join("\n"));
     ok(out.includes("walkers/fixtures/cli/cli-types.ts:" + lineIn("walkers/fixtures/cli/cli-types.ts", '"hidden"') + " cli:kind hidden (unwalked: no walked path returns this kind)"), out.join("\n"));
 
     // An unwalked kind off the baseline fails like any other gap.

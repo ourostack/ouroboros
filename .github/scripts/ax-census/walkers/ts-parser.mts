@@ -30,41 +30,67 @@ interface Outcome {
   text: string;
 }
 
-/** The kinds of a type alias's union, each at its literal, following `import("...").T` and imported names. */
-export function readKinds(sources: Sources, file: string, name: string): Map<string, { file: string; line: number }> {
-  const kinds = new Map<string, { file: string; line: number }>();
-  const aliasIn = (path: string, alias: string) => sources.file(path).statements.find((s): s is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(s) && s.name.text === alias) ?? null;
-  const seen = new Set<ts.Node>();
-  const visit = (path: string, node: ts.TypeNode): void => {
-    if (seen.has(node)) return;
-    seen.add(node);
+type KindDecl = ts.TypeAliasDeclaration | ts.InterfaceDeclaration;
+interface At {
+  file: string;
+  line: number;
+}
+
+/**
+ * The kinds of a type alias's union, each at its literal, following `import("...").T`, imported names and interfaces.
+ * A union member whose kind can't be read as string literals (a template kind, a type from a package) is `unread`:
+ * the cross-check fails closed, because a command typed that way could hide behind a word the walker misses.
+ */
+export function readKinds(sources: Sources, file: string, name: string): { kinds: Map<string, At>; unread: (At & { text: string })[] } {
+  const kinds = new Map<string, At>();
+  const unread: (At & { text: string })[] = [];
+  const declIn = (path: string, decl: string): KindDecl | null =>
+    sources.file(path).statements.find((s): s is KindDecl => (ts.isTypeAliasDeclaration(s) || ts.isInterfaceDeclaration(s)) && s.name.text === decl) ?? null;
+  const at = (path: string, node: ts.Node): At => {
     const sf = sources.file(path);
-    if (ts.isUnionTypeNode(node) || ts.isIntersectionTypeNode(node)) return node.types.forEach((t) => visit(path, t));
-    if (ts.isParenthesizedTypeNode(node)) return visit(path, node.type);
-    if (ts.isTypeLiteralNode(node)) {
-      for (const m of node.members) {
-        if (!ts.isPropertySignature(m) || !m.type || !ts.isIdentifier(m.name) || m.name.text !== "kind") continue;
-        const t = m.type;
-        if (ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal) && !kinds.has(t.literal.text)) {
-          kinds.set(t.literal.text, { file: path, line: sf.getLineAndCharacterOfPosition(t.literal.getStart(sf)).line + 1 });
-        }
-      }
-      return;
+    return { file: path, line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1 };
+  };
+  const literals = (path: string, t: ts.TypeNode): boolean => {
+    if (ts.isUnionTypeNode(t)) return t.types.map((u) => literals(path, u)).every(Boolean);
+    if (!ts.isLiteralTypeNode(t) || !ts.isStringLiteral(t.literal)) return false;
+    if (!kinds.has(t.literal.text)) kinds.set(t.literal.text, at(path, t.literal));
+    return true;
+  };
+  /** Whether the members hold a `kind` of string literals; false when there's none, or it isn't literals. */
+  const members = (path: string, list: ts.NodeArray<ts.TypeElement>): boolean => {
+    const kind = list.find((m): m is ts.PropertySignature => ts.isPropertySignature(m) && ts.isIdentifier(m.name) && m.name.text === "kind");
+    return !!kind?.type && literals(path, kind.type);
+  };
+  const seen = new Set<ts.Node>();
+  const declared = (path: string, decl: KindDecl): boolean => {
+    if (seen.has(decl)) return true;
+    seen.add(decl);
+    if (ts.isTypeAliasDeclaration(decl)) return visit(path, decl.type);
+    const heritage = (decl.heritageClauses ?? []).flatMap((h) => h.types).map((h) => (ts.isIdentifier(h.expression) ? sources.imported(path, h.expression.text, declIn) : null));
+    return members(path, decl.members) || heritage.some((found) => !!found && declared(found.file, found.found));
+  };
+  const visit = (path: string, node: ts.TypeNode): boolean => {
+    if (ts.isUnionTypeNode(node)) {
+      for (const t of node.types) if (!visit(path, t)) unread.push({ ...at(path, t), text: t.getText(sources.file(path)).replace(/\s+/g, " ") });
+      return true;
     }
+    if (ts.isIntersectionTypeNode(node)) return node.types.map((t) => visit(path, t)).some(Boolean);
+    if (ts.isParenthesizedTypeNode(node)) return visit(path, node.type);
+    if (ts.isTypeLiteralNode(node)) return members(path, node.members);
     if (ts.isImportTypeNode(node) && node.qualifier && ts.isIdentifier(node.qualifier) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
       const target = sources.module(path, node.argument.literal.text);
-      const alias = target && aliasIn(target, node.qualifier.text);
-      if (target && alias) visit(target, alias.type);
-      return;
+      const decl = target && declIn(target, node.qualifier.text);
+      return !!target && !!decl && declared(target, decl);
     }
-    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
-      const found = sources.imported(path, node.typeName.text, aliasIn);
-      if (found) visit(found.file, found.found.type);
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && !node.typeArguments) {
+      const found = sources.imported(path, node.typeName.text, declIn);
+      return !!found && declared(found.file, found.found);
     }
+    return false;
   };
-  const alias = aliasIn(file, name);
-  if (alias) visit(file, alias.type);
-  return kinds;
+  const alias = declIn(file, name);
+  if (alias) declared(file, alias);
+  return { kinds, unread };
 }
 
 interface Candidate {
@@ -92,7 +118,7 @@ export async function walkTsParser(opts: WalkerOptions): Promise<WalkResult> {
   const sourcePath = resolve(opts.root, opts.source);
   const fn = sources.functionIn(sourcePath, opts.parser);
   if (!fn) return { doors: [], errors: [`${opts.source}: declares no function ${opts.parser}`], unwalked: [] };
-  const kinds = readKinds(sources, resolve(opts.root, kindsFile), kindsType);
+  const { kinds, unread } = readKinds(sources, resolve(opts.root, kindsFile), kindsType);
   if (kinds.size === 0) return { doors: [], errors: [`${opts.kinds}: no type alias with kind literals`], unwalked: [] };
 
   const outcome = (argv: string[]): Outcome => {
@@ -205,6 +231,9 @@ export async function walkTsParser(opts: WalkerOptions): Promise<WalkResult> {
   }
   const unwalked: Gap[] = [...kinds]
     .filter(([kind]) => !reached.has(kind))
-    .map(([kind, at]) => ({ id: `cli:kind ${kind}`, kind: "cli", file: relative(opts.root, at.file), line: at.line, walker: "ts-parser", reasons: ["no walked path returns this kind"] }));
+    .map(([kind, at]): Gap => ({ id: `cli:kind ${kind}`, kind: "cli", file: relative(opts.root, at.file), line: at.line, walker: "ts-parser", reasons: ["no walked path returns this kind"] }));
+  for (const u of unread) {
+    unwalked.push({ id: `cli:type ${u.text}`, kind: "cli", file: relative(opts.root, u.file), line: u.line, walker: "ts-parser", reasons: ["the kind cross-check can't read this member's kind as string literals"] });
+  }
   return { doors, errors: [], unwalked };
 }

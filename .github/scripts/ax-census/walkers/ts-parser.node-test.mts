@@ -30,6 +30,8 @@ test("finds every word path the parser dispatches on, each at the line of its co
     "cli:mode",
     "cli:mode live",
     "cli:mode shadow",
+    "cli:pause",
+    "cli:resume",
     "cli:secret",
     "cli:secret rotate",
     "cli:stop",
@@ -43,6 +45,8 @@ test("finds every word path the parser dispatches on, each at the line of its co
   ]);
   const at = (id: string) => doors.find((d) => d.id === id)!;
   equal(at("cli:up").line, lineOf("cli-parse.ts", 'head === "up"'));
+  // A word compared with a named constant is that constant's value, at the comparison.
+  equal(at("cli:pause").line, lineOf("cli-parse.ts", "head === PAUSE"));
   equal(at("cli:friend show").line, lineOf("cli-parse.ts", 'sub === "show"'));
   equal(at("cli:work card").line, lineOf("cli-parse.ts", 'case "card"'));
   equal(at("cli:mode live").line, lineOf("cli-parse.ts", "const MODES"));
@@ -90,9 +94,20 @@ test("two words in one `||` that always parse the same are one door with an alia
 
 test("every kind of the command type that no walked path reaches is an unwalked gap at its line in the type", async () => {
   const { unwalked } = await walk();
-  deepEqual(unwalked, [
+  deepEqual((unwalked ?? []).filter((g) => g.id.startsWith("cli:kind ")), [
     { id: "cli:kind hidden", kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", '"hidden"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
     { id: "cli:kind extra", kind: "cli", file: "cli-extra.ts", line: lineOf("cli-extra.ts", '"extra"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
+    { id: "cli:kind resume.all", kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", '"resume.all"'), walker: "ts-parser", reasons: ["no walked path returns this kind"] },
+  ]);
+});
+
+test("a union member whose kind isn't string literals is an unwalked gap, so the cross-check fails closed", async () => {
+  const { unwalked } = await walk();
+  const unread = (unwalked ?? []).filter((g) => g.id.startsWith("cli:type "));
+  const reason = ["the kind cross-check can't read this member's kind as string literals"];
+  deepEqual(unread, [
+    { id: "cli:type { kind: `plug.${string}` }", kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", "plug."), walker: "ts-parser", reasons: reason },
+    { id: 'cli:type Partial<{ kind: "partial" }>', kind: "cli", file: "cli-types.ts", line: lineOf("cli-types.ts", "Partial<"), walker: "ts-parser", reasons: reason },
   ]);
 });
 

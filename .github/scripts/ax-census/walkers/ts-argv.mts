@@ -210,9 +210,25 @@ export class Sources {
       while (ts.isBinaryExpression(top.parent) && top.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken) top = top.parent;
       return `${file}:${top.pos}`;
     };
-    const record = (literal: ts.Node & { text: string }, pos: number | null, at: ts.Node, region: Region | null = regionOf(at)) => {
-      if (literal.text.startsWith("-")) return void context.flags.add(literal.text);
-      context.comparisons.push({ text: literal.text, pos, file, line: lineOf(literal), at: at.pos, region, group: groupOf(at) });
+    const record = (literal: ts.Node & { text: string }, pos: number | null, at: ts.Node, region: Region | null = regionOf(at), text = literal.text) => {
+      if (text.startsWith("-")) return void context.flags.add(text);
+      context.comparisons.push({ text, pos, file, line: lineOf(literal), at: at.pos, region, group: groupOf(at) });
+    };
+    /** A word's comparand: a string literal, or a `const` in this file that holds one (reported at the comparison). */
+    const compared = (expr: ts.Expression, at: ts.Node, pos: number | null, region: Region | null = regionOf(at)): void => {
+      const lit = unwrap(expr);
+      if (isText(lit)) return record(lit, pos, at, region);
+      if (!ts.isIdentifier(lit)) return;
+      let value: string | undefined;
+      const look = (n: ts.Node): void => {
+        if (value === undefined && ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === lit.text && n.initializer && ts.isVariableDeclarationList(n.parent) && n.parent.flags & ts.NodeFlags.Const) {
+          const init = unwrap(n.initializer);
+          if (isText(init)) value = init.text;
+        }
+        ts.forEachChild(n, look);
+      };
+      look(sf);
+      if (value !== undefined) record(lit, pos, at, region, value);
     };
     /** The literals a table holds: an array or `new Set([...])`'s strings, or an object literal's keys. */
     const tableOf = (expr: ts.Expression): (ts.Node & { text: string })[] | null => {
@@ -261,17 +277,14 @@ export class Sources {
       if (ts.isBinaryExpression(n) && EQUALITY.has(n.operatorToken.kind)) {
         for (const [a, b] of [[n.left, n.right], [n.right, n.left]] as const) {
           const w = wordOf(a);
-          const lit = unwrap(b);
-          if (w && isText(lit)) record(lit, w.pos, n);
+          if (w) compared(b, n, w.pos);
         }
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword) lookup(n.right, n.left, n);
       if (ts.isSwitchStatement(n)) {
         const w = wordOf(n.expression);
         for (const clause of n.caseBlock.clauses) {
-          if (!w || !ts.isCaseClause(clause)) continue;
-          const lit = unwrap(clause.expression);
-          if (isText(lit)) record(lit, w.pos, clause.expression, [clause.pos, clause.end]);
+          if (w && ts.isCaseClause(clause)) compared(clause.expression, clause.expression, w.pos, [clause.pos, clause.end]);
         }
       }
       if (ts.isCallExpression(n)) {
