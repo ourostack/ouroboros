@@ -331,7 +331,15 @@ function declaredOuroCommand(words: readonly string[]): string | null {
   return null
 }
 
+/** Where a shell line starts another command: its start, after an operator, or inside a substitution. */
+const OURO_AT_COMMAND_POSITION = /(^|&&|\|\||[;|`\n(])\s*ouro(\s|$)/
+const SHELL_CHAINING = /&&|\|\||[;|`\n]|\$\(/
+
 function ouroShellRiskReason(command: string): string | null {
+  // The read-only check below judges one ouro command; a line that also runs something else isn't one.
+  if (OURO_AT_COMMAND_POSITION.test(command) && SHELL_CHAINING.test(command)) {
+    return "shell line runs ouro beside other commands; run each ouro command alone so its own card decides."
+  }
   const tokens = shellTokens(command)
   if (tokens[0] !== "ouro") return null
 

@@ -178,7 +178,8 @@ export async function walkTsParser(opts: WalkerOptions): Promise<WalkResult> {
         }
       }
       if (!candidate.returned) {
-        for (const s of own) for (const k of s.context.kinds) if (inside(s.region, k.at) && kinds.has(k.kind)) candidate.branchKinds.add(k.kind);
+        // A region several words share holds their kinds together, so it reaches none of them for this word.
+        for (const s of own) if (!s.shared) for (const k of s.context.kinds) if (inside(s.region, k.at) && kinds.has(k.kind)) candidate.branchKinds.add(k.kind);
       }
       candidates.set(id, candidate);
       queue.push({ path: p, scopes: narrowed });

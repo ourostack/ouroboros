@@ -1,14 +1,14 @@
 // The error cards many ouro commands share in kind, each written for the one command it sits on, so an agent reads
 // that command's own fix. Where each code is raised: `usage`, `no-agent` and `which-agent` in cli-exec, the flag
-// refusals in cli-gate, `daemon-down` at cli-exec's daemonDown.
+// refusals in cli-gate, `daemon-down` at cli-exec's daemonDown. A failure prints its code as its last stderr line.
 import type { CliErrorCard } from "../cli-manifest"
 
 /** The flag gate's refusal of a flag this command doesn't take. */
 export function unknownFlag(name: string): CliErrorCard {
   return {
     code: "unknown-flag",
-    means: `ouro ${name} doesn't take that flag; the refusal names the nearest flag it does take.`,
-    fix: `Retry with the suggested flag, or read ouro ${name} --help for the flags it takes.`,
+    means: `ouro ${name} got a flag no ouro command takes; the refusal suggests the nearest known flag, which may belong to another command.`,
+    fix: `Read ouro ${name} --help for the flags this command takes, then retry with one of those.`,
   }
 }
 

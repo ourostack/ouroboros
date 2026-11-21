@@ -27,6 +27,8 @@ export interface Comparison {
   region: Region | null;
   /** The comparisons joined by `||` (or listed in one `includes`) share a group. */
   group: string;
+  /** Its region is one several words share (below an `a !== x && a !== y` guard), so its kinds aren't this word's alone. */
+  shared?: true;
 }
 
 export type Region = readonly [number, number];
@@ -45,6 +47,7 @@ export interface Context {
 const unwrap = (e: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e) ? unwrap(e.expression) : e;
 const isText = (n: ts.Node): n is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral => ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n);
+const NEGATED = new Set([ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
 const EQUALITY = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
 const CALLBACKS = new Set(["filter", "find", "findIndex", "some", "every", "map", "forEach", "flatMap"]);
 
@@ -205,30 +208,46 @@ export class Sources {
       }
       return null;
     };
+    const exits = (st: ts.Statement): boolean => {
+      const last = ts.isBlock(st) ? st.statements.at(-1) : st;
+      return !!last && (ts.isThrowStatement(last) || ts.isReturnStatement(last) || ts.isContinueStatement(last) || ts.isBreakStatement(last));
+    };
     /**
-     * A word checked with !== in an `if` guards the branch where it doesn't match (a throw); the word's own path goes
-     * on below the guard, to the end of the block the `if` sits in.
+     * A guard `if (w !== "a" && w !== "b") throw ...` leaves the words' own path below it, to the end of the block the
+     * `if` sits in. That holds only when the condition is nothing but `!==` checks of that one word and the `if` exits;
+     * anything else (another conjunct, a `||`, a branch that falls through) keeps the comparison's own branch.
      */
-    const afterGuard = (n: ts.Node): Region | null => {
-      const guard = regionOf(n);
-      for (let p: ts.Node = n; p.parent && p !== body; p = p.parent) {
-        if (ts.isIfStatement(p.parent) && p.parent.expression === p) return [p.parent.end, p.parent.parent.end];
-      }
-      return guard;
+    const afterGuard = (n: ts.BinaryExpression, word: ts.Expression): { region: Region | null; shared?: true } => {
+      const own = { region: regionOf(n) };
+      let top: ts.Node = n;
+      while (top.parent && (ts.isParenthesizedExpression(top.parent) || (ts.isBinaryExpression(top.parent) && top.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken))) top = top.parent;
+      const guard = top.parent;
+      if (!guard || !ts.isIfStatement(guard) || guard.expression !== top || guard.elseStatement || !exits(guard.thenStatement)) return own;
+      const leaves: ts.Expression[] = [];
+      const collect = (e: ts.Expression): void => {
+        const u = ts.isParenthesizedExpression(e) ? e.expression : e;
+        if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) return void (collect(u.left), collect(u.right));
+        leaves.push(u);
+      };
+      collect(guard.expression);
+      const text = word.getText(sf);
+      const sameWord = (e: ts.Expression) => ts.isBinaryExpression(e) && NEGATED.has(e.operatorToken.kind) && (e.left.getText(sf) === text || e.right.getText(sf) === text);
+      if (!leaves.every(sameWord)) return own;
+      return leaves.length > 1 ? { region: [guard.end, guard.parent.end], shared: true } : { region: [guard.end, guard.parent.end] };
     };
     const groupOf = (n: ts.Node): string => {
       let top = n;
       while (ts.isBinaryExpression(top.parent) && top.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken) top = top.parent;
       return `${file}:${top.pos}`;
     };
-    const record = (literal: ts.Node & { text: string }, pos: number | null, at: ts.Node, region: Region | null = regionOf(at), text = literal.text) => {
+    const record = (literal: ts.Node & { text: string }, pos: number | null, at: ts.Node, region: Region | null = regionOf(at), text = literal.text, shared?: true) => {
       if (text.startsWith("-")) return void context.flags.add(text);
-      context.comparisons.push({ text, pos, file, line: lineOf(literal), at: at.pos, region, group: groupOf(at) });
+      context.comparisons.push({ text, pos, file, line: lineOf(literal), at: at.pos, region, group: groupOf(at), ...(shared ? { shared } : {}) });
     };
     /** A word's comparand: a string literal, or a `const` in this file that holds one (reported at the comparison). */
-    const compared = (expr: ts.Expression, at: ts.Node, pos: number | null, region: Region | null = regionOf(at)): void => {
+    const compared = (expr: ts.Expression, at: ts.Node, pos: number | null, region: Region | null = regionOf(at), shared?: true): void => {
       const lit = unwrap(expr);
-      if (isText(lit)) return record(lit, pos, at, region);
+      if (isText(lit)) return record(lit, pos, at, region, lit.text, shared);
       if (!ts.isIdentifier(lit)) return;
       let value: string | undefined;
       const look = (n: ts.Node): void => {
@@ -239,7 +258,7 @@ export class Sources {
         ts.forEachChild(n, look);
       };
       look(sf);
-      if (value !== undefined) record(lit, pos, at, region, value);
+      if (value !== undefined) record(lit, pos, at, region, value, shared);
     };
     /** The literals a table holds: an array or `new Set([...])`'s strings, or an object literal's keys. */
     const tableOf = (expr: ts.Expression): (ts.Node & { text: string })[] | null => {
@@ -286,10 +305,11 @@ export class Sources {
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left)) bind(n.left, n.right);
       if (ts.isBinaryExpression(n) && EQUALITY.has(n.operatorToken.kind)) {
-        const negated = n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
         for (const [a, b] of [[n.left, n.right], [n.right, n.left]] as const) {
           const w = wordOf(a);
-          if (w) compared(b, n, w.pos, negated ? afterGuard(n) : regionOf(n));
+          if (!w) continue;
+          const at = NEGATED.has(n.operatorToken.kind) ? afterGuard(n, a) : { region: regionOf(n) };
+          compared(b, n, w.pos, at.region, at.shared);
         }
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword) lookup(n.right, n.left, n);
@@ -335,6 +355,8 @@ export class Sources {
 export interface Scope {
   context: Context;
   region: Region | null;
+  /** Narrowed to a region several words share, so the kinds in it may be a sibling's. */
+  shared?: true;
 }
 
 export const inside = (region: Region | null, at: number): boolean => !region || (at >= region[0] && at < region[1]);
@@ -348,7 +370,7 @@ export function expand(scopes: readonly Scope[]): Scope[] {
     if (seen.has(key)) return;
     seen.add(key);
     out.push(s);
-    for (const call of s.context.calls) if (inside(s.region, call.at)) add({ context: call.context, region: null });
+    for (const call of s.context.calls) if (inside(s.region, call.at)) add({ context: call.context, region: null, ...(s.shared ? { shared: s.shared } : {}) });
   };
   scopes.forEach(add);
   return out;
@@ -361,7 +383,8 @@ export function nextWords(scopes: readonly Scope[], pos: number): Map<string, { 
     for (const c of s.context.comparisons) {
       if (c.pos !== pos || c.text.length === 0 || !inside(s.region, c.at)) continue;
       const entry = next.get(c.text) ?? { scopes: [], first: c };
-      entry.scopes.push({ context: s.context, region: c.region ?? s.region });
+      const shared = c.shared ?? s.shared;
+      entry.scopes.push({ context: s.context, region: c.region ?? s.region, ...(shared ? { shared } : {}) });
       next.set(c.text, entry);
     }
   }

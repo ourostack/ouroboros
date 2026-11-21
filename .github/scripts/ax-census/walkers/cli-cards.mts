@@ -9,6 +9,8 @@
 //   can't be declared a read;
 // - `raises`: the card's error codes that are literals outside any card in the door's own file or the source's
 //   `handlers` files (the dispatcher and the gate, which raise for every command).
+//   For a CLI whose every door sits in one parser file, that check is CLI-wide: it catches a code nothing raises, not
+//   a code raised only by some other command.
 //
 // A declaration that names no walked door is stale, a census error. The declaration of an alias (`down` for `stop`)
 // needs no card: the door's card lists the alias instead (cards.mts checks that).

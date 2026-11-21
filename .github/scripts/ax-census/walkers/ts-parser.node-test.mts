@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { walkTsParser } from "./ts-parser.mts";
+import { Sources } from "./ts-argv.mts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures", "cli");
@@ -216,4 +217,23 @@ test("the real harness parser: the 21 missing first words with lines, and every 
   ok(source.includes("export type OuroCliCommand"));
   for (const gap of unwalked ?? []) ok(!reached.has(gap.id.slice("cli:kind ".length)), gap.id);
   ok(reached.size + (unwalked ?? []).length >= 133, `${reached.size} reached, ${(unwalked ?? []).length} reported`);
+});
+
+test("a !== check leads on below its if only when the if exits and checks nothing but that word", () => {
+  const sources = new Sources();
+  const file = join(fixtures, "guards.ts");
+  const read = (fn: string) => sources.read(file, sources.functionIn(file, fn)!, [{ arr: 0 }]).comparisons;
+  const below = (fn: string, text: string) => {
+    const c = read(fn).find((x) => x.text === text)!;
+    return { below: c.region !== null && c.region[0] > c.at, shared: c.shared === true };
+  };
+  deepEqual(below("guarded", "solo"), { below: true, shared: false });
+  // Several words below one guard share its region, so none of them claims the kinds in it.
+  deepEqual(below("chained", "one"), { below: true, shared: true });
+  deepEqual(below("chained", "two"), { below: true, shared: true });
+  // Another conjunct, a branch that falls through, an else, or a || keeps the check's own branch.
+  deepEqual(below("mixed", "loud"), { below: false, shared: false });
+  deepEqual(below("fallsThrough", "open"), { below: false, shared: false });
+  deepEqual(below("withElse", "shut"), { below: false, shared: false });
+  deepEqual(below("either", "left"), { below: false, shared: false });
 });

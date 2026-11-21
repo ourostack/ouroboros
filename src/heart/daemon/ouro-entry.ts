@@ -20,21 +20,25 @@ emitNervesEvent({
 })
 
 const gate = gateCommandArgs(process.argv.slice(2))
+// A failure ends with the code its Ouro AX card names (see `ouro help --json`), so an agent can look up the fix.
+const withCode = (message: string, code: unknown): string => (typeof code === "string" ? `${message}\ncode: ${code}\n` : `${message}\n`)
+
 if (gate.kind === "refuse") {
-  process.stderr.write(`${gate.message}\n`)
+  process.stderr.write(withCode(gate.message, gate.code))
   process.exitCode = 1
 } else if (gate.kind === "preview" || gate.kind === "help") {
   process.stdout.write(`${gate.text}\n`)
 } else {
   void runOuroCli(gate.args).catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
-    process.stderr.write(`${message}\n`)
+    const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined
+    process.stderr.write(withCode(message, code))
     emitNervesEvent({
       level: "error",
       component: "daemon",
       event: "daemon.cli_entry_error",
       message: "ouro CLI entrypoint failed",
-      meta: { error: message },
+      meta: typeof code === "string" ? { error: message, code } : { error: message },
     })
     process.exit(1)
   })

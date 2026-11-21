@@ -963,7 +963,8 @@ function formatDaemonStatusJsonOutput(response: DaemonResponse): string {
 /**
  * The answer when a command needs the daemon and it isn't running: the `daemon-down` error its Ouro AX card names.
  */
-function daemonDown(deps: Pick<OuroCliDeps, "writeStdout">, kind: string): string {
+/** The command needs the running daemon and it isn't up: a failure (exit 1) with the `daemon-down` code its card names. */
+function daemonDown(kind: string): never {
   const message = "daemon unavailable — start with `ouro up` first"
   emitNervesEvent({
     level: "warn",
@@ -972,8 +973,7 @@ function daemonDown(deps: Pick<OuroCliDeps, "writeStdout">, kind: string): strin
     message: "a CLI command needed the daemon and it was not running",
     meta: { command: kind, code: "daemon-down" },
   })
-  deps.writeStdout(message)
-  return message
+  throw Object.assign(new Error(message), { code: "daemon-down" })
 }
 
 function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: string): string {
@@ -9061,7 +9061,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
     /* v8 ignore start — error path: daemon not running */
     } catch {
-      return daemonDown(deps, command.kind)
+      daemonDown(command.kind)
     }
     /* v8 ignore stop */
 
@@ -9497,7 +9497,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         limit: command.limit,
       } as DaemonCommand)
     } catch {
-      return daemonDown(deps, command.kind)
+      daemonDown(command.kind)
     }
     if (!response.ok) {
       const message = response.error ?? "unknown error"
@@ -9519,7 +9519,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     try {
       response = await deps.sendCommand(deps.socketPath, daemonCommand)
     } catch {
-      return daemonDown(deps, command.kind)
+      daemonDown(command.kind)
     }
     if (!response.ok) {
       const message = response.error ?? "unknown error"
