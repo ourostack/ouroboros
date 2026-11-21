@@ -120,7 +120,7 @@ describe("turn-local canonical tool selection", () => {
       },
     }
     expect(await executeTool(definition.tool.function.name, { value: "safe" }, context)).toMatchObject({
-      kind: "rejected_before_handler", text: "relationship authorization required: current relationship selection changed",
+      kind: "rejected_before_handler", text: "relationship authorization required: current relationship selection changed (code: not-allowed)",
     })
     expect(handler).not.toHaveBeenCalled()
   })
@@ -285,7 +285,7 @@ describe("turn-local canonical tool selection", () => {
     expect(await executeTool("schema_status", { value: "safe" }, first)).toEqual({ kind: "handler_succeeded", text: "A result" })
     expect(await executeTool("schema_status", { value: "safe" }, second)).toEqual({ kind: "handler_succeeded", text: "A result" })
     expect(await execTool("schema_status", { value: 2 }, turn(b))).toBe("B result")
-    expect(await execTool("schema_status", { value: 2 }, turn(a))).toContain("invalid tool arguments: /value")
+    expect(await execTool("schema_status", { value: 2 }, turn(a))).toMatch(/^invalid tool arguments: \/value.* \(code: invalid-arguments\)$/)
     expect(a.manager.callTool).toHaveBeenCalledTimes(2)
     expect(b.manager.callTool).toHaveBeenCalledOnce()
   })
@@ -328,7 +328,7 @@ describe("turn-local canonical tool selection", () => {
       selectCurrentTools: () => ({ ordinary: [definition], engine: [] }),
     }
 
-    expect(await execTool(definition.tool.function.name, { value: "safe" }, context)).toMatch(/rejected|changed|stale/)
+    expect(await execTool(definition.tool.function.name, { value: "safe" }, context)).toMatch(/^rejected: .* changed or is no longer available in the current tool selection \(code: tool-changed\)$/)
     expect(handler).not.toHaveBeenCalled()
     expect(replacement).not.toHaveBeenCalled()
   })

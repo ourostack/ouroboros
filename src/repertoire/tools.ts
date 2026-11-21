@@ -1,6 +1,6 @@
 import type OpenAI from "openai";
 import { isDeepStrictEqual } from "node:util";
-import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester, withCode } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { CHAT_ACTION_TOOL_CHANNELS, chatToolDefinitions } from "./tools-chat";
@@ -417,12 +417,12 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     const schema = def?.tool ?? selection?.engine.find((tool) => tool.function.name === name)
     if (!schema) {
       emitNervesEvent({ level: "error", event: "tool.error", component: "tools", message: "unknown or unselected tool requested", meta: { name } })
-      return { kind: "rejected_before_handler", text: `unknown: ${name}` }
+      return { kind: "rejected_before_handler", text: withCode(`unknown: ${name}`, "unknown-tool") }
     }
     if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
     if (selection || ctx?.relationshipAuthorization) {
       const validation = validateAdvertisedToolArguments(JSON.stringify(args), schema.function.parameters ?? {})
-      if (!validation.ok) return { kind: "rejected_before_handler", text: `invalid tool arguments: ${validation.reason}` }
+      if (!validation.ok) return { kind: "rejected_before_handler", text: withCode(`invalid tool arguments: ${validation.reason}`, "invalid-arguments") }
     }
 
     assertRelationshipToolOwner(ctx)
@@ -438,7 +438,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
         level: "warn", event: "tool.relationship_authorization_block", component: "tools",
         message: "relationship authorization blocked tool execution", meta: { name, reason },
       })
-      return { kind: "rejected_before_handler", text: `relationship authorization required: ${reason}` }
+      return { kind: "rejected_before_handler", text: withCode(`relationship authorization required: ${reason}`, "not-allowed") }
     }
 
     const currentSelection = ctx?.selectCurrentTools?.()
@@ -457,7 +457,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
         level: "warn", event: "tool.selection_rejected", component: "tools",
         message: "selected tool is no longer current", meta: { name },
       })
-      return { kind: "rejected_before_handler", text: `rejected: ${name} changed or is no longer available in the current tool selection` }
+      return { kind: "rejected_before_handler", text: withCode(`rejected: ${name} changed or is no longer available in the current tool selection`, "tool-changed") }
     }
     if (def?.mcpBinding) {
       if (!ctx?.agentName || !ctx.agentRoot) throw new McpCallRejectedError("MCP requires an explicit owner")
@@ -475,7 +475,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
         message: "orientation hold blocked high-risk tool execution",
         meta: { name, mutates: mutationKindsFor(risk), reason: orientationPolicy.reason },
       })
-      return { kind: "rejected_before_handler", text: orientationHoldMessage(name, risk, orientationPolicy.reason) }
+      return { kind: "rejected_before_handler", text: withCode(orientationHoldMessage(name, risk, orientationPolicy.reason), "orientation-hold") }
     }
     const group = ctx?.context && "isGroupChat" in ctx.context ? ctx.context.isGroupChat : undefined
     const guardContext = {
@@ -491,7 +491,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
         level: "warn", event: "tool.guardrail_block", component: "tools",
         message: "guardrail blocked tool execution", meta: { name, reason: guard.reason },
       })
-      return { kind: "rejected_before_handler", text: guard.reason }
+      return { kind: "rejected_before_handler", text: withCode(guard.reason, "guardrail-blocked") }
     }
     return { kind: "ready", definition: def, agentRoot: guardContext.agentRoot, friendId: guardContext.friendId }
   } catch (error) {
@@ -538,7 +538,7 @@ export async function executeTool(
       message: "guardrail blocked tool execution",
       meta: { name, reason: commerceReservation.reason },
     });
-    return { kind: "rejected_before_handler", text: `commerce authority required: ${commerceReservation.reason}` }
+    return { kind: "rejected_before_handler", text: withCode(`commerce authority required: ${commerceReservation.reason}`, "commerce-authority-required") }
   }
   const authorizedContext = ctx
   const toolContext: ToolContext | undefined = commerceReservation?.ok
