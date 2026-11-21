@@ -99,7 +99,7 @@ const menuBackdropClass =
  * @claim "Highlighted by keyboard or pointer, dimmed" registry/ouro/components/ouro/menu/menu.test.tsx verify:testExists(registry/ouro/components/ouro/menu/menu.test.tsx::Menu items > paints tone destructive in the destructive color)
  */
 const menuItemClass =
-  "relative m-0 box-border flex w-full min-h-ouro-11 pointer-fine:min-h-8 cursor-default items-center gap-3 " +
+  "relative m-0 box-border flex w-full min-h-ouro-11 pointer-fine:min-h-ouro-8 cursor-default items-center gap-3 " +
   "rounded-ouro-md py-1.5 pe-2 ps-[calc(0.5rem+var(--ouro-menu-inset,0px))] " +
   "text-start text-base leading-5 pointer-fine:text-sm text-popover-foreground no-underline select-none " +
   "outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid " +
