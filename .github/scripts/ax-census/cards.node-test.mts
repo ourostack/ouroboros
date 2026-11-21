@@ -124,3 +124,9 @@ test("an error code the handler never raises is weak", () => {
 test("an error code the handler raises passes", () => {
   deepEqual(checkCard(door({ evidence: { readOnly: true, raises: ["agent-unreachable"] } }), ctx), []);
 });
+
+test("a door the code also reaches by another word must list that alias on its card", () => {
+  const stop = { id: "cli:stop", kind: "cli" as const, name: "stop", aliases: ["down"] };
+  ok(checkCard(door(stop), ctx).includes("aliases: the code also accepts down; list it on the card"));
+  deepEqual(checkCard(door(stop, { aliases: ["down"] }), ctx), []);
+});

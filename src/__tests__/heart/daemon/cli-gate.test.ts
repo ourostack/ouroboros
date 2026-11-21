@@ -10,6 +10,7 @@ describe("the flag gate in front of the ouro CLI", () => {
   it("refuses an unknown flag, naming the nearest real one", () => {
     const result = gateCommandArgs(["check", "--lan", "inner"])
     expect(result.kind === "refuse" && result.message).toContain('Unknown flag --lan for "ouro check". Fix: use --lane.')
+    expect(result).toMatchObject({ code: "unknown-flag" })
   })
 
   it("refuses an unknown flag with no near match, pointing at help", () => {
@@ -38,7 +39,7 @@ describe("the flag gate in front of the ouro CLI", () => {
   })
 
   it("requires --why on a command other people see, and removes it before the dispatcher reads the words", () => {
-    expect(gateCommandArgs(["msg", "--to", "inbox-agent", "hello"])).toMatchObject({ kind: "refuse" })
+    expect(gateCommandArgs(["msg", "--to", "inbox-agent", "hello"])).toMatchObject({ kind: "refuse", code: "needs-why" })
     const result = gateCommandArgs(["msg", "--to", "inbox-agent", "hello", "--why", "they asked"])
     expect(result).toEqual({ kind: "pass", args: ["msg", "--to", "inbox-agent", "hello"] })
   })
@@ -71,5 +72,6 @@ describe("the flag gate in front of the ouro CLI", () => {
   it("refuses extra words after a command other people see whose usage takes none", () => {
     const result = gateCommandArgs(["a2a", "serve", "serve", "--why", "they asked"])
     expect(result.kind === "refuse" && result.message).toContain("takes no words after its command")
+    expect(result).toMatchObject({ code: "extra-words" })
   })
 })

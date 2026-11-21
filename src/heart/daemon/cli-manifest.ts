@@ -1,141 +1,142 @@
 // The commands of the ouro CLI, declared once: the names `ouro help --json` lists and the X-ray's inventory reads.
 import { emitNervesEvent } from "../../nerves/runtime"
+import { LIFECYCLE_COMMANDS } from "./cli-commands/lifecycle"
+import { PROVIDERS_COMMANDS } from "./cli-commands/providers"
+import { VAULT_COMMANDS } from "./cli-commands/vault"
+import { FRIENDS_COMMANDS } from "./cli-commands/friends"
+import { HABITS_COMMANDS } from "./cli-commands/habits"
+import { MIND_COMMANDS } from "./cli-commands/mind"
+import { MAIL_COMMANDS } from "./cli-commands/mail"
+import { CODING_TOOLS_COMMANDS } from "./cli-commands/coding-tools"
+import { A2A_COMMANDS } from "./cli-commands/a2a"
+import { DESK_COMMANDS } from "./cli-commands/desk"
+import { PRESENCE_COMMANDS } from "./cli-commands/presence"
+import { SHEPHERD_COMMANDS } from "./cli-commands/shepherd"
+import { RSVP_COMMANDS } from "./cli-commands/rsvp"
+import { DNS_COMMANDS } from "./cli-commands/dns"
 
-// Each says who sees its effect: only the person ("private") or other people ("others"). A command moves onto the
-// Ouro AX kit's definitions one at a time; until then it is declared here and dispatched by cli-exec.
+// Each command says who sees its effect: only the person ("private") or other people ("others"). A command moves onto
+// the Ouro AX kit's definitions one at a time; until then it is declared in cli-commands/ and dispatched by cli-exec.
+//
+// A declaration's `ax` is its Ouro AX door card, the one the census (.github/scripts/ax-census) checks: when an agent
+// should pick the command over its neighbours, its consent class, and what can go wrong as the agent reads it, each
+// error code raised in the parser, the gate or the dispatcher. `help --json` serves the card, and the shell tool
+// treats a command whose card says `effect: "read"` as safe to run (READ_ONLY_OURO_SHELL_COMMANDS in tools.ts).
 
 export type CliEffect = "private" | "others";
+
+/** What can go wrong at a command, as the agent reads it: the census's `ErrorCard`. */
+export interface CliErrorCard {
+  code: string;
+  means: string;
+  fix: string;
+}
+
+/** A command's Ouro AX declaration: the census's `DoorCard`, with the command's id `cli:<words>`. */
+export interface CliDoorCard {
+  id: string;
+  group: string;
+  when: string;
+  effect: "read" | "write" | "consequential" | "person-only";
+  errors: readonly CliErrorCard[];
+  /** Other words the parser takes for this command, such as `down` for `stop`. */
+  aliases?: readonly string[];
+  destructive?: true;
+  idempotent?: true;
+  confirm?: string;
+}
 
 export interface CliCommandDeclaration {
   name: string;
   effect: CliEffect;
   readOnly?: true;
   summary: string;
+  /** A legacy spelling kept for old scripts: help JSON marks it, and the usage text and overview leave it out. */
+  hidden?: true;
+  /** One command line, after `ouro`, that the parser accepts: shown in help, and how the census reaches its kind. */
+  example?: string;
+  ax?: CliDoorCard;
 }
 
-const PRIVATE = "private";
-const OTHERS = "others";
+/** The CLI-level card: what words no command has answer. */
+export const serverErrors: readonly CliErrorCard[] = [
+  { code: "unknown-door", means: "No ouro command starts with those words; the error suggests the nearest one.", fix: "Run the suggested command if it is the one you meant; otherwise run ouro help --json and pick by summary." },
+];
 
 export const CLI_COMMANDS: readonly CliCommandDeclaration[] = [
-  { name: "auth", effect: PRIVATE, summary: "Store or check provider credentials for an agent." },
-  { name: "auth verify", effect: PRIVATE, readOnly: true, summary: "Check that an agent's provider credentials work." },
-  { name: "account ensure", effect: PRIVATE, summary: "Make sure an agent has its account and mail keys." },
-  { name: "chat", effect: PRIVATE, summary: "Open an interactive chat with an agent." },
-  { name: "check", effect: PRIVATE, readOnly: true, summary: "Check an agent's provider lane." },
-  { name: "clone", effect: PRIVATE, summary: "Clone an agent bundle from a remote." },
-  { name: "connect", effect: PRIVATE, summary: "Guide setup of an integration or local sense." },
-  { name: "dev", effect: PRIVATE, summary: "Run the daemon from this checkout, rebuilding as it goes." },
-  { name: "dns backup", effect: PRIVATE, summary: "Back up the DNS records of a binding." },
-  { name: "dns plan", effect: PRIVATE, readOnly: true, summary: "Show the DNS changes a binding would make." },
-  { name: "dns apply", effect: OTHERS, summary: "Apply DNS changes that other people on the internet can reach." },
-  { name: "dns verify", effect: PRIVATE, readOnly: true, summary: "Check that the DNS records are live." },
-  { name: "dns rollback", effect: PRIVATE, summary: "Restore the DNS records from a backup." },
-  { name: "dns certificate", effect: PRIVATE, summary: "Issue or check a certificate for a binding." },
-  { name: "doctor", effect: PRIVATE, readOnly: true, summary: "Check the health of this machine's Ouro install." },
-  { name: "down", effect: PRIVATE, summary: "Stop the daemon." },
-  { name: "event submit", effect: OTHERS, summary: "Submit an event that can wake the agent and reach other people." },
-  { name: "friend create", effect: PRIVATE, summary: "Add a friend the agent knows." },
-  { name: "friend link", effect: PRIVATE, summary: "Link a friend to an external account." },
-  { name: "friend list", effect: PRIVATE, readOnly: true, summary: "List the friends this agent knows." },
-  { name: "friend show", effect: PRIVATE, readOnly: true, summary: "Show one friend." },
-  { name: "friend unlink", effect: PRIVATE, summary: "Remove a link between a friend and an external account." },
-  { name: "friend update", effect: PRIVATE, summary: "Change a friend's trust, admission or initiative." },
-  { name: "gateway serve", effect: OTHERS, summary: "Serve the gateway that other agents connect to." },
-  { name: "habit cancel", effect: PRIVATE, summary: "Cancel a habit's pending run." },
-  { name: "habit create", effect: PRIVATE, summary: "Create a habit that runs on a cadence." },
-  { name: "habit inspect", effect: PRIVATE, readOnly: true, summary: "Show one habit run." },
-  { name: "habit list", effect: PRIVATE, readOnly: true, summary: "List the agent's habits." },
-  { name: "habit probe", effect: PRIVATE, readOnly: true, summary: "Check a habit without sending anything." },
-  { name: "habit runs", effect: PRIVATE, readOnly: true, summary: "List recent habit runs." },
-  { name: "habit summary", effect: PRIVATE, readOnly: true, summary: "Summarise a habit run." },
-  { name: "hatch", effect: PRIVATE, summary: "Create a new agent." },
-  { name: "link", effect: PRIVATE, summary: "Link an agent to a friend's external account." },
-  { name: "logs", effect: PRIVATE, readOnly: true, summary: "Show the daemon's recent logs." },
-  { name: "mail backfill-indexes", effect: PRIVATE, summary: "Rebuild the mail indexes for an agent." },
-  { name: "mail sweep-orphans", effect: PRIVATE, summary: "Delete unreferenced encrypted raw mail (dry run unless --live)." },
-  { name: "mail import-mbox", effect: PRIVATE, summary: "Import an MBOX export into the agent's mail." },
-  { name: "mailbox", effect: PRIVATE, readOnly: true, summary: "Show the agent's mailbox." },
-  { name: "mcp call", effect: PRIVATE, summary: "Call a tool on an MCP server." },
-  { name: "mcp doctor", effect: PRIVATE, readOnly: true, summary: "Check an agent's MCP servers." },
-  { name: "mcp list", effect: PRIVATE, readOnly: true, summary: "List the MCP servers." },
-  { name: "msg", effect: OTHERS, summary: "Send a message to another agent." },
-  { name: "nerves-review", effect: PRIVATE, readOnly: true, summary: "Review the runtime's nerves events." },
-  { name: "poke", effect: PRIVATE, summary: "Wake an agent for a task or habit." },
-  { name: "private decisions", effect: PRIVATE, readOnly: true, summary: "List an agent's recent private decisions." },
-  { name: "private status", effect: PRIVATE, readOnly: true, summary: "Show an agent's private status." },
-  { name: "provider refresh", effect: PRIVATE, summary: "Refresh the daemon's cached provider credentials." },
-  { name: "repair", effect: PRIVATE, summary: "Repair an agent's setup." },
-  { name: "rollback", effect: PRIVATE, summary: "Roll the install back to an earlier version." },
-  { name: "rsvp", effect: PRIVATE, summary: "Work with RSVP events." },
-  { name: "session list", effect: PRIVATE, readOnly: true, summary: "List the agent's sessions." },
-  { name: "status", effect: PRIVATE, readOnly: true, summary: "Show the daemon and an agent's status." },
-  { name: "stop", effect: PRIVATE, summary: "Stop the daemon." },
-  { name: "sync", effect: PRIVATE, summary: "Sync an agent bundle with its remote." },
-  { name: "thoughts", effect: PRIVATE, readOnly: true, summary: "Show an agent's recent thoughts." },
-  { name: "use", effect: PRIVATE, summary: "Choose the provider and model for a lane." },
-  { name: "vault config set", effect: PRIVATE, summary: "Set a vault config value." },
-  { name: "vault config status", effect: PRIVATE, readOnly: true, summary: "Show the vault config." },
-  { name: "vault create", effect: PRIVATE, summary: "Create an agent's vault." },
-  { name: "vault item list", effect: PRIVATE, readOnly: true, summary: "List vault items." },
-  { name: "vault item set", effect: PRIVATE, summary: "Set a vault item's secret field." },
-  { name: "vault item status", effect: PRIVATE, readOnly: true, summary: "Show a vault item's status." },
-  { name: "vault ops porkbun set", effect: PRIVATE, summary: "Store the Porkbun account for DNS work." },
-  { name: "vault ops porkbun status", effect: PRIVATE, readOnly: true, summary: "Show the Porkbun account status." },
-  { name: "vault recover", effect: PRIVATE, summary: "Recover an agent's vault from exported keys." },
-  { name: "vault replace", effect: PRIVATE, summary: "Replace an agent's vault." },
-  { name: "vault status", effect: PRIVATE, readOnly: true, summary: "Show the vault's status." },
-  { name: "vault unlock", effect: PRIVATE, summary: "Unlock an agent's vault." },
-  { name: "versions", effect: PRIVATE, readOnly: true, summary: "List the installed and available versions." },
-  { name: "voice join", effect: OTHERS, summary: "Join a voice call as the agent." },
-  { name: "voice leave", effect: OTHERS, summary: "Leave a voice call." },
-  { name: "voice status", effect: PRIVATE, readOnly: true, summary: "Show the agent's voice status." },
-  { name: "whoami", effect: PRIVATE, readOnly: true, summary: "Show which agent this is." },
-  { name: "work card", effect: PRIVATE, readOnly: true, summary: "Show the agent's work card." },
-  { name: "work gauntlet", effect: PRIVATE, readOnly: true, summary: "Show the agent's work gauntlet." },
-  { name: "work sentinel", effect: PRIVATE, readOnly: true, summary: "Show the agent's work sentinel." },
-  { name: "a2a card", effect: PRIVATE, readOnly: true, summary: "Show the agent's A2A card." },
-  { name: "a2a delegated-commands grant", effect: OTHERS, summary: "Let a friend's agent run delegated commands." },
-  { name: "a2a delegated-commands list", effect: PRIVATE, readOnly: true, summary: "List the delegated command grants." },
-  { name: "a2a delegated-commands revoke", effect: PRIVATE, summary: "Revoke a delegated command grant." },
-  { name: "a2a escalation grant", effect: OTHERS, summary: "Let a friend escalate to the person." },
-  { name: "a2a escalation list", effect: PRIVATE, readOnly: true, summary: "List escalation grants." },
-  { name: "a2a escalation revoke", effect: PRIVATE, summary: "Revoke an escalation grant." },
-  { name: "a2a identity", effect: PRIVATE, readOnly: true, summary: "Show the agent's A2A identity." },
-  { name: "a2a message", effect: OTHERS, summary: "Send an A2A message to another agent." },
-  { name: "a2a onboard", effect: PRIVATE, summary: "Onboard another agent from its card." },
-  { name: "a2a outbox ack", effect: OTHERS, summary: "Acknowledge messages another agent sent." },
-  { name: "a2a outbox list", effect: PRIVATE, readOnly: true, summary: "List the A2A outbox." },
-  { name: "a2a outbox resolve", effect: OTHERS, summary: "Resolve a report another agent filed." },
-  { name: "a2a serve", effect: OTHERS, summary: "Serve the agent's A2A endpoint to other agents." },
-  { name: "bluebubbles context-smoke", effect: PRIVATE, summary: "Check the context a BlueBubbles message would get." },
-  { name: "bluebubbles host", effect: PRIVATE, summary: "Install, check or repair the BlueBubbles host." },
-  { name: "bluebubbles replay", effect: PRIVATE, summary: "Replay a BlueBubbles message." },
+  ...LIFECYCLE_COMMANDS,
+  ...PROVIDERS_COMMANDS,
+  ...VAULT_COMMANDS,
+  ...FRIENDS_COMMANDS,
+  ...HABITS_COMMANDS,
+  ...MIND_COMMANDS,
+  ...MAIL_COMMANDS,
+  ...CODING_TOOLS_COMMANDS,
+  ...A2A_COMMANDS,
+  ...DESK_COMMANDS,
+  ...PRESENCE_COMMANDS,
+  ...SHEPHERD_COMMANDS,
+  ...RSVP_COMMANDS,
+  ...DNS_COMMANDS,
 ];
+
+/**
+ * Programs an agent's shell can start as `node <path>` beside the ouro command, such as the daemon and the senses.
+ * The census finds them by their `process.argv` reads; each is declared here with its card. `help --json` lists them
+ * as `entryPoints`, apart from the commands, because they don't start with `ouro`.
+ */
+export const CLI_ENTRY_POINTS: readonly CliCommandDeclaration[] = [];
 
 export const CLI_EXIT_CODES = [
   { code: 0, name: "ok", meaning: "The command did what it was asked." },
   { code: 1, name: "error", meaning: "The command failed or refused; the output says why and how to fix it." },
 ] as const;
 
-/** The help as data: every declared command with its effect, and the exit codes. */
+/**
+ * What `help --json` says about one declaration: the card's fields beside the name, effect and summary. A command's
+ * usage starts with `ouro`; an entry point's is its own command line.
+ */
+export function helpEntry(command: CliCommandDeclaration, usage: string = `ouro ${command.name}`): Record<string, unknown> {
+  return {
+    name: command.name,
+    effect: command.effect,
+    summary: command.summary,
+    usage: [usage],
+    ...(command.readOnly ? { readOnly: true } : {}),
+    ...(command.hidden ? { hidden: true } : {}),
+    ...(command.example ? { example: `ouro ${command.example}` } : {}),
+    ...(command.ax
+      ? {
+          group: command.ax.group,
+          when: command.ax.when,
+          consent: command.ax.effect,
+          errors: command.ax.errors,
+          ...(command.ax.aliases ? { aliases: command.ax.aliases } : {}),
+        }
+      : {}),
+  }
+}
+
+/** An entry point's help: its usage is its own command line, not an ouro command. */
+export function entryPointHelp(entry: CliCommandDeclaration): Record<string, unknown> {
+  return helpEntry(entry, entry.name)
+}
+
+/** The help as data: every declared command and entry point with its effect and card, and the exit codes. */
 export function cliHelpJson(): string {
   emitNervesEvent({
     component: "daemon",
     event: "daemon.cli_help_json",
     message: "printing ouro help as data",
-    meta: { commands: CLI_COMMANDS.length },
+    meta: { commands: CLI_COMMANDS.length, entryPoints: CLI_ENTRY_POINTS.length },
   })
   return JSON.stringify(
     {
       tool: "ouro",
-      commands: CLI_COMMANDS.map((command) => ({
-        name: command.name,
-        effect: command.effect,
-        summary: command.summary,
-        usage: [`ouro ${command.name}`],
-        ...(command.readOnly ? { readOnly: true } : {}),
-      })),
+      commands: CLI_COMMANDS.map((command) => helpEntry(command)),
+      entryPoints: CLI_ENTRY_POINTS.map(entryPointHelp),
       exitCodes: CLI_EXIT_CODES,
+      errors: serverErrors,
     },
     null,
     2,

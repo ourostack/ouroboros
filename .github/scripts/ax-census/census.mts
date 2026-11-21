@@ -37,6 +37,8 @@ const CHECKER_FILES = [
   "report.mts",
   "types.mts",
   "walkers/argv-entries.mts",
+  "walkers/cli-cards.mts",
+  "walkers/literals.mts",
   "walkers/mcp-schemas.mts",
   "walkers/registry.mts",
   "walkers/ts-argv.mts",
@@ -77,6 +79,9 @@ async function readConfig(path: string): Promise<Config> {
     }
     if ((s.parser !== undefined && typeof s.parser !== "string") || (s.kinds !== undefined && typeof s.kinds !== "string") || (s.claims !== undefined && !isClaims(s.claims))) {
       throw new CensusFailure(`ax-census: ${path}: a source's parser, kinds and claims must be strings and a list of { entry, parser } paths`);
+    }
+    if ((s.cards !== undefined && typeof s.cards !== "string") || (s.handlers !== undefined && !(Array.isArray(s.handlers) && s.handlers.every((h) => typeof h === "string")))) {
+      throw new CensusFailure(`ax-census: ${path}: a source's cards must be a string and its handlers a list of paths`);
     }
   }
   return { product: config.product, sources: config.sources, groups: Array.isArray(config.groups) ? config.groups : [] };

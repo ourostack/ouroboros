@@ -11387,6 +11387,10 @@ describe("provider CLI command execution", () => {
     await expect(runOuroCli(["provider", "refresh"], makeCliDeps(homeDir, bundlesRoot, {
       listDiscoveredAgents: () => ["Slugger", "Ouroboros"],
     }))).rejects.toThrow("multiple agents found: Slugger, Ouroboros")
+    // The error carries the code the command's Ouro AX card names.
+    await expect(runOuroCli(["provider", "refresh"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger", "Ouroboros"],
+    }))).rejects.toMatchObject({ code: "which-agent" })
   })
 
   it("connect prompts for an agent when --agent is omitted and multiple bundles exist", async () => {

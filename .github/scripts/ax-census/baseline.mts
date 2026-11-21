@@ -69,6 +69,8 @@ export interface WalkerSource {
   parser?: string;
   kinds?: string;
   claims?: readonly { entry: string; parser: string }[];
+  cards?: string;
+  handlers?: readonly string[];
 }
 
 /**

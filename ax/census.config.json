@@ -1,23 +1,35 @@
 {
   "product": "harness",
   "sources": [
-    { "walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts" },
+    {"walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts"},
     {
       "walker": "ts-parser",
       "module": "dist/heart/daemon/cli-parse.js",
       "source": "src/heart/daemon/cli-parse.ts",
       "parser": "parseOuroCommand",
-      "kinds": "src/heart/daemon/cli-types.ts#OuroCliCommand"
+      "kinds": "src/heart/daemon/cli-types.ts#OuroCliCommand",
+      "cards": "dist/heart/daemon/cli-manifest.js#CLI_COMMANDS",
+      "handlers": ["src/heart/daemon/cli-exec.ts", "src/heart/daemon/cli-gate.ts", "src/heart/daemon/cli-parse.ts"]
     },
     {
       "walker": "argv-entries",
       "module": "dist",
       "source": "src",
       "claims": [
-        { "entry": "src/heart/daemon/ouro-entry.ts", "parser": "src/heart/daemon/cli-parse.ts" },
-        { "entry": "src/heart/daemon/ouro-bot-entry.ts", "parser": "src/heart/daemon/cli-parse.ts" }
-      ]
+        {"entry": "src/heart/daemon/ouro-entry.ts", "parser": "src/heart/daemon/cli-parse.ts"},
+        {"entry": "src/heart/daemon/ouro-bot-entry.ts", "parser": "src/heart/daemon/cli-parse.ts"}
+      ],
+      "cards": "dist/heart/daemon/cli-manifest.js#CLI_ENTRY_POINTS"
     }
   ],
-  "groups": [{ "id": "ouro-agent", "when": "Work with your Ouro agent from a coding tool: talk to it, hand it work, report back, and read its state." }]
+  "groups": [
+    {"id": "ouro-agent", "when": "Work with your Ouro agent from a coding tool: talk to it, hand it work, report back, and read its state."},
+    {"id": "lifecycle", "when": "Install, start, stop, update or inspect the Ouro runtime itself on this machine, and find commands."},
+    {"id": "providers", "when": "Choose, credential and test the model providers each agent lane thinks with, and connect integrations."},
+    {"id": "vault", "when": "Unlock, inspect and change the encrypted store holding an agent's secrets and machine config."},
+    {"id": "friends", "when": "Manage the people an agent knows, their trust and linked accounts, and its live conversations."},
+    {"id": "mind", "when": "Look inside an agent: its private runtime turns and state, attention queue, work board, and wake it."},
+    {"id": "mail", "when": "Reach, import and maintain an agent's email: browser address, MBOX imports, index rebuilds, cleanup."},
+    {"id": "coding-tools", "when": "Connect coding tools to agents: MCP servers they serve or call, editor hooks and plugins."}
+  ]
 }

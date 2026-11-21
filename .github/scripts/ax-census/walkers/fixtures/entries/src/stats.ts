@@ -4,3 +4,7 @@ export function runStats([sub, ...rest]: string[]): number {
   if (sub === "export" && rest.includes("--json")) return 0
   return 2
 }
+
+export function noStats(): Error {
+  return Object.assign(new Error("no sessions yet"), { code: "no-stats" })
+}

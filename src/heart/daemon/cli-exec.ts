@@ -685,13 +685,16 @@ type ResolvedOuroCliCommand =
     [K in MissingAgentResolvableKind]: ResolvedAgentCommand<Extract<OuroCliCommand, { kind: K }>>
   }[MissingAgentResolvableKind]
 
+/** Why no agent could be picked, as the commands' Ouro AX cards name it. */
+type AgentResolutionFailure = "no-agent" | "which-agent"
+
 type AgentResolutionOutcome =
   | { ok: true; command: ResolvedOuroCliCommand }
-  | { ok: false; message: string; failureMode: AgentResolutionFailureMode }
+  | { ok: false; code: AgentResolutionFailure; message: string; failureMode: AgentResolutionFailureMode }
 
 type AgentNameResolutionOutcome =
   | { ok: true; agent: string }
-  | { ok: false; message: string; failureMode: AgentResolutionFailureMode }
+  | { ok: false; code: AgentResolutionFailure; message: string; failureMode: AgentResolutionFailureMode }
 
 function runtimeContextAgentName(deps: OuroCliDeps): string | undefined {
   try {
@@ -814,13 +817,13 @@ async function resolveMissingAgentName(
 
   const discoveredAgents = normalizeCliAgentNames(candidateOverride ?? await listCliAgents(deps))
   if (discoveredAgents.length === 0) {
-    return { ok: false, message: noAgentsFoundMessage(), failureMode }
+    return { ok: false, code: "no-agent", message: noAgentsFoundMessage(), failureMode }
   }
   if (discoveredAgents.length === 1) {
     return { ok: true, agent: discoveredAgents[0] }
   }
   if (!deps.promptInput) {
-    return { ok: false, message: multipleAgentsFoundMessage(discoveredAgents), failureMode }
+    return { ok: false, code: "which-agent", message: multipleAgentsFoundMessage(discoveredAgents), failureMode }
   }
 
   const answer = await deps.promptInput([
@@ -830,7 +833,7 @@ async function resolveMissingAgentName(
   ].join("\n"))
   const selectedAgent = resolveSelectedCliAgent(answer, discoveredAgents)
   if (!selectedAgent) {
-    return { ok: false, message: invalidAgentSelectionMessage(discoveredAgents), failureMode }
+    return { ok: false, code: "which-agent", message: invalidAgentSelectionMessage(discoveredAgents), failureMode }
   }
   return { ok: true, agent: selectedAgent }
 }
@@ -955,6 +958,22 @@ function formatDaemonStatusJsonOutput(response: DaemonResponse): string {
     ...(response.message ? { message: response.message } : {}),
     ...(response.error ? { error: response.error } : {}),
   }, null, 2)
+}
+
+/**
+ * The answer when a command needs the daemon and it isn't running: the `daemon-down` error its Ouro AX card names.
+ */
+function daemonDown(deps: Pick<OuroCliDeps, "writeStdout">, kind: string): string {
+  const message = "daemon unavailable — start with `ouro up` first"
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.cli_daemon_down",
+    message: "a CLI command needed the daemon and it was not running",
+    meta: { command: kind, code: "daemon-down" },
+  })
+  deps.writeStdout(message)
+  return message
 }
 
 function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: string): string {
@@ -7921,7 +7940,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         return ""
       }
     }
-    throw parseError
+    // Every other error the parser throws is about the words it was given; the cards name it `usage`.
+    const refusal = parseError as Error & { code?: string }
+    refusal.code ??= "usage"
+    throw refusal
   }
 
   const resolvedCommand = await resolveCommandAgent(parsedCommand, deps)
@@ -7930,7 +7952,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(resolvedCommand.message)
       return resolvedCommand.message
     }
-    throw new Error(resolvedCommand.message)
+    throw Object.assign(new Error(resolvedCommand.message), { code: resolvedCommand.code })
   }
   let command: ResolvedOuroCliCommand = resolvedCommand.command
 
@@ -9039,9 +9061,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
     /* v8 ignore start — error path: daemon not running */
     } catch {
-      const message = "daemon unavailable — start with `ouro up` first"
-      deps.writeStdout(message)
-      return message
+      return daemonDown(deps, command.kind)
     }
     /* v8 ignore stop */
 
@@ -9477,9 +9497,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         limit: command.limit,
       } as DaemonCommand)
     } catch {
-      const message = "daemon unavailable — start with `ouro up` first"
-      deps.writeStdout(message)
-      return message
+      return daemonDown(deps, command.kind)
     }
     if (!response.ok) {
       const message = response.error ?? "unknown error"
@@ -9501,9 +9519,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     try {
       response = await deps.sendCommand(deps.socketPath, daemonCommand)
     } catch {
-      const message = "daemon unavailable — start with `ouro up` first"
-      deps.writeStdout(message)
-      return message
+      return daemonDown(deps, command.kind)
     }
     if (!response.ok) {
       const message = response.error ?? "unknown error"

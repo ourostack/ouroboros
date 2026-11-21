@@ -205,6 +205,17 @@ export class Sources {
       }
       return null;
     };
+    /**
+     * A word checked with !== in an `if` guards the branch where it doesn't match (a throw); the word's own path goes
+     * on below the guard, to the end of the block the `if` sits in.
+     */
+    const afterGuard = (n: ts.Node): Region | null => {
+      const guard = regionOf(n);
+      for (let p: ts.Node = n; p.parent && p !== body; p = p.parent) {
+        if (ts.isIfStatement(p.parent) && p.parent.expression === p) return [p.parent.end, p.parent.parent.end];
+      }
+      return guard;
+    };
     const groupOf = (n: ts.Node): string => {
       let top = n;
       while (ts.isBinaryExpression(top.parent) && top.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken) top = top.parent;
@@ -275,9 +286,10 @@ export class Sources {
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left)) bind(n.left, n.right);
       if (ts.isBinaryExpression(n) && EQUALITY.has(n.operatorToken.kind)) {
+        const negated = n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || n.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
         for (const [a, b] of [[n.left, n.right], [n.right, n.left]] as const) {
           const w = wordOf(a);
-          if (w) compared(b, n, w.pos);
+          if (w) compared(b, n, w.pos, negated ? afterGuard(n) : regionOf(n));
         }
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.InKeyword) lookup(n.right, n.left, n);

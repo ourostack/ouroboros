@@ -9,6 +9,7 @@ import { readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type { Door, WalkerOptions, WalkResult } from "../types.mts";
+import { applyCards, loadCards, Raises } from "./cli-cards.mts";
 import { nextWords, Sources } from "./ts-argv.mts";
 
 const SKIP_DIRS = new Set(["node_modules", "__tests__", "fixtures"]);
@@ -115,5 +116,7 @@ export async function walkArgvEntries(opts: WalkerOptions): Promise<WalkResult> 
       if (!parserWords?.has(word)) doors.push(door(`${name} ${word}`, first.file, first.line));
     }
   }
+  const cards = loadCards(opts.root, opts.cards);
+  if (cards) errors.push(...cards.errors, ...applyCards(doors, cards, new Raises(sources, opts.root, opts.handlers ?? []), opts.cards!));
   return { doors, errors, unwalked: [] };
 }

@@ -13,25 +13,9 @@ import { createRequire } from "node:module";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import type { Door, DoorCard, WalkerOptions, WalkResult } from "../types.mts";
+import { isCard } from "./literals.mts";
 
 const isText = (node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral => ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
-
-const keyOf = (p: ts.ObjectLiteralElementLike): string | null =>
-  (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) ? p.name.text : null;
-
-/**
- * A node that holds a card: an `ax: ...` property, the `serverErrors` declaration, or an error card wherever it is
- * built (an object literal with `code`, `means` and `fix`, such as one a helper returns). Its literals are
- * declarations, not raises.
- */
-function isCard(node: ts.Node): boolean {
-  if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))) return node.name.text === "ax";
-  if (ts.isObjectLiteralExpression(node)) {
-    const keys = new Set(node.properties.map(keyOf));
-    return keys.has("code") && keys.has("means") && keys.has("fix");
-  }
-  return ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "serverErrors";
-}
 
 /**
  * Every `name: "<literal>"` in an object literal that also has `inputSchema`, as 1-based lines per name, in source
