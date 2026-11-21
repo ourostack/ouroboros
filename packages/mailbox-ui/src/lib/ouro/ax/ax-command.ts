@@ -16,7 +16,7 @@ import { checkVoice, type VoiceDef } from "./voice.ts";
  * (whose refusals name the exact fix), the usage and help, `help --json` and the MCP tool's input schema, so the CLI
  * and the MCP server can never disagree.
  *
- * @claim "the CLI and the MCP server can never disagree" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::usage, the input schema and toArgv come from the same definition)
+ * @claim "the CLI and the MCP server can never disagree" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::usage, the input schema and toArgv come from the same definition)
  */
 type FlagType = "boolean" | "string" | "number" | "enum" | "list";
 
@@ -37,15 +37,15 @@ interface FlagSpec {
   /**
    * A value errors and fixes never print back (a token): they show the placeholder instead.
    *
-   * @claim "errors and fixes never print back" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::an unknown flag's fix drops its value once the command's words are all given; a sensitive value is never printed back)
+   * @claim "errors and fixes never print back" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::an unknown flag's fix drops its value once the command's words are all given; a sensitive value is never printed back)
    */
   sensitive?: boolean;
   /**
    * The flag may be given more than once: its values come as a list, in the order given, and it is absent when not
    * given. A string flag only. Use it for names a person passes one at a time, such as `--ready-event a --ready-event b`.
    *
-   * @claim "its values come as a list, in the order given" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a repeat flag collects each value in order, in either form, and is absent when not given)
-   * @claim "A string flag only" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses repeat on a flag that is not a string, or repeat: false, naming the fix)
+   * @claim "its values come as a list, in the order given" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a repeat flag collects each value in order, in either form, and is absent when not given)
+   * @claim "A string flag only" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::defineCli refuses repeat on a flag that is not a string, or repeat: false, naming the fix)
    */
   repeat?: true;
   /**
@@ -53,8 +53,8 @@ interface FlagSpec {
    * and the input schema carries it. A string for a string flag, one of `values` for an enum, a number for a number flag
    * (within `min` and `max`), a true or false for a boolean. A required flag, and a list or repeat flag, takes none.
    *
-   * @claim "gets it in place of the flag" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a default fills the word or flag left out, and a value given still wins)
-   * @claim "A required flag, and a list or repeat flag, takes none" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
+   * @claim "gets it in place of the flag" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a default fills the word or flag left out, and a value given still wins)
+   * @claim "A required flag, and a list or repeat flag, takes none" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
    */
   default?: string | number | boolean;
 }
@@ -79,9 +79,9 @@ interface ArgSpec {
    * word itself as its fix. The input schema gives the argument these as its `enum`. A rest argument's text
    * (`rest: true`) is one string, so its values stay hints, unchecked: use `rest: "list"` to check each word.
    *
-   * @claim "A rest argument's text" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a list argument checks each of its words, and a free-text rest argument keeps its values as unchecked hints)
-   * @claim "a word outside them is refused with the usage exit" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a word outside a required argument's values is refused with the usage exit, naming the word and the values, and the fix names the closest value)
-   * @claim "gets the word itself as its fix" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::an unknown flag that is one of an argument's words gets that word as its fix)
+   * @claim "A rest argument's text" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a list argument checks each of its words, and a free-text rest argument keeps its values as unchecked hints)
+   * @claim "a word outside them is refused with the usage exit" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a word outside a required argument's values is refused with the usage exit, naming the word and the values, and the fix names the closest value)
+   * @claim "gets the word itself as its fix" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::an unknown flag that is one of an argument's words gets that word as its fix)
    */
   values?: readonly string[];
   /**
@@ -89,8 +89,8 @@ interface ArgSpec {
    * word, usage shows it as `[<name>=<value>]`, and the input schema carries it. A required word, a word that reads stdin
    * and a list word take none.
    *
-   * @claim "gets it in place of the word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a default fills the word or flag left out, and a value given still wins)
-   * @claim "A required word, a word that reads stdin" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
+   * @claim "gets it in place of the word" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a default fills the word or flag left out, and a value given still wins)
+   * @claim "A required word, a word that reads stdin" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::defineCli refuses a default that does not fit its word or flag, naming the fix)
    */
   default?: string;
 }
@@ -101,7 +101,7 @@ interface ArgSpec {
  * the agent gave that the command takes (a sensitive value as its placeholder). A flag `use` writes out itself, such as
  * `--why <why>`, gives way to the same flag given.
  *
- * @claim "the words the agent gave after the ambiguous word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::an ambiguous word's fix carries the words and flags the agent gave, in each meaning's command)
+ * @claim "the words the agent gave after the ambiguous word" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::an ambiguous word's fix carries the words and flags the agent gave, in each meaning's command)
  */
 interface Meaning {
   means: string;
@@ -161,7 +161,7 @@ interface CommandDef<R = unknown, C extends RunContext = RunContext> {
    * One or more words: "today", "draft set". A tool defined with `command` takes no command word, so its name labels its
    * errors and `help --json` only.
    *
-   * @claim "takes no command word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
+   * @claim "takes no command word" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
    */
   name: string;
   aliases?: readonly string[];
@@ -220,7 +220,7 @@ interface CliDefBase {
   /**
    * Words that could mean two effects answer with both commands instead of acting.
    *
-   * @claim "could mean two effects" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::every refusal names the exact command to run instead)
+   * @claim "could mean two effects" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::every refusal names the exact command to run instead)
    */
   ambiguous?: Readonly<Record<string, readonly Meaning[]>>;
   /** Words only the person acts on, by the words an agent might try (`unmute`). */
@@ -250,9 +250,9 @@ interface CliDefBase {
  * command word leads (`ouro-check <url>`), and a target named like a command word goes after `--`. `defineCli` refuses
  * neither.
  *
- * @claim "which takes no command word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
- * @claim "a target named like a command word goes after" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a tool with a default command runs it for any leading word that is not a command word, and a command word goes after --)
- * @claim "`defineCli` refuses neither" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::defineCli needs command or commands, and takes both: the default beside the named commands)
+ * @claim "which takes no command word" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
+ * @claim "a target named like a command word goes after" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a tool with a default command runs it for any leading word that is not a command word, and a command word goes after --)
+ * @claim "`defineCli` refuses neither" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::defineCli needs command or commands, and takes both: the default beside the named commands)
  */
 type CliDef<C extends RunContext = RunContext> = CliDefBase & ({ command: CommandDef<unknown, C>; commands?: readonly CommandDef<unknown, C>[] } | { commands: readonly CommandDef<unknown, C>[]; command?: undefined });
 
@@ -264,7 +264,7 @@ interface Cli<C extends RunContext = RunContext> {
   /**
    * Whether the tool was defined with `command` alone: its one command takes no command word.
    *
-   * @claim "its one command takes no command word" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
+   * @claim "its one command takes no command word" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
    */
   readonly single: boolean;
   /**
@@ -307,7 +307,7 @@ const unlessOf = (spec: { unless?: string | readonly string[] }): readonly strin
 /**
  * The words a command adds after the tool's name: its name's words, or none for the default command, which takes no word.
  *
- * @claim "or none for the default command" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
+ * @claim "or none for the default command" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::a tool with one command reads every token as the command's arguments and flags, with no command word)
  */
 function commandWords(cli: Pick<Cli, "defaultCommand">, cmd: CommandDef): string[] {
   return cmd === cli.defaultCommand ? [] : wordsOf(cmd.name);
@@ -526,7 +526,7 @@ const usage = (cli: Cli) => cli.exits.code("usage");
  * unknown flag names the nearest one, a missing argument shows where it goes and where to get it, a missing --why is
  * appended, an ambiguous word lists each meaning's command.
  *
- * @claim "whose fix is the corrected command line" registry/ouro/ax/command.test.mts verify:testExists(registry/ouro/ax/command.test.mts::every refusal names the exact command to run instead)
+ * @claim "whose fix is the corrected command line" registry/ouro/ax/ax-command.test.mts verify:testExists(registry/ouro/ax/ax-command.test.mts::every refusal names the exact command to run instead)
  */
 function parse(cli: Cli, argv: readonly string[]): Parsed | HelpAsked {
   // Global flags may come before the command's words (`tool --json send ...`); they move after them.

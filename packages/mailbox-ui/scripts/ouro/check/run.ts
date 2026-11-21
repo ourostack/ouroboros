@@ -11,7 +11,7 @@ import type { Browser, BrowserType, Page, Request } from "playwright";
 import { findDesignIssues, listCornerMedia, mediaDrawn, readCorners, shownCorners, type CornerReading } from "./design-check.ts";
 import { findImageFades } from "./fade-check.ts";
 import { ALIASES, behindModal, boxOf, decodeImages, findFragmentFocusIssues, isReady, listAllowances, listenForReady, listPersonSignals, outline, runAxe, type Allowance, type Box } from "./in-page.ts";
-import { findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint } from "./measure.ts";
+import { AUTO_PRESS, findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint } from "./measure.ts";
 import { findPopupJumps, watchPopups } from "./popup-check.ts";
 import { findRepaints, listenForMotion, markWalkables, readMotion, resetMotion, type MotionReading } from "./motion-check.ts";
 import { findOverlaps } from "./overlap-check.ts";
@@ -144,6 +144,10 @@ interface Gate {
   // each.
   press?: string[];
   pressRepeat?: number;
+  // true: inp also presses every Ouro control that is a button, switch, checkbox, tab or menu item (AUTO_PRESS), with the
+  // page opened again after each one, up to pressLimit of them a page (24 unless it says). Off unless set.
+  pressAll?: boolean;
+  pressLimit?: number;
   // Where long lines are checked, and against what: a page glob (two stars for all pages) holds the page's prose, a
   // CSS selector ("main .chat-message") holds what it matches. Without one the rule is off.
   measure?: Record<string, string>;
@@ -352,7 +356,7 @@ const TABS = 4;
 
 // Whether a page has a control listed for pressing, as an expression run in the page; and the error for a selector the
 // browser refuses.
-const anyListed = (press: string[]) => `document.querySelector(${JSON.stringify([...press, "[data-ouro-check-press]"].join(", "))}) !== null`;
+const anyListed = (press: string[], all: boolean) => `document.querySelector(${JSON.stringify([...press, "[data-ouro-check-press]", ...(all ? [AUTO_PRESS] : [])].join(", "))}) !== null`;
 const refused = (problem: Error): never => {
   throw new Error(`ouro-check.json's "press" has a selector the browser refuses: ${problem.message}`);
 };
@@ -705,7 +709,7 @@ async function check(options: CheckOptions): Promise<CheckResult> {
     };
     page.on("request", onRequest);
     try {
-      const mark = () => page.evaluate(markPressables, { limit: MAX_PRESSES, press: config.press ?? [], never: NEVER_PRESS });
+      const mark = () => page.evaluate(markPressables, { limit: config.pressLimit ?? MAX_PRESSES, press: [...(config.press ?? []), ...(config.pressAll ? [AUTO_PRESS] : [])], never: NEVER_PRESS });
       let controls = await mark();
       const reopen = async () => {
         await reach(page, target);
@@ -747,6 +751,8 @@ async function check(options: CheckOptions): Promise<CheckResult> {
           const detail = `${value} ms from the press to its paint at the 75th percentile of ${samples.length} presses, over the budget of ${budgets.inp} ms`;
           await record(page, target, { ref, rule: "inp", element, detail, value, budget: budgets.inp, unit: "ms", samples }, width, height, theme);
         }
+        // pressAll: the next control meets the page as it was loaded, whatever this one's presses changed.
+        if (config.pressAll && i < controls.length - 1) await reopen();
       }
       return found;
     } finally {
@@ -967,7 +973,7 @@ async function check(options: CheckOptions): Promise<CheckResult> {
     // Pressed in a context of its own, so what a press saves (a theme, a dismissed banner) reaches no other page.
     // Only on a page with a control listed for pressing: pressing is opt-in.
     let pressed = 0;
-    const listed = measured && !failed && inpAt === `${width}x${height} ${theme}` && ((await page.evaluate(anyListed(config.press ?? [])).catch(refused)) as boolean);
+    const listed = measured && !failed && inpAt === `${width}x${height} ${theme}` && ((await page.evaluate(anyListed(config.press ?? [], config.pressAll === true)).catch(refused)) as boolean);
     if (listed) {
       const own = await contextFor(width, height, theme);
       const tab = await own.newPage();
@@ -1484,12 +1490,14 @@ async function readJson<T>(file: string): Promise<T> {
 }
 
 // What is wrong with a config's press and state settings, which JSON leaves unchecked: a string would read as its letters.
-function configProblem({ press, pressRepeat, states, waive, firstRun, usability }: Gate): string | null {
+function configProblem({ press, pressRepeat, pressAll, pressLimit, states, waive, firstRun, usability }: Gate): string | null {
   const waived = Object.entries(waive ?? {}).find(([, rules]) => Object.hasOwn(Object(rules), "blurry-image"));
   if (waived)
     return `"waive" > "${waived[0]}" waives blurry-image, which cannot be waived: remove it, and give each picture it reports a larger source, or a srcset whose largest file covers its drawn width at 2x.`;
   if (press !== undefined && !(Array.isArray(press) && press.every((selector) => typeof selector === "string" && selector.trim() !== ""))) return '"press" takes a list of CSS selectors, such as ["[role=tab]"].';
   if (pressRepeat !== undefined && !(Number.isInteger(pressRepeat) && pressRepeat >= 1)) return '"pressRepeat" takes a whole number of presses, 1 or more.';
+  if (pressAll !== undefined && typeof pressAll !== "boolean") return '"pressAll" takes true or false.';
+  if (pressLimit !== undefined && !(Number.isInteger(pressLimit) && pressLimit >= 1)) return '"pressLimit" takes a whole number of controls, 1 or more.';
   const listOf = (steps: unknown) => Array.isArray(steps) && steps.length > 0 && steps.every((step) => typeof step === "string" && step.trim() !== "");
   const named = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
   if (states !== undefined && !(named(states) && Object.values(states).every((page) => named(page) && Object.values(page).every(listOf))))

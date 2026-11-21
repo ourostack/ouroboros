@@ -1,5 +1,5 @@
 export { quietPipes, runCli } from "#ouro-ax/cli.ts";
-export { defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input } from "#ouro-ax/command.ts";
+export { defineCli, defineCommand, parse, toArgv, type Cli, type CommandDef, type FlagSpec, type Input } from "#ouro-ax/ax-command.ts";
 export { BASE_EXIT_CODES, defineExitCodes, FINDINGS_EXIT_CODE } from "#ouro-ax/exit-codes.ts";
 export { DEFAULT_OUTCOME_EXITS, outcome, type Outcome } from "#ouro-ax/outcome.ts";
 export { AxError, commandLine, didYouMean, isAxError } from "#ouro-ax/problem.ts";

@@ -254,8 +254,10 @@ const base =
 
 // Height and padding step down to desktop density at the `sm` breakpoint through two
 // variables, so the button has one unprefixed `h-*` and `px-*` class and the app's own
-// (`className="h-20"`) replaces it at every width.
-const density = "h-(--ouro-button-h) px-(--ouro-button-px)";
+// (`className="h-20"`) replaces it at every width. The height never falls below a 20px icon plus
+// 4px, so a compact `--spacing` cannot shrink it under its icon; the floor is part of the height
+// class, not a min-height, so an app's or a component's own `h-*` still sets a smaller button.
+const density = "h-[max(var(--ouro-button-h),var(--ouro-size-6))] px-(--ouro-button-px)";
 const sizes = {
   sm:
     `${density} gap-1.5 text-sm [--ouro-button-h:calc(var(--spacing)*9)] [--ouro-button-px:calc(var(--spacing)*3)] ` +
@@ -326,7 +328,10 @@ const iconChildClass =
 
 // An icon-only button drops the label's side padding and is at least as wide as it is tall: the height is a floor,
 // never a width, so an icon sits in a square and a child wider than the height keeps its width.
-const iconOnlyClass = "min-w-(--ouro-button-h) [--ouro-button-px:0px] sm:[--ouro-button-px:0px]";
+// An icon-only button drops the label's side padding and is at least as wide as it is tall: the height is a floor,
+// never a width, so an icon sits in a square and a child wider than the height keeps its width. On a fine pointer the
+// square is at least the 24px floor, or the height when that is larger.
+const iconOnlyClass = "min-w-(--ouro-button-h) pointer-fine:min-w-[max(var(--ouro-button-h),var(--ouro-size-6))] [--ouro-button-px:0px] sm:[--ouro-button-px:0px]";
 
 const buttonTypes = ["button", "submit", "reset"] as const;
 

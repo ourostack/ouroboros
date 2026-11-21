@@ -1,4 +1,4 @@
-export { findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint };
+export { AUTO_PRESS, findLoadingIssues, interactionSince, listenForMeasures, markPressables, NEVER_PRESS, pressPoint };
 export type { LoadingBudgets, Measures, Painted, Pressable };
 
 import type { PageIssue } from "./size-check.ts";
@@ -236,6 +236,10 @@ const NEVER_PRESS = [
   'input[type="submit"]',
   'input[type="image"]',
 ].join(", ");
+
+// What pressAll presses without a list: each Ouro control (data-ouro-control) that is a button, switch, checkbox, tab or
+// menu item, by role or by element. NEVER_PRESS still keeps out links, submit buttons and destructive controls.
+const AUTO_PRESS = '[data-ouro-control]:is(button, input[type="checkbox"], [role="button"], [role="switch"], [role="checkbox"], [role="tab"], [role="menuitem"])';
 
 // Marks the first `limit` controls listed for pressing, shown and enabled, and names each: the ones ouro-check.json's
 // "press" selectors match, and the ones marked data-ouro-check-press. Pressing is opt-in because a press does what it

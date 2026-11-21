@@ -265,7 +265,7 @@ export function Sheet(props: SheetProps): JSX.Element {
  * The close button: in view at the top corner, as Dialog's is, with `TouchTarget` for a coarse pointer.
  */
 const closeClass =
-  "press absolute end-3 z-1 m-0 box-border inline-flex size-8 cursor-default items-center justify-center rounded-ouro-lg border-0 bg-transparent p-0 " +
+  "press absolute end-3 z-1 m-0 box-border inline-flex size-ouro-8 cursor-default items-center justify-center rounded-ouro-lg border-0 bg-transparent p-0 " +
   "text-muted-foreground outline-ring outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid " +
   "pointer-fine:hover:bg-muted pointer-fine:hover:text-foreground motion-safe:active:scale-(--ouro-press-scale) " +
   "forced-colors:border forced-colors:border-solid disabled:cursor-not-allowed disabled:opacity-50";
@@ -391,7 +391,7 @@ export function SheetFrame({
               className={`${closeClass} ${side === "bottom" && showHeader ? "top-8.25" : "top-3"}`}
             >
               <TouchTarget />
-              <svg data-slot="sheet-close-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-4">
+              <svg data-slot="sheet-close-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-ouro-4">
                 <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               <span data-slot="sheet-close-label" className="sr-only">{closeLabel}</span>

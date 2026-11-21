@@ -10,7 +10,7 @@ export type { Claim, ClaimEvidence, ClaimScope, ClaimSet, ClaimSurface, ClaimTie
  * agents failing without it, or when it guards against a stated safety, compatibility or integrity hazard; every other
  * claim is `should`.
  *
- * @claim "agents failing without it" registry/ouro/ax/claims.test.mts verify:testExists(registry/ouro/ax/claims.test.mts::the claim set follows its own admission rule: every must claim cites a run or states a hazard)
+ * @claim "agents failing without it" registry/ouro/ax/ax-claims.test.mts verify:testExists(registry/ouro/ax/ax-claims.test.mts::the claim set follows its own admission rule: every must claim cites a run or states a hazard)
  */
 const CLAIM_SET_VERSION = "1.7.0";
 
@@ -139,7 +139,7 @@ const isText = (v: unknown): v is string => typeof v === "string" && v.trim().le
  * scope, and a `must` claim the admission rule does not allow (one that rests on a principle, an evaluation without its
  * run, or a hazard not stated).
  *
- * @claim "The problems with a claim set" registry/ouro/ax/claims.test.mts verify:testExists(registry/ouro/ax/claims.test.mts::checkClaimSet names each problem with its fix)
+ * @claim "The problems with a claim set" registry/ouro/ax/ax-claims.test.mts verify:testExists(registry/ouro/ax/ax-claims.test.mts::checkClaimSet names each problem with its fix)
  */
 function checkClaimSet(value: unknown): string[] {
   const problems: string[] = [];
@@ -166,7 +166,7 @@ function checkClaimSet(value: unknown): string[] {
 /**
  * A claim set read from JSON (an adopter's own copy, say), checked; throws with every problem when it is not one.
  *
- * @claim "throws with every problem" registry/ouro/ax/claims.test.mts verify:testExists(registry/ouro/ax/claims.test.mts::checkClaimSet names each problem with its fix)
+ * @claim "throws with every problem" registry/ouro/ax/ax-claims.test.mts verify:testExists(registry/ouro/ax/ax-claims.test.mts::checkClaimSet names each problem with its fix)
  */
 function loadClaimSet(value: unknown): ClaimSet {
   const problems = checkClaimSet(value);

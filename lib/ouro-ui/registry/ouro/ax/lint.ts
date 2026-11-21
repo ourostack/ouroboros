@@ -4,7 +4,7 @@ export type { LintOptions, LintReport };
 // The export list comes first because the shadcn CLI drops comments before a file's
 // first statement, which would take the JSDoc below with it.
 
-import { flagsOf, invocation, type Cli } from "./command.ts";
+import { flagsOf, invocation, type Cli } from "./ax-command.ts";
 import { WHY_FLAG } from "./effects.ts";
 import { DEFAULT_WIDTH, renderCommand, renderOverview } from "./help.ts";
 

@@ -4,7 +4,7 @@ export type { CommandManifest, OverviewOptions };
 // The export list comes first because the shadcn CLI drops comments before a file's
 // first statement, which would take the JSDoc below with it.
 
-import { argUsage, BUILTIN_FLAGS, flagsOf, flagUsage, inputSchema, invocation, usageOf, type Cli, type CommandDef, type JsonSchema } from "./command.ts";
+import { argUsage, BUILTIN_FLAGS, flagsOf, flagUsage, inputSchema, invocation, usageOf, type Cli, type CommandDef, type JsonSchema } from "./ax-command.ts";
 import { DRY_RUN_FLAG, WHY_FLAG } from "./effects.ts";
 import { shellWord } from "./problem.ts";
 import { voiceLines } from "./voice.ts";

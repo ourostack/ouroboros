@@ -126,7 +126,7 @@ export type BadgeProps = BadgeCommonProps & (BadgeLinkModeProps | BadgeButtonMod
 const base =
   "relative isolate box-border inline-flex shrink-0 items-center gap-1 align-middle " +
   // Stryker disable next-line StringLiteral: a class string in a class position, unchanged but for the joining plus
-  "h-6 rounded-ouro-md border border-solid px-2 text-xs/none font-medium whitespace-nowrap no-underline " +
+  "h-ouro-6 rounded-ouro-md border border-solid px-2 text-xs/none font-medium whitespace-nowrap no-underline " +
   // Where corner-shape is missing, the surface slot paints the background, border and state layer instead (see ouro-base.css).
   "bg-(--ouro-bg) border-(--ouro-bd) [--ouro-sq-w:1px] [--ouro-sq-r:calc(var(--radius)*var(--ouro-radius-scale,1)*0.8)]";
 
@@ -261,8 +261,8 @@ export function Badge(props: BadgeProps): JSX.Element {
 
   const look = looks[variant][tone];
   // The icon and the label go in as siblings of the surface, not in a fragment, which would be a component of its own.
-  const icon = Icon && <Icon aria-hidden="true" className="relative -ms-0.5 size-3.5 shrink-0" />;
-  const statusDot = dot && <span data-slot="badge-dot" data-ouro-dot="" aria-hidden="true" className="relative size-1.5 shrink-0 rounded-full bg-current" />;
+  const icon = Icon && <Icon aria-hidden="true" className="relative -ms-0.5 size-ouro-3_5 shrink-0" />;
+  const statusDot = dot && <span data-slot="badge-dot" data-ouro-dot="" aria-hidden="true" className="relative size-ouro-1_5 shrink-0 rounded-full bg-current" />;
 
   if (rest.href !== undefined) {
     const { type: _type, disabled: _disabled, ...anchorProps } = rest as Omit<BadgeLinkProps, keyof BadgeBaseProps>;
