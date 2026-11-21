@@ -7,6 +7,7 @@
  */
 import type { KillRing } from "./kill-ring"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { PASTE_END, PASTE_START } from "./bracketed-paste"
 
 export interface InputResult {
   text: string
@@ -142,6 +143,39 @@ export function classifyEscapeSequence(inputChar: string): "home" | "end" | "ign
   if (seq.startsWith("<64;") || seq.startsWith("<65;")) return "ignore"
 
   return null
+}
+
+// Escape sequences (CSI, OSC, other two-byte ESC forms) and C0/C1 control bytes other than \n and \t.
+// eslint-disable-next-line no-control-regex -- matching the control bytes a paste must not carry into the composer
+const PASTED_CONTROLS = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?|[\x00-\x08\x0b-\x1f\x7f-\x9f]/g
+
+/**
+ * The text of a bracketed paste chunk, or null when `raw` holds no paste marker.
+ * Terminals and hosts such as Orca paste a prompt between \x1b[200~ and \x1b[201~, and Ink hands a chunk that
+ * starts with a marker over as an escape sequence, so without this the paste is dropped.
+ * `raw` must keep its leading \x1b (Ink strips it and sets meta). Line endings become \n, and escape sequences
+ * and other control bytes are removed.
+ * Only the chunks that carry a marker come through here; a paste's middle chunks arrive as ordinary input, which
+ * the composer cleans with `plainInputText` too.
+ */
+export function bracketedPasteText(raw: string): string | null {
+  if (!raw.includes(PASTE_START) && !raw.includes(PASTE_END)) return null
+  const text = plainInputText(raw.split(PASTE_START).join("").split(PASTE_END).join(""))
+  emitNervesEvent({ component: "senses", event: "senses.input_paste", message: "bracketed paste chunk reached the composer", meta: { length: text.length } })
+  return text
+}
+
+/** Input as plain text for the composer: line endings become \n, and escape sequences and other control bytes go. */
+export function plainInputText(raw: string): string {
+  return raw.replace(/\r\n?/g, "\n").replace(PASTED_CONTROLS, "")
+}
+
+/** Whether a paste is still open after `raw`, given whether one was open before it. */
+export function pasteOpenAfter(raw: string, openBefore: boolean): boolean {
+  const start = raw.lastIndexOf(PASTE_START)
+  const end = raw.lastIndexOf(PASTE_END)
+  if (start === -1 && end === -1) return openBefore
+  return start > end
 }
 
 /**

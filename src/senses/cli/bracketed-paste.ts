@@ -10,8 +10,8 @@
 import { EventEmitter } from "events"
 import { emitNervesEvent } from "../../nerves/runtime"
 
-const PASTE_START = "\x1b[200~"
-const PASTE_END = "\x1b[201~"
+export const PASTE_START = "\x1b[200~"
+export const PASTE_END = "\x1b[201~"
 
 export class BracketedPasteHandler extends EventEmitter {
   private pasting = false
