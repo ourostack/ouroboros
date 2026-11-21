@@ -132,7 +132,7 @@ export interface NavigationMenuProps {
 // with 14px text with a fine one. The current page, or the section it is in, is underlined in the primary colour, as in
 // FamilyBar; forced colours keep the underline.
 const rowItem =
-  "press relative m-0 box-border inline-flex h-11 min-w-11 pointer-fine:h-9 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap " +
+  "press relative m-0 box-border inline-flex h-ouro-11 min-w-ouro-11 pointer-fine:h-9 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap " +
   "rounded-ouro-md border-0 forced-colors:border forced-colors:border-solid bg-transparent px-3 font-[inherit] text-base pointer-fine:text-sm leading-5 font-medium text-muted-foreground no-underline " +
   "select-none touch-manipulation [-webkit-tap-highlight-color:transparent] " +
   "pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground " +
@@ -164,14 +164,14 @@ const popup = cn(
 // A panel: nearly the screen's width on a phone, as wide as its links from 640px; wider with
 // content or two columns.
 const panel = cn(
-  "box-border h-full w-[calc(100vw-2rem)] p-2 sm:w-max sm:min-w-64 sm:max-w-md data-wide:sm:max-w-2xl " +
+  "box-border h-full w-[calc(100vw-2rem)] p-2 sm:w-max sm:min-w-ouro-64 sm:max-w-md data-wide:sm:max-w-2xl " +
     "transition-opacity duration-(--ouro-duration-base) data-starting-style:opacity-0 data-ending-style:opacity-0",
   easeOut,
   instantly,
 );
 // A link in a panel: a full-width row, which highlights while pressed instead of scaling.
 const panelLink =
-  "relative m-0 box-border flex min-h-11 pointer-fine:min-h-9 flex-col justify-center gap-0.5 rounded-ouro-md px-3 py-2 text-base pointer-fine:text-sm leading-5 " +
+  "relative m-0 box-border flex min-h-ouro-11 pointer-fine:min-h-9 flex-col justify-center gap-0.5 rounded-ouro-md px-3 py-2 text-base pointer-fine:text-sm leading-5 " +
   "text-popover-foreground no-underline select-none touch-manipulation [-webkit-tap-highlight-color:transparent] " +
   "transition-colors duration-(--ouro-duration-fast) ease-[ease] pointer-fine:hover:bg-accent pointer-fine:hover:text-accent-foreground active:bg-accent active:text-accent-foreground " +
   "outline-ring -outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid";
@@ -337,7 +337,7 @@ export function NavigationMenuView(props: NavigationMenuViewProps): JSX.Element 
               <BaseNavigationMenu.Trigger data-current={item.links?.some(isCurrent) ? "" : undefined} data-ouro-control="navigation-menu" data-ouro-part="trigger" className={rowItem}>
                 {item.label}
                 <BaseNavigationMenu.Icon data-ouro-instant={instant ? "" : undefined} className={chevron}>
-                  <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="size-3.5">
+                  <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="size-ouro-3_5">
                     <path d="m4 6 4 4 4-4" />
                   </svg>
                 </BaseNavigationMenu.Icon>
