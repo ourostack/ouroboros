@@ -50,6 +50,7 @@
     {"id": "habits", "when": "Schedule, test and look back at the recurring jobs an agent runs on its own, and wake it early."},
     {"id": "entry-points", "when": "Start an agent's daemon, worker or sense process directly with node, as ouro up does, mostly to debug one."},
     {"id": "sanctuary-host", "when": "Run the Sanctuary host's root jobs: the Telegram authority, its lifecycle steps, host supervisor and health probes."},
-    {"id": "diagnostics", "when": "Inspect, audit, evaluate or repair saved sessions, nerves events and evaluation suites offline, outside the daemon."}
+    {"id": "diagnostics", "when": "Inspect, audit, evaluate or repair saved sessions, nerves events and evaluation suites offline, outside the daemon."},
+    {"id": "turn-files", "when": "Read, find and change files in the agent's home: open one, list a folder, search names or text, write or edit."}
   ]
 }
