@@ -11,6 +11,7 @@ import { openSanctuaryResidentAuthority } from "../../senses/sanctuary-authority
 import { migrateSanctuaryAuthorityVault } from "./sanctuary-authority-vault-migration"
 import { withSessionTurnLease } from "../../mind/session-transaction"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { failureCodeLine } from "./cli-commands/failure-code"
 
 const ROOT = "/mnt/user/appdata/ouro-authority"
 const BUNDLE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
@@ -1116,10 +1117,12 @@ export function recordSanctuaryRootLifecycleFailure(error: unknown, file = `${RO
   } catch { return "" }
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["needs-root", "usage", "outside-install", "not-active"]
+
 /** The stderr for a failed root lifecycle: generic (D-034), then the failure's code as its last line when it has one. */
 export function sanctuaryRootLifecycleFailureText(error: unknown, details: string): string {
-  const code = (error as { code?: unknown } | null)?.code
-  return `Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.${details}\n${typeof code === "string" ? `code: ${code}\n` : ""}`
+  return `Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.${details}\n${failureCodeLine(error, CARD_CODES)}`
 }
 
 export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text: string) => process.stdout.write(text)): Promise<void> {

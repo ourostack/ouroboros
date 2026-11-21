@@ -19,6 +19,7 @@ import {
   type SanctuaryTelegramAuthorityServer,
 } from "./sanctuary-telegram-authority-service"
 import { FileSanctuaryTelegramTestLog, sanctuaryTelegramTestLogRoot } from "./sanctuary-telegram-test-driver"
+import { failureCodeLine } from "./cli-commands/failure-code"
 
 const MAX_PRIVATE_FILE_BYTES = 64 * 1024
 const MAX_ATTACHMENT_BYTES = 20_000_000
@@ -511,10 +512,12 @@ export async function runSanctuaryTelegramAuthorityCli(options: {
   })
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-config"]
+
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryTelegramAuthorityCli().catch((error) => {
-    const code = (error as { code?: unknown } | null)?.code
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary Telegram authority failed"}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary Telegram authority failed"}\n${failureCodeLine(error, CARD_CODES)}`)
     process.exitCode = 1
   })
 }

@@ -3,8 +3,9 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { redactSecrets } from "./redact"
 
 void runShepherdJudgeEvaluationCommand(process.argv.slice(2)).then(code => {
-  // The JSON on stdout says why; stderr's last line names the failure for a script.
-  const failure = "not-passed"
+  // The JSON on stdout says why; stderr's last line names the failure for a script: 1 a run that finished and
+  // failed, 2 a run that couldn't start or finish.
+  const failure = code === 1 ? "not-passed" : "evaluation-error"
   if (code !== 0) process.stderr.write(`code: ${failure}\n`)
   process.exitCode = code
 }).catch(error => {

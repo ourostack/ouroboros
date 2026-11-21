@@ -148,6 +148,8 @@ describe("container healthcheck", () => {
     process.exitCode = undefined
     runContainerHealthcheckMain(true, () => { throw "plain" }, writeError)
     expect(writeError).toHaveBeenLastCalledWith("plain\n")
+    runContainerHealthcheckMain(true, () => { throw Object.assign(new Error("no file"), { code: "ENOENT" }) }, writeError)
+    expect(writeError).toHaveBeenLastCalledWith("no file\n")
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     runContainerHealthcheckMain(true, () => { throw new Error("boom") })
     expect(stderr).toHaveBeenCalledWith("boom\n")

@@ -8,6 +8,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess } from "./container-runtime"
 import { inspectSanctuaryPackageManagedBundle } from "./sanctuary-bundle-migration"
 import { resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
+import { failureCodeLine } from "./cli-commands/failure-code"
 
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
@@ -53,14 +54,16 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   emitNervesEvent({ component: "daemon", event: "daemon.container_healthcheck_end", message: "container healthcheck passed", meta: { agent } })
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-agent", "unhealthy"]
+
 /** Run the healthcheck as the container's entrypoint: a failure ends stderr with its code, and exits 1. */
 export function runContainerHealthcheckMain(isMain: boolean, runner: () => void, writeError: (text: string) => void = (text) => { process.stderr.write(text) }): void {
   if (!isMain) return
   try {
     runner()
   } catch (error) {
-    const code = (error as { code?: unknown } | null)?.code
-    writeError(`${error instanceof Error ? error.message : String(error)}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
+    writeError(`${error instanceof Error ? error.message : String(error)}\n${failureCodeLine(error, CARD_CODES)}`)
     process.exitCode = 1
   }
 }

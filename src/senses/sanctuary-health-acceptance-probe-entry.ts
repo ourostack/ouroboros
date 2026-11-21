@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   createSanctuaryHealthAcceptanceProbeCliOutput,
+  isSanctuaryHealthAcceptanceProbeMode,
   SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE,
   startSanctuaryHealthAcceptanceProbeCli,
 } from "./sanctuary-health-acceptance-probe"
@@ -14,10 +15,10 @@ emitNervesEvent({
 })
 
 const argv = process.argv.slice(2)
-// No mode at all: say so before the probe starts. Anything else is the probe's to refuse.
-const MISSING_MODE = "missing-mode"
-if (argv.length === 0) {
-  process.stderr.write(`${SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE}\ncode: ${MISSING_MODE}\n`)
+// No step, or a word that isn't one: say so before the probe starts. A step's coordinates are the probe's to refuse.
+if (!isSanctuaryHealthAcceptanceProbeMode(argv[0])) {
+  const code = argv.length === 0 ? "missing-mode" : "usage"
+  process.stderr.write(`${SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE}\ncode: ${code}\n`)
   process.exitCode = 1
 } else {
   startSanctuaryHealthAcceptanceProbeCli(argv, createSanctuaryHealthAcceptanceProbeCliOutput())

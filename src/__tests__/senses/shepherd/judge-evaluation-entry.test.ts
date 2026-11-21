@@ -3,7 +3,7 @@ const run = vi.hoisted(() => vi.fn())
 vi.mock("../../../senses/shepherd/judge-evaluation-command", () => ({ runShepherdJudgeEvaluationCommand: run }))
 const previous = process.exitCode
 afterEach(() => { process.exitCode = previous; vi.resetModules(); vi.restoreAllMocks() })
-it.each([0, 1])("forwards explicit CLI arguments and the measured command exit status %d", async code => {
+it.each([0, 1, 2])("forwards explicit CLI arguments and the measured command exit status %d", async code => {
   process.exitCode = undefined
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true)
   run.mockResolvedValue(code)
@@ -12,7 +12,7 @@ it.each([0, 1])("forwards explicit CLI arguments and the measured command exit s
   await vi.waitFor(() => expect(process.exitCode).toBe(code))
   expect(run).toHaveBeenLastCalledWith(["--agent", "synthetic", "--output", "/tmp/unused"])
   if (code === 0) expect(stderr).not.toHaveBeenCalled()
-  else expect(stderr).toHaveBeenCalledWith("code: not-passed\n")
+  else expect(stderr).toHaveBeenCalledWith(code === 1 ? "code: not-passed\n" : "code: evaluation-error\n")
   argv.mockRestore()
 })
 it("reports an unexpected rejection without exposing credentials or a success status", async () => {

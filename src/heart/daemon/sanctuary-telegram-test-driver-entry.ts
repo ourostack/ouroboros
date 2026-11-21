@@ -12,6 +12,7 @@ import {
   SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE,
   sanctuaryTelegramTestLogRoot,
 } from "./sanctuary-telegram-test-driver"
+import { failureCodeLine } from "./cli-commands/failure-code"
 
 /**
  * Root-only entry for the owner-turn test driver. It reads the live authority's own config and signing key, which
@@ -59,11 +60,13 @@ export async function runSanctuaryTelegramTestDriverCli(options: {
   }
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-config"]
+
 /* v8 ignore start -- process entry wiring; runSanctuaryTelegramTestDriverCli is tested directly @preserve */
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryTelegramTestDriverCli().catch((error) => {
-    const code = (error as { code?: unknown } | null)?.code
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary test driver failed"}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary test driver failed"}\n${failureCodeLine(error, CARD_CODES)}`)
     process.exitCode = 1
   })
 }

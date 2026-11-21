@@ -119,8 +119,10 @@ export async function runShepherdJudgeEvaluationCommand(
     }
     exitCode = report.classificationPassed ? 0 : 1
   } catch (error) {
+    // 2: the evaluation couldn't run (bad arguments, no judge, a bad corpus or output), apart from 1, a failed run.
+    exitCode = 2
     const detail = redactSecrets(String(error)).slice(0, 2000)
-    dependencies.print(JSON.stringify({ error: detail, v1Qualified: false }))
+    dependencies.print(JSON.stringify({ error: detail, code: "evaluation-error", v1Qualified: false }))
     if (output) {
       try { output.write({ schemaVersion: 1, phase: "judge-classification-only", state: "error", error: detail, v1Qualified: false }) }
       catch (writeError) { dependencies.print(JSON.stringify({ error: `Could not persist evaluation error: ${redactSecrets(String(writeError)).slice(0, 2000)}` })) }
@@ -131,7 +133,7 @@ export async function runShepherdJudgeEvaluationCommand(
   } finally {
     try { output?.close(); outputClosed = output !== null }
     catch (error) {
-      exitCode = 1
+      exitCode = Math.max(exitCode, 1)
       const detail = redactSecrets(String(error)).slice(0, 2000)
       dependencies.print(JSON.stringify({ error: `Could not close evaluation output: ${detail}`, v1Qualified: false }))
       emitNervesEvent({ component: "senses", level: "error", event: "senses.shepherd_judge_evaluation_output_close_error",

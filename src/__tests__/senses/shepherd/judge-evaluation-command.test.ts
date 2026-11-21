@@ -29,7 +29,9 @@ describe("explicit Shepherd judge evaluation command", () => {
       ["--agent", "../other", "--output", "/tmp/report"], ["--agent", "a", "--output", ""]]) {
       const fixture = setup()
       const result = await runShepherdJudgeEvaluationCommand(args, fixture.dependencies)
-      expect(result).toBe(1)
+      // 2: the evaluation couldn't run, apart from 1, a run that finished and failed.
+      expect(result).toBe(2)
+      expect(JSON.parse(fixture.output.at(-1)!)).toMatchObject({ code: "evaluation-error", v1Qualified: false })
       expect(fixture.loadJudge).not.toHaveBeenCalled()
       expect(fixture.dependencies.openOutput).not.toHaveBeenCalled()
       expect(fixture.output.join(" ")).toContain("error")
@@ -56,12 +58,12 @@ describe("explicit Shepherd judge evaluation command", () => {
   it("reserves the output before model calls and reports output/credential failures without false success", async () => {
     const fixture = setup()
     fixture.dependencies.openOutput.mockImplementation(() => { throw new Error("Output already exists") })
-    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).toBe(1)
+    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).toBe(2)
     expect(fixture.loadJudge).not.toHaveBeenCalled()
     expect(fixture.close).not.toHaveBeenCalled()
     const failed = setup()
     failed.loadJudge.mockRejectedValue(new Error("No provider credentials"))
-    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], failed.dependencies)).toBe(1)
+    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], failed.dependencies)).toBe(2)
     expect(failed.reports.at(-1)).toMatchObject({ state: "error", v1Qualified: false })
     expect(failed.close).toHaveBeenCalledOnce()
   })
@@ -69,7 +71,7 @@ describe("explicit Shepherd judge evaluation command", () => {
   it("reports failure to persist an error, and always closes the reserved output", async () => {
     const fixture = setup()
     fixture.write.mockImplementation(() => { throw new Error("Disk full") })
-    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).toBe(1)
+    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).toBe(2)
     expect(fixture.output.join(" ")).toContain("Could not persist")
     expect(fixture.close).toHaveBeenCalledOnce()
   })
@@ -80,6 +82,13 @@ describe("explicit Shepherd judge evaluation command", () => {
     await expect(runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).resolves.toBe(1)
     expect(fixture.output.join(" ")).toContain("Could not close")
     expect(fixture.output.join(" ")).not.toContain('"classificationPassed":true')
+  })
+
+  it("keeps a run that couldn't run at 2 when its output then fails to close too", async () => {
+    const fixture = setup()
+    fixture.loadJudge.mockRejectedValue(new Error("No provider credentials"))
+    fixture.close.mockImplementation(() => { throw new Error("Synthetic close failure") })
+    expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", "/tmp/unused"], fixture.dependencies)).toBe(2)
   })
 
   it("uses exclusive 0600 output creation in the real default writer and does not overwrite an existing file", async () => {
@@ -93,7 +102,7 @@ describe("explicit Shepherd judge evaluation command", () => {
     const before = fs.readFileSync(file, "utf8")
     expect(JSON.parse(before).v1Qualified).toBe(false)
     expect(await runShepherdJudgeEvaluationCommand(["--agent", "synthetic", "--output", file],
-      { ...fixture.dependencies, openOutput: openShepherdJudgeEvaluationOutput })).toBe(1)
+      { ...fixture.dependencies, openOutput: openShepherdJudgeEvaluationOutput })).toBe(2)
     expect(fs.readFileSync(file, "utf8")).toBe(before)
   })
 })

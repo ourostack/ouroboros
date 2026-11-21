@@ -7,6 +7,7 @@ import { FileMailroomStore } from "./file-store"
 import type { MailroomStore } from "./file-store"
 import { startMailroomIngress, type MailroomIngressServers } from "./smtp-ingress"
 import type { MailroomRegistry } from "./core"
+import { failureCodeLine } from "../heart/daemon/cli-commands/failure-code"
 
 interface MailroomEntryArgs {
   registryPath?: string
@@ -139,14 +140,16 @@ export function runMailroomEntry(args: string[] = process.argv.slice(2)): Mailro
   return servers
 }
 
+/** The codes this program's card names; only these end its stderr (see failure-code.ts). */
+const CARD_CODES = ["missing-store", "missing-registry", "bad-port"]
+
 /* v8 ignore start -- exercised by packaged/container entrypoint smoke rather than in-process unit tests. @preserve */
 if (require.main === module) {
   try {
     runMailroomEntry()
   } catch (error) {
-    const code = (error as { code?: unknown } | null)?.code
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
-    process.exitCode = 1
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${failureCodeLine(error, CARD_CODES)}`)
+    process.exit(1)
   }
 }
 /* v8 ignore stop */

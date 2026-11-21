@@ -6,7 +6,7 @@ describe("nerves/coverage cli-main", () => {
     vi.restoreAllMocks()
   })
 
-  it("invokes runAuditCli with argv args and exits with returned code", async () => {
+  it("invokes runAuditCli with argv args and sets the returned exit code", async () => {
     const runAuditCli = vi.fn(() => 7)
     vi.doMock("../../nerves/coverage/cli", () => ({
       runAuditCli,
@@ -19,11 +19,14 @@ describe("nerves/coverage cli-main", () => {
       .spyOn(process, "exit")
       .mockImplementation((() => undefined) as never)
 
+    const previousExitCode = process.exitCode
     await import("../../nerves/coverage/cli-main")
 
     expect(runAuditCli).toHaveBeenCalledWith(["--run-dir", "/tmp/run"])
-    expect(exitSpy).toHaveBeenCalledWith(7)
+    expect(exitSpy).not.toHaveBeenCalled()
+    expect(process.exitCode).toBe(7)
 
+    process.exitCode = previousExitCode
     process.argv = originalArgv
   })
 })

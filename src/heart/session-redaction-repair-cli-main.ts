@@ -16,8 +16,10 @@ async function main(): Promise<void> {
     } else {
       throw Object.assign(new Error("expected fixed inspect, apply, or rollback arguments"), { code: "usage" })
     }
-    process.stdout.write(`${JSON.stringify(result)}\n`)
-    process.exitCode = result.status === "indeterminate" || result.status === "not_applied" ? 1 : 0
+    // A step that didn't finish says so in its code: not-applied left the session as it was, indeterminate can't tell.
+    const unfinished = result.status === "indeterminate" ? "indeterminate" : result.status === "not_applied" ? "not-applied" : undefined
+    process.stdout.write(`${JSON.stringify(unfinished ? { ...result, code: unfinished } : result)}\n`)
+    process.exitCode = unfinished ? 1 : 0
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code === "usage" ? "usage" : "repair-refused"
     process.stdout.write(`${JSON.stringify({ status: "refused", code, error: (error instanceof Error ? error.message : String(error)).slice(0, 512) })}\n`)

@@ -1541,7 +1541,22 @@ describe("A003 fixed session repair", () => {
     const result = await invokeCli(["apply", "--manifest-sha256", artifact.manifestSha256, artifact.manifestPath])
     expect(result.code).toBe(1)
     expect(result.value.status).toBe("not_applied")
+    expect(result.value.code).toBe("not-applied")
     expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+  })
+
+  it.each(["apply", "rollback"])("names an indeterminate %s readback with its code, and leaves a finished one uncoded", async (step) => {
+    const outcome = { status: "indeterminate", detail: "readback differs" }
+    vi.doMock("../../heart/session-redaction-repair", () => ({
+      inspectA003SessionRepair: async () => ({ status: "inspected" }),
+      applyA003SessionRepair: async () => outcome,
+      rollbackA003SessionRepair: async () => outcome,
+    }))
+    try {
+      const words = step === "apply" ? ["apply", "--manifest-sha256", "0".repeat(64), "manifest"] : ["rollback", "--manifest-sha256", "0".repeat(64), "manifest", "preimage"]
+      expect(await invokeCli(words)).toEqual({ code: 1, value: { ...outcome, code: "indeterminate" } })
+      expect(await invokeCli(["inspect", "--agent", "a", "--session", "s", "--artifacts-dir", "d"])).toEqual({ code: 0, value: { status: "inspected" } })
+    } finally { vi.doUnmock("../../heart/session-redaction-repair") }
   })
 
   it("translates a non-Error dependency failure without losing the bounded CLI contract", async () => {

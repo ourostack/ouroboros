@@ -1900,5 +1900,7 @@ describe("root lifecycle failure detail", () => {
     const generic = "Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary. Details"
     expect(sanctuaryRootLifecycleFailureText(Object.assign(new Error("private bytes"), { code: "needs-root" }), " Details")).toBe(`${generic}\ncode: needs-root\n`)
     expect(sanctuaryRootLifecycleFailureText(new Error("private bytes"), " Details")).toBe(`${generic}\n`)
+    // A Node code such as ENOENT isn't on the card and could say something private about the host: stay generic.
+    expect(sanctuaryRootLifecycleFailureText(Object.assign(new Error("private bytes"), { code: "ENOENT" }), " Details")).toBe(`${generic}\n`)
   })
 })

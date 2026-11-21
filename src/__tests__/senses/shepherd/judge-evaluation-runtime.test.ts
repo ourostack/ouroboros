@@ -160,7 +160,7 @@ describe("classification runtime binding", () => {
 
   it("prints actionable nonzero default command failures without resolving credentials", async () => {
     const print = vi.spyOn(console, "log").mockImplementation(() => {})
-    expect(await runShepherdJudgeEvaluationCommand([])).toBe(1)
+    expect(await runShepherdJudgeEvaluationCommand([])).toBe(2)
     expect(print).toHaveBeenCalledWith(expect.stringContaining("error"))
     expect(mocks.getProviderRuntime).not.toHaveBeenCalled()
   })

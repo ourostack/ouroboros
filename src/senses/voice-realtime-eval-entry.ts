@@ -22,5 +22,6 @@ console.log(JSON.stringify(result.payload, null, 2))
 if (result.exitCode !== 0) {
   // stderr's last line names the failure: a bad --trace argument or file, or a scenario that didn't match.
   process.stderr.write(`code: ${result.payload.error === undefined ? "eval-failed" : "eval-error"}\n`)
-  process.exit(result.exitCode)
+  // exitCode, not process.exit: exit can drop the stderr line on a macOS pipe.
+  process.exitCode = result.exitCode
 }
