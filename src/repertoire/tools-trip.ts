@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import type { ToolDefinition } from "./tools-base"
+import { withCode, type ToolDefinition, type ToolErrorCard } from "./tools-base"
 import { isTrustedLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -140,17 +140,17 @@ function consumePreview(input: {
   const token = typeof input.token === "string" ? input.token.trim() : ""
   if (!token) {
     const guidance = `previewToken is required. Call ${input.previewToolName} first, inspect the diff, then retry with its previewToken.`
-    return `${guidance}\nAttempted change:\n${input.attemptSummary}`
+    return withCode(`${guidance}\nAttempted change:\n${input.attemptSummary}`, "preview-token-required")
   }
   pruneExpiredPreviews()
   const preview = pendingTripMutationPreviews.get(token)
-  if (!preview) return `previewToken is invalid or expired. Call ${input.previewToolName} again.`
+  if (!preview) return withCode(`previewToken is invalid or expired. Call ${input.previewToolName} again.`, "preview-token-expired")
   const matches = preview.kind === input.kind
     && preview.agentName === input.agentName
     && preview.tripId === input.tripId
     && preview.legId === input.legId
     && preview.digest === input.digest
-  if (!matches) return `previewToken does not match the current trip state or requested change. Call ${input.previewToolName} again.`
+  if (!matches) return withCode(`previewToken does not match the current trip state or requested change. Call ${input.previewToolName} again.`, "preview-token-stale")
   pendingTripMutationPreviews.delete(token)
   return null
 }
@@ -462,6 +462,17 @@ function renderTripCalendar(trips: TripRecord[], includeUndated: boolean): strin
   return lines.join("\n")
 }
 
+const TRIP_PRIVATE_ERROR: ToolErrorCard = { code: "trip-ledger-private", means: "The person in this conversation isn't a trusted friend, so the private trip ledger stays closed.", fix: "Don't retry here; trip details are read or changed only in a trusted friend's conversation." }
+const MISSING_ARGUMENT_ERROR: ToolErrorCard = { code: "missing-argument", means: "An argument the text names is empty or missing.", fix: "Call again with that argument filled in." }
+const TRIP_NOT_FOUND_ERROR: ToolErrorCard = { code: "trip-not-found", means: "No trip with that tripId is on this agent's ledger.", fix: "Call trip_status for the ids that exist, and use one of those." }
+const LEG_NOT_FOUND_ERROR: ToolErrorCard = { code: "leg-not-found", means: "The trip has no leg with that legId.", fix: "Read the trip with trip_get and use one of its legIds." }
+const UPDATES_INVALID_ERROR: ToolErrorCard = { code: "updates-invalid", means: "updates isn't a JSON object with at least one field, or it tries to change legId or kind.", fix: "Send only the fields to change; for a different kind, remove the leg and add a new one through trip_upsert." }
+const PREVIEW_TOKEN_ERRORS: readonly ToolErrorCard[] = [
+  { code: "preview-token-required", means: "No previewToken was given; the text shows the change you attempted.", fix: "Call the preview tool the text names, check its diff, then retry with the previewToken it returns." },
+  { code: "preview-token-expired", means: "The previewToken is unknown, already used, or older than 15 minutes.", fix: "Call the preview tool the text names again, and retry with its new token." },
+  { code: "preview-token-stale", means: "The trip or the requested change differs from what that previewToken previewed.", fix: "Preview the exact change you mean to make again, then retry with the new token." },
+]
+
 export const tripToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -473,13 +484,14 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (_args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const result = ensureAgentTripLedger({ agentName: getAgentName() })
       const verb = result.added ? "created" : "already present"
       return `trip ledger ${verb}: ledgerId=${result.ledger.ledgerId}, keyId=${result.ledger.keyId}, createdAt=${result.ledger.createdAt}`
     },
     summaryKeys: [],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates trip ledger state" },
+    ax: { id: "tool:trip_ensure_ledger", group: "turn-travel", when: "Pick this first on an agent that has never kept trips, before any trip_upsert; calling it again changes nothing.", effect: "write", idempotent: true, errors: [TRIP_PRIVATE_ERROR] },
   },
   {
     tool: {
@@ -491,12 +503,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (_args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripIds = listTripIds(getAgentName())
       if (tripIds.length === 0) return "no trips on the ledger yet."
       return `${tripIds.length} trip(s):\n${tripIds.map((id) => `- ${id}`).join("\n")}`
     },
     summaryKeys: [],
+    riskProfile: { mutates: "none", risk: "low", reason: "lists trip ids from the ledger" },
+    ax: { id: "tool:trip_status", group: "turn-travel", when: "Pick this to see which trips exist, as ids only, before opening one with trip_get or listing dates with trip_calendar.", effect: "read", idempotent: true, errors: [
+      { ...TRIP_PRIVATE_ERROR, fix: "Don't retry here; even the list of trips is shown only in a trusted friend's conversation." },
+    ] },
   },
   {
     tool: {
@@ -514,9 +530,9 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
       try {
         const trip = readTripRecord(getAgentName(), tripId)
         return [
@@ -526,11 +542,13 @@ export const tripToolDefinitions: ToolDefinition[] = [
           JSON.stringify(trip, null, 2),
         ].join("\n")
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
         throw error
       }
     },
     summaryKeys: ["tripId"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads one trip record" },
+    ax: { id: "tool:trip_get", group: "turn-travel", when: "Pick this to read every field of one trip, including its legs and their evidence, before you change any of it.", effect: "read", idempotent: true, errors: [TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR] },
   },
   {
     tool: {
@@ -548,7 +566,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       try {
         const parsed = parseJsonArg(args.record, "record")
         const replacementTrip = validateTripRecord(parsed)
@@ -558,11 +576,17 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const token = rememberPreview({ kind: "replace_trip", agentName, tripId: replacementTrip.tripId, digest })
         return renderReplaceTripPreview({ currentTrip, replacementTrip, token })
       } catch (error) {
-        if (error instanceof TripNotFoundError) return "no existing trip record found; new trip creation does not require trip_replace_preview."
-        return `replace preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`
+        if (error instanceof TripNotFoundError) return withCode("no existing trip record found; new trip creation does not require trip_replace_preview.", "no-existing-trip")
+        return withCode(`replace preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`, "replace-preview-failed")
       }
     },
     summaryKeys: [],
+    riskProfile: { mutates: "none", risk: "low", reason: "previews a whole-trip replacement; it keeps a short-lived token in memory and writes no trip record" },
+    ax: { id: "tool:trip_replace_preview", group: "turn-travel", when: "Pick this before trip_upsert overwrites a trip that already exists, to see the diff and get the token that write needs.", effect: "read", errors: [
+      TRIP_PRIVATE_ERROR,
+      { code: "no-existing-trip", means: "No trip with this tripId exists yet, so there is nothing to compare against.", fix: "Call trip_upsert directly to create the trip; a new trip needs no previewToken." },
+      { code: "replace-preview-failed", means: "record isn't valid TripRecord JSON; the text names the field.", fix: "Fix that field in the record, then preview again." },
+    ] },
   },
   {
     tool: {
@@ -582,7 +606,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       try {
         const parsed = parseJsonArg(args.record, "record")
         const trip = validateTripRecord(parsed)
@@ -598,7 +622,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
         }
         const writeReason = typeof args.writeReason === "string" ? args.writeReason.trim() : ""
         if (replacesExisting && writeReason.length === 0) {
-          return "writeReason is required when replacing an existing trip record."
+          return withCode("writeReason is required when replacing an existing trip record.", "write-reason-required")
         }
         if (replacesExisting && currentTrip) {
           const digest = replaceTripPreviewDigest({ agentName, currentTrip, replacementTrip: trip })
@@ -625,11 +649,17 @@ export const tripToolDefinitions: ToolDefinition[] = [
         }
         return `trip upserted: ${trip.tripId} (${trip.legs.length} leg(s), status=${trip.status})`
       } catch (error) {
-        return `upsert failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`
+        return withCode(`upsert failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`, "upsert-failed")
       }
     },
     summaryKeys: [],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates or replaces trip records" },
+    ax: { id: "tool:trip_upsert", group: "turn-travel", when: "Pick this to save a whole new trip, or to overwrite one after trip_replace_preview; to change one leg, use trip_update_leg.", effect: "write", errors: [
+      TRIP_PRIVATE_ERROR,
+      { code: "write-reason-required", means: "A trip with this tripId exists, and replacing it needs a writeReason.", fix: "Add a one-line writeReason saying why the whole record is right, with the previewToken from trip_replace_preview." },
+      ...PREVIEW_TOKEN_ERRORS,
+      { code: "upsert-failed", means: "record isn't valid TripRecord JSON, or the ledger couldn't save it; the text says which.", fix: "Fix the field the text names and call trip_upsert again with the full record." },
+    ] },
   },
   {
     tool: {
@@ -649,16 +679,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
       const legId = args.legId
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
-      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
+      if (typeof legId !== "string" || legId.length === 0) return withCode("legId is required.", "missing-argument")
       try {
         const evidence = validateTripEvidence(parseJsonArg(args.evidence, "evidence"))
         const trip = readTripRecord(getAgentName(), tripId)
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
-        if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
+        if (legIndex === -1) return withCode(`leg ${legId} not found in trip ${tripId}.`, "leg-not-found")
         const leg = trip.legs[legIndex]!
         const updatedLeg: TripLeg = {
           ...leg,
@@ -679,12 +709,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
         })
         return `evidence attached to leg ${legId} in ${tripId}; leg now carries ${updatedLeg.evidence.length} evidence entries.`
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
-        return `attach failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripEvidence/parseJsonArg/store */ String(error)}`
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
+        return withCode(`attach failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripEvidence/parseJsonArg/store */ String(error)}`, "attach-failed")
       }
     },
     summaryKeys: ["tripId", "legId"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "appends trip evidence" },
+    ax: { id: "tool:trip_attach_evidence", group: "turn-travel", when: "Pick this when one email proves a fact about a leg already on a trip, to add that proof without rewriting the trip.", effect: "write", errors: [
+      TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR, LEG_NOT_FOUND_ERROR,
+      { code: "attach-failed", means: "evidence isn't valid TripEvidence JSON, or the ledger couldn't save it; the text says which.", fix: "Send evidence with messageId, reason, recordedAt and discoveryMethod, then call again." },
+    ] },
   },
   {
     tool: {
@@ -704,30 +738,35 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
       const legId = args.legId
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
-      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
+      if (typeof legId !== "string" || legId.length === 0) return withCode("legId is required.", "missing-argument")
       try {
         const updates = parseJsonArg(args.updates, "updates")
-        if (!isRecord(updates)) return "updates must be a JSON object."
-        if ("legId" in updates) return "updates cannot change legId; create a new leg instead."
-        if ("kind" in updates) return "updates cannot change kind; create a new leg instead."
-        if (Object.keys(updates).length === 0) return "updates cannot be empty — pass at least one field."
+        if (!isRecord(updates)) return withCode("updates must be a JSON object.", "updates-invalid")
+        if ("legId" in updates) return withCode("updates cannot change legId; create a new leg instead.", "updates-invalid")
+        if ("kind" in updates) return withCode("updates cannot change kind; create a new leg instead.", "updates-invalid")
+        if (Object.keys(updates).length === 0) return withCode("updates cannot be empty — pass at least one field.", "updates-invalid")
         const agentName = getAgentName()
         const trip = readTripRecord(agentName, tripId)
         const leg = trip.legs.find((candidate) => candidate.legId === legId)
-        if (!leg) return `leg ${legId} not found in trip ${tripId}.`
+        if (!leg) return withCode(`leg ${legId} not found in trip ${tripId}.`, "leg-not-found")
         const digest = updateLegPreviewDigest({ agentName, trip, leg, updates })
         const token = rememberPreview({ kind: "update_leg", agentName, tripId, legId, digest })
         return renderUpdateLegPreview({ trip, leg, updates, token })
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
-        return `update preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
+        return withCode(`update preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`, "update-preview-failed")
       }
     },
     summaryKeys: ["tripId", "legId"],
+    riskProfile: { mutates: "none", risk: "low", reason: "previews a leg update; it keeps a short-lived token in memory and writes no trip record" },
+    ax: { id: "tool:trip_update_leg_preview", group: "turn-travel", when: "Pick this before trip_update_leg to see each field's old and new value, and to get the token that update needs.", effect: "read", errors: [
+      TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR, LEG_NOT_FOUND_ERROR, UPDATES_INVALID_ERROR,
+      { code: "update-preview-failed", means: "updates isn't valid JSON, or the ledger couldn't be read; the text says which.", fix: "Send updates as a JSON object string, then preview again." },
+    ] },
   },
   {
     tool: {
@@ -750,25 +789,25 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
       const legId = args.legId
       const updatedAt = args.updatedAt
       const updateReason = typeof args.updateReason === "string" ? args.updateReason.trim() : ""
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
-      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
-      if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
-      if (updateReason.length === 0) return "updateReason is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
+      if (typeof legId !== "string" || legId.length === 0) return withCode("legId is required.", "missing-argument")
+      if (typeof updatedAt !== "string" || updatedAt.length === 0) return withCode("updatedAt is required.", "missing-argument")
+      if (updateReason.length === 0) return withCode("updateReason is required.", "missing-argument")
       try {
         const updates = parseJsonArg(args.updates, "updates")
-        if (!isRecord(updates)) return "updates must be a JSON object."
+        if (!isRecord(updates)) return withCode("updates must be a JSON object.", "updates-invalid")
         // Reject identity-changing fields — those would silently break referential integrity.
-        if ("legId" in updates) return "updates cannot change legId; create a new leg instead."
-        if ("kind" in updates) return "updates cannot change kind; create a new leg instead."
-        if (Object.keys(updates).length === 0) return "updates cannot be empty — pass at least one field."
+        if ("legId" in updates) return withCode("updates cannot change legId; create a new leg instead.", "updates-invalid")
+        if ("kind" in updates) return withCode("updates cannot change kind; create a new leg instead.", "updates-invalid")
+        if (Object.keys(updates).length === 0) return withCode("updates cannot be empty — pass at least one field.", "updates-invalid")
         const trip = readTripRecord(getAgentName(), tripId)
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
-        if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
+        if (legIndex === -1) return withCode(`leg ${legId} not found in trip ${tripId}.`, "leg-not-found")
         const leg = trip.legs[legIndex]!
         const agentName = getAgentName()
         const digest = updateLegPreviewDigest({ agentName, trip, leg, updates })
@@ -805,12 +844,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const fieldList = Object.keys(updates).join(", ")
         return `leg ${legId} updated in ${tripId}: ${fieldList}. reason: ${updateReason}`
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
-        return `update failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
+        return withCode(`update failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`, "update-failed")
       }
     },
     summaryKeys: ["tripId", "legId"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates trip leg fields" },
+    ax: { id: "tool:trip_update_leg", group: "turn-travel", when: "Pick this to change a few fields of one leg, such as a new time or seat, once trip_update_leg_preview showed the change.", effect: "write", errors: [
+      TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR, LEG_NOT_FOUND_ERROR, UPDATES_INVALID_ERROR, ...PREVIEW_TOKEN_ERRORS,
+      { code: "update-failed", means: "updates isn't valid JSON, or the ledger couldn't save the leg; the text says which.", fix: "Send updates as a JSON object string, preview it again, and retry with the new token." },
+    ] },
   },
   {
     tool: {
@@ -829,25 +872,30 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
       const legId = args.legId
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
-      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
+      if (typeof legId !== "string" || legId.length === 0) return withCode("legId is required.", "missing-argument")
       try {
         const agentName = getAgentName()
         const trip = readTripRecord(agentName, tripId)
         const leg = trip.legs.find((candidate) => candidate.legId === legId)
-        if (!leg) return `leg ${legId} not found in trip ${tripId}.`
+        if (!leg) return withCode(`leg ${legId} not found in trip ${tripId}.`, "leg-not-found")
         const digest = removeLegPreviewDigest({ agentName, trip, leg })
         const token = rememberPreview({ kind: "remove_leg", agentName, tripId, legId, digest })
         return renderRemoveLegPreview({ trip, leg, token })
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
-        return `remove preview failed: ${error instanceof Error ? error.message : String(error)}`
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
+        return withCode(`remove preview failed: ${error instanceof Error ? error.message : String(error)}`, "remove-preview-failed")
       }
     },
     summaryKeys: ["tripId", "legId"],
+    riskProfile: { mutates: "none", risk: "low", reason: "previews a leg removal; it keeps a short-lived token in memory and writes no trip record" },
+    ax: { id: "tool:trip_remove_leg_preview", group: "turn-travel", when: "Pick this before trip_remove_leg to see exactly which leg and evidence would go, and to get the token it needs.", effect: "read", errors: [
+      TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR, LEG_NOT_FOUND_ERROR,
+      { code: "remove-preview-failed", means: "The ledger couldn't be read; the text says why.", fix: "Call trip_status to check the ledger is there, then preview again." },
+    ] },
   },
   {
     tool: {
@@ -869,19 +917,19 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const tripId = args.tripId
       const legId = args.legId
       const updatedAt = args.updatedAt
       const reason = typeof args.reason === "string" ? args.reason.trim() : ""
-      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
-      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
-      if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
-      if (reason.length === 0) return "reason is required."
+      if (typeof tripId !== "string" || tripId.length === 0) return withCode("tripId is required.", "missing-argument")
+      if (typeof legId !== "string" || legId.length === 0) return withCode("legId is required.", "missing-argument")
+      if (typeof updatedAt !== "string" || updatedAt.length === 0) return withCode("updatedAt is required.", "missing-argument")
+      if (reason.length === 0) return withCode("reason is required.", "missing-argument")
       try {
         const trip = readTripRecord(getAgentName(), tripId)
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
-        if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
+        if (legIndex === -1) return withCode(`leg ${legId} not found in trip ${tripId}.`, "leg-not-found")
         const droppedLeg = trip.legs[legIndex]!
         const agentName = getAgentName()
         const digest = removeLegPreviewDigest({ agentName, trip, leg: droppedLeg })
@@ -917,12 +965,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
         /* v8 ignore next -- pluralization branch: tests don't exhaustively cover both 1-leg and N-leg removal outcomes @preserve */
         return `leg ${legId} removed from ${tripId}. trip now has ${updated.legs.length} leg${updated.legs.length === 1 ? "" : "s"}.`
       } /* v8 ignore start -- error-classification branches: TripNotFoundError vs unexpected store failure; the latter is covered by trip-store unit tests rather than tool-level fixtures @preserve */ catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
-        return `remove failed: ${error instanceof Error ? error.message : String(error)}`
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
+        return withCode(`remove failed: ${error instanceof Error ? error.message : String(error)}`, "remove-failed")
       } /* v8 ignore stop */
     },
     summaryKeys: ["tripId", "legId", "reason"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "removes trip legs" },
+    ax: { id: "tool:trip_remove_leg", group: "turn-travel", when: "Pick this to delete one leg added by mistake or whose booking is cancelled, after trip_remove_leg_preview; its evidence goes too.", effect: "write", destructive: true, errors: [
+      TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR, TRIP_NOT_FOUND_ERROR, LEG_NOT_FOUND_ERROR, ...PREVIEW_TOKEN_ERRORS,
+      { code: "remove-failed", means: "The ledger couldn't save the trip without the leg; the text says why.", fix: "Read the trip with trip_get to see whether the leg is still there before trying again." },
+    ] },
   },
   {
     tool: {
@@ -940,7 +992,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const includeUndated = args.includeUndated === "true"
       const tripId = typeof args.tripId === "string" ? args.tripId.trim() : ""
       try {
@@ -950,11 +1002,16 @@ export const tripToolDefinitions: ToolDefinition[] = [
         if (trips.length === 0) return "no trips on the ledger yet."
         return renderTripCalendar(trips, includeUndated)
       } catch (error) {
-        if (error instanceof TripNotFoundError) return error.message
+        if (error instanceof TripNotFoundError) return withCode(error.message, "trip-not-found")
         throw error
       }
     },
     summaryKeys: ["tripId"],
+    riskProfile: { mutates: "none", risk: "low", reason: "renders trip legs as a calendar" },
+    ax: { id: "tool:trip_calendar", group: "turn-travel", when: "Pick this to answer what's booked when, gaps between stays, or what changed, from the ledger rather than old notes.", effect: "read", idempotent: true, errors: [
+      TRIP_PRIVATE_ERROR,
+      { ...TRIP_NOT_FOUND_ERROR, fix: "Leave tripId out to see every trip, or call trip_status for the ids that exist." },
+    ] },
   },
   {
     tool: {
@@ -973,13 +1030,15 @@ export const tripToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      if (!trustAllowsTripAccess(ctx)) return withCode("trip ledger is private; this tool is only available in trusted contexts.", "trip-ledger-private")
       const name = args.name
       const createdAt = args.createdAt
-      if (typeof name !== "string" || name.length === 0) return "name is required."
-      if (typeof createdAt !== "string" || createdAt.length === 0) return "createdAt is required."
+      if (typeof name !== "string" || name.length === 0) return withCode("name is required.", "missing-argument")
+      if (typeof createdAt !== "string" || createdAt.length === 0) return withCode("createdAt is required.", "missing-argument")
       return newTripId(getAgentName(), name, createdAt)
     },
     summaryKeys: ["name"],
+    riskProfile: { mutates: "none", risk: "low", reason: "computes a trip id" },
+    ax: { id: "tool:trip_new_id", group: "turn-travel", when: "Pick this to get the tripId for a brand-new trip before building its record for trip_upsert; the same inputs give the same id.", effect: "read", idempotent: true, errors: [TRIP_PRIVATE_ERROR, MISSING_ARGUMENT_ERROR] },
   },
 ]
