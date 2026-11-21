@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1292",
+      "changes": [
+        "The ouro CLI's commands carry Ouro AX cards: `ouro help --json` gives each card's when line, consent class and errors, and the shell treats exactly the commands whose card says read as safe. Twenty commands have cards so far, including every command the shell already treated as read-only.",
+        "A failed ouro command prints its error code as the last stderr line, and a shell line that runs ouro beside other commands always asks for approval."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1291",
       "changes": [
         "The replay eval has a provider proxy: inside the sandbox the agent's provider forwards every call to the host, which holds the one real provider and its credentials, takes one budget unit per call, and stops the run on the first 402 or 429 without a retry."
