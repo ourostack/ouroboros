@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1302",
       "changes": [
-        "Eval runs a case's turn in a two-container sandbox: the agent gets a read-only copy of the public bundle on an internal network, a fake household plays the library, mail and libgen, and the host reads the results back."
+        "Eval runs a case's turn in a two-container sandbox: the agent gets a read-only copy of the public bundle on an internal network, a fake household plays the library, mail and libgen, and the host reads the results back.",
+        "Update the Ouro UI files to Ouro UI v1.3.424."
       ]
     },
     {
