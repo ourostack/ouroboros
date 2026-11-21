@@ -51,7 +51,7 @@ export interface DoorEvidence {
 /** One door a walker found. `file` and `line` point at source, never at built output; `line` is null when the name isn't a literal. */
 export interface Door {
   id: string;
-  kind: "mcp" | "cli";
+  kind: "mcp" | "cli" | "tool" | "approval";
   product: string;
   name: string;
   description: string;
@@ -61,6 +61,8 @@ export interface Door {
   evidence: DoorEvidence;
   /** Other names that reach the same door, such as `down` for `stop`; not doors of their own. */
   aliases?: string[];
+  /** The door whose card declares this one, such as `tool:shell` for the approval prompt `approval:shell`. */
+  declaredBy?: string;
   /** The walker that found the door; the child sets it. */
   walker?: string;
 }
@@ -80,12 +82,14 @@ export interface Counts {
   declared: number;
   weak: number;
   undeclared: number;
+  /** Code of this kind the walkers saw but couldn't walk to a door. */
+  unwalked: number;
 }
 
 export interface ProductReport {
   product: string;
   walked: { kinds: string[]; finders: string[] };
-  summary: Counts & { unwalked: number; stale: number; excluded: number; baseline: number };
+  summary: Counts & { stale: number; excluded: number; baseline: number };
   byKind: Record<string, Counts>;
   undeclared: Gap[];
   weak: Gap[];
@@ -108,6 +112,8 @@ export interface WalkResult {
   errors: string[];
   /** Code the walker saw but couldn't walk to a door, such as a command kind no walked path returns. Each counts against zero. */
   unwalked?: Gap[];
+  /** Code left out under one of the closed exclusion categories, each with the census's own proof (design section 6). */
+  excluded?: { hit: string; category: string }[];
 }
 
 /** Where a walker reads from, as one source in `ax/census.config.json` names it. */
@@ -126,6 +132,10 @@ export interface WalkerOptions {
   handlers?: string[];
   /** argv-entries: entry modules another walker covers, each with the parser source it must import. */
   claims?: { entry: string; parser: string }[];
+  /** tool-schemas: functions that build tools from a connected server's list, as `<file>#<function>`. */
+  passthrough?: string[];
+  /** tool-schemas: functions that decide approval apart from a tool's policy, as `<file>#<function>`. */
+  approvals?: string[];
 }
 
 export type Walker = (options: WalkerOptions) => Promise<WalkResult>;

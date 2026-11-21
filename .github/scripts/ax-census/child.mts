@@ -1,5 +1,5 @@
 // The census child: `node --import ./guard.mjs child.mts <config>` runs every walker the config names and prints
-// exactly one JSON line, `{ "doors": Door[], "errors": string[], "unwalked": Gap[] }`. The parent starts it with an empty HOME and
+// exactly one JSON line, `{ "doors": Door[], "errors": string[], "unwalked": Gap[], "excluded": [...] }`. The parent starts it with an empty HOME and
 // TMPDIR and no credentials; the guard keeps it off the network. Anything a product's modules print while they load
 // goes to stderr, so stdout carries only the result.
 import { readFile } from "node:fs/promises";
@@ -19,6 +19,7 @@ export async function runChild(configPath: string, walkers: Readonly<Record<stri
   const doors: Door[] = [];
   const errors: string[] = [];
   const unwalked: Gap[] = [];
+  const excluded: { hit: string; category: string }[] = [];
   try {
     for (const source of config.sources) {
       const walker = walkers[source.walker];
@@ -31,11 +32,12 @@ export async function runChild(configPath: string, walkers: Readonly<Record<stri
       doors.push(...result.doors.map((d) => ({ ...d, walker: name })));
       errors.push(...result.errors);
       unwalked.push(...(result.unwalked ?? []));
+      excluded.push(...(result.excluded ?? []));
     }
   } finally {
     process.stdout.write = write;
   }
-  process.stdout.write(`${JSON.stringify({ doors, errors, unwalked })}\n`);
+  process.stdout.write(`${JSON.stringify({ doors, errors, unwalked, excluded })}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

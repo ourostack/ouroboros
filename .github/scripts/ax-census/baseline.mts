@@ -71,6 +71,8 @@ export interface WalkerSource {
   claims?: readonly { entry: string; parser: string }[];
   cards?: string;
   handlers?: readonly string[];
+  passthrough?: readonly string[];
+  approvals?: readonly string[];
 }
 
 /**
@@ -79,9 +81,13 @@ export interface WalkerSource {
  */
 export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
   if (!baseSources) return [];
-  // A changed parser or kinds type, or an added claim, can hide doors as surely as a removed source.
+  // A changed parser or kinds type, an added claim or passthrough, or a dropped approvals resolver can hide doors as
+  // surely as a removed source.
   const key = (s: WalkerSource) =>
-    [s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`)].join(" ");
+    [
+      s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`),
+      ...(s.passthrough ?? []).map((p) => `passthrough ${p}`), ...(s.approvals ?? []).map((a) => `approvals ${a}`),
+    ].join(" ");
   const here = new Set(sources.map(key));
   return baseSources
     .filter((s) => !here.has(key(s)))

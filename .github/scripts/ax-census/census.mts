@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkBaseline, checkSources, type WalkerSource } from "./baseline.mts";
-import { checkCard } from "./cards.mts";
+import { checkCard, checkDeclaredBy } from "./cards.mts";
 import { buildProductReport, renderText } from "./report.mts";
 import type { CensusReport, Door, GroupCard, WalkResult } from "./types.mts";
 import { WALKERS } from "./walkers/registry.mts";
@@ -41,6 +41,7 @@ const CHECKER_FILES = [
   "walkers/literals.mts",
   "walkers/mcp-schemas.mts",
   "walkers/registry.mts",
+  "walkers/tool-schemas.mts",
   "walkers/ts-argv.mts",
   "walkers/ts-parser.mts",
 ];
@@ -82,6 +83,10 @@ async function readConfig(path: string): Promise<Config> {
     }
     if ((s.cards !== undefined && typeof s.cards !== "string") || (s.handlers !== undefined && !(Array.isArray(s.handlers) && s.handlers.every((h) => typeof h === "string")))) {
       throw new CensusFailure(`ax-census: ${path}: a source's cards must be a string and its handlers a list of paths`);
+    }
+    const strings = (v: unknown) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === "string"));
+    if (!strings(s.passthrough) || !strings(s.approvals)) {
+      throw new CensusFailure(`ax-census: ${path}: a source's passthrough and approvals must be lists of <file>#<function>`);
     }
   }
   return { product: config.product, sources: config.sources, groups: Array.isArray(config.groups) ? config.groups : [] };
@@ -174,14 +179,18 @@ async function checkerHash(): Promise<string> {
   return hash.digest("hex");
 }
 
-/** The weak reasons per door id: a card's failed checks, or a door with no literal name. */
+/**
+ * The weak reasons per door id: a card's failed checks, or a door with no literal name. A door another door's card
+ * declares (an approval prompt) is checked after its owner, and isn't compared with the others: it shares their card.
+ */
 function weakDoors(doors: readonly Door[], groups: readonly GroupCard[]): Map<string, string[]> {
   const weak = new Map<string, string[]>();
-  for (const door of doors) {
+  const own = doors.filter((d) => !d.declaredBy);
+  for (const door of own) {
     if (door.card) {
       let reasons: string[];
       try {
-        reasons = checkCard(door, { groups, others: doors });
+        reasons = checkCard(door, { groups, others: own });
       } catch (error) {
         reasons = [`card: malformed (${(error as Error).message})`];
       }
@@ -189,6 +198,11 @@ function weakDoors(doors: readonly Door[], groups: readonly GroupCard[]): Map<st
     } else if (door.line === null) {
       weak.set(door.id, ["name: not a literal", "card: none declared"]);
     }
+  }
+  for (const door of doors) {
+    if (!door.declaredBy || !door.card) continue;
+    const reasons = checkDeclaredBy(door, weak.has(door.declaredBy));
+    if (reasons.length > 0) weak.set(door.id, reasons);
   }
   return weak;
 }
@@ -247,14 +261,14 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
     const baseline = await readBaseline(flags.baseline);
     const baseBaseline = flags.baseBaseline === "none" ? null : await readBaseline(flags.baseBaseline);
     const baseConfig = flags.baseConfig === "absent" ? null : await readConfig(flags.baseConfig);
-    const { doors, errors, unwalked = [] } = await runWalkers({ config: flags.config, root, timeoutMs: options.timeoutMs, childScript: options.childScript });
+    const { doors, errors, unwalked = [], excluded = [] } = await runWalkers({ config: flags.config, root, timeoutMs: options.timeoutMs, childScript: options.childScript });
     if (doors.length === 0 && errors.length === 0) {
       throw new CensusFailure("ax-census: the walkers found no doors; a census that counts nothing is broken, not clean");
     }
 
     const weak = weakDoors(doors, config.groups);
     const gaps = [...doors.filter((d) => !d.card || weak.has(d.id)).map((d) => d.id), ...unwalked.map((g) => g.id)];
-    const kindsOf = (c: Config) => [...new Set(c.sources.map((s) => WALKERS[s.walker]?.kind).filter((k): k is string => k !== undefined))];
+    const kindsOf = (c: Config) => [...new Set(c.sources.flatMap((s) => WALKERS[s.walker]?.kinds ?? []))];
     const kinds = kindsOf(config);
     const problems = [
       ...errors,
@@ -268,7 +282,7 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
       checker: { version: CENSUS_VERSION, sha256: await checkerHash() },
       target: { repo: flags.repo ?? null, ref: flags.ref ?? null, commit: flags.commit ?? null },
       at: new Date().toISOString(),
-      products: [buildProductReport(config.product, doors, weak, new Set(baseline).size, { kinds, finders: [] }, unwalked)],
+      products: [buildProductReport(config.product, doors, weak, new Set(baseline).size, { kinds, finders: [] }, unwalked, excluded)],
     };
     if (flags.out) {
       await mkdir(dirname(resolve(flags.out)), { recursive: true });

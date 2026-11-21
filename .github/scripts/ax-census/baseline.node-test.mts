@@ -87,3 +87,13 @@ test("a kind the base branch doesn't walk yet may join the baseline; a kind it w
     "cli:down: added to the baseline. Fix: declare the door instead; the baseline only shrinks.",
   ]);
 });
+
+test("a tool source's passthrough and approvals are part of what can't be removed", () => {
+  const tools = { walker: "tool-schemas", module: "dist", source: "src", passthrough: ["src/m.ts#schema"], approvals: ["src/t.ts#classify"] };
+  deepEqual(checkSources([tools], [tools]), []);
+  // A new passthrough hides tools; a dropped resolver hides prompts.
+  deepEqual(checkSources([{ ...tools, passthrough: [...tools.passthrough, "src/n.ts#more"] }], [tools]).length, 1);
+  deepEqual(checkSources([{ ...tools, approvals: [] }], [tools]), [
+    "tool-schemas dist src passthrough src/m.ts#schema approvals src/t.ts#classify: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.",
+  ]);
+});

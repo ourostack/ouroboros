@@ -330,7 +330,7 @@ test("a door with a valid card counts as declared", () => {
   const door: Door = { id: "mcp:ask", kind: "mcp", product: "harness", name: "ask", description: "", file: "a.ts", line: 3, card, evidence: { readOnly: true } };
   const report = buildProductReport("harness", [door], new Map(), 0, { kinds: ["mcp"], finders: [] });
   deepEqual(report.summary, { found: 1, declared: 1, weak: 0, undeclared: 0, unwalked: 0, stale: 0, excluded: 0, baseline: 0 });
-  deepEqual(report.byKind, { mcp: { found: 1, declared: 1, weak: 0, undeclared: 0 } });
+  deepEqual(report.byKind, { mcp: { found: 1, declared: 1, weak: 0, undeclared: 0, unwalked: 0 } });
 });
 
 test("the text sorts gaps by file, then line, then id", () => {
@@ -340,7 +340,7 @@ test("the text sorts gaps by file, then line, then id", () => {
     products: [{
       product: "harness", walked: { kinds: ["mcp"], finders: [] },
       summary: { found: 4, declared: 0, weak: 0, undeclared: 4, unwalked: 0, stale: 0, excluded: 0, baseline: 4 },
-      byKind: { mcp: { found: 4, declared: 0, weak: 0, undeclared: 4 } },
+      byKind: { mcp: { found: 4, declared: 0, weak: 0, undeclared: 4, unwalked: 0 } },
       undeclared: [gap("mcp:b", "b.ts", 1), gap("mcp:z", "a.ts", null), gap("mcp:y", "a.ts", 2), gap("mcp:x", "a.ts", 2)],
       weak: [], unwalked: [], excluded: [],
     }],
@@ -435,7 +435,7 @@ test("a census with the CLI walkers walks both kinds, and counts unwalked kinds 
     deepEqual(product.walked.kinds, ["mcp", "cli"]);
     equal(product.summary.unwalked, 6);
     deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind seal", "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>']);
-    deepEqual(product.byKind.cli, { found: 34, declared: 0, weak: 0, undeclared: 34 });
+    deepEqual(product.byKind.cli, { found: 34, declared: 0, weak: 0, undeclared: 34, unwalked: 6 });
     // Each gap names the walker that found it, even where two walkers find one kind.
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:up").walker, "ts-parser");
     equal(product.undeclared.find((g: { id: string }) => g.id === "cli:node dist/lone-entry.js").walker, "argv-entries");
@@ -495,13 +495,59 @@ test("CLI doors carry their declarations' cards: declared, weak with reasons, an
     const code = await run({ argv: args("config-cli-cards.json", baselineFile(dir, gaps), ["--out", file, "--inventory", inventory]), io, root: here });
     equal(code, 0, err.join("\n"));
     const product = JSON.parse(readFileSync(file, "utf8")).products[0];
-    deepEqual(product.byKind.cli, { found: 25, declared: 3, weak: 1, undeclared: 21 });
+    deepEqual(product.byKind.cli, { found: 25, declared: 3, weak: 1, undeclared: 21, unwalked: 5 });
     deepEqual(product.weak.find((g: { id: string }) => g.id === "cli:secret rotate").reasons, [
       "errors[0]: code bad-hex is never raised in walkers/fixtures/cli/cli-parse.ts",
       "effect: read, but the code mutates (others)",
     ]);
     deepEqual(JSON.parse(readFileSync(inventory, "utf8")), { cli: ["up", "stop", "friend list"] });
     ok(out[0]!.startsWith("harness: 25 found, 3 declared, 1 weak, 21 undeclared, 5 unwalked"), out.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("in-turn tools and their approval prompts: both kinds walked, unwalked and excluded counted, prompts declared by their tools", async () => {
+  const dir = scratch();
+  try {
+    const first = capture();
+    const probeFile = join(dir, "probe.json");
+    await run({ argv: args("config-tools.json", baselineFile(dir, []), ["--out", probeFile]), io: first.io, root: here });
+    const probed = JSON.parse(readFileSync(probeFile, "utf8")).products[0];
+    const gaps = [...probed.undeclared, ...probed.weak, ...probed.unwalked].map((g: { id: string }) => g.id);
+    const { out, err, io } = capture();
+    const file = join(dir, "census.json");
+    const inventory = join(dir, "inventory.json");
+    equal(await run({ argv: args("config-tools.json", baselineFile(dir, gaps, "all.json"), ["--out", file, "--inventory", inventory]), io, root: here }), 0, err.join("\n"));
+    const product = JSON.parse(readFileSync(file, "utf8")).products[0];
+    deepEqual(product.walked.kinds, ["tool", "approval"]);
+    deepEqual(product.byKind, {
+      tool: { found: 14, declared: 5, weak: 3, undeclared: 6, unwalked: 9 },
+      approval: { found: 4, declared: 2, weak: 1, undeclared: 1, unwalked: 0 },
+    });
+    deepEqual(product.summary.excluded, 1);
+    deepEqual(product.excluded, [{ hit: `walkers/fixtures/tools/src/nested/passthrough.ts:${lineIn("walkers/fixtures/tools/src/nested/passthrough.ts", "mcp__")}`, category: "third-party-passthrough" }]);
+    // The approval prompt shares its tool's card, so it isn't a near-duplicate of it, and its tool's weakness carries over.
+    deepEqual(product.weak.find((g: { id: string }) => g.id === "approval:resume_queue").reasons, [
+      "card: tool:resume_queue is weak",
+      "effect: the code asks for approval here, but tool:resume_queue says write",
+      "confirm: required for consequential",
+    ]);
+    ok(!product.weak.some((g: { id: string }) => g.id === "tool:restart_box"), JSON.stringify(product.weak));
+    deepEqual(JSON.parse(readFileSync(inventory, "utf8")), {
+      tool: ["restart_box", "list_contacts", "rest", "list_rows", "read_note"],
+      approval: ["restart_box", "restart_box"],
+    });
+    ok(out[0]!.startsWith("harness: 18 found, 7 declared, 4 weak, 7 undeclared, 9 unwalked (tool 14, approval 4)"), out.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a source's passthrough and approvals must be lists", async () => {
+  const dir = scratch();
+  try {
+    await failsWith(args("config-bad-passthrough.json", baselineFile(dir, [])), "passthrough and approvals must be lists of <file>#<function>");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
