@@ -115,3 +115,12 @@ test("error sets compare whatever order their cards are in", () => {
   const four = ["ask", "status", "catchup", "delegate"].map((name, i) => door({ id: `mcp:${name}`, name }, { errors: i % 2 ? [a, b] : [b, a] }));
   ok(checkCard(four[0]!, { groups, others: four }).includes("errors: same set as 3 other doors"));
 });
+
+test("an error code the handler never raises is weak", () => {
+  const reasons = checkCard(door({ evidence: { readOnly: true, raises: [] } }), ctx);
+  ok(reasons.includes("errors[0]: code agent-unreachable is never raised in src/heart/mcp/mcp-server.ts"), reasons.join("; "));
+});
+
+test("an error code the handler raises passes", () => {
+  deepEqual(checkCard(door({ evidence: { readOnly: true, raises: ["agent-unreachable"] } }), ctx), []);
+});

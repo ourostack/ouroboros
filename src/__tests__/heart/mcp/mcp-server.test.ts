@@ -320,8 +320,9 @@ describe("MCP server protocol layer", () => {
     expect(match).not.toBeNull()
     const response = JSON.parse(match![0])
     expect(response.id).toBe(4)
-    expect(response.result.isError).toBe(true)
-    expect(response.result.content[0].text).toContain("Unknown tool")
+    expect(response.result).toBeUndefined()
+    expect(response.error.code).toBe(-32602)
+    expect(response.error.message).toContain('Unknown tool "nonexistent_tool"')
 
     emitNervesEvent({
       component: "daemon",
