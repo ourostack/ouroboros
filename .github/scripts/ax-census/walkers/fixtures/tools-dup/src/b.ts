@@ -1,2 +1,2 @@
-export const b = { type: "function", function: { name: "twice", description: "" } }
-export const nameless = { type: "function", function: { description: "no name" } }
+export const twice = { type: "function", function: { name: "twice", description: "second" } }
+export const nameless = { tool: { type: "function", function: { description: "no name" } }, approvalPolicy: () => ({ kind: "required" }) }

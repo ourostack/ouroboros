@@ -27,7 +27,8 @@
       "source": "src",
       "handlers": ["src/repertoire/tools.ts"],
       "passthrough": ["src/repertoire/mcp-tools.ts#mcpToolSchema"],
-      "approvals": ["src/repertoire/tools.ts#classifyApprovalForInvocation"]
+      "approvals": ["src/repertoire/tools.ts#classifyApprovalForInvocation"],
+      "reshape": ["src/heart/streaming.ts#toResponsesTools", "src/senses/voice/realtime-tool-schema.ts#realtimeToolsFromDefinitions"]
     }
   ],
   "groups": [

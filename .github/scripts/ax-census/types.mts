@@ -136,6 +136,8 @@ export interface WalkerOptions {
   passthrough?: string[];
   /** tool-schemas: functions that decide approval apart from a tool's policy, as `<file>#<function>`. */
   approvals?: string[];
+  /** tool-schemas: functions that re-encode tools the census already counts in another wire shape, as `<file>#<function>`. */
+  reshape?: string[];
 }
 
 export type Walker = (options: WalkerOptions) => Promise<WalkResult>;

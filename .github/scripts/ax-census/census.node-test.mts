@@ -547,7 +547,7 @@ test("in-turn tools and their approval prompts: both kinds walked, unwalked and 
 test("a source's passthrough and approvals must be lists", async () => {
   const dir = scratch();
   try {
-    await failsWith(args("config-bad-passthrough.json", baselineFile(dir, [])), "passthrough and approvals must be lists of <file>#<function>");
+    await failsWith(args("config-bad-passthrough.json", baselineFile(dir, [])), "passthrough, approvals and reshape must be lists of <file>#<function>");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

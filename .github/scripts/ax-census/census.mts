@@ -85,8 +85,8 @@ async function readConfig(path: string): Promise<Config> {
       throw new CensusFailure(`ax-census: ${path}: a source's cards must be a string and its handlers a list of paths`);
     }
     const strings = (v: unknown) => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === "string"));
-    if (!strings(s.passthrough) || !strings(s.approvals)) {
-      throw new CensusFailure(`ax-census: ${path}: a source's passthrough and approvals must be lists of <file>#<function>`);
+    if (!strings(s.passthrough) || !strings(s.approvals) || !strings(s.reshape)) {
+      throw new CensusFailure(`ax-census: ${path}: a source's passthrough, approvals and reshape must be lists of <file>#<function>`);
     }
   }
   return { product: config.product, sources: config.sources, groups: Array.isArray(config.groups) ? config.groups : [] };

@@ -47,14 +47,14 @@ test("every tool schema outside tests is a door at its name, through as const, a
 
 test("a name the census can't read to a literal is unwalked at its place, with the reason", async () => {
   const { unwalked = [] } = await walk();
-  deepEqual(unwalked.map((g) => [g.id, g.line, g.reasons]), [
+  deepEqual(unwalked.map((g) => [g.id, g.line, g.reasons]).sort(), [
     ["tool:src/factory.ts#define(dynamicName)", lineOf("src/factory.ts", "define(dynamicName"), ["name: define is called with a name that isn't a literal"]],
     ...["deep_${action}", "two_${a}_${b}", "key_${obj.k}", "free_${free}", "each_${action}"].map((t) => [`tool:src/factory.ts#define(\`${t}\`)`, lineOf("src/factory.ts", t), ["name: define is called with a name that isn't a literal"]]),
     ["tool:src/factory.ts#label", lineOf("src/factory.ts", "orphan ="), ["name: the parameter label of orphan, which is never called in this file with a literal"]],
     ["tool:src/factory.ts#function: makeFunction()", lineOf("src/factory.ts", "opaque ="), ["function: not an object literal the census can read"]],
     ["tool:src/nested/passthrough.ts#`mcp__${entry.server}__${tool.name}`", lineOf("src/nested/passthrough.ts", "mcp__"), ["name: not a literal, a const holding one, or a factory parameter called with one"]],
     ["tool:src/nested/passthrough.ts#`${PREFIX}${tool.name}`", lineOf("src/nested/passthrough.ts", "${PREFIX}"), ["name: not a literal, a const holding one, or a factory parameter called with one"]],
-  ]);
+  ].sort());
   for (const gap of unwalked) equal(gap.kind, "tool");
 });
 
@@ -117,7 +117,7 @@ test("a name defined twice is a census error naming both places", async () => {
   deepEqual(errors, ["tool:twice: defined twice, at src/a.ts:1 and src/b.ts:1"]);
   equal(doors.length, 1);
   // A schema with no name at all is unwalked.
-  deepEqual(unwalked.map((g) => [g.id, g.reasons]), [["tool:src/b.ts#no name", ["name: missing"]]]);
+  deepEqual(unwalked[0]!.reasons, ["name: missing"]);
 });
 
 test("a module that isn't built, or throws on load, is a census error, and its doors have no cards", async () => {
@@ -132,7 +132,7 @@ test("the real harness: every in-turn tool is found, the MCP passthrough is excl
   const { doors, errors, unwalked, excluded = [] } = await walkToolSchemas({ ...source, product: "harness", root: repo });
   deepEqual(errors, []);
   deepEqual(unwalked, []);
-  deepEqual(excluded.map((e) => e.category), ["third-party-passthrough"]);
+  deepEqual(excluded.map((e) => e.category), ["third-party-passthrough", "re-encoding", "re-encoding"]);
   const tools = doors.filter((d) => d.kind === "tool");
   ok(tools.length > 200, `${tools.length} tools`);
   for (const name of ["complete_adoption", "list_directory", "find_tools", "sanctuary_host_execute", "voice_join_local_audio", "list_sessions_and_chats", "shepherd_correct", "unraid_list_containers", "ponder"]) {
@@ -141,4 +141,78 @@ test("the real harness: every in-turn tool is found, the MCP passthrough is excl
   deepEqual(doors.filter((d) => d.kind === "approval").map((d) => d.id).sort(), [
     "approval:sanctuary_host_execute", "approval:sanctuary_resume_download_queue", "approval:shell", "approval:unraid_restart_container", "approval:unraid_restart_container via classifyApprovalForInvocation",
   ]);
+});
+
+const tricks = join(fixtures, "tools-tricks");
+const walkTricks = (extra: Partial<WalkerOptions> = {}) =>
+  walk({
+    handlers: [],
+    passthrough: ["src/a.ts#mcpSchema", "src/a.ts#mcpTwice", "src/a.ts#mcpOk"],
+    approvals: ["src/a.ts#resolver"],
+    reshape: ["src/a.ts#reencode", "src/a.ts#leakyReencode"],
+    ...extra,
+  }, tricks);
+
+test("a tool is counted however its schema is spelled: a const type, a spread type, a computed key, the flat shape, a factory called from another file", async () => {
+  const { doors } = await walkTricks();
+  deepEqual(doors.filter((d) => d.kind === "tool").map((d) => [d.name, d.file, d.line]), [
+    ["direct_one", "src/a.ts", lineOf("src/a.ts", 'readDef("direct_one")', tricks)],
+    ["helper_policy", "src/a.ts", lineOf("src/a.ts", '"helper_policy"', tricks)],
+    ["never_asks", "src/a.ts", lineOf("src/a.ts", '"never_asks"', tricks)],
+    ["flat_tool", "src/a.ts", lineOf("src/a.ts", '"flat_tool"', tricks)],
+    ["const_type_tool", "src/a.ts", lineOf("src/a.ts", '"const_type_tool"', tricks)],
+    ["spread_tool", "src/a.ts", lineOf("src/a.ts", '"spread_tool", description', tricks)],
+    ["computed_tool", "src/a.ts", lineOf("src/a.ts", '"computed_tool" }', tricks)],
+    ["cross_file_tool", "src/b.ts", lineOf("src/b.ts", '"cross_file_tool"', tricks)],
+    // Exported by a later `export { }` and imported with its built extension.
+    ["listed_tool", "src/c.ts", lineOf("src/c.ts", '"listed_tool"', tricks)],
+  ]);
+});
+
+test("what the census can't follow is unwalked: a factory passed by value, a passthrough name with a literal or called with one, a leaky re-encoding, a built export with no schema", async () => {
+  const { unwalked = [], errors } = await walkTricks();
+  deepEqual(unwalked.map((g) => [g.id, g.reasons]).sort(), [
+    ["tool:src/a.ts#\`${FN}_${t.function.name}\`", ["name: in re-encoding src/a.ts#leakyReencode, but it reads FN, so it isn't only a tool the census already counts"]],
+    ["tool:src/a.ts#built_only", ["name: the built module exports built_only, but the census found no schema for it in the source"]],
+    ["tool:src/a.ts#mapped_ref", ["name: the built module exports mapped_ref, but the census found no schema for it in the source"]],
+    ["tool:src/a.ts#mcpOk({ server: \"shell2\" }, { name: \"\" })", ["name: passthrough src/a.ts#mcpOk is called here with a literal, so its name may not come from a connected server"]],
+    ["tool:src/a.ts#readDef", ["name: the factory readDef is passed as a value, so the census can't see the names it is called with"]],
+    ["tool:src/a.ts#tool.name || \"shell\"", ["name: in passthrough src/a.ts#mcpSchema, but it holds a literal, so it isn't only what a connected server lists"]],
+    ["tool:src/a.ts#label", ["name: the parameter label of an unnamed function, which is never called with a literal"]],
+  ].sort());
+  deepEqual(errors, [
+    "tool-schemas: passthrough src/a.ts#mcpSchema holds no schema built only from its parameters. Fix: remove it from the config.",
+    "tool-schemas: passthrough src/a.ts#mcpTwice holds 2 schemas; a passthrough function builds one. Fix: split it, or count the others.",
+    "tool-schemas: reshape src/a.ts#leakyReencode holds no flat schema built only from its own names. Fix: remove it from the config.",
+  ]);
+});
+
+test("a re-encoding of counted tools and a proved passthrough are excluded, each with its place", async () => {
+  const { excluded = [] } = await walkTricks();
+  deepEqual(excluded, [
+    { hit: `src/a.ts:${lineOf("src/a.ts", "mcp__", tricks)}`, category: "third-party-passthrough" },
+    { hit: `src/a.ts:${lineOf("src/a.ts", "name: t.function.name", tricks)}`, category: "re-encoding" },
+  ]);
+  const { errors } = await walkTricks({ reshape: ["src/a.ts#readDef", "src/a.ts#gone"] });
+  ok(errors.includes("tool-schemas: reshape src/a.ts#readDef holds no flat schema built only from its own names. Fix: remove it from the config."), errors.join("\n"));
+  ok(errors.includes("tool-schemas: reshape src/a.ts#gone names no function. Fix: remove it from the config."), errors.join("\n"));
+});
+
+test("a policy asks unless every answer it can give is a plain not_required; a resolver's case labels and lists count", async () => {
+  const { doors } = await walkTricks();
+  deepEqual(doors.filter((d) => d.kind === "approval").map((d) => d.id), [
+    "approval:helper_policy",
+    "approval:direct_one via resolver",
+    "approval:spread_tool via resolver",
+    "approval:computed_tool via resolver",
+  ]);
+  // A tool a resolver gates asks for approval, so its own door says so too.
+  equal(doors.find((d) => d.id === "tool:direct_one")!.evidence!.approval, true);
+  equal(doors.find((d) => d.id === "tool:never_asks")!.evidence!.approval, false);
+});
+
+test("a tool the census can't name that asks for approval is unwalked under both kinds", async () => {
+  const dir = join(fixtures, "tools-dup");
+  const { unwalked = [] } = await walk({ handlers: [] }, dir);
+  deepEqual(unwalked.map((g) => [g.id, g.kind]), [["tool:src/b.ts#no name", "tool"], ["approval:src/b.ts#no name", "approval"]]);
 });
