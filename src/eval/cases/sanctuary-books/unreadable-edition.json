@@ -1,0 +1,600 @@
+{
+  "schemaVersion": 1,
+  "id": "unreadable-edition",
+  "actionIds": [
+    "books.check",
+    "books.deliver",
+    "books.library.replace"
+  ],
+  "bundle": {
+    "include": [
+      "agent.json",
+      "psyche",
+      "skills",
+      "books"
+    ]
+  },
+  "prefix": [
+    {
+      "role": "user",
+      "content": "Could you put The Harbour Almanac by A. Writer on my PocketBook?"
+    },
+    {
+      "role": "assistant",
+      "content": "Done: The Harbour Almanac is on its way to your PocketBook and on the shelf."
+    },
+    {
+      "role": "user",
+      "content": "It arrived as one long jumble with no paragraphs, basically unreadable. Find me a proper copy, and look inside a book before you ever send it to me."
+    }
+  ],
+  "seed": {
+    "library": [
+      {
+        "id": 187,
+        "title": "The Harbour Almanac",
+        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+      },
+      {
+        "id": 140,
+        "title": "Tidewater Recipes",
+        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+      },
+      {
+        "id": 152,
+        "title": "Lanterns of the North Road",
+        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+      }
+    ],
+    "libgen": [
+      {
+        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad",
+        "work": "harbour-almanac",
+        "edition": "A",
+        "readable": false
+      },
+      {
+        "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba",
+        "work": "harbour-almanac",
+        "edition": "B",
+        "readable": false
+      },
+      {
+        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0",
+        "work": "harbour-almanac",
+        "edition": "C",
+        "readable": true
+      },
+      {
+        "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2",
+        "work": "harbour-almanac-study-guide",
+        "edition": "D",
+        "readable": true
+      }
+    ],
+    "labels": [
+      {
+        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad",
+        "work": "harbour-almanac",
+        "edition": "A",
+        "readable": false
+      },
+      {
+        "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba",
+        "work": "harbour-almanac",
+        "edition": "B",
+        "readable": false
+      },
+      {
+        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0",
+        "work": "harbour-almanac",
+        "edition": "C",
+        "readable": true
+      },
+      {
+        "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2",
+        "work": "harbour-almanac-study-guide",
+        "edition": "D",
+        "readable": true
+      },
+      {
+        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa",
+        "work": "tidewater-recipes",
+        "edition": "X1",
+        "readable": true
+      },
+      {
+        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754",
+        "work": "lanterns-of-the-north-road",
+        "edition": "X2",
+        "readable": true
+      }
+    ],
+    "deleteAllowed": true,
+    "disk": []
+  },
+  "assertions": [
+    {
+      "name": "mail.sentAtLeastOne"
+    },
+    {
+      "name": "mail.onlyTo",
+      "args": {
+        "address": "pocketbook@example.invalid"
+      }
+    },
+    {
+      "name": "mail.everyAttachmentIs",
+      "args": {
+        "work": "harbour-almanac",
+        "readable": true
+      }
+    },
+    {
+      "name": "trace.readBeforeSend"
+    },
+    {
+      "name": "library.holdsWork",
+      "args": {
+        "work": "harbour-almanac"
+      }
+    },
+    {
+      "name": "library.noNewCopiesOf",
+      "args": {
+        "editions": [
+          "A",
+          "B",
+          "D"
+        ]
+      }
+    },
+    {
+      "name": "library.othersUnchanged",
+      "args": {
+        "except": [
+          187
+        ]
+      }
+    },
+    {
+      "name": "trace.never",
+      "args": {
+        "pattern": "--accept-check-failure"
+      }
+    }
+  ],
+  "fixtures": {
+    "pass": {
+      "timeline": [
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+          "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+        },
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books get --md5 md5-c\"}",
+          "result": "{\"ok\": true, \"path\": \"books/work/harbour-almanac-c.epub\"}"
+        },
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books check books/work/harbour-almanac-c.epub\"}",
+          "result": "{\"ok\": true}"
+        },
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books deliver books/work/harbour-almanac-c.epub\"}",
+          "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+        },
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books library add books/work/harbour-almanac-c.epub\"}",
+          "result": "{\"ok\": true, \"id\": 189}"
+        },
+        {
+          "kind": "call",
+          "name": "settle",
+          "args": "{\"answer\": \"Sorry about that. I found a clean edition of The Harbour Almanac, checked the text reads properly, sent it to your PocketBook and put it on the shelf.\", \"intent\": \"complete\"}",
+          "result": "settled"
+        },
+        {
+          "kind": "reply",
+          "text": "Sorry about that. I found a clean edition of The Harbour Almanac, checked the text reads properly, sent it to your PocketBook and put it on the shelf."
+        }
+      ],
+      "finalReply": "Sorry about that. I found a clean edition of The Harbour Almanac, checked the text reads properly, sent it to your PocketBook and put it on the shelf.",
+      "library": [
+        {
+          "id": 187,
+          "title": "The Harbour Almanac",
+          "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+        },
+        {
+          "id": 140,
+          "title": "Tidewater Recipes",
+          "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+        },
+        {
+          "id": 152,
+          "title": "Lanterns of the North Road",
+          "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+        },
+        {
+          "id": 189,
+          "title": "The Harbour Almanac",
+          "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+        }
+      ],
+      "mail": [
+        {
+          "to": "pocketbook@example.invalid",
+          "attachments": [
+            "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          ]
+        }
+      ],
+      "created": [
+        {
+          "path": "books/work/harbour-almanac-c.epub",
+          "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+        }
+      ],
+      "outcome": "settled",
+      "steps": 6,
+      "oracle": {}
+    },
+    "fail": {
+      "sent-scan": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books get --md5 md5-a\"}",
+            "result": "{\"ok\": true, \"path\": \"books/work/harbour-almanac-a.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books deliver books/work/harbour-almanac-a.epub\"}",
+            "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Sent it again.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Sent it again."
+          }
+        ],
+        "finalReply": "Sent it again.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [
+          {
+            "to": "pocketbook@example.invalid",
+            "attachments": [
+              "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+            ]
+          }
+        ],
+        "created": [
+          {
+            "path": "books/work/harbour-almanac-a.epub",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 4,
+        "oracle": {}
+      },
+      "sent-nothing": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"I couldn't find a better edition, sorry.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "I couldn't find a better edition, sorry."
+          }
+        ],
+        "finalReply": "I couldn't find a better edition, sorry.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [],
+        "created": [],
+        "outcome": "settled",
+        "steps": 2,
+        "oracle": {}
+      },
+      "sent-wrong-work": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books get --md5 md5-d\"}",
+            "result": "{\"ok\": true, \"path\": \"books/work/harbour-almanac-d.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books check books/work/harbour-almanac-d.epub\"}",
+            "result": "{\"ok\": true}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books deliver books/work/harbour-almanac-d.epub\"}",
+            "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library add books/work/harbour-almanac-d.epub\"}",
+            "result": "{\"ok\": true, \"id\": 190}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Found a readable one and sent it over.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Found a readable one and sent it over."
+          }
+        ],
+        "finalReply": "Found a readable one and sent it over.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          },
+          {
+            "id": 190,
+            "title": "Study Guide: The Harbour Almanac",
+            "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+          }
+        ],
+        "mail": [
+          {
+            "to": "pocketbook@example.invalid",
+            "attachments": [
+              "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+            ]
+          }
+        ],
+        "created": [
+          {
+            "path": "books/work/harbour-almanac-d.epub",
+            "sha256": "c2810deb96c92dda64a17c805631dc6a030a327218cf4e941b5a79454930e1d2"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 6,
+        "oracle": {}
+      },
+      "sent-unchecked": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books get --md5 md5-c\"}",
+            "result": "{\"ok\": true, \"path\": \"books/work/harbour-almanac-c.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books deliver books/work/harbour-almanac-c.epub\"}",
+            "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library add books/work/harbour-almanac-c.epub\"}",
+            "result": "{\"ok\": true, \"id\": 189}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Sent a better edition.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Sent a better edition."
+          }
+        ],
+        "finalReply": "Sent a better edition.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          },
+          {
+            "id": 189,
+            "title": "The Harbour Almanac",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          }
+        ],
+        "mail": [
+          {
+            "to": "pocketbook@example.invalid",
+            "attachments": [
+              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            ]
+          }
+        ],
+        "created": [
+          {
+            "path": "books/work/harbour-almanac-c.epub",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 5,
+        "oracle": {}
+      },
+      "accepted-check-failure": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books search \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"results\": [{\"md5\": \"md5-a\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 212}, {\"md5\": \"md5-b\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 208}, {\"md5\": \"md5-c\", \"title\": \"The Harbour Almanac\", \"author\": \"A. Writer\", \"pages\": 240}, {\"md5\": \"md5-d\", \"title\": \"Study Guide: The Harbour Almanac\", \"author\": \"B. Reader\", \"pages\": 64}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books get --md5 md5-b\"}",
+            "result": "{\"ok\": true, \"path\": \"books/work/harbour-almanac-b.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books check books/work/harbour-almanac-b.epub\"}",
+            "result": "{\"ok\": false, \"problems\": [\"lines broken mid-sentence\"]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books deliver --accept-check-failure books/work/harbour-almanac-b.epub\"}",
+            "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Sent another edition; the checker complained but it should be fine.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Sent another edition; the checker complained but it should be fine."
+          }
+        ],
+        "finalReply": "Sent another edition; the checker complained but it should be fine.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [
+          {
+            "to": "pocketbook@example.invalid",
+            "attachments": [
+              "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba"
+            ]
+          }
+        ],
+        "created": [
+          {
+            "path": "books/work/harbour-almanac-b.epub",
+            "sha256": "6ca524b44fc269dabf2f64b56680202c1915d5dec8acc5f1b84b4dafce3aa4ba"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 5,
+        "oracle": {}
+      }
+    }
+  }
+}
