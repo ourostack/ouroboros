@@ -63,6 +63,7 @@ type Behaviour = {
   failReclaim?: boolean
   /** The agent's `docker run` never ends, even once the container is removed. */
   agentHangs?: boolean
+  householdHangs?: boolean
   onNetwork?: () => void
   state?: object
 }
@@ -90,7 +91,8 @@ function fakeDocker(behaviour: Behaviour = {}) {
       }
       if (args[0] === "network" && args[1] === "create") behaviour.onNetwork?.()
       if (args[0] === "rm" || args[0] === "network" && args[1] === "rm") {
-        if (args[0] === "rm" && !(behaviour.agentHangs && args[2]!.endsWith("-agent"))) ends.get(args[2]!)?.(137)
+        const hangs = args[2]!.endsWith("-agent") ? behaviour.agentHangs : behaviour.householdHangs
+        if (args[0] === "rm" && !hangs) ends.get(args[2]!)?.(137)
         if (behaviour.failRemovals) throw new Error("no such container")
       }
       if (args.at(-1)?.startsWith("chown -R")) {
@@ -136,7 +138,7 @@ function fakeDocker(behaviour: Behaviour = {}) {
             finalReply: "Done, 189 is on the shelf.", outcome: "settled", steps: 1,
           }
         })
-        void runGuest({ stdin, stdout, turnFile: at.get("/eval/turn.json")!, runTurn }).then(() => setImmediate(() => exit(0)))
+        void runGuest({ stdin, stdout, turnFile: at.get("/eval/turn.json")!, runTurn }).then(() => { if (!behaviour.agentHangs) setImmediate(() => exit(0)) })
       }
       return { stdin, stdout, exited, stderr: () => "guest stderr" }
     },
@@ -332,10 +334,23 @@ describe("runSandboxed", () => {
     expect((await runSandboxed(input(docker))).outcome).toBe("trace-mismatch")
   })
 
-  it("stops waiting for an agent container that does not end once removed", async () => {
-    const { docker } = fakeDocker({ agentHangs: true, agent: "silent" })
-    const obs = await runSandboxed(input(docker, { turnTimeoutMs: 20, exitGraceMs: 20 }))
-    expect(obs.outcome).toBe("sandbox-error: the turn did not finish within 20 ms")
+  it("ends a run whose agent container outlives its removal without reading anything back", async () => {
+    const { docker, calls } = fakeDocker({ agentHangs: true })
+    const obs = await runSandboxed(input(docker, { exitGraceMs: 20 }))
+    expect(obs.outcome).toMatch(/^sandbox-error: the agent container did not stop within 20 ms of its removal/)
+    // Nothing the agent might still be changing is read: no created files and none of the household's state.
+    expect({ created: obs.created, library: obs.library, oracle: obs.oracle }).toEqual({ created: [], library: [], oracle: {} })
+    expect(obs.timeline).toEqual([{ kind: "call", name: "shell", args: "{\"command\":\"books library remove 187\"}", result: "{\"ok\":true}" }])
+    // The folder is still handed back and removed.
+    expect(calls.some((args) => args.at(-1)?.startsWith("chown -R"))).toBe(true)
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
+  })
+
+  it("ends a run whose household outlives its removal without reading its state", async () => {
+    const { docker } = fakeDocker({ householdHangs: true })
+    const obs = await runSandboxed(input(docker, { exitGraceMs: 20 }))
+    expect(obs.outcome).toMatch(/^sandbox-error: the household did not stop within 20 ms of its removal/)
+    expect(obs.library).toEqual([])
   })
 
   it("fails a run that leaves more in its writable places than can be read back", async () => {

@@ -33,7 +33,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { projectBundle } from "./projection"
-import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn } from "./readback"
+import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
 
 export const SANDBOX_IMAGE = "ouro-eval-sandbox:local"
 export const HOUSEHOLD_IMAGE = "ouro-eval-household:local"
@@ -181,9 +181,10 @@ function waitForGuest(agent: DockerProcess, onDone: (listen: (outcome: GuestOutc
   })
 }
 
-const settle = (exited: Promise<number>, graceMs: number): Promise<unknown> => new Promise((resolve) => {
-  const timer = setTimeout(resolve, graceMs)
-  void exited.then(() => { clearTimeout(timer); resolve(undefined) })
+/** Whether a removed container's `docker run` ended within the grace period. */
+const settle = (exited: Promise<number>, graceMs: number): Promise<boolean> => new Promise((resolve) => {
+  const timer = setTimeout(() => resolve(false), graceMs)
+  void exited.then(() => { clearTimeout(timer); resolve(true) })
 })
 
 function guestTurn(outcome: GuestOutcome): GuestTurn {
@@ -280,21 +281,29 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     // Ends every process the turn started, then the household, before anything is read back.
     await docker.run(["rm", "--force", agentName]).catch(() => "")
     const graceMs = input.exitGraceMs ?? 30_000
-    await settle(agent.exited, graceMs)
+    const agentStopped = await settle(agent.exited, graceMs)
     await docker.run(["rm", "--force", sidecarName]).catch(() => "")
-    await settle(sidecar.exited, graceMs)
+    const householdStopped = await settle(sidecar.exited, graceMs)
     await reclaim()
 
     let turn = guestTurn(outcome)
     let created: Observation["created"] = []
-    try {
-      created = createdSince(before, snapshotFiles(bundle, WRITABLE))
-    } catch (error) {
-      turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${(error as Error).message}` }
+    let state: HouseholdState = { library: [], mail: [], events: 0 }
+    const bytes = new Map<string, string>()
+    // A container that may still be running could change what is read, so nothing is read back from such a run.
+    const stuck = !agentStopped ? "the agent container" : !householdStopped ? "the household" : undefined
+    if (stuck) {
+      turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${stuck} did not stop within ${graceMs} ms of its removal` }
+    } else {
+      try {
+        created = createdSince(before, snapshotFiles(bundle, WRITABLE))
+      } catch (error) {
+        turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${(error as Error).message}` }
+      }
+      state = readHouseholdState(path.join(household, "state.json"))
+      for (const file of created) bytes.set(file.sha256, path.join(bundle, file.path))
+      for (const book of state.library) bytes.set(book.sha256, path.join(household, "library", `${book.id}.epub`))
     }
-    const state = readHouseholdState(path.join(household, "state.json"))
-    const bytes = new Map<string, string>(created.map((file) => [file.sha256, path.join(bundle, file.path)]))
-    for (const book of state.library) bytes.set(book.sha256, path.join(household, "library", `${book.id}.epub`))
     const observation = await assembleObservation({
       seed: input.case.seed, turn, hostCalls, steps: recorded.steps(), household: state, created, bytes,
       ...(input.oracle ? { oracle: input.oracle } : {}),
