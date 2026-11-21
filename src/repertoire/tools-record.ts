@@ -8,6 +8,7 @@ import { isTrustedLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 const NOTES_INDEX_VERSION = 1
 const NOTE_SLUG_MAX_CHARS = 40
@@ -328,7 +329,7 @@ async function getFreshIndex(notesDir: string, indexPath: string, provider: Embe
 function createProviderForTool(toolName: string): EmbeddingProvider | string {
   const provider = createDefaultEmbeddingProvider()
   if (!provider) {
-    return `error: ${toolName} couldn't use notes because embeddings are not configured.`
+    return withCode(`error: ${toolName} couldn't use notes because embeddings are not configured.`, "embeddings-not-configured")
   }
   return provider
 }
@@ -373,11 +374,11 @@ export const recordToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!hasSelfTrust(ctx)) return "error: note requires self trust and cannot be used from an external caller context."
+      if (!hasSelfTrust(ctx)) return withCode("error: note requires self trust and cannot be used from an external caller context.", "self-trust-required")
 
       const rawArgs = args as Record<string, unknown>
       const content = typeof rawArgs.content === "string" ? rawArgs.content.trim() : ""
-      if (!content) return "content is required"
+      if (!content) return withCode("content is required", "missing-argument")
 
       const provider = createProviderForTool("note")
       if (typeof provider === "string") return provider
@@ -413,11 +414,18 @@ export const recordToolDefinitions: ToolDefinition[] = [
           message: "canonical note save failed",
           meta: { reason: error instanceof Error ? error.message : String(error) },
         })
-        return "error: couldn't save the note right now."
+        return withCode("error: couldn't save the note right now.", "note-save-failed")
       }
     },
     summaryKeys: ["content", "tags"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes canonical Desk record note" },
+    ax: { id: "tool:note", group: "turn-record", when: "Pick this to keep a longer tagged markdown note in your own record, from your own context only; short facts suit diary_write.", effect: "write", errors: [
+      { code: "self-trust-required", means: "note runs only in your own private context, and this call came from someone else's.", fix: "Use diary_write for a fact from this chat, or write the note later in your own private runtime." },
+      { code: "missing-argument", means: "content is empty or isn't text.", fix: "Call note again with the note's text as content." },
+      { code: "embeddings-not-configured", means: "No embedding provider is set up, so notes can't be indexed.", fix: "Keep the fact with diary_write, and tell your owner notes need an embedding provider." },
+      { code: "note-save-failed", means: "Writing the note file or its index failed.", fix: "Try once more; if it fails again, keep the fact with diary_write." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so new notes wait.", fix: "Call orientation_get, settle what the person meant, then write the note if it still holds." },
+    ] },
   },
   {
     tool: {
@@ -439,7 +447,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!hasRecordReadTrust(ctx)) return "error: consult_notes requires trusted record-read access."
+      if (!hasRecordReadTrust(ctx)) return withCode("error: consult_notes requires trusted record-read access.", "record-read-denied")
 
       const rawArgs = args as Record<string, unknown>
       const query = typeof rawArgs.query === "string" ? rawArgs.query.trim() : ""
@@ -489,9 +497,15 @@ export const recordToolDefinitions: ToolDefinition[] = [
           message: "canonical notes consult failed",
           meta: { reason: error instanceof Error ? error.message : String(error) },
         })
-        return "error: consult_notes couldn't search notes right now."
+        return withCode("error: consult_notes couldn't search notes right now.", "notes-search-failed")
       }
     },
     summaryKeys: ["query"],
+    // A stale notes index is rebuilt and saved before the search, so this changes the agent's own files.
+    ax: { id: "tool:consult_notes", group: "turn-record", when: "Pick this to search your longer markdown notes by meaning, paging with cursor; diary entries are searched with search_facts.", effect: "write", idempotent: true, errors: [
+      { code: "record-read-denied", means: "This caller isn't trusted to read your notes.", fix: "Answer without the notes, or look them up from a chat with a trusted person." },
+      { code: "embeddings-not-configured", means: "No embedding provider is set up, so notes can't be searched.", fix: "Search the diary with search_facts, or grep the notes folder for exact words." },
+      { code: "notes-search-failed", means: "Building the index or embedding the query failed.", fix: "Try again once; then fall back to grep over the notes folder." },
+    ] },
   },
 ]

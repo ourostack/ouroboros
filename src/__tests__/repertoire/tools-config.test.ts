@@ -542,5 +542,22 @@ describe("update_config tool (T1 only)", () => {
     expect(result.toLowerCase()).toContain("validation failed")
     expect(vi.mocked(fs.writeFileSync)).not.toHaveBeenCalled()
   })
-})
 
+  it("gives both config tools cards, read_config backed by a profile that changes nothing", async () => {
+    const { configToolDefinitions } = await import("../../repertoire/tools-config")
+    for (const def of configToolDefinitions) {
+      expect(def.ax?.id).toBe(`tool:${def.tool.function.name}`)
+      expect(def.ax?.group).toBe("turn-config")
+    }
+    const read = configToolDefinitions.find((d) => d.tool.function.name === "read_config")!
+    expect(read.ax?.effect).toBe("read")
+    expect(read.riskProfile).toEqual({ mutates: "none", risk: "low" })
+  })
+
+  it("ends each update_config refusal with the code its card names", async () => {
+    const { configToolDefinitions } = await import("../../repertoire/tools-config")
+    const update = configToolDefinitions.find((d) => d.tool.function.name === "update_config")!.handler
+    expect(await update({ path: "no.such.key", value: "1" })).toBe('Error: unknown config path "no.such.key". Use read_config to see available paths. (code: unknown-config-path)')
+    expect(await update({ path: "context.contextMargin", value: "{" })).toBe('Error: invalid JSON value. Provide value as valid JSON (e.g., 25, "debug", ["terminal"]). (code: invalid-json)')
+  })
+})
