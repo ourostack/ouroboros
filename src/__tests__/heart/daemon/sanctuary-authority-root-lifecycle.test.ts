@@ -25,6 +25,22 @@ const vaultOp = (args: readonly unknown[]): string => String(args.at(-1)).trim()
 const oldToken = "123:oldTokenabcdefghijklmnopqrstuvwxyz"
 const installSteps = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
 const rollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]
+// These cases replay whole transactions on a real temp filesystem and share a CPU with other test files.
+// When one overruns, the bare "timed out in 5000ms" names no phase, so fail just before vitest's limit with
+// the phase marks and the worst event-loop stall seen. It reports where the time went; it does not change the budget.
+async function withPhaseReport<T>(body: (mark: (phase: string) => void) => Promise<T>): Promise<T> {
+  const started = performance.now()
+  const marks: string[] = []
+  const mark = (phase: string) => { marks.push(`${phase}@${Math.round(performance.now() - started)}ms`) }
+  let worstStall = 0
+  let last = performance.now()
+  const sampler = setInterval(() => { const now = performance.now(); worstStall = Math.max(worstStall, now - last - 25); last = now }, 25)
+  let watchdog: NodeJS.Timeout | undefined
+  const overrun = new Promise<never>((_, reject) => {
+    watchdog = setTimeout(() => reject(new Error(`overran 4500ms before vitest's limit; worst event-loop stall ${Math.round(worstStall)}ms; last phases: ${marks.slice(-6).join(", ") || "none"}`)), 4_500)
+  })
+  try { return await Promise.race([body(mark), overrun]) } finally { clearInterval(sampler); clearTimeout(watchdog) }
+}
 function alterDocker(mutate: (args: string[], value: string) => string) {
   const original = host.exec.getMockImplementation()!
   host.exec.mockImplementation((file, args, options) => {
@@ -486,9 +502,11 @@ describe("fixed root installation effects", () => {
     alterDocker((args, value) => vaultOp(args) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
     await expect(f.lifecycle.effect("rollback:restore-token-cursor").apply()).rejects.toThrow(/identity/u)
   })
-  it.each([...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)])("recovers the concrete %s side effect after interruption without a second mutation", async (interrupted) => {
+  it.each([...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)])("recovers the concrete %s side effect after interruption without a second mutation", (interrupted) => withPhaseReport(async (mark) => {
     const f = await preparedFixture()
+    mark("prepared")
     const tx = await transactionFixture(f)
+    mark("transaction")
     tx.module.beginDockerManAuthorityHandoff(f.lifecycle.plan(), tx.options)
     let lifecycle = f.lifecycle
     for (const name of [...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)]) {
@@ -506,6 +524,7 @@ describe("fixed root installation effects", () => {
       }
       if (name === "rollback:restore-resident") f.createRollback()
       const effect = lifecycle.effect(name)
+      mark(name)
       if (name !== interrupted) { await tx.module.runDockerManAuthorityEffect(name, effect, tx.options); continue }
       const apply = vi.fn(async () => { await effect.apply(); throw new Error("crash after concrete effect") })
       // Initial preparation already materialized the first five effects.
@@ -523,7 +542,7 @@ describe("fixed root installation effects", () => {
     expect(JSON.parse(fs.readFileSync(tx.journalPath, "utf8")).authority.state).toBe("retired")
     expect(fs.existsSync(f.p(`${f.epochRoot}/current-token`))).toBe(false)
     expect(fs.existsSync(f.p(`${rootPath}/activation.json`))).toBe(false)
-  })
+  }))
   it.each(["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token"])("recovers interruption of initial concrete %s, including partial durable writes", async (interrupted) => {
     const f = fixture()
     const lifecycle = f.staged()
@@ -1749,8 +1768,9 @@ describe("in-place authority upgrade", () => {
       expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
     })
 
-    it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", async (code, error) => {
+    it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", (code, error) => withPhaseReport(async (mark) => {
       const f = await keepAware()
+      mark("keepAware")
       fs.rmSync(f.p(keep), { recursive: true, force: true })
       const mkdir = fs.mkdirSync
       vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
@@ -1758,7 +1778,8 @@ describe("in-place authority upgrade", () => {
         return mkdir(file, options)
       }) as typeof fs.mkdirSync)
       await expect(f.lifecycleFor().boot()).rejects.toThrow(error)
-    })
+      mark("boot")
+    }))
 
     it("removes the child and holds Unraid's reaper before starting a predecessor that predates it", async () => {
       const f = await upgradeFixture()
