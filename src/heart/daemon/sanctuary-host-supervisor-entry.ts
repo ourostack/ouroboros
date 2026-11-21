@@ -209,14 +209,15 @@ export async function runSanctuaryHostSupervisorCli(
 ): Promise<void> {
   const index = argv.indexOf("--spec")
   const specPath = index >= 0 ? argv[index + 1] : undefined
-  if (!specPath) throw new Error("Sanctuary host supervisor requires --spec")
+  if (!specPath) throw Object.assign(new Error("Sanctuary host supervisor requires --spec"), { code: "missing-spec" })
   await run(specPath)
 }
 
-/* v8 ignore next 6 -- executable guard delegates to the tested CLI runner @preserve */
+/* v8 ignore next 7 -- executable guard delegates to the tested CLI runner @preserve */
 if (require.main === module) {
   void runSanctuaryHostSupervisorCli().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary host supervisor failed"}\n`)
+    const code = (error as { code?: unknown } | null)?.code
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary host supervisor failed"}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
     process.exitCode = 1
   })
 }

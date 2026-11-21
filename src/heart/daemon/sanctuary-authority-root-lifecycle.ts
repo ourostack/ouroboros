@@ -1116,8 +1116,14 @@ export function recordSanctuaryRootLifecycleFailure(error: unknown, file = `${RO
   } catch { return "" }
 }
 
+/** The stderr for a failed root lifecycle: generic (D-034), then the failure's code as its last line when it has one. */
+export function sanctuaryRootLifecycleFailureText(error: unknown, details: string): string {
+  const code = (error as { code?: unknown } | null)?.code
+  return `Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.${details}\n${typeof code === "string" ? `code: ${code}\n` : ""}`
+}
+
 export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text: string) => process.stdout.write(text)): Promise<void> {
-  if (process.getuid!() !== 0 || process.getgid!() !== 0) throw new Error("Sanctuary root lifecycle requires root")
+  if (process.getuid!() !== 0 || process.getgid!() !== 0) throw Object.assign(new Error("Sanctuary root lifecycle requires root"), { code: "needs-root" })
   if (argv.length === 2 && argv[0] === "vault") {
     // `remove` is the one vault verb that can strand the household. It is safe
     // only inside the install transaction, which has already proven the same
@@ -1128,7 +1134,7 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     // transaction, not a privilege boundary: root can always set the variable,
     // but it can no longer do this by reaching for a documented verb.
     if (argv[1] === "remove" && !process.env.OURO_AUTHORITY_REMOVE_INTERLOCK) {
-      throw new Error("Sanctuary vault removal runs only inside the authority install transaction; use docker-man-template-transaction.mjs authority-install")
+      throw Object.assign(new Error("Sanctuary vault removal runs only inside the authority install transaction; use docker-man-template-transaction.mjs authority-install"), { code: "outside-install" })
     }
     const input = argv[1] === "restore" ? JSON.parse(fs.readFileSync(0, "utf8")) : undefined
     write(`${JSON.stringify(await migrateSanctuaryAuthorityVault(argv[1]!, input))}\n`)
@@ -1138,12 +1144,12 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
   const holdCommit = argv[0] === "upgrade" && argv.length === 4 && argv[3] === "--hold-commit"
   const upgrade = argv[0] === "upgrade" && (argv.length === 3 || holdCommit || (argv.length === 5 && argv[3] === "--fail-after"))
   const rollback = argv.length === 1 && argv[0] === "upgrade-rollback"
-  if (!repin && !upgrade && !rollback && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|upgrade <target-image-id> <image-reference> [--fail-after <step>|--hold-commit]|upgrade-rollback|vault snapshot|vault presence|vault remove|vault restore>")
+  if (!repin && !upgrade && !rollback && (argv.length !== 1 || argv[0] !== "boot")) throw Object.assign(new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|upgrade <target-image-id> <image-reference> [--fail-after <step>|--hold-commit]|upgrade-rollback|vault snapshot|vault presence|vault remove|vault restore>"), { code: "usage" })
   // Boot never waits: the host keeper retries it. An operator upgrade waits out a boot in flight.
   await withSessionTurnLease(TEMPLATE_JOURNAL, async () => {
     const activationPath = `${ROOT}/activation.json`
     if (!fs.existsSync(activationPath)) {
-      if (repin || upgrade || rollback) throw new Error("Sanctuary authority is not active")
+      if (repin || upgrade || rollback) throw Object.assign(new Error("Sanctuary authority is not active"), { code: "not-active" })
       return
     }
     const activation = JSON.parse(fs.readFileSync(activationPath, "utf8")) as Transaction
@@ -1162,7 +1168,7 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
 
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryAuthorityRootCli(process.argv.slice(2)).catch((error: unknown) => {
-    process.stderr.write(`Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.${recordSanctuaryRootLifecycleFailure(error)}\n`)
+    process.stderr.write(sanctuaryRootLifecycleFailureText(error, recordSanctuaryRootLifecycleFailure(error)))
     process.exitCode = 1
   })
 }

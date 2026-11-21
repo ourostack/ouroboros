@@ -199,7 +199,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
     const setExitCode = vi.fn()
     startSanctuaryHealthAcceptanceProbeCli([], { writeError, setExitCode })
     await new Promise<void>((resolve) => { queueMicrotask(resolve) })
-    expect(writeError).toHaveBeenCalledWith(expect.stringContaining("usage:"))
+    expect(writeError).toHaveBeenCalledWith(expect.stringMatching(/^usage:.*\ncode: usage\n$/u))
     expect(setExitCode).toHaveBeenCalledWith(1)
 
     const fixture = setup("unit-16f-cron-fingerprint")
@@ -218,7 +218,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
     { argv: ["bad", "--label", "unit-16f-cron-fingerprint", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64)] },
     { argv: ["run", "--wrong", "unit-16f-cron-fingerprint", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64)] },
   ])("rejects malformed CLI coordinates %#", async ({ argv }) => {
-    await expect(runSanctuaryHealthAcceptanceProbeCli(argv)).rejects.toThrow(/usage/u)
+    await expect(runSanctuaryHealthAcceptanceProbeCli(argv)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/usage/u) })
   })
 
   it("rejects extra non-finalize coordinates and incomplete finalize coordinates", async () => {

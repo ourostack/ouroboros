@@ -92,7 +92,8 @@ activatePortableGit()
 /* v8 ignore start -- refuses to start on a FAT or exFAT home; the check is unit-tested in home-filesystem.test.ts @preserve */
 const homeFilesystemProblem = unsupportedHomeFilesystem(getOuroCliHome())
 if (homeFilesystemProblem) {
-  process.stderr.write(`${homeFilesystemProblem}\n`)
+  const code = "unsupported-home"
+  process.stderr.write(`${homeFilesystemProblem}\ncode: ${code}\n`)
   process.exit(1)
 }
 /* v8 ignore stop */

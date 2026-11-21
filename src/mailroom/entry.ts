@@ -59,7 +59,7 @@ function optionalNumber(args: string[], flag: string, fallback: number): number 
   if (index === -1) return fallback
   const value = Number.parseInt(args[index + 1] ?? "", 10)
   if (!Number.isInteger(value) || value < 0 || value > 65535) {
-    throw new Error(`${flag} must be a TCP port`)
+    throw Object.assign(new Error(`${flag} must be a TCP port`), { code: "bad-port" })
   }
   return value
 }
@@ -73,12 +73,12 @@ export function parseMailroomEntryArgs(args: string[]): MailroomEntryArgs {
   const storePath = optionalValue(expanded, "--store")
   const azureAccountUrl = optionalValue(expanded, "--azure-account-url")
   if (!storePath && !azureAccountUrl) {
-    throw new Error("Missing --store or --azure-account-url")
+    throw Object.assign(new Error("Missing --store or --azure-account-url"), { code: "missing-store" })
   }
   const registryPath = optionalValue(expanded, "--registry")
   const registryBase64 = optionalValue(expanded, "--registry-base64")
   if (!registryPath && !registryBase64) {
-    throw new Error("Missing --registry or --registry-base64")
+    throw Object.assign(new Error("Missing --registry or --registry-base64"), { code: "missing-registry" })
   }
   const parsed = {
     ...(registryPath ? { registryPath } : {}),
@@ -141,6 +141,12 @@ export function runMailroomEntry(args: string[] = process.argv.slice(2)): Mailro
 
 /* v8 ignore start -- exercised by packaged/container entrypoint smoke rather than in-process unit tests. @preserve */
 if (require.main === module) {
-  runMailroomEntry()
+  try {
+    runMailroomEntry()
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
+    process.exitCode = 1
+  }
 }
 /* v8 ignore stop */

@@ -496,7 +496,7 @@ export async function runSanctuaryTelegramAuthorityCli(options: {
   const argv = options.argv ?? process.argv
   const configIndex = argv.indexOf("--config")
   const configPath = configIndex >= 0 ? argv[configIndex + 1] : undefined
-  if (!configPath) throw new Error("Sanctuary Telegram authority requires --config")
+  if (!configPath) throw Object.assign(new Error("Sanctuary Telegram authority requires --config"), { code: "missing-config" })
   const authority = await (options.start ?? startSanctuaryTelegramAuthority)({ configPath, ...(argv.includes("--retire-only") ? { retireOnly: true } : {}) })
   const close = async () => {
     await authority.close()
@@ -513,7 +513,8 @@ export async function runSanctuaryTelegramAuthorityCli(options: {
 
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryTelegramAuthorityCli().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary Telegram authority failed"}\n`)
+    const code = (error as { code?: unknown } | null)?.code
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary Telegram authority failed"}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
     process.exitCode = 1
   })
 }

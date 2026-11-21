@@ -7,11 +7,12 @@ import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
 import { emitNervesEvent } from "../nerves/runtime"
 
 // Fail fast if --agent is missing (before any src/ code tries getAgentName())
+const MISSING_AGENT = "missing-agent"
 const agentArgIndex = process.argv.indexOf("--agent")
 const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
 if (!agentName) {
   // eslint-disable-next-line no-console -- pre-boot guard: --agent check before imports
-  console.error("Missing required --agent <name> argument.\nUsage: node dist/senses/teams-entry.js --agent ouroboros")
+  console.error(`Missing required --agent <name> argument.\nUsage: node dist/senses/teams-entry.js --agent ouroboros\ncode: ${MISSING_AGENT}`)
   process.exit(1)
 }
 

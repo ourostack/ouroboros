@@ -1,11 +1,12 @@
 // Thin entrypoint for `npm run bluebubbles` / `node dist/senses/bluebubbles/entry.js --agent <name>`.
 // Separated from index.ts so the BlueBubbles adapter stays testable.
 
+const MISSING_AGENT = "missing-agent"
 const agentArgIndex = process.argv.indexOf("--agent")
 const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
 if (!agentName) {
   // eslint-disable-next-line no-console -- pre-boot guard: --agent check before imports
-  console.error("Missing required --agent <name> argument.\nUsage: node dist/senses/bluebubbles/entry.js --agent ouroboros")
+  console.error(`Missing required --agent <name> argument.\nUsage: node dist/senses/bluebubbles/entry.js --agent ouroboros\ncode: ${MISSING_AGENT}`)
   process.exit(1)
 }
 

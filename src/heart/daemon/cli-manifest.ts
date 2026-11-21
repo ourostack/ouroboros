@@ -14,6 +14,7 @@ import { PRESENCE_COMMANDS } from "./cli-commands/presence"
 import { SHEPHERD_COMMANDS } from "./cli-commands/shepherd"
 import { RSVP_COMMANDS } from "./cli-commands/rsvp"
 import { DNS_COMMANDS } from "./cli-commands/dns"
+import { ENTRY_POINT_COMMANDS } from "./cli-commands/entry-points"
 
 // Each command says who sees its effect: only the person ("private") or other people ("others"). A command moves onto
 // the Ouro AX kit's definitions one at a time; until then it is declared in cli-commands/ and dispatched by cli-exec.
@@ -85,7 +86,7 @@ export const CLI_COMMANDS: readonly CliCommandDeclaration[] = [
  * The census finds them by their `process.argv` reads; each is declared here with its card. `help --json` lists them
  * as `entryPoints`, apart from the commands, because they don't start with `ouro`.
  */
-export const CLI_ENTRY_POINTS: readonly CliCommandDeclaration[] = [];
+export const CLI_ENTRY_POINTS: readonly CliCommandDeclaration[] = ENTRY_POINT_COMMANDS;
 
 export const CLI_EXIT_CODES = [
   { code: 0, name: "ok", meaning: "The command did what it was asked." },

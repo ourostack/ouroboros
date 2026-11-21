@@ -12,7 +12,7 @@ import { resolveSanctuaryPackageManagementActivation } from "./sanctuary-package
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
   process.exitCode = 1
-  throw new Error(reason)
+  throw Object.assign(new Error(reason), { code: reason === "missing agent" ? "missing-agent" : "unhealthy" })
 }
 
 export function runContainerHealthcheck(options: { argv?: string[]; now?: () => number } = {}): void {
@@ -53,8 +53,16 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   emitNervesEvent({ component: "daemon", event: "daemon.container_healthcheck_end", message: "container healthcheck passed", meta: { agent } })
 }
 
-export function runContainerHealthcheckMain(isMain: boolean, runner: () => void): void {
-  if (isMain) runner()
+/** Run the healthcheck as the container's entrypoint: a failure ends stderr with its code, and exits 1. */
+export function runContainerHealthcheckMain(isMain: boolean, runner: () => void, writeError: (text: string) => void = (text) => { process.stderr.write(text) }): void {
+  if (!isMain) return
+  try {
+    runner()
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code
+    writeError(`${error instanceof Error ? error.message : String(error)}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
+    process.exitCode = 1
+  }
 }
 
 runContainerHealthcheckMain(require.main === module, runContainerHealthcheck)

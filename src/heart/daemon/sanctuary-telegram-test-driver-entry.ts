@@ -26,7 +26,7 @@ export async function runSanctuaryTelegramTestDriverCli(options: {
   const argv = options.argv ?? process.argv.slice(2)
   const configIndex = argv.indexOf("--config")
   const configPath = configIndex >= 0 ? argv[configIndex + 1] : undefined
-  if (!configPath) throw new Error(SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE)
+  if (!configPath) throw Object.assign(new Error(SANCTUARY_TELEGRAM_TEST_DRIVER_USAGE), { code: "missing-config" })
   const rest = [...argv.slice(0, configIndex), ...argv.slice(configIndex + 2)]
   const expectedUid = options.expectedUid ?? 0
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_test_driver_started", message: "Sanctuary owner-turn test driver started", meta: {} })
@@ -62,7 +62,8 @@ export async function runSanctuaryTelegramTestDriverCli(options: {
 /* v8 ignore start -- process entry wiring; runSanctuaryTelegramTestDriverCli is tested directly @preserve */
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryTelegramTestDriverCli().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary test driver failed"}\n`)
+    const code = (error as { code?: unknown } | null)?.code
+    process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary test driver failed"}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
     process.exitCode = 1
   })
 }

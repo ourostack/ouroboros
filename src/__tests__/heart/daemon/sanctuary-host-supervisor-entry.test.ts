@@ -217,7 +217,7 @@ describe("Sanctuary host supervisor entry", () => {
   })
 
   it("enforces the CLI spec argument", async () => {
-    await expect(runSanctuaryHostSupervisorCli(["node", "entry"])).rejects.toThrow(/--spec/u)
+    await expect(runSanctuaryHostSupervisorCli(["node", "entry"])).rejects.toMatchObject({ code: "missing-spec", message: expect.stringMatching(/--spec/u) })
     const run = vi.fn(async () => ({}) as never)
     await runSanctuaryHostSupervisorCli(["node", "entry", "--spec", "/root/spec.json"], run)
     expect(run).toHaveBeenCalledWith("/root/spec.json")

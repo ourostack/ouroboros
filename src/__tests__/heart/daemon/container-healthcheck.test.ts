@@ -80,7 +80,7 @@ describe("container healthcheck", () => {
     ["managed Telegram sense is not running exactly once", () => { execFileSync.mockReturnValue(`${AGENT}\n${SUPERCRONIC}\n`); run() }],
     ["managed Supercronic scheduler is not running exactly once", () => { execFileSync.mockReturnValue(`${AGENT}\n${TELEGRAM}\n`); run() }],
   ])("fails closed when %s", (reason, action) => {
-    expect(action).toThrow(reason)
+    expect(action).toThrow(expect.objectContaining({ message: reason, code: reason === "missing agent" ? "missing-agent" : "unhealthy" }))
     expect(process.exitCode).toBe(1)
   })
 
@@ -138,5 +138,19 @@ describe("container healthcheck", () => {
 
     runContainerHealthcheckMain(true, runner)
     expect(runner).toHaveBeenCalledTimes(1)
+  })
+
+  it("ends a failed run's stderr with its code and exits 1", () => {
+    const writeError = vi.fn()
+    runContainerHealthcheckMain(true, () => { throw Object.assign(new Error("health state stale"), { code: "unhealthy" }) }, writeError)
+    expect(writeError).toHaveBeenCalledWith("health state stale\ncode: unhealthy\n")
+    expect(process.exitCode).toBe(1)
+    process.exitCode = undefined
+    runContainerHealthcheckMain(true, () => { throw "plain" }, writeError)
+    expect(writeError).toHaveBeenLastCalledWith("plain\n")
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true)
+    runContainerHealthcheckMain(true, () => { throw new Error("boom") })
+    expect(stderr).toHaveBeenCalledWith("boom\n")
+    stderr.mockRestore()
   })
 })

@@ -532,6 +532,22 @@ describe("runOuroCli help execution", () => {
     expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])
   })
 
+  it("ouro help --json lists every declared command and every entry point by name, each entry point with its card", async () => {
+    const help = JSON.parse(await runOuroCli(["help", "--json"], makeDeps())) as {
+      commands: Array<{ name: string }>
+      entryPoints: Array<{ name: string; usage: string[]; group?: string; errors?: Array<{ code: string }> }>
+    }
+    expect(new Set(help.commands.map((command) => command.name))).toEqual(new Set(CLI_COMMANDS.map((command) => command.name)))
+    expect(help.entryPoints.map((entry) => entry.name)).toEqual(CLI_ENTRY_POINTS.map((entry) => entry.name))
+    expect(help.entryPoints.length).toBeGreaterThan(0)
+    for (const entry of help.entryPoints) {
+      expect(entry.name).toMatch(/^node dist\//u)
+      expect(entry.usage).toEqual([entry.name])
+      expect(entry.group).toEqual(expect.any(String))
+      expect(entry.errors?.length).toBeGreaterThan(0)
+    }
+  })
+
   it("tags the parser's refusals with the codes the cards name: usage for bad words, unknown-door for no command", async () => {
     await expect(runOuroCli(["check"], makeDeps())).rejects.toMatchObject({ code: "usage" })
     await expect(runOuroCli(["xyzzy-no-such-command"], makeDeps())).rejects.toMatchObject({ code: "unknown-door" })

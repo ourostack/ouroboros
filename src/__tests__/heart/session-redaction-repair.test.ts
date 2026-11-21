@@ -1552,7 +1552,7 @@ describe("A003 fixed session repair", () => {
       return (stat as any)(file, ...args)
     }) as typeof fs.lstatSync)
     const result = await invokeCli(["apply", "--manifest-sha256", artifact.manifestSha256, artifact.manifestPath])
-    expect(result).toEqual({ code: 2, value: { status: "refused", error: "metadata unavailable" } })
+    expect(result).toEqual({ code: 2, value: { status: "refused", code: "repair-refused", error: "metadata unavailable" } })
   })
 
   it.each([[], ["repair"], ["inspect"], ["apply"], ["rollback"], ["apply", "--manifest-sha256", "bad", "file"], ["inspect", "--agent", "sanctuary", "--targets", "86"], ["apply", "--manifest-sha256", "0".repeat(64), "file", "extra"]].map((args) => ({ args })))(
@@ -1561,6 +1561,8 @@ describe("A003 fixed session repair", () => {
       const result = await invokeCli(args)
       expect(result.code).toBe(2)
       expect(result.value.status).toBe("refused")
+      // Words of the fixed shape reach the repair, which refuses a malformed digest itself.
+      expect(result.value.code).toBe(args[2] === "bad" ? "repair-refused" : "usage")
       expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
     },
   )

@@ -768,10 +768,13 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
   return { recovered: true }
 }
 
+/** The probe's usage line, which a malformed command line gets back. */
+export const SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE = "usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]"
+
 function parseCli(argv: string[]): { mode: "run" | "stop" | "recover" | "finalize"; input: SanctuaryHealthAcceptanceProbeInput; after?: { ownerImageDigest: string; ownerContainerDigest: string } } {
   if ((argv.length !== 9 && argv.length !== 13) || (argv[0] !== "run" && argv[0] !== "stop" && argv[0] !== "recover" && argv[0] !== "finalize")
     || argv[1] !== "--label" || argv[3] !== "--scenario" || argv[5] !== "--owner-image" || argv[7] !== "--owner-container") {
-    throw new Error("usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]")
+    throw Object.assign(new Error(SANCTUARY_HEALTH_ACCEPTANCE_PROBE_USAGE), { code: "usage" })
   }
   const input = { label: argv[2] as SanctuaryHealthAcceptanceProbeLabel, scenarioHandleDigest: argv[4]!, ownerImageDigest: argv[6]!, ownerContainerDigest: argv[8]! }
   canonicalInput(input)
@@ -852,7 +855,8 @@ export function startSanctuaryHealthAcceptanceProbeCli(
   options: Parameters<typeof runSanctuaryHealthAcceptanceProbeCli>[1] = {},
 ): void {
   void runSanctuaryHealthAcceptanceProbeCli(argv, options).catch((error) => {
-    output.writeError(`${error instanceof Error ? error.message : String(error)}\n`)
+    const code = (error as { code?: unknown } | null)?.code
+    output.writeError(`${error instanceof Error ? error.message : String(error)}\n${typeof code === "string" ? `code: ${code}\n` : ""}`)
     output.setExitCode(1)
   })
 }
