@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1294",
+      "changes": [
+        "The CLI's flag gate and the shell's approval check now find an ouro command by its words wherever its flags sit, so putting --agent before a subcommand no longer skips --why or approval."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1293",
       "changes": [
         "The replay eval has a fake household: calibre-web, libgen mirrors and an SMTP sink that record every request, a hand-written books command that talks to them, and deterministic synthetic fixture editions, so the book cases can run with no real library, mirror or mail server.",
