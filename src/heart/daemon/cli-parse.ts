@@ -356,6 +356,8 @@ export function usage(): string {
     "  ouro nerves-review [--agent <name>] [--process <name>] [--component <substr>] [--event <substr>] [--level <level>] [--since <duration>] [--limit <n>] [--json]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
+    "  ouro friend merge --into <friend-id> <friend-id>... [--agent <name>] [--apply]",
+    "  ouro friend dedupe [--agent <name>] [--apply]",
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
     "  ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
