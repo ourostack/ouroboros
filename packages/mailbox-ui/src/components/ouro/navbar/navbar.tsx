@@ -144,7 +144,7 @@ const link_ =
   "aria-[current=page]:underline aria-[current=true]:underline decoration-primary decoration-2 underline-offset-5 [text-decoration-skip-ink:none] " +
   "outline-ring -outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid";
 // In the sheet a link is a full-width row, which highlights while pressed instead of scaling.
-const sheetLink = "flex min-h-11 pointer-fine:min-h-9 py-2 transition-colors duration-(--ouro-duration-fast) ease-[ease] active:bg-accent active:text-accent-foreground";
+const sheetLink = "flex min-h-ouro-11 pointer-fine:min-h-9 py-2 transition-colors duration-(--ouro-duration-fast) ease-[ease] active:bg-accent active:text-accent-foreground";
 
 const list_ = "m-0 flex list-none p-0";
 const example = '<Navbar label="Main" items={[{ label: "Recipes", href: "/recipes" }]}';
@@ -328,9 +328,9 @@ export function Navbar(props: NavbarProps): JSX.Element {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        className={cn("-ms-2 w-11 px-0", !overflow && breakpoint.show)}
+        className={cn("-ms-ouro-2 w-ouro-11 px-0", !overflow && breakpoint.show)}
       >
-        <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="size-5">
+        <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="size-ouro-5">
           <path d="M3 5.5h14M3 10h14M3 14.5h14" />
         </svg>
       </Button>
