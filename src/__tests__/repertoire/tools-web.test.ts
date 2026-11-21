@@ -136,7 +136,7 @@ describe("fetch_url", () => {
 
   it("reports HTTP errors and a redirect with no location, releasing the response", async () => {
     replies.push({ status: 404, body: "no" }, { status: 302 })
-    expect(await run({ url: "https://example.com/missing" })).toBe("error: HTTP 404 fetching https://example.com/missing")
+    expect(await run({ url: "https://example.com/missing" })).toBe("error: HTTP 404 fetching https://example.com/missing (code: http-error)")
     expect(seen[0].destroyed).toBe(true)
     expect(await run({ url: "https://example.com/m2" })).toContain("HTTP 302")
   })
@@ -175,7 +175,7 @@ describe("fetch_url", () => {
     it("refuses, at connect time, a name whose lookup returns a private address", async () => {
       fake.current = undefined
       lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }, { address: "10.1.2.3", family: 4 }])
-      expect(await run({ url: "http://sneaky.example.com/" })).toBe("error: refused: sneaky.example.com resolves to a private or local address (10.1.2.3)")
+      expect(await run({ url: "http://sneaky.example.com/" })).toBe("error: refused: sneaky.example.com resolves to a private or local address (10.1.2.3) (code: private-address)")
     })
 
     it("refuses a private answer even when the first lookup was fine and a redirect names a new host", async () => {
@@ -218,7 +218,7 @@ describe("fetch_url", () => {
     webTestHooks.timeoutMs = 30
     replies.push("hang")
     const started = Date.now()
-    expect(await run({ url: "https://slow.example.com/" })).toBe("error: timed out after 0.03 seconds fetching https://slow.example.com/")
+    expect(await run({ url: "https://slow.example.com/" })).toBe("error: timed out after 0.03 seconds fetching https://slow.example.com/ (code: fetch-failed)")
     expect(Date.now() - started).toBeLessThan(2000)
   })
 
@@ -235,9 +235,9 @@ describe("fetch_url", () => {
 
   it("reports other failures, including non-Error throws", async () => {
     replies.push(new Error("ECONNRESET"), "boom" as never)
-    expect(await run({ url: "https://example.com/" })).toBe("error: could not fetch https://example.com/: ECONNRESET")
+    expect(await run({ url: "https://example.com/" })).toBe("error: could not fetch https://example.com/: ECONNRESET (code: fetch-failed)")
     fake.current = () => { throw "weird" }
-    expect(await run({ url: "https://example.com/" })).toBe("error: could not fetch https://example.com/: weird")
+    expect(await run({ url: "https://example.com/" })).toBe("error: could not fetch https://example.com/: weird (code: fetch-failed)")
   })
 
   async function captureLookup() {

@@ -5,6 +5,7 @@ import { isIP, type LookupFunction } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 import { TOOL_MAX_CHARS } from "./tool-limits"
 import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 const MAX_REDIRECTS = 5
 /** Test hook: the request deadline. */
@@ -120,19 +121,19 @@ async function fetchPage(rawUrl: string, offset: number, exempt: boolean): Promi
   try {
     url = new URL(rawUrl)
   } catch {
-    return `error: not a valid URL: ${rawUrl}`
+    return withCode(`error: not a valid URL: ${rawUrl}`, "invalid-url")
   }
   const signal = AbortSignal.timeout(webTestHooks.timeoutMs)
   for (let hop = 0; ; hop++) {
-    if (url.protocol !== "http:" && url.protocol !== "https:") return `error: only http and https URLs can be fetched, not ${url.protocol}`
+    if (url.protocol !== "http:" && url.protocol !== "https:") return withCode(`error: only http and https URLs can be fetched, not ${url.protocol}`, "invalid-url")
     const literal = url.hostname.replace(/^\[|\]$/g, "")
-    if (!exempt && isIP(literal) && isPrivateAddress(literal)) return `error: ${new RefusedError(url.hostname, literal).message}`
+    if (!exempt && isIP(literal) && isPrivateAddress(literal)) return withCode(`error: ${new RefusedError(url.hostname, literal).message}`, "private-address")
     const response = await get(url, exempt, signal)
     const status = response.statusCode as number
     const location = response.headers.location
     if (status >= 300 && status < 400 && location) {
       response.destroy()
-      if (hop >= MAX_REDIRECTS) return `error: more than ${MAX_REDIRECTS} redirects fetching ${rawUrl}`
+      if (hop >= MAX_REDIRECTS) return withCode(`error: more than ${MAX_REDIRECTS} redirects fetching ${rawUrl}`, "fetch-failed")
       url = new URL(location, url)
       continue
     }
@@ -142,7 +143,7 @@ async function fetchPage(rawUrl: string, offset: number, exempt: boolean): Promi
     }
     if (status < 200 || status >= 300) {
       response.destroy()
-      return `error: HTTP ${status} fetching ${url.href}`
+      return withCode(`error: HTTP ${status} fetching ${url.href}`, "http-error")
     }
     const type = (response.headers["content-type"] ?? "text/plain").split(";")[0].trim().toLowerCase()
     const isHtml = type === "text/html" || type === "application/xhtml+xml"
@@ -184,11 +185,18 @@ export const webToolDefinitions: ToolDefinition[] = [
       try {
         return await fetchPage(a.url, a.offset ? Math.max(0, parseInt(a.offset, 10) || 0) : 0, isFamilyHuman(ctx))
       } catch (error) {
-        if (error instanceof RefusedError) return `error: ${error.message}`
+        if (error instanceof RefusedError) return withCode(`error: ${error.message}`, "private-address")
         const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
-        return timedOut ? `error: timed out after ${webTestHooks.timeoutMs / 1000} seconds fetching ${a.url}` : `error: could not fetch ${a.url}: ${error instanceof Error ? error.message : String(error)}`
+        return withCode(timedOut ? `error: timed out after ${webTestHooks.timeoutMs / 1000} seconds fetching ${a.url}` : `error: could not fetch ${a.url}: ${error instanceof Error ? error.message : String(error)}`, "fetch-failed")
       }
     },
     summaryKeys: ["url"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:fetch_url", group: "turn-web", when: "Pick this to read one web page whose address you already have; to find pages about a subject first, use web_search.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-url", means: "url isn't a full http or https address.", fix: "Send the whole address, starting with https://; read a local file with read_file instead." },
+      { code: "private-address", means: "The address leads to this machine or a private network, which only a family member may have fetched.", fix: "Fetch a public address, or ask a family member to have you fetch this one." },
+      { code: "http-error", means: "The site answered with an error status such as 404 or 403, shown in the message.", fix: "Check the address; for a 404, search for where the page moved." },
+      { code: "fetch-failed", means: "The page didn't arrive: the connection failed, it took over 20 seconds, or it redirected more than 5 times.", fix: "Try again once; if it fails again, use another source for the same facts." },
+    ] },
   },
 ]

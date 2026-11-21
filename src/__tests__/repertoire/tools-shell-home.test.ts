@@ -85,17 +85,17 @@ describe("shell at home", () => {
 
   it("tells the agent how a failed command ended and shows both its stdout and its stderr", async () => {
     const error = await shell.handler({ command: "echo '{\"records\":[]}'; echo 'HTTP 401' >&2; exit 22" }, ctx as any).then(() => undefined, (e: Error) => e)
-    expect(error!.message).toBe('the command exited with code 22\nstdout:\n{"records":[]}\nstderr:\nHTTP 401')
+    expect(error!.message).toBe('the command exited with code 22 (code: command-failed)\nstdout:\n{"records":[]}\nstderr:\nHTTP 401')
   })
 
   it("names a timeout, a command that could not start and a silent failure precisely", async () => {
     const { shellFailureText } = await import("../../repertoire/tools-shell")
     expect(shellFailureText({ killed: true, signal: "SIGTERM" }, 30000, "partial\n", "")).toBe(
-      "the command was stopped after 30000 ms (SIGTERM); pass a larger timeout_ms or background: true for long work\nstdout:\npartial",
+      "the command was stopped after 30000 ms (SIGTERM); pass a larger timeout_ms or background: true for long work (code: command-timed-out)\nstdout:\npartial",
     )
-    expect(shellFailureText({ code: "ENOENT" }, 30000, "", "")).toBe("the command could not start: ENOENT\nit printed nothing")
-    expect(shellFailureText({}, 30000, "", "")).toBe("the command could not start: unknown error\nit printed nothing")
-    expect(shellFailureText({ code: 1 }, 30000, "  \n", "")).toBe("the command exited with code 1\nit printed nothing")
+    expect(shellFailureText({ code: "ENOENT" }, 30000, "", "")).toBe("the command could not start: ENOENT (code: command-not-started)\nit printed nothing")
+    expect(shellFailureText({}, 30000, "", "")).toBe("the command could not start: unknown error (code: command-not-started)\nit printed nothing")
+    expect(shellFailureText({ code: 1 }, 30000, "  \n", "")).toBe("the command exited with code 1 (code: command-failed)\nit printed nothing")
   })
 
   it("starts a background shell in the agent's home", async () => {

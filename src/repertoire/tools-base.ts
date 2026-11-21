@@ -269,14 +269,7 @@ export interface ToolContext {
   };
 }
 
-/**
- * An error text a tool or the dispatcher returns, ending with the code its Ouro AX card names, so a model can look up
- * the card's fix. The message stays first and unchanged; the code is a suffix. Pass the code as a literal: the AX
- * census counts a card's code as raised only where it appears in the handler's file.
- */
-export function withCode(message: string, code: string): string {
-  return `${message} (code: ${code})`
-}
+export { withCode } from "./tool-error-code";
 
 export function routineActionDenied(reason: string): string {
   const message = reason.slice(0, 500)

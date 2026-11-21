@@ -51,6 +51,8 @@
     {"id": "entry-points", "when": "Start an agent's daemon, worker or sense process directly with node, as ouro up does, mostly to debug one."},
     {"id": "sanctuary-host", "when": "Run the Sanctuary host's root jobs: the Telegram authority, its lifecycle steps, host supervisor and health probes."},
     {"id": "diagnostics", "when": "Inspect, audit, evaluate or repair saved sessions, nerves events and evaluation suites offline, outside the daemon."},
-    {"id": "turn-files", "when": "Read, find and change files in the agent's home: open one, list a folder, search names or text, write or edit."}
+    {"id": "turn-files", "when": "Read, find and change files in the agent's home: open one, list a folder, search names or text, write or edit."},
+    {"id": "turn-shell", "when": "Run commands on the agent's machine: one shell line now, or a long one in the background you check and tail."},
+    {"id": "turn-web", "when": "Read the public web: search for pages on a subject, or fetch one page by its address as plain text."}
   ]
 }
