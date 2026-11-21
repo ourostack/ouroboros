@@ -1,24 +1,43 @@
 /**
  * Runs one owner Telegram turn through the production path, in-process, with an injected provider: the real
  * Telegram sense (`createTelegramSenseApp`), the shared turn runner and `handleInboundTurn`, the production owner
- * relationship (`createProductionTelegramRelationshipComposition`, which reads `tool-profiles.json`), real tool
- * dispatch, and a fake Telegram transport that records what the Butler sent.
+ * relationship (`createProductionTelegramRelationshipComposition`, which reads `tool-profiles.json`), the Sanctuary
+ * answer checks at settle, real tool dispatch, and a fake Telegram transport that records what the Butler sent.
+ *
+ * Run it only inside the eval sandbox. The owner profile offers `shell`, `fetch_url`, `web_search`, `bundle_push`
+ * and `send_message`, and in the process that runs the turn those tools are real.
  *
  * What the pipeline needed, found by running it (slice 2's spike):
  * - The bundle must sit where the turn itself looks for it, `$HOME/AgentBundles/sanctuary.ouro`: the Telegram sense
  *   takes a root, but the shared turn runner re-derives it from `HOME`, so a bundle anywhere else splits the session
  *   in two. The container sets `HOME=/home/ouro`; the test points `HOME` at a temporary folder.
- * - One owner Friend with the `sanctuary-owner` profile, bound to the fake bot and private chat (written here), and
- *   the case prefix saved as that owner's Telegram session (written here). The Telegram identity key is created in
- *   the bundle's state on first use, as on a fresh host.
+ * - One owner Friend with the `sanctuary-owner` profile, bound to the fake bot and private chat, and the case prefix
+ *   saved as that owner's Telegram session. Both are written here. The Telegram identity key is created in the
+ *   bundle's state on first use, as on a fresh host.
  * - `skipKeptNotes`, so the kept-notes judge does not ask for a provider of its own, and `providerRuntimeOverride`,
  *   which also empties the fallback chain. Both reach `runAgent` through the turn's `prepareRunAgentOptions` hook,
  *   after the relationship authorization is attached.
- * - Nothing from the live host. The Sanctuary tool context (Unraid, SABnzbd, Jellyfin) is left out, so those tools
- *   fail as they would with the services down, and the local interactive-control socket is not opened. Both are
- *   fidelity gaps of the sandbox, not of the books cases, which use `shell`.
+ * - No retry of a provider error. Core retries an error unless it says `retryable: false`, and each retry refreshes
+ *   the agent's credentials and rebuilds its runtime from `agent.json`, dropping the override. Every error from the
+ *   injected runtime is marked not retryable, so a turn makes one call per step and never reaches a real provider.
+ * - Nothing from the live host. The Sanctuary service context (Unraid, SABnzbd, Jellyfin) is left out, so those tools
+ *   are not offered; the local interactive-control socket is not opened.
+ *
+ * What the turn writes in the bundle: `friends/eval-owner.json`, the session under `state/sessions/`, the identity
+ * key and other runtime state under `state/`, and the flight recorder under `arc/`. A bundle runs one turn: the
+ * message ids are fixed, so a second run on the same bundle fails. Bundle sync is on in `agent.json` and does
+ * nothing only because the bundle is not a Git repository; a projection must not carry `.git`.
+ *
+ * Fidelity gaps:
+ * - The message goes straight to the sense's message handler, skipping the long poll's update parsing, its user and
+ *   chat filter and the inbox. Friend resolution and relationship authorization still run.
+ * - A question about whether a title is on the shelf brings in the media-catalog contract, which requires
+ *   `media_search`; with no Jellyfin context that tool is not offered and the turn fails. The books cases do not ask
+ *   one.
  * - The owner's prompt does not list `skills/`: the relationship prompt has no skills section and `load_skill` is not
  *   in the `sanctuary-owner` profile, so a skill file reaches the model only when the agent reads it with a tool.
+ * - Replies are read back as text: Telegram's HTML is decoded, and a message with buttons is not part of the answer.
+ *   Files sent with `send_file` appear only as the tool call.
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -27,11 +46,12 @@ import type { ProviderRuntime, RunAgentOptions } from "../../heart/core"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
 import { saveSession } from "../../mind/context"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { SANCTUARY_ANSWER_GATES } from "../../senses/sanctuary-runtime"
 import { runSenseTurn, getSenseSessionPath, type RunSenseTurnResult } from "../../senses/shared-turn"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
 import type { TelegramInboundMessage } from "../../senses/telegram-client"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
-import type { Case, Observation, TraceCall } from "../domain/case"
+import type { Case, Observation, TraceCall, TraceReply } from "../domain/case"
 
 const AGENT = "sanctuary"
 const BOT_ID = "7001"
@@ -66,7 +86,14 @@ export function recordModelTraffic(inner: ProviderRuntime, timeline: TelegramTur
   let steps = 0
   const streamTurn: ProviderRuntime["streamTurn"] = async (request) => {
     steps += 1
-    const result = await inner.streamTurn(request)
+    let result: Awaited<ReturnType<ProviderRuntime["streamTurn"]>>
+    try {
+      result = await inner.streamTurn(request)
+    } catch (error) {
+      // Never retried: a retry is another billed call, and core's retry rebuilds the runtime from the agent's own
+      // credentials, which would drop this override.
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { retryable: false })
+    }
     for (const call of result.toolCalls) {
       const entry: TraceCall = { kind: "call", name: call.name, args: call.arguments, result: "" }
       calls.set(call.id, entry)
@@ -91,6 +118,13 @@ export function recordModelTraffic(inner: ProviderRuntime, timeline: TelegramTur
 
 const idle = async (): Promise<void> => undefined
 
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", "#39": "'" }
+
+/** Telegram HTML as sent, back to the text the person reads. */
+function visibleText(html: string): string {
+  return html.replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt|quot|#39);/g, (_match, name: string) => ENTITIES[name]!)
+}
+
 export async function runTelegramTurn(input: TelegramTurnInput): Promise<TelegramTurnResult> {
   emitNervesEvent({ component: "eval", event: "eval.telegram_turn_start", message: "running one eval Telegram turn", meta: { steps: input.prefix.length } })
   try {
@@ -106,23 +140,30 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
 
     const timeline: TelegramTurnResult["timeline"] = []
     const recorded = recordModelTraffic(input.providerRuntime, timeline)
+    const withButtons = new Map<TraceReply, boolean>()
     let messageId = 1
     const api = {
       request: async <T>(method: string, body: Record<string, unknown>): Promise<T> => {
-        if (method === "sendMessage") timeline.push({ kind: "reply", text: String(body.text) })
+        if (method === "sendMessage") {
+          const entry: TraceReply = { kind: "reply", text: visibleText(String(body.text)) }
+          timeline.push(entry)
+          // A message with buttons (an approval card) is not part of the answer.
+          withButtons.set(entry, Boolean(body.reply_markup))
+        }
         return { message_id: messageId++ } as T
       },
       stop: () => undefined,
     }
     const credentials = { botToken: `${BOT_ID}:eval-token`, authorizedUserId: OWNER_USER, authorizedChatId: OWNER_USER }
     let turn: RunSenseTurnResult | undefined
+    let turnError: unknown
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
     const app = createTelegramSenseApp({
       agentName: AGENT,
       credentials,
       identityKey,
       _agentRoot: agentRoot,
-      _toolContext: { agentRoot } as never,
+      _toolContext: { agentRoot, answerGates: SANCTUARY_ANSWER_GATES } as never,
       api,
       createLongPoll: (options) => {
         onMessage = options.onMessage
@@ -132,15 +173,21 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
       migrateIdentity: idle,
       ...(await createProductionTelegramRelationshipComposition(AGENT, credentials, agentRoot)),
       _runTurn: async (options) => {
-        turn = await runSenseTurn({
-          ...options,
-          prepareRunAgentOptions: async (prepare) => ({
-            ...(await options.prepareRunAgentOptions!(prepare) as RunAgentOptions),
-            providerRuntimeOverride: recorded.runtime,
-            skipKeptNotes: true,
-          }),
-        })
-        return turn
+        try {
+          turn = await runSenseTurn({
+            ...options,
+            prepareRunAgentOptions: async (prepare) => ({
+              ...(await options.prepareRunAgentOptions!(prepare) as RunAgentOptions),
+              providerRuntimeOverride: recorded.runtime,
+              skipKeptNotes: true,
+            }),
+          })
+          return turn
+        } catch (error) {
+          // The sense reports a failed turn to the person and carries on; the eval needs the failure itself.
+          turnError = error
+          throw error
+        }
       },
     })
     try {
@@ -148,9 +195,12 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
     } finally {
       await app.stop()
     }
+    if (turnError) throw turnError
+    // The answer is every message sent after the model's last tool call: Telegram splits a long one into several.
+    const lastCall = timeline.findLastIndex((entry) => entry.kind === "call")
     const result: TelegramTurnResult = {
       timeline,
-      finalReply: timeline.flatMap((entry) => entry.kind === "reply" ? [entry.text] : []).slice(-1).join(""),
+      finalReply: (timeline.slice(lastCall + 1) as TraceReply[]).filter((entry) => !withButtons.get(entry)).map((entry) => entry.text).join("\n"),
       outcome: String(turn!.turnOutcome),
       steps: recorded.steps(),
     }
