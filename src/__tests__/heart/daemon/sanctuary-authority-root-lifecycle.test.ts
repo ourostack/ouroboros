@@ -26,20 +26,21 @@ const oldToken = "123:oldTokenabcdefghijklmnopqrstuvwxyz"
 const installSteps = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
 const rollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]
 // These cases replay whole transactions on a real temp filesystem and share a CPU with other test files.
-// When one overruns, the bare "timed out in 5000ms" names no phase, so fail just before vitest's limit with
-// the phase marks and the worst event-loop stall seen. It reports where the time went; it does not change the budget.
-async function withPhaseReport<T>(body: (mark: (phase: string) => void) => Promise<T>): Promise<T> {
+// A bare "timed out in 5000ms" names no phase, so at 4.5s (inside vitest's unchanged 5s limit) this writes the
+// phase marks and the worst event-loop stall seen so far to stderr, then keeps awaiting the body: the test still
+// owns its work, and its budget is unchanged. It records bounded observations only: it cannot attribute a cause
+// and cannot fire if the event loop is blocked synchronously.
+async function withPhaseReport<T>(label: string, body: (mark: (phase: string) => void) => Promise<T>): Promise<T> {
   const started = performance.now()
   const marks: string[] = []
   const mark = (phase: string) => { marks.push(`${phase}@${Math.round(performance.now() - started)}ms`) }
   let worstStall = 0
   let last = performance.now()
   const sampler = setInterval(() => { const now = performance.now(); worstStall = Math.max(worstStall, now - last - 25); last = now }, 25)
-  let watchdog: NodeJS.Timeout | undefined
-  const overrun = new Promise<never>((_, reject) => {
-    watchdog = setTimeout(() => reject(new Error(`overran 4500ms before vitest's limit; worst event-loop stall ${Math.round(worstStall)}ms; last phases: ${marks.slice(-6).join(", ") || "none"}`)), 4_500)
-  })
-  try { return await Promise.race([body(mark), overrun]) } finally { clearInterval(sampler); clearTimeout(watchdog) }
+  const watchdog = setTimeout(() => {
+    process.stderr.write(`sanctuary lifecycle case still running at 4500ms (${label}); worst event-loop stall ${Math.round(worstStall)}ms; last phases: ${marks.slice(-6).join(", ") || "none"}\n`)
+  }, 4_500)
+  try { return await body(mark) } finally { clearInterval(sampler); clearTimeout(watchdog) }
 }
 function alterDocker(mutate: (args: string[], value: string) => string) {
   const original = host.exec.getMockImplementation()!
@@ -502,7 +503,7 @@ describe("fixed root installation effects", () => {
     alterDocker((args, value) => vaultOp(args) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
     await expect(f.lifecycle.effect("rollback:restore-token-cursor").apply()).rejects.toThrow(/identity/u)
   })
-  it.each([...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)])("recovers the concrete %s side effect after interruption without a second mutation", (interrupted) => withPhaseReport(async (mark) => {
+  it.each([...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)])("recovers the concrete %s side effect after interruption without a second mutation", (interrupted) => withPhaseReport(`recovery ${interrupted}`, async (mark) => {
     const f = await preparedFixture()
     mark("prepared")
     const tx = await transactionFixture(f)
@@ -1768,7 +1769,7 @@ describe("in-place authority upgrade", () => {
       expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
     })
 
-    it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", (code, error) => withPhaseReport(async (mark) => {
+    it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", (code, error) => withPhaseReport(`bounded stop ${code}`, async (mark) => {
       const f = await keepAware()
       mark("keepAware")
       fs.rmSync(f.p(keep), { recursive: true, force: true })
