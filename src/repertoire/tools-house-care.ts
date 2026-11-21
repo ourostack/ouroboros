@@ -72,10 +72,15 @@ export const houseSweepToolDefinition: ToolDefinition = {
     },
   },
   handler: async (_args, ctx) => {
-    if (!ctx?.agentRoot) return JSON.stringify({ error: "house sweep runtime is unavailable" })
+    if (!ctx?.agentRoot) return JSON.stringify({ error: "house sweep runtime is unavailable", code: "sweep-runtime-missing" })
     if (sweepYieldsToReplay(ctx, (injected.now ?? Date.now)())) return REPLAY_YIELD
     const report = await runHouseSweep({ agentRoot: ctx.agentRoot, sanctuary: ctx.sanctuary, replay: replayAsker(ctx), now: injected.now, ...injected.sweepDeps })
     return JSON.stringify(report)
+  },
+  ax: {
+    id: "tool:house_sweep", group: "turn-sanctuary", effect: "read",
+    when: "Pick this for a whole-house check in one call, on the daily await or when asked; for one area, the unraid_ and sanctuary_ reads go deeper.",
+    errors: [{ code: "sweep-runtime-missing", means: "This turn has no agent bundle, so there's no house to sweep.", fix: "Tell the owner the sweep can't run in this turn; don't send a digest." }],
   },
   summaryKeys: [],
   riskProfile: { mutates: "none", risk: "low" },
@@ -100,7 +105,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
   },
   handler: async (args, ctx) => {
     const agentRoot = ctx?.agentRoot
-    if (!agentRoot) return JSON.stringify({ error: "house sweep runtime is unavailable" })
+    if (!agentRoot) return JSON.stringify({ error: "house sweep runtime is unavailable", code: "sweep-runtime-missing" })
     const rawIds = (args as unknown as { finding_ids?: unknown }).finding_ids
     const ids = Array.isArray(rawIds) ? [...new Set(rawIds.filter((id): id is string => typeof id === "string" && id.length > 0))] : []
     if (ids.length === 0) return JSON.stringify({ sent: false, error: "no digest: name at least one finding id from the latest house_sweep. When nothing needs the owner, say nothing." })
@@ -108,10 +113,10 @@ export const houseDigestToolDefinition: ToolDefinition = {
     const scope = replay ? "replay" : "live"
     // The digest comes only from the sweep THIS process ran. Files under state/house-sweep/ are writable by the resident's uid: untrusted bookkeeping, never a source of owner-facing text.
     const last = recallSweep(agentRoot, scope)
-    if (!last) return JSON.stringify({ sent: false, error: "no sweep has run in this session: run house_sweep first and use its finding ids." })
+    if (!last) return JSON.stringify({ sent: false, error: "no sweep has run in this session: run house_sweep first and use its finding ids.", code: "no-sweep-yet" })
     const known = new Map(last.map((finding) => [finding.id, finding]))
     const unknown = ids.filter((id) => !known.has(id))
-    if (unknown.length > 0) return JSON.stringify({ sent: false, error: `unknown finding ids: ${unknown.join(", ")}. Run house_sweep first and use its ids.` })
+    if (unknown.length > 0) return JSON.stringify({ sent: false, error: `unknown finding ids: ${unknown.join(", ")}. Run house_sweep first and use its ids.`, code: "unknown-finding" })
     const chosen = ids.map((id) => known.get(id)!)
     const rawLead = (args as unknown as { lead_in?: unknown }).lead_in
     const leadIn = typeof rawLead === "string" ? rawLead.trim() : ""
@@ -145,14 +150,14 @@ export const houseDigestToolDefinition: ToolDefinition = {
       const entry = ledger[finding.id]
       return entry !== undefined && entry.fingerprint === finding.fingerprint && now - Date.parse(entry.reportedAt) < REMIND_DAYS * DAY_MS
     })
-    if (told.length > 0) return JSON.stringify({ sent: false, error: `the owner was already told about ${told.map((finding) => finding.id).join(", ")} unchanged in the last ${REMIND_DAYS} days; leave ${told.length === 1 ? "it" : "them"} out` })
+    if (told.length > 0) return JSON.stringify({ sent: false, error: `the owner was already told about ${told.map((finding) => finding.id).join(", ")} unchanged in the last ${REMIND_DAYS} days; leave ${told.length === 1 ? "it" : "them"} out`, code: "already-told" })
     // Only the daily house-care await's own tick is "scheduled" and takes the one-per-day slot; on-demand digests are limited by the per-finding dedupe above.
     // The package-managed await may run under the owner's own relationship authorization (the live runtime binds it that way), which does not downgrade it;
     // The system await has no relationship coordinates, so the pipeline binds the self friend: no authorization with no friend or the self friend is the managed tick itself.
 // Any other relationship (a peer, a friend) or a real friend with no authorization behind the tick downgrades.
     const ownerBound = ctx.relationshipAuthorization?.profileId === "sanctuary-owner"
     const kind = isManagedSweepTick(ctx) && (ownerBound || (!ctx.relationshipAuthorization && (!friendId || friendId === SELF_FRIEND_ID))) ? "scheduled" : "ondemand"
-    if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day" })
+    if (kind === "scheduled" && sameUtcDay(priorStamp, stamp)) return JSON.stringify({ sent: false, error: "the daily house digest already went out today; at most one scheduled digest is sent per day", code: "digest-sent-today" })
     const day = stamp.slice(0, 10)
     // Reserve before sending so a crash or a concurrent turn cannot send twice; a failed send rolls the reservation back.
     const reserved = { ...ledger }
@@ -162,10 +167,21 @@ export const houseDigestToolDefinition: ToolDefinition = {
       await (injected.notifyOwner ? injected.notifyOwner(agentName) : defaultNotifyOwner(agentName))({ noticeId: `house-sweep:${kind}:${day}:${digest}`, text: body })
     } catch (error) {
       writeLedger(agentRoot, ledger, priorStamp)
-      return JSON.stringify({ sent: false, error: `the owner notice could not be sent: ${error instanceof Error ? error.message : String(error)}. Nothing was recorded as told, so the next sweep will try again.` })
+      return JSON.stringify({ sent: false, error: `the owner notice could not be sent: ${error instanceof Error ? error.message : String(error)}. Nothing was recorded as told, so the next sweep will try again.`, code: "notice-failed" })
     }
     emitNervesEvent({ component: "repertoire", event: "repertoire.house_digest_sent", message: "house digest sent to the owner", meta: { findings: ids.length, destination: "owner", kind } })
     return JSON.stringify({ sent: true, destination: "owner", findings: ids.length })
+  },
+  ax: {
+    id: "tool:house_digest_send", group: "turn-sanctuary", effect: "write",
+    when: "Pick this right after house_sweep, and only when its fresh findings need the owner to decide something; otherwise stay quiet.",
+    errors: [
+      { code: "no-sweep-yet", means: "No house_sweep has run in this process, so there are no findings to send.", fix: "Call house_sweep, then send its fresh finding ids." },
+      { code: "unknown-finding", means: "A finding id isn't in the latest sweep.", fix: "Copy the ids exactly from the latest house_sweep result." },
+      { code: "already-told", means: "The owner already heard about a finding, unchanged, in the last 7 days.", fix: "Drop those ids and send the rest, or nothing if none are left." },
+      { code: "digest-sent-today", means: "Today's scheduled digest already went out.", fix: "Send nothing more today; the next daily sweep picks it up." },
+      { code: "notice-failed", means: "The owner notice couldn't be sent, and nothing was recorded as told.", fix: "Leave it: the next sweep finds the same findings fresh and tries again." },
+    ],
   },
   summaryKeys: ["finding_ids"],
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends the owner a Telegram notice" },
