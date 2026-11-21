@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1301",
       "changes": [
-        "Every node entry point the harness ships has an Ouro AX card, and each prints a code an agent can act on when it fails."
+        "Every node entry point the harness ships has an Ouro AX card, and each prints a code an agent can act on when it fails.",
+        "Update the Ouro UI files to Ouro UI v1.3.423."
       ]
     },
     {

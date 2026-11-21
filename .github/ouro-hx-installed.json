@@ -1,6 +1,6 @@
 {
-  "tag": "v1.3.418",
-  "tagCommit": "84226a2e7ca5287d564ded5d2961859625954624",
+  "tag": "v1.3.423",
+  "tagCommit": "fa031373a4d91cb00422a0d6f71df01926ac4ee2",
   "files": {
     "packages/mailbox-ui/scripts/ouro/check/ax-hooks.ts": "5e83546160a532c0477e759212c79fdae07b98d7b519cfcb38dd309f3cd10d81",
     "packages/mailbox-ui/scripts/ouro/check/base-check.ts": "967112e5b078d0ed05eb426a608ea608e24d369352dead155f599a800734e4a4",
@@ -58,7 +58,7 @@
     "packages/mailbox-ui/src/lib/ouro/ax/ax-command.ts": "c96277de9e73a9633e166dfd6b5990b47dda32d08fe132b90e7de2933ca3f21f",
     "packages/mailbox-ui/src/lib/ouro/ax/ax-moved.d.ts": "878ff338c7eb2c273854635c354c6bbfc63a8536e33ea5db5b14f770c2353445",
     "packages/mailbox-ui/src/lib/ouro/ax/checks.ts": "21f7f2dd63a86ce58447c7af3b02dc00069df43620bee53c71b0faa3697a0ff4",
-    "packages/mailbox-ui/src/lib/ouro/ax/cli.ts": "3931376968b3b5a56c1bffa1b9d945c74b1764243e6ba0261b0449cd55037ba1",
+    "packages/mailbox-ui/src/lib/ouro/ax/cli.ts": "b3581e0b89b0746dc8131eca036ed562845139e8a2123224519fcf3fc28226d5",
     "packages/mailbox-ui/src/lib/ouro/ax/dev-commands.ts": "911d0d56d47f7feb0d64eb96367c29369bd82a7fa925568e8dacda7a4454e09f",
     "packages/mailbox-ui/src/lib/ouro/ax/doctor.ts": "50f27db03682d620e2c78babc40e4ff9d62f731d07ab4eb52678a7c2ad8a4c9d",
     "packages/mailbox-ui/src/lib/ouro/ax/effects.ts": "08c5e6ebd2485ec34a6e0d915200bdd09447548754d5b430cfb4941a7c7dc5ca",
@@ -68,12 +68,12 @@
     "packages/mailbox-ui/src/lib/ouro/ax/output.ts": "fcee98161b3537d82043898d4139af0fa2b84f4a6fa52bc1bb9c0ed6615356a2",
     "packages/mailbox-ui/src/lib/ouro/ax/problem.ts": "6f55bba8c4bf04c8521f9b6a3c15e385a9810a413ef4809e4c7d14e64315b539",
     "packages/mailbox-ui/src/lib/ouro/ax/terminal.ts": "41b6a375fe92d67e6190dccabfa80c94a9e275c641e83c46114d8d209c652ca5",
-    "packages/mailbox-ui/src/lib/ouro/ax/voice.ts": "b92512692f13f2fbd3ee45407b876d6a18ac164f8c35a33524ac5d7c88a015b5",
+    "packages/mailbox-ui/src/lib/ouro/ax/voice.ts": "cd56f3b4694fb7df2622747c703ab94c6c747ed09fce5867c9778630a1066a88",
     "packages/mailbox-ui/src/lib/ouro/ax/wait.ts": "fed4890771d0ce5d1a43d93e73c7d621818bbcb44b30e88c88be274972a133c7",
     "packages/mailbox-ui/src/lib/ouro/class-name-check.ts": "600bc22afbe0b7dd47451277ad893ff0f240a2a1c76c42c8e7e9e36320515cfc",
     "packages/mailbox-ui/src/lib/ouro/cn.ts": "47724274087b49701850e2a0caad8fbbbb28619e005f68c820ae958e0d7f6818",
     "packages/mailbox-ui/src/lib/ouro/current-path.ts": "bbb63ed157c7458ddec1d11ccf615da1f0978a5f224eeffb7c8fe0ab7a2cc3f6",
-    "packages/mailbox-ui/src/lib/ouro/dev.ts": "e524a5917fc3c8d0d973425f2e8da4a142e6099453f331246643f6e6ee8a92b0",
+    "packages/mailbox-ui/src/lib/ouro/dev.ts": "f90a1b18a05be6e931d2d3c1f4e920479884c87107607944298517bc313252be",
     "packages/mailbox-ui/src/lib/ouro/disabled-reason.tsx": "72737119caf8070444f18b17baacbc7b604368c692046e15e3ebd0236b31a3e0",
     "packages/mailbox-ui/src/lib/ouro/env.d.ts": "b9b1f9fbff01e0acecd2452110007846804d4d30e159a302f56312d2771fe90c",
     "packages/mailbox-ui/src/lib/ouro/floating.ts": "4c723c3a6c385e516f649b9ebbdcf6cb6302fd95d3f0cc782d33ba5f9172a7a1",
@@ -99,6 +99,6 @@
     "packages/mailbox-ui/src/lib/ouro/use-ouro.ts": "d49e64712c98e849dd9089444b3a2eba18bdeacd59120cc5123c9b9fb78c5331",
     "packages/mailbox-ui/src/lib/ouro/use-platform.ts": "7c86d4891f0727fe2fe30f2250f6d697d5f41428307ce400e44d8d09fabe12a5",
     "packages/mailbox-ui/src/lib/ouro/use-sheet-presentation.ts": "634b3a5858329030962b28a23cdb8d5074a21ece08112fb6369b0f4adfd50f84",
-    "packages/mailbox-ui/src/ouro/ouro-base.css": "dddb2e660ccf46a33208cd82c6c4e57629474338d39e38b583f46f5384be0bf6"
+    "packages/mailbox-ui/src/ouro/ouro-base.css": "ebbb28ae3f252a1436bb7fc605147e913bb6cf097a9ca0e9a73beff702b5c1cc"
   }
 }
