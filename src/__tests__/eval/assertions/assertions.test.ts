@@ -391,6 +391,16 @@ describe("evaluate", () => {
     expect(failing.passed).toBe(false)
   })
 
+  it.each(["trace-mismatch", "sandbox-error: the turn did not finish within 50 ms"])("fails a run whose outcome is %s, whatever else held", (outcome) => {
+    const graded = evaluate(testCase([{ name: "mail.none" }]), obs({ outcome }))
+    expect(graded.passed).toBe(false)
+    expect(graded.checks).toEqual([{ name: "mail.none", ok: true, detail: expect.any(String) }, { name: "run.trusted", ok: false, detail: `the run cannot be graded: ${outcome}` }])
+  })
+
+  it("does not add the trusted-run check to a run that settled or hit the harness's own limits", () => {
+    for (const outcome of ["settled", "step-limit"]) expect(evaluate(testCase([{ name: "mail.none" }]), obs({ outcome })).checks.map(check => check.name)).toEqual(["mail.none"])
+  })
+
   it("throws on an assertion name not in the vocabulary, including inherited object keys", () => {
     expect(() => evaluate(testCase([{ name: "mail.maybe" }]), obs())).toThrow("Unknown assertion: mail.maybe")
     expect(() => evaluate(testCase([{ name: "toString" }]), obs())).toThrow("Unknown assertion: toString")
