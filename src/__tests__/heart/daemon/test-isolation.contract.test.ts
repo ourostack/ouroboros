@@ -132,6 +132,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     file: "src/heart/daemon/plugin-cli.ts",
     why: "Plugin install/remove CLI infrastructure: removes plugin directories under ~/.ouro-cli/plugins/<id>/ during `ouro plugin install` rollback and `ouro plugin remove`. Not agent-callable — runs inside operator-invoked `ouro plugin` commands; the plugin install is a transaction (clone → verify manifest → rollback on failure).",
   },
+  {
+    file: "src/eval/sandbox/docker.ts",
+    why: "Eval sandbox cleanup: removes the run's own folder, made by mkdtemp under the eval's work root, once its containers are gone. Not agent-callable — runs on the eval host, outside the sandbox the agent's turn runs in.",
+  },
 ]
 
 // Files that are themselves the enforcement layer for the rm-rf rule

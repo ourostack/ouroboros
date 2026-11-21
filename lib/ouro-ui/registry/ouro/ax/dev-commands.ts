@@ -36,6 +36,8 @@ interface DevCommandFinding extends DevCommand {
 interface DevCommandsOptions {
   /** Read only what is under {@link MESSAGE_KEYS}, as in a read's `--json`, whose other fields are the person's data. */
   messagesOnly?: boolean;
+  /** The CLI's own name: a word after it is the CLI's own subcommand (`ouro git status`), so it is not read as a developer command. */
+  own?: string;
 }
 
 /** The fields of an answer that speak to the agent or the person: next steps, a human's resume step, an error and a fix. */
@@ -128,7 +130,7 @@ function devSegments(line: string, strict: boolean): DevCommand[] {
 }
 
 /** The developer commands and repository paths in one message; `asCommand` also reads the whole text as a command. */
-function devCommandsInText(text: string, asCommand: boolean): DevCommand[] {
+function devCommandsInText(text: string, asCommand: boolean, own?: string): DevCommand[] {
   const plain = text.replace(URL, " ");
   const found: DevCommand[] = [];
   const add = (f: DevCommand) => void (found.some((g) => g.match.includes(f.match) || f.match.includes(g.match)) || found.push(f));
@@ -136,6 +138,7 @@ function devCommandsInText(text: string, asCommand: boolean): DevCommand[] {
   for (const span of plain.matchAll(CODE_SPAN)) devSegments(span[1]!, true).forEach(add);
   const prose = plain.replace(CODE_SPAN, " ");
   for (const m of prose.matchAll(PROSE_HEAD)) {
+    if (own && prose.slice(0, m.index!).replace(/["'`]/g, "").trimEnd().split(/\s+/).pop() === own) continue;
     const clause = prose.slice(m.index!).split(/\n/)[0]!.split(CLAUSE_END)[0]!.trim();
     if (isDevSegment(clause, false)) add({ match: clause, kind: "command" });
   }
@@ -153,8 +156,8 @@ function devCommandsInText(text: string, asCommand: boolean): DevCommand[] {
  * // { match: "npm run writes -- on", kind: "command" }
  * devCommandIn("notes sync", true); // null
  */
-function devCommandIn(text: string, asCommand = false): DevCommand | null {
-  return devCommandsInText(text, asCommand)[0] ?? null;
+function devCommandIn(text: string, asCommand = false, own?: string): DevCommand | null {
+  return devCommandsInText(text, asCommand, own)[0] ?? null;
 }
 
 /** Calls `visit` with the strings in a value, their path and key, and whether an object marked `sourceCheckout: true` holds them. */
@@ -181,10 +184,12 @@ function walk(value: unknown, visit: (text: string, where: string, key: string, 
 function devCommandsIn(value: unknown, options: DevCommandsOptions = {}): DevCommandFinding[] {
   const out: DevCommandFinding[] = [];
   const read = (text: string, where: string, key: string) => {
-    for (const f of devCommandsInText(text, COMMAND_KEYS.has(key))) out.push({ ...f, where, text });
+    for (const f of devCommandsInText(text, COMMAND_KEYS.has(key), options.own)) out.push({ ...f, where, text });
   };
   walk(value, (text, where, key, marked) => {
     if (marked || key === "why") return;
+    // A help JSON command's name and usage are the CLI's own subcommands, whatever word they start with.
+    if ((key === "name" || key === "usage") && where.startsWith("commands[")) return;
     if (!options.messagesOnly) return read(text, where, key);
     if (where.split(/[.[]/).some((part) => MESSAGE_KEYS.has(part))) read(text, where, key);
   });
