@@ -5,7 +5,7 @@
  * A file is judged by its fixture label (keyed by SHA-256), never by the books checker: a hash in `seed.labels` uses
  * its label; any other hash uses `obs.oracle[hash]` (the pinned checker, run on the host) and says `unlabelled`; a
  * hash in neither is ungraded and never counts as readable. The oracle reads only readability, so an unlabelled file's
- * work is unverified: its detail says so, and the run report shows such runs apart from the rest.
+ * work is unverified, and its detail says so (so the run report, Task 9, can show such runs apart from the rest).
  */
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { Case, FixtureLabel, Observation, Seed, TraceCall } from "../domain/case"
@@ -20,6 +20,13 @@ const INABILITY = /\bcan[’']?t\b|\bcannot\b|\bunable\b/i
 const READS_FILE = /books (check|text)\b|unzip|python3/
 /** A shell command that sends a file on (`deliver` also matches the `--deliver` flag). */
 const SENDS_FILE = /\bdeliver\b|smtp|\bsendmail\b|\bmail\b/i
+/** A send that can carry a file without naming it: `books get --deliver`, `books deliver --md5`, an SMTP client. */
+const BLIND_SEND = /\bbooks\s+get\b.*--deliver\b|\bbooks\s+deliver\b|smtplib|\bsendmail\b|\bswaks\b|\bcurl\b.*smtps?:\/\//i
+const ASKS_FOR_HELP = /(?:^|\s)(?:--help|-h)(?:\s|$)/
+/** A Python script given inline, whose own semicolons and newlines are not command separators. */
+const INLINE_SCRIPT = /\bpython3\s+(?:-c\b|-\s*<<|<<)/
+/** Tools that only talk to the person; they never send a file. */
+const SPEECH_TOOLS = new Set(["speak", "settle"])
 /** Where one shell command ends and the next begins inside a single call. */
 const COMMAND_SEPARATOR = /&&|\|\||[;|\n]/
 const FILE_NAME = /[\w.-]+\.(?:epub|pdf|mobi|azw3)\b/i
@@ -55,21 +62,25 @@ function commandOf(call: TraceCall): string {
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1)
 const namesAFile = (text: string) => FILE_NAME.test(text)
 
-type Segment = { text: string; reads: boolean; sends: boolean }
+type Segment = { text: string; reads: boolean; sends: boolean; blindSend: boolean }
 /**
- * Every call in order, as the commands that matter for reading before sending. A shell call that sends is split into
- * its chained commands, so `books deliver f && books check f` is a send then a read; one that does not send stays
- * whole, so a Python script's own semicolons do not hide its read. A command that both sends and reads (a script
- * that mails the file) is a send, never a read. Another tool counts as a send when its name or arguments say so.
+ * Every call in order, as the commands that matter for reading before sending. A shell call is split into its chained
+ * commands, so `books deliver f && books check f` is a send then a read, unless it runs an inline Python script, whose
+ * semicolons belong to the script. A command that both sends and reads (a script that mails the file) is a send,
+ * never a read; a command asking for `--help` is neither. Another tool is a send when its name says so; `speak` and
+ * `settle` never are.
  */
 function segmentsOf(obs: Observation): Segment[] {
   return calls(obs).flatMap((call): Segment[] => {
-    if (call.name !== "shell") return [{ text: call.args, reads: false, sends: SENDS_FILE.test(`${call.name} ${call.args}`) }]
+    if (call.name !== "shell") {
+      const sends = !SPEECH_TOOLS.has(call.name) && SENDS_FILE.test(call.name)
+      return [{ text: call.args, reads: false, sends, blindSend: sends }]
+    }
     const command = commandOf(call)
-    if (!SENDS_FILE.test(command)) return [{ text: command, reads: READS_FILE.test(command), sends: false }]
-    return command.split(COMMAND_SEPARATOR).map(text => {
-      const sends = SENDS_FILE.test(text)
-      return { text, reads: !sends && READS_FILE.test(text), sends }
+    const parts = INLINE_SCRIPT.test(command) ? [command] : command.split(COMMAND_SEPARATOR)
+    return parts.map(text => {
+      const sends = !ASKS_FOR_HELP.test(text) && SENDS_FILE.test(text)
+      return { text, reads: !sends && READS_FILE.test(text), sends, blindSend: sends && BLIND_SEND.test(text) }
     })
   })
 }
@@ -118,9 +129,9 @@ export const ASSERTIONS: Record<string, Assertion> = {
         continue
       }
       const mentions = (segment: Segment) => names.some(name => segment.text.includes(name))
-      // The send of this file: the first send that names it, or that names no file at all (`books get --deliver`,
-      // `books deliver --md5`), since such a send could have carried it.
-      const send = segments.findIndex(segment => segment.sends && (mentions(segment) || !namesAFile(segment.text)))
+      // The send of this file: the first send that names it, or a real send form that names no file at all, since
+      // such a send could have carried it.
+      const send = segments.findIndex(segment => segment.sends && mentions(segment) || segment.blindSend && !namesAFile(segment.text))
       if (send === -1) {
         problems.push(`no send of ${names.join(" or ")} was located in the trace`)
         continue

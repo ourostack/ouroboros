@@ -161,6 +161,20 @@ describe("trace.readBeforeSend", () => {
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline: script })).ok).toBe(true)
   })
 
+  it.each([
+    ["asking the deliver command for help", shell("books deliver --help")],
+    ["reading the SMTP settings", shell("jq .smtp books/credentials.json")],
+    ["saying it will deliver", { kind: "call" as const, name: "speak", args: "{\"text\":\"Checking it, then I'll deliver it\"}", result: "" }],
+  ])("is not cut short by %s before the read", (_label, early) => {
+    const timeline = [early, shell("books check books/work/harbour-almanac-c.epub"), shell("books deliver books/work/harbour-almanac-c.epub")]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(true)
+  })
+
+  it("needs the read term and the file in the same command", () => {
+    const timeline = [shell("ls books/work/harbour-almanac-c.epub; python3 -V"), shell("books deliver books/work/harbour-almanac-c.epub")]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(false)
+  })
+
   it("ignores another tool that neither sends nor names a send", () => {
     const timeline = [{ kind: "call" as const, name: "read_file", args: "books/work/harbour-almanac-c.epub", result: "" },
       shell("books check books/work/harbour-almanac-c.epub"), shell("books deliver books/work/harbour-almanac-c.epub")]
