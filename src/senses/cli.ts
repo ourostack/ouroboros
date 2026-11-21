@@ -22,6 +22,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import { acquireSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import { createProgramStatusReporter, lastAssistantText, type ProgramStatusReporter } from "./program-status"
 import { applyPendingUpdates, registerUpdateHook } from "../heart/versioning/update-hooks"
 import { bundleMetaHook } from "../heart/daemon/hooks/bundle-meta"
 import { agentConfigV2Hook } from "../heart/daemon/hooks/agent-config-v2"
@@ -539,6 +540,8 @@ export interface RunCliSessionOptions {
   ) => Promise<{ usage?: UsageData; turnOutcome?: string; commandAction?: string }>;
   onTurnStart?: (messages: OpenAI.ChatCompletionMessageParam[]) => void | Promise<void>;
   onTurnFinish?: () => void | Promise<void>;
+  /** Reports the chat's status to terminals that read OSC 7501 (Orca). Defaults to one for this terminal. */
+  programStatus?: ProgramStatusReporter;
 }
 
 export interface RunCliSessionResult {
@@ -735,6 +738,13 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
   }
 
+  const programStatus = options.programStatus ?? createProgramStatusReporter({ agentName: options.agentName })
+  cliCallbacks = programStatus.wrap(cliCallbacks)
+  const reportTurnEnd = (aborted: boolean): void => {
+    if (aborted) programStatus.idle()
+    else programStatus.done(lastAssistantText(messages))
+  }
+
   // Display helpers: route to TUI store or imperative stderr/stdout
   const display = {
     error: (msg: string) => {
@@ -802,6 +812,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   // speaks first (e.g. specialist greeting). Only triggers when explicitly opted in.
   if (options.autoFirstTurn && messages.length > 0 && messages[messages.length - 1]?.role === "user") {
     currentAbort = new AbortController()
+    programStatus.working()
     const traceId = createTraceId()
     display.suppressInput()
     let result: { usage?: UsageData } | undefined
@@ -816,10 +827,12 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         display.error(err instanceof Error ? err.message : String(err))
+        programStatus.error(err instanceof Error ? err.message : String(err))
       }
     }
     cliCallbacks.flushMarkdown()
     display.restoreInput()
+    reportTurnEnd(currentAbort.signal.aborted)
     currentAbort = null
 
     if (exitToolFired) {
@@ -836,6 +849,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
     }
   }
 
+  programStatus.idle()
   try {
     // Input source: TUI queue for Ink, test source for tests, readline fallback
     let inputSource: AsyncIterable<string>
@@ -894,6 +908,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (tuiStore) tuiStore.addUserMessage(input)
 
       currentAbort = new AbortController()
+      programStatus.working()
       if (tuiStore) tuiStore.suppressInput()
       inputCtrl?.suppress(() => { currentAbort?.abort() })
 
@@ -919,6 +934,8 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
             }
             // For "response" commands: the pipeline already emitted the response via onTextChunk
             cliCallbacks.flushMarkdown()
+            // A slash command is not a turn the person waits on, so the chat goes back to rest.
+            programStatus.idle()
             continue
           }
         } else {
@@ -942,12 +959,14 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError")) {
           display.error(err instanceof Error ? err.message : String(err))
+          programStatus.error(err instanceof Error ? err.message : String(err))
         }
       }
       cliCallbacks.flushMarkdown()
       if (!tuiStore) process.stdout.write("\n") // ensure response ends with newline before prompt (imperative only)
       if (tuiStore) tuiStore.restoreInput()
       inputCtrl?.restore()
+      reportTurnEnd(currentAbort.signal.aborted)
       currentAbort = null
 
       // Check if exit tool was fired during this turn
@@ -973,6 +992,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
       if (closed) break
     }
   } finally {
+    programStatus.clear()
     rl?.close()
     releaseTerminal?.()
     if (inkRef) {
