@@ -1,1 +1,1 @@
-{ "product": "harness", "sources": [{ "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-malformed.cjs", "source": "walkers/fixtures/mcp-ok.ts" }], "groups": [] }
+{ "product": "harness", "sources": [{ "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-malformed.cjs", "source": "walkers/fixtures/mcp-card.ts" }], "groups": [] }

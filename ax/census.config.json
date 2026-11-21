@@ -1,5 +1,5 @@
 {
   "product": "harness",
   "sources": [{ "walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts" }],
-  "groups": []
+  "groups": [{ "id": "ouro-agent", "when": "Work with your Ouro agent from a coding tool: talk to it, hand it work, report back, and read its state." }]
 }

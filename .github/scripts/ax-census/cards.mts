@@ -1,6 +1,7 @@
 // The quality checks a door card must pass, so a declaration can't be empty (design section 3). A card that fails any
 // check is weak, and weak counts against zero. Slice 1 applies the checks that need only the cards and the code the
-// walker read: the error-code-in-handler and server-level `unknown-door` checks come with the doors that need them.
+// walker read. An error code must appear in the door's handler file outside any card (`evidence.raises`, when the
+// walker can tell); the server-level `unknown-door` card is the walker's check, because it belongs to no one door.
 import type { Consent, Door, DoorCard, ErrorCard, GroupCard } from "./types.mts";
 
 const CONSENTS: readonly Consent[] = ["read", "write", "consequential", "person-only"];
@@ -64,6 +65,7 @@ function errorReasons(door: Door, others: readonly Door[]): string[] {
     if (typeof error.means === "string" && typeof error.fix === "string" && error.means.trim().toLowerCase() === error.fix.trim().toLowerCase()) {
       reasons.push(`errors[${i}]: fix repeats means`);
     }
+    if (door.evidence.raises && !door.evidence.raises.includes(error.code)) reasons.push(`errors[${i}]: code ${error.code} is never raised in ${door.file}`);
   });
   const mine = errorSet(errors);
   const sharing = others.filter((o) => o.id !== door.id && o.card && Array.isArray(o.card.errors) && o.card.errors.length > 0 && errorSet(o.card.errors) === mine).length;

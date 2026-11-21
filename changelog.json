@@ -2,9 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1269",
+      "version": "0.1.0-alpha.1270",
       "changes": [
         "Add the first slice of an offline replay eval: a case format, a named vocabulary of machine-state assertions, the live replay gate's reply word rules pinned by a test, and two synthetic Butler book cases whose pass and fail fixtures a self-test checks."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1269",
+      "changes": [
+        "ouro mcp-serve now tells a coding tool when to pick each of its 17 tools (the line leads each description) and serves MCP annotations (read-only, destructive, idempotent, open-world) for each.",
+        "An unknown tool name in ouro mcp-serve is now a JSON-RPC -32602 error that names the real tools it could mean, or says none is close, instead of a tool result.",
+        "Each ouro mcp-serve error says what went wrong and how to fix it, and a missing required argument is refused before any agent turn runs."
       ]
     },
     {

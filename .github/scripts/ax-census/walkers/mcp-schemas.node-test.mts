@@ -72,3 +72,35 @@ test("a tool without a name is a census error", async () => {
   deepEqual(doors, []);
   deepEqual(errors, ["mcp-noname.cjs: getToolSchemas returned a tool without a name"]);
 });
+
+test("records which of a card's error codes the source raises outside the card", async () => {
+  const { doors, errors } = await walk("mcp-raises");
+  deepEqual(errors, []);
+  deepEqual(doors[0]!.evidence.raises, ["daemon-down"]);
+});
+
+test("a server with tool cards and no unknown-door card is a census error", async () => {
+  const { errors } = await walk("mcp-no-server-card");
+  deepEqual(errors, ["mcp-no-server-card.cjs: declares tool cards but exports no serverErrors with an unknown-door card, the answer to an unknown tool name"]);
+});
+
+test("an unknown-door card the source never raises is a census error", async () => {
+  const { errors } = await walk("mcp-unknown-unraised");
+  deepEqual(errors, ["mcp-unknown-unraised.cjs: the unknown-door code is never raised in mcp-unknown-unraised.ts"]);
+});
+
+test("a server with no cards needs no server card", async () => {
+  const { doors } = await walk("mcp-ok");
+  ok(doors.every((d) => d.evidence.raises === undefined));
+});
+
+test("reads read-only evidence from the served listTools() annotations when the server exports it", async () => {
+  const { doors } = await walkMcpSchemas({ product: "harness", module: "mcp-served.cjs", source: "mcp-ok.ts", root: fixtures });
+  deepEqual(doors.map((d) => [d.id, d.evidence.readOnly ?? false]), [["mcp:ask", false], ["mcp:status", true], ["mcp:catchup", false]]);
+});
+
+test("an error card built by a helper is a declaration, not a raise", async () => {
+  const { doors, errors } = await walk("mcp-helper-card");
+  deepEqual(errors, []);
+  deepEqual(doors[0]!.evidence.raises, []);
+});
