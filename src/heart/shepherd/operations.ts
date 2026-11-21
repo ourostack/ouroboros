@@ -21,18 +21,21 @@ export const SHEPHERD_ADMIN_USAGE = "Usage: ouro shepherd status|inspect|pause|r
 const nonempty = (value: string | undefined): value is string => !!value && value === value.trim() && value.length <= 2000 && !/[\x00-\x1f\x7f-\x9f]/.test(value)
 const absolute = (value: string): boolean => path.isAbsolute(value) && path.normalize(value) === value
 
+/** The flags each Shepherd operation reads, by name without the leading --, beyond --agent and --json. */
+export const SHEPHERD_OPERATION_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  status: [], inspect: ["id", "cursor", "limit"],
+  pause: ["host", "session"], resume: ["host", "session"],
+  "mandate.grant": ["project", "task", "expires-at", "host", "session", "instance"],
+  "mandate.revoke": ["id"], reconcile: ["id", "resolution"], maintenance: ["destination"],
+}
+
 export function parseShepherdOperation(args: string[]): ShepherdOperation {
   const fail = (): never => { throw new Error(SHEPHERD_ADMIN_USAGE) }
   let operation = args[0]
   let offset = 1
   if (operation === "mandate") { operation += `.${args[1]}`; offset = 2 }
   const mutation = !["status", "inspect"].includes(operation ?? "")
-  const operationFlags: Record<string, string[]> = {
-    status: [], inspect: ["id", "cursor", "limit"],
-    pause: ["host", "session"], resume: ["host", "session"],
-    "mandate.grant": ["project", "task", "expires-at", "host", "session", "instance"],
-    "mandate.revoke": ["id"], reconcile: ["id", "resolution"], maintenance: ["destination"],
-  }
+  const operationFlags = SHEPHERD_OPERATION_FLAGS
   if (!operation || !Object.hasOwn(operationFlags, operation)) return fail()
   const allowed = new Set(["agent", "json", ...operationFlags[operation]!, ...(mutation ? ["expected-revision", "request-id"] : [])])
   const values = new Map<string, string>()
