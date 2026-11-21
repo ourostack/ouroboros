@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { deepEqual, ok } from "node:assert/strict";
-import { checkCard } from "./cards.mts";
+import { checkCard, checkDeclaredBy } from "./cards.mts";
 import type { Door, DoorCard, GroupCard } from "./types.mts";
 
 const groups: GroupCard[] = [{ id: "agent", when: "Talk to and steer a running Ouro agent." }];
@@ -129,4 +129,27 @@ test("a door the code also reaches by another word must list that alias on its c
   const stop = { id: "cli:stop", kind: "cli" as const, name: "stop", aliases: ["down"] };
   ok(checkCard(door(stop), ctx).includes("aliases: the code also accepts down; list it on the card"));
   deepEqual(checkCard(door(stop, { aliases: ["down"] }), ctx), []);
+});
+
+test("an in-turn tool's card and its approval policy must agree both ways", () => {
+  const tool = (effect: DoorCard["effect"], approval: boolean) =>
+    door({ id: "tool:restart", kind: "tool", name: "restart", evidence: { approval, mutates: "external_side_effect" } }, { effect, ...(effect === "consequential" ? { confirm: "Restart it now?" } : {}) });
+  deepEqual(checkCard(tool("consequential", true), ctx), []);
+  deepEqual(checkCard(tool("write", false), ctx), []);
+  ok(checkCard(tool("consequential", false), ctx).includes("effect: consequential, but the code never asks for approval (no approvalPolicy)"));
+  ok(checkCard(tool("write", true), ctx).includes("effect: write, but the code asks for approval; say consequential"));
+  // read with approval keeps its own reason, once.
+  deepEqual(checkCard(tool("read", true), ctx), ["effect: read, but the code mutates (external_side_effect)", "effect: read, but the code asks for approval"]);
+  // Other kinds may be consequential without a policy: the CLI asks through its gate.
+  deepEqual(checkCard(door({}, { effect: "consequential", confirm: "Ask it?" }), { groups, others: [] }).filter((r) => r.includes("approval")), []);
+});
+
+test("an approval prompt is weak unless its tool's card is valid, consequential and has its question", () => {
+  const prompt = (card: Partial<DoorCard>) => door({ id: "approval:restart", kind: "approval", name: "restart", declaredBy: "tool:restart", evidence: { approval: true } }, { id: "tool:restart", ...card });
+  deepEqual(checkDeclaredBy(prompt({ effect: "consequential", confirm: "Restart it now?" }), false), []);
+  deepEqual(checkDeclaredBy(prompt({ effect: "write" }), true), [
+    "card: tool:restart is weak",
+    "effect: the code asks for approval here, but tool:restart says write",
+    "confirm: required for consequential",
+  ]);
 });

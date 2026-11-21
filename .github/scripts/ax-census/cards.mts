@@ -86,6 +86,11 @@ function effectReasons(door: Door): string[] {
   } else if (readOnly === true) {
     reasons.push(`effect: ${effect}, but the code says read-only`);
   }
+  // An in-turn tool's approval prompt is found from its code, so the card and the code must agree both ways.
+  if (door.kind === "tool" && effect !== "read") {
+    if (effect === "consequential" && approval !== true) reasons.push("effect: consequential, but the code never asks for approval (no approvalPolicy)");
+    if (effect !== "consequential" && approval === true) reasons.push(`effect: ${effect}, but the code asks for approval; say consequential`);
+  }
   if (effect === "consequential" && !isOneLine(confirm)) reasons.push("confirm: required for consequential");
   return reasons;
 }
@@ -116,5 +121,18 @@ export function checkCard(door: Door, ctx: { groups: readonly GroupCard[]; other
   reasons.push(...groupReasons(card, ctx.groups));
   reasons.push(...errorReasons(door, ctx.others));
   reasons.push(...effectReasons(door));
+  return reasons;
+}
+
+/**
+ * The reasons a door declared by another door's card is weak: an approval prompt is declared by its tool's card,
+ * which must itself be valid, say `consequential` and carry the `confirm` question.
+ */
+export function checkDeclaredBy(door: Door, ownerWeak: boolean): string[] {
+  const card = door.card!;
+  const reasons: string[] = [];
+  if (ownerWeak) reasons.push(`card: ${door.declaredBy} is weak`);
+  if (card.effect !== "consequential") reasons.push(`effect: the code asks for approval here, but ${door.declaredBy} says ${card.effect}`);
+  if (!isOneLine(card.confirm)) reasons.push("confirm: required for consequential");
   return reasons;
 }

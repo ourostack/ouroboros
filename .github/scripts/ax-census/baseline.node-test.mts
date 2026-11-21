@@ -87,3 +87,24 @@ test("a kind the base branch doesn't walk yet may join the baseline; a kind it w
     "cli:down: added to the baseline. Fix: declare the door instead; the baseline only shrinks.",
   ]);
 });
+
+test("a tool source's passthrough and approvals are part of what can't be removed", () => {
+  const tools = { walker: "tool-schemas", module: "dist", source: "src", passthrough: ["src/m.ts#schema"], approvals: ["src/t.ts#classify"] };
+  deepEqual(checkSources([tools], [tools]), []);
+  // A new passthrough hides tools; a dropped resolver hides prompts.
+  deepEqual(checkSources([{ ...tools, passthrough: [...tools.passthrough, "src/n.ts#more"] }], [tools]).length, 1);
+  deepEqual(checkSources([{ ...tools, approvals: [] }], [tools]), [
+    "tool-schemas dist src passthrough src/m.ts#schema approvals src/t.ts#classify: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.",
+  ]);
+});
+
+test("a source's re-encodings and cards are part of its key, and it may drop a handlers file but not add one", () => {
+  const tools = { walker: "tool-schemas", module: "dist", source: "src", handlers: ["src/d.ts"], reshape: ["src/s.ts#flat"] };
+  deepEqual(checkSources([{ ...tools, reshape: [...tools.reshape, "src/r.ts#more"] }], [tools]).length, 1);
+  deepEqual(checkSources([{ ...tools, cards: "src/cards.ts" }], [tools]).length, 1);
+  deepEqual(checkSources([{ ...tools, handlers: [] }], [tools]), []);
+  // A handlers file full of codes would make every card's errors count as raised.
+  deepEqual(checkSources([{ ...tools, handlers: ["src/d.ts", "src/all-codes.ts"] }], [tools]), [
+    "tool-schemas dist src reshape src/s.ts#flat: handlers src/all-codes.ts is new here. Fix: raise each code where the door handles it; a new handlers file can make any card's codes count as raised.",
+  ]);
+});
