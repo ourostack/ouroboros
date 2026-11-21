@@ -1,7 +1,8 @@
 name: ax-xray
 
 # The Ouro AX X-ray checks the ouro CLI the way an agent calls it, against a loopback mock with made-up data, and the
-# action claims check the declarations in actions/. Both write reports to artifacts named `xray` and `actions-xray`.
+# action claims check the declarations in actions/, and the census (.github/scripts/ax-census) counts the agent doors
+# the code has, declared or not. They write reports to artifacts named `xray`, `actions-xray` and `ax-census`.
 # The X-ray gates with --conformance: the job fails unless the CLI conforms.
 
 on:
@@ -35,6 +36,43 @@ jobs:
 
       - name: Build the CLI
         run: npm run build
+
+      # The census's own tests run after the build, so the test over the real mcp-serve server isn't skipped.
+      - name: Ouro AX census tests
+        run: |
+          npx tsc -p .github/scripts/ax-census
+          node --test --experimental-test-coverage \
+            --test-coverage-include='.github/scripts/ax-census/**/*.m[tj]s' \
+            --test-coverage-exclude='.github/scripts/ax-census/**/*.node-test.mts' \
+            --test-coverage-exclude='.github/scripts/ax-census/**/fixtures/**' \
+            --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=90 \
+            '.github/scripts/ax-census/**/*.node-test.mts'
+
+      # The census counts every agent door it walks and fails when one without a valid card isn't on
+      # ax/census.baseline.json, or when this pull request adds to the baseline. There is no override.
+      - name: Ouro AX census
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p ax-census
+          base_baseline=none; base_config=absent
+          if [ -n "$BASE_REF" ]; then
+            git fetch --depth=1 origin "$BASE_REF"
+            if git cat-file -e FETCH_HEAD:ax/census.config.json 2>/dev/null; then base_config=present; fi
+            if git show FETCH_HEAD:ax/census.baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then base_baseline="$RUNNER_TEMP/base-baseline.json"; fi
+          fi
+          node .github/scripts/ax-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
+            --base-baseline "$base_baseline" --base-config "$base_config" \
+            --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --out ax-census/census.json | tee ax-census/census.txt
+
+      - name: Upload the census
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ax-census
+          path: ax-census/
+          if-no-files-found: warn
 
       - name: Start the made-up-data mock
         run: |

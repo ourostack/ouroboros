@@ -1,0 +1,5 @@
+{
+  "product": "harness",
+  "sources": [{ "walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts" }],
+  "groups": []
+}

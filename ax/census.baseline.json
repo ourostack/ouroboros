@@ -1,0 +1,22 @@
+{
+  "census": "census/1",
+  "gaps": [
+    "mcp:ask",
+    "mcp:catchup",
+    "mcp:check_guidance",
+    "mcp:check_response",
+    "mcp:check_scope",
+    "mcp:delegate",
+    "mcp:get_context",
+    "mcp:get_task",
+    "mcp:report_blocker",
+    "mcp:report_complete",
+    "mcp:report_progress",
+    "mcp:request_decision",
+    "mcp:search_facts",
+    "mcp:send_message",
+    "mcp:shepherd_feedback",
+    "mcp:shepherd_feedback_status",
+    "mcp:status"
+  ]
+}
