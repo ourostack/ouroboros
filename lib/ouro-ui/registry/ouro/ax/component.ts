@@ -175,6 +175,11 @@ interface AxRead {
   fields: readonly string[];
   consent: ReadConsent;
   /**
+   * Why a field named like speech (`text`, `caption`, `transcript`) is not what people say, so the read may declare
+   * `consent: "none"`. Leave it out for a read that carries speech, and declare `consent: "listening"`.
+   */
+  notSpeech?: string;
+  /**
    * The read also streams, and its stream delivers lines only on a words trigger (such as `--on mention`): asked for
    * every line, it refuses. Bind the untriggered request as the read's `push` twin and the trigger as its `trigger`.
    *
@@ -267,6 +272,9 @@ interface UiEntry {
 // A twin's `--agent <placeholder>`: who is calling, filled in by the agent.
 const AGENT_WORDS = /(?:^|\s)--agent\s+<[^<>\s]+>(?:\s|$)/;
 
+// Field names that carry what people say: a read of them waits for a follow, so it never declares consent "none".
+const SPEECH_FIELDS = /^(?:text|captions?|transcripts?|utterances?|said)$/i;
+
 const oneLine = (v: unknown): v is string => typeof v === "string" && v.trim() !== "" && !/[\r\n]/.test(v);
 
 /**
@@ -311,6 +319,9 @@ function defineComponentAx(def: { component: string; reads: readonly AxRead[]; a
     reads.add(r.id);
     if (!Array.isArray(r.fields) || r.fields.length === 0 || !r.fields.every(oneLine)) throw fail(thing, "it lists no fields", 'fields: ["<a field its twin\'s --json carries>"]');
     if (!(READ_CONSENTS as readonly unknown[]).includes(r.consent)) throw fail(thing, `consent is ${JSON.stringify(r.consent)}`, 'consent: "none", or "listening" for what people say');
+    const spoken = r.fields.find((f) => SPEECH_FIELDS.test(f));
+    if (r.consent === "none" && spoken !== undefined && r.notSpeech === undefined) throw fail(thing, `field "${spoken}" carries what people say, and the read declares consent "none"`, 'consent: "listening", or notSpeech: "<why this field is not speech>"');
+    if (r.notSpeech !== undefined && !oneLine(r.notSpeech)) throw fail(thing, "notSpeech needs a one-line reason", 'notSpeech: "<why this field is not speech>"');
     if (r.push !== undefined && r.push !== "filtered") throw fail(thing, `push is ${JSON.stringify(r.push)}`, 'push: "filtered", or leave it out');
   }
   const ids = new Set<string>();
