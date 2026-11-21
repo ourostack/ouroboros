@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1300",
+      "changes": [
+        "Every ouro shepherd, rsvp, lifecycle, setup, plugin and dns command has an Ouro AX card, so an agent reads when to use it and how it fails."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1299",
       "changes": [
         "Every ouro a2a, gateway, desk, task, presence, voice and BlueBubbles command has an Ouro AX card, so an agent reads when to use it and how it fails."
