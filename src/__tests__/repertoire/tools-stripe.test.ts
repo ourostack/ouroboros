@@ -346,7 +346,7 @@ describe("stripe_create_card handler", () => {
       merchant_categories: "travel",
     }, familyContext(tmp.agentRoot))
 
-    expect(result).toContain("reservation race")
+    expect(result).toBe("commerce authority required: reservation race (code: commerce-authority-required)")
     expect(mockCreateVirtualCard).not.toHaveBeenCalled()
     reserveSpy.mockRestore()
   })

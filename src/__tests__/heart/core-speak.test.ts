@@ -222,7 +222,7 @@ describe("speak interception in runAgent", () => {
     expect(callbacks.onTextChunk).toHaveBeenCalledWith("current final reply")
     expect(JSON.stringify(messages)).not.toContain("call_speak_1")
     expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("call_speak_1")
-    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("was not advertised")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("was not advertised for this channel; no handler was executed. (code: unknown-tool)")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "engine.unadvertised_tool_blocked",
       component: "engine",

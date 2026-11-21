@@ -10,6 +10,7 @@ import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference 
 import { FIND_TOOLS_NAME, deferredNamesCalledInHistory, deferredToolLoadingEnabled, formatFindToolsResult, partitionTools, recordDeferredToolsLoaded, searchDeferredTools } from "../repertoire/deferred-tools";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
+import { withCode } from "../repertoire/tools-base";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -2466,8 +2467,8 @@ export async function runAgent(
           for (const entry of validatedCalls) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
             const rejection = unadvertisedCall
-              ? `rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`
-              : `invalid tool arguments: ${detail}`
+              ? withCode(`rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`, "unknown-tool")
+              : withCode(`invalid tool arguments: ${detail}`, "invalid-arguments")
             rejections.push(rejection)
             options?.toolBoundaryObserver?.({
               name: entry.call.name,
