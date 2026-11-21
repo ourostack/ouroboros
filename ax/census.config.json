@@ -35,6 +35,9 @@
     {"id": "a2a", "when": "Let an agent work with other agents: publish its card, onboard peers, message them, and grant them trust."},
     {"id": "desk", "when": "Keep an agent's work records: tasks, tracks, lessons and friction in its desk, plus Hosted Desk accounts."},
     {"id": "presence", "when": "Place an agent across machines and channels: rosters and failover, voice calls, and its iMessage host."},
+    {"id": "shepherd", "when": "Run and administer Shepherd, which keeps an agent's coding sessions: chat, status, pauses and mandates."},
+    {"id": "rsvp", "when": "Run an agent's RSVP habit: check it, move it off the legacy sender, refresh and send its report."},
+    {"id": "dns", "when": "Change a domain's DNS records and certificate from a binding file, safely: back up, plan, apply, verify, roll back."},
     {"id": "habits", "when": "Schedule, test and look back at the recurring jobs an agent runs on its own, and wake it early."}
   ]
 }
