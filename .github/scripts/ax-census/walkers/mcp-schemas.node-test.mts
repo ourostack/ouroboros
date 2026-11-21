@@ -98,3 +98,9 @@ test("reads read-only evidence from the served listTools() annotations when the 
   const { doors } = await walkMcpSchemas({ product: "harness", module: "mcp-served.cjs", source: "mcp-ok.ts", root: fixtures });
   deepEqual(doors.map((d) => [d.id, d.evidence.readOnly ?? false]), [["mcp:ask", false], ["mcp:status", true], ["mcp:catchup", false]]);
 });
+
+test("an error card built by a helper is a declaration, not a raise", async () => {
+  const { doors, errors } = await walk("mcp-helper-card");
+  deepEqual(errors, []);
+  deepEqual(doors[0]!.evidence.raises, []);
+});

@@ -104,7 +104,12 @@ describe("mcp-serve's Ouro AX cards", () => {
   it("serves annotations equal to ouro-actions' annotationsOf for each card", () => {
     for (const schema of getToolSchemas()) {
       const action = { consent: schema.ax.effect, destructive: schema.ax.destructive, idempotent: schema.ax.idempotent } as unknown as Action
-      expect(mcpAnnotationsOf(schema.ax), schema.name).toEqual(annotationsOf(action))
+      // The one difference: a card that runs an agent turn says `openWorld`, because the turn can reach outside this server.
+      const expected = { ...annotationsOf(action), ...(schema.ax.openWorld ? { openWorldHint: true } : {}) }
+      expect(mcpAnnotationsOf(schema.ax), schema.name).toEqual(expected)
+    }
+    for (const name of ["send_message", "ask", "delegate", "check_scope", "request_decision", "check_guidance", "report_progress", "report_blocker", "report_complete"]) {
+      expect(mcpAnnotationsOf(cardOf(name)), name).toEqual({ readOnlyHint: false, destructiveHint: false, openWorldHint: true })
     }
     expect(mcpAnnotationsOf(cardOf("status"))).toEqual({ readOnlyHint: true, destructiveHint: false, openWorldHint: false })
     expect(mcpAnnotationsOf(cardOf("check_response")).readOnlyHint).toBe(false)
@@ -138,13 +143,33 @@ describe("an unknown tool", () => {
     expect(frame.result).toBeUndefined()
     expect(frame.error?.code).toBe(-32602)
     expect(frame.error?.message).toBe('Unknown tool "sendmessage". Did you mean "send_message"? tools/list has all 17.')
-    expect(frame.error?.data).toEqual({ code: "unknown-door", tool: "sendmessage", nearest: "send_message", means: serverErrors[0]!.means, fix: serverErrors[0]!.fix })
+    expect(frame.error?.data).toEqual({ code: "unknown-door", tool: "sendmessage", nearest: "send_message", candidates: ["send_message"], means: serverErrors[0]!.means, fix: serverErrors[0]!.fix })
     expect(runtime.send).not.toHaveBeenCalled()
   })
 
-  it("finds the nearest name by spelling", async () => {
+  it("finds the nearest name by spelling, part of a name, or a host's server prefix", async () => {
     expect((await call("get_tasks")).error?.data?.nearest).toBe("get_task")
     expect((await call("feedback_status")).error?.data?.nearest).toBe("shepherd_feedback_status")
+    expect((await call("mcp__slugger__ask")).error?.data?.nearest).toBe("ask")
+    expect((await call("blocker")).error?.data?.nearest).toBe("report_blocker")
+    expect((await call("complete")).error?.data?.nearest).toBe("report_complete")
+    expect((await call("search")).error?.data?.nearest).toBe("search_facts")
+    expect((await call("send_message_now")).error?.data?.nearest).toBe("send_message")
+  })
+
+  it("lists every tool a partial name matches, rather than guessing one", async () => {
+    const frame = await call("report")
+    expect(frame.error?.data).toMatchObject({ nearest: null, candidates: ["report_progress", "report_blocker", "report_complete"] })
+    expect(frame.error?.message).toBe('Unknown tool "report". Did you mean one of "report_progress", "report_blocker", "report_complete"? tools/list has all 17.')
+    expect((await call("feedback")).error?.data?.candidates).toEqual(["shepherd_feedback", "shepherd_feedback_status"])
+  })
+
+  it("suggests nothing when no tool is close, rather than a wrong one", async () => {
+    for (const name of ["help", "x", "weather"]) {
+      const frame = await call(name)
+      expect(frame.error?.data?.nearest, name).toBeNull()
+      expect(frame.error?.message).toBe(`Unknown tool "${name}". No tool has a name close to it; tools/list has all 17.`)
+    }
   })
 
   it("answers a call with no tool name the same way, with nothing to suggest", async () => {
@@ -154,7 +179,7 @@ describe("an unknown tool", () => {
     const frame = connection.frames[0]!
     expect(frame.error?.code).toBe(-32602)
     expect(frame.error?.message).toBe("tools/call needs params.name, the tool to call. tools/list has all 17.")
-    expect(frame.error?.data).toMatchObject({ code: "unknown-door", tool: null, nearest: null })
+    expect(frame.error?.data).toMatchObject({ code: "unknown-door", tool: null, nearest: null, candidates: [] })
   })
 })
 
@@ -184,7 +209,8 @@ describe("isError results carry the card's text and fix", () => {
     runtime.send.mockReturnValue(new Promise(() => undefined))
     const frame = await call("ask", { question: "what now?" })
     expectCardError(frame, "ask", "turn-timed-out")
-    expect(errorOf("ask", "turn-timed-out").fix).toContain("check_response")
+    expect(errorOf("ask", "turn-timed-out").fix).toContain("send_message")
+    expect(errorOf("ask", "turn-timed-out").fix).not.toContain("check_response")
   })
 
   it("a turn the agent reports as failed carries its reason", async () => {

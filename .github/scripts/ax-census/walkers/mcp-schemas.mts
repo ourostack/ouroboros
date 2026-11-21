@@ -1,10 +1,13 @@
 // The mcp-serve walker: the doors are exactly what the built server's getToolSchemas() returns, and each door's line
 // comes from its `name: "<literal>"` in the TypeScript source, found in the syntax tree (never a regex over text).
-// A name with no literal in source is still a door, with `line: null`. Read-only evidence is the served
-// `readOnlyHint`: from `listTools()` when the module exports it (what tools/list answers), else on the schema. Every other string literal outside a card (an
-// `ax` property or the `serverErrors` declaration) is a code the handler may raise: a card's error code counts as
-// raised only when one of these matches it. A server that declares any tool card must export `serverErrors` with an
-// `unknown-door` card, the answer to a tool name it doesn't have, and raise that code too.
+// A name with no literal in source is still a door, with `line: null`.
+//
+// Read-only evidence is the served `readOnlyHint`: from `listTools()` when the module exports it (what tools/list
+// answers), else on the schema. Where the server derives it from the card, as mcp-serve does, it restates the card.
+//
+// Every string literal outside a card (an `ax` property, the `serverErrors` declaration, or any `{ code, means, fix }`
+// error card) is a code the handler may raise; a card's error code counts as raised only when one matches it. A server
+// that declares any tool card must export `serverErrors` with an `unknown-door` card and raise that code too.
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, relative, resolve } from "node:path";
@@ -13,9 +16,20 @@ import type { Door, DoorCard, WalkerOptions, WalkResult } from "../types.mts";
 
 const isText = (node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral => ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
 
-/** A node that holds a card: an `ax: ...` property, or the `serverErrors` declaration. Its literals are declarations, not raises. */
+const keyOf = (p: ts.ObjectLiteralElementLike): string | null =>
+  (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) ? p.name.text : null;
+
+/**
+ * A node that holds a card: an `ax: ...` property, the `serverErrors` declaration, or an error card wherever it is
+ * built (an object literal with `code`, `means` and `fix`, such as one a helper returns). Its literals are
+ * declarations, not raises.
+ */
 function isCard(node: ts.Node): boolean {
   if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))) return node.name.text === "ax";
+  if (ts.isObjectLiteralExpression(node)) {
+    const keys = new Set(node.properties.map(keyOf));
+    return keys.has("code") && keys.has("means") && keys.has("fix");
+  }
   return ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "serverErrors";
 }
 

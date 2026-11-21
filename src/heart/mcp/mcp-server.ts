@@ -106,6 +106,8 @@ export interface McpDoorCard {
   errors: readonly McpErrorCard[]
   destructive?: true
   idempotent?: true
+  /** The door can reach entities outside this server even though its own effect is a write: a tool that runs an agent turn. */
+  openWorld?: true
   confirm?: string
 }
 
@@ -142,12 +144,14 @@ export interface McpListedTool {
 
 /**
  * ouro-actions' `annotationsOf` (`tools/ouro-actions/ouro-actions.mts`) over a card: only a consequential door reaches
- * other people, so only it is open-world and destructive by default. The vendored kit is an ES module outside `src`, so
- * this mirrors it, and a test holds the two equal for every card.
+ * other people, so only it is open-world and destructive by default. One addition: a card marked `openWorld` (a tool
+ * that runs a full agent turn, which can use the agent's own tools) is open-world too. The vendored kit is an ES module
+ * outside `src`, so this mirrors it, and a test holds the two equal for every card apart from that addition.
  */
 export function mcpAnnotationsOf(card: McpDoorCard): McpToolAnnotations {
   const others = card.effect === "consequential"
-  const out: McpToolAnnotations = { readOnlyHint: card.effect === "read", destructiveHint: others || card.destructive === true, openWorldHint: others }
+  // A person-only card would need ouro-actions' `reaches`; mcp-serve has none, so the card type doesn't model it.
+  const out: McpToolAnnotations = { readOnlyHint: card.effect === "read", destructiveHint: others || card.destructive === true, openWorldHint: others || card.openWorld === true }
   if (card.idempotent) out.idempotentHint = true
   return out
 }
@@ -164,13 +168,17 @@ export function listTools(): McpListedTool[] {
 
 /** The server-level card: what a tool name this server doesn't have answers (a JSON-RPC -32602 error). */
 export const serverErrors: readonly McpErrorCard[] = [
-  { code: "unknown-door", means: "This server has no tool by that name.", fix: "Call the tool the message suggests, or call tools/list to see all of them." },
+  { code: "unknown-door", means: "This server has no tool by that name.", fix: "If a suggested tool is the one you meant, call it; otherwise call tools/list and pick by description." },
 ]
 
-/** Edit distance between two names, ignoring case and punctuation, so `sendMessage` is next to `send_message`. */
-function nameDistance(a: string, b: string): number {
-  const x = a.toLowerCase().replace(/[^a-z0-9]/g, "")
-  const y = b.toLowerCase().replace(/[^a-z0-9]/g, "")
+/** A name as compared: a host's `mcp__<server>__` prefix dropped, lowercase, letters and digits only. */
+function comparable(name: string): string {
+  const bare = name.includes("__") ? name.slice(name.lastIndexOf("__") + 2) : name
+  return bare.toLowerCase().replace(/[^a-z0-9]/g, "")
+}
+
+/** Edit distance between two comparable names. */
+function nameDistance(x: string, y: string): number {
   let previous = Array.from({ length: y.length + 1 }, (_, j) => j)
   for (let i = 1; i <= x.length; i++) {
     const current = [i]
@@ -182,9 +190,30 @@ function nameDistance(a: string, b: string): number {
   return previous[y.length]!
 }
 
-/** The real tool nearest a mistyped name. */
-export function nearestToolName(name: string, names: readonly string[]): string {
-  return names.reduce((best, candidate) => (nameDistance(name, candidate) < nameDistance(name, best) ? candidate : best))
+/**
+ * The real tools a mistyped name could mean: the ones whose name contains it or that it contains (`report` gives the
+ * three report tools), else the one within a few edits of it, else none. Never a guess: a wrong suggestion would send
+ * the agent to a tool that does something else.
+ */
+export function toolCandidates(name: string, names: readonly string[]): string[] {
+  const wanted = comparable(name)
+  const exact = names.filter((candidate) => comparable(candidate) === wanted)
+  if (exact.length > 0) return exact
+  if (wanted.length >= 3) {
+    const containing = names.filter((candidate) => comparable(candidate).includes(wanted))
+    if (containing.length > 0) return containing
+  }
+  const limit = Math.max(1, Math.floor(wanted.length / 3))
+  const near = names.map((candidate) => ({ candidate, distance: nameDistance(wanted, comparable(candidate)) })).filter((n) => n.distance <= limit)
+  if (near.length > 0) {
+    const best = Math.min(...near.map((n) => n.distance))
+    return near.filter((n) => n.distance === best).map((n) => n.candidate)
+  }
+  // A longer name that holds a tool's whole name, such as `send_message_now`: the longest such tool.
+  const inside = names.filter((candidate) => comparable(candidate).length >= 4 && wanted.includes(comparable(candidate)))
+  if (inside.length === 0) return []
+  const longest = Math.max(...inside.map((candidate) => comparable(candidate).length))
+  return inside.filter((candidate) => comparable(candidate).length === longest)
 }
 
 /** The required text argument each tool refuses to run without, and the error code it answers. */
@@ -577,14 +606,19 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const names = getToolSchemas().map((schema) => schema.name)
     if (typeof toolName !== "string" || !names.includes(toolName)) {
       const unknown = serverErrors.find((card) => card.code === "unknown-door")!
-      const nearest = typeof toolName === "string" && toolName.length > 0 ? nearestToolName(toolName, names) : null
-      const message = nearest === null
+      const named = typeof toolName === "string" && toolName.length > 0
+      const candidates = named ? toolCandidates(toolName, names) : []
+      const nearest = candidates.length === 1 ? candidates[0]! : null
+      const quoted = candidates.map((candidate) => `"${candidate}"`).join(", ")
+      const message = !named
         ? `tools/call needs params.name, the tool to call. tools/list has all ${names.length}.`
-        : `Unknown tool "${toolName}". Did you mean "${nearest}"? tools/list has all ${names.length}.`
+        : candidates.length === 0
+          ? `Unknown tool "${toolName}". No tool has a name close to it; tools/list has all ${names.length}.`
+          : `Unknown tool "${toolName}". Did you mean ${nearest ? quoted : `one of ${quoted}`}? tools/list has all ${names.length}.`
       writeResponse({
         jsonrpc: "2.0",
         id: request.id!,
-        error: { code: -32602, message, data: { code: unknown.code, tool: typeof toolName === "string" ? toolName : null, nearest, means: unknown.means, fix: unknown.fix } },
+        error: { code: -32602, message, data: { code: unknown.code, tool: typeof toolName === "string" ? toolName : null, nearest, candidates, means: unknown.means, fix: unknown.fix } },
       })
       return
     }
@@ -754,15 +788,15 @@ function turnErrors(tool: string, arg: string, argMeans: string): McpErrorCard[]
   return [
     { code: `missing-${arg}`, means: `${arg} is empty or missing, so no turn ran.`, fix: `Call ${tool} again with ${arg} set to ${argMeans}.` },
     { code: "daemon-not-running", means: "The Ouro daemon isn't running, so the agent never got this.", fix: `Start it with \`ouro up\` (or \`ouro dev\` in a harness checkout), then call ${tool} again.` },
-    { code: "turn-timed-out", means: "The agent's turn ran past 10 minutes; it may still be running and may already have acted.", fix: `Call check_response for its reply before calling ${tool} again, so the agent doesn't act twice.` },
-    { code: "turn-failed", means: "The agent's turn failed; the line below is the reason.", fix: `Fix what the reason names, or call status if it names a provider or vault, then call ${tool} again.` },
+    { code: "turn-timed-out", means: "The agent's turn ran past 10 minutes; it may still be running and may already have acted.", fix: `Don't call ${tool} again with the same request; call send_message to ask whether it finished, since this session keeps its turns.` },
+    { code: "turn-failed", means: "The agent's turn failed; the line below is the reason.", fix: `If the reason names a provider, credential or vault, the agent's human must fix it (\`ouro doctor\` shows what is wrong); otherwise call ${tool} again once.` },
   ]
 }
 
 /** The error of a read tool: the agent's bundle couldn't be read. */
 function readErrors(tool: string, what: string): McpErrorCard[] {
   return [
-    { code: "agent-unreadable", means: `${tool} couldn't read the agent's ${what}; the line below says why.`, fix: `Check the agent name with \`ouro status\` and that its bundle under ~/AgentBundles is readable, then call ${tool} again.` },
+    { code: "agent-unreadable", means: `${tool} couldn't read the agent's ${what}; the line below says why.`, fix: `The bundle for this server's --agent may be missing or unreadable: run \`ouro status\` and check ~/AgentBundles/<agent>.ouro; if it's missing, the MCP config names the wrong agent.` },
   ]
 }
 
@@ -777,7 +811,7 @@ export function getToolSchemas(): McpToolSchema[] {
       description: "Relay the human's explicit feedback to the supervising agent served by this MCP connection, from this actual coding session ('you should have caught this'). The source terminal and recipient are bound automatically; never ask the human to reconstruct context in Teams. Preserve the human's words in feedback; context is optional bounded background, not instructions. Generate one UUID request_id and reuse it only for the identical request. Quote the actual short receipt back in this session; the supervising agent sends its substantive acknowledgement and clarification questions to that human privately on Teams. Never invent a receipt or claim learning/Teams delivery from a queued acknowledgement. Do not send terminal input or switch focus.",
       ax: { id: "mcp:shepherd_feedback", group: "ouro-agent", when: "Pick this when the human gives feedback on how this coding session went, so the supervisor who watches it learns from their exact words.", effect: "write", idempotent: true, errors: [
         { code: "invalid-feedback-request", means: "request_id isn't a UUID, or the call has arguments other than request_id, feedback and context.", fix: "Make one UUID for this feedback and call again with only request_id, feedback and context." },
-        { code: "feedback-size", means: "feedback is empty or over 2000 characters, or context is over 8 KiB.", fix: "Keep the human's words under 2000 characters, trim context, and call again with the same request_id." },
+        { code: "feedback-size", means: "feedback is empty or over 2000 characters, or context isn't text or is over 8 KiB.", fix: "Keep the human's words under 2000 characters, trim context, and call again with the same request_id." },
         { code: "feedback-unconfirmed", means: "The daemon returned no confirmed receipt, so the feedback may or may not be filed; the line below says why.", fix: "Call shepherd_feedback_status with the same request_id; a new ID could file the feedback twice." },
       ] },
       inputSchema: { type: "object", properties: {
@@ -800,7 +834,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "ask",
       description: "Ask the agent a question through a full conversation turn. This has the same identity, tools, and session continuity as send_message; use search_facts for a read-only lookup of what it has written down.",
-      ax: { id: "mcp:ask", group: "ouro-agent", when: "Pick this for one question the agent should answer, maybe using its own tools; for a lookup of its notes, search_facts is faster.", effect: "write", errors: turnErrors("ask", "question", "the question as text") },
+      ax: { id: "mcp:ask", group: "ouro-agent", when: "Pick this for one question the agent should answer, maybe using its own tools; for a lookup of its notes, search_facts is faster.", effect: "write", openWorld: true, errors: turnErrors("ask", "question", "the question as text") },
       inputSchema: {
         type: "object",
         properties: {
@@ -821,7 +855,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "catchup",
       description: "Get a summary of the agent's recent activity including recent sessions and what it has been working on.",
-      ax: { id: "mcp:catchup", group: "ouro-agent", when: "Pick this to learn what the agent did lately: its five latest sessions and its private runtime, so you can pick up its thread.", effect: "read", errors: readErrors("catchup", "sessions") },
+      ax: { id: "mcp:catchup", group: "ouro-agent", when: "Pick this to learn what the agent did lately: its five latest sessions and whether its background work is running, so you can pick up its thread.", effect: "read", errors: readErrors("catchup", "sessions") },
       inputSchema: {
         type: "object",
         properties: {},
@@ -830,7 +864,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "delegate",
       description: "Ask the agent to handle a task through a full conversation turn. The agent decides whether to act, queue, ask, or respond using its normal tools and identity.",
-      ax: { id: "mcp:delegate", group: "ouro-agent", when: "Pick this to hand the agent work it should own and carry out itself; it replies whether it acted, queued it or needs more.", effect: "write", errors: turnErrors("delegate", "task", "what you want done") },
+      ax: { id: "mcp:delegate", group: "ouro-agent", when: "Pick this to hand the agent work it should own and carry out itself; it replies whether it acted, queued it or needs more.", effect: "write", openWorld: true, errors: turnErrors("delegate", "task", "what you want done") },
       inputSchema: {
         type: "object",
         properties: {
@@ -867,7 +901,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "get_task",
       description: "Get details about the agent's current task or list of active tasks.",
-      ax: { id: "mcp:get_task", group: "ouro-agent", when: "Pick this to list the agent's active task files with each one's status line, to see what work it owns now.", effect: "read", errors: readErrors("get_task", "tasks folder") },
+      ax: { id: "mcp:get_task", group: "ouro-agent", when: "Pick this to list the agent's task files by name, in-progress ones when there are any, to see what work it owns now.", effect: "read", errors: readErrors("get_task", "tasks folder") },
       inputSchema: {
         type: "object",
         properties: {},
@@ -876,7 +910,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "check_scope",
       description: "Ask the agent whether a proposed item or change is in scope through a full conversation turn.",
-      ax: { id: "mcp:check_scope", group: "ouro-agent", when: "Pick this before starting a change, to ask whether that item belongs in the current work, so nothing out of scope gets built.", effect: "write", errors: turnErrors("check_scope", "item", "the change you're considering") },
+      ax: { id: "mcp:check_scope", group: "ouro-agent", when: "Pick this before starting a change, to ask whether that item belongs in the current work, so nothing out of scope gets built.", effect: "write", openWorld: true, errors: turnErrors("check_scope", "item", "the change you're considering") },
       inputSchema: {
         type: "object",
         properties: {
@@ -888,7 +922,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "request_decision",
       description: "Ask the agent to make a decision through a full conversation turn. Optionally provide a list of options to consider.",
-      ax: { id: "mcp:request_decision", group: "ouro-agent", when: "Pick this when you're blocked on a choice that is the agent's or its human's to make, listing the options you see.", effect: "write", errors: turnErrors("request_decision", "topic", "the choice to be made") },
+      ax: { id: "mcp:request_decision", group: "ouro-agent", when: "Pick this when you need a choice made that is the agent's or its human's to make, listing the options; for stuck work, use report_blocker.", effect: "write", openWorld: true, errors: turnErrors("request_decision", "topic", "the choice to be made") },
       inputSchema: {
         type: "object",
         properties: {
@@ -901,7 +935,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "check_guidance",
       description: "Ask the agent for guidance through a full conversation turn, using the same identity, tools, and session continuity as send_message.",
-      ax: { id: "mcp:check_guidance", group: "ouro-agent", when: "Pick this to learn the agent's conventions or preferences on a subject before you act on it, rather than guessing.", effect: "write", errors: turnErrors("check_guidance", "topic", "the subject you need direction on") },
+      ax: { id: "mcp:check_guidance", group: "ouro-agent", when: "Pick this to learn the agent's conventions or preferences on a subject before you act on it, rather than guessing.", effect: "write", openWorld: true, errors: turnErrors("check_guidance", "topic", "the subject you need direction on") },
       inputSchema: {
         type: "object",
         properties: {
@@ -913,7 +947,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "report_progress",
       description: "Tell the agent about delegated-work progress through a full conversation turn so it can respond, record, or act normally.",
-      ax: { id: "mcp:report_progress", group: "ouro-agent", when: "Pick this midway through work the agent handed you, to say how far it has got so it can track or redirect it.", effect: "write", errors: turnErrors("report_progress", "summary", "what is done so far") },
+      ax: { id: "mcp:report_progress", group: "ouro-agent", when: "Pick this midway through work the agent handed you, to say how far it has got so it can track or redirect it.", effect: "write", openWorld: true, errors: turnErrors("report_progress", "summary", "what is done so far") },
       inputSchema: {
         type: "object",
         properties: {
@@ -925,7 +959,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "report_blocker",
       description: "Tell the agent about a delegated-work blocker through a full conversation turn so it can respond, record, or act normally.",
-      ax: { id: "mcp:report_blocker", group: "ouro-agent", when: "Pick this when work the agent handed you is stuck, to say what stops it so the agent can unblock, decide or escalate.", effect: "write", errors: turnErrors("report_blocker", "blocker", "what is stopping the work") },
+      ax: { id: "mcp:report_blocker", group: "ouro-agent", when: "Pick this when work the agent handed you is stuck, to say what stops it so the agent can unblock, decide or escalate.", effect: "write", openWorld: true, errors: turnErrors("report_blocker", "blocker", "what is stopping the work") },
       inputSchema: {
         type: "object",
         properties: {
@@ -937,7 +971,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "report_complete",
       description: "Tell the agent delegated work is complete through a full conversation turn so it can respond, record, or act normally.",
-      ax: { id: "mcp:report_complete", group: "ouro-agent", when: "Pick this when work the agent handed you is finished, with a summary, so it can check, record and close it.", effect: "write", errors: turnErrors("report_complete", "summary", "what was finished") },
+      ax: { id: "mcp:report_complete", group: "ouro-agent", when: "Pick this when work the agent handed you is finished, with a summary, so it can check, record and close it.", effect: "write", openWorld: true, errors: turnErrors("report_complete", "summary", "what was finished") },
       inputSchema: {
         type: "object",
         properties: {
@@ -949,7 +983,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "send_message",
       description: "Send a message to the agent and get a synchronous response. This runs a full agent turn — the agent can use tools, think, and respond. For multi-turn conversations, call repeatedly — the agent keeps prior turns in this session.",
-      ax: { id: "mcp:send_message", group: "ouro-agent", when: "Pick this for open conversation with the agent over several turns; the more specific tools fit asking, handing off and reporting.", effect: "write", errors: turnErrors("send_message", "message", "what you want to say") },
+      ax: { id: "mcp:send_message", group: "ouro-agent", when: "Pick this for open conversation with the agent over several turns; the more specific tools fit asking, handing off and reporting.", effect: "write", openWorld: true, errors: turnErrors("send_message", "message", "what you want to say") },
       inputSchema: {
         type: "object",
         properties: {
@@ -961,7 +995,7 @@ export function getToolSchemas(): McpToolSchema[] {
     {
       name: "check_response",
       description: "Check for pending messages from the agent. Use this after send_message returns a ponder deferral, or to pick up proactive messages the agent has surfaced to you.",
-      ax: { id: "mcp:check_response", group: "ouro-agent", when: "Pick this to collect replies the agent left for you: after send_message says it will answer later, or messages it sent unprompted.", effect: "write", errors: [
+      ax: { id: "mcp:check_response", group: "ouro-agent", when: "Pick this to collect replies the agent left for you, after send_message says it will answer later or when it wrote unprompted; each comes back once.", effect: "write", errors: [
         { code: "pending-unreadable", means: "The agent's pending-message folder for this session couldn't be read; the line below says why.", fix: "Call check_response again in a moment; if it keeps failing, call status to check the agent's bundle." },
       ] },
       inputSchema: {
