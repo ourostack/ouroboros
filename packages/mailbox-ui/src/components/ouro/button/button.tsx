@@ -249,7 +249,8 @@ const base =
   "not-data-disabled:not-active:pointer-fine:hover:[--ouro-state:var(--ouro-state-hover,8%)] not-data-disabled:active:[--ouro-state:var(--ouro-state-pressed,14%)] " +
   // Press feedback: scale only when motion is allowed and the button is enabled.
   "motion-safe:not-data-disabled:active:scale-(--ouro-press-scale) " +
-  "disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress";
+  // `data-ouro-off` is set only when `disabledReason` turns the button off, so a loading button (also data-disabled) keeps its own look.
+  "disabled:cursor-not-allowed disabled:opacity-50 data-ouro-off:cursor-not-allowed data-ouro-off:opacity-50 aria-busy:cursor-progress";
 
 // Height and padding step down to desktop density at the `sm` breakpoint through two
 // variables, so the button has one unprefixed `h-*` and `px-*` class and the app's own
@@ -288,7 +289,7 @@ const looks = {
       "not-data-disabled:active:[--ouro-bg:var(--ouro-action-active,var(--ouro-action,var(--primary)))] " +
       "data-disabled:[--ouro-bg:var(--ouro-action-disabled,var(--ouro-action,var(--primary)))] " +
       "data-disabled:text-(--ouro-action-disabled-foreground,var(--ouro-action-foreground,var(--primary-foreground))) " +
-      "disabled:opacity-(--ouro-action-disabled-opacity,0.5)",
+      "disabled:opacity-(--ouro-action-disabled-opacity,0.5) data-ouro-off:opacity-(--ouro-action-disabled-opacity,0.5)",
     secondary: "[--ouro-bd:transparent] [--ouro-bg:var(--secondary)] text-secondary-foreground",
     destructive: "[--ouro-bd:transparent] [--ouro-bg:var(--destructive)] text-destructive-foreground",
     success: "[--ouro-bd:transparent] [--ouro-bg:var(--success)] text-success-foreground",
@@ -630,6 +631,7 @@ export function Button(props: ButtonProps): JSX.Element {
       data-variant={variant}
       data-tone={tone}
       data-loading={loading ? "" : undefined}
+      data-ouro-off={reason.off ? "" : undefined}
       data-default={isDefault ? "" : undefined}
       aria-keyshortcuts={isDefault ? "Enter" : buttonProps["aria-keyshortcuts"]}
       aria-busy={loading || buttonProps["aria-busy"]}

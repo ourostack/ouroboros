@@ -142,7 +142,7 @@ const interactive =
   // Stryker disable next-line StringLiteral: a class string in a class position, which no test reads
   "not-data-disabled:not-active:pointer-fine:hover:[--ouro-state:var(--ouro-state-hover,8%)] not-data-disabled:active:[--ouro-state:var(--ouro-state-pressed,14%)] " +
   "motion-safe:not-data-disabled:active:scale-(--ouro-press-scale) " +
-  "disabled:cursor-not-allowed disabled:opacity-50";
+  "disabled:cursor-not-allowed disabled:opacity-50 data-disabled:cursor-not-allowed data-disabled:opacity-50";
 
 // `soft` text is the tone mixed 20% toward the foreground, as on Button, so it keeps
 // 4.5:1 on the tint under shadcn's stock values too. `secondary` is shadcn's quiet surface.

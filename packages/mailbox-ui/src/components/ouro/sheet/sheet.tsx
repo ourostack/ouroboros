@@ -3,6 +3,7 @@
 import type { JSX, ReactElement, ReactNode } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { checkOpenMode, type TriggerOrOpen } from "@/lib/ouro/open-mode";
+import { returnFocusTo } from "@/lib/ouro/return-focus";
 import { TouchTarget } from "@/lib/ouro/touch-target";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 import {
@@ -297,7 +298,7 @@ export interface SheetFrameProps {
   footer?: ReactNode;
   /** Marks the popup with `data-ouro-presentation`, when `Dialog` renders as a sheet. */
   presentation?: "sheet" | undefined;
-  /** Where focus goes on close: `Dialog` passes its own trigger, which it renders outside the sheet, and `Command` a choice of its own. */
+  /** Where focus goes on close: a ref such as `Dialog`'s trigger, which it renders outside the sheet, unless a dialog opened since has focus; or `Command` a choice of its own. */
   finalFocus?: SheetPopupProps["finalFocus"];
   /** What takes focus as the sheet opens: `Command` puts it in its search after a key press or a click, and on the sheet itself after a touch or pen tap. */
   initialFocus?: SheetPopupProps["initialFocus"];
@@ -363,7 +364,7 @@ export function SheetFrame({
           <SheetPopupUnchecked
             className={className}
             data-ouro-presentation={presentation}
-            {...(finalFocus ? { finalFocus } : {})}
+            {...(finalFocus ? { finalFocus: typeof finalFocus === "object" ? () => returnFocusTo(finalFocus.current) : finalFocus } : {})}
             initialFocus={initialFocus}
           >
             {side === "bottom" && <SheetHandle />}
