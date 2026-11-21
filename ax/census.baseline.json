@@ -9,6 +9,7 @@
     "mcp:delegate",
     "mcp:get_context",
     "mcp:get_task",
+    "mcp:made-up",
     "mcp:report_blocker",
     "mcp:report_complete",
     "mcp:report_progress",
