@@ -1,5 +1,6 @@
 import { PassThrough } from "node:stream"
 import { describe, expect, it } from "vitest"
+import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 import type { ChannelCallbacks, ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
 import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type ProxyChannel, type ProxyMessage } from "../../../eval/transport/provider-proxy"
@@ -220,7 +221,7 @@ describe("provider proxy", () => {
     serveProxyRuntime(host, hostRuntime(log), { take: () => { units += 1; return true } })
     const runtime = await createProxyRuntime(guest)
     const failure = await runtime.streamTurn(request(recordingCallbacks([]), { signal: AbortSignal.abort() })).catch((error: Error) => error)
-    expect(failure).toMatchObject({ message: "aborted before the provider call", retryable: false })
+    expect(failure).toMatchObject({ message: "aborted before the provider call", reason: "aborted", retryable: false })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(log).toEqual([])
     expect(units).toBe(0)
@@ -252,7 +253,8 @@ describe("provider proxy", () => {
     const failure = await runtime.streamTurn(request(recordingCallbacks(events, {
       onTextChunk: (text) => { events.push(["onTextChunk", text]); throw new Error("display failed") },
     }))).catch((error: Error) => error)
-    expect(failure).toMatchObject({ message: "display failed", retryable: false })
+    expect(failure).toMatchObject({ message: "display failed", reason: "callback", retryable: false })
+    expect((failure as Error).cause).toMatchObject({ message: "display failed" })
     expect(events).toEqual([["onTextChunk", "one"]])
     expect(wire.filter((msg) => msg.type === "abort")).toHaveLength(1)
     expect(hostSignal!.aborted).toBe(true)
@@ -270,6 +272,34 @@ describe("provider proxy", () => {
     }))).catch((error: Error) => error)
     expect(failure).toBeInstanceOf(Error)
     expect(failure).toMatchObject({ message: "render broke", retryable: false })
+  })
+
+  it("fails the turn when the callback's error cannot be changed", async () => {
+    const { guest, host } = channelPair()
+    serveProxyRuntime(host, hostRuntime([]), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    const frozen = Object.freeze(new Error("frozen failure"))
+    const failure = await runtime.streamTurn(request(recordingCallbacks([], { onModelStreamStart: () => { throw frozen } }))).catch((error: Error) => error)
+    expect(failure).toMatchObject({ message: "frozen failure", reason: "callback", retryable: false })
+    expect((failure as Error).cause).toBe(frozen)
+  })
+
+  it("emits the guest's start, end and error events for each turn", async () => {
+    const events: LogEvent[] = []
+    const unregister = registerGlobalLogSink((event) => events.push(event))
+    try {
+      const { guest, host } = channelPair()
+      let calls = 0
+      serveProxyRuntime(host, hostRuntime([], async () => { calls += 1; if (calls === 2) throw new Error("bad gateway"); return RESULT }), unlimited)
+      const runtime = await createProxyRuntime(guest)
+      await runtime.streamTurn(request(recordingCallbacks([])))
+      await runtime.streamTurn(request(recordingCallbacks([]))).catch(() => undefined)
+    } finally {
+      unregister()
+    }
+    expect(events.map((event) => event.event).filter((name) => name.startsWith("eval.proxy_guest"))).toEqual([
+      "eval.proxy_guest_turn_start", "eval.proxy_guest_turn_end", "eval.proxy_guest_turn_start", "eval.proxy_guest_turn_error",
+    ])
   })
 
   it("refuses a second turn while one is in flight, without calling the host for it", async () => {
@@ -354,7 +384,7 @@ describe("createStreamChannel", () => {
     expect(received).toEqual([{ type: "appendToolOutput", callId: "c", output: "Ålmanac — ✓" }])
   })
 
-  it("never throws on a line that is not a message: the host keeps serving, and the guest's turn fails", async () => {
+  it("never throws on a line that is not a message: the host keeps serving, and the guest's turn fails and aborts the host call", async () => {
     const hostToGuest = new PassThrough()
     const guestToHost = new PassThrough()
     const guest = createStreamChannel(hostToGuest, guestToHost)
@@ -365,9 +395,59 @@ describe("createStreamChannel", () => {
     const runtime = await createProxyRuntime(guest)
     const pending = runtime.streamTurn(request(recordingCallbacks([]))).catch((error: Error) => error)
     await new Promise((resolve) => setImmediate(resolve))
+    const sent: string[] = []
+    guestToHost.on("data", (chunk: string | Buffer) => sent.push(chunk.toString()))
     hostToGuest.write("Traceback (most recent call last)\n")
     expect(await pending).toMatchObject({ reason: "channel", retryable: false, message: expect.stringContaining("Traceback") })
+    expect(sent.join("")).toContain(JSON.stringify({ type: "abort", turn: 1 }))
     release()
+  })
+
+  it("turns a message of a known type but the wrong shape into a broken channel, before the host spends anything", async () => {
+    const guestToHost = new PassThrough()
+    const hostToGuest = new PassThrough()
+    const host = createStreamChannel(guestToHost, hostToGuest)
+    const log: HostLog = []
+    let units = 0
+    serveProxyRuntime(host, hostRuntime(log), { take: () => { units += 1; return true } })
+    const replies: ProxyMessage[] = []
+    createStreamChannel(hostToGuest, new PassThrough()).onMessage((msg) => replies.push(msg))
+    const bad = [
+      { type: "streamTurn", turn: 1 }, { type: "streamTurn", turn: "1", request: { messages: [] } }, { type: "streamTurn", turn: 1, request: { messages: "x" } },
+      { type: "resetTurnState" }, { type: "appendToolOutput", callId: 1, output: "x" }, { type: "abort" }, { type: "mystery" },
+      { type: "capabilities", id: "x" }, { type: "callback", turn: 1, event: "onTextChunk" }, { type: "turnResult", turn: 1 }, { type: "error", turn: 1, error: {} },
+    ]
+    guestToHost.write(bad.map((msg) => JSON.stringify(msg)).join("\n") + "\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(units).toBe(0)
+    expect(log).toEqual([])
+    guestToHost.write(`${JSON.stringify({ type: "streamTurn", turn: 2, request: { messages: [{ role: "user", content: "hi" }], activeTools: [] } })}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(replies.map((msg) => msg.type)).toContain("turnResult")
+    expect(units).toBe(1)
+  })
+
+  it("survives a listener that throws, reporting it instead of crashing the stream", async () => {
+    const input = new PassThrough()
+    const channel = createStreamChannel(input, new PassThrough())
+    const received: ProxyMessage[] = []
+    channel.onMessage(() => { throw new Error("listener broke") })
+    channel.onMessage(() => { throw "listener broke too" })
+    channel.onMessage((msg) => received.push(msg))
+    input.write(`${JSON.stringify({ type: "hello" })}\n${JSON.stringify({ type: "abort", turn: 1 })}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received).toEqual([{ type: "hello" }, { type: "abort", turn: 1 }])
+  })
+
+  it("keeps serving when the host runtime throws on a state call", async () => {
+    const hostToGuest = new PassThrough()
+    const guestToHost = new PassThrough()
+    const guest = createStreamChannel(hostToGuest, guestToHost)
+    const host = createStreamChannel(guestToHost, hostToGuest)
+    serveProxyRuntime(host, hostRuntime([], undefined, { resetTurnState: () => { throw new Error("state broke") } }), unlimited)
+    const runtime = await createProxyRuntime(guest)
+    runtime.resetTurnState([])
+    expect(await runtime.streamTurn(request(recordingCallbacks([])))).toEqual(RESULT)
   })
 
   it("reports a failed stream as a broken channel rather than an unhandled error", async () => {
