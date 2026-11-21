@@ -6,7 +6,7 @@ export type { CliIo, RunOptions };
 
 import { checksText, isChecksReport } from "./checks.ts";
 import { doctorText, isDoctorReport } from "./doctor.ts";
-import { checkOwner, flagsOf, findCommand, invocation, parse, type ArgSpec, type Cli, type CommandDef, type Input, type InputValue, type Parsed, type RunContext } from "./command.ts";
+import { checkOwner, flagsOf, findCommand, invocation, parse, type ArgSpec, type Cli, type CommandDef, type Input, type InputValue, type Parsed, type RunContext } from "./ax-command.ts";
 import { DRY_RUN_FLAG } from "./effects.ts";
 import { AxError, errorJson, errorLine, errorMessage, isAxError, type AxErrorShape } from "./problem.ts";
 import { commandManifest, helpJson, renderCommand, renderOverview, type OverviewOptions } from "./help.ts";

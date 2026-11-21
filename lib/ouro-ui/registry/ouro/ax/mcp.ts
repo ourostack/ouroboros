@@ -4,7 +4,7 @@ export type { McpCall, McpCallResult, McpOptions, McpTool };
 // The export list comes first because the shadcn CLI drops comments before a file's
 // first statement, which would take the JSDoc below with it.
 
-import { checkInput, checkOwner, invocation, type Cli, type CommandDef, type Input } from "./command.ts";
+import { checkInput, checkOwner, invocation, type Cli, type CommandDef, type Input } from "./ax-command.ts";
 import { DRY_RUN_FLAG, WHY_FLAG, WHY_PLACEHOLDER, effectAnnotations } from "./effects.ts";
 import { didYouMean, errorJson, errorLine, isAxError, type AxError, type AxErrorShape } from "./problem.ts";
 import { commandManifest } from "./help.ts";

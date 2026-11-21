@@ -434,7 +434,7 @@ export function SheetHandle(): JSX.Element | null {
       data-ouro-sheet-handle=""
       className="flex shrink-0 justify-center py-2 touch-none"
     >
-      <div data-slot="sheet-handle-bar" className="h-1.25 w-9 rounded-full bg-border" />
+      <div data-slot="sheet-handle-bar" className="h-1.25 w-ouro-9 rounded-full bg-border" />
     </div>
   );
 }

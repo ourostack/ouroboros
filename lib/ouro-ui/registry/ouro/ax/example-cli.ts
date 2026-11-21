@@ -3,7 +3,7 @@ export { exampleCli, exits, postMessage, resetRooms, rooms, setClock };
 // The export list comes first because the shadcn CLI drops comments before a file's
 // first statement, which would take the JSDoc below with it.
 
-import { defineCli, defineCommand } from "./command.ts";
+import { defineCli, defineCommand } from "./ax-command.ts";
 import { privateResult } from "./effects.ts";
 import { AxError } from "./problem.ts";
 import { BASE_EXIT_CODES, defineExitCodes } from "./exit-codes.ts";
