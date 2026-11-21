@@ -155,6 +155,8 @@ describe("an unknown tool", () => {
     expect((await call("complete")).error?.data?.nearest).toBe("report_complete")
     expect((await call("search")).error?.data?.nearest).toBe("search_facts")
     expect((await call("send_message_now")).error?.data?.nearest).toBe("send_message")
+    expect((await call("please_send_message_to_the_agent")).error?.data?.nearest).toBe("send_message")
+    expect((await call("check_shepherd_feedback_status_now")).error?.data?.nearest).toBe("shepherd_feedback_status")
   })
 
   it("lists every tool a partial name matches, rather than guessing one", async () => {
@@ -231,6 +233,17 @@ describe("isError results carry the card's text and fix", () => {
   it("a read the agent service refuses carries its reason", async () => {
     runtime.status.mockResolvedValue({ ok: false, error: "no such agent" })
     expectCardError(await call("get_task"), "get_task", "agent-unreadable", "no such agent")
+  })
+
+  it("a read answers with the service's message, else its summary, else its data", async () => {
+    runtime.status.mockResolvedValueOnce({ ok: true, message: "up" })
+    expect((await call("status")).result?.content[0]!.text).toBe("up")
+    runtime.status.mockResolvedValueOnce({ ok: true, summary: "two sessions" })
+    expect((await call("catchup")).result?.content[0]!.text).toBe("two sessions")
+    runtime.status.mockResolvedValueOnce({ ok: true, data: { facts: 3 } })
+    expect((await call("search_facts", { query: "x" })).result?.content[0]!.text).toBe('{"facts":3}')
+    runtime.status.mockResolvedValueOnce({ ok: true })
+    expect((await call("get_task")).result?.content[0]!.text).toBe('{"ok":true}')
   })
 
   it("check_response says when the pending folder can't be read", async () => {
