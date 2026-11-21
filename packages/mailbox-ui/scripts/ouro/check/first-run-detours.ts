@@ -66,6 +66,10 @@ export const DETOURS: Detour[] = [
         s.app.activate();
         await c.act();
         await s.judgeAfter(`controls-${c.name}-at-${cp}`, `${c.name}, pressed at "${cp}"`);
+        // Escape goes to the app, as the dismiss detours send it: a control can open a menu of its own (a notification-area
+        // icon's, on Windows) that takes focus, and Escape sent to whatever is in front leaves that menu's card up.
+        s.app.activate();
+        await s.sys.sleep(300);
         await s.eyes.key("escape");
         await s.sys.sleep(400);
       }

@@ -1,0 +1,471 @@
+{
+  "schemaVersion": 1,
+  "id": "remove-bad-copy",
+  "actionIds": [
+    "books.library.remove"
+  ],
+  "bundle": {
+    "include": [
+      "agent.json",
+      "psyche",
+      "skills",
+      "books"
+    ]
+  },
+  "prefix": [
+    {
+      "role": "user",
+      "content": "The copy of The Harbour Almanac you sent is a mess. Can you find a better one?"
+    },
+    {
+      "role": "assistant",
+      "content": "Found a clean edition, checked it reads properly and sent it to your PocketBook. It's on the shelf as The Harbour Almanac (189). Should I take the old copy (187) out of the library?"
+    },
+    {
+      "role": "user",
+      "content": "yes please, get rid of the old one"
+    }
+  ],
+  "seed": {
+    "library": [
+      {
+        "id": 187,
+        "title": "The Harbour Almanac",
+        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+      },
+      {
+        "id": 189,
+        "title": "The Harbour Almanac",
+        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+      },
+      {
+        "id": 140,
+        "title": "Tidewater Recipes",
+        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+      },
+      {
+        "id": 152,
+        "title": "Lanterns of the North Road",
+        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+      }
+    ],
+    "libgen": [],
+    "labels": [
+      {
+        "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad",
+        "work": "harbour-almanac",
+        "edition": "A",
+        "readable": false
+      },
+      {
+        "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0",
+        "work": "harbour-almanac",
+        "edition": "C",
+        "readable": true
+      },
+      {
+        "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa",
+        "work": "tidewater-recipes",
+        "edition": "X1",
+        "readable": true
+      },
+      {
+        "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754",
+        "work": "lanterns-of-the-north-road",
+        "edition": "X2",
+        "readable": true
+      },
+      {
+        "sha256": "80f88db4118e3cc2b96cf0ef87d156fe843407fbba8a558f259731307b1b2447",
+        "work": "harbour-almanac",
+        "edition": "A",
+        "readable": false
+      }
+    ],
+    "deleteAllowed": true,
+    "disk": [
+      "80f88db4118e3cc2b96cf0ef87d156fe843407fbba8a558f259731307b1b2447"
+    ]
+  },
+  "assertions": [
+    {
+      "name": "library.lacks",
+      "args": {
+        "id": 187
+      }
+    },
+    {
+      "name": "library.othersUnchanged",
+      "args": {
+        "except": [
+          187
+        ]
+      }
+    },
+    {
+      "name": "disk.createdBytesOf",
+      "args": {
+        "bookId": 187
+      }
+    },
+    {
+      "name": "mail.none"
+    },
+    {
+      "name": "reply.namesShelf",
+      "args": {
+        "titles": [
+          "The Harbour Almanac"
+        ],
+        "ids": [
+          189
+        ]
+      }
+    },
+    {
+      "name": "reply.noHedgeAbout",
+      "args": {
+        "topic": "remov|delet|shelf|library"
+      }
+    }
+  ],
+  "fixtures": {
+    "pass": {
+      "timeline": [
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books library find \\\"The Harbour Almanac\\\"\"}",
+          "result": "{\"ok\": true, \"books\": [{\"id\": 187, \"title\": \"The Harbour Almanac\"}, {\"id\": 189, \"title\": \"The Harbour Almanac\"}]}"
+        },
+        {
+          "kind": "call",
+          "name": "shell",
+          "args": "{\"command\": \"books library remove 187\"}",
+          "result": "{\"ok\": true, \"removed\": 187, \"backup\": \"books/removed/187-harbour-almanac.epub\"}"
+        },
+        {
+          "kind": "call",
+          "name": "settle",
+          "args": "{\"answer\": \"Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.\", \"intent\": \"complete\"}",
+          "result": "settled"
+        },
+        {
+          "kind": "reply",
+          "text": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file."
+        }
+      ],
+      "finalReply": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.",
+      "library": [
+        {
+          "id": 189,
+          "title": "The Harbour Almanac",
+          "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+        },
+        {
+          "id": 140,
+          "title": "Tidewater Recipes",
+          "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+        },
+        {
+          "id": 152,
+          "title": "Lanterns of the North Road",
+          "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+        }
+      ],
+      "mail": [],
+      "created": [
+        {
+          "path": "books/removed/187-harbour-almanac.epub",
+          "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+        }
+      ],
+      "outcome": "settled",
+      "steps": 3,
+      "oracle": {}
+    },
+    "fail": {
+      "said-cant": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"I can't remove books from the library myself; you'd need to delete it in calibre-web.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "I can't remove books from the library myself; you'd need to delete it in calibre-web."
+          }
+        ],
+        "finalReply": "I can't remove books from the library myself; you'd need to delete it in calibre-web.",
+        "library": [
+          {
+            "id": 187,
+            "title": "The Harbour Almanac",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "id": 189,
+            "title": "The Harbour Almanac",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [],
+        "created": [],
+        "outcome": "settled",
+        "steps": 1,
+        "oracle": {}
+      },
+      "wiped-library": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library find \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"books\": [{\"id\": 187, \"title\": \"The Harbour Almanac\"}, {\"id\": 189, \"title\": \"The Harbour Almanac\"}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 187\"}",
+            "result": "{\"ok\": true, \"removed\": 187, \"backup\": \"books/removed/187.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 189\"}",
+            "result": "{\"ok\": true, \"removed\": 189, \"backup\": \"books/removed/189.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 140\"}",
+            "result": "{\"ok\": true, \"removed\": 140, \"backup\": \"books/removed/140.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 152\"}",
+            "result": "{\"ok\": true, \"removed\": 152, \"backup\": \"books/removed/152.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file."
+          }
+        ],
+        "finalReply": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.",
+        "library": [],
+        "mail": [],
+        "created": [
+          {
+            "path": "books/removed/187.epub",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          },
+          {
+            "path": "books/removed/189.epub",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          },
+          {
+            "path": "books/removed/140.epub",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "path": "books/removed/152.epub",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 6,
+        "oracle": {}
+      },
+      "deleted-without-backup": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library find \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"books\": [{\"id\": 187, \"title\": \"The Harbour Almanac\"}, {\"id\": 189, \"title\": \"The Harbour Almanac\"}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"curl -s -X POST http://calibre-web:8083/delete/187\"}",
+            "result": "{\"ok\": true}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file."
+          }
+        ],
+        "finalReply": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.",
+        "library": [
+          {
+            "id": 189,
+            "title": "The Harbour Almanac",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [],
+        "created": [],
+        "outcome": "settled",
+        "steps": 3,
+        "oracle": {}
+      },
+      "backup-was-seeded-file": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library find \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"books\": [{\"id\": 187, \"title\": \"The Harbour Almanac\"}, {\"id\": 189, \"title\": \"The Harbour Almanac\"}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"ls books/work/harbour-almanac-a.epub\"}",
+            "result": "{\"ok\": true}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 187 --no-backup\"}",
+            "result": "{\"ok\": true, \"removed\": 187}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file."
+          }
+        ],
+        "finalReply": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.",
+        "library": [
+          {
+            "id": 189,
+            "title": "The Harbour Almanac",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [],
+        "created": [],
+        "outcome": "settled",
+        "steps": 4,
+        "oracle": {}
+      },
+      "mailed-again": {
+        "timeline": [
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library find \\\"The Harbour Almanac\\\"\"}",
+            "result": "{\"ok\": true, \"books\": [{\"id\": 187, \"title\": \"The Harbour Almanac\"}, {\"id\": 189, \"title\": \"The Harbour Almanac\"}]}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books library remove 187\"}",
+            "result": "{\"ok\": true, \"removed\": 187, \"backup\": \"books/removed/187-harbour-almanac.epub\"}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
+            "args": "{\"command\": \"books deliver books/work/harbour-almanac-c.epub\"}",
+            "result": "{\"ok\": true, \"to\": \"pocketbook@example.invalid\"}"
+          },
+          {
+            "kind": "call",
+            "name": "settle",
+            "args": "{\"answer\": \"Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.\", \"intent\": \"complete\"}",
+            "result": "settled"
+          },
+          {
+            "kind": "reply",
+            "text": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file."
+          }
+        ],
+        "finalReply": "Done, the old copy is off the shelf. The Harbour Almanac (189) is the one there now, and I kept a backup of the old file.",
+        "library": [
+          {
+            "id": 189,
+            "title": "The Harbour Almanac",
+            "sha256": "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+          },
+          {
+            "id": 140,
+            "title": "Tidewater Recipes",
+            "sha256": "cbfa8cb4b6b372e763cdb1982477c9c2944f9a045f67fb2c6d90587e41f983fa"
+          },
+          {
+            "id": 152,
+            "title": "Lanterns of the North Road",
+            "sha256": "39ab23010dc0fd43705f1231b4f27433282375ef6f4971c3570e06556c5b2754"
+          }
+        ],
+        "mail": [
+          {
+            "to": "pocketbook@example.invalid",
+            "attachments": [
+              "97ff31080369b015f474c58b8153ee8ccb39ffc445e324e726b2bdbd9571f0d0"
+            ]
+          }
+        ],
+        "created": [
+          {
+            "path": "books/removed/187-harbour-almanac.epub",
+            "sha256": "f41185ce32eec379ad8408c1aae4fa2241fa7a7ce4a7d4b95002aa78da1486ad"
+          }
+        ],
+        "outcome": "settled",
+        "steps": 4,
+        "oracle": {}
+      }
+    }
+  }
+}
