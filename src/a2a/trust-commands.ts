@@ -51,7 +51,7 @@ export interface EscalationCommandInput {
 const NEEDS_ROOT = "refusing: this command writes root-owned files the agent cannot forge, so it must run as root on the agent's host (for example docker exec as root, or sudo). Nothing was written."
 
 function requireRoot(ctx: TrustCommandContext): void {
-  if (!ctx.isRoot) throw new Error(NEEDS_ROOT)
+  if (!ctx.isRoot) throw Object.assign(new Error(NEEDS_ROOT), { code: "needs-root" })
 }
 
 async function requireFriend(ctx: TrustCommandContext, friendId: string | undefined): Promise<FriendRecord> {

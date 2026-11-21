@@ -120,6 +120,8 @@ describe("delegated-commands grant", () => {
     it("it is not run as root", async () => {
       const friend = await peer()
       await expect(grant(friend.id, {}, { isRoot: false })).rejects.toThrow("must run as root")
+      // The code the grant commands' Ouro AX cards name.
+      await expect(grant(friend.id, {}, { isRoot: false })).rejects.toMatchObject({ code: "needs-root" })
       untouched()
     })
 

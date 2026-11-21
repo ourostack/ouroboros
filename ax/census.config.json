@@ -9,7 +9,7 @@
       "parser": "parseOuroCommand",
       "kinds": "src/heart/daemon/cli-types.ts#OuroCliCommand",
       "cards": "dist/heart/daemon/cli-manifest.js#CLI_COMMANDS",
-      "handlers": ["src/heart/daemon/cli-exec.ts", "src/heart/daemon/cli-gate.ts", "src/heart/daemon/cli-parse.ts"]
+      "handlers": ["src/heart/daemon/cli-exec.ts", "src/heart/daemon/cli-gate.ts", "src/heart/daemon/cli-parse.ts", "src/a2a/trust-commands.ts"]
     },
     {
       "walker": "argv-entries",
@@ -32,6 +32,7 @@
     {"id": "mail", "when": "Reach, import and maintain an agent's email: browser address, MBOX imports, index rebuilds, cleanup."},
     {"id": "coding-tools", "when": "Connect coding tools to agents: MCP servers they serve or call, editor hooks and plugins."}
   ,
+    {"id": "a2a", "when": "Let an agent work with other agents: publish its card, onboard peers, message them, and grant them trust."},
     {"id": "habits", "when": "Schedule, test and look back at the recurring jobs an agent runs on its own, and wake it early."}
   ]
 }
