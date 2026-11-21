@@ -14,7 +14,7 @@ import { Text, Box, Static, useInput } from "ink"
 import { StreamingMarkdown } from "./streaming-markdown"
 import { processSubmitInput } from "./image-paste"
 import { KillRing } from "./kill-ring"
-import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence } from "./input-keys"
+import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, handleYankPop, handleCursorLeft, handleCursorRight, handleBackspace, handleForwardDelete, handleHome, handleEnd, classifyEscapeSequence, bracketedPasteText, pasteOpenAfter, plainInputText } from "./input-keys"
 import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
@@ -315,6 +315,8 @@ export function QueuedMessages({ items }: {
 
 // ─── Kill Ring (session-scoped) ─────────────────────────────────────
 const killRing = new KillRing()
+// How long an unfinished bracketed paste waits for its next chunk.
+const PASTE_CHUNK_GAP_MS = 200
 
 // ─── Input ──────────────────────────────────────────────────────────
 
@@ -343,6 +345,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
   // another key arrives in that window, it was an escape sequence, not standalone ESC.
   const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastEscTime = useRef(0)
+  // Until when a bracketed paste counts as still arriving.
+  const pasteOpenUntilRef = useRef(0)
   const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => () => {
@@ -418,6 +422,28 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (escTimerRef.current) {
       clearTimeout(escTimerRef.current)
       escTimerRef.current = null
+    }
+    // A bracketed paste (how Orca sends a launch prompt) arrives as an escape-prefixed chunk, which every
+    // path below would drop. Ink strips the \x1b and sets meta, so put it back before looking.
+    const rawChunk = key.meta && inputChar.startsWith("[") ? "\x1b" + inputChar : inputChar
+    // A lone \r inside an open paste is a line of the paste, not Enter. A paste's chunks arrive back to back, so an
+    // open paste lapses after a short gap: an end marker Ink swallowed can never leave Enter unable to send.
+    const now = Date.now()
+    const pasteOpen = now < pasteOpenUntilRef.current
+    const pasted = pasteOpen && key.return && inputChar === "\r" ? "\n" : bracketedPasteText(rawChunk)
+    // Single keys never extend it, so typing after a lost end marker cannot hold it open.
+    const extend = rawChunk.length > 1 || !pasteOpen
+    pasteOpenUntilRef.current = pasteOpenAfter(rawChunk, pasteOpen) ? (extend ? now + PASTE_CHUNK_GAP_MS : pasteOpenUntilRef.current) : 0
+    if (pasted !== null) {
+      killRing.resetAccumulation()
+      killRing.resetYankState()
+      if (pasted) {
+        const before = inputRef.current.slice(0, cursorRef.current)
+        const after = inputRef.current.slice(cursorRef.current)
+        updateInput(before + pasted + after, cursorRef.current + pasted.length)
+        historyIdx.current = -1
+      }
+      return
     }
     // PageUp/PageDown: suppress (no text insertion, no action)
     if (key.pageUp || key.pageDown) return
@@ -724,8 +750,8 @@ function InputArea({ onSubmit, onCtrlC, history, queuedInputs, onPopQueue, agent
     if (escClass === "ignore") return
     // Regular character: insert at cursor position
     if (!key.ctrl && !key.meta && inputChar) {
-      // Strip ANSI escape codes and normalize \r to \n (SSH/paste compat)
-      const cleaned = inputChar.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\r\n?/g, "\n")
+      // Plain text only: escape sequences and control bytes go, \r becomes \n (SSH/paste compat)
+      const cleaned = plainInputText(inputChar)
       if (!cleaned) return
       const before = inputRef.current.slice(0, cursorRef.current)
       const after = inputRef.current.slice(cursorRef.current)

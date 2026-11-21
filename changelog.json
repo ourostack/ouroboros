@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1287",
+      "changes": [
+        "ouro chat keeps a bracketed paste: a prompt pasted by a terminal or a host such as Orca now lands in the composer as plain text instead of vanishing, and a line break inside it no longer sends it early."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1286",
       "changes": [
         "In an Orca terminal, ouro chat reports its status (working, done with the reply, error) through Orca's terminal status protocol (OSC 7501), so the chat appears in Orca's sidebar, Agent Dashboard, notifications and orca agent list. Other terminals get nothing new."
