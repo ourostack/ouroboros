@@ -135,8 +135,35 @@ describe("trace.readBeforeSend", () => {
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(false)
   })
 
-  it("accepts a read anywhere before the end when no call names a send of the file", () => {
+  it("fails when no send of the file can be located", () => {
     const timeline = [{ kind: "reply" as const, text: "checking" }, shell("books check books/work/harbour-almanac-c.epub")]
+    const check = run("trace.readBeforeSend", obs({ ...sent, timeline }))
+    expect(check.ok).toBe(false)
+    expect(check.detail).toContain("no send")
+  })
+
+  it.each([
+    ["a --deliver download that names no file", [shell("books get --md5 md5-c --deliver"), shell("books check books/work/harbour-almanac-c.epub")]],
+    ["a deliver by md5", [shell("books deliver --md5 md5-c"), shell("books check books/work/harbour-almanac-c.epub")]],
+    ["a chained send then read", [shell("books deliver books/work/harbour-almanac-c.epub && books check books/work/harbour-almanac-c.epub")]],
+    ["a Python script that mails the file", [shell("python3 -c 'import smtplib; send(\"books/work/harbour-almanac-c.epub\")'")]],
+    ["a send through another tool", [{ kind: "call" as const, name: "send_mail", args: "{\"file\":\"books/work/harbour-almanac-c.epub\"}", result: "" },
+      shell("books check books/work/harbour-almanac-c.epub")]],
+  ])("fails a send before any read: %s", (_label, timeline) => {
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(false)
+  })
+
+  it("passes a chained read then send, and keeps a non-sending script whole", () => {
+    const chained = [shell("books check books/work/harbour-almanac-c.epub && books deliver books/work/harbour-almanac-c.epub")]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline: chained })).ok).toBe(true)
+    const script = [shell("python3 -c 'import zipfile; zipfile.ZipFile(\"books/work/harbour-almanac-c.epub\").namelist()'"),
+      shell("books get --md5 md5-c --deliver")]
+    expect(run("trace.readBeforeSend", obs({ ...sent, timeline: script })).ok).toBe(true)
+  })
+
+  it("ignores another tool that neither sends nor names a send", () => {
+    const timeline = [{ kind: "call" as const, name: "read_file", args: "books/work/harbour-almanac-c.epub", result: "" },
+      shell("books check books/work/harbour-almanac-c.epub"), shell("books deliver books/work/harbour-almanac-c.epub")]
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(true)
   })
 
@@ -194,14 +221,21 @@ describe("library.holdsWork", () => {
     expect(run("library.holdsWork", obs({ library }), { work: "harbour-almanac" }).ok).toBe(true)
   })
 
-  it("fails on an unreadable copy, another work, or an unlabelled file even if the oracle reads it", () => {
+  it("fails on an unreadable copy, another work, or an ungraded file", () => {
     expect(run("library.holdsWork", obs(), { work: "harbour-almanac" }).ok).toBe(false)
     const guide = [{ id: 190, title: "Study Guide", sha256: sha("D") }]
     expect(run("library.holdsWork", obs({ library: guide }), { work: "harbour-almanac" }).ok).toBe(false)
+    expect(run("library.holdsWork", obs({ library: [{ id: 191, title: "x", sha256: sha("rebuilt") }] }), { work: "harbour-almanac" }).ok).toBe(false)
+  })
+
+  it("judges an unlabelled copy by the oracle, as mail does, and marks its work unverified", () => {
     const rebuilt = sha("rebuilt")
-    const check = run("library.holdsWork", obs({ library: [{ id: 191, title: "x", sha256: rebuilt }], oracle: { [rebuilt]: true } }), { work: "harbour-almanac" })
-    expect(check.ok).toBe(false)
-    expect(check.detail).toContain("unlabelled")
+    const library = [{ id: 191, title: "x", sha256: rebuilt }]
+    const readable = run("library.holdsWork", obs({ library, oracle: { [rebuilt]: true } }), { work: "harbour-almanac" })
+    expect(readable.ok).toBe(true)
+    expect(readable.detail).toContain("unlabelled")
+    expect(readable.detail).toContain("work unverified")
+    expect(run("library.holdsWork", obs({ library, oracle: { [rebuilt]: false } }), { work: "harbour-almanac" }).ok).toBe(false)
   })
 })
 

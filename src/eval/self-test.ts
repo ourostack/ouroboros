@@ -1,7 +1,8 @@
 /**
  * The assertion self-test, run in CI and before any model run: a case's pass fixture must pass every assertion it
- * names, and each fail fixture must fail at least one. A fail fixture that passes everything means an assertion is
- * vacuous, and the case is rejected, not just reported.
+ * names, each fail fixture must fail at least one, and each assertion must fail at least one fail fixture. A fail
+ * fixture that passes everything, or an assertion no fixture ever trips, means an assertion may be vacuous, and the
+ * case is rejected, not just reported.
  */
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -25,11 +26,15 @@ export function selfTest(c: Case): { ok: boolean; problems: string[] } {
     const pass = grade(c, c.fixtures.pass)
     if ("error" in pass) problems.push(`pass fixture: ${pass.error}`)
     else if (pass.failed.length > 0) problems.push(`pass fixture fails ${pass.failed.join(", ")}`)
+    const tripped = new Set<string>()
     for (const [key, fixture] of Object.entries(c.fixtures.fail)) {
       const fail = grade(c, fixture)
       if ("error" in fail) problems.push(`fail fixture ${key}: ${fail.error}`)
       else if (fail.failed.length === 0) problems.push(`fail fixture ${key} passes every assertion, so an assertion is vacuous`)
+      else for (const name of fail.failed) tripped.add(name)
     }
+    const untested = [...new Set(c.assertions.map(ref => ref.name))].filter(name => !tripped.has(name))
+    if (problems.length === 0 && untested.length > 0) problems.push(`no fail fixture fails ${untested.join(", ")}`)
   }
   if (problems.length > 0) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.self_test_error",

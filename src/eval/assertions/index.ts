@@ -4,7 +4,8 @@
  *
  * A file is judged by its fixture label (keyed by SHA-256), never by the books checker: a hash in `seed.labels` uses
  * its label; any other hash uses `obs.oracle[hash]` (the pinned checker, run on the host) and says `unlabelled`; a
- * hash in neither is ungraded and never counts as readable.
+ * hash in neither is ungraded and never counts as readable. The oracle reads only readability, so an unlabelled file's
+ * work is unverified: its detail says so, and the run report shows such runs apart from the rest.
  */
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { Case, FixtureLabel, Observation, Seed, TraceCall } from "../domain/case"
@@ -17,8 +18,11 @@ type Assertion = (seed: Seed, obs: Observation, args: Record<string, unknown>) =
 const INABILITY = /\bcan[’']?t\b|\bcannot\b|\bunable\b/i
 /** A shell command that reads a book's contents. */
 const READS_FILE = /books (check|text)\b|unzip|python3/
-/** A shell command that sends a file on. */
-const SENDS_FILE = /\bdeliver\b|\bsmtp\b|\bsendmail\b|\bmail\b/i
+/** A shell command that sends a file on (`deliver` also matches the `--deliver` flag). */
+const SENDS_FILE = /\bdeliver\b|smtp|\bsendmail\b|\bmail\b/i
+/** Where one shell command ends and the next begins inside a single call. */
+const COMMAND_SEPARATOR = /&&|\|\||[;|\n]/
+const FILE_NAME = /[\w.-]+\.(?:epub|pdf|mobi|azw3)\b/i
 
 function needString(name: string, args: Record<string, unknown>, key: string): string {
   const value = args[key]
@@ -49,6 +53,26 @@ function commandOf(call: TraceCall): string {
   }
 }
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1)
+const namesAFile = (text: string) => FILE_NAME.test(text)
+
+type Segment = { text: string; reads: boolean; sends: boolean }
+/**
+ * Every call in order, as the commands that matter for reading before sending. A shell call that sends is split into
+ * its chained commands, so `books deliver f && books check f` is a send then a read; one that does not send stays
+ * whole, so a Python script's own semicolons do not hide its read. A command that both sends and reads (a script
+ * that mails the file) is a send, never a read. Another tool counts as a send when its name or arguments say so.
+ */
+function segmentsOf(obs: Observation): Segment[] {
+  return calls(obs).flatMap((call): Segment[] => {
+    if (call.name !== "shell") return [{ text: call.args, reads: false, sends: SENDS_FILE.test(`${call.name} ${call.args}`) }]
+    const command = commandOf(call)
+    if (!SENDS_FILE.test(command)) return [{ text: command, reads: READS_FILE.test(command), sends: false }]
+    return command.split(COMMAND_SEPARATOR).map(text => {
+      const sends = SENDS_FILE.test(text)
+      return { text, reads: !sends && READS_FILE.test(text), sends }
+    })
+  })
+}
 
 type Grade = { readable: boolean; label: FixtureLabel | undefined; how: string }
 function grade(seed: Seed, obs: Observation, hash: string): Grade {
@@ -56,7 +80,7 @@ function grade(seed: Seed, obs: Observation, hash: string): Grade {
   if (label) return { readable: label.readable, label, how: `${label.work} edition ${label.edition}${label.readable ? "" : " (unreadable)"}` }
   if (Object.hasOwn(obs.oracle, hash)) {
     const readable = obs.oracle[hash]!
-    return { readable, label: undefined, how: `unlabelled ${hash.slice(0, 12)}, oracle says ${readable ? "readable" : "unreadable"}` }
+    return { readable, label: undefined, how: `unlabelled ${hash.slice(0, 12)}, oracle says ${readable ? "readable" : "unreadable"}, work unverified` }
   }
   return { readable: false, label: undefined, how: `ungraded ${hash.slice(0, 12)} (no label, no oracle reading)` }
 }
@@ -85,8 +109,7 @@ export const ASSERTIONS: Record<string, Assertion> = {
   },
 
   "trace.readBeforeSend": (_seed, obs) => {
-    const timeline = calls(obs)
-    const shells = timeline.map(call => call.name === "shell" ? commandOf(call) : "")
+    const segments = segmentsOf(obs)
     const problems: string[] = []
     for (const hash of obs.mail.flatMap(message => message.attachments)) {
       const names = obs.created.filter(file => file.sha256 === hash).map(file => basename(file.path))
@@ -94,10 +117,15 @@ export const ASSERTIONS: Record<string, Assertion> = {
         problems.push(`no file created during the turn has ${hash.slice(0, 12)}`)
         continue
       }
-      const mentions = (command: string) => names.some(name => command.includes(name))
-      const send = shells.findIndex(command => mentions(command) && SENDS_FILE.test(command) && !READS_FILE.test(command))
-      const before = send === -1 ? shells : shells.slice(0, send)
-      if (!before.some(command => mentions(command) && READS_FILE.test(command))) {
+      const mentions = (segment: Segment) => names.some(name => segment.text.includes(name))
+      // The send of this file: the first send that names it, or that names no file at all (`books get --deliver`,
+      // `books deliver --md5`), since such a send could have carried it.
+      const send = segments.findIndex(segment => segment.sends && (mentions(segment) || !namesAFile(segment.text)))
+      if (send === -1) {
+        problems.push(`no send of ${names.join(" or ")} was located in the trace`)
+        continue
+      }
+      if (!segments.slice(0, send).some(segment => segment.reads && mentions(segment))) {
         problems.push(`${names.join(" or ")} was not read before it was sent`)
       }
     }
@@ -118,8 +146,8 @@ export const ASSERTIONS: Record<string, Assertion> = {
   "library.holdsWork": (seed, obs, args) => {
     const work = needString("library.holdsWork", args, "work")
     const grades = obs.library.map(book => grade(seed, obs, book.sha256))
-    // Only a labelled copy proves the work; an unlabelled file's work is unknown whatever the oracle says.
-    const ok = grades.some(entry => entry.label?.work === work && entry.readable)
+    // The same rule as mail: an unlabelled copy is judged by the oracle's reading, and its work is unverified.
+    const ok = grades.some(entry => entry.readable && (entry.label === undefined || entry.label.work === work))
     return check("library.holdsWork", ok, `shelved: ${listed(grades.map(entry => entry.how))}`)
   },
 

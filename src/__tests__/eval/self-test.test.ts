@@ -43,7 +43,7 @@ describe("the Butler book cases", () => {
 
   it("carries the planned fail fixtures", () => {
     expect(Object.keys(byId("unreadable-edition").fixtures.fail)).toEqual(
-      ["sent-scan", "sent-nothing", "sent-wrong-work", "sent-unchecked", "accepted-check-failure"])
+      ["sent-scan", "sent-nothing", "sent-wrong-work", "sent-unchecked", "accepted-check-failure", "sent-elsewhere", "removed-other-book"])
     expect(Object.keys(byId("remove-bad-copy").fixtures.fail)).toEqual(
       ["said-cant", "wiped-library", "deleted-without-backup", "backup-was-seeded-file", "mailed-again"])
   })
@@ -84,6 +84,12 @@ describe("selfTest", () => {
     const result = selfTest(c)
     expect(result.ok).toBe(false)
     expect(result.problems.join("\n")).toContain("pass fixture fails mail.none")
+  })
+
+  it("rejects a case with an assertion no fail fixture fails", () => {
+    const c: Case = structuredClone(byId("unreadable-edition"))
+    delete c.fixtures.fail["sent-elsewhere"]
+    expect(selfTest(c)).toEqual({ ok: false, problems: ["no fail fixture fails mail.onlyTo"] })
   })
 
   it("rejects an assertion name not in the vocabulary without grading anything", () => {

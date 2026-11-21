@@ -355,6 +355,12 @@
           {
             "kind": "call",
             "name": "shell",
+            "args": "{\"command\": \"ls books/work/harbour-almanac-a.epub\"}",
+            "result": "{\"ok\": true}"
+          },
+          {
+            "kind": "call",
+            "name": "shell",
             "args": "{\"command\": \"books library remove 187 --no-backup\"}",
             "result": "{\"ok\": true, \"removed\": 187}"
           },
@@ -388,14 +394,9 @@
           }
         ],
         "mail": [],
-        "created": [
-          {
-            "path": "books/work/harbour-almanac-a.epub",
-            "sha256": "80f88db4118e3cc2b96cf0ef87d156fe843407fbba8a558f259731307b1b2447"
-          }
-        ],
+        "created": [],
         "outcome": "settled",
-        "steps": 3,
+        "steps": 4,
         "oracle": {}
       },
       "mailed-again": {
