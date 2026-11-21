@@ -1,6 +1,5 @@
 // The census report (design section 4): one ProductReport per product, and the short text table CI prints.
 import type { CensusReport, Counts, Door, Gap, ProductReport } from "./types.mts";
-import { walkerOfKind } from "./walkers/registry.mts";
 
 /**
  * `weak` maps a door id to its reasons; a door with a card and no entry is declared, and a door without a card and no
@@ -12,6 +11,7 @@ export function buildProductReport(
   weak: ReadonlyMap<string, string[]>,
   baselineSize: number,
   walked: { kinds: string[]; finders: string[] },
+  unwalked: readonly Gap[] = [],
 ): ProductReport {
   const byKind: Record<string, Counts> = {};
   const undeclared: Gap[] = [];
@@ -29,16 +29,17 @@ export function buildProductReport(
       declared += 1;
     } else {
       counts.undeclared += 1;
-      undeclared.push({ id: door.id, kind: door.kind, file: door.file, line: door.line, walker: walkerOfKind(door.kind) });
+      undeclared.push({ id: door.id, kind: door.kind, file: door.file, line: door.line, ...(door.walker ? { walker: door.walker } : {}) });
     }
   }
   return {
     product,
     walked,
-    summary: { found: doors.length, declared, weak: weakGaps.length, undeclared: undeclared.length, unwalked: 0, stale: 0, excluded: 0, baseline: baselineSize },
+    summary: { found: doors.length, declared, weak: weakGaps.length, undeclared: undeclared.length, unwalked: unwalked.length, stale: 0, excluded: 0, baseline: baselineSize },
     byKind,
     undeclared,
     weak: weakGaps,
+    unwalked: [...unwalked],
     excluded: [],
   };
 }
@@ -49,15 +50,20 @@ function byPlace(a: Gap, b: Gap): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/** Per product: `<product>: N found, N declared, N weak, N undeclared (<kind> N, ...)`, then one `file:line id` line per gap. */
+/**
+ * Per product: `<product>: N found, N declared, N weak, N undeclared[, N unwalked] (<kind> N, ...)`, then one
+ * `file:line id` line per gap.
+ */
 export function renderText(report: CensusReport): string {
   const lines: string[] = [];
   for (const p of report.products) {
     const kinds = Object.entries(p.byKind).map(([kind, c]) => `${kind} ${c.found}`).join(", ");
     const s = p.summary;
-    lines.push(`${p.product}: ${s.found} found, ${s.declared} declared, ${s.weak} weak, ${s.undeclared} undeclared (${kinds})`);
-    for (const gap of [...p.undeclared, ...p.weak].sort(byPlace)) {
-      const why = gap.reasons ? ` (weak: ${gap.reasons.join("; ")})` : "";
+    const unwalked = s.unwalked > 0 ? `, ${s.unwalked} unwalked` : "";
+    lines.push(`${p.product}: ${s.found} found, ${s.declared} declared, ${s.weak} weak, ${s.undeclared} undeclared${unwalked} (${kinds})`);
+    const isUnwalked = new Set(p.unwalked.map((g) => g.id));
+    for (const gap of [...p.undeclared, ...p.weak, ...p.unwalked].sort(byPlace)) {
+      const why = gap.reasons ? ` (${isUnwalked.has(gap.id) ? "unwalked" : "weak"}: ${gap.reasons.join("; ")})` : "";
       lines.push(`${gap.file}:${gap.line ?? "?"} ${gap.id}${why}`);
     }
   }

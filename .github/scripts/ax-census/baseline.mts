@@ -7,11 +7,16 @@ export interface BaselineInput {
   gaps: readonly string[];
   /** The ids on this branch's baseline. */
   baseline: readonly string[];
-  /** The base branch's baseline and whether it already runs the census; null outside a pull request. */
-  base: { baseline: readonly string[] | null; hasConfig: boolean } | null;
+  /**
+   * The base branch's baseline, whether it already runs the census, and the door kinds its config walks (absent: all
+   * of this run's kinds); null outside a pull request.
+   */
+  base: { baseline: readonly string[] | null; hasConfig: boolean; kinds?: readonly string[] } | null;
   /** The door kinds this census walks. */
   kinds: readonly string[];
 }
+
+const kindOf = (id: string): string => (id.includes(":") ? id.slice(0, id.indexOf(":")) : id);
 
 /** The problems with the baseline; `[]` passes. */
 export function checkBaseline(input: BaselineInput): string[] {
@@ -30,7 +35,7 @@ export function checkBaseline(input: BaselineInput): string[] {
     entries.add(id);
   }
   for (const id of entries) {
-    const kind = id.includes(":") ? id.slice(0, id.indexOf(":")) : id;
+    const kind = kindOf(id);
     if (!kinds.has(kind)) {
       problems.push(`${id}: the census doesn't walk ${kind} doors yet, so it can't be on the baseline.`);
       unknownKind.add(id);
@@ -45,8 +50,10 @@ export function checkBaseline(input: BaselineInput): string[] {
   if (input.base) {
     if (input.base.baseline) {
       const before = new Set(input.base.baseline);
+      // A kind the base doesn't walk couldn't be on its baseline: the pull request that starts walking it seeds it.
+      const walkedBefore = new Set(input.base.kinds ?? input.kinds);
       for (const id of entries) {
-        if (!before.has(id)) problems.push(`${id}: added to the baseline. Fix: declare the door instead; the baseline only shrinks.`);
+        if (!before.has(id) && walkedBefore.has(kindOf(id))) problems.push(`${id}: added to the baseline. Fix: declare the door instead; the baseline only shrinks.`);
       }
     } else if (input.base.hasConfig && entries.size > 0) {
       problems.push("ax/census.baseline.json: missing on the base branch, which already runs the census. Fix: restore it from the base.");
@@ -59,6 +66,9 @@ export interface WalkerSource {
   walker: string;
   module: string;
   source: string;
+  parser?: string;
+  kinds?: string;
+  claims?: readonly { entry: string; parser: string }[];
 }
 
 /**
@@ -67,7 +77,9 @@ export interface WalkerSource {
  */
 export function checkSources(sources: readonly WalkerSource[], baseSources: readonly WalkerSource[] | null): string[] {
   if (!baseSources) return [];
-  const key = (s: WalkerSource) => `${s.walker} ${s.module} ${s.source}`;
+  // A changed parser or kinds type, or an added claim, can hide doors as surely as a removed source.
+  const key = (s: WalkerSource) =>
+    [s.walker, s.module, s.source, ...(s.parser ? [s.parser] : []), ...(s.kinds ? [s.kinds] : []), ...(s.claims ?? []).map((c) => `claims ${c.entry}=${c.parser}`)].join(" ");
   const here = new Set(sources.map(key));
   return baseSources
     .filter((s) => !here.has(key(s)))

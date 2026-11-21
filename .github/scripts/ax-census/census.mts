@@ -16,7 +16,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkBaseline, checkSources } from "./baseline.mts";
+import { checkBaseline, checkSources, type WalkerSource } from "./baseline.mts";
 import { checkCard } from "./cards.mts";
 import { buildProductReport, renderText } from "./report.mts";
 import type { CensusReport, Door, GroupCard, WalkResult } from "./types.mts";
@@ -28,7 +28,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CHILD = join(HERE, "child.mts");
 const GUARD = join(HERE, "guard.mjs");
 /** The files whose hash is the checker's identity; the ledger compares it with a released manifest. */
-const CHECKER_FILES = ["baseline.mts", "cards.mts", "census.mts", "child.mts", "guard.mjs", "report.mts", "types.mts", "walkers/mcp-schemas.mts", "walkers/registry.mts"];
+const CHECKER_FILES = [
+  "baseline.mts",
+  "cards.mts",
+  "census.mts",
+  "child.mts",
+  "guard.mjs",
+  "report.mts",
+  "types.mts",
+  "walkers/argv-entries.mts",
+  "walkers/mcp-schemas.mts",
+  "walkers/registry.mts",
+  "walkers/ts-argv.mts",
+  "walkers/ts-parser.mts",
+];
 const TIMEOUT_MS = 10_000;
 
 const USAGE = "usage: node census.mts --config <file> --baseline <file> --base-baseline <file|none> --base-config <file|absent> [--out <file>] [--inventory <file>] [--commit <sha>] [--ref <ref>] [--repo <owner/name>]";
@@ -42,9 +55,12 @@ class CensusFailure extends Error {}
 
 interface Config {
   product: string;
-  sources: { walker: string; module: string; source: string }[];
+  sources: WalkerSource[];
   groups: GroupCard[];
 }
+
+const isClaims = (c: unknown): boolean =>
+  Array.isArray(c) && c.every((x: { entry?: unknown; parser?: unknown }) => typeof x?.entry === "string" && typeof x.parser === "string");
 
 async function readConfig(path: string): Promise<Config> {
   let config: Partial<Config>;
@@ -58,6 +74,9 @@ async function readConfig(path: string): Promise<Config> {
   for (const s of config.sources) {
     if (typeof s?.walker !== "string" || typeof s.module !== "string" || typeof s.source !== "string") {
       throw new CensusFailure(`ax-census: ${path}: each source needs walker, module and source strings`);
+    }
+    if ((s.parser !== undefined && typeof s.parser !== "string") || (s.kinds !== undefined && typeof s.kinds !== "string") || (s.claims !== undefined && !isClaims(s.claims))) {
+      throw new CensusFailure(`ax-census: ${path}: a source's parser, kinds and claims must be strings and a list of { entry, parser } paths`);
     }
   }
   return { product: config.product, sources: config.sources, groups: Array.isArray(config.groups) ? config.groups : [] };
@@ -223,17 +242,18 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
     const baseline = await readBaseline(flags.baseline);
     const baseBaseline = flags.baseBaseline === "none" ? null : await readBaseline(flags.baseBaseline);
     const baseConfig = flags.baseConfig === "absent" ? null : await readConfig(flags.baseConfig);
-    const { doors, errors } = await runWalkers({ config: flags.config, root, timeoutMs: options.timeoutMs, childScript: options.childScript });
+    const { doors, errors, unwalked = [] } = await runWalkers({ config: flags.config, root, timeoutMs: options.timeoutMs, childScript: options.childScript });
     if (doors.length === 0 && errors.length === 0) {
       throw new CensusFailure("ax-census: the walkers found no doors; a census that counts nothing is broken, not clean");
     }
 
     const weak = weakDoors(doors, config.groups);
-    const gaps = doors.filter((d) => !d.card || weak.has(d.id)).map((d) => d.id);
-    const kinds = [...new Set(config.sources.map((s) => WALKERS[s.walker]?.kind).filter((k): k is string => k !== undefined))];
+    const gaps = [...doors.filter((d) => !d.card || weak.has(d.id)).map((d) => d.id), ...unwalked.map((g) => g.id)];
+    const kindsOf = (c: Config) => [...new Set(c.sources.map((s) => WALKERS[s.walker]?.kind).filter((k): k is string => k !== undefined))];
+    const kinds = kindsOf(config);
     const problems = [
       ...errors,
-      ...checkBaseline({ gaps, baseline, base: { baseline: baseBaseline, hasConfig: baseConfig !== null }, kinds }),
+      ...checkBaseline({ gaps, baseline, base: { baseline: baseBaseline, hasConfig: baseConfig !== null, ...(baseConfig ? { kinds: kindsOf(baseConfig) } : {}) }, kinds }),
       ...checkSources(config.sources, baseConfig?.sources ?? null),
     ];
 
@@ -243,7 +263,7 @@ export async function run(options: { argv: readonly string[]; io: Io; root?: str
       checker: { version: CENSUS_VERSION, sha256: await checkerHash() },
       target: { repo: flags.repo ?? null, ref: flags.ref ?? null, commit: flags.commit ?? null },
       at: new Date().toISOString(),
-      products: [buildProductReport(config.product, doors, weak, new Set(baseline).size, { kinds, finders: [] })],
+      products: [buildProductReport(config.product, doors, weak, new Set(baseline).size, { kinds, finders: [] }, unwalked)],
     };
     if (flags.out) {
       await mkdir(dirname(resolve(flags.out)), { recursive: true });

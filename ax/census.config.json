@@ -1,5 +1,23 @@
 {
   "product": "harness",
-  "sources": [{ "walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts" }],
+  "sources": [
+    { "walker": "mcp-schemas", "module": "dist/heart/mcp/mcp-server.js", "source": "src/heart/mcp/mcp-server.ts" },
+    {
+      "walker": "ts-parser",
+      "module": "dist/heart/daemon/cli-parse.js",
+      "source": "src/heart/daemon/cli-parse.ts",
+      "parser": "parseOuroCommand",
+      "kinds": "src/heart/daemon/cli-types.ts#OuroCliCommand"
+    },
+    {
+      "walker": "argv-entries",
+      "module": "dist",
+      "source": "src",
+      "claims": [
+        { "entry": "src/heart/daemon/ouro-entry.ts", "parser": "src/heart/daemon/cli-parse.ts" },
+        { "entry": "src/heart/daemon/ouro-bot-entry.ts", "parser": "src/heart/daemon/cli-parse.ts" }
+      ]
+    }
+  ],
   "groups": [{ "id": "ouro-agent", "when": "Work with your Ouro agent from a coding tool: talk to it, hand it work, report back, and read its state." }]
 }

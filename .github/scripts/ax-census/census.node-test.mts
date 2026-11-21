@@ -342,7 +342,7 @@ test("the text sorts gaps by file, then line, then id", () => {
       summary: { found: 4, declared: 0, weak: 0, undeclared: 4, unwalked: 0, stale: 0, excluded: 0, baseline: 4 },
       byKind: { mcp: { found: 4, declared: 0, weak: 0, undeclared: 4 } },
       undeclared: [gap("mcp:b", "b.ts", 1), gap("mcp:z", "a.ts", null), gap("mcp:y", "a.ts", 2), gap("mcp:x", "a.ts", 2)],
-      weak: [], excluded: [],
+      weak: [], unwalked: [], excluded: [],
     }],
   };
   deepEqual(renderText(report).split("\n").slice(1), ["a.ts:2 mcp:x", "a.ts:2 mcp:y", "a.ts:? mcp:z", "b.ts:1 mcp:b"]);
@@ -409,6 +409,71 @@ test("--inventory writes the declared doors only, in the X-ray's inventory shape
     const code = await run({ argv: args("config-declared.json", baselineFile(dir, ["mcp:status"]), ["--inventory", file]), io, root: here });
     equal(code, 0, err.join("\n"));
     deepEqual(JSON.parse(readFileSync(file, "utf8")), { mcp: ["ask"] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const CLI_GAPS = [
+  "mcp:ask", "mcp:status", "mcp:catchup",
+  "cli:connect", "cli:friend", "cli:friend list", "cli:friend show", "cli:lock", "cli:mode", "cli:mode live", "cli:mode shadow",
+  "cli:secret", "cli:secret rotate", "cli:stop", "cli:tool", "cli:tool run", "cli:unlock", "cli:up", "cli:work", "cli:work card", "cli:work gauntlet",
+  "cli:pause", "cli:resume",
+  "cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>',
+  "cli:node dist/alias-entry.js", "cli:node dist/bracket-entry.js", "cli:node dist/global-entry.js",
+  "cli:node dist/daemon-entry.js", "cli:node dist/ouro-entry.mjs rescue", "cli:node dist/lone-entry.js", "cli:node dist/stats-main.js", "cli:node dist/stats-main.js summary", "cli:node dist/stats-main.js export",
+];
+
+test("a census with the CLI walkers walks both kinds, and counts unwalked kinds against zero", async () => {
+  const dir = scratch();
+  try {
+    const { out, err, io } = capture();
+    const file = join(dir, "census.json");
+    const code = await run({ argv: args("config-cli.json", baselineFile(dir, CLI_GAPS), ["--out", file]), io, root: here });
+    equal(code, 0, err.join("\n"));
+    const product = JSON.parse(readFileSync(file, "utf8")).products[0];
+    deepEqual(product.walked.kinds, ["mcp", "cli"]);
+    equal(product.summary.unwalked, 5);
+    deepEqual(product.unwalked.map((g: { id: string }) => g.id), ["cli:kind hidden", "cli:kind extra", "cli:kind resume.all", "cli:type { kind: `plug.${string}` }", 'cli:type Partial<{ kind: "partial" }>']);
+    deepEqual(product.byKind.cli, { found: 29, declared: 0, weak: 0, undeclared: 29 });
+    // Each gap names the walker that found it, even where two walkers find one kind.
+    equal(product.undeclared.find((g: { id: string }) => g.id === "cli:up").walker, "ts-parser");
+    equal(product.undeclared.find((g: { id: string }) => g.id === "cli:node dist/lone-entry.js").walker, "argv-entries");
+    ok(out.includes("harness: 32 found, 0 declared, 0 weak, 32 undeclared, 5 unwalked (mcp 3, cli 29)"), out.join("\n"));
+    ok(out.includes("walkers/fixtures/cli/cli-types.ts:" + lineIn("walkers/fixtures/cli/cli-types.ts", '"hidden"') + " cli:kind hidden (unwalked: no walked path returns this kind)"), out.join("\n"));
+
+    // An unwalked kind off the baseline fails like any other gap.
+    const short = capture();
+    equal(await run({ argv: args("config-cli.json", baselineFile(dir, CLI_GAPS.filter((g) => g !== "cli:kind extra"))), io: short.io, root: here }), 1);
+    ok(short.err.some((e) => e.startsWith("cli:kind extra: ")), short.err.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a source's claims must be a list of entry and parser paths", async () => {
+  const dir = scratch();
+  try {
+    await failsWith(args("config-bad-claims.json", baselineFile(dir, [])), "parser, kinds and claims");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function lineIn(file: string, text: string): number {
+  return readFileSync(join(here, file), "utf8").split("\n").findIndex((l) => l.includes(text)) + 1;
+}
+
+test("the pull request that starts walking CLI doors seeds their baseline against an MCP-only base", async () => {
+  const dir = scratch();
+  try {
+    const { err, io } = capture();
+    const argv = ["--config", join(fixtures, "config-cli.json"), "--baseline", baselineFile(dir, CLI_GAPS), "--base-baseline", baselineFile(dir, CLI_GAPS.slice(0, 3), "base.json"), "--base-config", join(fixtures, "config-ok.json")];
+    equal(await run({ argv, io, root: here }), 0, err.join("\n"));
+    const grown = capture();
+    const more = ["--config", join(fixtures, "config-cli.json"), "--baseline", baselineFile(dir, CLI_GAPS, "b2.json"), "--base-baseline", baselineFile(dir, CLI_GAPS.slice(0, 2), "base2.json"), "--base-config", join(fixtures, "config-ok.json")];
+    equal(await run({ argv: more, io: grown.io, root: here }), 1);
+    ok(grown.err.includes("mcp:catchup: added to the baseline. Fix: declare the door instead; the baseline only shrinks."), grown.err.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -63,3 +63,27 @@ test("walker sources may be added but not removed", () => {
     "mcp-schemas dist/a.js src/a.ts: a walker source on the base branch is missing here. Fix: restore it in ax/census.config.json; removing a source makes its doors vanish from the count.",
   ]);
 });
+
+test("a CLI source's parser, kinds and claims are part of what can't be removed", () => {
+  const parser = { walker: "ts-parser", module: "dist/p.js", source: "src/p.ts", parser: "parse", kinds: "src/t.ts#T" };
+  const entries = { walker: "argv-entries", module: "dist", source: "src", claims: [{ entry: "src/e.ts", parser: "src/p.ts" }] };
+  deepEqual(checkSources([parser, entries], [parser, entries]), []);
+  // A new claim hides an entry's doors, so it counts as narrowing the source.
+  const more = { ...entries, claims: [...entries.claims, { entry: "src/f.ts", parser: "src/p.ts" }] };
+  deepEqual(checkSources([parser, more], [parser, entries]).length, 1);
+  deepEqual(checkSources([{ ...parser, kinds: "src/t.ts#U" }, entries], [parser, entries]).length, 1);
+});
+
+test("a kind the base branch doesn't walk yet may join the baseline; a kind it walks may not grow", () => {
+  const gaps = ["mcp:ask", "cli:up", "cli:down"];
+  const base = { baseline: ["mcp:ask"], hasConfig: true, kinds: ["mcp"] };
+  deepEqual(checkBaseline({ gaps, baseline: gaps, base, kinds: ["mcp", "cli"] }), []);
+  deepEqual(checkBaseline({ gaps: [...gaps, "mcp:new"], baseline: [...gaps, "mcp:new"], base, kinds: ["mcp", "cli"] }), [
+    "mcp:new: added to the baseline. Fix: declare the door instead; the baseline only shrinks.",
+  ]);
+  // Once the base walks cli, cli entries are ratcheted too.
+  deepEqual(checkBaseline({ gaps, baseline: gaps, base: { ...base, kinds: ["mcp", "cli"] }, kinds: ["mcp", "cli"] }), [
+    "cli:up: added to the baseline. Fix: declare the door instead; the baseline only shrinks.",
+    "cli:down: added to the baseline. Fix: declare the door instead; the baseline only shrinks.",
+  ]);
+});
