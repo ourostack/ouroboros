@@ -481,6 +481,13 @@ describe("execTool", () => {
     expect(shellRiskProfile({ command: "ouro auth verify --agent slugger" })).toMatchObject({ risk: "low" })
     expect(shellRiskProfile({ command: "ouro auth verifyy" })).toMatchObject({ risk: "high" })
     expect(shellRiskProfile({ command: "ouro auth --agent slugger" })).toMatchObject({ risk: "high" })
+    // A flag before the subcommand doesn't hide it: the command is named by its words, wherever the flags sit.
+    expect(shellRiskProfile({ command: "ouro auth --agent slugger verify" })).toMatchObject({ risk: "low" })
+    expect(shellRiskProfile({ command: "ouro auth --agent slugger switch --provider anthropic" })).toMatchObject({ risk: "high" })
+    expect(shellRiskProfile({ command: "ouro mcp --agent slugger call srv tool --args {}" })).toMatchObject({ risk: "high" })
+    expect(shellRiskProfile({ command: "ouro --agent slugger status" })).toMatchObject({ risk: "low" })
+    // A group followed by any word that isn't a flag names something under it, even after another flag.
+    expect(shellRiskProfile({ command: "ouro auth --json switch" })).toMatchObject({ risk: "high" })
   })
 
   it("treats a shell line that runs ouro beside another command as risky, whatever the first command is", async () => {

@@ -44,6 +44,14 @@ describe("the flag gate in front of the ouro CLI", () => {
     expect(result).toEqual({ kind: "pass", args: ["msg", "--to", "inbox-agent", "hello"] })
   })
 
+  it("finds the command by its words when a flag comes before them, so --why can't be skipped by moving --agent first", () => {
+    expect(gateCommandArgs(["a2a", "--agent", "slugger", "message", "--to", "peer", "--text", "hi"])).toMatchObject({ kind: "refuse", code: "needs-why" })
+    expect(gateCommandArgs(["--agent", "slugger", "msg", "--to", "inbox-agent", "hello"])).toMatchObject({ kind: "refuse", code: "needs-why" })
+    const result = gateCommandArgs(["a2a", "--agent", "slugger", "message", "--to", "peer", "--text", "hi", "--why", "they asked"])
+    expect(result).toEqual({ kind: "pass", args: ["a2a", "--agent", "slugger", "message", "--to", "peer", "--text", "hi"] })
+    expect(gateCommandArgs(["check", "--agent", "slugger", "--lan", "inner"])).toMatchObject({ kind: "refuse", code: "unknown-flag" })
+  })
+
   it("previews a command other people see with --dry-run, and says nothing was sent", () => {
     const result = gateCommandArgs(["msg", "--to", "inbox-agent", "hello", "--why", "they asked", "--dry-run"])
     expect(result.kind).toBe("preview")

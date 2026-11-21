@@ -33,6 +33,7 @@ import { ApprovalExecutionFailedError } from "../heart/tool-approval";
 import { localAudioToolGate, voiceLocalAudioToolDefinition } from "./tools-voice-local";
 import { authorizeRootHostToolInvocation, rootHostToolDefinition, selectRootHostTool, type RootHostSelectionContext } from "./tools-sanctuary-host";
 import { CLI_COMMANDS } from "../heart/daemon/cli-manifest";
+import { commandWords } from "../heart/daemon/cli-gate";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -316,17 +317,19 @@ function shellTokens(command: string): string[] {
 }
 
 /**
- * The declared command a shell line names: the longest declaration whose words start it, as the CLI's gate reads it.
- * A group's declaration (one with longer declarations under it) followed by another word names no command, since
- * that word is an undeclared one under the group.
+ * The declared command a shell line names: the longest declaration its words start with, read past flags as the
+ * CLI's gate reads them (see commandWords), so `ouro a2a --agent x message` names `a2a message`. A group's
+ * declaration (one with longer declarations under it) followed by any other word names no command, since that word
+ * is an undeclared one under the group.
  */
-function declaredOuroCommand(words: readonly string[]): string | null {
+function declaredOuroCommand(args: readonly string[]): string | null {
+  if (args.length > 0 && OURO_INFO_FLAGS.includes(args[0]!)) return args[0]!
+  const words = commandWords(args)
   for (let length = words.length; length > 0; length--) {
     const name = words.slice(0, length).join(" ")
-    if (!DECLARED_OURO_COMMANDS.includes(name) && !OURO_INFO_FLAGS.includes(name)) continue
-    const next = words[length]
+    if (!DECLARED_OURO_COMMANDS.includes(name)) continue
     const isGroup = DECLARED_OURO_COMMANDS.some((other) => other.startsWith(`${name} `))
-    return next !== undefined && !next.startsWith("-") && isGroup ? null : name
+    return length < words.length && isGroup ? null : name
   }
   return null
 }
