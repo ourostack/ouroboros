@@ -241,7 +241,7 @@ describe("notes/friend tools", () => {
         findByExternalId: vi.fn(),
       },
     })
-    expect(result).toBe("friend not found: missing-friend")
+    expect(result).toBe("friend not found: missing-friend (code: friend-not-found)")
   })
 
   it("requires explicit provenance for a Sanctuary relationship preference", async () => {
@@ -267,7 +267,7 @@ describe("notes/friend tools", () => {
       friendStore,
     })
 
-    expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default")
+    expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default (code: preference-source-required)")
     expect(friendStore.put).not.toHaveBeenCalled()
   })
 
@@ -295,7 +295,7 @@ describe("notes/friend tools", () => {
       friendStore,
     })
 
-    expect(result).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy")
+    expect(result).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy (code: preference-not-allowed)")
     expect(await execTool("save_friend_note", {
       type: "tool_preference",
       source: "stated",
@@ -307,7 +307,7 @@ describe("notes/friend tools", () => {
         channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
       },
       friendStore,
-    })).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy")
+    })).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy (code: preference-not-allowed)")
     expect(friendStore.put).not.toHaveBeenCalled()
   })
 
@@ -337,10 +337,10 @@ describe("notes/friend tools", () => {
 
     expect(await execTool("save_friend_note", {
       type: "tool_preference", key: "timing", source: "stated", content: "Remind me tomorrow",
-    }, { signin: async () => undefined, context, friendStore })).toBe("i can't find the friend record on disk")
+    }, { signin: async () => undefined, context, friendStore })).toBe("i can't find the friend record on disk (code: friend-not-found)")
     expect(await execTool("save_friend_note", {
       type: "tool_preference", key: "communication", source: "stated", content: "Use one paragraph",
-    }, { signin: async () => undefined, context, friendStore })).toBe("relationship preference 'communication' already exists; call again with override: true to replace it")
+    }, { signin: async () => undefined, context, friendStore })).toBe("relationship preference 'communication' already exists; call again with override: true to replace it (code: override-required)")
     expect(friendStore.put).not.toHaveBeenCalled()
   })
 
@@ -501,6 +501,7 @@ describe("notes/friend tools", () => {
       const { result, friendStore } = await save({ type, key, content })
       expect(result).toContain("not about this person")
       expect(result).toContain("psyche/TACIT.md")
+      expect(result).toMatch(/ \(code: persona-note\)$/)
       expect(result).not.toContain("Claude Code")
       expect(result).not.toContain("pull request")
       expect(friendStore.put).not.toHaveBeenCalled()
@@ -585,12 +586,12 @@ describe("notes/friend tools", () => {
       const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "carrier pigeon" }, {
         signin: async () => undefined, context: { friend, channel }, friendStore,
       })
-      expect(result).toBe("i can only reach people on bluebubbles or teams")
+      expect(result).toBe("i can only reach people on bluebubbles or teams (code: invalid-reach-channel)")
       expect(friendStore.put).not.toHaveBeenCalled()
       const empty = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated" }, {
         signin: async () => undefined, context: { friend, channel }, friendStore,
       })
-      expect(empty).toBe("i can only reach people on bluebubbles or teams")
+      expect(empty).toBe("i can only reach people on bluebubbles or teams (code: invalid-reach-channel)")
       expect(friendStore.put).not.toHaveBeenCalled()
     })
 
@@ -601,7 +602,7 @@ describe("notes/friend tools", () => {
       const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", content: "teams" }, {
         signin: async () => undefined, context: { friend, channel }, friendStore,
       })
-      expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default")
+      expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default (code: preference-source-required)")
       expect(friendStore.put).not.toHaveBeenCalled()
     })
 
@@ -635,7 +636,7 @@ describe("notes/friend tools", () => {
       const result = await execTool("save_friend_note", { type: "tool_preference", key: "reachChannel", source: "stated", content: "bluebubbles" }, {
         signin: async () => undefined, context: { friend, channel }, friendStore,
       })
-      expect(result).toBe("relationship preference 'reachChannel' already exists; call again with override: true to replace it")
+      expect(result).toBe("relationship preference 'reachChannel' already exists; call again with override: true to replace it (code: override-required)")
       expect(friendStore.put).not.toHaveBeenCalled()
     })
 
