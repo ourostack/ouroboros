@@ -20,8 +20,9 @@
  * - No retry of a provider error. Core retries an error unless it says `retryable: false`, and each retry refreshes
  *   the agent's credentials and rebuilds its runtime from `agent.json`, dropping the override. Every error from the
  *   injected runtime is marked not retryable, so a turn makes one call per step and never reaches a real provider.
- * - Nothing from the live host. The Sanctuary service context (Unraid, SABnzbd, Jellyfin) is left out, so those tools
- *   are not offered; the local interactive-control socket is not opened.
+ * - Nothing from the live host. The Sanctuary service context (Unraid, SABnzbd, Jellyfin) is synthetic
+ *   (`synthetic-sanctuary.ts`): reads return fixed data, a restart or queue resume reports unavailable; the local
+ *   interactive-control socket is not opened.
  *
  * What the turn writes in the bundle: `friends/eval-owner.json`, the session under `state/sessions/`, the identity
  * key and other runtime state under `state/`, and the flight recorder under `arc/`. A bundle runs one turn: the
@@ -31,9 +32,8 @@
  * Fidelity gaps:
  * - The message goes straight to the sense's message handler, skipping the long poll's update parsing, its user and
  *   chat filter and the inbox. Friend resolution and relationship authorization still run.
- * - A question about whether a title is on the shelf brings in the media-catalog contract, which requires
- *   `media_search`; with no Jellyfin context that tool is not offered and the turn fails. The books cases do not ask
- *   one.
+ * - The Sanctuary service answers (containers, storage, disks, media catalog) are synthetic and fixed; a restart and a
+ *   download-queue resume are not simulated. The books tools are not covered by this context.
  * - The owner's prompt does not list `skills/`: the relationship prompt has no skills section and `load_skill` is not
  *   in the `sanctuary-owner` profile, so a skill file reaches the model only when the agent reads it with a tool.
  * - Replies are read back as text: Telegram's HTML is decoded, and a message with buttons is not part of the answer.
@@ -52,6 +52,7 @@ import { createProductionTelegramRelationshipComposition, createTelegramSenseApp
 import type { TelegramInboundMessage } from "../../senses/telegram-client"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram-identity-key"
 import type { Case, Observation, TraceCall, TraceReply } from "../domain/case"
+import { createSyntheticSanctuary } from "./synthetic-sanctuary"
 
 const AGENT = "sanctuary"
 const BOT_ID = "7001"
@@ -163,7 +164,7 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
       credentials,
       identityKey,
       _agentRoot: agentRoot,
-      _toolContext: { agentRoot, answerGates: SANCTUARY_ANSWER_GATES } as never,
+      _toolContext: { agentRoot, answerGates: SANCTUARY_ANSWER_GATES, sanctuary: createSyntheticSanctuary() } as never,
       api,
       createLongPoll: (options) => {
         onMessage = options.onMessage
