@@ -9,6 +9,7 @@ import type { ToolDefinition, ToolDoorCard, ToolResultImage } from "./tools-base
 import { emitNervesEvent } from "../nerves/runtime"
 import { digestJson } from "./tool-arguments"
 import { guardMcpArgs } from "./mcp-write-guard"
+import { declaredRiskProfile, type DeclaredTool } from "./mcp-declared-tools"
 
 export class McpCallRejectedError extends Error {
   constructor(message: string) {
@@ -51,6 +52,11 @@ export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId">,
   }
 }
 
+/** The served schema with the bundle's declared description and parameters; its name stays the served one. */
+function withDeclaration(served: ReturnType<typeof mcpToolSchema>, declared: DeclaredTool): ReturnType<typeof mcpToolSchema> {
+  return { ...served, function: { ...served.function, description: declared.description, parameters: declared.parameters as typeof served.function.parameters } }
+}
+
 /**
  * An MCP tool's Ouro AX card, made from what its server says: the tool's first description sentence as its `when`
  * line, and a read effect only when the read-only hint is trusted (the agent's own servers), else a write.
@@ -83,81 +89,101 @@ function mcpToolCard(server: string, tool: McpToolInfo, surfacedName: string, re
 export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
   if (!view) return []
 
-  return view.entries.flatMap((entry) => entry.tools.map((tool): ToolDefinition => {
-    const schema = mcpToolSchema(entry, tool)
-    const binding: McpToolBinding = Object.freeze({
-      manager: view.manager, ...view.owner, server: entry.server,
-      rawName: tool.name, surfacedName: schema.function.name,
-      source: entry.source, pluginId: entry.pluginId,
-      configDigest: entry.configDigest, generation: entry.generation,
-      schemaDigest: digestJson(schema),
-    })
-    // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
-    // so an orientation hold still lets the agent inspect through those tools.
-    const trustedReadOnly = entry.source === "builtin" && tool.annotations?.readOnlyHint === true
-    return {
-      tool: schema,
-      ax: mcpToolCard(entry.server, tool, schema.function.name, trustedReadOnly),
-      riskProfile: trustedReadOnly
-        ? { mutates: "none" as const, risk: "low" as const, reason: "read-only tool from the agent's own MCP server" }
-        : {
-          mutates: "external_side_effect" as const,
-          risk: "high" as const,
-          reason: "MCP tools may mutate external systems",
-        },
-      handler: async (args, ctx): Promise<string> => {
-        if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
-          emitNervesEvent({
-            level: "warn", event: "mcp.tool_rejected", component: "repertoire",
-            message: "MCP tool owner does not match its caller", meta: { reason: "owner mismatch" },
-          })
-          throw new McpCallRejectedError("MCP tool owner does not match its caller")
-        }
-        emitNervesEvent({
-          event: "mcp.tool_start",
-          component: "repertoire",
-          message: `calling MCP tool ${entry.server}/${tool.name}`,
-          meta: { server: entry.server, tool: tool.name },
-        })
-
-        const guarded = guardMcpArgs({ toolName: tool.name, declaresDryRun: Object.hasOwn((tool.inputSchema?.properties ?? {}) as object, "dry_run"), args, ctx })
-        if (guarded.rejected !== undefined) throw new McpCallRejectedError(guarded.rejected)
-
-        try {
-          const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
-          const { text, images } = splitMcpContent(result.content)
-
-          if (result.isError === true) {
-            throw new McpToolExecutionError("handler_failed", `[mcp error] ${entry.server}/${tool.name}: ${text}`)
-          }
-          let output = text
-          if (images.length > 0) {
-            if (ctx.attachToolImages) ctx.attachToolImages(images)
-            else output = `${text}${text ? "\n\n" : ""}[${images.length} image(s) returned, but this caller can't receive images]`
+  return view.entries.flatMap((entry) => {
+    if (entry.declared) warnUnservedDeclarations(entry)
+    return entry.tools.flatMap((tool): ToolDefinition[] => {
+      const served = mcpToolSchema(entry, tool)
+      // The bundle's own declaration, when it has one: the model sees the declared description, parameters and card.
+      const declared = entry.declared?.get(tool.name)
+      // A person-only action is never an agent's to call, so a declared one is not surfaced.
+      if (declared?.ax.effect === "person-only") return []
+      const schema = declared ? withDeclaration(served, declared) : served
+      const binding: McpToolBinding = Object.freeze({
+        manager: view.manager, ...view.owner, server: entry.server,
+        rawName: tool.name, surfacedName: served.function.name,
+        source: entry.source, pluginId: entry.pluginId,
+        configDigest: entry.configDigest, generation: entry.generation,
+        // The served schema, which the manager checks the binding against; the declaration changes only what the model reads.
+        schemaDigest: digestJson(served),
+      })
+      // A read-only hint is trusted only from the agent's own bundle (agent.json mcpServers),
+      // so an orientation hold still lets the agent inspect through those tools.
+      const trustedReadOnly = entry.source === "builtin" && tool.annotations?.readOnlyHint === true
+      return [{
+        tool: schema,
+        ax: declared ? { ...declared.ax, id: `tool:${served.function.name}` as const } : mcpToolCard(entry.server, tool, served.function.name, trustedReadOnly),
+        riskProfile: declared ? declaredRiskProfile(declared.ax.effect) : trustedReadOnly
+          ? { mutates: "none" as const, risk: "low" as const, reason: "read-only tool from the agent's own MCP server" }
+          : {
+            mutates: "external_side_effect" as const,
+            risk: "high" as const,
+            reason: "MCP tools may mutate external systems",
+          },
+        handler: async (args, ctx): Promise<string> => {
+          if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
+            emitNervesEvent({
+              level: "warn", event: "mcp.tool_rejected", component: "repertoire",
+              message: "MCP tool owner does not match its caller", meta: { reason: "owner mismatch" },
+            })
+            throw new McpCallRejectedError("MCP tool owner does not match its caller")
           }
           emitNervesEvent({
-            event: "mcp.tool_end",
+            event: "mcp.tool_start",
             component: "repertoire",
-            message: `MCP tool ${entry.server}/${tool.name} completed`,
+            message: `calling MCP tool ${entry.server}/${tool.name}`,
             meta: { server: entry.server, tool: tool.name },
           })
 
-          return output
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error)
-          emitNervesEvent({
-            level: "error",
-            event: "mcp.tool_error",
-            component: "repertoire",
-            message: `MCP tool ${entry.server}/${tool.name} failed: ${reason}`,
-            meta: { server: entry.server, tool: tool.name, reason },
-          })
-          if (error instanceof McpCallRejectedError || error instanceof McpToolExecutionError) throw error
-          throw new McpToolExecutionError("handler_indeterminate", `[mcp error] ${entry.server}/${tool.name}: ${reason}`)
-        }
-      },
-      mcpServer: entry.server,
-      mcpBinding: binding,
-    }
-  }))
+          const guarded = guardMcpArgs({ toolName: tool.name, declaresDryRun: Object.hasOwn((tool.inputSchema?.properties ?? {}) as object, "dry_run"), args, ctx })
+          if (guarded.rejected !== undefined) throw new McpCallRejectedError(guarded.rejected)
+
+          try {
+            const result = await view.manager.callTool(binding, guarded.args as Record<string, string>, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
+            const { text, images } = splitMcpContent(result.content)
+
+            if (result.isError === true) {
+              throw new McpToolExecutionError("handler_failed", `[mcp error] ${entry.server}/${tool.name}: ${text}`)
+            }
+            let output = text
+            if (images.length > 0) {
+              if (ctx.attachToolImages) ctx.attachToolImages(images)
+              else output = `${text}${text ? "\n\n" : ""}[${images.length} image(s) returned, but this caller can't receive images]`
+            }
+            emitNervesEvent({
+              event: "mcp.tool_end",
+              component: "repertoire",
+              message: `MCP tool ${entry.server}/${tool.name} completed`,
+              meta: { server: entry.server, tool: tool.name },
+            })
+
+            return output
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error)
+            emitNervesEvent({
+              level: "error",
+              event: "mcp.tool_error",
+              component: "repertoire",
+              message: `MCP tool ${entry.server}/${tool.name} failed: ${reason}`,
+              meta: { server: entry.server, tool: tool.name, reason },
+            })
+            if (error instanceof McpCallRejectedError || error instanceof McpToolExecutionError) throw error
+            throw new McpToolExecutionError("handler_indeterminate", `[mcp error] ${entry.server}/${tool.name}: ${reason}`)
+          }
+        },
+        mcpServer: entry.server,
+        mcpBinding: binding,
+      }]
+    })
+  })
+}
+
+/** A declared tool the server doesn't serve is not surfaced; say so, since the bundle promised it. */
+function warnUnservedDeclarations(entry: McpServerView): void {
+  const served = new Set(entry.tools.map((tool) => tool.name))
+  const missing = [...entry.declared!.keys()].filter((name) => !served.has(name))
+  if (missing.length === 0) return
+  emitNervesEvent({
+    level: "warn", event: "mcp.declared_tool_unserved", component: "repertoire",
+    message: `MCP server ${entry.server} doesn't serve tools its bundle declares`, meta: { server: entry.server, missing },
+  })
 }
