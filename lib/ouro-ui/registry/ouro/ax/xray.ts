@@ -10,20 +10,28 @@ import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileS
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface, isChecksReport, type ChecksReport, isReservedPersonOnly, type UiEntry, devCommandIn, devCommandsIn, sourceCheckoutTexts, checkFailureCopyAllow, vagueFailureIn, vagueFailuresIn, type FailureCopyAllow, isGenericAudience, isOutcome, validateOutcome, hasAnsi, stripAnsi, isWait, validateWait, checkWorkEvent, quietPipes, runCli, defineCli, defineCommand, parse, type FlagSpec, type Input, defineExitCodes, AxError, isAxError, shellWord as typedWord } from "./xray.kit.mts";
+import { CLAIM_SET, claimSetText, type Claim, type ClaimSurface, isChecksReport, type ChecksReport, isReservedPersonOnly, type UiEntry, devCommandIn, devCommandsIn, sourceCheckoutTexts, checkFailureCopyAllow, vagueFailureIn, vagueFailuresIn, type FailureCopyAllow, isGenericAudience, isOutcome, OUTCOME_STATES, validateOutcome, hasAnsi, stripAnsi, isWait, validateWait, checkWorkEvent, quietPipes, runCli, defineCli, defineCommand, parse, type FlagSpec, type Input, defineExitCodes, AxError, isAxError, shellWord as typedWord } from "./xray.kit.mts";
 
 /**
- * The Ouro AX conformance checker: it calls a CLI, an HTTP API or an MCP server the way an agent would, and reports
+ * The Ouro AX conformance checker: it calls a CLI, an HTTP API, an MCP server or a harness's in-turn tools the way an
+ * agent would, and reports
  * which claims hold on which surface, with the fix where a claim does not hold. It checks from outside, never by
  * importing the interface's code. Reads run freely; what other people see is called only on paths that must refuse (a made-up
  * target, no `--why`) or that act on nothing (`--dry-run`), and only against a target that proves it is a mock.
  *
- *   node xray.ts --cli "<command>" [--http <url> --routes <manifest.json>] [--mcp "<command>"] [options]
+ *   node xray.ts --cli "<command>" [--http <url> --routes <manifest.json>] [--mcp "<command>"] [--tools "<command>"] [options]
+ *
+ * In-turn tools are the tools a harness gives a model inside a turn. `--tools` runs a command that serves them over
+ * stdio, one JSON-RPC message a line: `tools/list` answers `{ tools: [{ type: "function", function: { name,
+ * description, parameters }, ax: { effect, when, errors: [{ code, means, fix }], confirm? } }], errors? }`, where the
+ * top-level `errors` are the cards of the dispatcher's shared codes, and `tools/call`
+ * (`{ name, arguments }`) answers the call's typed outcome, `{ state, text, code? }`: `state` is an ax-outcome state,
+ * `text` is what the model reads, and `code` is the error card's code when it was not done.
  *
  * @claim "never by importing the interface's code" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::the kit's example tool conforms, and the X-ray acts on nothing)
  * @claim "only against a target that proves it is a mock" registry/ouro/ax/xray.test.mts verify:testExists(registry/ouro/ax/xray.test.mts::without proof of a mock, nothing other people see is called, and it does not conform)
  */
-const XRAY_VERSION = "1.7.0";
+const XRAY_VERSION = "1.8.0";
 
 type Verdict = "pass" | "fail" | "skip";
 
@@ -36,12 +44,14 @@ interface CheckResult {
 
 /**
  * The surfaces an adopter generates from its own registration: CLI command names, HTTP `METHOD /path` routes, MCP tool
- * names, and its components' bound reads and actions (`ui`, the entries `bindAx` returns), whose twins it checks.
+ * names, in-turn tool names (`tools`), and its components' bound reads and actions (`ui`, the entries `bindAx`
+ * returns), whose twins it checks.
  */
 interface Inventory {
   cli?: string[];
   http?: string[];
   mcp?: string[];
+  tools?: string[];
   ui?: UiEntry[];
 }
 
@@ -64,6 +74,7 @@ interface XrayOptions {
   http?: string | undefined;
   routes?: string | undefined;
   mcp?: string | undefined;
+  tools?: string | undefined;
   name?: string | undefined;
   env: Record<string, string>;
   guard?: string | undefined;
@@ -1492,17 +1503,17 @@ async function checkHttp(ctx: Context) {
 
 interface RpcReply {
   id?: unknown;
-  result?: { tools?: unknown; supportedVersions?: unknown; content?: { text?: string }[]; isError?: boolean };
+  result?: { tools?: unknown; errors?: unknown; supportedVersions?: unknown; content?: { text?: string }[]; isError?: boolean };
   error?: { message?: string; data?: unknown };
 }
 
 const MCP_MODERN = "2026-07-28";
 const MCP_LEGACY = "2025-06-18";
 
-async function checkMcp(ctx: Context) {
-  const { rec, opts } = ctx;
-  const argv = splitCommand(opts.mcp!);
-  const child = spawn(argv[0]!, argv.slice(1), { env: ctx.env, stdio: ["pipe", "pipe", "pipe"] });
+/** A JSON-RPC client over a command's stdio, one message a line; a request left unanswered past its timeout resolves to an error. */
+function rpcClient(line: string, env: Record<string, string>, timeoutMs: number) {
+  const argv = splitCommand(line);
+  const child = spawn(argv[0]!, argv.slice(1), { env, stdio: ["pipe", "pipe", "pipe"] });
   let buf = "";
   const waiting = new Map<number, (v: RpcReply) => void>();
   child.stdout.on("data", (d: Buffer) => {
@@ -1525,22 +1536,29 @@ async function checkMcp(ctx: Context) {
   child.stdin.on("error", () => undefined);
   /* node:coverage enable */
   let id = 0;
-  // MCP 2026-07-28 has no handshake: each request names its version in _meta. A server that does not answer server/discover with it gets initialize, as before.
-  let meta: Record<string, unknown> | null = null;
   const request = (method: string, params: unknown) =>
     new Promise<RpcReply>((done) => {
       const my = ++id;
-      if (meta && method !== "initialize") params = { ...(params as Record<string, unknown>), _meta: meta };
       const t = setTimeout(() => {
         waiting.delete(my);
-        done({ error: { message: `no answer to ${method} in ${opts.timeoutMs} ms` } });
-      }, opts.timeoutMs);
+        done({ error: { message: `no answer to ${method} in ${timeoutMs} ms` } });
+      }, timeoutMs);
       waiting.set(my, (v) => {
         clearTimeout(t);
         done(v);
       });
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: my, method, params })}\n`);
     });
+  const notify = (method: string) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
+  return { request, notify, kill: () => child.kill() };
+}
+
+async function checkMcp(ctx: Context) {
+  const { rec, opts } = ctx;
+  const rpc = rpcClient(opts.mcp!, ctx.env, opts.timeoutMs);
+  // MCP 2026-07-28 has no handshake: each request names its version in _meta. A server that does not answer server/discover with it gets initialize, as before.
+  let meta: Record<string, unknown> | null = null;
+  const request = (method: string, params: unknown) => rpc.request(method, meta && method !== "initialize" ? { ...(params as Record<string, unknown>), _meta: meta } : params);
   const textOf = (r: RpcReply) => (r.error ? JSON.stringify(r.error) : (r.result?.content ?? []).map((c) => c.text ?? "").join(" "));
   const refused = (r: RpcReply) => Boolean(r.error) || r.result?.isError === true;
   const modern = { "io.modelcontextprotocol/protocolVersion": MCP_MODERN, "io.modelcontextprotocol/clientCapabilities": {} };
@@ -1558,7 +1576,7 @@ async function checkMcp(ctx: Context) {
         rec.add("mcp.tools-list", "initialize", "fail", textOf(init));
         return { tools: 0, revision: MCP_LEGACY };
       }
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+      rpc.notify("notifications/initialized");
     }
     const list = await request("tools/list", {});
     const tools = Array.isArray(list.result?.tools) ? list.result.tools.filter(isRecord) : null;
@@ -1590,7 +1608,85 @@ async function checkMcp(ctx: Context) {
     rec.add("mcp.unknown-tool", "ax_xray_no_such_tool", ok ? "pass" : "fail", `${refused(u) ? "refused" : "ran"}: ${clip(ut || "(no text)")}`);
     return { tools: tools.length, revision };
   } finally {
-    child.kill();
+    rpc.kill();
+  }
+}
+
+/** The effects an in-turn tool's card may declare. */
+const TOOL_EFFECTS = ["read", "write", "consequential", "person-only"];
+/** The outcome states that report something done or about to be: the others carry the error card's code. */
+const DONE_STATES = ["done", "queued", "planned"];
+
+async function checkTools(ctx: Context) {
+  const { rec, opts } = ctx;
+  const rpc = rpcClient(opts.tools!, ctx.env, opts.timeoutMs);
+  /** The call's typed outcome, or null when the answer is not one. */
+  const outcomeOf = (r: RpcReply) => {
+    const o = r.result as unknown;
+    return isRecord(o) && (OUTCOME_STATES as readonly unknown[]).includes(o["state"]) && typeof o["text"] === "string" ? { state: String(o["state"]), text: o["text"], code: typeof o["code"] === "string" && o["code"] ? o["code"] : null } : null;
+  };
+  /** What the model would read: the outcome's text, or the answer as it came when it is not an outcome. */
+  const textOf = (r: RpcReply) => {
+    const o = outcomeOf(r);
+    return o ? o.text || "(no text)" : JSON.stringify(r.error ?? r.result ?? null);
+  };
+  const refused = (r: RpcReply) => Boolean(r.error) || ["refused", "failed"].includes(outcomeOf(r)?.state ?? "");
+  const typed = (surface: string, r: RpcReply, codes: readonly string[]) => {
+    const o = outcomeOf(r);
+    if (!o) return rec.add("tools.typed-outcome", surface, "fail", `not an outcome { state, text, code? }: ${clip(textOf(r))}`);
+    if (DONE_STATES.includes(o.state)) return rec.add("tools.typed-outcome", surface, "pass", o.state);
+    if (!o.code) return rec.add("tools.typed-outcome", surface, "fail", `${o.state} with no code`);
+    if (!codes.includes(o.code)) return rec.add("tools.typed-outcome", surface, "fail", `${o.state} with code ${o.code}, which no error card lists (listed: ${codes.join(", ") || "none"})`);
+    rec.add("tools.typed-outcome", surface, "pass", `${o.state} (${o.code})`);
+  };
+  try {
+    const list = await rpc.request("tools/list", {});
+    const tools = Array.isArray(list.result?.tools) ? list.result.tools.filter(isRecord) : null;
+    if (!tools) {
+      rec.add("tools.listed", "tools/list", "fail", list.error ? JSON.stringify(list.error) : "no tools array");
+      return { tools: 0 };
+    }
+    const codesOf = (errors: unknown) => (Array.isArray(errors) ? errors.filter(isRecord).map((e) => String(e["code"])) : []);
+    // Codes the dispatcher answers for every tool (an unknown tool, arguments that don't match the schema) are listed once, beside the tools.
+    const shared = codesOf(list.result?.errors);
+    const fnOf = (t: Record<string, unknown>) => (t["type"] === "function" && isRecord(t["function"]) ? t["function"] : null);
+    const names = tools.map((t) => String(fnOf(t)?.["name"] ?? t["name"]));
+    recordInventory(rec, "tools.inventory", ctx.inventory?.tools ? compareInventory(ctx.inventory.tools, names) : null, "tools/list");
+    for (const [i, t] of tools.entries()) {
+      const tname = names[i]!;
+      const f = fnOf(t);
+      const schema = f?.["parameters"];
+      const described = typeof f?.["description"] === "string" && f["description"].trim() !== "";
+      const listedNote = !f ? 'not a function definition: { type: "function", function: { name, description, parameters } }' : !described ? "missing description" : !isRecord(schema) ? "missing parameters" : clip(String(f["description"]), 120);
+      rec.add("tools.listed", tname, f && described && isRecord(schema) ? "pass" : "fail", listedNote);
+      const ax = isRecord(t["ax"]) ? t["ax"] : {};
+      const effect = TOOL_EFFECTS.includes(ax["effect"] as string) ? String(ax["effect"]) : null;
+      const none = "no ax.effect (read, write, consequential or person-only)";
+      rec.add("tools.effect-declared", tname, effect ? "pass" : "fail", effect ?? (ax["effect"] === undefined ? none : `${none}: ${JSON.stringify(ax["effect"])}`));
+      const when = typeof ax["when"] === "string" && ax["when"].trim() ? ax["when"] : null;
+      rec.add("tools.when-line", tname, when ? "pass" : "fail", when ? clip(when, 120) : "no ax.when");
+      if (effect === "consequential") {
+        const confirm = typeof ax["confirm"] === "string" && ax["confirm"].trim() ? ax["confirm"] : null;
+        rec.add("tools.consequential-confirms", tname, confirm ? "pass" : "fail", confirm ? clip(confirm, 120) : "no ax.confirm, the question the person is asked before it runs");
+      }
+      const required = isRecord(schema) && Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
+      if (!required.length) continue;
+      if (effect !== "read" && !ctx.safety.ok) {
+        rec.add("tools.bad-call-teaches", tname, "skip", refusedNote(ctx.safety));
+        continue;
+      }
+      const r = await rpc.request("tools/call", { name: tname, arguments: {} });
+      const text = textOf(r);
+      rec.add("tools.bad-call-teaches", tname, refused(r) && required.some((k) => text.includes(k)) ? "pass" : "fail", `${refused(r) ? "refused" : "ran"}: ${clip(text)}`);
+      typed(tname, r, [...codesOf(ax["errors"]), ...shared]);
+    }
+    const u = await rpc.request("tools/call", { name: "ax_xray_no_such_tool", arguments: {} });
+    const ut = textOf(u);
+    rec.add("tools.unknown-tool", "ax_xray_no_such_tool", refused(u) && (ut.includes("tools/list") || names.some((n) => ut.includes(n))) ? "pass" : "fail", `${refused(u) ? "refused" : "ran"}: ${clip(ut)}`);
+    typed("ax_xray_no_such_tool", u, shared);
+    return { tools: tools.length };
+  } finally {
+    rpc.kill();
   }
 }
 
@@ -1608,7 +1704,7 @@ interface Report {
   checker: { version: string };
   claimSet: { version: string; hash: string };
   at: string;
-  target: { commit: string | null; app?: { name: string }; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number; revision: string } };
+  target: { commit: string | null; app?: { name: string }; cli?: { name: string; calls: number; commands: number }; http?: { origin: string; routes: number; requests: number }; mcp?: { tools: number; revision: string }; tools?: { tools: number } };
   safety: Safety;
   inventory: { given: boolean; surfaces: ClaimSurface[] };
   effects: { surface: string; note: string }[];
@@ -1650,7 +1746,7 @@ function summarize(results: readonly CheckResult[], parts: Pick<Report, "target"
 }
 
 const targetLine = (t: Report["target"]) =>
-  [t.commit && `at ${t.commit}`, t.cli && `CLI \`${t.cli.name}\` (${t.cli.commands} commands, ${t.cli.calls} calls)`, t.http && `HTTP ${t.http.origin} (${t.http.routes} routes in the manifest, ${t.http.requests} requests)`, t.mcp && `MCP ${t.mcp.revision} (${t.mcp.tools} tools)`].filter(Boolean).join("; ");
+  [t.commit && `at ${t.commit}`, t.cli && `CLI \`${t.cli.name}\` (${t.cli.commands} commands, ${t.cli.calls} calls)`, t.http && `HTTP ${t.http.origin} (${t.http.routes} routes in the manifest, ${t.http.requests} requests)`, t.mcp && `MCP ${t.mcp.revision} (${t.mcp.tools} tools)`, t.tools && `in-turn tools (${t.tools.tools} tools)`].filter(Boolean).join("; ");
 const order = (claims: readonly ClaimSummary[]) => [...claims].sort((a, b) => Number(a.holds) - Number(b.holds) || (a.tier === b.tier ? 0 : a.tier === "must" ? -1 : 1) || b.fail - a.fail);
 const mark = (c: ClaimSummary) => (c.holds ? "✓" : c.fail ? "✗" : "–");
 const pinLine = (r: Report) => `Ouro AX claim set ${r.claimSet.version} (sha256 ${r.claimSet.hash}), checked by ax-xray ${r.checker.version} at ${r.at}.`;
@@ -1677,7 +1773,7 @@ function renderText(report: Report, max = 6): string {
 }
 
 const md = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
-const titleOf = (r: Report) => r.target.cli?.name ?? r.target.http?.origin ?? "MCP server";
+const titleOf = (r: Report) => r.target.cli?.name ?? r.target.http?.origin ?? (r.target.mcp ? "MCP server" : "in-turn tools");
 const bySurface = (r: Report) => {
   const by: Record<string, CheckResult[]> = {};
   for (const x of r.results) (by[`${CLAIM.get(x.claim)!.surface} · ${x.surface}`] ??= []).push(x);
@@ -1762,7 +1858,8 @@ const CHECK_FLAGS: Readonly<Record<string, FlagSpec>> = Object.freeze({
   http: { type: "string", placeholder: "<url>", description: "The HTTP API to check, at its address. Needs --routes." },
   routes: { type: "string", placeholder: "<manifest.json>", description: "The routes to check, with --http." },
   mcp: { type: "string", placeholder: '"<command>"', description: "The MCP server to check, run over stdio as a command line." },
-  inventory: { type: "string", placeholder: "<file>", description: 'The surfaces your interface registers, generated from its own registration: { "cli": [names], "http": ["GET /api/x"], "mcp": [names], "ui": [bindAx entries] }.' },
+  tools: { type: "string", placeholder: '"<command>"', description: "The in-turn tools to check: a command that serves them over stdio as JSON-RPC, tools/list with each tool's ax card and tools/call answering its typed outcome { state, text, code? }." },
+  inventory: { type: "string", placeholder: "<file>", description: 'The surfaces your interface registers, generated from its own registration: { "cli": [names], "http": ["GET /api/x"], "mcp": [names], "tools": [names], "ui": [bindAx entries] }.' },
   conformance: { type: "boolean", description: "Exit 1 unless it conforms: every applicable must claim holds, none skipped, inventory given." },
   mock: { type: "string", placeholder: '"<url> k=v"', description: "Prove the target is a mock: a loopback URL whose JSON has k=v, such as mock=true." },
   guard: { type: "string", placeholder: '"<command>"', description: "Run this first; refuse to check unless it exits 0 (it also proves a mock)." },
@@ -1869,6 +1966,7 @@ function optionsOf(input: Input, json: boolean): XrayOptions {
     http: text("http"),
     routes: text("routes"),
     mcp: text("mcp"),
+    tools: text("tools"),
     name: text("name"),
     guard: text("guard"),
     mock: text("mock"),
@@ -1891,7 +1989,7 @@ function optionsOf(input: Input, json: boolean): XrayOptions {
     command: null,
   };
   if (o.http && !o.routes) throw refusal("needs-routes", "--http", "needs --routes <manifest.json>, the routes to check", "ax-xray --http <url> --routes routes.json");
-  if (!o.cli && !o.http && !o.mcp) throw refusal("nothing-to-check", "check", "nothing to check", "give --cli, --http or --mcp; ax-xray --help");
+  if (!o.cli && !o.http && !o.mcp && !o.tools) throw refusal("nothing-to-check", "check", "nothing to check", "give --cli, --http, --mcp or --tools; ax-xray --help");
   if (o.conformance && !o.inventory) throw refusal("needs-inventory", "--conformance", "needs --inventory <file>, the surfaces your interface registers", "ax-xray --inventory inventory.json --conformance");
   return o;
 }
@@ -1930,7 +2028,8 @@ async function xray(opts: XrayOptions): Promise<Report> {
   if (opts.cli) target.cli = await checkCli(ctx);
   if (opts.http) target.http = await checkHttp(ctx);
   if (opts.mcp) target.mcp = await checkMcp(ctx);
-  const surfaces = (["cli", "http", "mcp", "ui"] as const).filter((s) => Array.isArray(inventory?.[s]));
+  if (opts.tools) target.tools = await checkTools(ctx);
+  const surfaces = (["cli", "http", "mcp", "tools", "ui"] as const).filter((s) => Array.isArray(inventory?.[s]));
   return summarize(ctx.rec.results, { target, safety: ctx.safety, inventory: { given: inventory !== null, surfaces }, effects: ctx.effects });
 }
 
