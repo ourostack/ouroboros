@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Badge } from "./status-badge"
+import { Empty } from "@/components/ouro/empty/empty"
+import { PageHeader } from "@/components/ouro/page-header/page-header"
 import { buildHash, NavigationContext, type NavigateTarget, type RouteState, type TabId } from "../navigation"
 import { useKeyboardShortcuts } from "../hooks/use-keyboard"
 import { OverviewTab } from "./tabs/overview"
@@ -83,12 +85,13 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
 
   if (!view || !agentName) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <p className="font-display text-2xl italic text-ouro-bone">Choose an agent</p>
-        <p className="mt-2 text-sm text-ouro-mist">
-          Select an agent from the sidebar to inspect its state.
-        </p>
-      </div>
+      <Empty
+        variant="plain"
+        className="py-24"
+        headingLevel={2}
+        title="Choose an agent"
+        description="Select an agent from the sidebar to inspect its state."
+      />
     )
   }
 
@@ -99,14 +102,12 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
     <NavigationContext.Provider value={navigate}>
       <div>
         {/* Agent header */}
-        <div className="flex min-h-[4.5rem] flex-wrap items-start justify-between gap-3 pb-4 border-b border-ouro-moss/30">
-          <div className="min-w-0">
-            <h1 className="font-display text-2xl italic font-semibold text-ouro-bone sm:text-3xl">
-              {agentName}
-            </h1>
-          </div>
-          <Badge color={attentionColor(attention.level)}>{attention.label}</Badge>
-        </div>
+        <PageHeader
+          title={agentName}
+          divider
+          className="min-h-[4.5rem]"
+          actions={<Badge color={attentionColor(attention.level)}>{attention.label}</Badge>}
+        />
 
         {/* Tabs */}
         <nav className="mt-4 flex gap-0.5 overflow-x-auto border-b border-ouro-moss/20 -mx-1">

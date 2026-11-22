@@ -1,4 +1,12 @@
 import { useEffect, useState } from "react"
+import { Button } from "@/components/ouro/button/button"
+import { Card } from "@/components/ouro/card/card"
+import { Empty } from "@/components/ouro/empty/empty"
+import { Item } from "@/components/ouro/item/item"
+import { ItemGroup } from "@/components/ouro/item/item-group"
+import { Skeleton } from "@/components/ouro/skeleton/skeleton"
+import { Spinner } from "@/components/ouro/spinner/spinner"
+import { Text } from "@/components/ouro/text/text"
 import { Badge } from "../status-badge"
 import { fetchJson, relTime } from "../../api"
 import type { MailboxNoteDecisionView, MailboxNotesView } from "../../contracts"
@@ -17,118 +25,100 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
 
   if (!data) {
     return (
-      <div className="flex items-center gap-2 py-6">
-        <div className="h-2 w-2 animate-pulse rounded-full bg-ouro-glow" />
-        <span className="font-mono text-xs text-ouro-shadow">Loading…</span>
+      <div aria-busy="true" className="space-y-3 py-6">
+        <div className="flex items-center gap-2">
+          <Spinner label="Loading…" />
+          <Text as="span" size="sm" tone="muted" aria-hidden="true">Loading…</Text>
+        </div>
+        <Skeleton shape="card" count={3} />
       </div>
     )
   }
 
   const diaryEntries = data.recentDiaryEntries
   const canonicalNotes = data.recentCanonicalNotes
+  const viewButton = (mode: NotesViewMode, label: string) => (
+    <Button
+      variant={view === mode ? "soft" : "plain"}
+      tone={view === mode ? "primary" : "secondary"}
+      size="sm"
+      aria-pressed={view === mode}
+      onClick={() => setView(mode)}
+    >
+      {label}
+    </Button>
+  )
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => setView("diary")}
-          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
-            view === "diary" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
-          }`}
-        >
-          Diary ({data.diaryEntryCount})
-        </button>
-        <span className="text-ouro-shadow/30">|</span>
-        <button
-          onClick={() => setView("notes")}
-          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
-            view === "notes" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
-          }`}
-        >
-          Notes ({data.canonicalNoteCount})
-        </button>
-        <span className="text-ouro-shadow/30">|</span>
-        <button
-          onClick={() => setView("decisions")}
-          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
-            view === "decisions" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
-          }`}
-        >
-          Decisions ({decisions?.totalCount ?? 0})
-        </button>
+      <div className="flex flex-wrap items-center gap-2">
+        {viewButton("diary", `Diary (${data.diaryEntryCount})`)}
+        {viewButton("notes", `Notes (${data.canonicalNoteCount})`)}
+        {viewButton("decisions", `Decisions (${decisions?.totalCount ?? 0})`)}
       </div>
 
       {view === "diary" && (
-        <div>
-          {diaryEntries.length > 0 ? (
-            <div className="space-y-3">
-              {diaryEntries.map((e) => (
-                <article key={e.id} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
-                  <p className="text-sm leading-relaxed text-ouro-bone">
-                    {e.text}
-                  </p>
-                  <div className="mt-2 flex items-center gap-2 text-xs text-ouro-shadow">
+        diaryEntries.length > 0 ? (
+          <div className="space-y-3">
+            {diaryEntries.map((e) => (
+              <Card
+                key={e.id}
+                as="article"
+                size="sm"
+                footer={
+                  <>
                     <Badge>{e.source}</Badge>
-                    <span>{relTime(e.createdAt)}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-ouro-shadow italic">No diary entries yet. The agent hasn't written anything down.</p>
-          )}
-        </div>
+                    <Text as="span" size="sm" tone="muted">{relTime(e.createdAt)}</Text>
+                  </>
+                }
+              >
+                <Text size="sm">{e.text}</Text>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <Empty title="No diary entries yet." description="The agent hasn't written anything down." />
+        )
       )}
 
       {view === "notes" && (
-        <div>
-          {canonicalNotes.length > 0 ? (
-            <div className="space-y-3">
-              {canonicalNotes.map((note) => (
-                <article key={note.filename} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-medium text-ouro-bone">{note.title}</p>
-                    <span className="text-xs text-ouro-shadow">{relTime(note.writtenAt)}</span>
-                  </div>
-                  <p className="mt-1 text-sm leading-relaxed text-ouro-mist">{note.preview}</p>
-                  {note.tags.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {note.tags.map((tag) => (
-                        <Badge key={tag}>{tag}</Badge>
-                      ))}
-                    </div>
-                  )}
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-ouro-shadow italic">No canonical notes yet.</p>
-          )}
-        </div>
+        canonicalNotes.length > 0 ? (
+          <div className="space-y-3">
+            {canonicalNotes.map((note) => (
+              <Card
+                key={note.filename}
+                as="article"
+                size="sm"
+                title={note.title}
+                description={relTime(note.writtenAt)}
+                footer={note.tags.length > 0 ? note.tags.map((tag) => <Badge key={tag}>{tag}</Badge>) : undefined}
+              >
+                <Text size="sm" tone="muted">{note.preview}</Text>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <Empty title="No canonical notes yet." />
+        )
       )}
 
       {view === "decisions" && (
-        <div>
-          {decisions && decisions.items.length > 0 ? (
-            <div className="space-y-2">
-              {decisions.items.map((d, i) => (
-                <div key={i} className="rounded-xl bg-ouro-void/40 px-4 py-3 ring-1 ring-ouro-moss/15">
-                  <div className="flex items-center gap-2">
-                    <Badge color={d.decision === "saved" ? "lime" : "zinc"}>
-                      {d.decision}
-                    </Badge>
-                    <Badge>{d.kind.replace(/_/g, " ")}</Badge>
-                    <span className="text-xs text-ouro-shadow">{relTime(d.timestamp)}</span>
-                  </div>
-                  {d.reason && <p className="mt-1 text-sm text-ouro-mist">{d.reason}</p>}
-                  {d.excerpt && <p className="mt-0.5 text-xs text-ouro-shadow italic truncate">{d.excerpt}</p>}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-ouro-shadow italic">No note decisions logged yet.</p>
-          )}
-        </div>
+        <ItemGroup variant="outline" aria-label="Note decisions" empty={<Empty title="No note decisions logged yet." />}>
+          {(decisions?.items ?? []).map((d, i) => (
+            <Item
+              key={i}
+              title={d.reason || d.kind.replace(/_/g, " ")}
+              description={d.excerpt ? <span className="block truncate">{d.excerpt}</span> : undefined}
+              actions={
+                <>
+                  <Badge color={d.decision === "saved" ? "lime" : "zinc"}>{d.decision}</Badge>
+                  <Badge>{d.kind.replace(/_/g, " ")}</Badge>
+                  <Text as="span" size="sm" tone="muted">{relTime(d.timestamp)}</Text>
+                </>
+              }
+            />
+          ))}
+        </ItemGroup>
       )}
     </div>
   )
