@@ -108,21 +108,21 @@ describe("let_go tool", () => {
     it("returns error when id is missing", async () => {
       const t = findTool("let_go")
       const result = JSON.parse(await t.handler({}))
-      expect(result).toEqual({ error: "id is required" })
+      expect(result).toEqual({ error: "id is required", code: "missing-argument" })
     })
 
     it("returns error when id is empty/whitespace", async () => {
       const t = findTool("let_go")
       const r1 = JSON.parse(await t.handler({ id: "" }))
       const r2 = JSON.parse(await t.handler({ id: "   " }))
-      expect(r1).toEqual({ error: "id is required" })
-      expect(r2).toEqual({ error: "id is required" })
+      expect(r1).toEqual({ error: "id is required", code: "missing-argument" })
+      expect(r2).toEqual({ error: "id is required", code: "missing-argument" })
     })
 
     it("returns not-found error when id matches no obligation in either store", async () => {
       const t = findTool("let_go")
       const result = JSON.parse(await t.handler({ id: "ghost-id" }))
-      expect(result).toEqual({ error: 'no obligation found with id "ghost-id"' })
+      expect(result).toEqual({ error: 'no obligation found with id "ghost-id"', code: "obligation-not-found" })
       expect(mockAdvanceReturnObligation).not.toHaveBeenCalled()
       expect(mockFulfillObligation).not.toHaveBeenCalled()
     })

@@ -3,6 +3,7 @@ import { FileFriendStore } from "@ouro.bot/friends"
 import { fileFailureReport, type FailureSeverity } from "../heart/failure-reports"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : ""
@@ -33,7 +34,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     },
   },
   handler: async (args, ctx) => {
-    if (!ctx?.agentRoot) return "report_failure is unavailable: no agent runtime."
+    if (!ctx?.agentRoot) return withCode("report_failure is unavailable: no agent runtime.", "no-agent-runtime")
     const severity = (["low", "medium", "high"] as const).includes(args.severity as FailureSeverity) ? args.severity as FailureSeverity : "medium"
     const store = new FileFriendStore(path.join(ctx.agentRoot, "friends"))
     const result = await fileFailureReport(ctx.agentRoot, store, {
@@ -50,8 +51,12 @@ export const reportFailureToolDefinition: ToolDefinition = {
         localPath: path.join(ctx.agentRoot, "state", "reports", `${result.id}.json`),
         recovery: "agent-runnable: retain/read this local report and retry report_failure after authorization is repaired. human-required: configure a verified escalation peer and its root-owned grant, or submit a sanitized issue at https://github.com/ourostack/ouroboros/issues/new. No peer was granted access and no external issue was filed.",
       })
-      return `Not filed (${result.reason}): ${result.detail}`
+      return withCode(`Not filed (${result.reason}): ${result.detail}`, "report-not-filed")
     }
     return JSON.stringify({ filed: true, reportId: result.id, shortId: result.shortId, duplicate: result.duplicate, recipients: result.recipients })
   },
+  ax: { id: "tool:report_failure", group: "turn-escalation", when: "Pick this when a tool you need is missing or keeps failing in a way you can't get around, to hand it to the engineers who fix you.", effect: "write", errors: [
+    { code: "no-agent-runtime", means: "This turn runs without an agent home, so there is nowhere to file from.", fix: "Tell the person plainly what failed; the report can be filed from a normal chat later." },
+    { code: "report-not-filed", means: "The report was refused, usually because ari_words, tried or error is missing; the message gives the reason.", fix: "Fill in all three fields and call report_failure again." },
+  ] },
 }

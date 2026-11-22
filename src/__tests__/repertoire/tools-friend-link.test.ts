@@ -37,6 +37,11 @@ describe("friend_link_code tool", () => {
     expect(await run({}, ctx(friend("friend")))).toContain("only for family")
     expect(await run({}, ctx(friend("family"), { isGroupChat: true }))).toContain("group chat")
     expect(await run({ channel: "fax" }, ctx(friend("family")))).toContain("unknown channel")
+    expect(await run({})).toBe("no friend context: I can only issue a link code to the person I'm talking to. (code: no-friend-context)")
+    expect(await run({}, ctx(friend("friend")))).toBe("link codes are only for family. (code: family-only)")
+    expect(await run({}, ctx(friend("family"), { isGroupChat: true }))).toBe("link codes can't be issued in a group chat. Ask me in a 1:1 chat. (code: group-chat)")
+    expect(await run({ channel: "fax" }, ctx(friend("family")))).toMatch(/^unknown channel 'fax'\. Use one of: .*\. \(code: invalid-channel\)$/)
+    expect(friendLinkToolDefinition.ax).toMatchObject({ id: "tool:friend_link_code", group: "turn-friends", effect: "write" })
   })
 
   it("issues a code for the family friend, under the agent root", async () => {

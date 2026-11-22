@@ -21,6 +21,11 @@ async function withPeer() {
 }
 
 describe("report_failure tool", () => {
+  it("has a card, and its refusal without a runtime ends with the code the card names", async () => {
+    expect(reportFailureToolDefinition.ax).toMatchObject({ id: "tool:report_failure", group: "turn-escalation", effect: "write" })
+    expect(await run({ ari_words: "a", tried: "b", error: "c" })).toBe("report_failure is unavailable: no agent runtime. (code: no-agent-runtime)")
+  })
+
   it("is shaped for the model: three required fields and a severity enum", () => {
     const fn = reportFailureToolDefinition.tool.function
     expect(fn.name).toBe("report_failure")
@@ -55,6 +60,7 @@ describe("report_failure tool", () => {
     const { agentRoot } = await withPeer()
     expect(await run({ ari_words: "x", tried: "y", error: "z" }, agentRoot)).toContain("no_escalation_peer")
     expect(await run({ ari_words: 1, tried: null }, agentRoot)).toContain("invalid")
+    expect(await run({ ari_words: 1, tried: null }, agentRoot)).toMatch(/^Not filed \(invalid\): .* \(code: report-not-filed\)$/s)
   })
 
   it("distinguishes a saved local report from a delivered escalation", async () => {

@@ -12,7 +12,8 @@ import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
-import type { ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
+import type { ToolDefinition, ToolDoorCard, VoiceCallAudioRequest } from "./tools-base";
+import { withCode } from "./tool-error-code";
 
 type SurfaceDeliveryChannel = "auto" | "voice" | "teams"
 
@@ -298,7 +299,7 @@ export const surfaceToolDefinition: ToolDefinition = {
           contentLength: rawContent.length,
         },
       })
-      return "failed — blocked: contains internal meta markers"
+      return withCode("failed — blocked: contains internal meta markers", "delivery-blocked")
     }
 
     const queue = ctx?.delegatedOrigins ?? []
@@ -370,4 +371,12 @@ export const surfaceToolDefinition: ToolDefinition = {
     reason: "queues or delivers surfaced responses and may fulfill obligations",
   },
 }
+
+/** surface's Ouro AX card. The bare schema above is exported first, so the census reads the card from this list. */
+export const toolCards: ToolDoorCard[] = [
+  { id: "tool:surface", group: "turn-sessions", when: "Pick this to hand a finished thought back to whoever is waiting on it, by delegationId, or to reach out to a friend unprompted.", effect: "write", errors: [
+    { code: "delivery-blocked", means: "The content carries internal meta markers, so nothing was delivered.", fix: "Rewrite the content as plain words for the person and surface it again." },
+    { code: "orientation-hold", means: "This turn is on a correction hold, so surfacing waits.", fix: "Call orientation_get, settle what the person meant, then surface the thought if it still answers them." },
+  ] },
+]
 /* v8 ignore stop */
