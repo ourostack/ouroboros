@@ -1,7 +1,7 @@
 import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
-import { baseToolDefinitions, settleTool } from "../../repertoire/tools-base"
+import { baseToolDefinitions, settleTool, withCode, type ToolDefinition } from "../../repertoire/tools-base"
 import { storeHatchlingProviderCredentials, type HatchCredentialsInput } from "./hatch-flow"
 import { playHatchAnimation } from "./hatch-animation"
 import { createBundleMeta } from "../../mind/bundle-manifest"
@@ -57,6 +57,36 @@ const listDirToolSchema: OpenAI.ChatCompletionFunctionTool = {
     },
   },
 }
+
+/**
+ * The Ouro AX cards and risk profiles of the two tools only the hatch specialist has; read_file, write_file and settle
+ * carry their own. The specialist's executor below runs them, not the dispatcher.
+ */
+export const specialistToolDefinitions: Array<Required<Pick<ToolDefinition, "tool" | "ax" | "riskProfile">>> = [
+  {
+    tool: completeAdoptionTool,
+    riskProfile: { mutates: ["durable_state_write", "external_side_effect"], risk: "high", reason: "creates the agent bundle, its vault account and its stored credentials" },
+    ax: { id: "tool:complete_adoption", group: "hatch", when: "Pick this last, once the five psyche files and agent.json are written and the human approved the bundle, to hatch the new agent.", effect: "write", errors: [
+      { code: "missing-name", means: "No name was given for the new agent.", fix: "Call complete_adoption again with name set to the agent's PascalCase name." },
+      { code: "invalid-name", means: "The name is not PascalCase, like MyAgent.", fix: "Pick a PascalCase name with the human and call again." },
+      { code: "psyche-files-missing", means: "Some of the five psyche files aren't in the temp folder yet.", fix: "Write the listed files with write_file, then call again." },
+      { code: "agent-json-missing", means: "agent.json isn't in the temp folder yet.", fix: "Write agent.json with write_file, then call again." },
+      { code: "bundle-exists", means: "An agent bundle with this name already exists.", fix: "Choose a different name with the human and call again." },
+      { code: "no-secret-prompt", means: "This hatch isn't running in a terminal that can ask for the vault unlock secret.", fix: "Tell the human to run ouro hatch in an interactive terminal." },
+      { code: "no-unlock-store", means: "This machine has no local store for the vault unlock secret, so no vault was created.", fix: "Tell the human what the error says this machine is missing; nothing needs undoing." },
+      { code: "secret-not-read", means: "The vault unlock secret prompt failed, or the secret was empty, too weak, or typed differently the second time.", fix: "Tell the human the rule in the error, then call complete_adoption again so they can enter the secret twice." },
+      { code: "vault-not-created", means: "The vault account couldn't be created, so the files went back to the temp folder.", fix: "Tell the human the error, fix its cause together, then call complete_adoption again." },
+      { code: "secrets-not-stored", means: "The vault account exists, but the unlock secret or provider credentials couldn't be saved; the files went back to the temp folder.", fix: "Tell the human the error: a retry under this name can't register the vault again, so pick a new name or recover that vault first." },
+    ] },
+  },
+  {
+    tool: listDirToolSchema,
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:list_directory", group: "hatch", when: "Pick this while hatching to see which files a folder holds, such as the temp bundle, before you read or write one.", effect: "read", idempotent: true, errors: [
+      { code: "list-failed", means: "The folder couldn't be read, often because the path doesn't exist.", fix: "Check the path, or list its parent folder to find the right one." },
+    ] },
+  },
+]
 
 /**
  * Returns the specialist's tool schema array.
@@ -145,11 +175,11 @@ async function execCompleteAdoption(
   const handoffMessage = args.handoff_message
 
   if (!name) {
-    return "error: missing required 'name' parameter"
+    return withCode("error: missing required 'name' parameter", "missing-name")
   }
 
   if (!isPascalCase(name)) {
-    return `error: name '${name}' must be PascalCase (e.g. 'MyAgent', 'Hatchling')`
+    return withCode(`error: name '${name}' must be PascalCase (e.g. 'MyAgent', 'Hatchling')`, "invalid-name")
   }
 
   // Validate psyche files exist
@@ -158,23 +188,23 @@ async function execCompleteAdoption(
     (f) => !fs.existsSync(path.join(psycheDir, f)),
   )
   if (missingPsyche.length > 0) {
-    return `error: missing psyche files in temp directory: ${missingPsyche.join(", ")}. write them first using write_file.`
+    return withCode(`error: missing psyche files in temp directory: ${missingPsyche.join(", ")}. write them first using write_file.`, "psyche-files-missing")
   }
 
   // Validate agent.json exists
   const agentJsonPath = path.join(deps.tempDir, "agent.json")
   if (!fs.existsSync(agentJsonPath)) {
-    return "error: agent.json not found in temp directory. write it first using write_file."
+    return withCode("error: agent.json not found in temp directory. write it first using write_file.", "agent-json-missing")
   }
 
   // Validate target doesn't exist
   const targetBundle = path.join(deps.bundlesRoot, `${name}.ouro`)
   if (fs.existsSync(targetBundle)) {
-    return `error: bundle '${name}.ouro' already exists at ${deps.bundlesRoot}. choose a different name.`
+    return withCode(`error: bundle '${name}.ouro' already exists at ${deps.bundlesRoot}. choose a different name.`, "bundle-exists")
   }
 
   if (!deps.promptSecret) {
-    return "error: complete_adoption requires an interactive vault unlock secret prompt. Re-run `ouro hatch` in a terminal so the human can enter a hatchling vault unlock secret without echoing it."
+    return withCode("error: complete_adoption requires an interactive vault unlock secret prompt. Re-run `ouro hatch` in a terminal so the human can enter a hatchling vault unlock secret without echoing it.", "no-secret-prompt")
   }
 
   const vault = resolveVaultConfig(name)
@@ -183,7 +213,7 @@ async function execCompleteAdoption(
   try {
     resolveVaultUnlockStore({ agentName: name, email: vault.email, serverUrl: vault.serverUrl })
   } catch (error) {
-    return `error: no local store for the vault unlock secret, so no vault was created. ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+    return withCode(`error: no local store for the vault unlock secret, so no vault was created. ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`, "no-unlock-store")
   }
 
   let vaultUnlockSecret: string
@@ -195,7 +225,7 @@ async function execCompleteAdoption(
       emptyError: "hatchling vault creation requires an unlock secret. Re-run `ouro hatch` in an interactive terminal and enter a human-chosen unlock secret.",
     })
   } catch (error) {
-    return `error: failed to read hatchling vault unlock secret: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+    return withCode(`error: failed to read hatchling vault unlock secret: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`, "secret-not-read")
   }
 
   // Keep the bundle inert until vault/provider credentials are durably stored.
@@ -222,7 +252,9 @@ async function execCompleteAdoption(
     } catch {
       // Best effort cleanup
     }
-    return `error: failed to write secrets: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`
+    const detail = e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)
+    // A vault account that was created stays on the server, so a retry under the same name can't register it again.
+    return withCode(`error: failed to write secrets: ${detail}`, detail.startsWith("failed to create vault") ? "vault-not-created" : "secrets-not-stored")
   }
 
   // Create initial friend record if contact info provided
@@ -365,7 +397,7 @@ export function createSpecialistExecTool(
           .map((e) => `${e.isDirectory() ? "d" : "-"}  ${e.name}`)
           .join("\n")
       } catch (e) {
-        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`
+        return withCode(`error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive @preserve */ String(e)}`, "list-failed")
       }
     }
 
