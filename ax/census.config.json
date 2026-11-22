@@ -62,6 +62,8 @@
     {"id": "turn-friends", "when": "Know the people the agent talks with: list them, read one person's record, save what you learn about them."},
     {"id": "turn-travel", "when": "Help with travel during a turn: weather, country advisories, places, flight offers and bookings, and the private trip ledger."},
     {"id": "turn-vault", "when": "Keep secrets and personal details in the agent's own vault during a turn: logins, new passwords, profile fields, setup."},
-    {"id": "turn-rsvp", "when": "Answer questions about an event's guest list during a turn, from a saved RSVP snapshot file."}
+    {"id": "turn-rsvp", "when": "Answer questions about an event's guest list during a turn, from a saved RSVP snapshot file."},
+    {"id": "turn-microsoft", "when": "Reach your owner's Microsoft 365, Teams and raw Azure DevOps APIs: look up the right endpoint, read, change, or message someone."},
+    {"id": "turn-ado", "when": "Plan and tidy an Azure DevOps backlog: list it, file epics and issues, move items, and check the tree for mistakes."}
   ]
 }

@@ -3,7 +3,7 @@
 
 import { emitNervesEvent } from "../nerves/runtime"
 import { authRequired } from "./auth-required"
-import type { ToolDefinition, ToolContext } from "./tools-base"
+import { withCode, type ToolDefinition, type ToolContext } from "./tools-base"
 import { adoRequest } from "./ado-client"
 import { resolveAdoContext } from "./ado-context"
 import { fetchProcessTemplate, deriveHierarchyRules } from "./ado-templates"
@@ -112,7 +112,7 @@ function buildReparentPatch(newParentId: string): JsonPatchOp[] {
 
 async function checkAuth(ctx: ToolContext | undefined): Promise<string | null> {
   if (!ctx?.adoToken) {
-    return authRequired(ctx, "ado", "I need access to Azure DevOps.")
+    return withCode(authRequired(ctx, "ado", "I need access to Azure DevOps."), "auth-required")
   }
   return null
 }
@@ -299,9 +299,15 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_backlog_list", group: "turn-ado", when: "Pick this to see a project's whole backlog as a tree, with types, parents and owners, filtered by area, state or person.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps answered with an error instead of work items; the text is its reply.", fix: "Check the organization and project names, then retry once." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return authRequired(ctx, "ado", "I need access to Azure DevOps.")
+        return withCode(authRequired(ctx, "ado", "I need access to Azure DevOps."), "auth-required")
       }
       emitNervesEvent({
         component: "repertoire",
@@ -337,7 +343,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       try {
         wiqlData = JSON.parse(wiqlResult)
       } catch {
-        return wiqlResult // Pass through error message
+        return withCode(wiqlResult, "ado-request-failed") // Pass through error message
       }
 
       if (!wiqlData.workItems || wiqlData.workItems.length === 0) {
@@ -357,7 +363,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       try {
         batchData = JSON.parse(batchResult)
       } catch {
-        return batchResult
+        return withCode(batchResult, "ado-request-failed")
       }
 
       const items = formatWorkItems(batchData.value ?? [])
@@ -388,6 +394,10 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_create_epic", group: "turn-ado", when: "Pick this when someone wants a new large piece of work tracked in Azure DevOps; for a single task under one, use ado_create_issue.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+    ] },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -396,7 +406,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
 
       const ops = buildCreatePatch(args)
@@ -431,6 +441,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_create_issue", group: "turn-ado", when: "Pick this when someone wants a new task, bug or issue filed in Azure DevOps, optionally placed under an existing epic.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps refused the new item; the text is its reply.", fix: "Check the type and parent exist in that project, then retry once." },
+    ] },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -439,7 +454,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
 
       const wiType = args.workItemType || "Issue"
@@ -472,6 +487,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_move_items", group: "turn-ado", when: "Pick this to put one or more existing work items under a different parent, such as moving bugs into a new epic.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "move-failed", means: "Some items couldn't be moved; each one in errors carries Azure DevOps's reply.", fix: "Fix the items listed in errors and move only those again." },
+    ] },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -480,13 +500,13 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
 
       const ids = args.workItemIds.split(",").map(s => s.trim()).filter(Boolean)
       const ops = buildReparentPatch(args.newParentId)
       const moved: number[] = []
-      const errors: { id: string, error: string }[] = []
+      const errors: { id: string, error: string, code: string }[] = []
 
       for (const id of ids) {
         /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
@@ -496,10 +516,10 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
           if (parsed.id) {
             moved.push(parsed.id)
           } else {
-            errors.push({ id, error: result })
+            errors.push({ id, error: result, code: "move-failed" })
           }
         } catch {
-          errors.push({ id, error: result })
+          errors.push({ id, error: result, code: "move-failed" })
         }
       }
 
@@ -528,6 +548,12 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_restructure_backlog", group: "turn-ado", when: "Pick this to reshuffle many parent links in one pass after someone agrees a new backlog shape; check it first with ado_preview_changes.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "invalid-operations", means: "operations wasn't a valid JSON array.", fix: "Pass operations as a JSON array of objects, like the example in the description." },
+      { code: "update-failed", means: "Some items failed while others went through; each failed result has success false and Azure DevOps's reply.", fix: "Fix the failed items named in results and send only those again." },
+    ] },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -536,17 +562,17 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
 
       let operations: { workItemId: number, newParentId: number }[]
       try {
         operations = JSON.parse(args.operations)
       } catch {
-        return "error: operations must be a valid JSON array"
+        return withCode("error: operations must be a valid JSON array", "invalid-operations")
       }
 
-      const results: { workItemId: number, success: boolean, error?: string }[] = []
+      const results: { workItemId: number, success: boolean, error?: string, code?: string }[] = []
 
       for (const op of operations) {
         const ops = buildReparentPatch(String(op.newParentId))
@@ -557,10 +583,10 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
           if (parsed.id) {
             results.push({ workItemId: op.workItemId, success: true })
           } else {
-            results.push({ workItemId: op.workItemId, success: false, error: result })
+            results.push({ workItemId: op.workItemId, success: false, error: result, code: "update-failed" })
           }
         } catch {
-          results.push({ workItemId: op.workItemId, success: false, error: result })
+          results.push({ workItemId: op.workItemId, success: false, error: result, code: "update-failed" })
         }
       }
 
@@ -590,6 +616,13 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_validate_structure", group: "turn-ado", when: "Pick this before moving an item, to check the new parent exists and that the parent and child types may be linked.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps answered with an error instead of work items; the text is its reply.", fix: "Check the organization and project names, then retry once." },
+      { code: "parent-not-found", means: "No work item has that parent id.", fix: "Check the id with ado_backlog_list, then validate again." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -598,7 +631,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
       // Fetch parent work item to get its type
       /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
@@ -607,11 +640,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       try {
         parentData = JSON.parse(parentResult)
       } catch {
-        return parentResult
+        return withCode(parentResult, "ado-request-failed")
       }
 
       if (!parentData.value || parentData.value.length === 0) {
-        return `error: parent work item ${args.parentId} not found`
+        return withCode(`error: parent work item ${args.parentId} not found`, "parent-not-found")
       }
 
       const parentType = parentData.value[0].fields["System.WorkItemType"]
@@ -656,6 +689,12 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_preview_changes", group: "turn-ado", when: "Pick this to show someone exactly what a create or move would change, before doing it, so they can agree first.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "unknown-operation", means: "operation wasn't create_epic, create_issue or move_items.", fix: "Call again with one of those three." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -664,11 +703,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
       const operations = buildPreviewOps(args.operation, args)
       if (operations === null) {
-        return `Unknown operation: ${args.operation}. Supported: create_epic, create_issue, move_items`
+        return withCode(`Unknown operation: ${args.operation}. Supported: create_epic, create_issue, move_items`, "unknown-operation")
       }
 
       return JSON.stringify({
@@ -704,6 +743,13 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_batch_update", group: "turn-ado", when: "Pick this to apply a mixed list of creates, moves and edits in one call, once someone has agreed the whole list.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "invalid-operations", means: "operations wasn't a valid JSON array.", fix: "Pass operations as a JSON array of objects, like the example in the description." },
+      { code: "unknown-operation", means: "One entry's type isn't supported; its result has success false.", fix: "Fix that entry's type and send only it again." },
+      { code: "update-failed", means: "Some items failed while others went through; each failed result has success false and Azure DevOps's reply.", fix: "Fix the failed items named in results and send only those again." },
+    ] },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -712,7 +758,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
 
       interface BatchOp {
@@ -727,10 +773,10 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       try {
         operations = JSON.parse(args.operations)
       } catch {
-        return "error: operations must be a valid JSON array"
+        return withCode("error: operations must be a valid JSON array", "invalid-operations")
       }
 
-      const results: { index: number, type: string, success: boolean, id?: number, error?: string }[] = []
+      const results: { index: number, type: string, success: boolean, id?: number, error?: string, code?: string }[] = []
 
       for (let i = 0; i < operations.length; i++) {
         const op = operations[i]
@@ -762,7 +808,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
             /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
             apiResult = await adoRequest(ctx!.adoToken!, "PATCH", adoCtx.organization, `/${adoCtx.project}/_apis/wit/workitems/${op.workItemId}`, JSON.stringify(patchOps))
           } else {
-            results.push({ index: i, type: op.type, success: false, error: `Unknown operation type: ${op.type}` })
+            results.push({ index: i, type: op.type, success: false, error: `Unknown operation type: ${op.type}`, code: "unknown-operation" })
             continue
           }
 
@@ -771,13 +817,13 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
             if (parsed.id) {
               results.push({ index: i, type: op.type, success: true, id: parsed.id })
             } else {
-              results.push({ index: i, type: op.type, success: false, error: apiResult })
+              results.push({ index: i, type: op.type, success: false, error: apiResult, code: "update-failed" })
             }
           } catch {
-            results.push({ index: i, type: op.type, success: false, error: apiResult })
+            results.push({ index: i, type: op.type, success: false, error: apiResult, code: "update-failed" })
           }
         } catch (err) {
-          results.push({ index: i, type: op.type, success: false, error: err instanceof Error ? err.message : String(err) })
+          results.push({ index: i, type: op.type, success: false, error: err instanceof Error ? err.message : String(err), code: "update-failed" })
         }
       }
 
@@ -804,6 +850,12 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_detect_orphans", group: "turn-ado", when: "Pick this when someone asks for backlog cleanup, to list work items that should sit under a parent but have none.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps answered with an error instead of work items; the text is its reply.", fix: "Check the organization and project names, then retry once." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -812,11 +864,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
       /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
       const fetched = await fetchAllItems(ctx!.adoToken!, adoCtx.organization, adoCtx.project)
-      if ("error" in fetched) return fetched.error
+      if ("error" in fetched) return withCode(fetched.error, "ado-request-failed")
 
       const orphans = fetched.items
         .filter(wi => {
@@ -856,6 +908,12 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_detect_cycles", group: "turn-ado", when: "Pick this when a backlog tree looks wrong or loops, to find items that end up as their own ancestor.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps answered with an error instead of work items; the text is its reply.", fix: "Check the organization and project names, then retry once." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -864,11 +922,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
       /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
       const fetched = await fetchAllItems(ctx!.adoToken!, adoCtx.organization, adoCtx.project)
-      if ("error" in fetched) return fetched.error
+      if ("error" in fetched) return withCode(fetched.error, "ado-request-failed")
 
       const cycles = detectCycles(fetched.items)
       return JSON.stringify({ cycles, organization: adoCtx.organization, project: adoCtx.project })
@@ -892,6 +950,13 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_validate_parent_type_rules", group: "turn-ado", when: "Pick this to audit a backlog for links the process forbids, like a task sitting directly over an epic.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-project", means: "The Azure DevOps organization or project couldn't be worked out: none found, several to pick from, or not in this channel; the text lists them.", fix: "Call again with organization and project set to one of those listed." },
+      { code: "ado-request-failed", means: "Azure DevOps answered with an error instead of work items; the text is its reply.", fix: "Check the organization and project names, then retry once." },
+      { code: "no-process-template", means: "The project's process template couldn't be fetched, so no type rules were checked.", fix: "Say the type check was skipped; try again later." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       const authErr = await checkAuth(ctx)
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
@@ -900,11 +965,11 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- non-null assertions guarded by checkAuth; error return tested via ado_backlog_list @preserve */
       const adoCtx = await resolveAdoContext(ctx!.adoToken!, ctx!.context!, { organization: args.organization, project: args.project })
       /* v8 ignore next -- error return tested via ado_backlog_list @preserve */
-      if (!adoCtx.ok) return adoCtx.error
+      if (!adoCtx.ok) return withCode(adoCtx.error, "no-ado-project")
 
       /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
       const fetched = await fetchAllItems(ctx!.adoToken!, adoCtx.organization, adoCtx.project)
-      if ("error" in fetched) return fetched.error
+      if ("error" in fetched) return withCode(fetched.error, "ado-request-failed")
 
       // Fetch process template to derive hierarchy rules
       /* v8 ignore next -- non-null assertion guarded by checkAuth above @preserve */
@@ -913,6 +978,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
         return JSON.stringify({
           violations: [],
           message: "Could not fetch process template -- type rule validation skipped.",
+          code: "no-process-template",
           organization: adoCtx.organization,
           project: adoCtx.project,
         })
