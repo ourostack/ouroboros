@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1371",
+      "version": "0.1.0-alpha.1372",
       "changes": [
         "The Butler checks Slugger's card every 5 minutes. After 3 failed checks it tells the owner once on Telegram that Slugger is unreachable, and silently when he is back."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1371",
+      "changes": [
+        "iMessage: a message whose reply never went out (the process died or the turn ended early) is now answered on recovery instead of being marked handled, and recovery finds messages saved by older builds."
       ]
     },
     {
@@ -16,7 +22,8 @@
     {
       "version": "0.1.0-alpha.1369",
       "changes": [
-        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever."
+        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever.",
+        "Update the Ouro UI files to Ouro UI core v1.12.0 and Ouro UI v1.3.454."
       ]
     },
     {
