@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents: Array<Record<string, unknown>> = vi.hoisted(() => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
@@ -12,6 +12,8 @@ vi.mock("../../heart/identity", () => ({
   getAgentName: () => mockGetAgentName(),
 }))
 
+// tools-base assembles every tool module and tools-vault imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { vaultToolDefinitions } from "../../repertoire/tools-vault"
 
 function findTool(name: string) {
@@ -32,6 +34,10 @@ describe("vault_setup tool", () => {
     expect(tool.tool.function.name).toBe("vault_setup")
   })
 
+  it("has a person-only card, since only a person can type the vault secret", () => {
+    expect(findTool("vault_setup").ax).toMatchObject({ id: "tool:vault_setup", group: "turn-vault", effect: "person-only" })
+  })
+
   it("does not require confirmation", () => {
     const tool = findTool("vault_setup")
     expect(tool.confirmationRequired).toBeUndefined()
@@ -49,6 +55,7 @@ describe("vault_setup tool", () => {
     expect(result).toContain("ouro vault unlock --agent slugger")
     expect(result).not.toContain("masterPassword")
     expect(result).not.toContain("secrets.json")
+    expect(result).toMatch(/ \(code: human-required\)$/)
   })
 
   it("emits nerves events", async () => {
