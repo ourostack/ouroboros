@@ -1027,6 +1027,35 @@ describe("handleInboundTurn", () => {
       expect(options.toolContext?.orientationFrame).toBe(suppliedFrame)
     })
 
+    it("makes a sense-supplied correction hold advisory for a family speaker", async () => {
+      // 2026-11-22: BlueBubbles builds its own frame, so Ari's "452841 - go!" got a blocking hold and his code was never typed.
+      const suppliedFrame: RunAgentOptions["orientationFrame"] = {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["452841 - go!"],
+        priorAssistantReferents: [],
+        signals: ["structured_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears to correct or revise prior understanding; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+        },
+        source: { kind: "bluebubbles", lane: "top_level" },
+      }
+      const input = makeInput({
+        channel: "bluebubbles" as Channel,
+        runAgentOptions: { orientationFrame: suppliedFrame },
+        friendResolver: { resolve: vi.fn().mockResolvedValue({ friend: makeFriend({ trustLevel: "family" }), channel: makeCapabilities() }) },
+      })
+
+      await handleInboundTurn(input)
+
+      const options = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0][4] as RunAgentOptions
+      expect(options.orientationFrame?.actionPolicy).toMatchObject({ mode: "correction_hold", advisory: true })
+      expect(options.orientationFrame?.currentUserSpeech).toEqual(["452841 - go!"])
+      expect(options.toolContext?.orientationFrame).toBe(options.orientationFrame)
+    })
+
     it("returns usage data from runAgent", async () => {
       const input = makeInput({
         runAgent: vi.fn().mockResolvedValue({ usage: usageData }),

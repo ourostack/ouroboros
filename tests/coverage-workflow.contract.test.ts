@@ -17,6 +17,21 @@ describe("coverage workflow contract", () => {
     expect(workflow).not.toContain("${{ env.HOME }}/.agentstate/test-runs/ouroboros-agent-harness")
   })
 
+  it("holds a pull request's shards behind the yield job, and never waits or skips them on a push", () => {
+    const workflow = readFileSync(
+      join(process.cwd(), ".github", "workflows", "coverage.yml"),
+      "utf8",
+    )
+    const yieldJob = workflow.split("\n  yield:\n")[1].split("\n\n")[0]
+    const shardJob = workflow.split("\n  coverage-shard:\n")[1].split("\n    steps:")[0]
+
+    expect(yieldJob).toContain("if: github.event_name == 'pull_request'")
+    expect(yieldJob).toContain("yield-to-default-branch/yield.mjs")
+    expect(yieldJob).toContain("continue-on-error: true")
+    expect(shardJob).toContain("needs: [yield]")
+    expect(shardJob).toContain("needs.yield.result == 'success' || needs.yield.result == 'skipped'")
+  })
+
   it("uses the current Node 24-compatible GitHub action majors", () => {
     const workflow = readFileSync(
       join(process.cwd(), ".github", "workflows", "coverage.yml"),

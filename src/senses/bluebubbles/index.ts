@@ -24,7 +24,7 @@ import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { withSessionTurnLease, type SessionTurnLease } from "../../mind/session-transaction"
-import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
+import { drainOutboundRecords, isRecordedOutboundText, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
 import type { OutboundOrigin } from "../../heart/session-events"
 import {
@@ -822,16 +822,40 @@ function buildInboundContent(
   ]
 }
 
-function sessionLikelyContainsMessage(
+function sessionUserMessageIndex(
+  event: BlueBubblesNormalizedMessage,
+  existingMessages: OpenAI.ChatCompletionMessageParam[],
+): number {
+  const fragment = event.textForAgent.trim()
+  if (!fragment) return -1
+  return existingMessages.findLastIndex((message) => (
+    message.role === "user" && extractMessageText(message.content).includes(fragment)
+  ))
+}
+
+/**
+ * A turn saves the friend's message before the model runs, so the text alone
+ * does not prove the message was answered. Only a later assistant reply does;
+ * a proactive send recorded in the session afterwards does not count.
+ */
+function sessionAlreadyAnsweredMessage(
   event: BlueBubblesNormalizedMessage,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
 ): boolean {
-  const fragment = event.textForAgent.trim()
-  if (!fragment) return false
-  return existingMessages.some((message) => {
-    if (message.role !== "user") return false
-    return extractMessageText(message.content).includes(fragment)
-  })
+  const index = sessionUserMessageIndex(event, existingMessages)
+  return index >= 0 && existingMessages.slice(index + 1).some((message) => (
+    message.role === "assistant" && !isRecordedOutboundText(extractMessageText(message.content))
+  ))
+}
+
+/** Drop the unanswered copy a dead turn left at the tail, so the replay adds the message once. */
+function withoutUnansweredTail(
+  event: BlueBubblesNormalizedMessage,
+  messages: OpenAI.ChatCompletionMessageParam[],
+): OpenAI.ChatCompletionMessageParam[] {
+  return sessionUserMessageIndex(event, messages) === messages.length - 1
+    ? messages.slice(0, -1)
+    : messages
 }
 
 function getBlueBubblesContinuityIngressTexts(event: CanonicalBlueBubblesDirectionObservedMessage): string[] {
@@ -1915,16 +1939,16 @@ async function handleBlueBubblesNormalizedEvent(
       // Pre-load session inside the canonical turn lock so same-chat
       // deliveries cannot race on stale trunk state.
       const existing = resolvedDeps.loadSession(sessPath)
+      const replaying = options.semanticRecovery || source !== "webhook"
       const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
         existing?.messages && existing.messages.length > 0
-          ? structuredClone(existing.messages)
+          ? structuredClone(replaying ? withoutUnansweredTail(event, existing.messages) : existing.messages)
           : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
       // Record EARLY for audit and crash recovery. This is capture truth, not
       // a claim that the agent turn completed successfully.
       const inboundSource: BlueBubblesInboundSource =
-        (options.semanticRecovery || source !== "webhook")
-          && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
+        replaying && sessionAlreadyAnsweredMessage(event, existing?.messages ?? sessionMessages)
           ? "recovery-bootstrap"
           : source
       recordBlueBubblesInbound(agentName, event, inboundSource)
@@ -3602,6 +3626,11 @@ export async function catchUpMissedBlueBubblesMessages(
     Date.parse(cutover.effectiveAt),
   )
   const processTurns = options.processTurns !== false
+  let pendingKeyHashes: ReadonlySet<string> | null = null
+  const pendingCaptureKeyHashes = (): ReadonlySet<string> => {
+    pendingKeyHashes ??= new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash))
+    return pendingKeyHashes
+  }
 
   /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
   if (!client.listRecentMessages) return result
@@ -3738,6 +3767,17 @@ export async function catchUpMissedBlueBubblesMessages(
         }
 
         if (!processTurns) {
+          if (
+            captured.writeResult === "semantic_capture_duplicate"
+            && !semanticObservationGenerations.has(captured.capture.keyHash)
+            && !pendingCaptureKeyHashes().has(captured.capture.keyHash)
+          ) {
+            // Already has an outcome. Fencing it again would hold every older
+            // reply in this chat behind a message nobody will process.
+            clearPending(observationReservation)
+            result.skipped++
+            continue
+          }
           const generation = adoptBlueBubblesSemanticObservation(
             captured.capture.keyHash,
             observationReservation,
