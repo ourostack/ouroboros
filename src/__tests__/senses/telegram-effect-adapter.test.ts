@@ -526,6 +526,28 @@ describe("Telegram effect adapter", () => {
     expect(api.request.mock.calls.map(([method]) => method)).toEqual(["sendMessage", "editMessageText", "answerCallbackQuery"])
   })
 
+  it("sends a silent card without a notification, and refuses a stored silent flag that isn't true", async () => {
+    const store = journal()
+    const api = { request: vi.fn(async () => ({ message_id: 79 })) }
+    const card = prepareTelegramEffect(store, { idempotencyKey: "card:silent", target, authorClass: "control", effect: { kind: "card", text: "Allow?", buttons: [[{ text: "Allow", callbackData: "allow:1" }]], silent: true }, authorization })
+    await executeTelegramEffect(store, card.id, api, () => authorization)
+    expect(api.request.mock.calls[0]).toEqual(["sendMessage", expect.objectContaining({ disable_notification: true, reply_markup: expect.anything() }), undefined])
+    // Its plain-text resend after a 400 is silent too.
+    const refusing = { request: vi.fn(async (_method: string, body: any) => { if (body.parse_mode) throw new TelegramApiError("bad html", { status: 400 }); return { message_id: 80 } }) }
+    const second = prepareTelegramEffect(store, { idempotencyKey: "card:silent-plain", target, authorClass: "control", effect: { kind: "card", text: "Allow?", buttons: [[{ text: "Allow", callbackData: "allow:1" }]], silent: true }, authorization })
+    await executeTelegramEffect(store, second.id, refusing, () => authorization)
+    expect(refusing.request.mock.calls[1]![1]).toMatchObject({ disable_notification: true })
+    const loud = prepareTelegramEffect(store, { idempotencyKey: "card:loud", target, authorClass: "control", effect: { kind: "card", text: "Allow?", buttons: [[{ text: "Allow", callbackData: "allow:1" }]] }, authorization })
+    await executeTelegramEffect(store, loud.id, api, () => authorization)
+    expect(api.request.mock.calls[1]![1]).not.toHaveProperty("disable_notification")
+
+    const filePath = path.join((store as unknown as { root: string }).root, `${card.id}.json`)
+    const corrupt = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    corrupt.effect.silent = false
+    fs.writeFileSync(filePath, JSON.stringify(corrupt), { mode: 0o600 })
+    expect(() => store.read(card.id)).toThrow("invalid")
+  })
+
   it("sends a text effect as a reply to the message it names, and refuses a stored reply id that isn't one", async () => {
     const store = journal()
     const api = { request: vi.fn(async () => ({ message_id: 78 })) }
