@@ -6,6 +6,7 @@ import { spawnBackgroundShell, getShellSession, listShellSessions, tailShellSess
 import { getAgentName, getAgentRoot, loadAgentConfig } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ToolContext, ToolDefinition } from "./tools-base";
+import { withCode } from "./tool-error-code";
 import { assertRelationshipToolOwner } from "./tool-arguments";
 import { TOOL_MAX_CHARS, TOOL_MAX_LINES, cutNotice } from "./tool-limits";
 
@@ -26,9 +27,10 @@ function shellHome(ctx?: ToolContext): string {
  */
 /** A failed command as one result: how it ended, then stdout and stderr, each only when it printed something. */
 export function shellFailureText(error: { code?: unknown; signal?: unknown; killed?: boolean }, timeout: number, stdout: string, stderr: string): string {
+  // The code goes on the first line, so it survives when a long failure is cut to fit.
   const ended = error.killed && error.signal
-    ? `the command was stopped after ${timeout} ms (${String(error.signal)}); pass a larger timeout_ms or background: true for long work`
-    : typeof error.code === "number" ? `the command exited with code ${error.code}` : `the command could not start: ${String(error.code ?? "unknown error")}`
+    ? withCode(`the command was stopped after ${timeout} ms (${String(error.signal)}); pass a larger timeout_ms or background: true for long work`, "command-timed-out")
+    : typeof error.code === "number" ? withCode(`the command exited with code ${error.code}`, "command-failed") : withCode(`the command could not start: ${String(error.code ?? "unknown error")}`, "command-not-started")
   const parts = [ended]
   if (stdout.trim()) parts.push(`stdout:\n${stdout.trimEnd()}`)
   if (stderr.trim()) parts.push(`stderr:\n${stderr.trimEnd()}`)
@@ -157,6 +159,13 @@ export const shellToolDefinitions: ToolDefinition[] = [
       return output
     },
     summaryKeys: ["command"],
+    ax: { id: "tool:shell", group: "turn-shell", when: "Pick this to run a program or script in your home; for plain file reads and searches, read_file, grep and glob are safer.", effect: "consequential", confirm: "Approve shell with exact arguments <the call's arguments as JSON>?", errors: [
+      { code: "command-failed", means: "The command ran and exited non-zero; its stdout and stderr follow the first line.", fix: "Read stderr, fix the command or its input, and run it again." },
+      { code: "command-timed-out", means: "The command ran past its timeout and was stopped; whatever it printed follows.", fix: "Run it again with a larger timeout_ms, at most 600000, or with background: true and watch it with shell_status." },
+      { code: "command-not-started", means: "The shell couldn't start the command at all, so nothing ran.", fix: "Check the program's name and that it is installed, then run it again." },
+      { code: "guardrail-blocked", means: "The line writes to a protected path, names the sync key's folder, or runs a command this person isn't trusted for.", fix: "Change the command so it stays off protected paths, or run it from a chat with your owner." },
+      { code: "orientation-hold", means: "This turn is on a correction hold and the command changes things, so it waits.", fix: "Call orientation_get, settle what the person meant, then run the command if it is still right." },
+    ] },
   },
   {
     tool: {
@@ -177,10 +186,15 @@ export const shellToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(listShellSessions(shellOwner(ctx)))
       }
       const session = getShellSession(a.id, shellOwner(ctx))
-      if (!session) return `process not found: ${a.id}`
+      if (!session) return withCode(`process not found: ${a.id}`, "process-not-found")
       return JSON.stringify(session)
     },
     summaryKeys: ["id"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:shell_status", group: "turn-shell", when: "Pick this to learn whether a background shell you started is still running or how it ended; shell_tail shows its output.", effect: "read", idempotent: true, errors: [
+      { code: "process-not-found", means: "No background shell with that id belongs to you; a runtime restart forgets them all.", fix: "Call shell_status with no id to list yours, or start the command again." },
+      { code: "invalid-arguments", means: "id isn't text.", fix: "Call shell_status again with the id shell returned, or with no id to list them." },
+    ] },
   },
   {
     tool: {
@@ -201,9 +215,14 @@ export const shellToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- schema requires id, defensive guard @preserve */
       if (!a.id) return "id is required"
       const output = tailShellSession(a.id, shellOwner(ctx))
-      if (output === undefined) return `process not found: ${a.id}`
+      if (output === undefined) return withCode(`process not found: ${a.id}`, "process-not-found")
       return output || "(no output yet)"
     },
     summaryKeys: ["id"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:shell_tail", group: "turn-shell", when: "Pick this to read the latest lines a background shell you started has printed; shell_status says only whether it still runs.", effect: "read", idempotent: true, errors: [
+      { code: "process-not-found", means: "That id names no background shell of yours, often because the runtime restarted since it began.", fix: "List yours with shell_status, or run the command in the background again." },
+      { code: "invalid-arguments", means: "id is missing or isn't text.", fix: "Call shell_tail again with the id shell returned." },
+    ] },
   },
 ]

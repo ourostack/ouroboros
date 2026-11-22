@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1308",
+      "changes": [
+        "shell, shell_status, shell_tail and fetch_url have Ouro AX cards, with shell's approval prompt declared; their failures end with a code (command-failed, command-timed-out, command-not-started, process-not-found, invalid-url, private-address, http-error, fetch-failed), and shell_status, shell_tail and fetch_url state a low-risk profile."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1307",
       "changes": [
         "travel_advisory reads the right country for an ISO code the State Department feed spells differently: GB is the United Kingdom, not Gabon, and every ISO code that shares its feed tag with another country now finds its own advisory or reports none."
