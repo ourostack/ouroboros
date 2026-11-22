@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1369",
+      "changes": [
+        "Every agent now loads tools through the Ouro AX tool catalog: eager doors up front and the rest through find_tools (Anthropic loads them natively with tool_reference), cutting tool-definition tokens per request by about 85%. OURO_DEFERRED_TOOLS is gone."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1368",
       "changes": [
         "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
