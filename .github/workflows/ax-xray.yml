@@ -2,7 +2,7 @@ name: ax-xray
 
 # The Ouro AX X-ray checks the ouro CLI the way an agent calls it, against a loopback mock with made-up data, and the
 # action claims check the declarations in actions/, and the census (.github/scripts/ax-census) counts the agent doors
-# the code has, declared or not. They write reports to artifacts named `xray`, `xray-mcp`, `actions-xray` and
+# the code has, declared or not. They write reports to artifacts named `xray`, `xray-mcp`, `xray-tools`, `actions-xray` and
 # `ax-census`.
 # The X-ray gates with --conformance: the job fails unless the CLI conforms.
 
@@ -139,6 +139,30 @@ jobs:
         with:
           name: xray-mcp
           path: xray-mcp/
+          if-no-files-found: warn
+
+      # The same X-ray over the in-turn tools a model calls inside a turn, served by the dispatcher's own checks
+      # (.github/scripts/ax-tools-serve.mjs, which never runs a tool), with the census's declared tools as the
+      # inventory: every registered tool must have a card, and its calls must answer typed outcomes with carded codes.
+      - name: Ouro AX X-ray over in-turn tools
+        run: |
+          mkdir -p xray-tools
+          node -e "const i = require('./ax-census/inventory.json'); process.stdout.write(JSON.stringify({ tools: i.tool ?? [] }))" > xray-tools/inventory.json
+          node lib/ouro-ui/registry/ouro/ax/xray.ts \
+            --tools "node .github/scripts/ax-tools-serve.mjs" --name ouro \
+            --inventory xray-tools/inventory.json \
+            --conformance \
+            --home "$RUNNER_TEMP/xray-tools-home" \
+            --mock "http://127.0.0.1:$MOCK_PORT/ mock=ouroboros-ax-xray" \
+            --commit "$GITHUB_SHA" \
+            --json --md xray-tools/xray.md > xray-tools/report.json
+
+      - name: Upload the in-turn tools X-ray
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xray-tools
+          path: xray-tools/
           if-no-files-found: warn
 
   actions:

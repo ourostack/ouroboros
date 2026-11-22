@@ -262,9 +262,14 @@ export function resolveToolDefinition(toolName: string, selection?: ToolSelectio
   return (selection?.ordinary ?? [...baseToolDefinitions, ...additionalDefinitions]).find((definition) => definition.tool.function.name === toolName)
 }
 
+/** Every in-turn tool definition the harness registers, before any channel or relationship narrows it. */
+export function registeredToolDefinitions(): ToolDefinition[] {
+  return [...baseToolDefinitions, ...additionalDefinitions, rootHostToolDefinition]
+}
+
 /** What an unknown tool answers: the real tools its name could mean, else where the real ones are. */
 function unknownToolText(name: string, selection?: ToolSelection): string {
-  const names = selection ? selection.engine.map((tool) => tool.function.name) : [...baseToolDefinitions, ...additionalDefinitions].map((d) => d.tool.function.name)
+  const names = (selection ? toolSelectionSchemas(selection) : registeredToolDefinitions().map((d) => d.tool)).map((tool) => tool.function.name)
   const candidates = toolCandidates(name, names)
   return candidates.length > 0
     ? `unknown: ${name}; did you mean ${candidates.map((candidate) => `"${candidate}"`).join(" or ")}?`
