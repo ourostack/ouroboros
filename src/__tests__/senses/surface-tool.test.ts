@@ -789,6 +789,7 @@ describe("surface tool", () => {
 
       expect(result).toContain("queued")
       expect(result).toContain("for originating mcp session")
+      expect(result).not.toContain("iMessage")
       expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
       expect(fs.writeFileSync).toHaveBeenCalledWith(
         expect.stringMatching(/\/state\/pending\/friend-1\/mcp\/mcp-session-123\/\d+-[a-z0-9]+\.json$/),
@@ -1058,6 +1059,9 @@ describe("surface tool", () => {
 
       expect(result).toContain("queued")
       expect(result).toContain("for next interaction via bluebubbles")
+      // The agent must not read "queued" as "sent": say it waits, and how to text them now.
+      expect(result).toContain("it waits for their next iMessage")
+      expect(result).toContain('use send_message with channel="bluebubbles"')
       expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
       expect(fs.writeFileSync).toHaveBeenCalledWith(
         expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;owner@example.test\/\d+-[a-z0-9]+\.json$/),

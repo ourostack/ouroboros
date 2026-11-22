@@ -142,7 +142,12 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
         content,
         timestamp: Date.now(),
       })
-      return { status: "queued", detail }
+      // A BlueBubbles return deliberately waits for the friend's next iMessage
+      // instead of live-sending one. Say so, so the agent never reads "queued"
+      // as "sent", and name the tool that texts them now when that is the intent.
+      return target.channel === "bluebubbles"
+        ? { status: "queued", detail: `${detail}; it waits for their next iMessage. To text them now, use send_message with channel="bluebubbles"` }
+        : { status: "queued", detail }
     }
     const deliverTelegramOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
       const telegramKey = canonicalizeTelegramSessionKey(target.key)

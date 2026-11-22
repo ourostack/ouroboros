@@ -9,6 +9,7 @@ import {
   labelPriorWorkSurface,
   priorWorkInstruction,
   renderOrientationFrame,
+  withSpeakerTrust,
 } from "../../heart/orientation-frame"
 
 describe("orientation frame", () => {
@@ -129,6 +130,21 @@ describe("orientation frame", () => {
     expect(other.actionPolicy).toMatchObject({ mode: "correction_hold" })
     expect(other.actionPolicy).not.toHaveProperty("advisory")
     expect(renderOrientationFrame(other)).toContain("policy blocks: durable_state_write, external_side_effect")
+  })
+
+  it("applies family trust to a frame built anywhere, leaving every other frame untouched", () => {
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: "Babysitter is on it." },
+      { role: "user", content: "no i want that fix for borja done" },
+    ]
+    const held = buildOrientationFrame({ channel: "bluebubbles", messages })
+    const family = withSpeakerTrust(held, true)
+    expect(family.actionPolicy).toMatchObject({ mode: "correction_hold", advisory: true })
+    expect(renderOrientationFrame(family)).toContain("do it now without asking for confirmation")
+    expect(withSpeakerTrust(held, false)).toBe(held)
+    expect(withSpeakerTrust(family, true)).toBe(family)
+    const normal = buildOrientationFrame({ channel: "bluebubbles", messages: [{ role: "user", content: "what's the weather like in Lisbon this weekend for a walk?" }] })
+    expect(withSpeakerTrust(normal, true)).toBe(normal)
   })
 
   it("keeps ordinary turns in normal action policy", () => {

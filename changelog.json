@@ -2,6 +2,31 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1371",
+      "changes": [
+        "iMessage: a message whose reply never went out (the process died or the turn ended early) is now answered on recovery instead of being marked handled, and recovery finds messages saved by older builds."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1370",
+      "changes": [
+        "A family speaker's correction hold is advice on every sense, never a refusal: senses that build their own orientation frame (iMessage) skipped the family flag, so Ari's own Apple ID code was refused."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1369",
+      "changes": [
+        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever.",
+        "Update the Ouro UI files to Ouro UI core v1.12.0 and Ouro UI v1.3.454."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1368",
+      "changes": [
+        "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1367",
       "changes": [
         "A tool with no riskProfile is no longer quietly low risk: the dispatcher takes its risk from its Ouro AX card, and one with no card counts as high risk."
