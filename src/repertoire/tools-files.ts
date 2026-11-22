@@ -6,7 +6,8 @@ import { fileStateCache } from "../mind/file-state";
 import { trackModifiedFile, getModifiedFileCount, getPostImplementationScrutiny } from "../mind/scrutiny";
 import type { ToolDefinition } from "./tools-base";
 import { editFileReadTracker, withCode, type ToolContext } from "./tools-base";
-import { psycheEditNote, psycheFileClass } from "./guardrails";
+import { fileToolPath, psycheEditNote, psycheFileClass } from "./guardrails";
+import { emitNervesEvent } from "../nerves/runtime";
 import { SKIP_DIRS, TOOL_MAX_CHARS, TOOL_MAX_LINES, cutNotice, looksBinary } from "./tool-limits";
 
 /** The profile of a file tool that only reads, so a card can say `read`; it is the dispatcher's own default. */
@@ -30,13 +31,20 @@ function psycheNoteFor(resolvedPath: string, ctx: ToolContext | undefined): stri
   }
 }
 
-/** Relative paths start in the agent's home (its bundle); absolute paths are used as given. */
-function resolveLocalToolPath(targetPath: string, ctx?: ToolContext): string {
-  if (!path.isAbsolute(targetPath)) {
-    return path.resolve(ctx?.agentRoot ?? getAgentRoot(), targetPath)
-  }
-  return targetPath
+/** Relative paths start in the agent's home (its bundle), or in `cwd` when the call names one; absolute paths are used as given. */
+function resolveLocalToolPath(targetPath: string, ctx?: ToolContext, cwd?: string): string {
+  return path.isAbsolute(targetPath) ? targetPath : fileToolPath(targetPath, cwd || undefined, ctx?.agentRoot ?? getAgentRoot())
 }
+
+const CWD_PARAMETER = { type: "string", description: "folder a relative path starts from (defaults to your home)" } as const
+
+/** A result for a path that names nothing, with the absolute path tried, so a wrong starting folder shows in the result. */
+function notFound(tool: string, given: string, tried: string, what: "file" | "folder" | "file or folder"): string {
+  emitNervesEvent({ component: "tools", event: "tools.file_not_found", message: "a file tool's path named nothing", meta: { tool, relative: !path.isAbsolute(given) } })
+  return withCode(`error: no ${what} at ${tried}${path.isAbsolute(given) ? "" : ` (from the relative path ${given})`}`, "not-found")
+}
+
+const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
 
 function homeOf(ctx?: ToolContext): string {
   return ctx?.agentRoot ?? getAgentRoot()
@@ -93,6 +101,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             path: { type: "string" },
+            cwd: CWD_PARAMETER,
             offset: { type: "number", description: "1-based line number to start reading from" },
             limit: { type: "number", description: "maximum number of lines to return" },
             char_offset: { type: "number", description: "1-based character to start from within the first line shown, to read on through a line over 30,000 characters" },
@@ -102,8 +111,14 @@ export const fileToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a, ctx) => {
-      const resolvedPath = resolveLocalToolPath(a.path, ctx)
-      const raw = asBuffer(fs.readFileSync(resolvedPath))
+      const resolvedPath = resolveLocalToolPath(a.path, ctx, a.cwd)
+      let raw: Buffer
+      try {
+        raw = asBuffer(fs.readFileSync(resolvedPath))
+      } catch (error) {
+        if (isMissing(error)) return notFound("read_file", a.path, resolvedPath, "file")
+        throw error
+      }
       if (looksBinary(raw)) return `[binary file, ${raw.length} bytes; not shown]`
       const full = raw.toString("utf-8")
       // A final newline ends the last line; it is not another, empty line.
@@ -142,8 +157,9 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["path"],
     riskProfile: READS_ONLY,
     ax: { id: "tool:read_file", eager: true, group: "turn-files", when: "Pick this to see a file's exact text before you quote or change it; to find which file holds something, grep or glob first.", effect: "read", idempotent: true, errors: [
+      { code: "not-found", means: "Nothing is at the path; the result names the absolute path tried, so a relative path that started in the wrong folder shows there.", fix: "Pass cwd for the folder the path is relative to, or an absolute path." },
       { code: "guardrail-blocked", means: "The path is inside the folder holding the sync key, which no tool may read, or the path can't be resolved (a link loop or a folder you can't open).", fix: "Read a file outside that folder; for a path that won't resolve, check it with ls first." },
-      { code: "invalid-arguments", means: "path is missing, or offset, limit or char_offset isn't a number.", fix: "Call read_file again with path as text and offset, limit and char_offset as numbers." },
+      { code: "invalid-arguments", means: "path is missing, cwd isn't text, or offset, limit or char_offset isn't a number.", fix: "Call read_file again with path and cwd as text and offset, limit and char_offset as numbers." },
     ] },
   },
   {
@@ -154,13 +170,13 @@ export const fileToolDefinitions: ToolDefinition[] = [
         description: "Create a file, or replace one whole. It writes what you send and nothing of what was there, so read an existing file first when you mean to keep any of it. Prefer edit_file for a change to part of a file -- it only sends the diff.",
         parameters: {
           type: "object",
-          properties: { path: { type: "string" }, content: { type: "string" } },
+          properties: { path: { type: "string" }, cwd: CWD_PARAMETER, content: { type: "string" } },
           required: ["path", "content"],
         },
       },
     },
     handler: (a, ctx) => {
-      const resolvedPath = resolveLocalToolPath(a.path, ctx)
+      const resolvedPath = resolveLocalToolPath(a.path, ctx, a.cwd)
       fs.mkdirSync(path.dirname(resolvedPath), { recursive: true })
       fs.writeFileSync(resolvedPath, a.content, "utf-8")
       trackModifiedFile(resolvedPath)
@@ -188,6 +204,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             path: { type: "string" },
+            cwd: CWD_PARAMETER,
             old_string: { type: "string" },
             new_string: { type: "string" },
           },
@@ -196,7 +213,8 @@ export const fileToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a, ctx) => {
-      const resolvedPath = resolveLocalToolPath(a.path, ctx)
+      const resolvedPath = resolveLocalToolPath(a.path, ctx, a.cwd)
+      if (!fs.existsSync(resolvedPath)) return notFound("edit_file", a.path, resolvedPath, "file")
       if (!editFileReadTracker.has(resolvedPath)) {
         return withCode(`error: you must read the file with read_file before editing it. call read_file on ${a.path} first.`, "read-first")
       }
@@ -269,6 +287,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },
     ax: { id: "tool:edit_file", eager: true, group: "turn-files", when: "Pick this to change one exact passage of a file you have read, including psyche/TACIT.md, where what you've learned about how things work here lives; write_file is for new files and full rewrites.", effect: "write", errors: [
+      { code: "not-found", means: "Nothing is at the path; the result names the absolute path tried, so a relative path that started in the wrong folder shows there.", fix: "Pass cwd for the folder the path is relative to, or an absolute path." },
       { code: "read-first", means: "You haven't read this file with read_file yet, so the edit was refused.", fix: "Call read_file on the same path, then send the edit again." },
       { code: "no-match", means: "old_string appears nowhere in the file, often because whitespace or an earlier edit differs.", fix: "Read the file again and copy old_string from it exactly, indentation included." },
       { code: "ambiguous-match", means: "old_string appears more than once, so the edit can't tell which place you mean.", fix: "Add surrounding lines to old_string until it matches one place only." },
@@ -320,6 +339,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     handler: (a, ctx) => {
       const cwd = a.cwd ? resolveLocalToolPath(a.cwd, ctx) : homeOf(ctx)
+      if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return notFound("glob", a.cwd ?? cwd, cwd, "folder")
       // A cwd the caller chose is searched as asked; only the default (the whole home) leaves state/ out.
       const skipsState = !a.cwd && searchesWholeHome(cwd, cwd)
       const ignore = [...SKIP_DIRS.map((d) => `**/${d}/**`), ...(skipsState ? [`${RUNTIME_DATA_DIR}/**`] : [])]
@@ -331,6 +351,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["pattern", "cwd"],
     riskProfile: READS_ONLY,
     ax: { id: "tool:glob", group: "turn-files", when: "Pick this to find files by name pattern, such as every Markdown file under notes; to search inside files, use grep.", effect: "read", idempotent: true, errors: [
+      { code: "not-found", means: "Nothing is at the path; the result names the absolute path tried, so a relative path that started in the wrong folder shows there.", fix: "Pass cwd for the folder the path is relative to, or an absolute path." },
       { code: "guardrail-blocked", means: "The pattern or cwd reaches into the folder holding the sync key, or cwd can't be resolved.", fix: "Narrow cwd or the pattern so the search stays out of that folder." },
       { code: "invalid-arguments", means: "pattern is missing, or cwd isn't text.", fix: "Call glob again with pattern set, such as **/*.md, and cwd as a folder name if you want one." },
     ] },
@@ -345,7 +366,8 @@ export const fileToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             pattern: { type: "string", description: "regex pattern to search for" },
-            path: { type: "string", description: "file or directory to search (defaults to your home)" },
+            path: { type: "string", description: "file or directory to search (defaults to cwd, else your home)" },
+            cwd: CWD_PARAMETER,
             context_lines: { type: "number", description: "number of surrounding context lines (default 0)" },
             include: { type: "string", description: "glob filter to limit searched files (e.g. *.md)" },
             ignore_case: { type: "boolean", description: "match without regard to case" },
@@ -356,7 +378,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: (a, ctx) => {
-      const targetPath = a.path ? resolveLocalToolPath(a.path, ctx) : homeOf(ctx)
+      const targetPath = a.path || a.cwd ? resolveLocalToolPath(a.path || ".", ctx, a.cwd) : homeOf(ctx)
       const regex = new RegExp(a.pattern, a.ignore_case ? "i" : "")
       const contextLines = parseInt(a.context_lines || "0", 10)
       const includeGlob = a.include || undefined
@@ -446,7 +468,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       }
 
       const stat = fs.statSync(targetPath, { throwIfNoEntry: false })
-      if (!stat) return ""
+      if (!stat) return notFound("grep", a.path || a.cwd || targetPath, targetPath, "file or folder")
 
       let files = [targetPath]
       if (!stat.isFile()) {
@@ -465,6 +487,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["pattern", "path", "include"],
     riskProfile: READS_ONLY,
     ax: { id: "tool:grep", eager: true, group: "turn-files", when: "Pick this to learn which files and lines contain some text or regex; then read_file shows a match in full.", effect: "read", idempotent: true, errors: [
+      { code: "not-found", means: "Nothing is at the path; the result names the absolute path tried, so a relative path that started in the wrong folder shows there.", fix: "Pass cwd for the folder the path is relative to, or an absolute path." },
       { code: "guardrail-blocked", means: "The search path is, or contains, the folder holding the sync key, or it can't be resolved.", fix: "Pass a narrower path that leaves that folder out." },
       { code: "invalid-arguments", means: "pattern is missing, or context_lines, ignore_case or files_only has the wrong type.", fix: "Call grep again with pattern as text, context_lines as a number and the flags as true or false." },
     ] },
