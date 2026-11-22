@@ -76,7 +76,9 @@ function findOverlaps({ slack = 2, maxSteps = 40 }: OverlapOptions = {}): PageIs
   // The layer an element is drawn on, when it covers what is under it: the nearest sticky or fixed bar with a fill, or
   // the nearest overlay with an opaque fill on it or on a box between it and the element. Text on one layer and text on
   // another don't collide: the one on top hides the other.
-  const overlay = "[role=dialog], [role=alertdialog], dialog, [role=menu], [role=listbox], [role=tooltip], [popover], [data-popover]";
+  // data-ouro=tooltip covers Ouro's own Tooltip popup, which carries no role=tooltip of its own and, under 120x48, misses
+  // the floating-panel fallback below.
+  const overlay = "[role=dialog], [role=alertdialog], dialog, [role=menu], [role=listbox], [role=tooltip], [data-ouro=tooltip], [popover], [data-popover]";
   const coverOf = (el: Element) => {
     let opaque = false;
     for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
