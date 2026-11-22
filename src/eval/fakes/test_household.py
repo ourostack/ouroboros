@@ -18,7 +18,9 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -282,6 +284,21 @@ class HouseholdTest(unittest.TestCase):
         self.books_cli("library", "find", "Tidewater")
         with open(os.path.join(self.state_dir, "state.json")) as f:
             self.assertEqual(json.load(f), self.state())
+
+    def test_a_request_is_already_an_event_when_its_response_arrives(self):
+        original = household.Household.event
+
+        def slow_event(store, **fields):
+            time.sleep(0.5)
+            original(store, **fields)
+
+        with unittest.mock.patch.object(household.Household, "event", slow_event):
+            self.start()
+            urllib.request.urlopen(f"http://127.0.0.1:{self.ports['calibre-web']}/login", timeout=10).read()
+            with open(os.path.join(self.state_dir, "state.json")) as f:
+                on_disk = json.load(f)
+            self.assertEqual(on_disk, self.state())
+            self.assertIn("/login", [e.get("path") for e in on_disk["events"]])
 
     def test_calibre_web_needs_a_signed_in_session_and_the_csrf_token(self):
         self.start()
