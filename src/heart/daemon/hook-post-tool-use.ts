@@ -17,6 +17,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "./socket-client"
+import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonCommand } from "./daemon"
 
 /** How long a session's tool use stays news: one note per session in each window. */
@@ -65,6 +66,13 @@ function stamp(dir: string, file: string, now: number): void {
 }
 
 export async function runPostToolUseHook(agent: string, deps: PostToolUseDeps): Promise<PostToolUseOutcome> {
+  const outcome = await decide(agent, deps)
+  // Nothing configures a log sink in this process, so this costs only the runtime's import (about 10 ms).
+  emitNervesEvent({ event: "daemon.hook_post_tool_use", component: "daemon", message: `post-tool-use hook: ${outcome}`, meta: { agent, outcome } })
+  return outcome
+}
+
+async function decide(agent: string, deps: PostToolUseDeps): Promise<PostToolUseOutcome> {
   try {
     let event: Record<string, unknown> = {}
     try {
