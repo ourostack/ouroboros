@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1372",
+      "version": "0.1.0-alpha.1373",
       "changes": [
         "An `ouro up` that an agent's shell runs inside the daemon's own launchd job now hands the daemon replacement to the detached helper instead of stranding the daemon. Apple's sh, bash and zsh set XPC_SERVICE_NAME=0 for every child they fork, so the label check alone missed it; the check now also looks for the daemon job's pid among the command's ancestors, treats a launchctl or ps failure as inside the job, and logs which check decided (daemon.runtime_replacement_job_check)."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1372",
+      "changes": [
+        "ouro hook post-tool-use no longer loads the whole CLI: it sends from a small module, skips subagents, and sends at most one note per Claude Code session every five minutes. Measured on a stand-in agent with no daemon, the hook's node process went from a median 178 ms, 0.20 s of CPU and 80 MB to 86 ms, 0.07 s and 44 MB (bare node is 67 ms)."
       ]
     },
     {
