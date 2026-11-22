@@ -309,9 +309,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           {item.icon !== undefined ? item.icon : item.label.charAt(0).toUpperCase()}
         </span>
       )}
-      <span title={rail ? undefined : item.label} className={rail ? "sr-only" : "min-w-0 flex-1 truncate"}>
-        {item.label}
-      </span>
+      <span className={rail ? "sr-only" : "min-w-0 flex-1 [overflow-wrap:anywhere]"}>{item.label}</span>
       {item.badge !== undefined && (
         <>
           {" "}
@@ -493,7 +491,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                     <path d="M8 4v12" />
                   </svg>
                 </span>
-                <span className={collapsed ? "sr-only" : "min-w-0 flex-1 truncate"}>{collapseLabel}</span>
+                <span className={collapsed ? "sr-only" : "min-w-0 flex-1 [overflow-wrap:anywhere]"}>{collapseLabel}</span>
               </button>
             </div>
           )}
