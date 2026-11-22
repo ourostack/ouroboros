@@ -506,7 +506,7 @@ describe("Unraid typed read tools", () => {
       expect(getInstallState).toHaveBeenCalledExactlyOnceWith()
       expect(JSON.stringify(state)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
     }
-    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "tool_context_missing", message: "Sanctuary tools are not wired into this turn; this is a harness wiring gap, not a runtime outage — do not restart; report it.", degraded: true } }))
+    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "tool_context_missing", message: "Sanctuary tools are not wired into this turn; this is a harness wiring gap, not a runtime outage — do not restart; report it. (code: tool-context-missing)", degraded: true } }))
   })
 
   describe("A-006 current requester routing", () => {

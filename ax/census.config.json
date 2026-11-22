@@ -64,6 +64,7 @@
     {"id": "turn-vault", "when": "Keep secrets and personal details in the agent's own vault during a turn: logins, new passwords, profile fields, setup."},
     {"id": "turn-rsvp", "when": "Answer questions about an event's guest list during a turn, from a saved RSVP snapshot file."},
     {"id": "turn-microsoft", "when": "Reach your owner's Microsoft 365, Teams and raw Azure DevOps APIs: look up the right endpoint, read, change, or message someone."},
-    {"id": "turn-ado", "when": "Plan and tidy an Azure DevOps backlog: list it, file epics and issues, move items, and check the tree for mistakes."}
+    {"id": "turn-ado", "when": "Plan and tidy an Azure DevOps backlog: list it, file epics and issues, move items, and check the tree for mistakes."},
+    {"id": "turn-sanctuary", "when": "Look after the Sanctuary home server as its Butler: read app, drive, space and download health, and restart or resume with approval."}
   ]
 }

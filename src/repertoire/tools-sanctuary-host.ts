@@ -9,7 +9,7 @@ import { getSenseSessionPath } from "../senses/shared-turn"
 import type { RootHostApprovalPort } from "../senses/root-host-approval-port"
 import { loadRelationshipCapabilityRegistry } from "./relationship-authorization"
 import { freezeToolValue } from "./tool-arguments"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode, type ToolContext, type ToolDefinition } from "./tools-base"
 
 export interface RootHostBinding {
   readonly agentRoot: string
@@ -36,7 +36,7 @@ const selections = new WeakMap<ToolDefinition, { binding: RootHostBinding; capab
 export class RootHostAuthorizationError extends Error {}
 
 function requireOwner(condition: unknown): asserts condition {
-  if (!condition) throw new RootHostAuthorizationError("Sanctuary root host authorization denied")
+  if (!condition) throw new RootHostAuthorizationError(withCode("Sanctuary root host authorization denied", "root-host-denied"))
 }
 
 function ownerFriend(friend: FriendRecord | null | undefined, port: RootHostApprovalPort): asserts friend is FriendRecord {
@@ -142,11 +142,21 @@ export const rootHostToolDefinition: ToolDefinition = freezeToolValue({
       },
     },
   },
+  ax: {
+    id: "tool:sanctuary_host_execute", group: "turn-sanctuary", effect: "consequential", destructive: true,
+    when: "Pick this only when the owner asks, in their own Telegram chat, for a root command on the house server that no typed Sanctuary tool covers.",
+    confirm: "OURO ROOT HOST APPROVAL. Effect: unrestricted root, potentially destructive and persistent. Namespaces: real Sanctuary host namespaces. Target: <host> / <resource>. Executable: <executable>",
+    errors: [
+      { code: "root-host-denied", means: "This turn doesn't carry the owner's current, verified Telegram request, or the host authority's pins or profile don't match.", fix: "Run nothing; tell the owner a root command needs a fresh request from them in their Telegram chat." },
+      { code: "root-host-unavailable", means: "The root host authority isn't answering, so no approval can be asked.", fix: "Tell the owner the root approval service is down; don't retry until they say it's back." },
+      { code: "resident-execution-forbidden", means: "The command reached the agent's own process, which never runs host commands; nothing ran.", fix: "Don't retry; tell the owner the root approval path is broken, as a harness bug." },
+    ],
+  },
   requiredCapability: "approval-continuation",
   summaryKeys: ["targetHost", "targetResource"],
   riskProfile: { risk: "high", mutates: "external_side_effect", reason: "owner-approved arbitrary host command" },
   approvalPolicy: () => ({ kind: "required", policyId: "sanctuary.host.owner-approved.v1", actionClass: "owner_approved_arbitrary_host", requiresSoleCall: true }),
-  handler: () => { throw new Error("Sanctuary host execution requires the root approval continuation; resident execution is forbidden") },
+  handler: () => { throw new Error(withCode("Sanctuary host execution requires the root approval continuation; resident execution is forbidden", "resident-execution-forbidden")) },
 })
 
 export function validateRootHostToolArguments(args: Record<string, unknown>, targetHost: string): Omit<HostProposalRequestV1, "ownerObservation"> {
@@ -178,7 +188,7 @@ export function selectRootHostTool(ctx?: RootHostSelectionContext, capabilities?
 export async function authorizeRootHostToolInvocation(ctx: ToolContext | undefined, definition: ToolDefinition | undefined, args: Record<string, unknown>): Promise<void> {
   const selected = definition && selections.get(definition)
   requireOwner(ctx && selected && ctx.rootHost?.binding === selected.binding && ctx.toolSelection?.ordinary.includes(definition!))
-  if (!ctx.rootHost.port.isHealthy() && !await ctx.rootHost.port.refresh()) throw new Error("Sanctuary root host authority is unavailable")
+  if (!ctx.rootHost.port.isHealthy() && !await ctx.rootHost.port.refresh()) throw new Error(withCode("Sanctuary root host authority is unavailable", "root-host-unavailable"))
   requireOwner(selectRootHostTool(ctx, selected.capabilities))
   const provenance = bindings.get(selected.binding)!
   await authorizeRootHostContext(ctx, provenance.recovery ? selected.binding : undefined)
