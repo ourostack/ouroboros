@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1343",
+      "changes": [
+        "settle, speak, observe, rest and ponder have Ouro AX cards in a new turn-flow group, and the engine's refusals for them end with a code their cards name."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1342",
       "changes": [
         "The Butler's replay gate takes another timed turn when a post-turn commit was skipped because another sync held the lock, instead of failing sync-latency on that one turn."
