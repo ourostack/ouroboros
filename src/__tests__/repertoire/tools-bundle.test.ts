@@ -147,6 +147,7 @@ describe("tools-bundle", () => {
       expect(result.ok).toBe(false)
       expect(result.alreadyInit).toBe(true)
       expect(String(result.error)).toContain("force")
+      expect(result.code).toBe("already-initialized")
     })
 
     it("does NOT overwrite an existing .gitignore", async () => {
@@ -195,12 +196,14 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_add_remote", { url: 12345 as unknown as string })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("invalid remote url")
+      expect(result.code).toBe("invalid-remote-url")
     })
 
     it("refuses empty URL", async () => {
       const result = await invoke("bundle_add_remote", { url: "" })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("invalid remote url")
+      expect(result.code).toBe("invalid-remote-url")
     })
 
     it("refuses whitespace-only URL", async () => {
@@ -238,6 +241,7 @@ describe("tools-bundle", () => {
         const result = await invoke("bundle_add_remote", { url: "https://x.test/y.git" })
         expect(result.ok).toBe(false)
         expect(String(result.error)).toContain("not a git repo")
+        expect(result.code).toBe("not-a-repo")
       } finally {
         freshTmp.cleanup()
       }
@@ -249,6 +253,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_list_first_commit")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("not a git repo")
+      expect(result.code).toBe("not-a-repo")
     })
 
     it("returns empty groups for a freshly-init'd bundle (only agent.json from tmpdir helper)", async () => {
@@ -296,6 +301,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_list_first_commit")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("already has commits")
+      expect(result.code).toBe("already-committed")
     })
   })
 
@@ -331,18 +337,21 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_do_first_commit", { files: [] })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("non-empty")
+      expect(result.code).toBe("invalid-files")
     })
 
     it("refuses files outside bundle root (../escape)", async () => {
       const result = await invoke("bundle_do_first_commit", { files: ["../escape.txt"] })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("outside bundle root")
+      expect(result.code).toBe("outside-bundle")
     })
 
     it("refuses absolute paths outside bundle root", async () => {
       const result = await invoke("bundle_do_first_commit", { files: ["/etc/passwd"] })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("outside bundle root")
+      expect(result.code).toBe("outside-bundle")
     })
 
     it("refuses when HEAD already exists", async () => {
@@ -350,6 +359,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_do_first_commit")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("already has commits")
+      expect(result.code).toBe("already-committed")
     })
 
     it("refuses when bundle is not a git repo", async () => {
@@ -359,6 +369,7 @@ describe("tools-bundle", () => {
         const result = await invoke("bundle_do_first_commit")
         expect(result.ok).toBe(false)
         expect(String(result.error)).toContain("not a git repo")
+        expect(result.code).toBe("not-a-repo")
       } finally {
         freshTmp.cleanup()
       }
@@ -368,6 +379,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_do_first_commit", { files: "oops" as unknown as string[] })
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("array")
+      expect(result.code).toBe("invalid-files")
     })
 
     it("uses a custom commit message when provided", async () => {
@@ -385,6 +397,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_push")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("not a git repo")
+      expect(result.code).toBe("not-a-repo")
     })
 
     it("refuses when no remote is configured", async () => {
@@ -392,6 +405,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_push")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("not configured")
+      expect(result.code).toBe("no-remote")
     })
 
     it("refuses when no commits exist", async () => {
@@ -400,6 +414,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_push")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("no commits")
+      expect(result.code).toBe("no-commits")
     })
 
     it("refuses first push without a confirmation token (Directive D)", async () => {
@@ -410,6 +425,7 @@ describe("tools-bundle", () => {
       expect(result.ok).toBe(false)
       expect(result.kind).toBe("confirmation_required")
       expect(String(result.error)).toContain("confirmation token")
+      expect(result.code).toBe("confirmation-required")
     })
 
     it("says it couldn't reach GitHub, rather than asking for a first-push token, when the remote cannot be asked", async () => {
@@ -421,6 +437,7 @@ describe("tools-bundle", () => {
         expect(result.ok).toBe(false)
         expect(result.kind).toBe("remote_unreachable")
         expect(String(result.error)).toMatch(/^I couldn't reach GitHub to check whether this would be my first push, so I didn't sync: git ls-remote failed: /)
+        expect(result.code).toBe("remote-unreachable")
       }
     })
 
@@ -432,7 +449,7 @@ describe("tools-bundle", () => {
       })
       commitFile(tmp.agentRoot, "file.txt", "x", "init")
       const result = await invoke("bundle_push", { remote: "upstream" })
-      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first' })
+      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first', code: "no-remote" })
     })
   })
 
@@ -441,6 +458,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_pull_rebase")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("not a git repo")
+      expect(result.code).toBe("not-a-repo")
     })
 
     it("refuses when no remote is configured", async () => {
@@ -448,6 +466,7 @@ describe("tools-bundle", () => {
       const result = await invoke("bundle_pull_rebase")
       expect(result.ok).toBe(false)
       expect(String(result.error)).toContain("not configured")
+      expect(result.code).toBe("no-remote")
     })
 
     it("refuses a first sync without a confirmation token, like bundle_push", async () => {
@@ -467,6 +486,7 @@ describe("tools-bundle", () => {
       const bogus = await invoke("bundle_pull_rebase", { confirmation_token: "not-a-token" })
       expect(bogus.kind).toBe("confirmation_required")
       expect(String(bogus.error)).toContain("invalid or expired")
+      expect(bogus.code).toBe("confirmation-required")
 
       const review = await invoke("bundle_first_push_review")
       const other = createTmpBundle({ agentName: "bundle-tools-other" })
@@ -478,6 +498,7 @@ describe("tools-bundle", () => {
         const foreign = await invoke("bundle_pull_rebase", { confirmation_token: String(review.confirmationToken) })
         expect(foreign.kind).toBe("confirmation_required")
         expect(String(foreign.error)).toContain("different bundle")
+        expect(foreign.code).toBe("confirmation-required")
       } finally {
         other.cleanup()
       }
@@ -500,7 +521,7 @@ describe("tools-bundle", () => {
       execFileSync("git", ["add", "-A"], { cwd: tmp.agentRoot, stdio: "pipe" })
       execFileSync("git", ["commit", "-m", "baseline"], { cwd: tmp.agentRoot, stdio: "pipe" })
       const result = await invoke("bundle_pull_rebase", { remote: "upstream" })
-      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first' })
+      expect(result).toEqual({ ok: false, error: 'remote "origin" not configured — run bundle_add_remote first', code: "no-remote" })
     })
   })
 })
@@ -688,6 +709,7 @@ describe("bundle sync tools against a real remote", () => {
       const result = await pending
       expect(result).toMatchObject({ ok: false, busy: true, holderPid: process.pid })
       expect(String(result.error)).toBe(`bundle sync lock is held by pid ${process.pid}`)
+      expect(result.code).toBe("sync-busy")
     } finally {
       vi.useRealTimers()
       delete __testHooks.fetchTimeoutMs

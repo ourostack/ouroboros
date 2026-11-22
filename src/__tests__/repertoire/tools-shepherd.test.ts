@@ -191,20 +191,20 @@ describe("Shepherd tools", () => {
     expect(server.methods.at(-1)?.params).toMatchObject({ lines: 40 })
     await call(shepherdReadToolDefinition, { session: "surface:2", lines: "x" })
     expect(server.methods.at(-1)?.params).toMatchObject({ lines: 60 })
-    expect(await call(shepherdReadToolDefinition, { session: " " })).toEqual({ error: "name a session id or ref from shepherd_overview" })
+    expect(await call(shepherdReadToolDefinition, { session: " " })).toEqual({ error: "name a session id or ref from shepherd_overview", code: "session-required" })
   })
 
   it("signal sets or clears the status and can notify", async () => {
     expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "waiting on Ari", notify_title: "Shepherd", notify_body: "gate" })).toEqual({ session: "surface:1", status: "set", notified: true })
     expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "" })).toEqual({ session: "surface:1", status: "cleared", notified: false })
     expect(server.lines.filter((line) => line.includes("_status")).map((line) => line.split(" ").slice(2, 4).join(" "))).toEqual(["set_status ouro_surface_1", "clear_status ouro_surface_1"])
-    expect(await call(shepherdSignalToolDefinition, { session: "", status: "x" })).toEqual({ error: "name a session id or ref from shepherd_overview" })
-    expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "a\nb" })).toEqual({ error: "status must be one line of at most 120 characters" })
-    expect(await call(shepherdSignalToolDefinition, { session: "surface:9", status: "x" })).toEqual({ error: "no cmux terminal surface:9" })
+    expect(await call(shepherdSignalToolDefinition, { session: "", status: "x" })).toEqual({ error: "name a session id or ref from shepherd_overview", code: "session-required" })
+    expect(await call(shepherdSignalToolDefinition, { session: "surface:1", status: "a\nb" })).toEqual({ error: "status must be one line of at most 120 characters", code: "status-too-long" })
+    expect(await call(shepherdSignalToolDefinition, { session: "surface:9", status: "x" })).toEqual({ error: "no cmux terminal surface:9", code: "host-failed" })
   })
 
   it("explain a missing runtime or terminal host", async () => {
-    expect(await call(shepherdOverviewToolDefinition, {}, "none")).toEqual({ error: "the Shepherd tools need an agent runtime" })
+    expect(await call(shepherdOverviewToolDefinition, {}, "none")).toEqual({ error: "the Shepherd tools need an agent runtime", code: "no-agent-runtime" })
     resetRuntimeCredentialConfigCache()
     expect((await call(shepherdOverviewToolDefinition, {})).error).toContain("no terminal host is attached on this machine")
   })
@@ -290,7 +290,7 @@ describe("Shepherd tools", () => {
       server.respond(method, () => { throw new Error("credential approval timed out") })
       const result = await call(shepherdSendToolDefinition, { session: "surface:1", text: "Run the checks once." }, family())
       expect(result).toMatchObject({
-        error: "credential approval timed out",
+        error: "credential approval timed out", code: "submission-unknown",
         attempted: { text: "[Ouro for Ari] Run the checks once." },
         submission: {
           state: "unknown", attemptId: expect.any(String),
@@ -329,7 +329,7 @@ describe("Shepherd tools", () => {
     })
 
     it("types only for a family member who asked in this conversation", async () => {
-      const refusal = { error: "shepherd_send types only for a family member who asked for it in this conversation" }
+      const refusal = { error: "shepherd_send types only for a family member who asked for it in this conversation", code: "family-only" }
       expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" }, "none")).toEqual(refusal)
       expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "go" })).toEqual(refusal)
       for (const trustLevel of ["stranger", "acquaintance", "friend"]) {
@@ -347,13 +347,13 @@ describe("Shepherd tools", () => {
 
     it("validates the session, text and key before touching the terminal", async () => {
       const send = (args: Record<string, unknown>) => call(shepherdSendToolDefinition, args, family())
-      expect(await send({ session: " ", text: "go" })).toEqual({ error: "name a session id or ref from shepherd_overview" })
-      expect(await send({ session: "surface:1" })).toEqual({ error: "give exactly one of text or key" })
-      expect(await send({ session: "surface:1", text: "go", key: "enter", screen: "x" })).toEqual({ error: "give exactly one of text or key" })
+      expect(await send({ session: " ", text: "go" })).toEqual({ error: "name a session id or ref from shepherd_overview", code: "session-required" })
+      expect(await send({ session: "surface:1" })).toEqual({ error: "give exactly one of text or key", code: "text-or-key" })
+      expect(await send({ session: "surface:1", text: "go", key: "enter", screen: "x" })).toEqual({ error: "give exactly one of text or key", code: "text-or-key" })
       expect((await send({ session: "surface:1", key: "ctrl-d" })).error).toBe("key must be one of enter, escape, up, down, tab, ctrl-c, 1, 2, 3, 4, 5, 6, 7, 8, 9, y, n")
-      expect(await send({ session: "surface:1", text: "a".repeat(2_001) })).toEqual({ error: "text must be at most 2000 characters" })
+      expect(await send({ session: "surface:1", text: "a".repeat(2_001) })).toEqual({ error: "text must be at most 2000 characters", code: "text-or-key" })
       for (const text of ["run\nrm -rf /", "go\u001b[A", "go\tnow", "a\u2028b"]) {
-        expect(await send({ session: "surface:1", text })).toEqual({ error: "text must be one line with no control characters; press enter, escape or ctrl-c with key" })
+        expect(await send({ session: "surface:1", text })).toEqual({ error: "text must be one line with no control characters; press enter, escape or ctrl-c with key", code: "text-or-key" })
       }
       for (const key of ["enter", "tab", "2", "y", "N"]) {
         expect((await send({ session: "surface:1", key })).error).toContain("can approve or choose on a prompt, so pass screen from a shepherd_read made just before")
@@ -397,9 +397,9 @@ describe("Shepherd tools", () => {
     it("sends nothing when the terminal changed since it was read or is gone", async () => {
       const seen = screenFingerprint(screen)
       server.respond("surface.read_text", () => ({ text: `${screen}\nBash command\n  git push --force` }))
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "enter", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again" })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "yes, go", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again" })
-      expect(await call(shepherdSendToolDefinition, { session: "surface:9", text: "go" }, family())).toEqual({ error: "session surface:9 is gone; check shepherd_overview" })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", key: "enter", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again", code: "screen-changed" })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:1", text: "yes, go", screen: seen }, family())).toEqual({ error: "the terminal changed since it was read, so nothing was sent; read it again", code: "screen-changed" })
+      expect(await call(shepherdSendToolDefinition, { session: "surface:9", text: "go" }, family())).toEqual({ error: "session surface:9 is gone; check shepherd_overview", code: "session-gone" })
       expect(sends()).toEqual([])
       expect(events.map((entry) => entry.event)).toEqual(["repertoire.shepherd_send_refused", "repertoire.shepherd_send_refused", "repertoire.shepherd_send_refused"])
     })

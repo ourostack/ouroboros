@@ -7,7 +7,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { createShepherdHost, type ShepherdHost, type ShepherdKey } from "../senses/shepherd/host"
 import { FINGERPRINT_READ_LINES, redactSecrets, screenFingerprint } from "../senses/shepherd/redact"
 import { readReturns, type ReturnRecord } from "../senses/shepherd/returns"
-import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition } from "./tools-base"
+import { SELF_FRIEND_ID, type ToolContext, type ToolDefinition, type ToolErrorCard } from "./tools-base"
 import { shepherdGuidanceToolDefinitions } from "./tools-shepherd-guidance"
 import { shepherdReturnId } from "../senses/shepherd/guidance"
 import { assertBoundShepherdTarget } from "../senses/shepherd/target-binding"
@@ -50,9 +50,9 @@ function hostFor(agentName: string): ShepherdHost | string {
 }
 
 async function withHost(tool: string, ctx: ToolContext | undefined, run: (host: ShepherdHost) => Promise<Record<string, unknown>>): Promise<string> {
-  if (!ctx?.agentName || !ctx.agentRoot) return JSON.stringify({ error: "the Shepherd tools need an agent runtime" })
+  if (!ctx?.agentName || !ctx.agentRoot) return JSON.stringify({ error: "the Shepherd tools need an agent runtime", code: "no-agent-runtime" })
   const host = hostFor(ctx.agentName)
-  if (typeof host === "string") return JSON.stringify({ error: host })
+  if (typeof host === "string") return JSON.stringify({ error: host, code: "host-unconfigured" })
   try {
     if (ctx.currentShepherdSurface) {
       const bound = ctx.currentShepherdSurface
@@ -64,8 +64,17 @@ async function withHost(tool: string, ctx: ToolContext | undefined, run: (host: 
     return JSON.stringify(result)
   } catch (error) {
     emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_tool_error", message: "Shepherd tool call failed", meta: { tool, error: (error as Error).message } })
-    return JSON.stringify({ error: (error as Error).message })
+    return JSON.stringify({ error: (error as Error).message, code: "host-failed" })
   }
+}
+
+/** The errors every Shepherd terminal tool can end with, from `withHost`; `tool` is named in each fix. */
+function hostErrors(tool: string, retry: string): ToolErrorCard[] {
+  return [
+    { code: "no-agent-runtime", means: "The call ran outside an agent's runtime, so there is no terminal host to ask.", fix: `Don't retry; report that ${tool} was called without an agent runtime.` },
+    { code: "host-unconfigured", means: "This machine has no Shepherd terminal host connection set up for the agent.", fix: `Tell the human Shepherd isn't connected here; ${tool} works once it is.` },
+    { code: "host-failed", means: "The terminal host refused or failed the call; the error says why (often a session that is gone or not bound to this chat).", fix: retry },
+  ]
 }
 
 async function currentScreen(host: ShepherdHost, session: string, maxChars: number) {
@@ -106,6 +115,11 @@ export const shepherdOverviewToolDefinition: ToolDefinition = {
       })),
     }
   }),
+  ax: {
+    id: "tool:shepherd_overview", group: "turn-shepherd", effect: "read",
+    when: "Pick this first when asked what the coding agents on this machine are doing; it covers every terminal in one call.",
+    errors: hostErrors("shepherd_overview", "Say which part failed, then call shepherd_overview once more; don't guess the missing rows."),
+  },
   summaryKeys: [],
   riskProfile: { mutates: "none", risk: "low" },
 }
@@ -134,7 +148,7 @@ export const shepherdReadToolDefinition: ToolDefinition = {
   },
   handler: (args, ctx) => {
     const session = text(args.session).trim()
-    if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview" }))
+    if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview", code: "session-required" }))
     return withHost("shepherd_read", ctx, async (host) => {
       assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       const lines = boundedLines(args.lines)
@@ -143,6 +157,14 @@ export const shepherdReadToolDefinition: ToolDefinition = {
       const screen = redactSecrets(raw).replace(/\n$/, "").split("\n").slice(-lines).join("\n")
       return { session, text: screen.slice(-READ_MAX_CHARS), truncated: screen.length > READ_MAX_CHARS, screen: screenFingerprint(raw) }
     })
+  },
+  ax: {
+    id: "tool:shepherd_read", group: "turn-shepherd", effect: "read",
+    when: "Pick this to look closely at one terminal after shepherd_overview, and always just before pressing a choosing key with shepherd_send.",
+    errors: [
+      { code: "session-required", means: "No session id or ref was given.", fix: "Take the session's ref (surface:12) from shepherd_overview and pass it as session." },
+      ...hostErrors("shepherd_read", "Call shepherd_overview to see whether that terminal still exists, then read the one it lists."),
+    ],
   },
   summaryKeys: ["session"],
   riskProfile: { mutates: "none", risk: "low" },
@@ -171,21 +193,30 @@ export const shepherdSignalToolDefinition: ToolDefinition = {
     const session = text(args.session).trim()
     const status = text(args.status).trim()
     const title = text(args.notify_title).trim()
-    if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview" }))
-    if (status.length > STATUS_MAX_CHARS || /[\r\n]/.test(status)) return Promise.resolve(JSON.stringify({ error: `status must be one line of at most ${STATUS_MAX_CHARS} characters` }))
+    if (!session) return Promise.resolve(JSON.stringify({ error: "name a session id or ref from shepherd_overview", code: "session-required" }))
+    if (status.length > STATUS_MAX_CHARS || /[\r\n]/.test(status)) return Promise.resolve(JSON.stringify({ error: `status must be one line of at most ${STATUS_MAX_CHARS} characters`, code: "status-too-long" }))
     return withHost("shepherd_signal", ctx, async (host) => {
       assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       await host.signal(session, status || null, title ? { title, body: text(args.notify_body) } : undefined)
       return { session, status: status ? "set" : "cleared", notified: !!title }
     })
   },
+  ax: {
+    id: "tool:shepherd_signal", group: "turn-shepherd", effect: "write",
+    when: "Pick this to leave the human a status line or desktop alert beside a terminal without typing into it; shepherd_send types.",
+    errors: [
+      { code: "session-required", means: "No session id or ref was given.", fix: "Pass the ref from shepherd_overview of the terminal the status belongs to." },
+      { code: "status-too-long", means: `status is longer than ${STATUS_MAX_CHARS} characters or has a line break.`, fix: `Shorten status to one line of at most ${STATUS_MAX_CHARS} characters; put detail in notify_body.` },
+      ...hostErrors("shepherd_signal", "Call shepherd_overview and signal a terminal it still lists."),
+    ],
+  },
   summaryKeys: ["session", "status"],
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "changes what the terminal host shows the human (a status line or a desktop notification)" },
 }
 
-function refused(reason: string, meta: Record<string, unknown>): Record<string, unknown> {
+function refused(reason: string, code: string, meta: Record<string, unknown>): Record<string, unknown> {
   emitNervesEvent({ level: "warn", component: "repertoire", event: "repertoire.shepherd_send_refused", message: "refused to type into a terminal", meta: { ...meta, reason } })
-  return { error: reason }
+  return { error: reason, code }
 }
 
 export const shepherdSendToolDefinition: ToolDefinition = {
@@ -214,22 +245,22 @@ export const shepherdSendToolDefinition: ToolDefinition = {
     const seen = text(args.screen).trim()
     const friend = ctx?.context?.friend
     const meta = { session, chars: line.length, key: key || null, friendId: friend?.id ?? null }
-    const refuse = (reason: string): Promise<string> => Promise.resolve(JSON.stringify(refused(reason, meta)))
+    const refuse = (reason: string, code: string): Promise<string> => Promise.resolve(JSON.stringify(refused(reason, code, meta)))
     // The private runtime talks to itself as a family "friend"; only a real family member's request may type.
-    if (!friend || friend.trustLevel !== "family" || friend.id === SELF_FRIEND_ID) return refuse("shepherd_send types only for a family member who asked for it in this conversation")
-    if (!session) return refuse("name a session id or ref from shepherd_overview")
-    if (!line === !key) return refuse("give exactly one of text or key")
-    if (key && !(SEND_KEYS as readonly string[]).includes(key)) return refuse(`key must be one of ${SEND_KEYS.join(", ")}`)
-    if (line.length > SEND_TEXT_MAX_CHARS) return refuse(`text must be at most ${SEND_TEXT_MAX_CHARS} characters`)
-    if (/[\p{Cc}\u2028\u2029]/u.test(line)) return refuse("text must be one line with no control characters; press enter, escape or ctrl-c with key")
-    if (CHOOSING_KEYS.has(key) && !seen) return refuse(`${key} can approve or choose on a prompt, so pass screen from a shepherd_read made just before`)
+    if (!friend || friend.trustLevel !== "family" || friend.id === SELF_FRIEND_ID) return refuse("shepherd_send types only for a family member who asked for it in this conversation", "family-only")
+    if (!session) return refuse("name a session id or ref from shepherd_overview", "session-required")
+    if (!line === !key) return refuse("give exactly one of text or key", "text-or-key")
+    if (key && !(SEND_KEYS as readonly string[]).includes(key)) return refuse(`key must be one of ${SEND_KEYS.join(", ")}`, "text-or-key")
+    if (line.length > SEND_TEXT_MAX_CHARS) return refuse(`text must be at most ${SEND_TEXT_MAX_CHARS} characters`, "text-or-key")
+    if (/[\p{Cc}\u2028\u2029]/u.test(line)) return refuse("text must be one line with no control characters; press enter, escape or ctrl-c with key", "text-or-key")
+    if (CHOOSING_KEYS.has(key) && !seen) return refuse(`${key} can approve or choose on a prompt, so pass screen from a shepherd_read made just before`, "screen-required")
     return withHost("shepherd_send", ctx, async (host) => {
       assertBoundShepherdTarget(ctx?.currentShepherdSurface, session, host.name)
       const target = (await host.list()).find((entry) => entry.id === session || entry.ref === session)
-      if (!target) return refused(`session ${session} is gone; check shepherd_overview`, meta)
+      if (!target) return refused(`session ${session} is gone; check shepherd_overview`, "session-gone", meta)
       // Read again right before typing, as Shepherd does before its own answers: a gone or changed screen gets nothing.
       const now = screenFingerprint(await host.read(target.id, FINGERPRINT_READ_LINES))
-      if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", meta)
+      if (seen && seen !== now) return refused("the terminal changed since it was read, so nothing was sent; read it again", "screen-changed", meta)
       const label = `[${readAgentPresentation(ctx!.agentName!, ctx!.agentRoot!).name} for ${friend.name}]`
       // The agent sometimes writes the label itself; type it once.
       const typed = key ? null : `${label} ${line.toLowerCase().startsWith(label.toLowerCase()) ? line.slice(label.length).trimStart() : line}`
@@ -252,7 +283,7 @@ export const shepherdSendToolDefinition: ToolDefinition = {
           meta: { ...meta, session: target.id, ref: target.ref, instance: target.instance ?? null, attemptId, attemptedAt, error: message },
         })
         return {
-          error: message, session: target.ref, attempted: input,
+          error: message, code: "submission-unknown", session: target.ref, attempted: input,
           submission: { state: "unknown", attemptId, attemptedAt, reportedAt: new Date().toISOString(), target: receiptTarget },
           verification, retry,
         }
@@ -270,6 +301,20 @@ export const shepherdSendToolDefinition: ToolDefinition = {
         verification, retry,
       }
     })
+  },
+  ax: {
+    id: "tool:shepherd_send", group: "turn-shepherd", effect: "write",
+    when: "Pick this when a family member replies to a Shepherd prompt with a go-ahead, a correction or a stop meant for that coding session.",
+    errors: [
+      { code: "family-only", means: "The person in this conversation isn't a family member, so nothing is typed for them.", fix: "Tell them you can't type into terminals for them, and send nothing." },
+      { code: "text-or-key", means: "The call gave both text and key or neither, a key outside the list, or text that is too long or has control characters.", fix: "Send exactly one: a one-line text, or one key from the list (enter, escape and ctrl-c go as key)." },
+      { code: "screen-required", means: "A choosing key (enter, tab, a digit, y or n) came without screen.", fix: "Call shepherd_read on that session and pass its screen value with the key." },
+      { code: "screen-changed", means: "The terminal changed since your read, so nothing was typed.", fix: "Call shepherd_read again, check the prompt is still the one the human answered, then send." },
+      { code: "submission-unknown", means: "The host failed partway, so the input may or may not have arrived.", fix: "Don't resend; call shepherd_read to see whether it landed, and tell the human it's unverified." },
+      { code: "session-required", means: "No session id or ref was given.", fix: "Pass the ref from shepherd_overview of the terminal the human means." },
+      { code: "session-gone", means: "That terminal no longer exists, so nothing was typed.", fix: "Call shepherd_overview, and ask the human which listed terminal they meant." },
+      ...hostErrors("shepherd_send", "Nothing was typed; call shepherd_overview and shepherd_read before trying again."),
+    ],
   },
   summaryKeys: ["session", "key"],
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "types into a coding agent's terminal for the human, which can answer or approve its prompts" },
