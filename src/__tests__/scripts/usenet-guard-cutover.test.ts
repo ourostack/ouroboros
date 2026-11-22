@@ -130,6 +130,7 @@ describe("Unraid usenet guard cutover assets", () => {
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only-secret-123\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 ${response}
 `, { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
@@ -241,6 +242,7 @@ esac
     fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(producer, "process.exit(0)\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
 printf '{}\n'
 `, { mode: 0o700 })
@@ -305,7 +307,7 @@ exit 3
     const ini = path.join(temp, "sabnzbd.ini")
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only\n")
-    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\ncat >/dev/null\nprintf '{}\\n'\n", { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
 cat >/dev/null
 case "$*" in
@@ -348,6 +350,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
     if (seedBaseline) fs.writeFileSync(state, JSON.stringify({ day, tried: 1_000_000, okay: 70_000 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) [ "$GUARD_HISTORICAL_AUTH" = 1 ] && printf '{"warnings":[{"text":"502 Authentication Failed","time":1}]}\n' || printf '{"warnings":[]}\n' ;;
@@ -397,6 +400,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
     fs.writeFileSync(stats, `${serverStats.replaceAll('"today"', JSON.stringify(day))}\n`)
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
   *mode=queue*) printf '{"queue":{"paused":false,"status":"Downloading","noofslots":0}}\n' ;;
@@ -428,6 +432,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
 case "$*" in
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
@@ -476,6 +481,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
     fs.writeFileSync(state, JSON.stringify({ day, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+cat >/dev/null
 case "$*" in
   *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
@@ -532,7 +538,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     fs.writeFileSync(ini, "api_key = test-only\n")
     const local = new Date()
     fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
-    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\ncat >/dev/null\nprintf '{}\\n'\n", { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncat >/dev/null\ncase "$*" in\n  *valid_count*) echo true ;;\n  *@tsv*) printf '50000\\t0\\t1000000000\\n' ;;\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o700 })
