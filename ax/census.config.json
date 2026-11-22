@@ -83,6 +83,7 @@
     {"id": "turn-continuity", "when": "Keep track over time: recall and mark turning points, watch cares, jot intentions, see who is around."},
     {"id": "turn-sessions", "when": "See and reach the agent's other chats: live work across sessions, habit runs, transcripts, cross-chat messages."},
     {"id": "turn-orientation", "when": "Get your bearings in a turn: see what a terse or corrective message refers to, and drop stale held work."},
+    {"id": "turn-flow", "when": "Pace a turn: tell the person something midway, give the final answer, stay quiet, close a private turn, or save a question for later."},
     {"id": "turn-escalation", "when": "Hand a failure you can't get around to the engineers: a local failure report, or a GitHub issue."}
   ]
 }
