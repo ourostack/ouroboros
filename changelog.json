@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1353",
+      "changes": [
+        "Skills can list the tools they use in a frontmatter tools: line; the commerce, travel, commerce-setup and browser skills now do."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1352",
       "changes": [
         "Every agent's Telegram replies render Markdown (bold, italic, headings, lists, quotes, links, code, and tables as aligned monospace), split by block and measured after rendering; a refused chunk is resent with only code and links, then as plain text."
