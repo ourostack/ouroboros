@@ -145,7 +145,7 @@ describe("execTool with MCP tools", () => {
 
   it("MCP tool name NOT found anywhere: returns unknown", async () => {
     const result = await execTool("nonexistent_tool_xyz", {}, MCP_CONTEXT)
-    expect(result).toBe("unknown: nonexistent_tool_xyz (code: unknown-tool)")
+    expect(result).toBe("unknown: nonexistent_tool_xyz; no tool has a name close to it, so pick one from this turn's tool list (code: unknown-tool)")
   })
 
   it("MCP tool handler error: error propagated through handler (returns error string)", async () => {

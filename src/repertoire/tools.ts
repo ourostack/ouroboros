@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import { isDeepStrictEqual } from "node:util";
+import { toolCandidates } from "./tool-candidates";
 import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester, withCode } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
@@ -261,6 +262,15 @@ export function resolveToolDefinition(toolName: string, selection?: ToolSelectio
   return (selection?.ordinary ?? [...baseToolDefinitions, ...additionalDefinitions]).find((definition) => definition.tool.function.name === toolName)
 }
 
+/** What an unknown tool answers: the real tools its name could mean, else where the real ones are. */
+function unknownToolText(name: string, selection?: ToolSelection): string {
+  const names = selection ? selection.engine.map((tool) => tool.function.name) : [...baseToolDefinitions, ...additionalDefinitions].map((d) => d.tool.function.name)
+  const candidates = toolCandidates(name, names)
+  return candidates.length > 0
+    ? `unknown: ${name}; did you mean ${candidates.map((candidate) => `"${candidate}"`).join(" or ")}?`
+    : `unknown: ${name}; no tool has a name close to it, so pick one from this turn's tool list`
+}
+
 export function approvalPolicyForToolName(name: string, args: Record<string, unknown>, selection?: ToolSelection): ToolApprovalPolicy {
   return resolveToolDefinition(name, selection)?.approvalPolicy?.(args) ?? { kind: "not_required" }
 }
@@ -428,7 +438,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     const schema = def?.tool ?? selection?.engine.find((tool) => tool.function.name === name)
     if (!schema) {
       emitNervesEvent({ level: "error", event: "tool.error", component: "tools", message: "unknown or unselected tool requested", meta: { name } })
-      return { kind: "rejected_before_handler", text: withCode(`unknown: ${name}`, "unknown-tool") }
+      return { kind: "rejected_before_handler", text: withCode(unknownToolText(name, selection), "unknown-tool") }
     }
     if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
     if (selection || ctx?.relationshipAuthorization) {
