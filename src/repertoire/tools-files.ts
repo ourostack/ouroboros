@@ -141,7 +141,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["path"],
     riskProfile: READS_ONLY,
-    ax: { id: "tool:read_file", group: "turn-files", when: "Pick this to see a file's exact text before you quote or change it; to find which file holds something, grep or glob first.", effect: "read", idempotent: true, errors: [
+    ax: { id: "tool:read_file", eager: true, group: "turn-files", when: "Pick this to see a file's exact text before you quote or change it; to find which file holds something, grep or glob first.", effect: "read", idempotent: true, errors: [
       { code: "guardrail-blocked", means: "The path is inside the folder holding the sync key, which no tool may read, or the path can't be resolved (a link loop or a folder you can't open).", fix: "Read a file outside that folder; for a path that won't resolve, check it with ls first." },
       { code: "invalid-arguments", means: "path is missing, or offset, limit or char_offset isn't a number.", fix: "Call read_file again with path as text and offset, limit and char_offset as numbers." },
     ] },
@@ -268,7 +268,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },
-    ax: { id: "tool:edit_file", group: "turn-files", when: "Pick this to change one exact passage of a file you have read, including psyche/TACIT.md, where what you've learned about how things work here lives; write_file is for new files and full rewrites.", effect: "write", errors: [
+    ax: { id: "tool:edit_file", eager: true, group: "turn-files", when: "Pick this to change one exact passage of a file you have read, including psyche/TACIT.md, where what you've learned about how things work here lives; write_file is for new files and full rewrites.", effect: "write", errors: [
       { code: "read-first", means: "You haven't read this file with read_file yet, so the edit was refused.", fix: "Call read_file on the same path, then send the edit again." },
       { code: "no-match", means: "old_string appears nowhere in the file, often because whitespace or an earlier edit differs.", fix: "Read the file again and copy old_string from it exactly, indentation included." },
       { code: "ambiguous-match", means: "old_string appears more than once, so the edit can't tell which place you mean.", fix: "Add surrounding lines to old_string until it matches one place only." },
@@ -464,7 +464,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["pattern", "path", "include"],
     riskProfile: READS_ONLY,
-    ax: { id: "tool:grep", group: "turn-files", when: "Pick this to learn which files and lines contain some text or regex; then read_file shows a match in full.", effect: "read", idempotent: true, errors: [
+    ax: { id: "tool:grep", eager: true, group: "turn-files", when: "Pick this to learn which files and lines contain some text or regex; then read_file shows a match in full.", effect: "read", idempotent: true, errors: [
       { code: "guardrail-blocked", means: "The search path is, or contains, the folder holding the sync key, or it can't be resolved.", fix: "Pass a narrower path that leaves that folder out." },
       { code: "invalid-arguments", means: "pattern is missing, or context_lines, ignore_case or files_only has the wrong type.", fix: "Call grep again with pattern as text, context_lines as a number and the flags as true or false." },
     ] },
