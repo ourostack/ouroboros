@@ -1,4 +1,4 @@
-import { withCode, type ToolDefinition } from "./tools-base";
+import { withCode, type ToolDefinition, type ToolRiskProfile } from "./tools-base";
 import { authRequired } from "./auth-required";
 import { getProfile, graphRequest } from "./graph-client";
 import { queryWorkItems, adoRequest, discoverOrganizations } from "./ado-client";
@@ -9,6 +9,14 @@ import { emitNervesEvent } from "../nerves/runtime";
 const MUTATE_METHODS = ["POST", "PATCH", "DELETE"];
 
 const DEFAULT_ADO_QUERY = "SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] <> 'Closed' ORDER BY [System.ChangedDate] DESC";
+
+/** ado_query reads with GET, and with POST only for a WIQL query; any other request can change Azure DevOps. */
+export function adoQueryRiskProfile(args: Record<string, string>): ToolRiskProfile {
+  const method = (args.method || "GET").toUpperCase()
+  const route = (args.path ?? "").split(/[?#]/)[0]!
+  if (method === "GET" || (method === "POST" && /^(\/[^/]+){0,2}\/_apis\/wit\/wiql\/?$/i.test(route))) return { mutates: "none", risk: "low" }
+  return { mutates: "external_side_effect", risk: "high", reason: "a request other than a GET or a WIQL query can change Azure DevOps" }
+}
 
 export const teamsToolDefinitions: ToolDefinition[] = [
   // -- Generic Graph tools --
@@ -94,6 +102,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: adoQueryRiskProfile,
     ax: { id: "tool:ado_query", group: "turn-microsoft", when: "Pick this for an Azure DevOps lookup no dedicated ado_ tool covers, after ado_docs gives the path; it can POST, so keep it to reads.", effect: "write", errors: [
       { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
     ] },

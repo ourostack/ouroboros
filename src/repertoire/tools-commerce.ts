@@ -224,6 +224,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       return record ? JSON.stringify(record, null, 2) : withCode(`commerce checkout not found: ${args.checkout_id}`, "checkout-not-found")
     },
     summaryKeys: ["checkout_id"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads one checkout record; the read is logged" },
     ax: { id: "tool:commerce_receipt_get", group: "turn-payments", when: "Pick this to read one checkout's full record, such as its status and approved amount, by checkout id; each read is logged.", effect: "write", errors: [
       NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
       { code: "checkout-not-found", means: "No checkout with that id is stored on this agent.", fix: "Find the right checkoutId in commerce_access_log, or start over with commerce_checkout_preview." },

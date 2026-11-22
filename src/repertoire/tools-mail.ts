@@ -1033,6 +1033,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads mail state; the read is logged" },
     ax: { id: "tool:mail_status", group: "turn-mail", when: "Pick this to see which mailboxes are connected and whether the latest mail import worked, before trusting what the mail looks like.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "Mail status includes your owner's delegated mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1077,6 +1078,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads mail; the read is logged" },
     ax: { id: "tool:mail_recent", group: "turn-mail", when: "Pick this to skim the newest mail by sender and subject, like checking the inbox; to look for something specific, use mail_search.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "Delegated or all scope includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1284,6 +1286,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads drafts and sent mail; the read is logged" },
     ax: { id: "tool:mail_outbox", group: "turn-mail", when: "Pick this to check what you have already drafted or sent, and whether a sent email was delivered or bounced.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
@@ -1353,6 +1356,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads mail; the read is logged" },
     ax: { id: "tool:mail_search", group: "turn-mail", when: "Pick this to look up a particular email by words in it, a sender or a topic; to browse the latest, use mail_recent.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "Searching delegated or all mail includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1593,6 +1597,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "rebuilds only the local decrypted mail search index" },
     ax: { id: "tool:mail_index_refresh", group: "turn-mail", when: "Pick this when mail_search finds nothing in your owner's delegated mail but it probably exists, before saying it isn't there.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "Refreshing delegated mail touches your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1674,6 +1679,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads mail; the read is logged" },
     ax: { id: "tool:mail_body", group: "turn-mail", when: "Pick this to read the full text of one email you found; to follow a whole back-and-forth, use mail_thread.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "That message is in your owner's delegated mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1780,6 +1786,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads mail; the read is logged" },
     ax: { id: "tool:mail_thread", group: "turn-mail", when: "Pick this to follow a whole email conversation, oldest first, around one message; then open single messages with mail_body.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "Delegated or all scope includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
@@ -1879,6 +1886,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reads the screener queue; the read is logged" },
     ax: { id: "tool:mail_screener", group: "turn-mail", when: "Pick this to see mail from unknown senders waiting for a decision, so you can ask family whether to let each one through.", effect: "write", errors: [
       { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
       { code: "family-only", means: "The Screener can include your owner's delegated mail, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },

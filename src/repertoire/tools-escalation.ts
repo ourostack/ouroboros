@@ -55,6 +55,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     }
     return JSON.stringify({ filed: true, reportId: result.id, shortId: result.shortId, duplicate: result.duplicate, recipients: result.recipients })
   },
+  riskProfile: { mutates: "none", risk: "low", reason: "files a de-duplicated failure report, which must stay possible during a correction hold and in habits" },
   ax: { id: "tool:report_failure", group: "turn-escalation", when: "Pick this when a tool you need is missing or keeps failing in a way you can't get around, to hand it to the engineers who fix you.", effect: "write", errors: [
     { code: "no-agent-runtime", means: "This turn runs without an agent home, so there is nowhere to file from.", fix: "Tell the person plainly what failed; the report can be filed from a normal chat later." },
     { code: "report-not-filed", means: "The report was refused, usually because ari_words, tried or error is missing; the message gives the reason.", fix: "Fill in all three fields and call report_failure again." },
