@@ -268,7 +268,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["path"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },
-    ax: { id: "tool:edit_file", group: "turn-files", when: "Pick this to change one exact passage of a file you have read; write_file is for new files and full rewrites.", effect: "write", errors: [
+    ax: { id: "tool:edit_file", group: "turn-files", when: "Pick this to change one exact passage of a file you have read, including psyche/TACIT.md, where what you've learned about how things work here lives; write_file is for new files and full rewrites.", effect: "write", errors: [
       { code: "read-first", means: "You haven't read this file with read_file yet, so the edit was refused.", fix: "Call read_file on the same path, then send the edit again." },
       { code: "no-match", means: "old_string appears nowhere in the file, often because whitespace or an earlier edit differs.", fix: "Read the file again and copy old_string from it exactly, indentation included." },
       { code: "ambiguous-match", means: "old_string appears more than once, so the edit can't tell which place you mean.", fix: "Add surrounding lines to old_string until it matches one place only." },
