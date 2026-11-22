@@ -322,6 +322,7 @@ describe("local evolution loop flow", () => {
     expect(closeAttempt).toEqual({
       ok: false,
       error: "Evolution case closure requires ratification or none_needed",
+      code: "close-failed",
     })
     expect(readEvolutionCase(mockRuntime.agentRoot, evolutionCaseId)?.status).not.toBe("closed")
   })
