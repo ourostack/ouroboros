@@ -3,7 +3,7 @@ export { isChecksReport, type ChecksReport } from "#ouro-ax/checks.ts";
 export { isReservedPersonOnly, type UiEntry } from "#ouro-ax/component.ts";
 export { devCommandIn, devCommandsIn, sourceCheckoutTexts } from "#ouro-ax/dev-commands.ts";
 export { checkFailureCopyAllow, vagueFailureIn, vagueFailuresIn, type FailureCopyAllow } from "#ouro-ax/precise-copy.ts";
-export { isGenericAudience, isOutcome, validateOutcome } from "#ouro-ax/outcome.ts";
+export { isGenericAudience, isOutcome, OUTCOME_STATES, validateOutcome } from "#ouro-ax/outcome.ts";
 export { hasAnsi, stripAnsi } from "#ouro-ax/terminal.ts";
 export { isWait, validateWait } from "#ouro-ax/wait.ts";
 export { checkWorkEvent } from "#ouro-ax/work-event.ts";
