@@ -3626,6 +3626,11 @@ export async function catchUpMissedBlueBubblesMessages(
     Date.parse(cutover.effectiveAt),
   )
   const processTurns = options.processTurns !== false
+  let pendingKeyHashes: ReadonlySet<string> | null = null
+  const pendingCaptureKeyHashes = (): ReadonlySet<string> => {
+    pendingKeyHashes ??= new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash))
+    return pendingKeyHashes
+  }
 
   /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
   if (!client.listRecentMessages) return result
@@ -3762,6 +3767,17 @@ export async function catchUpMissedBlueBubblesMessages(
         }
 
         if (!processTurns) {
+          if (
+            captured.writeResult === "semantic_capture_duplicate"
+            && !semanticObservationGenerations.has(captured.capture.keyHash)
+            && !pendingCaptureKeyHashes().has(captured.capture.keyHash)
+          ) {
+            // Already has an outcome. Fencing it again would hold every older
+            // reply in this chat behind a message nobody will process.
+            clearPending(observationReservation)
+            result.skipped++
+            continue
+          }
           const generation = adoptBlueBubblesSemanticObservation(
             captured.capture.keyHash,
             observationReservation,

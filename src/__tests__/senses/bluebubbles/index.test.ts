@@ -5549,6 +5549,110 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
+  it("does not let runtime sync of an already-answered message hold a newer reply in the same chat", async () => {
+    // 2026-11-22: runtime sync re-saw a message that already had an outcome,
+    // fenced it again, and Slugger's next reply in that chat waited forever.
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const answeredPayload = {
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "ANSWERED-BEFORE-SYNC", text: "testing 12", dateCreated: now - 5_000 },
+    }
+    const livePayload = {
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "LIVE-AFTER-ANSWERED", text: "are you there", dateCreated: now - 1_000 },
+    }
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const answered = normalizeBlueBubblesEvent(answeredPayload)
+    if (answered.kind !== "message") throw new Error("expected message")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await expect(bluebubbles.handleBlueBubblesEvent(answeredPayload)).resolves.toEqual(expect.objectContaining({
+      notifiedAgent: true,
+    }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    const releaseRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseRepair.promise
+      return event
+    })
+    const live = bluebubbles.handleBlueBubblesEvent(livePayload)
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 2)
+
+    mocks.listRecentMessages.mockResolvedValueOnce([answered])
+    const sync = await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now - 10_000).toISOString(),
+      pendingRecoveryCount: 0,
+    }, { processTurns: false })
+    expect(sync).toEqual(expect.objectContaining({ skipped: 1, failed: 0 }))
+
+    releaseRepair.resolve()
+    await expect(live).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.sendText).toHaveBeenCalledTimes(2)
+  })
+
+  it("sends the reply to the second of two quick texts when the context fetch fails and runtime sync re-reads both", async () => {
+    // 2026-11-22 20:51Z and 22:03Z: two texts 24 s apart, the first superseded,
+    // the context fetch failed, and the second reply never went out.
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    const firstPayload = {
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "QUICK-TEXT-FIRST", text: "can you check the sign-in", dateCreated: now - 24_000 },
+    }
+    const secondPayload = {
+      ...dmTopLevelPayload,
+      data: { ...dmTopLevelPayload.data, guid: "QUICK-TEXT-SECOND", text: "it is asking for a code", dateCreated: now },
+    }
+    const { normalizeBlueBubblesEvent } = await import("../../../senses/bluebubbles/model")
+    const first = normalizeBlueBubblesEvent(firstPayload)
+    const second = normalizeBlueBubblesEvent(secondPayload)
+    const releaseFirstModel = createDeferred<void>()
+    const releaseSecondModel = createDeferred<void>()
+    mocks.runAgent
+      .mockImplementationOnce(async (_messages: any, callbacks: any) => {
+        callbacks.onModelStart()
+        await releaseFirstModel.promise
+        return { outcome: "settled", completion: { answer: "stale answer", intent: "complete" } }
+      })
+      .mockImplementationOnce(async (_messages: any, callbacks: any) => {
+        callbacks.onModelStart()
+        await releaseSecondModel.promise
+        callbacks.onTextChunk("send me the code when it arrives")
+        return { outcome: "settled", completion: { answer: "send me the code when it arrives", intent: "complete" } }
+      })
+    mocks.queryRecentMessagesWithMetadata.mockRejectedValue(new TypeError("fetch failed"))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const firstHandling = bluebubbles.handleBlueBubblesEvent(firstPayload)
+    await waitFor(() => mocks.runAgent.mock.calls.length === 1)
+    const secondHandling = bluebubbles.handleBlueBubblesEvent(secondPayload)
+    releaseFirstModel.resolve()
+    await expect(firstHandling).resolves.toEqual(expect.objectContaining({ reason: "superseded" }))
+    await waitFor(() => mocks.runAgent.mock.calls.length === 2)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_context_packet_error",
+      meta: expect.objectContaining({ reason: "fetch failed" }),
+    }))
+
+    mocks.listRecentMessages.mockResolvedValueOnce([second, first])
+    await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now - 60_000).toISOString(),
+      pendingRecoveryCount: 0,
+    }, { processTurns: false })
+
+    releaseSecondModel.resolve()
+    await expect(secondHandling).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
+    expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).toEqual(["send me the code when it arrives"])
+  })
+
   it("stops paginating catch-up once a full page reaches the catch-up cutoff", async () => {
     const now = Date.now()
     mocks.listRecentMessages.mockResolvedValueOnce(Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
