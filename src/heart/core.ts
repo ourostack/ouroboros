@@ -11,6 +11,7 @@ import { FIND_TOOLS_NAME, deferredNamesCalledInHistory, deferredToolLoadingEnabl
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
+import { FLOW_TOOL_REFUSALS } from "../repertoire/tools-flow";
 import { buildToolImagesMessage, canModelSeeToolImages, toolImagesNote, type ToolCallImages } from "./tool-images";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -858,9 +859,9 @@ function bindCurrentIngressEvidenceLocator(
 // Sole-call tools must be the only tool call in a turn. When they appear
 // alongside other tools, the sole-call tool is rejected with this message.
 const SOLE_CALL_REJECTION: Record<string, string> = {
-  settle: "rejected: settle must be the only tool call. finish your work first, then call settle alone.",
-  observe: "rejected: observe must be the only tool call. call observe alone when you want to stay silent.",
-  rest: "rejected: rest must be the only tool call. finish your work first, then call rest alone.",
+  settle: FLOW_TOOL_REFUSALS.settleAlone,
+  observe: FLOW_TOOL_REFUSALS.observeAlone,
+  rest: FLOW_TOOL_REFUSALS.restAlone,
 };
 
 type SettleIntent = "complete" | "blocked" | "direct_reply";
@@ -2623,7 +2624,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false);
             callbacks.onClearText?.();
-            const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.";
+            const gateMessage = FLOW_TOOL_REFUSALS.settleHeldWork;
             rejectToolBatch(msg, [gateMessage]);
             continue;
           }
@@ -2772,7 +2773,7 @@ export async function runAgent(
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (!wrappingUp && attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
-            const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
+            const gateMessage = FLOW_TOOL_REFUSALS.restHeldWork;
             rejectToolBatch(msg, [gateMessage]);
             continue;
           }
@@ -2780,7 +2781,7 @@ export async function runAgent(
           if (!wrappingUp && hasFreshPendingWork(options) && !freshWorkGateFired) {
             freshWorkGateFired = true;
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
-            const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
+            const gateMessage = FLOW_TOOL_REFUSALS.restFreshWork;
             rejectToolBatch(msg, [gateMessage]);
             emitNervesEvent({
               level: "info",
@@ -2980,7 +2981,7 @@ export async function runAgent(
             const argSummary = summarizeArgs("speak", { message: speakMessage }, toolSelection);
             callbacks.onToolStart("speak", { message: speakMessage });
             if (speakMessage.trim().length === 0) {
-              const err = "speak requires a non-empty `message` string.";
+              const err = FLOW_TOOL_REFUSALS.speakEmpty;
               callbacks.onToolEnd("speak", argSummary, false);
               pushGenerated({ role: "tool", tool_call_id: tc.id, content: err });
               providerRuntime.appendToolOutput(tc.id, err);
@@ -3002,7 +3003,7 @@ export async function runAgent(
             }
             if (speakDeliveryError) {
               callbacks.onToolEnd("speak", argSummary, false);
-              const failMsg = `speak delivery failed: ${speakDeliveryError.message}. the message did not reach your friend; do not assume they saw it.`;
+              const failMsg = FLOW_TOOL_REFUSALS.speakNotDelivered(speakDeliveryError.message);
               pushGenerated({ role: "tool", tool_call_id: tc.id, content: failMsg });
               providerRuntime.appendToolOutput(tc.id, failMsg);
               emitNervesEvent({
@@ -3052,7 +3053,7 @@ export async function runAgent(
 
               if (action === "create") {
                 if (isInnerChannel && attentionQueue.length > 0) {
-                  throw new Error("private runtime already has held return work in the attention queue; surface the existing delegationId instead of creating a replacement ponder packet.")
+                  throw new Error(FLOW_TOOL_REFUSALS.ponderHeldWork)
                 }
                 const kind = parsedArgs.kind;
                 const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
@@ -3061,7 +3062,7 @@ export async function runAgent(
                 privateReturnSourceRequest = sourceRequest;
 
                 if (!kind || !objective || !successCriteria || !payload) {
-                  throw new Error("ponder create requires kind, objective, success_criteria, and valid payload_json.")
+                  throw new Error(FLOW_TOOL_REFUSALS.ponderCreateIncomplete)
                 }
                 const packetPayload = sourceRequest
                   ? { ...payload, sourceRequest }
@@ -3142,7 +3143,7 @@ export async function runAgent(
                 const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
                 const summary = typeof parsedArgs.summary === "string" ? parsedArgs.summary.trim() : "";
                 if (!packetId || !kind || !objective || !successCriteria || !payload) {
-                  throw new Error("ponder revise requires packet_id, kind, objective, success_criteria, and valid payload_json.")
+                  throw new Error(FLOW_TOOL_REFUSALS.ponderReviseIncomplete)
                 }
                 packet = revisePonderPacket(getAgentRoot(), packetId, {
                   kind,

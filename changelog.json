@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1343",
+      "version": "0.1.0-alpha.1346",
       "changes": [
         "media_blocklist_stalled takes dry_run: it reports which stalled downloads it would remove and re-search, and changes nothing. The replay gate then runs it as a dry run and does not count a dry run as a removal."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1344",
+      "changes": [
+        "A tool catalog built from each tool's Ouro AX card, with a search that finds the right tool, ready for loading tools on demand; and a script that counts tool-definition tokens per request."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1343",
+      "changes": [
+        "settle, speak, observe, rest and ponder have Ouro AX cards in a new turn-flow group, and the engine's refusals for them end with a code their cards name."
       ]
     },
     {
