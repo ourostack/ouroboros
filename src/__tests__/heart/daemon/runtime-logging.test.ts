@@ -54,6 +54,35 @@ describe("daemon runtime logging", () => {
     expect(fs.existsSync(path.join(tmpRoot, "AgentBundles"))).toBe(false)
   })
 
+  async function configureForArgvAgent(agent: string, home: string, bundleExists: boolean) {
+    if (bundleExists) fs.mkdirSync(path.join(home, "AgentBundles", `${agent}.ouro`), { recursive: true })
+    vi.resetModules()
+    vi.doMock("../../../heart/identity", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
+      return { ...actual, getAgentName: () => agent }
+    })
+    const { configureDaemonRuntimeLogger: configure } = await import("../../../heart/daemon/runtime-logging")
+    const { emitNervesEvent: emit, setRuntimeLogger: setLogger } = await import("../../../nerves/runtime")
+    setLogger(null)
+    configure("ouro", { homeDir: home })
+    emit({ component: "daemon", event: "daemon.argv_agent_logging_test", message: "argv agent", meta: {} })
+  }
+
+  it("does not create a bundle for an --agent that names none", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-missing-agent-logging-"))
+    await configureForArgvAgent("hook-standin", tmpRoot, false)
+    const file = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "ouro.ndjson")
+    expect(await waitForLogContent(file, "daemon.argv_agent_logging_test")).toContain("daemon.argv_agent_logging_test")
+    expect(fs.existsSync(path.join(tmpRoot, "AgentBundles", "hook-standin.ouro"))).toBe(false)
+  })
+
+  it("still logs into the bundle of an --agent that exists", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-real-agent-logging-"))
+    await configureForArgvAgent("real", tmpRoot, true)
+    const file = path.join(tmpRoot, "AgentBundles", "real.ouro", "state", "daemon", "logs", "ouro.ndjson")
+    expect(await waitForLogContent(file, "daemon.argv_agent_logging_test")).toContain("daemon.argv_agent_logging_test")
+  })
+
   it("uses daemon logging config to disable terminal sink", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
     const configPath = path.join(tmpRoot, ".ouro-cli", "daemon", "logging.json")
