@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1367",
+      "changes": [
+        "iMessage: a message whose reply never went out (the process died or the turn ended early) is now answered on recovery instead of being marked handled, and recovery finds messages saved by older builds."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1366",
       "changes": [
         "shepherd_feedback and shepherd_feedback_status say what they do instead of giving the agent rules, so they pass the Ouro AX census's booklet-words check."
