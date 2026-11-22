@@ -5047,6 +5047,49 @@ describe("ensureDaemonRunning", () => {
     expect(deps.cleanupStaleSocket).not.toHaveBeenCalled()
   })
 
+  it("tells callers other than ouro up to retry while a detached helper replaces the daemon", async () => {
+    vi.resetModules()
+    vi.doMock("../../../heart/daemon/runtime-metadata", () => ({
+      getRuntimeMetadata: () => ({ version: "0.1.0-alpha.20", lastUpdated: "2026-03-09T11:00:00.000Z" }),
+    }))
+
+    const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
+
+    const sendCommand = vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: { daemon: "running", health: "ok", socketPath: "/tmp/ouro-test.sock", version: "0.1.0-alpha.6", lastUpdated: "2026-03-08T00:00:00.000Z", workerCount: 0, senseCount: 0 },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      throw new Error(`unexpected command ${command.kind}`)
+    })
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand,
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      handOffDaemonRuntimeReplacement: vi.fn(() => ({ pid: 4242, logPath: "/fixture/helper.log" })),
+    }
+
+    const result = await ensureDaemonRunning(deps)
+
+    expect(result.ok).toBe(false)
+    expect(result.handedOff).toBe(true)
+    expect(result.message).toContain("a detached helper (pid 4242) is replacing 0.1.0-alpha.6 -> 0.1.0-alpha.20")
+    expect(result.message).toContain("run this command again once the replacement answers")
+    expect(result.startupFailureReason).toBe("the background service is being replaced by a detached helper")
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
   it("replaces a running daemon when its version is older than the local runtime", async () => {
     vi.resetModules()
     vi.doMock("../../../heart/daemon/runtime-metadata", () => ({

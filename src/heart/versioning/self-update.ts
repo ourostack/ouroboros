@@ -43,6 +43,12 @@ export interface SelfUpdateDeps {
   runningDaemonVersion: () => Promise<string | null>
   /** Restart a running daemon on the active version and confirm it answers with that version. */
   restartDaemon: (expectedVersion: string) => Promise<{ ok: boolean; detail?: string }>
+  /**
+   * True when a runtime replacement booted the daemon's launchd label out and
+   * died before loading the new plist, so nothing will start the daemon again.
+   * A label someone booted out on purpose does not count.
+   */
+  isDaemonReplacementStranded?: () => boolean
   /** True while `ouro dev` owns the daemon; the updater must not replace a dev daemon. */
   isDevMode: () => boolean
   acquireLock: () => (() => void) | null
@@ -211,8 +217,24 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
       })
     }
     const failedSources = lookup.answers.filter((answer) => !answer.version).map((answer) => `${answer.source}: ${answer.error}`)
+    let summary = `current at ${currentVersion}${failedSources.length ? ` (unreachable: ${failedSources.join("; ")})` : ""}`
+    // 2026-11-16: an interrupted replacement left the daemon's job unloaded and
+    // every pass reported "current" for six days while nothing ran.
+    if (!daemonVersion && !deps.isDevMode() && deps.isDaemonReplacementStranded?.()) {
+      const restart = await deps.restartDaemon(currentVersion)
+      emitNervesEvent({
+        level: restart.ok ? "warn" : "error",
+        component: "daemon",
+        event: "daemon.self_update_unloaded_daemon_restarted",
+        message: "a runtime replacement left the daemon's launch agent unloaded; ran ouro up to load it again",
+        meta: { currentVersion, ok: restart.ok, detail: restart.detail ?? null },
+      })
+      summary += restart.ok
+        ? "; an interrupted daemon replacement had left nothing running, so started the daemon again and it is healthy"
+        : `; an interrupted daemon replacement had left nothing running, and starting the daemon again failed: ${restart.detail ?? "no detail"}`
+    }
     return finish("current", {
-      summary: `current at ${currentVersion}${failedSources.length ? ` (unreachable: ${failedSources.join("; ")})` : ""}`,
+      summary,
       latestVersion: latest,
       source: lookupSource,
     })

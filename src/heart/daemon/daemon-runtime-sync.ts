@@ -17,6 +17,13 @@ export interface DaemonRuntimeSyncDeps {
   }>
   stopDaemon: () => Promise<void>
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
+  /**
+   * Starts a detached helper to do the replacement when this command runs
+   * inside the daemon's own process tree, where stopping the daemon would kill
+   * it mid-replacement. Returns null when the replacement should run here,
+   * and throws when it is needed but the helper could not start.
+   */
+  handOffRuntimeReplacement?: () => { pid: number | null; logPath: string } | null
   cleanupStaleSocket: (socketPath: string) => void
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
@@ -31,6 +38,8 @@ export interface DaemonRuntimeSyncDeps {
 export interface DaemonRuntimeSyncResult {
   ok: boolean
   alreadyRunning: boolean
+  /** True when a detached helper took over the replacement and the old daemon is still running for now. */
+  handedOff?: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
@@ -179,6 +188,64 @@ export async function ensureCurrentDaemonRuntime(
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
+      let handoff: { pid: number | null; logPath: string } | null
+      try {
+        handoff = deps.handOffRuntimeReplacement?.() ?? null
+      } catch (error) {
+        const reason = formatErrorReason(error)
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.runtime_sync_decision",
+          message: "evaluated daemon runtime sync outcome",
+          meta: {
+            socketPath: deps.socketPath,
+            localVersion: deps.localVersion,
+            runningVersion,
+            action: "stale_replace_handoff_failed",
+            driftKeys: driftReasons.map((entry) => entry.key),
+            reason,
+          },
+        })
+        // Replacing in place from inside the daemon's own job would stop the
+        // daemon and then die before starting the new one.
+        return {
+          ok: false,
+          alreadyRunning: true,
+          message: `daemon already running (${deps.socketPath}); this command runs inside the background service it would replace and ${reason}, so it left the older background service running; run \`ouro up\` from a terminal instead`,
+          startupFailureReason: "could not hand the replacement to a detached helper",
+        }
+      }
+      if (handoff) {
+        const target = includesVersionDrift
+          ? `${runningVersion} -> ${deps.localVersion}`
+          : `it after runtime drift: ${publicDriftSummary}`
+        result = {
+          ok: true,
+          alreadyRunning: true,
+          handedOff: true,
+          message: `this command runs inside the background service it would replace, so a detached helper (pid ${handoff.pid ?? "unknown"}) is replacing ${target}; it logs to ${handoff.logPath}`,
+          verifyStartupStatus: false,
+          startedPid: null,
+          startupFailureReason: null,
+        }
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.runtime_sync_decision",
+          message: "evaluated daemon runtime sync outcome",
+          meta: {
+            socketPath: deps.socketPath,
+            localVersion: deps.localVersion,
+            runningVersion,
+            action: "stale_replace_handed_off",
+            driftKeys: driftReasons.map((entry) => entry.key),
+            helperPid: handoff.pid,
+            helperLogPath: handoff.logPath,
+          },
+        })
+        return result
+      }
       try {
         deps.onProgress?.("stopping the older background service")
         await deps.stopDaemon()

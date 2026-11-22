@@ -215,6 +215,8 @@ export interface OuroCliDeps {
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   ensureSkillManagement?: () => Promise<void>
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
+  /** See DaemonRuntimeSyncDeps.handOffRuntimeReplacement. */
+  handOffDaemonRuntimeReplacement?: () => { pid: number | null; logPath: string } | null
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   /** Opens a URL in the person's browser; `ouro desk` admin sign-in uses it. */
@@ -358,6 +360,8 @@ export interface SessionEntry {
 export interface EnsureDaemonResult {
   ok: boolean
   alreadyRunning: boolean
+  /** True when a detached helper took over the replacement; the old daemon is about to stop. */
+  handedOff?: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
