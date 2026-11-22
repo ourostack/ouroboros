@@ -69,7 +69,7 @@ export function guardMcpArgs(input: { toolName: string; declaresDryRun: boolean;
   const familyOnly = FAMILY_ONLY_ARGUMENTS[toolName]
   if (familyOnly && rung === "friend" && familyOnly.used(args)) {
     emitNervesEvent({ level: "warn", component: "repertoire", event: "mcp.write_refused_non_owner", message: "a family-only MCP argument was refused for a friend", meta: { tool: toolName, argument: familyOnly.argument } })
-    return { rejected: JSON.stringify({ result: "family_only", tool: toolName, argument: familyOnly.argument, summary: `Nothing ran: ${familyOnly.argument} on ${toolName} is for family. A dry run or a read of the same tool still works for this person.` }) }
+    return { rejected: JSON.stringify({ result: "family_only", tool: toolName, argument: familyOnly.argument }) }
   }
   if (OWNER_ONLY_WRITE_TOOLS.has(toolName)) {
     args = { ...args, caller: caller.id ? `${caller.id}${caller.name ? ` (${caller.name})` : ""}` : "unknown" }

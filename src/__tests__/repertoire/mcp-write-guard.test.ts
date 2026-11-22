@@ -88,7 +88,7 @@ describe("guardMcpArgs", () => {
       ["media_fill_missing", { series: "Bluey", retry_blocklisted: ["S01E02"] }, "retry_blocklisted"],
     ])("refuses a friend %s with %j, naming the argument", (toolName, args, argument) => {
       const out = guardMcpArgs({ toolName, declaresDryRun: true, args, ctx: friend })
-      expect(refusal(out)).toEqual({ result: "family_only", tool: toolName, argument, summary: expect.stringContaining(`${argument} on ${toolName} is for family`) })
+      expect(refusal(out)).toEqual({ result: "family_only", tool: toolName, argument })
       expect(guardMcpArgs({ toolName, declaresDryRun: true, args, ctx: family })).toHaveProperty("args")
     })
 
