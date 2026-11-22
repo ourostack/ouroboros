@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1339",
+      "version": "0.1.0-alpha.1341",
       "changes": [
-        "Only family turns and the agent's own inner turns write psyche/TACIT.md. A friend's turn is told that what it learns from that person goes in their friend record, and the diary_write, save_friend_note and edit_file cards say in one sentence what goes where."
+        "Only family turns and the agent's own private-runtime turns write psyche/TACIT.md. A friend's turn is told that what it learns from that person goes in their friend record, and the diary_write, save_friend_note and edit_file cards say in one sentence what goes where."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1340",
+      "changes": [
+        "media_fill_missing now finishes its job in one call: up to three passes in three minutes, never grabbing anything twice, with a result that says what is still missing and why. media_search_now says in one sentence what it does, and its result says what it started."
       ]
     },
     {
