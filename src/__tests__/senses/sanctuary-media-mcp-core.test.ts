@@ -966,6 +966,18 @@ describe("media MCP — release numbering tools", () => {
     } finally { episodes[0].hasFile = false }
   })
 
+  it("refuses a friend's import that would replace a file, before Sonarr is asked, but imports a new episode for them", async () => {
+    const files = [{ path: "/dl/Chef.S02E01.mkv", episode_ids: [14472] }]
+    episodes[0].hasFile = true
+    try {
+      const out = await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files, caller_rung: "friend" })
+      expect(out).toEqual({ result: "family_only", tool: "media_manual_import", argument: "files", replacing: [{ episode_id: 14472, code: "S02E01" }] })
+      expect(calls.some((c) => c.url.endsWith("/command"))).toBe(false)
+      expect((await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files, caller_rung: "family" })).replacing).toHaveLength(1)
+    } finally { episodes[0].hasFile = false }
+    expect(await mod.mediaManualImport({ mode: "import", service_id: 191, download_id: "DL1", files, caller_rung: "friend" })).toMatchObject({ mode: "import" })
+  })
+
   it("lists the item's blocklist and removes only its own entries", async () => {
     const list = await mod.mediaBlocklist({ kind: "series", service_id: 191 })
     expect(list.entries).toEqual([{ blocklist_id: 11, title: "Bad.S03", date: "2026-10-01", indexer: null, quality: null, episode_ids: [1], message: null }])
