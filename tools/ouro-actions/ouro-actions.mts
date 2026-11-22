@@ -16,7 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The generator's version, written into every generated file; it is core's version. */
-export const ACTIONS_VERSION = "1.10.0";
+export const ACTIONS_VERSION = "1.11.0";
 const GENERATOR = `ouro-actions ${ACTIONS_VERSION}`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -195,6 +195,14 @@ export type InputOf<A> = A extends Action<infer I, Fields> ? ValuesOf<I> : never
 /** An action's output type. */
 export type OutputOf<A> = A extends Action<Fields, infer O> ? ValuesOf<O> : never;
 
+/** One thing that can go wrong at an action, as the agent reads it: the Ouro AX census's `ErrorCard`. */
+export interface ActionError {
+  /** Lowercase words joined by - or _, such as `not-found`; the code the outcome carries. */
+  code: string;
+  means: string;
+  fix: string;
+}
+
 /** Why only the person does it, said to the agent, and how the person does it. One line each. */
 export interface PersonOnly {
   reason: string;
@@ -211,6 +219,19 @@ export interface ActionDef<I extends Fields = Fields, O extends Fields = Fields>
   description: string;
   /** The agent's description: the MCP and WebMCP description, the CLI summary. One line. */
   agent: string;
+  /**
+   * When an agent should pick this action over its neighbours, one line, such as "Pick this to add one thing the person
+   * asked for; to change an item already there, use update_shopping_list_item." Its Ouro AX card's `when`, which the
+   * in-turn tools projection (src/actions-tools.mts) requires on every action an agent may call. Besides actions.json,
+   * the declaration itself, no other projection reads it.
+   */
+  when?: string;
+  /**
+   * What can go wrong when an agent calls it, as the agent reads it: each error's code (the outcome's code), what it
+   * means and how to fix the call, one line each. Its Ouro AX card's `errors`. Besides actions.json, no other
+   * projection reads it.
+   */
+  errors?: readonly ActionError[];
   /**
    * Only for `consequential`: the one question the person is asked before it acts, word for word on every surface that
    * asks (the confirm sheet, the A2UI and MCP Apps card, the App Intent's prompt). One line of at most 200 characters.
@@ -486,6 +507,23 @@ function checkFields(where: string, fields: unknown, input: boolean, top = true)
   }
 }
 
+const ERROR_CODE = /^[a-z][a-z0-9]*([-_][a-z0-9]+)*$/;
+
+/** An action's errors: a list of unique codes, each with one-line means and fix; `person-only` is the refusal's own. */
+function checkErrors(at: string, errors: unknown): void {
+  if (errors === undefined) return;
+  if (!Array.isArray(errors)) throw new Error(`${at}: errors is not a list. Fix: errors: [{ code, means, fix }].`);
+  const seen = new Set<string>();
+  for (const e of errors as Record<string, unknown>[]) {
+    const code = e?.["code"];
+    if (typeof code !== "string" || !ERROR_CODE.test(code)) throw new Error(`${at}: error code ${JSON.stringify(code)} is not lowercase words joined by - or _. Fix: such as "not-found".`);
+    if (code === "person-only") throw new Error(`${at}: error code "person-only" is the person-only refusal's own, which core writes. Fix: another code, or consent "person-only".`);
+    if (seen.has(code)) throw new Error(`${at}: error code "${code}" is listed twice. Fix: list each code once.`);
+    seen.add(code);
+    for (const key of ["means", "fix"]) if (!oneLine(e[key])) throw new Error(`${at}: error "${code}": ${key} is empty or more than one line. Fix: write it in one line.`);
+  }
+}
+
 /** Declares one action and checks it; a problem throws one line with its fix. */
 export function defineAction<const I extends Fields, const O extends Fields>(def: ActionDef<I, O>): Action<I, O> {
   const id = typeof def.id === "string" ? def.id : String(def.id);
@@ -517,6 +555,8 @@ export function defineAction<const I extends Fields, const O extends Fields>(def
   if (def.idempotent !== undefined && (def.idempotent !== true || (def.consent !== "write" && def.consent !== "consequential"))) {
     throw new Error(`${at}: idempotent is for a write or consequential action that changes nothing more when called again with the same input; a read is idempotent already. Fix: idempotent: true, or drop it.`);
   }
+  if (def.when !== undefined && !oneLine(def.when)) throw new Error(`${at}: when is empty or more than one line. Fix: say in one line when an agent should pick it over its neighbours.`);
+  checkErrors(at, def.errors);
   if (def.openInput !== undefined && def.openInput !== true) throw new Error(`${at}: openInput is ${JSON.stringify(def.openInput)}. Fix: true, or drop it.`);
   checkFields(`${at} input`, def.input, true);
   checkFields(`${at} output`, def.output, false);
