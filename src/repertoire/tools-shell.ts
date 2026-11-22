@@ -159,7 +159,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
       return output
     },
     summaryKeys: ["command"],
-    ax: { id: "tool:shell", group: "turn-shell", when: "Pick this to run a program or script in your home; for plain file reads and searches, read_file, grep and glob are safer.", effect: "consequential", confirm: "Approve shell with exact arguments <the call's arguments as JSON>?", errors: [
+    ax: { id: "tool:shell", eager: true, group: "turn-shell", when: "Pick this to run a program or script in your home; for plain file reads and searches, read_file, grep and glob are safer.", effect: "consequential", confirm: "Approve shell with exact arguments <the call's arguments as JSON>?", errors: [
       { code: "command-failed", means: "The command ran and exited non-zero; its stdout and stderr follow the first line.", fix: "Read stderr, fix the command or its input, and run it again." },
       { code: "command-timed-out", means: "The command ran past its timeout and was stopped; whatever it printed follows.", fix: "Run it again with a larger timeout_ms, at most 600000, or with background: true and watch it with shell_status." },
       { code: "command-not-started", means: "The shell couldn't start the command at all, so nothing ran.", fix: "Check the program's name and that it is installed, then run it again." },
