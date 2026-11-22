@@ -50,6 +50,23 @@ function makeCase(overrides: Partial<Parameters<typeof createEvolutionCase>[1]> 
   })
 }
 
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = {
+    evolution_status: "read", evolution_case: "read", evolution_capture: "write", evolution_decide: "write",
+    evolution_verify: "write", evolution_deliver: "write", evolution_ratify: "write", evolution_close: "write",
+  }
+
+  it("gives each evolution tool a card in turn-evolution, and keeps it on the exported definition", () => {
+    expect(evolutionToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of evolutionToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, group: "turn-evolution", effect: effects[name] })
+      if (effects[name] === "write") expect(def.ax!.errors!.map((e) => e.code)).toEqual(expect.arrayContaining(["bad-argument", "orientation-hold"]))
+    }
+  })
+})
+
 describe("evolution tools", () => {
   beforeEach(() => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-evolution-tools-"))
@@ -137,11 +154,13 @@ describe("evolution tools", () => {
     expect(await invoke("evolution_case", {})).toEqual({
       ok: false,
       error: "caseId is required",
+      code: "bad-argument",
     })
 
     expect(await invoke("evolution_case", { caseId: "evo-missing" })).toEqual({
       ok: false,
       error: "Evolution case not found: evo-missing",
+      code: "case-not-found",
     })
   })
 
@@ -217,32 +236,32 @@ describe("evolution tools", () => {
   })
 
   it("evolution_capture validates required fields and enums", async () => {
-    expect(await invoke("evolution_capture", {})).toEqual({ ok: false, error: "title is required" })
+    expect(await invoke("evolution_capture", {})).toEqual({ ok: false, error: "title is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Missing problem",
-    })).toEqual({ ok: false, error: "problemStatement is required" })
+    })).toEqual({ ok: false, error: "problemStatement is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Missing desired behavior",
       problemStatement: "p",
-    })).toEqual({ ok: false, error: "desiredBehavior is required" })
+    })).toEqual({ ok: false, error: "desiredBehavior is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Missing origin kind",
       problemStatement: "p",
       desiredBehavior: "d",
-    })).toEqual({ ok: false, error: "originKind is required" })
+    })).toEqual({ ok: false, error: "originKind is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Missing origin label",
       problemStatement: "p",
       desiredBehavior: "d",
       originKind: "runtime",
-    })).toEqual({ ok: false, error: "originLabel is required" })
+    })).toEqual({ ok: false, error: "originLabel is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Missing origin locator",
       problemStatement: "p",
       desiredBehavior: "d",
       originKind: "runtime",
       originLabel: "l",
-    })).toEqual({ ok: false, error: "originLocator is required" })
+    })).toEqual({ ok: false, error: "originLocator is required", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Bad origin",
       problemStatement: "p",
@@ -250,7 +269,7 @@ describe("evolution tools", () => {
       originKind: "dream",
       originLabel: "l",
       originLocator: "x",
-    })).toEqual({ ok: false, error: "invalid originKind: dream" })
+    })).toEqual({ ok: false, error: "invalid originKind: dream", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       title: "Bad budget",
       problemStatement: "p",
@@ -259,7 +278,7 @@ describe("evolution tools", () => {
       originLabel: "l",
       originLocator: "x",
       budgetProfile: "infinite",
-    })).toEqual({ ok: false, error: "invalid budgetProfile: infinite" })
+    })).toEqual({ ok: false, error: "invalid budgetProfile: infinite", code: "bad-argument" })
   })
 
   it("evolution_capture validates partial and invalid evidence fields", async () => {
@@ -276,30 +295,30 @@ describe("evolution tools", () => {
       ...base,
       evidenceLocator: "desk/task.md",
       evidenceReason: "source",
-    })).toEqual({ ok: false, error: "evidenceKind is required when evidence is provided" })
+    })).toEqual({ ok: false, error: "evidenceKind is required when evidence is provided", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       ...base,
       evidenceKind: "desk_doc",
       evidenceReason: "source",
-    })).toEqual({ ok: false, error: "evidenceLocator is required when evidence is provided" })
+    })).toEqual({ ok: false, error: "evidenceLocator is required when evidence is provided", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       ...base,
       evidenceKind: "desk_doc",
       evidenceLocator: "desk/task.md",
-    })).toEqual({ ok: false, error: "evidenceReason is required when evidence is provided" })
+    })).toEqual({ ok: false, error: "evidenceReason is required when evidence is provided", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       ...base,
       evidenceKind: "desk_task",
       evidenceLocator: "desk/task.md",
       evidenceReason: "source",
-    })).toEqual({ ok: false, error: "invalid evidenceKind: desk_task" })
+    })).toEqual({ ok: false, error: "invalid evidenceKind: desk_task", code: "bad-argument" })
     expect(await invoke("evolution_capture", {
       ...base,
       evidenceKind: "desk_doc",
       evidenceLocator: "desk/task.md",
       evidenceReason: "source",
       evidenceRedaction: "opaque",
-    })).toEqual({ ok: false, error: "invalid evidenceRedaction: opaque" })
+    })).toEqual({ ok: false, error: "invalid evidenceRedaction: opaque", code: "bad-argument" })
   })
 
   it("evolution_decide records an allowed decision for an action", async () => {
@@ -330,7 +349,7 @@ describe("evolution tools", () => {
       reason: "not a real action",
     })
 
-    expect(result).toEqual({ ok: false, error: "invalid action: rewrite_soul" })
+    expect(result).toEqual({ ok: false, error: "invalid action: rewrite_soul", code: "bad-argument" })
     expect(readEvolutionCase(agentRoot, item.id)?.decision).toBeNull()
   })
 
@@ -358,28 +377,28 @@ describe("evolution tools", () => {
   it("evolution_decide validates required fields and nonexistent cases", async () => {
     const item = makeCase()
 
-    expect(await invoke("evolution_decide", {})).toEqual({ ok: false, error: "caseId is required" })
+    expect(await invoke("evolution_decide", {})).toEqual({ ok: false, error: "caseId is required", code: "bad-argument" })
     expect(await invoke("evolution_decide", {
       caseId: item.id,
       action: "spawn_coding",
       reason: "missing decision",
-    })).toEqual({ ok: false, error: "decision is required" })
+    })).toEqual({ ok: false, error: "decision is required", code: "bad-argument" })
     expect(await invoke("evolution_decide", {
       caseId: item.id,
       decision: "levitate",
       action: "spawn_coding",
       reason: "bad decision",
-    })).toEqual({ ok: false, error: "invalid decision: levitate" })
+    })).toEqual({ ok: false, error: "invalid decision: levitate", code: "bad-argument" })
     expect(await invoke("evolution_decide", {
       caseId: item.id,
       decision: "delegate",
       reason: "missing action",
-    })).toEqual({ ok: false, error: "action is required" })
+    })).toEqual({ ok: false, error: "action is required", code: "bad-argument" })
     expect(await invoke("evolution_decide", {
       caseId: item.id,
       decision: "delegate",
       action: "spawn_coding",
-    })).toEqual({ ok: false, error: "reason is required" })
+    })).toEqual({ ok: false, error: "reason is required", code: "bad-argument" })
     expect(await invoke("evolution_decide", {
       caseId: "evo-missing",
       decision: "delegate",
@@ -415,20 +434,20 @@ describe("evolution tools", () => {
   it("evolution_verify validates inputs and supports newline/comma list parsing", async () => {
     const item = makeCase()
 
-    expect(await invoke("evolution_verify", {})).toEqual({ ok: false, error: "caseId is required" })
+    expect(await invoke("evolution_verify", {})).toEqual({ ok: false, error: "caseId is required", code: "bad-argument" })
     expect(await invoke("evolution_verify", {
       caseId: item.id,
       objective: "missing status",
-    })).toEqual({ ok: false, error: "status is required" })
+    })).toEqual({ ok: false, error: "status is required", code: "bad-argument" })
     expect(await invoke("evolution_verify", {
       caseId: item.id,
       status: "excellent",
       objective: "bad status",
-    })).toEqual({ ok: false, error: "invalid status: excellent" })
+    })).toEqual({ ok: false, error: "invalid status: excellent", code: "bad-argument" })
     expect(await invoke("evolution_verify", {
       caseId: item.id,
       status: "partial",
-    })).toEqual({ ok: false, error: "objective is required" })
+    })).toEqual({ ok: false, error: "objective is required", code: "bad-argument" })
 
     const result = await invoke("evolution_verify", {
       caseId: item.id,
@@ -451,19 +470,19 @@ describe("evolution tools", () => {
       status: "partial",
       objective: "bad commands",
       commands: JSON.stringify({ command: "npm test" }),
-    })).toEqual({ ok: false, error: "commands must be a JSON string array, newline list, or comma list" })
+    })).toEqual({ ok: false, error: "commands must be a JSON string array, newline list, or comma list", code: "bad-argument" })
     expect(await invoke("evolution_verify", {
       caseId: item.id,
       status: "partial",
       objective: "bad evidence refs",
       evidenceRefs: JSON.stringify({ ref: "test://one" }),
-    })).toEqual({ ok: false, error: "evidenceRefs must be a JSON string array, newline list, or comma list" })
+    })).toEqual({ ok: false, error: "evidenceRefs must be a JSON string array, newline list, or comma list", code: "bad-argument" })
     expect(await invoke("evolution_verify", {
       caseId: item.id,
       status: "partial",
       objective: "bad missing checks",
       missingChecks: JSON.stringify({ check: "release" }),
-    })).toEqual({ ok: false, error: "missingChecks must be a JSON string array, newline list, or comma list" })
+    })).toEqual({ ok: false, error: "missingChecks must be a JSON string array, newline list, or comma list", code: "bad-argument" })
   })
 
   it("evolution_deliver merges delivery state from JSON", async () => {
@@ -491,18 +510,18 @@ describe("evolution tools", () => {
       delivery: "{not json",
     })
 
-    expect(result).toEqual({ ok: false, error: "delivery must be valid JSON" })
+    expect(result).toEqual({ ok: false, error: "delivery must be valid JSON", code: "bad-argument" })
   })
 
   it("evolution_deliver validates missing and non-object delivery input", async () => {
     const item = makeCase()
 
-    expect(await invoke("evolution_deliver", {})).toEqual({ ok: false, error: "caseId is required" })
-    expect(await invoke("evolution_deliver", { caseId: item.id })).toEqual({ ok: false, error: "delivery is required" })
+    expect(await invoke("evolution_deliver", {})).toEqual({ ok: false, error: "caseId is required", code: "bad-argument" })
+    expect(await invoke("evolution_deliver", { caseId: item.id })).toEqual({ ok: false, error: "delivery is required", code: "bad-argument" })
     expect(await invoke("evolution_deliver", {
       caseId: item.id,
       delivery: JSON.stringify(["not", "object"]),
-    })).toEqual({ ok: false, error: "delivery must be a JSON object" })
+    })).toEqual({ ok: false, error: "delivery must be a JSON object", code: "bad-argument" })
   })
 
   it("evolution_ratify records the durable lesson destination", async () => {
@@ -528,28 +547,28 @@ describe("evolution tools", () => {
   it("evolution_ratify validates required and enum fields", async () => {
     const item = makeCase()
 
-    expect(await invoke("evolution_ratify", {})).toEqual({ ok: false, error: "caseId is required" })
+    expect(await invoke("evolution_ratify", {})).toEqual({ ok: false, error: "caseId is required", code: "bad-argument" })
     expect(await invoke("evolution_ratify", {
       caseId: item.id,
       locator: "x",
       reason: "missing destination",
-    })).toEqual({ ok: false, error: "destination is required" })
+    })).toEqual({ ok: false, error: "destination is required", code: "bad-argument" })
     expect(await invoke("evolution_ratify", {
       caseId: item.id,
       destination: "memory_palace",
       locator: "x",
       reason: "bad destination",
-    })).toEqual({ ok: false, error: "invalid destination: memory_palace" })
+    })).toEqual({ ok: false, error: "invalid destination: memory_palace", code: "bad-argument" })
     expect(await invoke("evolution_ratify", {
       caseId: item.id,
       destination: "desk_lesson",
       reason: "missing locator",
-    })).toEqual({ ok: false, error: "locator is required" })
+    })).toEqual({ ok: false, error: "locator is required", code: "bad-argument" })
     expect(await invoke("evolution_ratify", {
       caseId: item.id,
       destination: "desk_lesson",
       locator: "x",
-    })).toEqual({ ok: false, error: "reason is required" })
+    })).toEqual({ ok: false, error: "reason is required", code: "bad-argument" })
   })
 
   it("evolution_close closes a ratified case", async () => {
@@ -582,6 +601,7 @@ describe("evolution tools", () => {
     expect(result).toEqual({
       ok: false,
       error: "Evolution case closure requires ratification or none_needed",
+      code: "close-failed",
     })
     expect(readEvolutionCase(agentRoot, item.id)?.status).not.toBe("closed")
   })
@@ -607,19 +627,19 @@ describe("evolution tools", () => {
   it("evolution_close validates required fields and inline ratification fields", async () => {
     const item = makeCase()
 
-    expect(await invoke("evolution_close", {})).toEqual({ ok: false, error: "caseId is required" })
-    expect(await invoke("evolution_close", { caseId: item.id })).toEqual({ ok: false, error: "reason is required" })
+    expect(await invoke("evolution_close", {})).toEqual({ ok: false, error: "caseId is required", code: "bad-argument" })
+    expect(await invoke("evolution_close", { caseId: item.id })).toEqual({ ok: false, error: "reason is required", code: "bad-argument" })
     expect(await invoke("evolution_close", {
       caseId: item.id,
       reason: "bad inline destination",
       destination: "somewhere_else",
       locator: "x",
-    })).toEqual({ ok: false, error: "invalid destination: somewhere_else" })
+    })).toEqual({ ok: false, error: "invalid destination: somewhere_else", code: "bad-argument" })
     expect(await invoke("evolution_close", {
       caseId: item.id,
       reason: "missing inline locator",
       destination: "none_needed",
-    })).toEqual({ ok: false, error: "locator is required" })
+    })).toEqual({ ok: false, error: "locator is required", code: "bad-argument" })
   })
 
   it("getOpenEvolutionCasesForActiveWork returns compact summaries for non-terminal cases only", () => {
