@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1364",
+      "version": "0.1.0-alpha.1365",
       "changes": [
         "shepherd_feedback and shepherd_feedback_status say what they do instead of giving the agent rules, so they pass the Ouro AX census's booklet-words check."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1364",
+      "changes": [
+        "The Butler can send the messages it starts itself (house notices, external events, unprompted messages) to the owner's primary agent over A2A instead of to Telegram, set by senses.telegram.ownerNoticesTo in agent.json; replies stay on Telegram, and while the peer can't be reached only urgent messages go to Telegram, marked as a fallback."
       ]
     },
     {
