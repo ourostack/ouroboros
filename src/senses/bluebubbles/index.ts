@@ -446,7 +446,7 @@ export interface BlueBubblesHandleResult {
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "no_visible_reply"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "no_visible_reply" | "shutdown"
   /** True when the friend saw part of this turn before it ended, so a replay could repeat it. */
   spokeBeforeEnd?: boolean
 }
@@ -2282,7 +2282,13 @@ async function handleBlueBubblesNormalizedEvent(
       if (!finalTransportInvoked) {
         const reason = lifecycleSignal!.reason
         controller.abort(reason)
-        rejectLifecycle(reason)
+        // A turn the friend already heard from must not replay in the next
+        // process; end it with a result so it is recorded instead.
+        if (spokeBeforeFinalTransport && resolveTimeout) {
+          resolveTimeout({ handled: true, notifiedAgent: false, kind: event.kind, reason: "shutdown", spokeBeforeEnd: true })
+        } else {
+          rejectLifecycle(reason)
+        }
       }
     }
     lifecycleSignal?.addEventListener("abort", cancelForShutdown, { once: true })
@@ -3439,7 +3445,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
       // A budget or storm-breaker block defers the message; it was never seen.
       // Leave it pending so a later recovery pass retries it once the block lifts.
       if (result.reason === "autonomy_budget_blocked") return result
-      if (result.reason === "turn_timeout" || result.reason === "delivery_admission_timeout") {
+      if (result.reason === "turn_timeout" || result.reason === "delivery_admission_timeout" || result.reason === "shutdown") {
         // The turn ended without a reply or a chosen silence. Leave it pending so
         // recovery replays it, unless the friend already saw part of it or it
         // keeps failing; then record a visible failure instead.
