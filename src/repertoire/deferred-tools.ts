@@ -1,5 +1,7 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 /**
  * Deferred tool loading (trial, off by default). When OURO_DEFERRED_TOOLS is set, each request carries the core
@@ -104,7 +106,7 @@ function signature(tool: OpenAI.ChatCompletionFunctionTool): string {
 }
 
 export function formatFindToolsResult(matched: readonly OpenAI.ChatCompletionFunctionTool[]): string {
-  if (matched.length === 0) return "no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools."
+  if (matched.length === 0) return withCode("no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools.", "no-matching-tools")
   return `loaded; callable on your next step:\n${matched.map((tool) => `- ${tool.function.name}(${signature(tool)}): ${tool.function.description ?? ""}`).join("\n")}`
 }
 
@@ -123,4 +125,16 @@ export function deferredNamesCalledInHistory(messages: readonly OpenAI.ChatCompl
 
 export function recordDeferredToolsLoaded(query: string, matched: readonly OpenAI.ChatCompletionFunctionTool[]): void {
   emitNervesEvent({ component: "engine", event: "engine.deferred_tools_loaded", message: "deferred tools loaded for this turn", meta: { query, loaded: matched.map((tool) => tool.function.name).join(",") } })
+}
+
+/**
+ * find_tools's Ouro AX card and risk profile. The engine runs find_tools itself, so this is a declaration rather than
+ * a dispatched definition: loading a tool changes only which schemas this turn sends.
+ */
+export const findToolsDefinition: Required<Pick<ToolDefinition, "tool" | "ax" | "riskProfile">> = {
+  tool: buildFindToolsSchema([]),
+  riskProfile: { mutates: "none", risk: "low" },
+  ax: { id: "tool:find_tools", group: "turn-skills", when: "Pick this when the tool you need isn't in your list; it searches the tools held back from this turn and makes the matches callable.", effect: "read", idempotent: true, errors: [
+    { code: "no-matching-tools", means: "No held-back tool matched the query, so nothing was loaded.", fix: "Try other words for the job, or select:name1,name2 with names from the find_tools list." },
+  ] },
 }

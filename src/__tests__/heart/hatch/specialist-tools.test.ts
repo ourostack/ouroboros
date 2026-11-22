@@ -708,7 +708,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const failed = await execTool("complete_adoption", { name: "TestAgent", handoff_message: "Hello" })
     expect(parseAdoptionResult(failed)).toEqual({
       ok: false,
-      error: "failed to write secrets: failed to create vault: registration not allowed",
+      error: "failed to write secrets: failed to create vault: registration not allowed (code: vault-not-created)",
     })
 
     const retried = await execTool("complete_adoption", { name: "TestAgent", handoff_message: "Hello" })
