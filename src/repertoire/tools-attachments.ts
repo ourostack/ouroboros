@@ -216,6 +216,7 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["attachment_id", "attachment_guid", "variant"],
+    riskProfile: { mutates: "none", risk: "low", reason: "copies an attachment into the agent's own attachment cache" },
     ax: { id: "tool:materialize_attachment", group: "turn-attachments", when: "Pick this to get a real file path on disk for something someone sent, so another tool can open or forward it; to ask about a picture, use describe_image.", effect: "write", idempotent: true, errors: [
       { code: "attachment-not-found", means: "That attachment isn't in the recent store any more, or this conversation can't see it.", fix: "Call list_recent_attachments for the current attachment_id, then retry." },
       { code: "missing-attachment-id", means: "attachment_id was empty.", fix: "Call list_recent_attachments and retry with one of its ids." },
@@ -299,6 +300,7 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["attachment_id", "attachment_guid", "prompt"],
+    riskProfile: { mutates: "none", risk: "low", reason: "asks a vision model about an image and changes nothing" },
     ax: { id: "tool:describe_image", group: "turn-attachments", when: "Pick this to ask a pointed question about a photo or screenshot, like a date or total on it, or to double-check a reading you got wrong.", effect: "write", errors: [
       { code: "attachment-not-found", means: "That attachment isn't in the recent store any more, or this conversation can't see it.", fix: "Call list_recent_attachments for the current attachment_id, then retry." },
       { code: "missing-attachment-id", means: "attachment_id was empty.", fix: "Call list_recent_attachments and retry with one of its ids." },

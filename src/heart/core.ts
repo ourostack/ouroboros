@@ -3255,14 +3255,17 @@ export async function runAgent(
               (effect) => effect.fingerprint !== currentEffectFingerprint,
             )
           }
-          const resolvedRiskProfile = resolveToolDefinition(tc.name, toolSelection)?.riskProfile
+          const dispatchedDefinition = resolveToolDefinition(tc.name, toolSelection)
+          const resolvedRiskProfile = dispatchedDefinition?.riskProfile
           const toolRiskProfile = typeof resolvedRiskProfile === "function" ? resolvedRiskProfile(args) : resolvedRiskProfile
+          // A low-risk profile can still change state; the card's effect says whether it does.
+          const changesState = toolRiskProfile?.mutates !== "none" || (dispatchedDefinition?.ax !== undefined && dispatchedDefinition.ax.effect !== "read")
           options?.toolBoundaryObserver?.({
             name: tc.name,
             reason: "dispatched",
-            globallyResolvable: typeof resolveToolDefinition(tc.name, toolSelection)?.handler === "function",
+            globallyResolvable: typeof dispatchedDefinition?.handler === "function",
             invoked,
-            sideEffect: success && toolRiskProfile?.mutates !== "none",
+            sideEffect: success && changesState,
           })
           if (success && !hasRecordedToolCall(toolLoopState, tc.name, args)) lastIterationMadeProgress = true;
           recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
