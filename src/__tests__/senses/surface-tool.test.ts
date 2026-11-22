@@ -679,7 +679,7 @@ describe("surface tool", () => {
 
       expect(typeof result).toBe("string")
       expect((result as string).toLowerCase()).toContain("failed")
-      expect(result).toContain("blocked: contains internal meta markers")
+      expect(result).toBe("failed — blocked: contains internal meta markers (code: delivery-blocked)")
       expect(emitNervesEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           level: "warn",

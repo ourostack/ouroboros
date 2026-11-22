@@ -1,5 +1,6 @@
 import type { Channel } from "@ouro.bot/friends"
 import type { ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 import { getAgentRoot } from "../heart/identity"
 import { issueLinkCode } from "../mind/friend-link-codes"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -35,12 +36,12 @@ export const friendLinkToolDefinition: ToolDefinition = {
       meta: { channel: args.channel ?? "any" },
     })
     const context = ctx?.context
-    if (!context?.friend) return "no friend context: I can only issue a link code to the person I'm talking to."
+    if (!context?.friend) return withCode("no friend context: I can only issue a link code to the person I'm talking to.", "no-friend-context")
     const friend = context.friend
-    if (friend.trustLevel !== "family") return "link codes are only for family."
-    if (context.isGroupChat) return "link codes can't be issued in a group chat. Ask me in a 1:1 chat."
+    if (friend.trustLevel !== "family") return withCode("link codes are only for family.", "family-only")
+    if (context.isGroupChat) return withCode("link codes can't be issued in a group chat. Ask me in a 1:1 chat.", "group-chat")
     const channel = args.channel
-    if (channel && !(LINKABLE_CHANNELS as readonly string[]).includes(channel)) return `unknown channel '${channel}'. Use one of: ${LINKABLE_CHANNELS.join(", ")}.`
+    if (channel && !(LINKABLE_CHANNELS as readonly string[]).includes(channel)) return withCode(`unknown channel '${channel}'. Use one of: ${LINKABLE_CHANNELS.join(", ")}.`, "invalid-channel")
     const issued = issueLinkCode({
       agentRoot: ctx?.agentRoot ?? getAgentRoot(),
       friend,
@@ -52,4 +53,11 @@ export const friendLinkToolDefinition: ToolDefinition = {
   },
   summaryKeys: ["channel"],
   riskProfile: { mutates: "durable_state_write", risk: "high", reason: "issues a code that links a new account to a family friend" },
+  ax: { id: "tool:friend_link_code", group: "turn-friends", when: "Pick this when a family member wants another of their own accounts, such as Teams, recognised as them.", effect: "write", errors: [
+    { code: "no-friend-context", means: "This turn has no known person to issue a code for.", fix: "Issue the code from a chat with that family member." },
+    { code: "family-only", means: "Link codes are only for family, and this person isn't family.", fix: "Tell them plainly; their owner can raise their trust level if that is wanted." },
+    { code: "group-chat", means: "Codes aren't issued in group chats.", fix: "Ask them to message you one to one, then issue it there." },
+    { code: "invalid-channel", means: "channel isn't one of the linkable channels listed in the message.", fix: "Call again with a listed channel, or leave channel out to accept any." },
+    { code: "orientation-hold", means: "This turn is on a correction hold, so new link codes wait.", fix: "Call orientation_get, settle what the person meant, then issue the code if it is still wanted." },
+  ] },
 }

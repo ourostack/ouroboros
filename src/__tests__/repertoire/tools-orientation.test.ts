@@ -11,7 +11,7 @@ describe("orientation_get tool", () => {
   it("returns a clear message when no orientation frame exists", async () => {
     const tool = findTool("orientation_get")
 
-    expect(await tool.handler({})).toBe("no orientation frame is available for this turn.")
+    expect(await tool.handler({})).toBe("no orientation frame is available for this turn. (code: no-orientation-frame)")
   })
 
   it("returns the current frame as structured JSON", async () => {

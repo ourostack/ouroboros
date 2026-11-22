@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1328",
+      "changes": [
+        "orientation_get, let_go, report_failure, file_ouroboros_bug, surface and friend_link_code have Ouro AX cards; their failures end with a code, and orientation_get states a low-risk profile."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1327",
       "changes": [
         "The five session tools have Ouro AX cards; their failures end with a code, and query_active_work and query_session state a low-risk profile."

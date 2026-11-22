@@ -85,7 +85,7 @@ function completePacketsForObligation(agentRoot: string, obligationId: string): 
 
 function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
   if (typeof args.id !== "string" || args.id.trim().length === 0) {
-    return JSON.stringify({ error: "id is required" })
+    return JSON.stringify({ error: "id is required", code: "missing-argument" })
   }
   const id = args.id.trim()
   const reason = typeof args.reason === "string" && args.reason.trim().length > 0
@@ -137,7 +137,7 @@ function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
     return JSON.stringify({ kind: "obligation", let_go: id, reason })
   }
 
-  return JSON.stringify({ error: `no obligation found with id "${id}"` })
+  return JSON.stringify({ error: `no obligation found with id "${id}"`, code: "obligation-not-found" })
 }
 
 export const obligationToolDefinitions: ToolDefinition[] = [
@@ -170,5 +170,10 @@ export const obligationToolDefinitions: ToolDefinition[] = [
       return letGo({ id: args.id, reason: args.reason }, agentRoot, agentName)
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "releases durable obligation state" },
+    ax: { id: "tool:let_go", group: "turn-orientation", when: "Pick this to drop a held work item that was settled elsewhere or no longer applies, so it stops cycling in your prompt.", effect: "write", idempotent: true, errors: [
+      { code: "missing-argument", means: "id is empty.", fix: "Copy the bracketed id from the held work items list and call let_go with it." },
+      { code: "obligation-not-found", means: "No held item or obligation has that id.", fix: "Check the id against the held work items list; a mistyped id is the usual cause." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so releases wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
 ]
