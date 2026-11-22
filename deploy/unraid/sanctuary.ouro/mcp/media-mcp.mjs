@@ -1482,9 +1482,11 @@ export async function mediaManualImport(a) {
     return { path: f.path, seriesId, episodeIds: f.episode_ids.map(Number), quality: r.quality, languages: r.languages, releaseGroup: r.releaseGroup ?? "",
              indexerFlags: r.indexerFlags ?? 0, releaseType: r.releaseType ?? "unknown", downloadId: a.download_id }
   })
-  const c = await sonarr("/command", { method: "POST", body: { name: "ManualImport", files, importMode: "auto" } })
-  // Episodes that already had a file: Sonarr treats these imports as replacements.
+  // Episodes that already had a file: Sonarr treats these imports as replacements, which is family-only (spec R12). The harness
+  // guard stamps caller_rung; a call with no stamp (run outside the harness) is treated as family, as before.
   const replacing = seriesEps.filter((e) => e.hasFile && targets.includes(e.id)).map((e) => ({ episode_id: e.id, code: sxe(e) }))
+  if (a.caller_rung === "friend" && replacing.length) return { result: "family_only", tool: "media_manual_import", argument: "files", replacing }
+  const c = await sonarr("/command", { method: "POST", body: { name: "ManualImport", files, importMode: "auto" } })
   return { mode: "import", imported: a.files.map((f) => ({ path: f.path, episode_ids: f.episode_ids })), ...(replacing.length ? { replacing } : {}), command: { id: c?.id ?? null, name: c?.name ?? "ManualImport", status: c?.status ?? null } }
 }
 
@@ -2408,6 +2410,7 @@ const TOOL_LIST = [
       service_id: { type: "number", description: "Sonarr series id." },
       download_id: { type: "string", description: "Download client id of the completed download (queue row downloadId)." },
       files: { type: "array", items: { type: "object", properties: { path: { type: "string" }, episode_ids: { type: "array", items: { type: "number" } } }, required: ["path", "episode_ids"] } },
+      caller_rung: { type: "string", enum: ["family", "friend"], description: "Filled in by the runtime from who is asking; leave it out. An import that replaces a file is for family." },
     }, required: ["service_id", "download_id"] },
   },
 ]
