@@ -1854,7 +1854,7 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
     }
 
     const result = await execTool("graph_profile", {}, ctx)
-    expect(result).toBe("AUTH_REQUIRED:graph -- I need access to your Microsoft 365 profile. Please sign in when prompted.")
+    expect(result).toBe("AUTH_REQUIRED:graph -- I need access to your Microsoft 365 profile. Please sign in when prompted. (code: auth-required)")
   })
 
   it("graph_profile returns AUTH_UNAVAILABLE when no ToolContext provided", async () => {
@@ -1893,7 +1893,7 @@ describe("execTool with ToolContext (graph/ado handlers)", () => {
     }
 
     const result = await execTool("ado_work_items", { organization: "myorg" }, ctx)
-    expect(result).toBe("AUTH_REQUIRED:ado -- I need access to your Azure DevOps account. Please sign in when prompted.")
+    expect(result).toBe("AUTH_REQUIRED:ado -- I need access to your Azure DevOps account. Please sign in when prompted. (code: auth-required)")
   })
 
   it("ado_work_items uses default query when none provided", async () => {

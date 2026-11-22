@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "./tools-base";
+import { withCode, type ToolDefinition } from "./tools-base";
 import { authRequired } from "./auth-required";
 import { getProfile, graphRequest } from "./graph-client";
 import { queryWorkItems, adoRequest, discoverOrganizations } from "./ado-client";
@@ -27,9 +27,13 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:graph_query", group: "turn-microsoft", when: "Pick this to look up something in your owner's Microsoft 365, like mail, calendar or files, once graph_docs has given you the path.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Microsoft Graph token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       if (!ctx?.graphToken) {
-        return authRequired(ctx, "graph", "I need access to Microsoft Graph.");
+        return withCode(authRequired(ctx, "graph", "I need access to Microsoft Graph."), "auth-required");
       }
       return graphRequest(ctx.graphToken, "GET", args.path);
     },
@@ -53,12 +57,16 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:graph_mutate", group: "turn-microsoft", when: "Pick this to create, change or delete something in your owner's Microsoft 365 that they asked for, such as a calendar event.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Microsoft Graph token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "invalid-method", means: "method wasn't POST, PATCH or DELETE.", fix: "Use POST, PATCH or DELETE; for a GET, use the matching query tool." },
+    ] },
     handler: async (args, ctx) => {
       if (!ctx?.graphToken) {
-        return authRequired(ctx, "graph", "I need access to Microsoft Graph.");
+        return withCode(authRequired(ctx, "graph", "I need access to Microsoft Graph."), "auth-required");
       }
       if (!MUTATE_METHODS.includes(args.method)) {
-        return `Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`;
+        return withCode(`Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`, "invalid-method");
       }
       return graphRequest(ctx.graphToken, args.method, args.path, args.body);
     },
@@ -86,9 +94,12 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_query", group: "turn-microsoft", when: "Pick this for an Azure DevOps lookup no dedicated ado_ tool covers, after ado_docs gives the path; it can POST, so keep it to reads.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+    ] },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return authRequired(ctx, "ado", "I need access to Azure DevOps.");
+        return withCode(authRequired(ctx, "ado", "I need access to Azure DevOps."), "auth-required");
       }
       const method = args.method || "GET";
       return adoRequest(ctx.adoToken, method, args.organization, args.path, args.body, args.host);
@@ -115,12 +126,16 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_mutate", group: "turn-microsoft", when: "Pick this for an Azure DevOps change no dedicated ado_ tool covers, after ado_docs gives the path and the person asked for it.", effect: "write", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "invalid-method", means: "method wasn't POST, PATCH or DELETE.", fix: "Use POST, PATCH or DELETE; for a GET, use the matching query tool." },
+    ] },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return authRequired(ctx, "ado", "I need access to Azure DevOps.");
+        return withCode(authRequired(ctx, "ado", "I need access to Azure DevOps."), "auth-required");
       }
       if (!MUTATE_METHODS.includes(args.method)) {
-        return `Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`;
+        return withCode(`Invalid method "${args.method}". Must be one of: ${MUTATE_METHODS.join(", ")}`, "invalid-method");
       }
       return adoRequest(ctx.adoToken, args.method, args.organization, args.path, args.body, args.host);
     },
@@ -138,9 +153,13 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    ax: { id: "tool:graph_profile", group: "turn-microsoft", when: "Pick this when you need your owner's own Microsoft 365 details, like their job title or work email, rather than someone else's.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Microsoft Graph token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (_args, ctx) => {
       if (!ctx?.graphToken) {
-        return authRequired(ctx, "graph", "I need access to your Microsoft 365 profile.");
+        return withCode(authRequired(ctx, "graph", "I need access to your Microsoft 365 profile."), "auth-required");
       }
       return getProfile(ctx.graphToken);
     },
@@ -162,9 +181,16 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_work_items", group: "turn-microsoft", when: "Pick this when someone asks what is on their Azure DevOps plate, such as their open bugs and tasks; for whole backlogs use ado_backlog_list.", effect: "read", errors: [
+      { code: "auth-required", means: "I have no Azure DevOps token yet; the text says whether a sign-in prompt is coming or why it can't start here.", fix: "Ask the person to sign in when Teams prompts, then retry; if sign-in can't start here, ask them from Teams." },
+      { code: "no-ado-org", means: "Their account can't see any Azure DevOps organization.", fix: "Tell them their account needs adding to an organization first." },
+      { code: "ado-org-ambiguous", means: "Their account can see several organizations; the text lists them.", fix: "Ask which one they mean, then call again with organization set." },
+      { code: "org-discovery-failed", means: "Listing their organizations failed; the text gives the reason.", fix: "Retry once with organization set, if they told you one." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (args, ctx) => {
       if (!ctx?.adoToken) {
-        return authRequired(ctx, "ado", "I need access to your Azure DevOps account.");
+        return withCode(authRequired(ctx, "ado", "I need access to your Azure DevOps account."), "auth-required");
       }
       let org = args.organization;
       if (!org) {
@@ -172,15 +198,15 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         try {
           const orgs = await discoverOrganizations(ctx.adoToken);
           if (orgs.length === 0) {
-            return "No ADO organizations found for your account. Ensure your Azure DevOps account has access to at least one organization.";
+            return withCode("No ADO organizations found for your account. Ensure your Azure DevOps account has access to at least one organization.", "no-ado-org");
           }
           if (orgs.length === 1) {
             org = orgs[0];
           } else {
-            return `Multiple ADO organizations found. Please specify which organization to use:\n${orgs.map((o) => `- ${o}`).join("\n")}`;
+            return withCode(`Multiple ADO organizations found. Please specify which organization to use:\n${orgs.map((o) => `- ${o}`).join("\n")}`, "ado-org-ambiguous");
           }
         } catch (e) {
-          return `error discovering ADO organizations: ${e instanceof Error ? e.message : String(e)}`;
+          return withCode(`error discovering ADO organizations: ${e instanceof Error ? e.message : String(e)}`, "org-discovery-failed");
         }
       }
       const query = args.query || DEFAULT_ADO_QUERY;
@@ -210,9 +236,13 @@ export const teamsToolDefinitions: ToolDefinition[] = [
       },
     },
     /* v8 ignore start -- proactive messaging requires live Teams SDK conversation client @preserve */
+    ax: { id: "tool:teams_send_message", group: "turn-microsoft", when: "Pick this to start a new Teams chat with a person on your own, such as a reminder they asked for; in the chat you are in, just reply.", effect: "write", errors: [
+      { code: "not-in-teams", means: "This turn isn't running in Teams, so there is no bot to send from.", fix: "Do it from a Teams conversation, or tell the person you can't reach them in Teams from here." },
+      { code: "send-failed", means: "Teams refused or failed to deliver the message; the text gives the reason.", fix: "Check the user_id is right; if it is, tell the person the message didn't go." },
+    ] },
     handler: async (args, ctx) => {
       if (!ctx?.botApi) {
-        return "proactive messaging is not available -- no bot API context (this tool only works in the Teams channel)";
+        return withCode("proactive messaging is not available -- no bot API context (this tool only works in the Teams channel)", "not-in-teams");
       }
       try {
         const tenantId = args.tenant_id || ctx.tenantId;
@@ -233,7 +263,7 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         });
         return `message sent to ${args.user_name || args.user_id}`;
       } catch (e) {
-        return `failed to send proactive message: ${e instanceof Error ? e.message : String(e)}`;
+        return withCode(`failed to send proactive message: ${e instanceof Error ? e.message : String(e)}`, "send-failed");
       }
     },
     /* v8 ignore stop */
@@ -256,6 +286,10 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:graph_docs", group: "turn-microsoft", when: "Pick this first, before graph_query or graph_mutate, to find the right Microsoft 365 path and the permission it needs.", effect: "read", idempotent: true, errors: [
+      { code: "no-matching-endpoints", means: "No documented endpoint matched the search words.", fix: "Search again with a broader word, such as the resource name." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: (args) => {
       return searchEndpoints(graphEndpoints as EndpointEntry[], args.query || "");
     },
@@ -277,6 +311,10 @@ export const teamsToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:ado_docs", group: "turn-microsoft", when: "Pick this first, before ado_query or ado_mutate, to find the right Azure DevOps path, host and permission for a job.", effect: "read", idempotent: true, errors: [
+      { code: "no-matching-endpoints", means: "No documented endpoint matched the search words.", fix: "Search again with a broader word, such as the resource name." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: (args) => {
       return searchEndpoints(adoEndpoints as EndpointEntry[], args.query || "");
     },
@@ -310,7 +348,7 @@ function searchEndpoints(entries: EndpointEntry[], query: string): string {
   });
 
   if (matches.length === 0) {
-    return `No matching endpoints found for "${query}". Try a broader search term.`;
+    return withCode(`No matching endpoints found for "${query}". Try a broader search term.`, "no-matching-endpoints");
   }
 
   return matches.slice(0, 5).map((e) => {
