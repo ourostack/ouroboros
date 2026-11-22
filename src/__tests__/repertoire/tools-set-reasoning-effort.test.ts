@@ -146,4 +146,14 @@ describe("set_reasoning_effort tool", () => {
     expect(setter).not.toHaveBeenCalled()
     expect(result).toContain("invalid")
   })
+
+  it("gives set_reasoning_effort a card and ends its refusals with the codes it names", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const def = baseToolDefinitions.find(d => d.tool.function.name === "set_reasoning_effort")!
+    expect(def.ax?.id).toBe("tool:set_reasoning_effort")
+    expect(def.ax?.effect).toBe("write")
+    expect(await def.handler({ level: "low" }, { signin: async () => undefined } as never)).toBe("reasoning effort adjustment is not available in this context. (code: effort-unavailable)")
+    expect(await def.handler({ level: "max" }, { signin: async () => undefined, supportedReasoningEfforts: ["low", "high"], setReasoningEffort: () => undefined } as never)).toBe('invalid reasoning effort level "max". accepted levels: low, high (code: invalid-effort-level)')
+  })
 })
+

@@ -93,7 +93,7 @@ describe("query_session tool", () => {
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ version: 1, messages: [{ role: "user", content: "must not read" }] }))
       vi.mocked(fs.readFileSync).mockClear()
       const result = await tool.handler({ friendId: "friend", channel: "cli", [field]: value })
-      expect(result).toBe("no session found for that friend/channel/key combination.")
+      expect(result).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
       expect(fs.readFileSync).not.toHaveBeenCalled()
       expect(result).not.toContain("/mock/agent-root")
     },
@@ -171,7 +171,7 @@ describe("query_session tool", () => {
       const result = await tool.handler({ friendId: "friend", channel: "cli" }, {
         signin: async () => undefined, agentName: "owner-a", agentRoot,
       })
-      expect(result).toBe("no session found for that friend/channel/key combination.")
+      expect(result).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
       expect(result).not.toContain(root)
       expect(fs.readFileSync).not.toHaveBeenCalled()
     } finally {
@@ -602,7 +602,7 @@ describe("query_session tool", () => {
       channel: "cli",
       key: "session",
     }))
-    expect(result).toBe("no session found for that friend/channel/key combination.")
+    expect(result).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
   })
 
   it("supports a lightweight status mode for self/private-runtime checks", async () => {
@@ -829,7 +829,7 @@ describe("query_session tool", () => {
       mode: "status",
     })
 
-    expect(result).toBe("status mode is only available for self/private runtime.")
+    expect(result).toBe("status mode is only available for self/private runtime. (code: status-self-only)")
   })
 
   it("describes query_session search as deprecated and points agents at notes tools", async () => {
