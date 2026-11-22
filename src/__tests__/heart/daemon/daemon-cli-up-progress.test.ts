@@ -1187,3 +1187,37 @@ describe("ouro up: UpProgress integration", () => {
     expect(calls).toContain("sync status:\n  butler: 1 ahead, 0 behind origin/main\n  slugger: sync paused until 2026-11-06T12:00:00.000Z")
   })
 })
+
+describe("ouro up: replacement from inside the daemon's own process tree", () => {
+  it("hands the replacement to a detached helper and stops before talking to the daemon it is about to lose", async () => {
+    mocks.upProgressStartPhase.mockClear()
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.upProgressEnd.mockClear()
+    const sendCommand = vi.fn(async (_socketPath: string, command: { kind: string }) => {
+      if (command.kind === "daemon.status") {
+        const status = daemonStatusOk()
+        return { ...status, data: { ...status.data, overview: { ...status.data.overview, version: "0.0.1-older" } } }
+      }
+      return { ok: true, summary: "ok" }
+    })
+    const handOffDaemonRuntimeReplacement = vi.fn(() => ({ pid: 4242, logPath: "/fixture/helper.log" }))
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn(async () => true),
+      sendCommand,
+      handOffDaemonRuntimeReplacement,
+      ensureDaemonBootPersistence: vi.fn(),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(handOffDaemonRuntimeReplacement).toHaveBeenCalledTimes(1)
+    expect(result).toContain("a detached helper (pid 4242) is replacing 0.0.1-older ->")
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+    expect(sendCommand).not.toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.stop" })
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+    expect(deps.ensureDaemonBootPersistence).not.toHaveBeenCalled()
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("starting daemon", "handed to a detached helper")
+    expect(mocks.upProgressStartPhase).not.toHaveBeenCalledWith("provider checks")
+    expect(mocks.upProgressEnd).toHaveBeenCalled()
+  })
+})
