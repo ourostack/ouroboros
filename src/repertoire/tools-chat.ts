@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { ChatActions, ReplyTargetRequest, SenseChatActions, ToolContext, ToolDefinition } from "./tools-base"
+import { withCode, type ChatActions, type ReplyTargetRequest, type SenseChatActions, type ToolContext, type ToolDefinition } from "./tools-base"
 
 // Every chat app lets you react to a message, reply to a specific one and send a file. These tools are the same on
 // every sense; each sense binds `ctx.chatActions` to its own app, and a missing action means the app can't do it.
@@ -27,14 +27,14 @@ export function chatActionsForTurn(actions: SenseChatActions, inboundMessageId: 
     ...(react ? {
       react: async (emoji: string, messageId?: string) => {
         const id = messageId ?? inboundMessageId
-        return id ? react(emoji, id) : "there is no message to react to here; pass message_id."
+        return id ? react(emoji, id) : withCode("there is no message to react to here; pass message_id.", "no-message")
       },
     } : {}),
     ...(setReplyTarget ? {
       setReplyTarget: (request: ReplyTargetRequest) => {
         if (request.target !== "thread") return setReplyTarget(request)
         const id = request.messageId ?? inboundMessageId
-        return id ? setReplyTarget({ target: "thread", messageId: id }) : "there is no message to reply to here; pass message_id."
+        return id ? setReplyTarget({ target: "thread", messageId: id }) : withCode("there is no message to reply to here; pass message_id.", "no-message")
       },
     } : {}),
   }
@@ -42,7 +42,7 @@ export function chatActionsForTurn(actions: SenseChatActions, inboundMessageId: 
 
 /** Chat actions act in the chat the turn came from, so a turn that may not send can't take them, even when called directly. */
 export function offTurnRefusal(ctx: ToolContext | undefined): string | undefined {
-  return ctx?.noSend || ctx?.habitSession || ctx?.autonomousTurnKind ? "I can't act in a chat on this turn." : undefined
+  return ctx?.noSend || ctx?.habitSession || ctx?.autonomousTurnKind ? withCode("I can't act in a chat on this turn.", "off-turn") : undefined
 }
 
 function argText(value: unknown): string {
@@ -77,15 +77,22 @@ export const chatToolDefinitions: ToolDefinition[] = [
       const refusal = offTurnRefusal(ctx)
       if (refusal) return ended("react", false, refusal)
       const emoji = argText(args.emoji)
-      if (!emoji) return ended("react", false, "emoji is required.")
+      if (!emoji) return ended("react", false, withCode("emoji is required.", "missing-emoji"))
       const actions = ctx?.chatActions
-      if (!actions?.react) return ended("react", false, "this chat doesn't take reactions from me.")
+      if (!actions?.react) return ended("react", false, withCode("this chat doesn't take reactions from me.", "no-reactions"))
       try {
         return ended("react", true, await actions.react(emoji, argText(args.message_id) || undefined))
       } catch (error) {
-        return ended("react", false, `the reaction didn't go through: ${error instanceof Error ? error.message : String(error)}`)
+        return ended("react", false, withCode(`the reaction didn't go through: ${error instanceof Error ? error.message : String(error)}`, "reaction-failed"))
       }
     },
+    ax: { id: "tool:react", group: "turn-chat", when: "Pick this to acknowledge or answer someone with a single emoji tap, alone or beside a text reply, when words would be too much.", effect: "write", errors: [
+      { code: "missing-emoji", means: "emoji was empty, so there was nothing to react with.", fix: "Call again with emoji set to one emoji, for example 👍." },
+      { code: "no-reactions", means: "This chat app doesn't let me add reactions.", fix: "Answer in words instead; a short text reply does the same job here." },
+      { code: "reaction-failed", means: "The chat app refused or dropped the reaction; the reason follows the colon.", fix: "Check message_id is a real id from this chat, then try once more or reply in words." },
+      { code: "no-message", means: "No message_id was given and this turn has no starting message to react to.", fix: "Call again with message_id set to one of the ids shown in this chat's context." },
+      { code: "off-turn", means: "This turn may not send (an autonomous, habit or no-send turn), so nothing happened in the chat.", fix: "Leave the chat alone this turn; act in it on a turn that someone in that chat started." },
+    ] },
     summaryKeys: ["emoji", "message_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "adds a reaction in the current chat" },
   },
@@ -111,7 +118,7 @@ export const chatToolDefinitions: ToolDefinition[] = [
       if (refusal) return ended("set_reply_target", false, refusal)
       const target = argText(args.target)
       const actions = ctx?.chatActions
-      if (!actions?.setReplyTarget) return ended("set_reply_target", false, "this chat doesn't let me choose where a reply lands.")
+      if (!actions?.setReplyTarget) return ended("set_reply_target", false, withCode("this chat doesn't let me choose where a reply lands.", "no-reply-choice"))
       let request: ReplyTargetRequest
       if (target === "current_lane" || target === "top_level") {
         request = { target }
@@ -119,10 +126,16 @@ export const chatToolDefinitions: ToolDefinition[] = [
         const messageId = argText(args.message_id)
         request = messageId ? { target, messageId } : { target }
       } else {
-        return ended("set_reply_target", false, "target must be one of: current_lane, top_level, thread.")
+        return ended("set_reply_target", false, withCode("target must be one of: current_lane, top_level, thread.", "invalid-target"))
       }
       return ended("set_reply_target", true, actions.setReplyTarget(request))
     },
+    ax: { id: "tool:set_reply_target", group: "turn-chat", when: "Pick this before you settle, to thread the reply under one message, post it top-level, or go back to this chat's usual lane.", effect: "write", idempotent: true, errors: [
+      { code: "no-reply-choice", means: "This chat app gives me no choice of where a reply lands.", fix: "Just send the reply; it lands where this chat always puts it." },
+      { code: "invalid-target", means: "target wasn't current_lane, top_level or thread.", fix: "Call again with target set to current_lane, top_level or thread." },
+      { code: "no-message", means: "No message_id was given and this turn has no starting message to reply to.", fix: "Call again with message_id set to one of the ids shown in this chat's context." },
+      { code: "off-turn", means: "This turn may not send (an autonomous, habit or no-send turn), so nothing happened in the chat.", fix: "Leave the chat alone this turn; act in it on a turn that someone in that chat started." },
+    ] },
     summaryKeys: ["target", "message_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "changes where the reply in the current chat lands" },
   },
@@ -148,11 +161,16 @@ export const chatToolDefinitions: ToolDefinition[] = [
       const refusal = offTurnRefusal(ctx)
       if (refusal) throw new Error(refusal)
       const filePath = argText(args.path)
-      if (!filePath.startsWith("/")) throw new Error("path must be an absolute path to a file.")
+      if (!filePath.startsWith("/")) throw new Error(withCode("path must be an absolute path to a file.", "relative-path"))
       const actions = ctx?.chatActions
-      if (!actions?.sendFile) throw new Error("this chat doesn't take files from me.")
+      if (!actions?.sendFile) throw new Error(withCode("this chat doesn't take files from me.", "no-files"))
       return actions.sendFile(filePath, typeof args.caption === "string" ? args.caption : "")
     },
+    ax: { id: "tool:send_file", group: "turn-chat", when: "Pick this to hand someone an actual photo, PDF or document stored on disk; for a link or a few lines of text, just reply.", effect: "write", errors: [
+      { code: "relative-path", means: "path didn't start with /, so I can't tell which file you mean.", fix: "Call again with the file's absolute path, such as /Users/me/menu.pdf." },
+      { code: "no-files", means: "This chat app doesn't take files from me.", fix: "Describe the file in your reply, or tell them where it is on disk." },
+      { code: "off-turn", means: "This turn may not send (an autonomous, habit or no-send turn), so nothing happened in the chat.", fix: "Leave the chat alone this turn; act in it on a turn that someone in that chat started." },
+    ] },
     summaryKeys: ["path"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends a local file into the current chat" },
   },

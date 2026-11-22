@@ -54,6 +54,8 @@
     {"id": "turn-files", "when": "Read, find and change files in the agent's home: open one, list a folder, search names or text, write or edit."},
     {"id": "turn-shell", "when": "Run commands on the agent's machine: one shell line now, or a long one in the background you check and tail."},
     {"id": "turn-web", "when": "Read the public web: search for pages on a subject, or fetch one page by its address as plain text."},
-    {"id": "turn-coding", "when": "Hand coding work to a separate claude or codex worker, then watch it, answer it or stop it."}
+    {"id": "turn-coding", "when": "Hand coding work to a separate claude or codex worker, then watch it, answer it or stop it."},
+    {"id": "turn-chat", "when": "Act inside the chat a turn came from: react to a message, pick where the reply lands, send a file."},
+    {"id": "turn-voice", "when": "Control the live phone or voice call a turn belongs to: play a sound into it or hang it up."}
   ]
 }

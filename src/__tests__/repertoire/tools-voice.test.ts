@@ -32,7 +32,7 @@ describe("voice lifecycle tools", () => {
       signin: async () => undefined,
     })
 
-    expect(result).toBe("no active voice call to end")
+    expect(result).toBe("no active voice call to end (code: no-active-call)")
   })
 
   it("requests active voice call audio playback through ToolContext", async () => {
@@ -93,6 +93,6 @@ describe("voice lifecycle tools", () => {
       signin: async () => undefined,
     })
 
-    expect(result).toBe("no active voice call audio path")
+    expect(result).toBe("no active voice call audio path (code: no-call-audio)")
   })
 })

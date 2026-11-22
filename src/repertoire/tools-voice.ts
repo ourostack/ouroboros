@@ -1,4 +1,4 @@
-import type { ToolDefinition, VoiceCallAudioRequest } from "./tools-base"
+import { withCode, type ToolDefinition, type VoiceCallAudioRequest } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export const voiceToolDefinitions: ToolDefinition[] = [{
@@ -22,6 +22,9 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
       },
     },
   },
+  ax: { id: "tool:voice_end_call", group: "turn-voice", when: "Pick this once goodbyes are said or the caller asks to hang up; settling alone leaves the phone line open.", effect: "write", idempotent: true, errors: [
+    { code: "no-active-call", means: "This turn isn't part of a live voice call, so there was no call to end.", fix: "Nothing to hang up; end the conversation with a normal reply." },
+  ] },
   handler: async (args, ctx) => {
     const reason = typeof args.reason === "string" && args.reason.trim().length > 0
       ? args.reason.trim()
@@ -40,7 +43,7 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
         message: "voice end-call tool had no active call",
         meta: { hasActiveCall: "false" },
       })
-      return "no active voice call to end"
+      return withCode("no active voice call to end", "no-active-call")
     }
 
     await ctx.voiceCall.requestEnd(reason)
@@ -130,7 +133,7 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
         message: "voice play-audio tool had no active audio-capable call",
         meta: { hasActiveCallAudio: "false", source },
       })
-      return "no active voice call audio path"
+      return withCode("no active voice call audio path", "no-call-audio")
     }
 
     const result = await ctx.voiceCall.playAudio(request)
@@ -143,5 +146,8 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
     if (result.toolResult?.trim()) return result.toolResult.trim()
     return `(played audio: ${result.label}, ${Math.round(result.durationMs)}ms)`
   },
+  ax: { id: "tool:voice_play_audio", group: "turn-voice", when: "Pick this when a caller asks to hear a test beep or a recorded sound over the phone; your spoken answers need no tool.", effect: "write", errors: [
+    { code: "no-call-audio", means: "No live call on this turn can carry played audio, so nothing was played.", fix: "Tell the caller in words that you can't play sound on this call." },
+  ] },
   riskProfile: { mutates: "external_side_effect", risk: "high", reason: "plays audio into a live voice call" },
 }]
