@@ -644,6 +644,31 @@ describe("runSuite orchestration", () => {
     expect(log.at(-1)).toBe("close")
   })
 
+  // With an owner route on, a notice the run causes goes to the owner's primary agent instead of Telegram, and is recorded in
+  // state/telegram/routed-owner-notices.json; the same leak rules apply to it.
+  it("fails the run when a notice it caused was routed to the owner's primary agent", async () => {
+    const before = ["owner-notice:failure-fixed:1", "owner-notice:delegated:old"]
+    for (const [after, ok] of [
+      [[...before, "owner-notice:delegated:x"], false],
+      // A key routed again moves to the end, so it counts as new.
+      [["owner-notice:delegated:old", "owner-notice:failure-fixed:1"], false],
+      [before, true],
+      [[...before, "proactive:1"], true],
+    ] as const) {
+      const { host } = fakeHost({ observations: [empty({ routed: before }), empty({ routed: [...after] })], clock: { t: 10_000 } })
+      const suite = await gate.runSuite(host, { cases: ["stall-kept"] })
+      expect(suite.results.find((r: { id: string }) => r.id === "no-telegram")).toMatchObject({ status: ok ? "pass" : "fail" })
+    }
+  })
+
+  it("names the routed notices a run added, newest last", () => {
+    expect(gate.routedSince(["a", "b", "c"], ["b", "c", "d"])).toEqual(["d"])
+    expect(gate.routedSince(["a", "b"], ["b", "a"])).toEqual(["a"])
+    expect(gate.routedSince(["a"], ["a"])).toEqual([])
+    expect(gate.routedSince(undefined, ["a"])).toEqual(["a"])
+    expect(gate.routedSince(["a"], undefined)).toEqual([])
+  })
+
   it("fails owner-policy-untouched when the steward or audit bytes differ between the first case and the last", async () => {
     for (const changed of [{ stewardSha: "bbb" }, { auditSha: "zzz" }]) {
       const { host, log } = fakeHost({ observations: [empty({ auditSha: "aud" }), empty({ auditSha: "aud" }), empty({ auditSha: "aud", ...changed })] })
@@ -2167,6 +2192,13 @@ describe("provision and the real host", () => {
     expect(observed.awaiting[0]).toMatchObject({ name: "live.md", createdAt: "2026-10-08T11:50:59.264Z", filedFor: "friend-9" })
     expect(observed.done.find((e: { name: string }) => e.name === "gone.md")).toMatchObject({ createdAt: "2026-10-08T05:00:00.000Z", reason: "gave up" })
     expect(observed.effectsReadable).toBe(true)
+    expect(observed.routed).toEqual([])
+    fs.writeFileSync(path.join(bundle, "state/telegram/routed-owner-notices.json"), JSON.stringify(["owner-notice:x", 7]))
+    expect((await host.observe()).routed).toEqual(["owner-notice:x"])
+    fs.writeFileSync(path.join(bundle, "state/telegram/routed-owner-notices.json"), "{nope")
+    expect((await host.observe()).routed).toEqual([])
+    fs.writeFileSync(path.join(bundle, "state/telegram/routed-owner-notices.json"), "{}")
+    expect((await host.observe()).routed).toEqual([])
     expect(observed.containers).toEqual({ "ouro-butler": true, "calibre-web": true })
     expect(observed.stewardSha).toMatch(/^[0-9a-f]{64}$/)
     expect(observed.auditSha).toBeNull()
