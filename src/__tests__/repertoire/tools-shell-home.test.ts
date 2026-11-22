@@ -113,4 +113,31 @@ describe("shell at home", () => {
     const out = await shell.handler({ command: node('process.stdout.write("a".repeat(3000000))') }, ctx as any)
     expect(out).toContain("full output saved to")
   })
+
+  describe("takes a cwd (spec R11.2)", () => {
+    it("runs in cwd, relative to home or absolute, and in home without one", async () => {
+      const root = home
+      fs.mkdirSync(path.join(home, "notes")); fs.mkdirSync(path.join(home, "psyche")); fs.writeFileSync(path.join(home, "top.md"), "")
+      expect((await shell.handler({ command: "pwd", cwd: "notes" }, ctx as any)).trim()).toBe(path.join(root, "notes"))
+      expect((await shell.handler({ command: "pwd", cwd: path.join(root, "psyche") }, ctx as any)).trim()).toBe(path.join(root, "psyche"))
+      expect((await shell.handler({ command: "pwd" }, ctx as any)).trim()).toBe(root)
+    })
+
+    it("says plainly when cwd is not a folder", async () => {
+      const root = home
+      fs.mkdirSync(path.join(home, "notes")); fs.mkdirSync(path.join(home, "psyche")); fs.writeFileSync(path.join(home, "top.md"), "")
+      expect(await shell.handler({ command: "pwd", cwd: "gone" }, ctx as any)).toBe(`error: no folder at ${path.join(root, "gone")} (from the relative cwd gone) (code: not-found)`)
+      expect(await shell.handler({ command: "pwd", cwd: path.join(root, "top.md") }, ctx as any)).toBe(`error: no folder at ${path.join(root, "top.md")} (code: not-found)`)
+    })
+
+    it("starts a background command in cwd", async () => {
+      const root = home
+      fs.mkdirSync(path.join(home, "notes"))
+      const started = JSON.parse(await shell.handler({ command: "pwd > where.txt", cwd: "notes", background: true as unknown as string }, ctx as any))
+      expect(started.status).toBe("running")
+      for (let i = 0; i < 100 && !fs.existsSync(path.join(root, "notes", "where.txt")); i++) await new Promise((r) => setTimeout(r, 20))
+      for (let i = 0; i < 100 && !fs.readFileSync(path.join(root, "notes", "where.txt"), "utf8"); i++) await new Promise((r) => setTimeout(r, 20))
+      expect(fs.readFileSync(path.join(root, "notes", "where.txt"), "utf8").trim()).toBe(path.join(root, "notes"))
+    })
+  })
 })
