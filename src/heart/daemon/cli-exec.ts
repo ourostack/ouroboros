@@ -1498,7 +1498,11 @@ interface DaemonStartupFailure {
 
 export async function ensureDaemonRunning(
   deps: OuroCliDeps,
-  options: { initialAlive?: boolean } = {},
+  options: {
+    initialAlive?: boolean
+    /** Only `ouro up` finishes cleanly while a detached helper replaces the daemon; other callers need a daemon now. */
+    acceptRuntimeReplacementHandoff?: boolean
+  } = {},
 ): Promise<EnsureDaemonResult> {
   const readLatestDaemonStartupEvent = () => {
     try {
@@ -1615,6 +1619,17 @@ export async function ensureDaemonRunning(
     }
     if (runtimeResult.handedOff) {
       // The old daemon is about to stop; polling it would only watch it go.
+      if (!options.acceptRuntimeReplacementHandoff) {
+        return {
+          ok: false,
+          alreadyRunning: true,
+          handedOff: true,
+          message: `${runtimeResult.message}; run this command again once the replacement answers`,
+          verifyStartupStatus: false,
+          startedPid: null,
+          startupFailureReason: "the background service is being replaced by a detached helper",
+        }
+      }
       return {
         ok: true,
         alreadyRunning: true,
@@ -8600,7 +8615,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       reportDaemonStartupPhase: (label) => {
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
-    }, { initialAlive: daemonAliveBeforeStart })
+    }, { initialAlive: daemonAliveBeforeStart, acceptRuntimeReplacementHandoff: true })
     if (!daemonResult.ok) {
       ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
         "starting daemon",

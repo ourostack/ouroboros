@@ -541,4 +541,27 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.startedPid).toBe(777)
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
   })
+
+  it("leaves the old daemon running when a needed hand-off cannot start", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => {}),
+      handOffRuntimeReplacement: vi.fn(() => { throw new Error("could not start the detached helper: EAGAIN") }),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result).toEqual({
+      ok: false,
+      alreadyRunning: true,
+      message: "daemon already running (/tmp/ouro-test.sock); this command runs inside the background service it would replace and could not start the detached helper: EAGAIN, so it left the older background service running; run `ouro up` from a terminal instead",
+      startupFailureReason: "could not hand the replacement to a detached helper",
+    })
+    expect(deps.stopDaemon).not.toHaveBeenCalled()
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
 })

@@ -40,7 +40,7 @@ import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTail
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { readLocalPresenceSettings } from "./presence"
-import { handOffDaemonRuntimeReplacement, type RuntimeReplacementHandoff } from "./runtime-replacement-handoff"
+import { handOffDaemonRuntimeReplacement, runtimeReplacementMarkerPath, type RuntimeReplacementHandoff } from "./runtime-replacement-handoff"
 import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps, type ServiceSupervision } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -462,6 +462,7 @@ async function startDaemonProcessViaLaunchd(socketPath: string): Promise<{ pid: 
       message: "daemon launch agent started for current login session",
       meta: { plistPath, label: DAEMON_PLIST_LABEL },
     })
+    fs.rmSync(runtimeReplacementMarkerPath(getOuroCliHome()), { force: true })
     await waitForBootstrappedDaemonSocket(socketPath)
     return { pid: readDaemonLaunchAgentPid() }
   } catch (error) {
@@ -500,6 +501,11 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
     return
   }
 
+  // If this process dies between the bootout and the bootstrap, the marker
+  // lets the unattended updater see that the replacement was stranded.
+  const markerPath = runtimeReplacementMarkerPath(getOuroCliHome())
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true })
+  fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`, "utf-8")
   bootoutLaunchAgentByLabel({
     exec: launchdExec,
     userUid: process.getuid?.() ?? 0,

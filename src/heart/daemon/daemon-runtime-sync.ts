@@ -20,7 +20,8 @@ export interface DaemonRuntimeSyncDeps {
   /**
    * Starts a detached helper to do the replacement when this command runs
    * inside the daemon's own process tree, where stopping the daemon would kill
-   * it mid-replacement. Returns null when the replacement should run here.
+   * it mid-replacement. Returns null when the replacement should run here,
+   * and throws when it is needed but the helper could not start.
    */
   handOffRuntimeReplacement?: () => { pid: number | null; logPath: string } | null
   cleanupStaleSocket: (socketPath: string) => void
@@ -187,7 +188,34 @@ export async function ensureCurrentDaemonRuntime(
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
-      const handoff = deps.handOffRuntimeReplacement?.() ?? null
+      let handoff: { pid: number | null; logPath: string } | null
+      try {
+        handoff = deps.handOffRuntimeReplacement?.() ?? null
+      } catch (error) {
+        const reason = formatErrorReason(error)
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.runtime_sync_decision",
+          message: "evaluated daemon runtime sync outcome",
+          meta: {
+            socketPath: deps.socketPath,
+            localVersion: deps.localVersion,
+            runningVersion,
+            action: "stale_replace_handoff_failed",
+            driftKeys: driftReasons.map((entry) => entry.key),
+            reason,
+          },
+        })
+        // Replacing in place from inside the daemon's own job would stop the
+        // daemon and then die before starting the new one.
+        return {
+          ok: false,
+          alreadyRunning: true,
+          message: `daemon already running (${deps.socketPath}); this command runs inside the background service it would replace and ${reason}, so it left the older background service running; run \`ouro up\` from a terminal instead`,
+          startupFailureReason: "could not hand the replacement to a detached helper",
+        }
+      }
       if (handoff) {
         const target = includesVersionDrift
           ? `${runningVersion} -> ${deps.localVersion}`

@@ -448,8 +448,14 @@ describe("daemon CLI default dependency branches", () => {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
 
+      const markerPath = path.join(tempHome, ".ouro-cli", "daemon", "runtime-replacement-pending")
+      fs.mkdirSync(path.dirname(markerPath), { recursive: true })
+      fs.writeFileSync(markerPath, "pending\n")
+
       await expect(deps.startDaemonProcess("/tmp/daemon.sock")).resolves.toEqual({ pid: 2468 })
 
+      // A loaded plist means no replacement is stranded any more.
+      expect(fs.existsSync(markerPath)).toBe(false)
       expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl print gui/"), { stdio: "ignore" })
       expect(execSync).toHaveBeenCalledWith(expect.stringContaining("launchctl bootstrap gui/"), { stdio: "ignore" })
       expect(spawn).not.toHaveBeenCalled()
@@ -912,6 +918,7 @@ describe("daemon CLI default dependency branches", () => {
 
       deps.prepareDaemonRuntimeReplacement?.()
 
+      expect(fs.existsSync(path.join(tempHome, ".ouro-cli", "daemon", "runtime-replacement-pending"))).toBe(true)
       expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon", { stdio: "ignore" })
       expect(execSync).toHaveBeenCalledWith("/bin/sleep 1", { stdio: "ignore" })
     } finally {

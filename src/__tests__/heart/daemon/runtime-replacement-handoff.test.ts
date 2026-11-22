@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest"
 import {
   handOffDaemonRuntimeReplacement,
   isInsideDaemonLaunchdJob,
+  isRuntimeReplacementStranded,
+  runtimeReplacementMarkerPath,
+  STRANDED_REPLACEMENT_AFTER_MS,
   type RuntimeReplacementHandoffDeps,
 } from "../../../heart/daemon/runtime-replacement-handoff"
 
@@ -40,10 +43,10 @@ describe("handOffDaemonRuntimeReplacement", () => {
     expect(deps.openLog).not.toHaveBeenCalled()
   })
 
-  it("does nothing when it cannot tell which entry script to rerun", () => {
+  it("refuses when it cannot tell which entry script to rerun", () => {
     const { deps } = makeDeps({ entryPath: undefined })
 
-    expect(handOffDaemonRuntimeReplacement(deps)).toBeNull()
+    expect(() => handOffDaemonRuntimeReplacement(deps)).toThrow("could not tell which ouro entry script to run as the detached helper")
     expect(deps.spawn).not.toHaveBeenCalled()
   })
 
@@ -78,16 +81,38 @@ describe("handOffDaemonRuntimeReplacement", () => {
     })
   })
 
-  it("returns null so the caller replaces in place when the helper cannot start", () => {
+  it("throws rather than letting the caller replace in place when the helper cannot start", () => {
     const { deps } = makeDeps({ spawn: vi.fn(() => { throw new Error("EAGAIN") }) })
 
-    expect(handOffDaemonRuntimeReplacement(deps)).toBeNull()
+    expect(() => handOffDaemonRuntimeReplacement(deps)).toThrow("could not start the detached helper: EAGAIN")
   })
 
-  it("returns null when the helper log cannot be opened, and names non-Error failures", () => {
+  it("throws when the helper log cannot be opened, and names non-Error failures", () => {
     const { deps } = makeDeps({ openLog: vi.fn(() => { throw "disk gone" }) })
 
-    expect(handOffDaemonRuntimeReplacement(deps)).toBeNull()
+    expect(() => handOffDaemonRuntimeReplacement(deps)).toThrow("could not start the detached helper: disk gone")
     expect(deps.spawn).not.toHaveBeenCalled()
+  })
+})
+
+describe("isRuntimeReplacementStranded", () => {
+  const now = Date.parse("2026-11-16T05:00:00.000Z")
+  const old = now - STRANDED_REPLACEMENT_AFTER_MS
+
+  it("keeps the marker under the CLI home's daemon folder", () => {
+    expect(runtimeReplacementMarkerPath("/fixture/.ouro-cli")).toBe("/fixture/.ouro-cli/daemon/runtime-replacement-pending")
+  })
+
+  it("is true only when an old replacement marker remains and the label is unloaded", () => {
+    const unloaded = vi.fn(() => false)
+    expect(isRuntimeReplacementStranded({ markerWrittenAtMs: old, nowMs: now, labelLoaded: unloaded })).toBe(true)
+    expect(isRuntimeReplacementStranded({ markerWrittenAtMs: old, nowMs: now, labelLoaded: () => true })).toBe(false)
+  })
+
+  it("does not ask launchd when no replacement is pending or one may still be running", () => {
+    const labelLoaded = vi.fn(() => false)
+    expect(isRuntimeReplacementStranded({ markerWrittenAtMs: null, nowMs: now, labelLoaded })).toBe(false)
+    expect(isRuntimeReplacementStranded({ markerWrittenAtMs: old + 1, nowMs: now, labelLoaded })).toBe(false)
+    expect(labelLoaded).not.toHaveBeenCalled()
   })
 })

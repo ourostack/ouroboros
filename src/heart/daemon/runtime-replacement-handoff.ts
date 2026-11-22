@@ -14,8 +14,32 @@
  * going to a log, and let that helper do the stop, bootout and bootstrap.
  */
 
+import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DAEMON_PLIST_LABEL } from "./launchd"
+
+/**
+ * Written before a runtime replacement boots the daemon's label out and
+ * removed once launchd has the new plist. If it outlives
+ * STRANDED_REPLACEMENT_AFTER_MS while the label is unloaded, the replacement
+ * died halfway. A label someone booted out on purpose has no marker.
+ */
+export function runtimeReplacementMarkerPath(cliHome: string): string {
+  return path.join(cliHome, "daemon", "runtime-replacement-pending")
+}
+
+/** Long enough that a live replacement has finished its bootout and bootstrap. */
+export const STRANDED_REPLACEMENT_AFTER_MS = 5 * 60_000
+
+export function isRuntimeReplacementStranded(input: {
+  markerWrittenAtMs: number | null
+  nowMs: number
+  labelLoaded: () => boolean
+}): boolean {
+  if (input.markerWrittenAtMs === null) return false
+  if (input.nowMs - input.markerWrittenAtMs < STRANDED_REPLACEMENT_AFTER_MS) return false
+  return !input.labelLoaded()
+}
 
 export interface RuntimeReplacementHandoffDeps {
   platform: NodeJS.Platform
@@ -49,8 +73,9 @@ export function isInsideDaemonLaunchdJob(env: NodeJS.ProcessEnv, platform: NodeJ
 
 /**
  * Starts the detached helper when the current command is inside the daemon's
- * launchd job. Returns null when no hand-off is needed or the helper could not
- * start; the caller then replaces the daemon in place, as before.
+ * launchd job, and returns null when no hand-off is needed. Throws when the
+ * helper cannot start: replacing in place from inside the job is the failure
+ * this module exists to prevent.
  */
 export function handOffDaemonRuntimeReplacement(deps: RuntimeReplacementHandoffDeps): RuntimeReplacementHandoff | null {
   if (!isInsideDaemonLaunchdJob(deps.env, deps.platform)) return null
@@ -59,10 +84,10 @@ export function handOffDaemonRuntimeReplacement(deps: RuntimeReplacementHandoffD
       level: "warn",
       component: "daemon",
       event: "daemon.runtime_replacement_handoff_failed",
-      message: "runtime replacement runs inside the daemon's launchd job but the entry script is unknown; replacing in place",
+      message: "runtime replacement runs inside the daemon's launchd job but the entry script is unknown",
       meta: { logPath: deps.logPath, reason: "no entry script" },
     })
-    return null
+    throw new Error("could not tell which ouro entry script to run as the detached helper")
   }
 
   try {
@@ -87,13 +112,14 @@ export function handOffDaemonRuntimeReplacement(deps: RuntimeReplacementHandoffD
     })
     return handoff
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
     emitNervesEvent({
       level: "error",
       component: "daemon",
       event: "daemon.runtime_replacement_handoff_failed",
-      message: "could not start the detached runtime replacement helper; replacing in place",
-      meta: { logPath: deps.logPath, reason: error instanceof Error ? error.message : String(error) },
+      message: "could not start the detached runtime replacement helper",
+      meta: { logPath: deps.logPath, reason },
     })
-    return null
+    throw new Error(`could not start the detached helper: ${reason}`)
   }
 }
