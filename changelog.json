@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1369",
       "changes": [
-        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever."
+        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever.",
+        "Update the Ouro UI files to Ouro UI core v1.12.0 and Ouro UI v1.3.454."
       ]
     },
     {
