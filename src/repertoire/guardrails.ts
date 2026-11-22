@@ -128,6 +128,9 @@ export function insideAgentFolder(p: string, agentRoot: string, folder: "psyche"
 
 export const PSYCHE_REFUSAL = "that file is part of me; I change it when my owner asks me in our own chat."
 
+/** A friend's turn reads TACIT but cannot write it, so no friend steers the owner's turns through it. */
+export const TACIT_REFUSAL = "TACIT is written from my family's turns and my own; what I learn from this person goes in their friend record (save_friend_note)."
+
 const PSYCHE_IDENTITY_CHANNELS = new Set(["telegram", "bluebubbles", "teams"])
 
 /** `tacit` for the agent's psyche/TACIT.md, `identity` for anything else in psyche/ (the folder and new files included), `null` outside it. */
@@ -162,8 +165,8 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
       // A symlink or a hard link would carry the write to some other file.
       const tacit = lstatIfPresent(path.join(agentRoot, "psyche", "TACIT.md"))
       if (tacit && (tacit.isSymbolicLink() || tacit.nlink > 1)) return false
-      if (context.friendId === undefined) return true
-      return context.trustLevel === undefined || context.trustLevel === "friend" || context.trustLevel === "family"
+      // Only my own inner turns (no friend) and family turns write TACIT.
+      return context.friendId === undefined || context.trustLevel === "family"
     }
   } catch {
     return false
@@ -174,6 +177,11 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
     && context.isGroupChat !== true
     // On Teams only an explicit one-to-one counts; an unknown conversation type proves nothing.
     && (context.channel !== "teams" || context.isGroupChat === false)
+}
+
+/** A turn that carries a person who is not family: TACIT is read-only to it. */
+function isFriendTurn(context: GuardContext): boolean {
+  return context.friendId !== undefined && context.trustLevel !== "family"
 }
 
 /** The line a successful write to an identity file carries back to the agent. */
@@ -223,7 +231,7 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     if (agentRoot) {
       try {
         const psycheClass = psycheFileClass(filePath, agentRoot)
-        if (psycheClass && !psycheWriteAllowed(psycheClass, filePath, context)) return deny(PSYCHE_REFUSAL)
+        if (psycheClass && !psycheWriteAllowed(psycheClass, filePath, context)) return deny(psycheClass === "tacit" && isFriendTurn(context) ? TACIT_REFUSAL : PSYCHE_REFUSAL)
         if (insideAgentFolder(filePath, agentRoot, "friends")) return deny(REASONS.protectedPath)
         if (insideAgentFolder(filePath, agentRoot, "product")) return deny(REASONS.protectedPath)
         // A link can carry a write that reads as harmless to a protected file (state/policy, agent.json).

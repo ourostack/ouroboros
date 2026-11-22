@@ -1259,23 +1259,30 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       expect(guardInvocation("write_file", { path: target }, ctx(target, family("telegram")))).toEqual({ allowed: true })
     })
 
-    describe("TACIT is what the agent learns, so it writes it for anyone it trusts", () => {
+    describe("TACIT is written only from family turns and the agent's own inner turns", () => {
       const target = "/bundle/psyche/TACIT.md"
       it.each([
-        ["a friend human", family("telegram", { trustLevel: "friend" })],
         ["a family human", family("telegram")],
         ["a family agent on a2a", family("a2a", { friendKind: "agent" })],
-        ["a friend with no trust level", family("telegram", { trustLevel: undefined })],
-        ["no friend at all", {}],
+        ["the agent's own inner turn, with no friend", {}],
       ])("allows %s", async (_label, who) => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         for (const tool of ["write_file", "edit_file"]) {
           expect(guardInvocation(tool, { path: target }, ctx(target, who)), tool).toEqual({ allowed: true })
         }
       })
-      it.each([["a stranger", "stranger"], ["an acquaintance", "acquaintance"]])("refuses %s", async (_label, trustLevel) => {
-        const { guardInvocation } = await import("../../repertoire/guardrails")
-        expect(guardInvocation("write_file", { path: target }, ctx(target, family("telegram", { trustLevel })))).toEqual({ allowed: false, reason: REFUSAL })
+      it.each([
+        ["a friend human", family("telegram", { trustLevel: "friend" })],
+        ["a friend agent on a2a", family("a2a", { friendKind: "agent", trustLevel: "friend" })],
+        ["a friend with no trust level", family("telegram", { trustLevel: undefined })],
+        ["a stranger", family("telegram", { trustLevel: "stranger" })],
+        ["an acquaintance", family("telegram", { trustLevel: "acquaintance" })],
+      ])("refuses %s and points at their friend record", async (_label, who) => {
+        const { guardInvocation, TACIT_REFUSAL } = await import("../../repertoire/guardrails")
+        for (const tool of ["write_file", "edit_file"]) {
+          expect(guardInvocation(tool, { path: target }, ctx(target, who)), tool).toEqual({ allowed: false, reason: TACIT_REFUSAL })
+        }
+        expect(TACIT_REFUSAL).toContain("save_friend_note")
       })
     })
 
@@ -1338,7 +1345,7 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       const target = path.join(agentRoot, "psyche", "TACIT.md")
       const { guardInvocation, psycheFileClass } = await import("../../repertoire/guardrails")
       expect(psycheFileClass(target, agentRoot)).toBe("tacit")
-      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set(), agentRoot, ...family("telegram", { trustLevel: "friend" }) })).toEqual({ allowed: true })
+      expect(guardInvocation("write_file", { path: target }, { readPaths: new Set(), agentRoot, ...family("telegram") })).toEqual({ allowed: true })
     })
 
     it("refuses a TACIT write through a symlink", async () => {

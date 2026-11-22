@@ -272,7 +272,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "diary_write",
         description:
-          "Write a diary entry: something I learned, noticed, or concluded that I want later. Use 'about' to tag a person, topic, or context. Write for my future self, with enough context to stand alone; prefer durable conclusions over passing noise. Don't duplicate what already belongs in friend notes.",
+          "Writes a dated entry about my work to my Desk diary: what happened and what I decided. 'about' tags the person, topic or context it concerns.",
         parameters: {
           type: "object",
           properties: {
@@ -317,7 +317,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["entry", "about"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes Desk record diary fact" },
-    ax: { id: "tool:diary_write", group: "turn-record", when: "Pick this to keep a conclusion or lesson you will want in later chats; facts about one person go in save_friend_note.", effect: "write", errors: [
+    ax: { id: "tool:diary_write", group: "turn-record", when: "Pick this to keep a dated entry about my work (what happened, what I decided); how things work here goes in psyche/TACIT.md with edit_file, and facts about one person go in save_friend_note.", effect: "write", errors: [
       { code: "missing-argument", means: "entry is empty.", fix: "Call diary_write again with the entry written to stand alone." },
       { code: "orientation-hold", means: "This turn is on a correction hold, so diary writes wait.", fix: "Call orientation_get, settle what the person meant, then write the entry if it is still true." },
     ] },
@@ -504,7 +504,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["type", "key", "content"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes friend notes/preferences" },
-    ax: { id: "tool:save_friend_note", group: "turn-friends", when: "Pick this to remember a fact, name or preference about the person you're talking with; your own lessons go in diary_write.", effect: "write", errors: [
+    ax: { id: "tool:save_friend_note", group: "turn-friends", when: "Pick this to remember a fact, name or preference about the person you're talking with, including what they teach you; how things work here goes in psyche/TACIT.md.", effect: "write", errors: [
       { code: "no-friend-context", means: "This turn has no friend, friend store or friend id to save against.", fix: "Save it in a chat with that person, or keep it with diary_write instead." },
       { code: "persona-note", means: "The note is about your own personality or voice, not about this person.", fix: "Leave it out of friend notes; house lessons go in psyche/TACIT.md, other psyche changes wait for your owner." },
       { code: "preference-source-required", means: "A relationship or reachChannel preference needs source set to stated, observed or default.", fix: "Call again with source: stated if they said it, or observed if you inferred it." },
