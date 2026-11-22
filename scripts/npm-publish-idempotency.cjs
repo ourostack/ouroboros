@@ -93,7 +93,7 @@ function sleepSync(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-// A previous run's publish can be staged (E409) before the registry serves it. Wait,
+// A previous run's publish can be staged (E409) or published (E403) before the registry serves it. Wait,
 // bounded, for it to become readable so its contents can be compared; waiting never
 // makes different contents acceptable.
 function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
@@ -115,11 +115,13 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
       const published = npm(["publish", "--access", "public", "--tag", tag], cwd);
       if (published.status === 0) return { outcome: "published", spec };
       if (lookupPublishedVersion(spec, npm) === null) {
-        const staged = /\bE409\b/.test(`${published.stderr}${published.stdout}`);
+        const output = `${published.stderr}${published.stdout}`;
+        // Only the registry's own "version already exists" answers; any other 403 is policy or auth.
+        const staged = /\bE409\b/.test(output) || (/\bE403\b/.test(output) && /previously published versions/.test(output));
         if (!staged || !waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep })) {
           throw new Error(
             `npm publish ${spec} failed: ${published.stderr.trim()}` +
-              (staged ? ` (staged by another publish but still unreadable after ${attempts} polls)` : ""),
+              (staged ? ` (published or staged by another publish but still unreadable after ${attempts} polls)` : ""),
           );
         }
       }
