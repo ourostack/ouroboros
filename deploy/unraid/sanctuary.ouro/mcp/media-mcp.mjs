@@ -1175,6 +1175,11 @@ export async function mediaBlocklistStalled(a) {
              message: "Nothing removed. These downloads are not confirmed dead, and removing one deletes its progress. A partial download counts as dead only after two calls at least 30 minutes apart see no progress and no ETA; call again later to confirm. For missing episodes call media_fill_missing instead: it replaces a stalled download only when a seeded alternative exists. Pass owner_words only with the owner's own words asking to remove, clear or cancel this download; 'get them' is not that." }
   }
   if (!targets.length) return { result: "nothing_to_blocklist", queue: queueReport(rows, a.kind) }
+  // A dry run returns the plan: no DELETE, no blocklist entry, no new search.
+  if (a.dry_run === true) {
+    return { result: "dry_run", would_remove: targets.map((r) => ({ queue_id: r.id, title: r.title ?? null, percent: pct(r) })), would_search_again: a.research !== false,
+             ...(kept.length ? { kept } : {}), ...(ownerWords ? { owner_words: ownerWords } : {}), queue: queueReport(rows, a.kind) }
+  }
   const removed = []
   const failed = []
   for (const row of targets) {
@@ -2274,6 +2279,7 @@ const TOOL_LIST = [
       queue_ids: { type: "array", items: { type: "number" } },
       research: { type: "boolean", description: "Search again afterwards. Default true." },
       owner_words: { type: "string", description: "The owner's exact words asking to remove, clear or cancel these downloads; requires queue_ids. Not for 'get them'." },
+      dry_run: { type: "boolean", description: "true returns the plan (would_remove) and changes nothing. Default false." },
     }, required: ["kind", "service_id"] },
   },
   {

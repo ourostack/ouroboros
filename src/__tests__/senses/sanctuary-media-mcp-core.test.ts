@@ -443,6 +443,21 @@ describe("media MCP — search_now and blocklist_stalled", () => {
     expect(calls.findIndex((c) => c.method === "DELETE")).toBeLessThan(calls.findIndex((c) => c.url.includes("/command")))
   })
 
+  it("a dry run returns the plan and deletes, blocklists and searches nothing", async () => {
+    queues.sonarr = [stalledRow(1), stalledRow(2, { added: hoursAgo(now, 1) }), stalledRow(4)]
+    const out = await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, dry_run: true })
+    expect(out).toMatchObject({ result: "dry_run", would_search_again: true })
+    expect(out.would_remove.map((r: any) => r.queue_id)).toEqual([1, 4])
+    expect(deletes()).toHaveLength(0)
+    expect(commands()).toHaveLength(0)
+    expect((await mod.mediaBlocklistStalled({ kind: "series", service_id: 7, dry_run: true, research: false })).would_search_again).toBe(false)
+  })
+
+  it("declares dry_run, so the replay guard forces a replay identity's call to a dry run instead of refusing it", async () => {
+    const tool = mod.TOOLS.find((t: any) => t.name === "media_blocklist_stalled")
+    expect(Object.hasOwn(tool.inputSchema.properties, "dry_run")).toBe(true)
+  })
+
   it("treats a 200 with an empty body as success, as Sonarr answers a queue DELETE", async () => {
     // Live 2026-10-02: Curb S10E02 was blocklisted, then res.json() threw and the re-search never ran.
     queues.sonarr = [stalledRow(5)]
