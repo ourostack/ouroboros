@@ -80,6 +80,11 @@ function mockWorkerModules(
   options: { mockProviderCredentials?: boolean } = {},
 ) {
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
+  // agent-entry imports sanctuary-runtime after the worker starts. Unmocked, that pulls the real tool graph in
+  // before the worker would have loaded it, and its a2a/tools-base cycle throws "a2aToolDefinitions is not
+  // iterable" after the test has ended, so agent-entry's catch calls process.exit(1). Tests that assert on
+  // readiness override this mock.
+  vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: vi.fn(async () => undefined) }))
   if (options.mockProviderCredentials !== false) mockProviderCredentialModule()
   return { startPrivateRuntimeWorker }
 }
