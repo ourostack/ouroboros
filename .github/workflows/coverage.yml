@@ -72,6 +72,26 @@ jobs:
           node .github/scripts/prepass-failure-notice.cjs
           gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" || true
 
+  # A pull request's 16 shards wait here, in one cheap job beside the pre-pass, while main's CI in the org's busy
+  # repositories has a job without a runner (the org shares about 150 concurrent jobs, and pull request bursts
+  # starved main's). It never skips or fails: any API error proceeds at once, it stops waiting after 20 minutes, and
+  # it is fetched from ourostack/.github's main (tools/yield-to-default-branch). Pushes never wait.
+  yield:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Yield to the default branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 2 --max-time 20 https://raw.githubusercontent.com/ourostack/.github/main/tools/yield-to-default-branch/yield.mjs -o "$RUNNER_TEMP/yield.mjs" \
+            && node "$RUNNER_TEMP/yield.mjs" || echo "::warning::the yield step could not run; the pull request proceeds"
+
   # The vitest coverage suite split across 16 runners (about 2 to 3 minutes of
   # tests each, six runners took 4 to 5 and twelve about 3.5; one runner took 26+). A pull request
   # waits for the slowest shard, and its whole run, publish included, has to fit
@@ -80,6 +100,9 @@ jobs:
   # merged coverage, in the coverage job. The shards start with the pre-pass
   # instead of waiting for it: the coverage job still fails on a failed pre-pass.
   coverage-shard:
+    needs: [yield]
+    # A skipped yield (every push) must not skip the shards.
+    if: ${{ !cancelled() && (needs.yield.result == 'success' || needs.yield.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
