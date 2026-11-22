@@ -33,6 +33,7 @@ const REASONS = {
   readBeforeEdit: "i need to read that file first before i can edit it.",
   readBeforeOverwrite: "i need to read that file first before i can overwrite it.",
   protectedPath: "that path is protected — i can read it but not modify it.",
+  unresolvedCwd: "this call names a cwd, but no home is known to resolve it from; pass an absolute path instead.",
   unreadablePath: "that path is protected — i can't read it.",
   destructiveCommand: "that command is too dangerous to run — it could cause irreversible damage.",
   // Trust reasons (vary by relationship)
@@ -1251,9 +1252,30 @@ function syncSecretShellRefused(command: string): boolean {
 
 // --- main entry point ---
 
+/** The file tools whose path may start from a cwd the call names. */
+const CWD_FILE_TOOLS = new Set(["read_file", "write_file", "edit_file", "grep"])
+
+/**
+ * Where a file tool's path lands: an absolute path as given; a relative one from `cwd` when the call names one (itself
+ * relative to home unless absolute), else from home. The guard and the tool both use this, so they check the same file.
+ */
+export function fileToolPath(target: string, cwd: string | undefined, home: string): string {
+  if (path.isAbsolute(target)) return target
+  const base = cwd ? path.resolve(home, cwd) : home
+  return path.resolve(base, target)
+}
+
+/** The call with its path made absolute from cwd, so every check below sees the file the tool will touch; null if it can't be. */
+function withCwdResolved(toolName: string, args: Record<string, string>, home: string | undefined): Record<string, string> | null {
+  if (!CWD_FILE_TOOLS.has(toolName) || typeof args.cwd !== "string" || args.cwd === "") return args
+  if (!home) return null
+  const target = args.path || (toolName === "grep" ? "." : "")
+  return target ? { ...args, path: fileToolPath(target, args.cwd, home) } : args
+}
+
 export function guardInvocation(
   toolName: string,
-  args: Record<string, string>,
+  rawArgs: Record<string, string>,
   context: GuardContext,
 ): GuardResult {
   emitNervesEvent({
@@ -1262,6 +1284,8 @@ export function guardInvocation(
     message: "guardrail check",
     meta: { toolName },
   })
+  const args = withCwdResolved(toolName, rawArgs, context.agentRoot)
+  if (!args) return deny(REASONS.unresolvedCwd)
 
   // Read-only tools skip the structural and trust guardrails; only the sync key's directory is closed to them.
   if (READ_ONLY_TOOLS.has(toolName)) return syncSecretReadRefused(toolName, args, context.agentRoot) ? deny(REASONS.unreadablePath) : allow

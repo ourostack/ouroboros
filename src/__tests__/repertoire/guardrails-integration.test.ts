@@ -82,7 +82,12 @@ describe("guardrails integration — full flow", () => {
       },
     } as unknown as ToolContext
 
-    const result = await execTool("edit_file", { path: "/some/file.ts", old_string: "x", new_string: "y" }, ctx)
+    // A file that exists, so the refusal is about reading it first rather than about a missing file.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "edit-unread-"))
+    const file = path.join(dir, "file.ts")
+    fs.writeFileSync(file, "x")
+    const result = await execTool("edit_file", { path: file, old_string: "x", new_string: "y" }, ctx)
+    fs.rmSync(dir, { recursive: true, force: true })
     expect(result).toMatch(/read.*file/i)
     // Should be structural tone, not trust tone
     expect(result).not.toMatch(/vouch/i)

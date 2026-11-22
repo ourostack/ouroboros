@@ -276,11 +276,12 @@ describe("grep tool", () => {
     fs.chmodSync(subDir, 0o755)
   })
 
-  it("returns empty string when path does not exist (statSync returns null)", async () => {
+  it("names the absolute path it tried when the path does not exist", async () => {
     const handler = getGrepHandler()
-    const result = await handler({ pattern: "anything", path: path.join(tmpDir, "nonexistent") })
+    const missing = path.join(tmpDir, "nonexistent")
+    const result = await handler({ pattern: "anything", path: missing })
 
-    expect(result).toBe("")
+    expect(result).toBe(`error: no file or folder at ${missing} (code: not-found)`)
   })
 
   it("skips entries that are neither files nor directories (e.g. symlinks to nonexistent targets)", async () => {
