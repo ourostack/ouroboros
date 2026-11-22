@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import type { ToolDefinition } from "./tools-base"
+import { withCode, type ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "@ouro.bot/friends"
 import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailListFilters, type MailMessageIndexRecord, type MailroomStore } from "../mailroom/file-store"
 import { resolveMailroomReaderWithRefresh, readMailroomRegistry, writeMailroomRegistry, type MailroomRuntimeConfig } from "../mailroom/reader"
@@ -1033,12 +1033,17 @@ export const mailToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    ax: { id: "tool:mail_status", group: "turn-mail", when: "Pick this to see which mailboxes are connected and whether the latest mail import worked, before trusting what the mail looks like.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Mail status includes your owner's delegated mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+    ] },
     handler: async (_args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const blocked = delegatedHumanMailBlocked(ctx)
-      if (blocked) return blocked
+      if (blocked) return withCode(blocked, "family-only")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       await resolved.store.recordAccess({
         agentId: resolved.agentName,
         tool: "mail_status",
@@ -1072,15 +1077,21 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_recent", group: "turn-mail", when: "Pick this to skim the newest mail by sender and subject, like checking the inbox; to look for something specific, use mail_search.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Delegated or all scope includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "invalid-arguments", means: "placement or scope wasn't one of its listed values.", fix: "Leave that filter out, or use one of the listed values." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
       if (requestedScope === "delegated" || requestedScope === "all") {
         const blocked = delegatedHumanMailBlocked(ctx)
-        if (blocked) return blocked
+        if (blocked) return withCode(blocked, "family-only")
       }
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
       const scope = requestedScope === "all"
         ? undefined
@@ -1137,10 +1148,15 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_compose", group: "turn-mail", when: "Pick this to write an email someone asked you to send, as a draft they can check; it goes out only after mail_send.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "compose-failed", means: "The draft couldn't be made, for example no recipient was given; the text says why.", fix: "Fix what the text names, usually the to addresses, and compose again." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       try {
         const draft = await createMailDraft({
           store: resolved.store,
@@ -1167,7 +1183,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           "send: call mail_send with draft_id and confirmation=CONFIRM_SEND after explicit approval.",
         ].join("\n")
       } catch (error) {
-        return error instanceof Error ? error.message : /* v8 ignore next -- defensive: draft creation throws Error instances. @preserve */ String(error)
+        return withCode(error instanceof Error ? error.message : /* v8 ignore next -- defensive: draft creation throws Error instances. @preserve */ String(error), "compose-failed")
       }
     },
     summaryKeys: ["to", "subject"],
@@ -1191,14 +1207,21 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_send", group: "turn-mail", when: "Pick this only once someone has clearly approved a drafted email going out; write it first with mail_compose.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Sending mail needs a family member or the agent itself; this conversation is neither.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "missing-draft-id", means: "draft_id was empty.", fix: "Call again with the draft id mail_compose returned." },
+      { code: "send-failed", means: "The send was refused or failed: no confirmation, no such draft, policy said no, or the transport broke; the text says which.", fix: "If confirmation was missing, ask for approval and pass CONFIRM_SEND; otherwise tell the person it didn't send." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const blocked = outboundSendBlocked(ctx)
-      if (blocked) return blocked
+      if (blocked) return withCode(blocked, "family-only")
       const draftId = (args.draft_id ?? "").trim()
-      if (!draftId) return "draft_id is required."
+      if (!draftId) return withCode("draft_id is required.", "missing-draft-id")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       try {
         const transport = resolveOutboundTransport(resolved.config)
         const sent = await confirmMailDraftSend({
@@ -1235,7 +1258,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           `to: ${sent.to.join(", ")}`,
         ].join("\n")
       } catch (error) {
-        return error instanceof Error ? error.message : /* v8 ignore next -- defensive: send confirmation throws Error instances. @preserve */ String(error)
+        return withCode(error instanceof Error ? error.message : /* v8 ignore next -- defensive: send confirmation throws Error instances. @preserve */ String(error), "send-failed")
       }
     },
     summaryKeys: ["draft_id"],
@@ -1261,11 +1284,16 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_outbox", group: "turn-mail", when: "Pick this to check what you have already drafted or sent, and whether a sent email was delivered or bounced.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "invalid-arguments", means: "status wasn't one of its listed values.", fix: "Leave that filter out, or use one of the listed values." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const resolved = await resolveMailroomReaderWithRefresh()
       /* v8 ignore next -- defensive: reader resolution covered separately for read tools; mail_outbox tests use cached config @preserve */
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const limit = numberArg(args.limit, 20, 1, 50)
       const records = await resolved.store.listMailOutbound(resolved.agentName)
       const filtered = args.status
@@ -1325,18 +1353,25 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_search", group: "turn-mail", when: "Pick this to look up a particular email by words in it, a sender or a topic; to browse the latest, use mail_recent.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Searching delegated or all mail includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "missing-query", means: "query was empty.", fix: "Call again with the words to look for." },
+      { code: "invalid-arguments", means: "placement or scope wasn't one of its listed values.", fix: "Leave that filter out, or use one of the listed values." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const query = (args.query ?? "").trim().toLowerCase()
-      if (!query) return "query is required."
+      if (!query) return withCode("query is required.", "missing-query")
       const terms = mailSearchTerms(query)
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
       const explicitScope = (args.scope ?? "").trim().length > 0
       if (!familyOrAgentSelf(ctx) && explicitScope && requestedScope !== "native") {
-        return "delegated human mail requires family trust."
+        return withCode("delegated human mail requires family trust.", "family-only")
       }
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
       const scope = requestedScope === "all"
         ? undefined
@@ -1558,15 +1593,21 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_index_refresh", group: "turn-mail", when: "Pick this when mail_search finds nothing in your owner's delegated mail but it probably exists, before saying it isn't there.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Refreshing delegated mail touches your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "index-refresh-failed", means: "Rebuilding the search index failed; the text gives the reason.", fix: "Retry once; if it fails again, tell your owner search may be missing recent mail." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
       if (requestedScope === "delegated" || requestedScope === "all" || args.source?.trim()) {
         const blocked = delegatedHumanMailBlocked(ctx)
-        if (blocked) return blocked
+        if (blocked) return withCode(blocked, "family-only")
       }
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const placement = parsePlacement(args.placement)
       const scope = requestedScope === "all"
         ? undefined
@@ -1611,7 +1652,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         ].join("\n")
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        return `mail search index refresh failed: ${message}`
+        return withCode(`mail search index refresh failed: ${message}`, "index-refresh-failed")
       }
     },
     summaryKeys: ["scope", "source", "placement"],
@@ -1633,19 +1674,26 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_body", group: "turn-mail", when: "Pick this to read the full text of one email you found; to follow a whole back-and-forth, use mail_thread.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "That message is in your owner's delegated mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "missing-message-id", means: "message_id was empty.", fix: "Call again with an id from mail_recent or mail_search." },
+      { code: "message-not-found", means: "No mail you can see has that id.", fix: "Find the current id with mail_recent or mail_search, then retry." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const messageId = (args.message_id ?? "").trim()
-      if (!messageId) return "message_id is required."
+      if (!messageId) return withCode("message_id is required.", "missing-message-id")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
 
       const cached = getCachedMailBody(messageId)
       if (cached && cached.agentId === resolved.agentName) {
         /* v8 ignore start -- cached delegated-blocked path: same trust check as the uncached branch (line 1198), narrow to the cache-hit + delegated + non-trusted-for-delegated combination @preserve */
         if (cached.compartmentKind === "delegated") {
           const blocked = delegatedHumanMailBlocked(ctx)
-          if (blocked) return blocked
+          if (blocked) return withCode(blocked, "family-only")
         }
         /* v8 ignore stop */
         await resolved.store.recordAccess({
@@ -1675,11 +1723,11 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
 
       const message = await resolved.store.getMessage(messageId)
-      if (!message || message.agentId !== resolved.agentName) return `No visible mail message found for ${messageId}.`
+      if (!message || message.agentId !== resolved.agentName) return withCode(`No visible mail message found for ${messageId}.`, "message-not-found")
       if (message.compartmentKind === "delegated") {
         const blocked = delegatedHumanMailBlocked(ctx)
         /* v8 ignore next -- same delegated trust gate as cached body and search paths; focused tests cover the blocked behavior. @preserve */
-        if (blocked) return blocked
+        if (blocked) return withCode(blocked, "family-only")
       }
       await resolved.store.recordAccess({
         agentId: resolved.agentName,
@@ -1732,18 +1780,25 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_thread", group: "turn-mail", when: "Pick this to follow a whole email conversation, oldest first, around one message; then open single messages with mail_body.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Delegated or all scope includes your owner's own mailbox, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "missing-message-id", means: "message_id was empty.", fix: "Call again with an id from mail_recent or mail_search." },
+      { code: "invalid-arguments", means: "scope wasn't native, delegated or all.", fix: "Leave that filter out, or use one of the listed values." },
+    ] },
     handler: async (args, ctx) => {
       /* v8 ignore start -- mail_thread arg + pool-assembly defensive branches: parseScope branching, delegated-block early returns, seedStored null path, agentId mismatch, non-family scope cascade, seedById merge variants — incidental shape, real coverage via integration tests above @preserve */
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const messageId = (args.message_id ?? "").trim()
-      if (!messageId) return "message_id is required."
+      if (!messageId) return withCode("message_id is required.", "missing-message-id")
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
       if (requestedScope === "delegated" || requestedScope === "all") {
         const blocked = delegatedHumanMailBlocked(ctx)
-        if (blocked) return blocked
+        if (blocked) return withCode(blocked, "family-only")
       }
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const seedStored = await resolved.store.getMessage(messageId)
       const seedById = seedStored && seedStored.agentId === resolved.agentName ? seedStored : null
       const scope = requestedScope === "all" ? undefined : requestedScope ?? (familyOrAgentSelf(ctx) ? undefined : "native")
@@ -1824,12 +1879,18 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_screener", group: "turn-mail", when: "Pick this to see mail from unknown senders waiting for a decision, so you can ask family whether to let each one through.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "The Screener can include your owner's delegated mail, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "invalid-arguments", means: "status or placement wasn't one of its listed values.", fix: "Leave that filter out, or use one of the listed values." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const blocked = delegatedHumanMailBlocked(ctx)
-      if (blocked) return blocked
+      if (blocked) return withCode(blocked, "family-only")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       const candidates = await resolved.store.listScreenerCandidates({
         agentId: resolved.agentName,
         status: parseCandidateStatus(args.status) ?? "pending",
@@ -1865,28 +1926,38 @@ export const mailToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: { id: "tool:mail_decide", group: "turn-mail", when: "Pick this after family tells you what to do with mail from an unknown sender: let it in, link it to a friend, or discard it.", effect: "write", errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "Screener decisions need a family member or the agent itself; this conversation is neither.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+      { code: "invalid-action", means: "action was empty or not one of the listed decisions.", fix: "Call again with one decision, such as allow-sender or discard." },
+      { code: "missing-reason", means: "reason was empty.", fix: "Call again saying who decided this and why." },
+      { code: "missing-candidate", means: "Neither candidate_id nor message_id was given.", fix: "Call again with a candidate_id from mail_screener." },
+      { code: "candidate-not-found", means: "No Screener candidate has that id.", fix: "Call mail_screener for the current ids, then retry." },
+      { code: "message-not-found", means: "No mail you can see has that id.", fix: "Find the current id with mail_recent or mail_search, then retry." },
+    ] },
     handler: async (args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const blocked = screenerDecisionBlocked(ctx)
-      if (blocked) return blocked
+      if (blocked) return withCode(blocked, "family-only")
       const action = parseDecisionAction(args.action)
-      if (!action) return "action is required and must be a supported mail decision."
+      if (!action) return withCode("action is required and must be a supported mail decision.", "invalid-action")
       const reason = (args.reason ?? "").trim()
-      if (!reason) return "reason is required."
+      if (!reason) return withCode("reason is required.", "missing-reason")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       let messageId = (args.message_id ?? "").trim()
       const candidateId = (args.candidate_id ?? "").trim()
       let candidate: MailScreenerCandidate | undefined
       if (candidateId) {
         const candidates = await resolved.store.listScreenerCandidates({ agentId: resolved.agentName, limit: 200 })
         candidate = candidates.find((entry) => entry.id === candidateId)
-        if (!candidate) return `No Screener candidate found for ${candidateId}.`
+        if (!candidate) return withCode(`No Screener candidate found for ${candidateId}.`, "candidate-not-found")
         messageId = candidate.messageId
       }
-      if (!messageId) return "candidate_id or message_id is required."
+      if (!messageId) return withCode("candidate_id or message_id is required.", "missing-candidate")
       const message = await resolved.store.getMessage(messageId)
-      if (!message || message.agentId !== resolved.agentName) return `No visible mail message found for ${messageId}.`
+      if (!message || message.agentId !== resolved.agentName) return withCode(`No visible mail message found for ${messageId}.`, "message-not-found")
       const decision = await applyMailDecision({
         store: resolved.store,
         agentId: resolved.agentName,
@@ -1937,12 +2008,18 @@ export const mailToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    ax: { id: "tool:mail_access_log", group: "turn-mail", when: "Pick this when someone asks who or what opened mail lately, and why, to audit reading rather than to read mail itself.", effect: "read", idempotent: true, errors: [
+      { code: "not-trusted", means: "Mail is private, and this conversation isn't with someone trusted enough to see it.", fix: "Tell them you can't share mail here; your owner can ask from a trusted chat." },
+      { code: "family-only", means: "The access log covers your owner's delegated mail, which only family can see.", fix: "Ask your owner for it from a family chat, or stick to your own native mailbox." },
+      { code: "mail-unavailable", means: "The mailbox isn't set up or its vault credentials can't be read; the text says what is missing.", fix: "If the text names an ouro connect mail command, run it; otherwise tell your owner mail needs setting up." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     handler: async (_args, ctx) => {
-      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      if (!trustAllowsMailRead(ctx)) return withCode("mail is private; this tool is only available in trusted contexts.", "not-trusted")
       const blocked = delegatedHumanMailBlocked(ctx)
-      if (blocked) return blocked
+      if (blocked) return withCode(blocked, "family-only")
       const resolved = await resolveMailroomReaderWithRefresh()
-      if (!resolved.ok) return resolved.error
+      if (!resolved.ok) return withCode(resolved.error, "mail-unavailable")
       return renderAccessLog(await resolved.store.listAccessLog(resolved.agentName))
     },
     summaryKeys: [],
