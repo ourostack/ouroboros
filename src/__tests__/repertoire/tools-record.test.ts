@@ -401,7 +401,7 @@ describe("record tools: note and consult_notes", () => {
 
     const result = await handler({ content: "This cannot be indexed." } as never, selfContext())
 
-    expect(result).toBe("error: couldn't save the note right now.")
+    expect(result).toBe("error: couldn't save the note right now. (code: note-save-failed)")
   })
 
   it("note returns a friendly error when embeddings are not configured", async () => {
@@ -410,7 +410,16 @@ describe("record tools: note and consult_notes", () => {
 
     const result = await handler({ content: "No embeddings key." } as never, selfContext())
 
-    expect(result).toBe("error: note couldn't use notes because embeddings are not configured.")
+    expect(result).toBe("error: note couldn't use notes because embeddings are not configured. (code: embeddings-not-configured)")
+  })
+
+  it("gives note and consult_notes cards; consult_notes rebuilds its index, so it is a write", async () => {
+    const { recordToolDefinitions } = await import("../../repertoire/tools-record")
+    for (const def of recordToolDefinitions) {
+      expect(def.ax?.id).toBe(`tool:${def.tool.function.name}`)
+      expect(def.ax?.group).toBe("turn-record")
+      expect(def.ax?.effect).toBe("write")
+    }
   })
 
   it("note rejects callers without self trust", async () => {
@@ -419,6 +428,7 @@ describe("record tools: note and consult_notes", () => {
 
     expect(result).toMatch(/self trust/i)
     expect(result).toMatch(/note/i)
+    expect(result).toMatch(/ \(code: self-trust-required\)$/)
   })
 
   it("note requires string content", async () => {
@@ -426,7 +436,7 @@ describe("record tools: note and consult_notes", () => {
 
     const result = await handler({ content: 7 } as never, selfContext())
 
-    expect(result).toBe("content is required")
+    expect(result).toBe("content is required (code: missing-argument)")
   })
 
   it("note rejects calls without an inner self context", async () => {
@@ -561,7 +571,7 @@ describe("record tools: note and consult_notes", () => {
 
     const result = await consultHandler({ query: "archive" } as never, selfContext())
 
-    expect(result).toBe("error: consult_notes couldn't use notes because embeddings are not configured.")
+    expect(result).toBe("error: consult_notes couldn't use notes because embeddings are not configured. (code: embeddings-not-configured)")
   })
 
   it("consult_notes rebuilds indexes with empty note embeddings", async () => {
@@ -792,7 +802,7 @@ describe("record tools: note and consult_notes", () => {
     const consultHandler = await handlerFor("consult_notes")
     const result = await consultHandler({ query: "archive" } as never, selfContext())
 
-    expect(result).toBe("error: consult_notes couldn't search notes right now.")
+    expect(result).toBe("error: consult_notes couldn't search notes right now. (code: notes-search-failed)")
   })
 
   it("consult_notes sanitizes non-Error embedding failures", async () => {
@@ -806,7 +816,7 @@ describe("record tools: note and consult_notes", () => {
     const consultHandler = await handlerFor("consult_notes")
     const result = await consultHandler({ query: "archive" } as never, selfContext())
 
-    expect(result).toBe("error: consult_notes couldn't search notes right now.")
+    expect(result).toBe("error: consult_notes couldn't search notes right now. (code: notes-search-failed)")
   })
 
   it("consult_notes returns an empty page when no embedding match clears the threshold", async () => {
@@ -855,7 +865,7 @@ describe("record tools: note and consult_notes", () => {
     const consultHandler = await handlerFor("consult_notes")
     const result = await consultHandler({ query: "archive" } as never, untrustedExternalContext())
 
-    expect(result).toContain("trusted record-read access")
+    expect(result).toBe("error: consult_notes requires trusted record-read access. (code: record-read-denied)")
   })
 
   it("consult_notes rejects missing caller context", async () => {

@@ -77,6 +77,7 @@
     {"id": "turn-awaits", "when": "Wait on something that happens later, like a reply or a delivery: file the wait, record each check, or drop it."},
     {"id": "turn-attachments", "when": "Work with photos, voice notes and documents people sent: find one, get it as a file on disk, or ask about an image."},
     {"id": "turn-payments", "when": "Spend money for a family member during a turn: approve a checkout, then make a virtual card, and audit what happened."},
-    {"id": "turn-evolution", "when": "Track a change to the agent's own harness during a turn: capture friction as a case, decide, verify, deliver, ratify, close."}
+    {"id": "turn-evolution", "when": "Track a change to the agent's own harness during a turn: capture friction as a case, decide, verify, deliver, ratify, close."},
+    {"id": "turn-config", "when": "See and change the agent's own settings in agent.json, with defaults, effects and allowed values."}
   ]
 }

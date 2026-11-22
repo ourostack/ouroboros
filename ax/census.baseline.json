@@ -8,7 +8,6 @@
     "tool:care_manage",
 
     "tool:complete_adoption",
-    "tool:consult_notes",
 
     "tool:external_event_disposition",
     "tool:file_ouroboros_bug",
@@ -20,7 +19,6 @@
     "tool:intention_manage",
     "tool:let_go",
     "tool:list_directory",
-    "tool:note",
     "tool:observe",
     "tool:orientation_get",
     "tool:ponder",
@@ -30,7 +28,6 @@
     "tool:query_presence",
     "tool:query_relationships",
     "tool:query_session",
-    "tool:read_config",
     "tool:report_failure",
     "tool:rest",
 
@@ -43,7 +40,6 @@
     "tool:surface",
 
 
-    "tool:update_config",
     "tool:voice_join_local_audio"
 
   ]
