@@ -751,7 +751,7 @@ export function erroredTurnReply(errorMessage: string | undefined): string {
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
-  return withTurnExecutionLease(() => handleInboundTurnExclusive(input))
+  return withTurnExecutionLease(() => handleInboundTurnExclusive(input), input.signal)
 }
 
 async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<InboundTurnResult> {

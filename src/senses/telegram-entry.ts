@@ -25,8 +25,9 @@ Promise.all([
   import("../heart/runtime-credentials"),
   import("../heart/machine-identity"),
   import("./telegram"),
+  import("./sense-shutdown"),
 ])
-  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, runtimeCredentialConfigSettled }, { loadOrCreateMachineIdentity }, { startTelegramSenseApp }]) => {
+  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig, runtimeCredentialConfigSettled }, { loadOrCreateMachineIdentity }, { startTelegramSenseApp }, { installSenseShutdown }]) => {
     const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
     if (!bootstrapped && !readRuntimeCredentialConfig(agentName).ok) {
       await refreshRuntimeCredentialConfig(agentName)
@@ -37,12 +38,8 @@ Promise.all([
       await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     const app = await startTelegramSenseApp(agentName, true)
-    let stopping: Promise<void> | undefined
-    const stop = (): void => { stopping ??= app.stop() }
-    process.once("SIGTERM", stop)
-    process.once("SIGINT", stop)
+    installSenseShutdown({ sense: "telegram", stop: () => app.stop() })
     await app.run()
-    await stopping
   })
   .catch((error) => {
     emitNervesEvent({
