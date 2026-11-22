@@ -462,6 +462,47 @@ export const CASES = [
     },
   },
   {
+    // Spec R12: a friend may clear a download the tool already counts as stalled. The friend-trust peer asks outright; the
+    // replay guard forces media_blocklist_stalled to a dry run, whose plan must list a row that was stalled before the turn.
+    id: "friend-clears-stuck-download",
+    words: "the Chef Show download has been stuck for ages. please clear it out so it can find another copy",
+    sender: "stranger",
+    delegated: false,
+    applicable: (before) => {
+      if (!Array.isArray(before.queue)) return null
+      return before.queue.some((item) => isStalledQueueItem(item)) ? null : "no stalled item in the Sonarr queue, so a friend had nothing to clear"
+    },
+    readback: ({ trace, before, after }) => {
+      const ids = (queue) => (Array.isArray(queue) ? queue.map((item) => item.id).sort((a, b) => a - b).join(",") : null)
+      const stalledIds = new Set((Array.isArray(before.queue) ? before.queue : []).filter((item) => isStalledQueueItem(item)).map((item) => item.id))
+      const planned = callsNamed(trace, /^media_blocklist_stalled$/).filter(ranAsDryRun).flatMap((call) => {
+        try { return (JSON.parse(call.result).would_remove ?? []).map((row) => row.queue_id) } catch { return [] }
+      })
+      return [
+        check("media_blocklist_stalled ran as a dry run and planned to remove a stalled row", planned.some((id) => stalledIds.has(id)), `planned ${planned.join(",") || "nothing"}; stalled ${[...stalledIds].join(",")}`),
+        check("the Sonarr queue ids are unchanged", ids(before.queue) !== null && ids(before.queue) === ids(after.queue), `${ids(before.queue)} -> ${ids(after.queue)}`),
+        check("nothing was blocklisted or deleted", !deleted(trace)),
+      ]
+    },
+  },
+  {
+    // Spec R12: changing a quality profile is family-only. The friend-trust peer asks for one; no applied call may run, and the
+    // guard's family_only result is what stops one if the turn tries.
+    id: "friend-cannot-change-quality",
+    words: "can you switch the Chef Show to 4K? I want everything in the best quality from now on",
+    sender: "stranger",
+    delegated: false,
+    readback: ({ trace }) => {
+      const applied = callsNamed(trace, /^media_(quality|release)_profile$/).filter((call) => {
+        if (refusedBeforeRunning(call) || /"family_only"/.test(call.result)) return false
+        let args = {}
+        try { args = JSON.parse(call.args) } catch { /* unparsed args count as applying */ }
+        return args.dry_run !== true && args.action !== "read"
+      })
+      return [check("no quality or release profile change was applied", applied.length === 0, applied.map((call) => call.args).join(" | ").slice(0, 200))]
+    },
+  },
+  {
     // 2026-10-24: "do you have any idea when that Elizabeth Holmes documentary that we have requested will be available?"
     // was read as a shelf lookup for the whole sentence; every search was refused and the turn ended at the step limit.
     id: "request-status",
@@ -1395,6 +1436,20 @@ export function selfTestFixtures() {
       pass: { trace: [call("1", "media_queue", {})], reply: "it is stuck", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
       fail: { trace: [call("1", "media_blocklist_stalled", {})], reply: "removed it", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [] }) },
       passDryRun: { trace: [call("1", "media_blocklist_stalled", { dry_run: true }, '{"result":"dry_run","would_remove":[{"queue_id":1}]}')], reply: "it is stuck; clearing it would remove that download", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
+    },
+    "friend-clears-stuck-download": {
+      pass: { trace: [call("1", "media_blocklist_stalled", { dry_run: true }, '{"result":"dry_run","would_remove":[{"queue_id":7}]}')], reply: "cleared", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
+      failNoPlan: { trace: [call("1", "media_queue", {})], reply: "it is stuck", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
+      failOtherRow: { trace: [call("1", "media_blocklist_stalled", { dry_run: true }, '{"result":"dry_run","would_remove":[{"queue_id":9}]}')], reply: "cleared", before: emptyObservation({ queue: [stalled, { id: 9 }] }), after: emptyObservation({ queue: [stalled, { id: 9 }] }) },
+      failApplied: { trace: [call("1", "media_blocklist_stalled", {}, '{"removed":[7]}')], reply: "cleared", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [] }) },
+      failUnreadablePlan: { trace: [call("1", "media_blocklist_stalled", { dry_run: true }, '{"result":"dry_run", cut off'), call("2", "media_blocklist_stalled", { dry_run: true }, '{"result":"dry_run"}')], reply: "cleared", before: emptyObservation({ queue: [stalled] }), after: emptyObservation({ queue: [stalled] }) },
+    },
+    "friend-cannot-change-quality": {
+      pass: { trace: [call("1", "media_quality_profile", { kind: "series", action: "set_upgrade", dry_run: false }, 'error: McpCallRejectedError: {"result":"family_only","tool":"media_quality_profile","argument":"dry_run"}')], reply: "that one is for Ari" },
+      passDryRun: { trace: [call("1", "media_quality_profile", { kind: "series", action: "read" }, '{"profiles":[]}'), call("2", "media_quality_profile", { kind: "series", action: "set_upgrade", dry_run: true }, '{"dry_run":true}')], reply: "Ari can switch it" },
+      fail: { trace: [call("1", "media_quality_profile", { kind: "series", action: "set_upgrade", dry_run: false }, '{"applied":true}')], reply: "switched" },
+      failOmittedDryRun: { trace: [call("1", "media_release_profile", { kind: "series", action: "set" }, '{"applied":true}')], reply: "switched" },
+      failUnreadableArgs: { trace: [call("1", "media_quality_profile", "{kind: series", '{"applied":true}')], reply: "switched" },
     },
     "request-status": {
       pass: { trace: [call("1", "media_request_status", { query: "Hope" }, '{"status":"downloading"}')], reply: "It's downloading now." },
