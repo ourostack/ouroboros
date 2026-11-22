@@ -7,6 +7,8 @@ import type { ToolDoorCard } from "./tools-base"
 import { preflightToolCall, registeredToolDefinitions } from "./tools"
 import { observeTool, ponderTool, restTool, settleTool, speakTool, toolCards as flowCards } from "./tools-flow"
 import { typedOutcome, type TypedToolOutcome } from "./tool-error-code"
+import { findToolsDefinition } from "./deferred-tools"
+import { specialistToolDefinitions } from "../heart/hatch/specialist-tools"
 
 /** An in-turn tool as tools/list serves it: the function definition the model sees, and its Ouro AX card. */
 export interface ListedInTurnTool extends OpenAI.ChatCompletionFunctionTool {
@@ -25,17 +27,21 @@ export const DISPATCH_ERRORS = [
   { code: "not-run", means: "This X-ray door checked the call but runs no tool.", fix: "Nothing to fix: in a real turn the tool runs." },
 ] as const
 
-const ENGINE_TOOLS = [settleTool, speakTool, observeTool, restTool, ponderTool]
+const FLOW_TOOLS = [settleTool, speakTool, observeTool, restTool, ponderTool]
+/** Tools a runner other than the dispatcher runs, which declare their cards beside their schemas. */
+const DECLARED = [findToolsDefinition, ...specialistToolDefinitions]
+const ENGINE_TOOLS = [...FLOW_TOOLS, ...DECLARED.map((d) => d.tool)]
 
 function card(id: string): ToolDoorCard {
   return flowCards.find((c) => c.id === id)!
 }
 
-/** Every in-turn tool the harness registers, with its card: the registered definitions, then the engine's flow tools. */
+/** Every in-turn tool the harness registers, with its card: the dispatched definitions, the engine's flow tools, then find_tools and the hatch specialist's own. */
 export function listInTurnTools(): ListedInTurnTool[] {
   const tools = [
     ...registeredToolDefinitions().map((def) => ({ ...def.tool, ax: def.ax })),
-    ...ENGINE_TOOLS.map((tool) => ({ ...tool, ax: card(`tool:${tool.function.name}`) })),
+    ...FLOW_TOOLS.map((tool) => ({ ...tool, ax: card(`tool:${tool.function.name}`) })),
+    ...DECLARED.map((d) => ({ ...d.tool, ax: d.ax })),
   ]
   emitNervesEvent({ component: "tools", event: "tool.door_listed", message: "in-turn tools listed for the X-ray", meta: { count: tools.length } })
   return tools

@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import { isDeepStrictEqual } from "node:util";
 import { toolCandidates } from "./tool-candidates";
+import { FIND_TOOLS_NAME } from "./tool-catalog";
 import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester, withCode } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
@@ -264,7 +265,7 @@ export function resolveToolDefinition(toolName: string, selection?: ToolSelectio
 
 /** Every in-turn tool definition the harness registers, before any channel or relationship narrows it. */
 export function registeredToolDefinitions(): ToolDefinition[] {
-  return [...baseToolDefinitions, ...additionalDefinitions, rootHostToolDefinition]
+  return [...baseToolDefinitions, ...additionalDefinitions, rootHostToolDefinition, voiceLocalAudioToolDefinition]
 }
 
 /** What an unknown tool answers: the real tools its name could mean, else where the real ones are. */
@@ -273,7 +274,9 @@ function unknownToolText(name: string, selection?: ToolSelection): string {
   const candidates = toolCandidates(name, names)
   return candidates.length > 0
     ? `unknown: ${name}; did you mean ${candidates.map((candidate) => `"${candidate}"`).join(" or ")}?`
-    : `unknown: ${name}; no tool has a name close to it, so pick one from this turn's tool list`
+    : names.includes(FIND_TOOLS_NAME)
+      ? `unknown: ${name}; no tool has a name close to it, so pick one from this turn's tool list, or call ${FIND_TOOLS_NAME} to search the tools held back from it`
+      : `unknown: ${name}; no tool has a name close to it, so pick one from this turn's tool list`
 }
 
 export function approvalPolicyForToolName(name: string, args: Record<string, unknown>, selection?: ToolSelection): ToolApprovalPolicy {

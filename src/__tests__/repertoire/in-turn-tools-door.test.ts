@@ -6,7 +6,7 @@ describe("the in-turn tools door", () => {
     const tools = listInTurnTools()
     const names = tools.map((tool) => tool.function.name)
     expect(new Set(names).size).toBe(names.length)
-    expect(names).toEqual(expect.arrayContaining(["read_file", "shell", "surface", "settle", "rest"]))
+    expect(names).toEqual(expect.arrayContaining(["read_file", "shell", "surface", "settle", "rest", "find_tools", "complete_adoption", "list_directory", "voice_join_local_audio"]))
     for (const tool of tools) {
       expect(tool.type).toBe("function")
       expect(tool.ax.id).toBe(`tool:${tool.function.name}`)
@@ -17,6 +17,14 @@ describe("the in-turn tools door", () => {
   it("refuses an unknown tool with the dispatcher's code, naming the real tool it could mean", async () => {
     await expect(callInTurnTool("read_fil", {})).resolves.toEqual({
       state: "refused", text: 'unknown: read_fil; did you mean "read_file"? (code: unknown-tool)', code: "unknown-tool",
+    })
+  })
+
+  it("points an unknown tool with no close name at find_tools, which this door serves", async () => {
+    await expect(callInTurnTool("zzqx", {})).resolves.toEqual({
+      state: "refused",
+      text: "unknown: zzqx; no tool has a name close to it, so pick one from this turn's tool list, or call find_tools to search the tools held back from it (code: unknown-tool)",
+      code: "unknown-tool",
     })
   })
 
