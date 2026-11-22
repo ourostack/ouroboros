@@ -2,9 +2,33 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1348",
+      "version": "0.1.0-alpha.1349",
       "changes": [
         "Friends of the Butler can no longer restart a container; restarts stay with family (household profile version 7)."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1346",
+      "changes": [
+        "find_tools, voice_join_local_audio, complete_adoption and list_directory have Ouro AX cards, their failures end with a code, and the census now finds a card for every in-turn tool."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1345",
+      "changes": [
+        "Only family turns and the agent's own private-runtime turns write psyche/TACIT.md. A friend's turn is told that what it learns from that person goes in their friend record, and the diary_write, save_friend_note and edit_file cards say in one sentence what goes where."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1344",
+      "changes": [
+        "A tool catalog built from each tool's Ouro AX card, with a search that finds the right tool, ready for loading tools on demand; and a script that counts tool-definition tokens per request."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1343",
+      "changes": [
+        "settle, speak, observe, rest and ponder have Ouro AX cards in a new turn-flow group, and the engine's refusals for them end with a code their cards name."
       ]
     },
     {

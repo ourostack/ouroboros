@@ -68,10 +68,10 @@ describe("Phase 2: tool description enrichment", () => {
       expect(desc).toContain("Search written facts before asking the human something the record may already answer")
     })
 
-    it("diary_write description contains behavioral guidance", () => {
+    it("diary_write description says in one sentence what goes in the diary (R10)", () => {
       const desc = getBaseDescription("diary_write")
-      expect(desc).toContain("Write for my future self")
-      expect(desc).toContain("Don't duplicate what already belongs in friend notes")
+      expect(desc).toContain("what happened and what I decided")
+      expect(desc).not.toMatch(/\b(always|never|don't)\b/i)
     })
   })
 
