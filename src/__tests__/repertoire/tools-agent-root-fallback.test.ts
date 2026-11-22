@@ -50,6 +50,8 @@ describe("tool agent-root fallbacks", () => {
       const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
       return { ...actual, getAgentRoot: () => tmp!.agentRoot }
     })
+    // tools-base assembles every tool module and tools-a2a imports withCode from it, so load tools-base first, as the runtime does.
+    await import("../../repertoire/tools-base")
     const { a2aToolDefinitions } = await import("../../repertoire/tools-a2a")
     const listPeers = a2aToolDefinitions.find((entry) => entry.tool.function.name === "a2a_list_peers")?.handler
     if (!listPeers) throw new Error("missing a2a_list_peers")

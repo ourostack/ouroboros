@@ -21,7 +21,7 @@ import { markRelayContactStale, readRelayContact, refreshRelayContact, relayCont
 import { delegationStoresFor } from "../a2a/delegation-stores"
 import { wrapMissionResultDataPart } from "../a2a/mission-result-wire"
 import type { A2ATask } from "../a2a/types"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode, type ToolContext, type ToolDefinition } from "./tools-base"
 
 const outboundTaskTokens = new Map<string, string>()
 
@@ -64,8 +64,8 @@ function storeFor(ctx?: ToolContext): FriendStore {
 }
 
 function requireTrustedRequester(ctx?: ToolContext): string | null {
-  if (!ctx?.context?.friend?.id) return "no friend context — cannot use A2A tools."
-  if (!isTrustedLevel(ctx.context.friend.trustLevel)) return "A2A tools require friend or family trust."
+  if (!ctx?.context?.friend?.id) return withCode("no friend context — cannot use A2A tools.", "no-friend-context")
+  if (!isTrustedLevel(ctx.context.friend.trustLevel)) return withCode("A2A tools require friend or family trust.", "untrusted-requester")
   return null
 }
 
@@ -300,7 +300,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           message: "connect_to refused (non-owner management sense)",
           meta: { tool: "connect_to", senseType, reason: authorization.reason },
         })
-        return `connect_to is available only from your own local management sense (the CLI you launched). This sense (${senseType}) is not permitted to link agents.`
+        return withCode(`connect_to is available only from your own local management sense (the CLI you launched). This sense (${senseType}) is not permitted to link agents.`, "not-local-sense")
       }
 
       const agentName = agentNameFromRoot(ctx?.agentRoot)
@@ -345,9 +345,15 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         }
         return `connected ${result.record.name} (${did ?? result.record.id}) at family trust.`
       } catch (error) {
-        return `connect_to error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+        return withCode(`connect_to error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`, "connect-failed")
       }
     },
+    ax: { id: "tool:connect_to", group: "a2a", when: "Pick this when your owner, at their own terminal, hands you another agent's card link to add as a trusted peer you can then message.", effect: "write", errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "not-local-sense", means: "Linking agents works only from the owner's own CLI session, and this turn came from another sense.", fix: "Ask your owner to make the link in a CLI session with you, where connect_to is allowed." },
+      { code: "connect-failed", means: "Fetching the card, checking its DID or saving the peer failed; the reason follows the colon.", fix: "Check card_url opens the agent's /.well-known/agent-card.json, then try once more." },
+    ] },
     summaryKeys: ["card_url", "name"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "links a new agent peer into the friend model at family trust" },
   },
@@ -374,7 +380,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       if (guard) return guard
       const store = storeFor(ctx)
       const listAll = store.listAll
-      if (!listAll) return "friend store does not support listing."
+      if (!listAll) return withCode("friend store does not support listing.", "no-peer-listing")
       const peers = (await listAll.call(store)).filter(isA2APeer)
       return JSON.stringify(peers.map((peer) => ({
         id: peer.id,
@@ -384,6 +390,12 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         cardUrl: peer.agentMeta?.a2a?.cardUrl,
       })), null, 2)
     },
+    ax: { id: "tool:a2a_list_peers", group: "a2a", when: "Pick this first when you need another agent's friend_id, or to see which agents you are linked with and how far each is trusted.", effect: "read", idempotent: true, errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "no-peer-listing", means: "This friend store can't list its records, so no peers can be shown.", fix: "Use a friend_id you already know, or ask your owner which agents are linked." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     summaryKeys: [],
   },
   {
@@ -413,8 +425,8 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const guard = requireTrustedRequester(ctx)
       if (guard) return guard
       const peer = await storeFor(ctx).get(args.friend_id)
-      if (!peer || !isA2APeer(peer)) return `A2A peer not found: ${args.friend_id}`
-      if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before outbound messages."
+      if (!peer || !isA2APeer(peer)) return withCode(`A2A peer not found: ${args.friend_id}`, "peer-not-found")
+      if (!isTrustedLevel(peer.trustLevel)) return withCode("target A2A peer must be friend or family trust before outbound messages.", "untrusted-peer")
 
       // ROUTING (explicit, no impl judgment): a DID-keyed peer → seal+sign via
       // sendShare over the direct rung (E2E, verified-DID inbound). A legacy peer
@@ -434,7 +446,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           })
           return deliveryText(peer.name, did, delivery)
         } catch (error) {
-          return `A2A sealed send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures @preserve */ String(error)}`
+          return withCode(`A2A sealed send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures @preserve */ String(error)}`, "send-failed")
         }
       }
 
@@ -451,9 +463,16 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         rememberTaskToken(ctx, peer.id, task)
         return JSON.stringify(redactTaskToken(task), null, 2)
       } catch (error) {
-        return `A2A send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
+        return withCode(`A2A send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`, "send-failed")
       }
     },
+    ax: { id: "tool:a2a_send_message", group: "a2a", when: "Pick this to say something to another agent or ask it a one-off favour; for tracked work on a shared mission, coordinate records the request.", effect: "write", errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "peer-not-found", means: "friend_id names no onboarded A2A agent peer.", fix: "Call a2a_list_peers and pass one of the ids it shows." },
+      { code: "untrusted-peer", means: "That agent peer is below friend trust, so I won't talk to it.", fix: "Ask your owner to raise the peer's trust, or pick a trusted peer from a2a_list_peers." },
+      { code: "send-failed", means: "The message didn't reach the peer; the transport's reason follows the colon.", fix: "Try once more later; if it fails again, tell your owner that peer can't be reached." },
+    ] },
     summaryKeys: ["friend_id", "session_key"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends a message to a remote agent peer" },
   },
@@ -484,8 +503,8 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const guard = requireTrustedRequester(ctx)
       if (guard) return guard
       const peer = await storeFor(ctx).get(args.friend_id)
-      if (!peer || !isA2APeer(peer)) return `A2A peer not found: ${args.friend_id}`
-      if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before task lookup."
+      if (!peer || !isA2APeer(peer)) return withCode(`A2A peer not found: ${args.friend_id}`, "peer-not-found")
+      if (!isTrustedLevel(peer.trustLevel)) return withCode("target A2A peer must be friend or family trust before task lookup.", "untrusted-peer")
       try {
         const endpoint = await resolveA2AEndpoint(peer)
         const task = await getA2ATask({
@@ -499,9 +518,17 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         rememberTaskToken(ctx, peer.id, task)
         return JSON.stringify(redactTaskToken(task), null, 2)
       } catch (error) {
-        return `A2A task error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
+        return withCode(`A2A task error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`, "task-fetch-failed")
       }
     },
+    ax: { id: "tool:a2a_get_task", group: "a2a", when: "Pick this after a2a_send_message gave you a task id, to see whether the other agent has finished it and what it answered.", effect: "read", idempotent: true, errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "peer-not-found", means: "friend_id names no onboarded A2A agent peer.", fix: "Call a2a_list_peers and pass one of the ids it shows." },
+      { code: "untrusted-peer", means: "That agent peer is below friend trust, so I won't talk to it.", fix: "Ask your owner to raise the peer's trust, or pick a trusted peer from a2a_list_peers." },
+      { code: "task-fetch-failed", means: "The peer didn't return the task; its reason follows the colon.", fix: "Check task_id came from that same peer's reply; pass access_token if an outside agent gave you one." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     summaryKeys: ["friend_id", "task_id"],
   },
   {
@@ -533,10 +560,10 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       const guard = requireTrustedRequester(ctx)
       if (guard) return guard
       const peer = await storeFor(ctx).get(args.friend_id)
-      if (!peer || !isA2APeer(peer)) return `A2A peer not found: ${args.friend_id}`
-      if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before delegating."
+      if (!peer || !isA2APeer(peer)) return withCode(`A2A peer not found: ${args.friend_id}`, "peer-not-found")
+      if (!isTrustedLevel(peer.trustLevel)) return withCode("target A2A peer must be friend or family trust before delegating.", "untrusted-peer")
       const did = peerDid(peer)
-      if (!did) return "coordinate requires a DID-keyed peer (connect_to it first to pin its did:key)."
+      if (!did) return withCode("coordinate requires a DID-keyed peer (connect_to it first to pin its did:key).", "peer-not-did-keyed")
 
       /* v8 ignore next -- in-turn coordinate always carries a bundle agentRoot; the ambient-name fallback is defensive (same pattern as connect_to) @preserve */
       const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
@@ -579,9 +606,17 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         const queued = delivery.rung === "relay" ? ` ${deliveryText(peer.name, did, delivery, "delegation")}` : ""
         return `coordinated: delegated "${args.task_summary}" to ${peer.name} on mission ${args.mission_key} (requestId ${requestId}).${queued}`
       } catch (error) {
-        return `coordinate error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+        return withCode(`coordinate error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`, "coordinate-failed")
       }
     },
+    ax: { id: "tool:coordinate", group: "a2a", when: "Pick this to hand a piece of work on a named shared mission to another agent and track it until it answers with send_result.", effect: "write", errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "peer-not-found", means: "friend_id names no onboarded A2A agent peer.", fix: "Call a2a_list_peers and pass one of the ids it shows." },
+      { code: "untrusted-peer", means: "That agent peer is below friend trust, so I won't talk to it.", fix: "Ask your owner to raise the peer's trust, or pick a trusted peer from a2a_list_peers." },
+      { code: "peer-not-did-keyed", means: "The peer has no pinned did:key, so the request can't be sealed to it.", fix: "Ask your owner to link the peer again with connect_to, which pins its DID." },
+      { code: "coordinate-failed", means: "Recording or sealing the delegation failed; the reason follows the colon.", fix: "Read the reason, fix what it names, and call coordinate again with the same mission_key." },
+    ] },
     summaryKeys: ["friend_id", "mission_key"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "delegates a task to a remote agent peer" },
   },
@@ -624,6 +659,11 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       }
       return JSON.stringify(rows, null, 2)
     },
+    ax: { id: "tool:list_delegations", group: "a2a", when: "Pick this to check for jobs peers handed you before you start on them, and to find the requestId to answer with.", effect: "read", idempotent: true, errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
     summaryKeys: [],
   },
   {
@@ -660,20 +700,20 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       /* v8 ignore next -- FileMissionStore always implements listAll; the [] fallback guards a future store-shape regression @preserve */
       const missions: MissionRecord[] = missionStore.listAll ? await missionStore.listAll() : []
       const found = findImportedDelegation(missions, args.request_id)
-      if (!found) return `no imported delegation found for requestId ${args.request_id} (check list_delegations).`
+      if (!found) return withCode(`no imported delegation found for requestId ${args.request_id} (check list_delegations).`, "delegation-not-found")
 
       // The delegator (the recipient of the result) must be a trusted, reachable,
       // DID-keyed peer in our store.
       const delegator = await findFriendByDid(store, found.fromAgentId)
-      if (!delegator || !isA2APeer(delegator)) return `delegating peer not found for ${found.fromAgentId}.`
-      if (!isTrustedLevel(delegator.trustLevel)) return "delegating peer must be friend or family trust to return a result."
+      if (!delegator || !isA2APeer(delegator)) return withCode(`delegating peer not found for ${found.fromAgentId}.`, "delegator-not-found")
+      if (!isTrustedLevel(delegator.trustLevel)) return withCode("delegating peer must be friend or family trust to return a result.", "untrusted-peer")
       const delegatorDid = peerDid(delegator)
       /* v8 ignore next -- unreachable: findFriendByDid matched this record BY its DID (via resolveAgentIdentity, which omits empty DIDs), so a2a.did is always present here. Defensive. @preserve */
       if (!delegatorDid) return "delegating peer is not DID-keyed (cannot seal the result)."
       const parsedDelegator = parseDidKey(delegatorDid)
-      if (!parsedDelegator) return `cannot seal: delegating peer DID is unparseable (${delegatorDid}).`
+      if (!parsedDelegator) return withCode(`cannot seal: delegating peer DID is unparseable (${delegatorDid}).`, "delegator-unreachable")
       const endpointUrl = delegator.agentMeta?.a2a?.endpointUrl
-      if (!endpointUrl) return "delegating peer has no reachable A2A endpoint to return the result to."
+      if (!endpointUrl) return withCode("delegating peer has no reachable A2A endpoint to return the result to.", "delegator-unreachable")
 
       /* v8 ignore next -- in-turn send_result always carries a bundle agentRoot; the ambient-name fallback is defensive (same pattern as connect_to) @preserve */
       const agentName = agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent"
@@ -720,9 +760,18 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           ? `result sent to ${delegator.name} (${delegatorDid}) for requestId ${args.request_id}.`
           : `${deliveryText(delegator.name, delegatorDid, delivery, "result")} (requestId ${args.request_id})`
       } catch (error) {
-        return `send_result error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`
+        return withCode(`send_result error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error failures @preserve */ String(error)}`, "send-result-failed")
       }
     },
+    ax: { id: "tool:send_result", group: "a2a", when: "Pick this once you have finished work another agent delegated to you, to deliver the outcome back against its requestId.", effect: "write", errors: [
+      { code: "no-friend-context", means: "This turn has no friend behind it, so A2A tools can't tell who is asking.", fix: "Use A2A tools only on a turn that a known friend or family member started." },
+      { code: "untrusted-requester", means: "The person on this turn is below friend trust, and A2A tools need friend or family.", fix: "Tell them you can't reach other agents for them; your owner can raise their trust." },
+      { code: "delegation-not-found", means: "No delegation sent to you has that request_id.", fix: "Call list_delegations and pass the requestId it shows." },
+      { code: "delegator-not-found", means: "The agent that sent the delegation isn't a linked peer any more.", fix: "Ask your owner to link that agent again with connect_to, then send the result." },
+      { code: "untrusted-peer", means: "The delegating agent is below friend trust, so I won't send it the result.", fix: "Ask your owner whether to raise its trust before you send." },
+      { code: "delegator-unreachable", means: "The delegating agent's DID can't be read or it has no A2A endpoint, so the result can't be delivered.", fix: "Ask your owner to link that agent again with connect_to, which refreshes its DID and endpoint." },
+      { code: "send-result-failed", means: "Sealing or delivering the result failed; the reason follows the colon.", fix: "Try send_result once more; if it fails again, tell your owner the result is ready but undelivered." },
+    ] },
     summaryKeys: ["request_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "returns a result to a remote agent peer" },
   },

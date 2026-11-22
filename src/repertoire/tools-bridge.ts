@@ -6,7 +6,7 @@ import {
   type SessionTailOptions,
   type SessionTailResult,
 } from "../heart/session-transcript";
-import type { ToolDefinition } from "./tools-base";
+import { withCode, type ToolDefinition } from "./tools-base";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
@@ -76,10 +76,10 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
 
       if (action === "begin") {
         if (!ctx?.currentSession) {
-          return "bridge_manage begin requires an active session context."
+          return withCode("bridge_manage begin requires an active session context.", "no-active-session")
         }
         const objective = (args.objective || "").trim()
-        if (!objective) return "objective is required for bridge begin."
+        if (!objective) return withCode("objective is required for bridge begin.", "missing-objective")
 
         return formatBridgeStatus(
           manager.beginBridge({
@@ -92,7 +92,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
 
       const bridgeId = (args.bridgeId || "").trim()
       if (!bridgeId) {
-        return "bridgeId is required for this bridge action."
+        return withCode("bridgeId is required for this bridge action.", "missing-bridge-id")
       }
 
       if (action === "attach") {
@@ -100,7 +100,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
         const channel = (args.channel || "").trim()
         const key = (args.key || "session").trim()
         if (!friendId || !channel) {
-          return "friendId and channel are required for bridge attach."
+          return withCode("friendId and channel are required for bridge attach.", "missing-attach-target")
         }
 
         const sessionPath = resolveSessionPath(friendId, channel, key)
@@ -114,7 +114,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
           summarize: ctx?.summarize,
         })
         if (sessionTail.kind === "missing") {
-          return NO_SESSION_FOUND_MESSAGE
+          return withCode(NO_SESSION_FOUND_MESSAGE, "session-not-found")
         }
 
         return formatBridgeStatus(
@@ -130,7 +130,7 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
 
       if (action === "status") {
         const bridge = manager.getBridge(bridgeId)
-        if (!bridge) return `bridge not found: ${bridgeId}`
+        if (!bridge) return withCode(`bridge not found: ${bridgeId}`, "bridge-not-found")
         return formatBridgeStatus(bridge)
       }
 
@@ -154,6 +154,14 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
 
       return `unknown bridge action: ${action}`
     },
+    ax: { id: "tool:bridge_manage", group: "turn-sessions", when: "Pick this when one piece of work spans conversations already under way, such as two friends' chats, so each can share its status and progress.", effect: "write", errors: [
+      { code: "no-active-session", means: "begin needs the conversation you're in, and this turn has none.", fix: "Start the bridge from a turn inside one of the conversations it should join." },
+      { code: "missing-objective", means: "begin came without an objective.", fix: "Call begin again with objective set to the shared goal in one line." },
+      { code: "missing-bridge-id", means: "Every action but begin needs bridgeId.", fix: "Pass the bridge id that begin returned." },
+      { code: "missing-attach-target", means: "attach needs both friendId and channel.", fix: "Call attach again with the friend's id and the channel of their session, plus key if it isn't 'session'." },
+      { code: "session-not-found", means: "No saved session matches that friendId, channel and key.", fix: "Check the friend, channel and key with query_session, then attach again." },
+      { code: "bridge-not-found", means: "No bridge has that bridgeId.", fix: "Check the id from begin's reply, or begin a new bridge." },
+    ] },
     summaryKeys: ["action", "bridgeId", "objective", "friendId", "channel", "key"],
     riskProfile: (args) => args.action === "status"
       ? { mutates: "none", risk: "low", reason: "bridge status is read-only" }
