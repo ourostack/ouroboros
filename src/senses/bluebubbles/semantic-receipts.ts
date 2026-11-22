@@ -2537,7 +2537,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
+// Every recovery pass re-reads the same legacy records, so a bundle with
+// 1,530 of them wrote 1,530 identical warnings every 30 seconds. Report each
+// distinct record once per process; the record stays audit-only either way.
+const reportedLegacyRecoveryRecords = new Set<string>()
+
+function legacyRecoveryFingerprint(value: unknown): string | null {
+  try {
+    const serialized = JSON.stringify(value)
+    return serialized === undefined ? null : sha256Utf8(serialized)
+  } catch {
+    return null
+  }
+}
+
 function emitLegacyRecoveryBlocked(value: unknown): void {
+  const fingerprint = legacyRecoveryFingerprint(value)
+  if (fingerprint !== null) {
+    if (reportedLegacyRecoveryRecords.has(fingerprint)) return
+    reportedLegacyRecoveryRecords.add(fingerprint)
+  }
   emitNervesEvent({
     level: "warn",
     component: "senses",

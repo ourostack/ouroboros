@@ -1229,6 +1229,41 @@ describe("BlueBubbles semantic identity and cutover", () => {
       }),
     }))
   })
+
+  it("reports each legacy recovery record once per process, however many recovery passes see it", async () => {
+    vi.resetModules()
+    const nerves = vi.fn()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: nerves }))
+    const semantic = await import("../../../senses/bluebubbles/semantic-receipts")
+    const cutover = {
+      schemaVersion: 1 as const,
+      providerNamespace: PROVIDER_NAMESPACE,
+      effectiveAt: CUTOVER_AT,
+    }
+    const legacyA = { mutationType: "reaction", messageGuid: "legacy-a" }
+    const legacyB = { mutationType: "reaction", messageGuid: "legacy-b" }
+    const legacyCalls = () => nerves.mock.calls
+      .filter(([event]) => event.event === "senses.bluebubbles_legacy_recovery_blocked")
+
+    for (let pass = 0; pass < 3; pass += 1) {
+      expect(semantic.classifyBlueBubblesRecoveryRecord({ ...legacyA }, cutover))
+        .toEqual({ disposition: "audit_only", reason: "legacy_or_actorless" })
+    }
+    expect(legacyCalls()).toHaveLength(1)
+
+    semantic.classifyBlueBubblesRecoveryRecord(legacyB, cutover)
+    semantic.classifyBlueBubblesRecoveryRecord(legacyB, cutover)
+    expect(legacyCalls()).toHaveLength(2)
+
+    // A record with no JSON form can't be fingerprinted, so it is never hidden.
+    const circular: Record<string, unknown> = { mutationType: "reaction" }
+    circular.self = circular
+    for (const unfingerprintable of [undefined, circular, undefined, circular]) {
+      expect(semantic.classifyBlueBubblesRecoveryRecord(unfingerprintable, cutover))
+        .toEqual({ disposition: "audit_only", reason: "legacy_or_actorless" })
+    }
+    expect(legacyCalls()).toHaveLength(6)
+  })
 })
 
 type SemanticCapture = NonNullable<ReturnType<typeof buildBlueBubblesSemanticCapture>>
