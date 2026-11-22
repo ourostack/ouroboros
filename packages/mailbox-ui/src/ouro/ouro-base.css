@@ -20,7 +20,8 @@
  * - --ouro-control-radius and --ouro-control-corner-shape: the shape of the controls a person presses
  *   or types into (Button, Toggle, SegmentedControl, TextField, Select, Combobox, NumberField and
  *   Field's inputs). Unset, they follow --radius and --ouro-corner-shape, as every other corner does; a
- *   theme sets them to give its controls their own shape, such as capsules (9999px and round) on a
+ *   theme sets them to give its controls their own shape, such as capsules (9999px and superellipse(1.05),
+ *   Apple's continuous capsule) on a
  *   page of square cards. --ouro-check-radius and --ouro-check-corner-shape do the same for the
  *   checkbox's box (Checkbox and Checklist), such as circles (9999px and round).
  * - --ouro-bubble-user and --ouro-bubble-user-foreground: the fill and text of the user's own chat
@@ -356,7 +357,7 @@
 @supports (clip-path: shape(from 0 0, close)) {
   [data-ouro-surface],
   [data-ouro-avatar-surface] {
-    --ouro-sq-path: shape(from 0 calc(var(--ouro-sq-r)*1), curve to calc(var(--ouro-sq-r)*.1591) calc(var(--ouro-sq-r)*.1591) with 0 calc(var(--ouro-sq-r)*.613) / calc(var(--ouro-sq-r)*-.0092) calc(var(--ouro-sq-r)*.3274), curve to calc(var(--ouro-sq-r)*1) 0 with calc(var(--ouro-sq-r)*.3274) calc(var(--ouro-sq-r)*-.0092) / calc(var(--ouro-sq-r)*.613) 0, line to calc(100% - var(--ouro-sq-r)*1) 0, curve to calc(100% - var(--ouro-sq-r)*.1591) calc(var(--ouro-sq-r)*.1591) with calc(100% - var(--ouro-sq-r)*.613) 0 / calc(100% - var(--ouro-sq-r)*.3274) calc(var(--ouro-sq-r)*-.0092), curve to 100% calc(var(--ouro-sq-r)*1) with calc(100% + var(--ouro-sq-r)*.0092) calc(var(--ouro-sq-r)*.3274) / 100% calc(var(--ouro-sq-r)*.613), line to 100% calc(100% - var(--ouro-sq-r)*1), curve to calc(100% - var(--ouro-sq-r)*.1591) calc(100% - var(--ouro-sq-r)*.1591) with 100% calc(100% - var(--ouro-sq-r)*.613) / calc(100% + var(--ouro-sq-r)*.0092) calc(100% - var(--ouro-sq-r)*.3274), curve to calc(100% - var(--ouro-sq-r)*1) 100% with calc(100% - var(--ouro-sq-r)*.3274) calc(100% + var(--ouro-sq-r)*.0092) / calc(100% - var(--ouro-sq-r)*.613) 100%, line to calc(var(--ouro-sq-r)*1) 100%, curve to calc(var(--ouro-sq-r)*.1591) calc(100% - var(--ouro-sq-r)*.1591) with calc(var(--ouro-sq-r)*.613) 100% / calc(var(--ouro-sq-r)*.3274) calc(100% + var(--ouro-sq-r)*.0092), curve to 0 calc(100% - var(--ouro-sq-r)*1) with calc(var(--ouro-sq-r)*-.0092) calc(100% - var(--ouro-sq-r)*.3274) / 0 calc(100% - var(--ouro-sq-r)*.613), close);
+    --ouro-sq-path: var(--ouro-sq-capsule-path, shape(from 0 calc(var(--ouro-sq-r)*1), curve to calc(var(--ouro-sq-r)*.1591) calc(var(--ouro-sq-r)*.1591) with 0 calc(var(--ouro-sq-r)*.613) / calc(var(--ouro-sq-r)*-.0092) calc(var(--ouro-sq-r)*.3274), curve to calc(var(--ouro-sq-r)*1) 0 with calc(var(--ouro-sq-r)*.3274) calc(var(--ouro-sq-r)*-.0092) / calc(var(--ouro-sq-r)*.613) 0, line to calc(100% - var(--ouro-sq-r)*1) 0, curve to calc(100% - var(--ouro-sq-r)*.1591) calc(var(--ouro-sq-r)*.1591) with calc(100% - var(--ouro-sq-r)*.613) 0 / calc(100% - var(--ouro-sq-r)*.3274) calc(var(--ouro-sq-r)*-.0092), curve to 100% calc(var(--ouro-sq-r)*1) with calc(100% + var(--ouro-sq-r)*.0092) calc(var(--ouro-sq-r)*.3274) / 100% calc(var(--ouro-sq-r)*.613), line to 100% calc(100% - var(--ouro-sq-r)*1), curve to calc(100% - var(--ouro-sq-r)*.1591) calc(100% - var(--ouro-sq-r)*.1591) with 100% calc(100% - var(--ouro-sq-r)*.613) / calc(100% + var(--ouro-sq-r)*.0092) calc(100% - var(--ouro-sq-r)*.3274), curve to calc(100% - var(--ouro-sq-r)*1) 100% with calc(100% - var(--ouro-sq-r)*.3274) calc(100% + var(--ouro-sq-r)*.0092) / calc(100% - var(--ouro-sq-r)*.613) 100%, line to calc(var(--ouro-sq-r)*1) 100%, curve to calc(var(--ouro-sq-r)*.1591) calc(100% - var(--ouro-sq-r)*.1591) with calc(var(--ouro-sq-r)*.613) 100% / calc(var(--ouro-sq-r)*.3274) calc(100% + var(--ouro-sq-r)*.0092), curve to 0 calc(100% - var(--ouro-sq-r)*1) with calc(var(--ouro-sq-r)*-.0092) calc(100% - var(--ouro-sq-r)*.3274) / 0 calc(100% - var(--ouro-sq-r)*.613), close));
   }
 }
 
@@ -364,6 +365,22 @@
 @container style(--corner-shape: round) {
   [data-ouro-squircle] > [data-ouro-surface] {
     clip-path: inset(0 round var(--ouro-sq-r));
+  }
+  [data-ouro-squircle] > [data-ouro-surface]::after {
+    border-radius: var(--ouro-sq-r);
+  }
+}
+
+/* Where the surface shows (no corner-shape), a capsule in Ouro's capsule shape, superellipse(1.05) (Apple's continuous
+   capsule, which a theme gives its controls with --ouro-control-radius: 9999px and --ouro-control-corner-shape:
+   superellipse(1.05)), is clipped to that same superellipse: an exponent of 2^1.05 from the corner's centre, one Bézier
+   curve a corner within 0.06% of the curve (--ouro-sq-capsule-path, which the shape() rule below takes), or a polygon of
+   nine points a corner where the engine draws no shape(). The
+   ring inside it follows the radius's circle, at most 1.2% of the radius inside the curve. */
+@container style(--corner-shape: superellipse(1.05)) {
+  [data-ouro-squircle] > [data-ouro-surface] {
+    --ouro-sq-o: 0 calc(var(--ouro-sq-r)*1), calc(var(--ouro-sq-r)*0.0186) calc(var(--ouro-sq-r)*0.7937), calc(var(--ouro-sq-r)*0.0736) calc(var(--ouro-sq-r)*0.6046), calc(var(--ouro-sq-r)*0.1633) calc(var(--ouro-sq-r)*0.4332), calc(var(--ouro-sq-r)*0.2845) calc(var(--ouro-sq-r)*0.2845), calc(var(--ouro-sq-r)*0.4332) calc(var(--ouro-sq-r)*0.1633), calc(var(--ouro-sq-r)*0.6046) calc(var(--ouro-sq-r)*0.0736), calc(var(--ouro-sq-r)*0.7937) calc(var(--ouro-sq-r)*0.0186), calc(var(--ouro-sq-r)*1) 0, calc(100% - var(--ouro-sq-r)*1) 0, calc(100% - var(--ouro-sq-r)*0.7937) calc(var(--ouro-sq-r)*0.0186), calc(100% - var(--ouro-sq-r)*0.6046) calc(var(--ouro-sq-r)*0.0736), calc(100% - var(--ouro-sq-r)*0.4332) calc(var(--ouro-sq-r)*0.1633), calc(100% - var(--ouro-sq-r)*0.2845) calc(var(--ouro-sq-r)*0.2845), calc(100% - var(--ouro-sq-r)*0.1633) calc(var(--ouro-sq-r)*0.4332), calc(100% - var(--ouro-sq-r)*0.0736) calc(var(--ouro-sq-r)*0.6046), calc(100% - var(--ouro-sq-r)*0.0186) calc(var(--ouro-sq-r)*0.7937), 100% calc(var(--ouro-sq-r)*1), 100% calc(100% - var(--ouro-sq-r)*1), calc(100% - var(--ouro-sq-r)*0.0186) calc(100% - var(--ouro-sq-r)*0.7937), calc(100% - var(--ouro-sq-r)*0.0736) calc(100% - var(--ouro-sq-r)*0.6046), calc(100% - var(--ouro-sq-r)*0.1633) calc(100% - var(--ouro-sq-r)*0.4332), calc(100% - var(--ouro-sq-r)*0.2845) calc(100% - var(--ouro-sq-r)*0.2845), calc(100% - var(--ouro-sq-r)*0.4332) calc(100% - var(--ouro-sq-r)*0.1633), calc(100% - var(--ouro-sq-r)*0.6046) calc(100% - var(--ouro-sq-r)*0.0736), calc(100% - var(--ouro-sq-r)*0.7937) calc(100% - var(--ouro-sq-r)*0.0186), calc(100% - var(--ouro-sq-r)*1) 100%, calc(var(--ouro-sq-r)*1) 100%, calc(var(--ouro-sq-r)*0.7937) calc(100% - var(--ouro-sq-r)*0.0186), calc(var(--ouro-sq-r)*0.6046) calc(100% - var(--ouro-sq-r)*0.0736), calc(var(--ouro-sq-r)*0.4332) calc(100% - var(--ouro-sq-r)*0.1633), calc(var(--ouro-sq-r)*0.2845) calc(100% - var(--ouro-sq-r)*0.2845), calc(var(--ouro-sq-r)*0.1633) calc(100% - var(--ouro-sq-r)*0.4332), calc(var(--ouro-sq-r)*0.0736) calc(100% - var(--ouro-sq-r)*0.6046), calc(var(--ouro-sq-r)*0.0186) calc(100% - var(--ouro-sq-r)*0.7937), 0 calc(100% - var(--ouro-sq-r)*1);
+    --ouro-sq-capsule-path: shape(from 0 var(--ouro-sq-r), curve to var(--ouro-sq-r) 0 with 0 calc(var(--ouro-sq-r)*.4253) / calc(var(--ouro-sq-r)*.4253) 0, line to calc(100% - var(--ouro-sq-r)) 0, curve to 100% var(--ouro-sq-r) with calc(100% - var(--ouro-sq-r)*.4253) 0 / 100% calc(var(--ouro-sq-r)*.4253), line to 100% calc(100% - var(--ouro-sq-r)), curve to calc(100% - var(--ouro-sq-r)) 100% with 100% calc(100% - var(--ouro-sq-r)*.4253) / calc(100% - var(--ouro-sq-r)*.4253) 100%, line to var(--ouro-sq-r) 100%, curve to 0 calc(100% - var(--ouro-sq-r)) with calc(var(--ouro-sq-r)*.4253) 100% / 0 calc(100% - var(--ouro-sq-r)*.4253), close);
   }
   [data-ouro-squircle] > [data-ouro-surface]::after {
     border-radius: var(--ouro-sq-r);
@@ -383,7 +400,7 @@
 }
 
 /* The controls a person presses or types into round with these, so a theme shapes them all at once with
-   --ouro-control-radius and --ouro-control-corner-shape (9999px and round make capsules), and its checks with
+   --ouro-control-radius and --ouro-control-corner-shape (9999px and superellipse(1.05) make capsules), and its checks with
    --ouro-check-radius and --ouro-check-corner-shape. Unset, they are Ouro's lg and md steps (rounded-ouro-lg,
    rounded-ouro-md) and the sm step in the theme's corner shape. --ouro-control-r is the radius, for a part that
    rounds to match (a stepper inside a field); --ouro-sq-r is the squircle surface's radius where corner-shape is missing.
