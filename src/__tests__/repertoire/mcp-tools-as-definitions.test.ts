@@ -385,6 +385,8 @@ describe("mcpToolsAsDefinitions", () => {
     const [tool] = mcpToolsAsDefinitions(mgr)
     const peer = { ...MCP_CONTEXT, relationshipAuthorization: { profileId: "sanctuary-agent-peer", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: false as const, reason: "x" }) } }
     await expect(tool.handler({ kind: "movie", dry_run: false }, peer as any)).rejects.toMatchObject({ name: "McpCallRejectedError" })
-    await expect(tool.handler({ kind: "movie" }, peer as any)).resolves.toBe("ok")
+    // Only dry_run true is a dry run (spec R12): an omitted dry_run is refused too.
+    await expect(tool.handler({ kind: "movie" }, peer as any)).rejects.toMatchObject({ name: "McpCallRejectedError" })
+    await expect(tool.handler({ kind: "movie", dry_run: true }, peer as any)).resolves.toBe("ok")
   })
 })
