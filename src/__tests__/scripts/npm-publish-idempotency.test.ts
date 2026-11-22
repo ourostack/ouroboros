@@ -165,9 +165,9 @@ describe("npm publish idempotency", () => {
     const STAGED = fail("npm error code E409\nnpm error Cannot publish over previously staged version")
     const noSleep = { attempts: 3, intervalMs: 0, sleep: () => {} }
 
-    function stagedFake(landed: string | null, local: string) {
+    function stagedFake(landed: string | null, local: string, rejection: NpmResult = STAGED) {
       let views = 0
-      const fake = fakeNpm({ local, remote: null, publish: () => STAGED })
+      const fake = fakeNpm({ local, remote: null, publish: () => rejection })
       const inner = fake.npm
       const npm = (args: string[]): NpmResult => {
         if (args[0] === "view" && ++views >= 4) fake.state.remote = landed
@@ -184,6 +184,20 @@ describe("npm publish idempotency", () => {
       expect(publishCalls(fake.calls)).toHaveLength(1)
     })
 
+    it("also waits on E403 over a previously published version that is not yet readable", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", SAME_FILES), local, FORBIDDEN)
+      expect(publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
+        .toEqual({ outcome: "already-published", spec: SPEC })
+    })
+
+    it("does not wait on a generic E403 policy or auth denial", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", SAME_FILES), local, fail("npm error code E403\nnpm error 403 Forbidden - token lacks permission"))
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
+        .toThrow(`npm publish ${SPEC} failed: npm error code E403`)
+    })
+
     it("fails on different contents after the wait instead of accepting E409", () => {
       const local = tarball("local", SAME_FILES)
       const fake = stagedFake(tarball("landed", CHANGED_FILES), local)
@@ -195,7 +209,7 @@ describe("npm publish idempotency", () => {
       const local = tarball("local", SAME_FILES)
       const fake = stagedFake(null, local)
       expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
-        .toThrow("staged by another publish but still unreadable after 3 polls")
+        .toThrow("published or staged by another publish but still unreadable after 3 polls")
     })
 
     it("surfaces a registry read error during the wait", () => {
