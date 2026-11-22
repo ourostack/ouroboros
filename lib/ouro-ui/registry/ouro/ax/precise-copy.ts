@@ -1,4 +1,4 @@
-export { BARE_FAILURE, CAUSE_MARKER, checkFailureCopyAllow, FAILURE_KEYS, LEAD_FAILURE, NOT_A_CAUSE, NOT_BARE_LEADS, statesCause, VAGUE_CAUSE, VAGUE_FAILURE_PHRASES, vagueFailureIn, vagueFailuresIn };
+export { BARE_FAILURE, CAUSE_MARKER, checkFailureCopyAllow, FAILURE_KEYS, LEAD_FAILURE, NOT_A_CAUSE, NOT_BARE_LEADS, PRECISE_FAILURE_KEY, preciseFailureProblem, statesCause, VAGUE_CAUSE, VAGUE_FAILURE_PHRASES, vagueFailureIn, vagueFailuresIn };
 export type { FailureCopyAllow, VagueFailureFinding, VagueFailuresOptions };
 
 // The export list comes first because the shadcn CLI drops comments before a file's
@@ -100,6 +100,21 @@ const NOT_BARE_LEADS: readonly string[] = Object.freeze(["no", "nothing", "zero"
  */
 const FAILURE_KEYS: ReadonlySet<string> = new Set(["error", "human", "reason", "next", "fix", "resume"]);
 const AX_KEYS: ReadonlySet<string> = new Set(["summary", "detail"]);
+/** The field on an outcome's `error` or `human`, or a checks row, that says why its short failure text is precise. */
+const PRECISE_FAILURE_KEY = "preciseFailure";
+
+/**
+ * What is wrong with a record's `preciseFailure`, or null when the field is absent or holds a reason. A blank or
+ * non-text value is skipped, so the detectors keep reading the record's text.
+ *
+ * @example
+ * preciseFailureProblem({ code: "x", preciseFailure: " " }); // "preciseFailure needs a reason in words"
+ */
+function preciseFailureProblem(record: Record<string, unknown>): string | null {
+  const reason = record[PRECISE_FAILURE_KEY];
+  return reason === undefined || (typeof reason === "string" && reason.trim().length > 0) ? null : "preciseFailure needs a reason in words";
+}
+
 /** A code or a status ("failed", "not_found"), not copy. */
 const TOKEN = /^[a-z][\w.:-]*$/;
 
@@ -163,7 +178,9 @@ const allowedBy = (text: string, allow: readonly FailureCopyAllow[]) => allow.fi
 /**
  * Every vague failure message in a value: a message, a `help --json`, an outcome, a refusal or a checks report. A
  * finding an allow-list entry lets through carries the entry. With `messagesOnly`, only what is under
- * {@link FAILURE_KEYS}, and an Ouro AX answer's `summary` and `detail`; a `code` is never read.
+ * {@link FAILURE_KEYS}, and an Ouro AX answer's `summary` and `detail`; a `code` is never read. A record with a
+ * `preciseFailure` reason (an outcome's `error` or `human`, a checks row) lets its own short texts, and a list of them, through, with
+ * the reason carried as the allow entry; the X-ray's `copy.precise-failure` reads the same list.
  *
  * @claim "a `code` is never read" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::walks a value, reading an outcome's error, human reason and summary and a checks report's findings, not the person's data)
  * @claim "Every vague failure message in a value" registry/ouro/ax/precise-copy.test.mts verify:testExists(registry/ouro/ax/precise-copy.test.mts::walks a value, reading an outcome's error, human reason and summary and a checks report's findings, not the person's data)
@@ -174,19 +191,21 @@ const allowedBy = (text: string, allow: readonly FailureCopyAllow[]) => allow.fi
  */
 function vagueFailuresIn(value: unknown, options: VagueFailuresOptions = {}): VagueFailureFinding[] {
   const out: VagueFailureFinding[] = [];
-  const visit = (v: unknown, where: string, speaks: boolean, ax: boolean): void => {
+  const visit = (v: unknown, where: string, speaks: boolean, ax: boolean, why: string | null = null): void => {
     if (typeof v === "string") {
       const phrase = speaks ? phraseIn(v) : null;
-      if (phrase) out.push({ phrase, where, text: v, allowed: allowedBy(v, options.allow ?? []) });
+      if (phrase) out.push({ phrase, where, text: v, allowed: why ? { match: v, reason: why } : allowedBy(v, options.allow ?? []) });
       return;
     }
-    if (Array.isArray(v)) return v.forEach((x, i) => visit(x, `${where}[${i}]`, speaks, ax));
+    if (Array.isArray(v)) return v.forEach((x, i) => visit(x, `${where}[${i}]`, speaks, ax, why));
     if (typeof v !== "object" || v === null) return;
     const record = v as Record<string, unknown>;
     const inAx = ax || typeof record["ax"] === "string";
+    const reason = record[PRECISE_FAILURE_KEY];
+    const own = typeof reason === "string" && reason.trim() ? reason.trim() : null;
     for (const [k, x] of Object.entries(record)) {
-      if (k === "code") continue;
-      visit(x, where ? `${where}.${k}` : k, speaks || FAILURE_KEYS.has(k) || (inAx && AX_KEYS.has(k)), inAx);
+      if (k === "code" || k === PRECISE_FAILURE_KEY) continue;
+      visit(x, where ? `${where}.${k}` : k, speaks || FAILURE_KEYS.has(k) || (inAx && AX_KEYS.has(k)), inAx, own);
     }
   };
   visit(value, "", !options.messagesOnly, false);

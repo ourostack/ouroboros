@@ -4,7 +4,7 @@
     {
       "id": "ourostack-ouro-ui-ax",
       "repository": "ourostack/ouro-ui",
-      "commit": "0d7fcc6a9ad3ed1e6f2c5c126d77a0fc27f25b1f",
+      "commit": "ef8f371120a6a4e9f62d1504a1e63f1bd17e177a",
       "license": "MIT",
       "files": [
         {
@@ -15,7 +15,7 @@
         {
           "sourcePath": "registry/ouro/ax/checks.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/checks.ts",
-          "sha256": "21f7f2dd63a86ce58447c7af3b02dc00069df43620bee53c71b0faa3697a0ff4"
+          "sha256": "6f0b92e42b3a27b686f5775ac382913880a7d1c197965587b56e4b0237f0807c"
         },
         {
           "sourcePath": "registry/ouro/ax/ax-claims.ts",
@@ -90,7 +90,7 @@
         {
           "sourcePath": "registry/ouro/ax/outcome.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/outcome.ts",
-          "sha256": "ab83a9c4182039a7d23a176bdfc159c29aaf9b3515c7bb939190877bdbaefe60"
+          "sha256": "d8ef0aecf0c043946cba9a3a2ba60a3aecaa50bf65ee0c8aa1b4257e02614616"
         },
         {
           "sourcePath": "registry/ouro/ax/output.ts",
@@ -100,12 +100,12 @@
         {
           "sourcePath": "registry/ouro/ax/precise-copy.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/precise-copy.ts",
-          "sha256": "97695b01e20f4278a31238f2ea8cf28f9e9adc5bbdd91018c39a76a3a8df089e"
+          "sha256": "3cf4ae137f2f81a207d9bfcf71cdcef3b19912f9596ed435d0d9e33017a3c593"
         },
         {
           "sourcePath": "registry/ouro/ax/problem.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/problem.ts",
-          "sha256": "6f55bba8c4bf04c8521f9b6a3c15e385a9810a413ef4809e4c7d14e64315b539"
+          "sha256": "5b1c4a89300b04878fb4576dc76a6e70e2f75ce20df3c1614d45f0b74f5b7a05"
         },
         {
           "sourcePath": "registry/ouro/ax/surfaces.kit.mts",

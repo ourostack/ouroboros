@@ -22,6 +22,8 @@ interface AxErrorShape {
   problem: string;
   /** The exact code to run instead, or null when nothing the agent runs can fix it. */
   fix: string | null;
+  /** Why the problem text is precise though it is short or holds a vague phrase; the vague-failure check and the X-ray pass it with this reason. */
+  preciseFailure?: string;
 }
 
 /** The error the kit's primitives throw: its message is the one line, its shape the data. */
