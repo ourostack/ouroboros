@@ -202,16 +202,30 @@ describe("sense-owned observation publisher", () => {
   })
 
   it("marks timeline totals unknown when custody has an undisplayed page", () => {
-    const store = openCheckInStore(checkInStorePath(root))
+    // This case is fully synchronous, so a watchdog timer could never fire during it. It times its own phases
+    // and reports them to stderr only when the case took over 2s (normally well under 0.5s): a bounded
+    // observation of which phase stalled, not a cause.
+    const phases: string[] = []
+    const started = performance.now()
+    const lap = (name: string) => phases.push(`${name}@${Math.round(performance.now() - started)}ms`)
     try {
-      for (let index = 0; index < 201; index++) store.claimDispatch({
-        host: "cmux", session: `terminal-${index}`, instance: null, screenFingerprint: "screen", guidanceRevision: "0",
-        reply: "Continue", trigger: "immediate", transition: "stop", at: record.at,
-      }, "owner")
-    } finally { store.close() }
-    const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
-    expect(publisher.refresh()).toBe(true)
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).timeline).toMatchObject({ totalCount: null, truncated: true })
+      const store = openCheckInStore(checkInStorePath(root))
+      lap("open-store")
+      try {
+        for (let index = 0; index < 201; index++) store.claimDispatch({
+          host: "cmux", session: `terminal-${index}`, instance: null, screenFingerprint: "screen", guidanceRevision: "0",
+          reply: "Continue", trigger: "immediate", transition: "stop", at: record.at,
+        }, "owner")
+      } finally { store.close() }
+      lap("201-claims")
+      const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
+      expect(publisher.refresh()).toBe(true)
+      lap("publish")
+      expect(readMailboxSupervision("slugger", { agentRoot: root }).timeline).toMatchObject({ totalCount: null, truncated: true })
+      lap("read")
+    } finally {
+      if (performance.now() - started > 2_000) process.stderr.write(`observation-publisher undisplayed-page case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ")}\n`)
+    }
   })
 
   it("never upgrades a legacy sent report into bound native admission evidence", () => {
