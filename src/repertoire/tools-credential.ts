@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto"
-import type { ToolDefinition } from "./tools-base"
+import { withCode, type ToolDefinition, type ToolErrorCard } from "./tools-base"
 import { getCredentialStore } from "./credential-access"
 import { sanitizeCredentialErrorDetail } from "./bitwarden-store"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -100,6 +100,9 @@ function generatePassword(length: number, symbols: boolean): string {
   return chars.join("")
 }
 
+const GUARDRAIL_ERROR: ToolErrorCard = { code: "guardrail-blocked", means: "The trust guardrail stopped the call before it ran, because this person may not touch the vault this way.", fix: "Don't retry here; tell the person this needs someone with more trust, or another conversation." }
+const CREDENTIAL_NOT_FOUND_ERROR: ToolErrorCard = { code: "credential-not-found", means: "The vault has no item under that exact name or path.", fix: "Call credential_list with part of the name to find the item's exact path, then use that." }
+
 export const credentialToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -138,16 +141,21 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         const meta = await store.get(itemName)
 
         if (!meta) {
-          return `No credential found for "${itemName}".`
+          return withCode(`No credential found for "${itemName}".`, "credential-not-found")
         }
 
         return JSON.stringify(meta, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive: store.get wraps errors @preserve */
-        return `Credential error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Credential error: ${err instanceof Error ? err.message : String(err)}`, "credential-read-failed")
       }
     },
     summaryKeys: ["domain"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads credential metadata; the password is never returned" },
+    ax: { id: "tool:credential_get", group: "turn-vault", when: "Pick this to check which username a saved login uses, by its vault path; the password stays hidden.", effect: "read", idempotent: true, errors: [
+      GUARDRAIL_ERROR, CREDENTIAL_NOT_FOUND_ERROR,
+      { code: "credential-read-failed", means: "The vault couldn't be read; the text gives the reason, often that it is locked.", fix: "If it says locked, tell the person to unlock it with vault_setup's commands; otherwise retry once." },
+    ] },
   },
 
   {
@@ -200,10 +208,15 @@ export const credentialToolDefinitions: ToolDefinition[] = [
           nextStep: "Use this password for signup, then call credential_store with the exact accepted password.",
         }, null, 2)
       } catch (err) {
-        return `Credential password generation error: ${sanitizeCredentialToolError(err)}`
+        return withCode(`Credential password generation error: ${sanitizeCredentialToolError(err)}`, "password-generation-failed")
       }
     },
     summaryKeys: ["domain", "length", "symbols"],
+    riskProfile: { mutates: "none", risk: "low", reason: "generates a password in memory; nothing is saved" },
+    ax: { id: "tool:credential_generate_password", group: "turn-vault", when: "Pick this when signing up somewhere new needs a strong password; save the one the site accepted with credential_store.", effect: "read", errors: [
+      GUARDRAIL_ERROR,
+      { code: "password-generation-failed", means: "domain is blank, length isn't a whole number from 12 to 128, or symbols isn't true or false.", fix: "Fix the argument the text names; leave length and symbols out to get the defaults." },
+    ] },
   },
 
   {
@@ -271,11 +284,15 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         return `Credentials stored and verified for "${domain}".`
       } catch (err) {
         /* v8 ignore next -- defensive: store.store wraps errors @preserve */
-        return `Credential store error: ${sanitizeCredentialToolError(err, [password, username, notes])}`
+        return withCode(`Credential store error: ${sanitizeCredentialToolError(err, [password, username, notes])}`, "credential-store-failed")
       }
     },
     summaryKeys: ["domain"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "stores credential vault item" },
+    ax: { id: "tool:credential_store", group: "turn-vault", when: "Pick this right after an account is created or its password changes, to save the exact login the site accepted.", effect: "write", idempotent: true, errors: [
+      GUARDRAIL_ERROR,
+      { code: "credential-store-failed", means: "An argument is blank or the vault refused the save; the text names which, with secrets redacted.", fix: "Fill in the item, username or password the text names; if the vault refused, check it is unlocked, then save again." },
+    ] },
   },
 
   {
@@ -321,10 +338,15 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(items, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive: store.list wraps errors @preserve */
-        return `Credential list error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Credential list error: ${err instanceof Error ? err.message : String(err)}`, "credential-list-failed")
       }
     },
     summaryKeys: ["search"],
+    riskProfile: { mutates: "none", risk: "low", reason: "lists credential item names and usernames" },
+    ax: { id: "tool:credential_list", group: "turn-vault", when: "Pick this to find the exact vault path of a saved login, by part of its name or username, before credential_get.", effect: "read", idempotent: true, errors: [
+      GUARDRAIL_ERROR,
+      { code: "credential-list-failed", means: "The vault couldn't be listed; the text gives the reason, often that it is locked.", fix: "If it says locked, tell the person to unlock it with vault_setup's commands; otherwise retry once." },
+    ] },
   },
 
   {
@@ -365,13 +387,18 @@ export const credentialToolDefinitions: ToolDefinition[] = [
         if (deleted) {
           return `Credentials for "${itemName}" deleted.`
         }
-        return `No credential found for "${itemName}".`
+        return withCode(`No credential found for "${itemName}".`, "credential-not-found")
       } catch (err) {
         /* v8 ignore next -- defensive: store.delete wraps errors @preserve */
-        return `Credential delete error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`Credential delete error: ${err instanceof Error ? err.message : String(err)}`, "credential-delete-failed")
       }
     },
     summaryKeys: ["domain"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "deletes credential vault item" },
+    ax: { id: "tool:credential_delete", group: "turn-vault", when: "Pick this only when the person asks to forget a saved login, such as a closed account; it can't be undone.", effect: "write", destructive: true, idempotent: true, errors: [
+      GUARDRAIL_ERROR,
+      { ...CREDENTIAL_NOT_FOUND_ERROR, fix: "Call credential_list to find the exact path; if nothing matches, it is already gone." },
+      { code: "credential-delete-failed", means: "The vault refused the delete; the text gives the reason.", fix: "Check the vault is unlocked, then confirm with credential_list whether the item is still there before retrying." },
+    ] },
   },
 ]

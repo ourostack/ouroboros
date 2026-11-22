@@ -9,11 +9,7 @@
 
     "tool:complete_adoption",
     "tool:consult_notes",
-    "tool:credential_delete",
-    "tool:credential_generate_password",
-    "tool:credential_get",
-    "tool:credential_list",
-    "tool:credential_store",
+
     "tool:evolution_capture",
     "tool:evolution_case",
     "tool:evolution_close",
@@ -56,9 +52,6 @@
 
 
     "tool:update_config",
-    "tool:user_profile_delete",
-    "tool:user_profile_get",
-    "tool:user_profile_store",
     "tool:voice_join_local_audio"
 
   ]
