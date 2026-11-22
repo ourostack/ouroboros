@@ -76,7 +76,7 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "settle",
     description:
-      "deliver your response and end your turn — this hands control back to the user. only settle when your work is complete, you're genuinely blocked, the user asked a direct question that needs an answer now, or a required confirmation/stop/pause boundary is reached. process feedback during active work is loop input, not a settle reason. do not settle with status updates mid-task. if you're settling with 'I'll look into that,' you probably should be using a tool instead.",
+      "deliver your response and end your turn — this hands control back to the user. only settle when your work is complete, you're genuinely blocked, the user asked a direct question that needs an answer now, or a required confirmation/stop/pause boundary is reached. process feedback during active work is loop input, not a settle reason. do not settle with status updates mid-task. if you're settling with 'I'll look into that,' you probably should be using a tool instead. if you're blocked because a tool you need doesn't exist (not because you need an answer from them), call report_failure first so the engineers hear about the gap, then settle with intent blocked.",
     parameters: {
       type: "object",
       properties: {
