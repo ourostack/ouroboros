@@ -5626,6 +5626,50 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).toHaveBeenCalledTimes(2)
   })
 
+  it("counts a missed message that runtime sync left for recovery as owned only while it is still pending", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    mocks.listRecentMessages.mockResolvedValueOnce([makeCatchUpMessage({
+      messageGuid: "MISSED-FOR-OWNERSHIP-AUDIT",
+      timestamp: now - 1_000,
+    })])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now - 10_000).toISOString(),
+      pendingRecoveryCount: 0,
+    }, { processTurns: false })
+
+    const pending = new Set<string>(mocks.listPendingSemanticCaptures("testagent").map((capture: any) => capture.keyHash))
+    expect(pending.size).toBe(1)
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(pending)).toEqual([])
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toHaveLength(1)
+  })
+
+  it("counts a webhook's reservation as owned while the webhook is still capturing it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    let duringCapture: unknown[] | undefined
+    const defaultWrite = mocks.writeSemanticCapture.getMockImplementation()!
+    mocks.writeSemanticCapture.mockImplementationOnce((...args: any[]) => {
+      expect(latestTurns.listPendingObservationsForAudit()).toHaveLength(1)
+      duringCapture = bluebubbles.auditBlueBubblesObservationOwnership(new Set())
+      return defaultWrite(...args)
+    })
+
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(duringCapture).toEqual([])
+    const orphan = latestTurns.reserveObservation({ chatGuid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" })
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toEqual([orphan])
+    latestTurns.clearPending(orphan)
+  })
+
   it("sends the reply to the second of two quick texts when the context fetch fails and runtime sync re-reads both", async () => {
     // 2026-11-22 20:51Z and 22:03Z: two texts 24 s apart, the first superseded,
     // the context fetch failed, and the second reply never went out.
@@ -5678,10 +5722,13 @@ describe("BlueBubbles sense runtime", () => {
       lastCheckedAt: new Date(now - 60_000).toISOString(),
       pendingRecoveryCount: 0,
     }, { processTurns: false })
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toEqual([])
 
     releaseSecondModel.resolve()
     await expect(secondHandling).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
     expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).toEqual(["send me the code when it arrives"])
+  })
+
   it("marks a reply waiting for send permission as stalled, then gives up at the turn deadline and keeps the message pending", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
@@ -6956,6 +7003,29 @@ describe("BlueBubbles sense runtime", () => {
         stalledTurnCount: 1,
       }),
     )
+    closableServer.close()
+  })
+
+  it("surfaces a reply stuck waiting for permission to send in runtime state detail", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const activeTurns = await import("../../../senses/bluebubbles/active-turns")
+    const turnId = activeTurns.beginBlueBubblesActiveTurn("testagent", makeCatchUpMessage({ messageGuid: "runtime-admission-guid" }))
+    activeTurns.noteBlueBubblesActiveTurnAdmissionWait("testagent", turnId, new Date(Date.now() - 90_000).toISOString())
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("waiting for permission to send"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail)
+      .toMatch(/^iMessage reply stalled; 1 turn\(s\) waiting for permission to send for 9\ds$/)
     closableServer.close()
   })
 

@@ -3643,13 +3643,14 @@ function formatBlueBubblesRuntimeDetail(
 ): string {
   const queued = pending.pendingRecoveryCount
   if (active.admissionStalledTurnCount > 0) {
-    return `iMessage reply stalled; ${active.admissionStalledTurnCount} turn(s) waiting for permission to send for ${Math.round((active.oldestAdmissionWaitAgeMs ?? 0) / 1000)}s`
+    return `iMessage reply stalled; ${active.admissionStalledTurnCount} turn(s) waiting for permission to send for ${Math.round(active.oldestAdmissionWaitAgeMs! / 1000)}s`
   }
   if (active.stalledTurnCount > 0) {
     return `iMessage live turn appears stalled; ${active.stalledTurnCount} active turn(s) older than ${BLUEBUBBLES_LIVE_TURN_STALLED_MS}ms`
   }
   if (active.activeTurnCount > 0) return `upstream reachable; ${active.activeTurnCount} live turn(s) active`
   if (queued > 0) {
+    /* v8 ignore next -- every capture this sense writes carries a parseable capturedAt @preserve */
     return `upstream reachable but iMessage is not caught up; ${queued} message(s) without a reply or recorded outcome, oldest ${Math.round((pending.oldestPendingRecoveryAgeMs ?? 0) / 1000)}s`
   }
   if (failed > 0) return `${failed} message(s) unrecoverable this cycle; upstream ok`
