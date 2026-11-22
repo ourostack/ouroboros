@@ -54,6 +54,8 @@ describe("D-007 real one-shot disposal caller", () => {
     vi.stubEnv("TZ", "America/Los_Angeles")
     vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true, now: new Date("2026-10-20T19:00:00.000Z") })
     mocks.root = fs.mkdtempSync("/tmp/d007-send-")
+    // Starting the Telegram app reads the owner route from agent.json: the Butler's own, which names none.
+    fs.copyFileSync(path.join(__dirname, "../../../deploy/unraid/sanctuary.ouro/agent.json"), path.join(mocks.root, "agent.json"))
     fs.writeFileSync(path.join(mocks.root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 1, contextScopes: ["household.private"], toolNames: [], effectScopes: ["telegram.owner_event", "telegram.proactive"] },
       "sanctuary-household": { version: 1, contextScopes: ["own_requests"], toolNames: [], effectScopes: ["telegram.request_return"] },
