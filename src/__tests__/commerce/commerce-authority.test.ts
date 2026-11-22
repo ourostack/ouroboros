@@ -20,6 +20,8 @@ import {
   validateCommerceAuthorityToken,
 } from "../../commerce/store"
 import { guardInvocation } from "../../repertoire/guardrails"
+// tools-base assembles every tool module and tools-commerce imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { commerceToolDefinitions } from "../../repertoire/tools-commerce"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { FriendRecord } from "@ouro.bot/friends"
@@ -81,6 +83,20 @@ function testToken(checkoutId: string, digest: string): string {
 function testTokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex")
 }
+
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = { commerce_checkout_preview: "write", commerce_checkout_commit: "write", commerce_receipt_get: "write", commerce_access_log: "read" }
+
+  it("gives each tool a card with its effect, and each read tool an explicit low-risk profile", () => {
+    expect(commerceToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of commerceToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, effect: effects[name] })
+      if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+  })
+})
 
 describe("commerce authority", () => {
   it("creates, confirms, validates, and logs a commerce mandate", () => {
@@ -1266,6 +1282,11 @@ describe("commerce authority", () => {
 
     expect(await commerceTool("commerce_checkout_preview")({}, undefined)).toContain("no friend context")
     expect(await commerceTool("commerce_checkout_preview")({}, friend)).toContain("family trust")
+    expect(await commerceTool("commerce_checkout_preview")({}, undefined)).toMatch(/\(code: no-friend-context\)$/)
+    expect(await commerceTool("commerce_access_log")({}, friend)).toMatch(/\(code: family-required\)$/)
+    expect(await commerceTool("commerce_receipt_get")({ checkout_id: "missing" }, family)).toBe("commerce checkout not found: missing (code: checkout-not-found)")
+    expect(await commerceTool("commerce_checkout_preview")({ merchant: "Duffel", amount: "10", currency: "usd", tool_name: "stripe_create_card", reason: "Bad items", items_json: "{}" }, family)).toMatch(/^commerce preview error: .* \(code: preview-failed\)$/)
+    expect(await commerceTool("commerce_checkout_commit")({ checkout_id: "missing", digest: "d", confirmation: "CONFIRM_PURCHASE" }, family)).toMatch(/^commerce commit error: .* \(code: commit-failed\)$/)
     expect(await commerceTool("commerce_checkout_commit")({}, friend)).toContain("family trust")
     expect(await commerceTool("commerce_receipt_get")({}, friend)).toContain("family trust")
     expect(await commerceTool("commerce_access_log")({}, friend)).toContain("family trust")

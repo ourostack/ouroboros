@@ -10,6 +10,8 @@ import {
   type ResolvedMailAddress,
 } from "../../mailroom/core"
 import { extractTravelFactsFromMail } from "../../mailroom/travel-extract"
+// tools-base assembles every tool module and tools-trip imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { tripToolDefinitions } from "../../repertoire/tools-trip"
 import type { TripRecord } from "../../trips/core"
 

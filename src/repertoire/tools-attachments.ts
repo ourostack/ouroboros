@@ -38,6 +38,10 @@ function parseLimit(raw: string | undefined): number | undefined {
   return parsed
 }
 
+function frictionSignature(tool: string, code: string): string {
+  return `${tool}:${code}`
+}
+
 function normalizeThrownReason(error: unknown): string {
   const rendered = String(error)
   return rendered.startsWith("Error: ") ? rendered.slice(7) : rendered
@@ -48,7 +52,7 @@ function attachmentNotFound(tool: string, attachmentId: string): string {
     kind: "local_repair",
     recoverability: "transformable",
     summary: `Attachment ${attachmentId} is not in the recent attachment store anymore.`,
-    signature: `${tool}:attachment-not-found`,
+    signature: frictionSignature(tool, "attachment-not-found"),
     suggested_next_actions: [
       {
         kind: "tool",
@@ -65,7 +69,7 @@ function missingAttachmentId(tool: string): string {
     kind: "input_error",
     recoverability: "transformable",
     summary: "An attachment id is required for this tool call.",
-    signature: `${tool}:missing-attachment-id`,
+    signature: frictionSignature(tool, "missing-attachment-id"),
     suggested_next_actions: [
       {
         kind: "tool",
@@ -81,7 +85,7 @@ function missingPrompt(): string {
     kind: "input_error",
     recoverability: "transformable",
     summary: "describe_image needs a targeted prompt before retrying.",
-    signature: "describe_image:missing-prompt",
+    signature: frictionSignature("describe_image", "missing-prompt"),
     suggested_next_actions: [
       {
         kind: "message",
@@ -100,7 +104,7 @@ function normalizeMaterializeError(tool: string, attachmentId: string, reason: s
       kind: "input_error",
       recoverability: "transformable",
       summary: `Attachment ${attachmentId} is not an image, so it cannot produce a vision_safe variant.`,
-      signature: `${tool}:not-image`,
+      signature: frictionSignature(tool, "not-image"),
       suggested_next_actions: [
         {
           kind: "tool",
@@ -115,7 +119,7 @@ function normalizeMaterializeError(tool: string, attachmentId: string, reason: s
     kind: "local_repair",
     recoverability: "retryable",
     summary: reason,
-    signature: `${tool}:materialize-failed`,
+    signature: frictionSignature(tool, "materialize-failed"),
     suggested_next_actions: [
       {
         kind: "tool",
@@ -161,6 +165,10 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       return okToolResult("list_recent_attachments", attachments)
     },
     summaryKeys: ["kind", "limit"],
+    ax: { id: "tool:list_recent_attachments", group: "turn-attachments", when: "Pick this to find the id of a photo, voice note or document someone sent earlier, before opening it or asking them to resend.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "kind wasn't one of image, audio, document, binary or unknown.", fix: "Leave kind out, or pass one of those five." },
+    ] },
+    riskProfile: { mutates: "none", risk: "low" },
   },
   {
     tool: {
@@ -208,6 +216,12 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["attachment_id", "attachment_guid", "variant"],
+    ax: { id: "tool:materialize_attachment", group: "turn-attachments", when: "Pick this to get a real file path on disk for something someone sent, so another tool can open or forward it; to ask about a picture, use describe_image.", effect: "write", idempotent: true, errors: [
+      { code: "attachment-not-found", means: "That attachment isn't in the recent store any more, or this conversation can't see it.", fix: "Call list_recent_attachments for the current attachment_id, then retry." },
+      { code: "missing-attachment-id", means: "attachment_id was empty.", fix: "Call list_recent_attachments and retry with one of its ids." },
+      { code: "not-image", means: "variant vision_safe was asked for, but the attachment isn't an image.", fix: "Retry with variant original to get the file as it was sent." },
+      { code: "materialize-failed", means: "The file couldn't be written out or converted; the summary gives the reason.", fix: "Retry once; if it fails again, ask the person to send the file again." },
+    ] },
   },
   {
     tool: {
@@ -261,7 +275,7 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
             kind: "external_blocker",
             recoverability: missingMinimaxKey || error instanceof UnsupportedImageModelError ? "blocked" : "retryable",
             summary: reason,
-            signature: missingMinimaxKey ? "describe_image:minimax-missing-key" : "describe_image:provider-unavailable",
+            signature: frictionSignature("describe_image", missingMinimaxKey ? "minimax-missing-key" : "provider-unavailable"),
             suggested_next_actions: [
               {
                 kind: "message",
@@ -285,5 +299,14 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["attachment_id", "attachment_guid", "prompt"],
+    ax: { id: "tool:describe_image", group: "turn-attachments", when: "Pick this to ask a pointed question about a photo or screenshot, like a date or total on it, or to double-check a reading you got wrong.", effect: "write", errors: [
+      { code: "attachment-not-found", means: "That attachment isn't in the recent store any more, or this conversation can't see it.", fix: "Call list_recent_attachments for the current attachment_id, then retry." },
+      { code: "missing-attachment-id", means: "attachment_id was empty.", fix: "Call list_recent_attachments and retry with one of its ids." },
+      { code: "missing-prompt", means: "prompt was empty.", fix: "Retry with a pointed question, like what is the confirmation number." },
+      { code: "not-image", means: "That attachment isn't an image, so there is nothing to look at.", fix: "Use materialize_attachment with variant original to get the file itself." },
+      { code: "minimax-missing-key", means: "The image model needs a MiniMax API key this agent doesn't have.", fix: "Tell your owner to run ouro auth with provider minimax for this agent; it needs them." },
+      { code: "provider-unavailable", means: "The image model couldn't answer; the summary gives the reason.", fix: "Retry once later; if it still fails, tell the person you can't read the image now." },
+      { code: "materialize-failed", means: "The file couldn't be written out or converted; the summary gives the reason.", fix: "Retry once; if it fails again, ask the person to send the file again." },
+    ] },
   },
 ]

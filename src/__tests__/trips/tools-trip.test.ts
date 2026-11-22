@@ -4,6 +4,8 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as identity from "../../heart/identity"
 import * as tripStore from "../../trips/store"
+// tools-base assembles every tool module and tools-trip imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { tripToolDefinitions } from "../../repertoire/tools-trip"
 import type { TripRecord } from "../../trips/core"
 
@@ -98,6 +100,39 @@ async function previewTripRemoveLeg(input: {
 }
 
 describe("trip tools", () => {
+  describe("Ouro AX cards", () => {
+    const effects: Record<string, string> = {
+      trip_ensure_ledger: "write", trip_status: "read", trip_get: "read", trip_replace_preview: "read", trip_upsert: "write",
+      trip_attach_evidence: "write", trip_update_leg_preview: "read", trip_update_leg: "write", trip_remove_leg_preview: "read",
+      trip_remove_leg: "write", trip_calendar: "read", trip_new_id: "read",
+    }
+
+    it("gives every trip tool a card in turn-travel with its effect, and each read tool a low-risk profile", () => {
+      expect(tripToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+      for (const def of tripToolDefinitions) {
+        const name = def.tool.function.name
+        expect(def.ax).toMatchObject({ id: `tool:${name}`, group: "turn-travel", effect: effects[name] })
+        expect(def.ax!.errors.map((e) => e.code)).toContain("trip-ledger-private")
+        if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+      }
+      expect(tool("trip_remove_leg").ax?.destructive).toBe(true)
+    })
+
+    it("ends each refusal a model can act on with its code", async () => {
+      mountAgent()
+      await expect(tool("trip_get").handler({}, familyCtx)).resolves.toBe("tripId is required. (code: missing-argument)")
+      await expect(tool("trip_new_id").handler({ name: "n" }, familyCtx)).resolves.toBe("createdAt is required. (code: missing-argument)")
+      await expect(tool("trip_update_leg_preview").handler({ tripId: "t", legId: "l", updates: "[]" }, familyCtx)).resolves.toBe("updates must be a JSON object. (code: updates-invalid)")
+      await expect(tool("trip_update_leg_preview").handler({ tripId: "t", legId: "l", updates: "{\"kind\":\"x\"}" }, familyCtx)).resolves.toBe("updates cannot change kind; create a new leg instead. (code: updates-invalid)")
+      await expect(tool("trip_replace_preview").handler({ record: "not json" }, familyCtx)).resolves.toMatch(/^replace preview failed: .* \(code: replace-preview-failed\)$/)
+      await expect(tool("trip_upsert").handler({ record: "{}" }, familyCtx)).resolves.toMatch(/^upsert failed: .* \(code: upsert-failed\)$/)
+      await expect(tool("trip_attach_evidence").handler({ tripId: "t", legId: "l", evidence: "{}" }, familyCtx)).resolves.toMatch(/^attach failed: .* \(code: attach-failed\)$/)
+      await expect(tool("trip_update_leg_preview").handler({ tripId: "t", legId: "l", updates: "nope" }, familyCtx)).resolves.toMatch(/^update preview failed: .* \(code: update-preview-failed\)$/)
+      await expect(tool("trip_update_leg").handler({ tripId: "t", legId: "l", updates: "nope", updatedAt: "u", updateReason: "r" }, familyCtx)).resolves.toMatch(/^update failed: .* \(code: update-failed\)$/)
+      await expect(tool("trip_remove_leg_preview").handler({ tripId: "t", legId: "l" }, familyCtx)).resolves.toMatch(/ \(code: trip-not-found\)$/)
+    })
+  })
+
   describe("trust gating", () => {
     it("trust-allows family ctx for trip_status", async () => {
       mountAgent()
@@ -111,6 +146,7 @@ describe("trip tools", () => {
       for (const name of names) {
         const result = await tool(name).handler({ tripId: "x", legId: "y", evidence: "{}", record: "{}", name: "n", createdAt: "t" }, strangerCtx)
         expect(typeof result === "string" && result.includes("private")).toBe(true)
+        expect(result).toMatch(/\(code: trip-ledger-private\)$/)
       }
     })
 
@@ -178,12 +214,14 @@ describe("trip tools", () => {
       })
       const missing = await tool("trip_upsert").handler({ record: JSON.stringify(replacement) }, familyCtx) as string
       expect(missing).toContain("writeReason is required")
+      expect(missing).toMatch(/\(code: write-reason-required\)$/)
 
       const blank = await tool("trip_upsert").handler({
         record: JSON.stringify(replacement),
         writeReason: "   ",
       }, familyCtx) as string
       expect(blank).toContain("writeReason is required")
+      expect(blank).toMatch(/\(code: write-reason-required\)$/)
 
       const stored = tripStore.readTripRecord("slugger", original.tripId)
       expect(stored.name).toBe("Basel weekend")
@@ -233,6 +271,7 @@ describe("trip tools", () => {
         writeReason: "Ari corrected the itinerary in chat.",
       }, familyCtx) as string
       expect(missing).toContain("previewToken is required")
+      expect(missing).toMatch(/\(code: preview-token-required\)$/)
       expect(missing).toContain("Attempted change:")
       expect(missing).toContain("- name: \"Basel weekend\" -> \"Basel corrected weekend\"")
 
@@ -248,6 +287,7 @@ describe("trip tools", () => {
         previewToken: token,
       }, familyCtx) as string
       expect(mismatch).toContain("previewToken does not match")
+      expect(mismatch).toMatch(/\(code: preview-token-stale\)$/)
 
       const stored = tripStore.readTripRecord("slugger", original.tripId)
       expect(stored.name).toBe("Basel weekend")
@@ -274,6 +314,7 @@ describe("trip tools", () => {
         previewToken: token,
       }, familyCtx) as string
       expect(expired).toContain("previewToken is invalid or expired")
+      expect(expired).toMatch(/\(code: preview-token-expired\)$/)
 
       const stored = tripStore.readTripRecord("slugger", original.tripId)
       expect(stored.name).toBe("Basel weekend")
@@ -387,6 +428,7 @@ describe("trip tools", () => {
       await tool("trip_ensure_ledger").handler({}, familyCtx)
       const result = await tool("trip_get").handler({ tripId: "trip_missing_0000000000000000" }, familyCtx) as string
       expect(result).toContain("trip not found")
+      expect(result).toMatch(/\(code: trip-not-found\)$/)
     })
 
     it("trip_get rejects an empty tripId", async () => {
@@ -773,6 +815,7 @@ describe("trip tools", () => {
       await tool("trip_ensure_ledger").handler({}, familyCtx)
       const result = await tool("trip_calendar").handler({ tripId: "trip_missing_0000000000000000" }, familyCtx) as string
       expect(result).toContain("trip not found")
+      expect(result).toMatch(/\(code: trip-not-found\)$/)
     })
 
     it("trip_calendar propagates non-TripNotFoundError errors from the store", async () => {
@@ -937,6 +980,7 @@ describe("trip tools", () => {
         evidence: JSON.stringify({ messageId: "m", reason: "r", recordedAt: "t", discoveryMethod: "extracted" }),
       }, familyCtx) as string
       expect(result).toContain("trip not found")
+      expect(result).toMatch(/\(code: trip-not-found\)$/)
     })
 
     it("rejects when the evidence JSON is malformed", async () => {
@@ -1025,6 +1069,7 @@ describe("trip tools", () => {
         updateReason: "Refund confirmation from Basel hotel email.",
       }, familyCtx) as string
       expect(missing).toContain("previewToken is required")
+      expect(missing).toMatch(/\(code: preview-token-required\)$/)
       expect(missing).toContain("Attempted change:")
       expect(missing).toContain("- status: \"confirmed\" -> \"cancelled\"")
 
@@ -1038,6 +1083,7 @@ describe("trip tools", () => {
         previewToken: token,
       }, familyCtx) as string
       expect(mismatch).toContain("previewToken does not match")
+      expect(mismatch).toMatch(/\(code: preview-token-stale\)$/)
 
       const got = await tool("trip_get").handler({ tripId: "trip_basel_aaaaaaaaaaaaaaaa" }, familyCtx) as string
       expect(got).toContain("\"status\": \"confirmed\"")
@@ -1082,6 +1128,7 @@ describe("trip tools", () => {
         updates: JSON.stringify({ status: "cancelled" }),
       }, familyCtx) as string
       expect(missingTrip).toContain("trip not found")
+      expect(missingTrip).toMatch(/\(code: trip-not-found\)$/)
 
       await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
 
@@ -1112,6 +1159,7 @@ describe("trip tools", () => {
         updates: "{}",
       }, familyCtx) as string
       expect(emptyUpdates).toContain("updates cannot be empty")
+      expect(emptyUpdates).toMatch(/\(code: updates-invalid\)$/)
 
       const missingLeg = await tool("trip_update_leg_preview").handler({
         tripId: "trip_basel_aaaaaaaaaaaaaaaa",
@@ -1195,6 +1243,7 @@ describe("trip tools", () => {
         updateReason: "Testing unknown-trip guard.",
       }, familyCtx) as string
       expect(result).toContain("trip not found")
+      expect(result).toMatch(/\(code: trip-not-found\)$/)
     })
 
     it("rejects malformed updates JSON", async () => {
@@ -1419,6 +1468,7 @@ describe("trip tools", () => {
         reason: "booking cancelled",
       }, familyCtx) as string
       expect(missing).toContain("previewToken is required")
+      expect(missing).toMatch(/\(code: preview-token-required\)$/)
       expect(missing).toContain("Attempted change:")
       expect(missing).toContain("will remove: ")
 
@@ -1434,6 +1484,7 @@ describe("trip tools", () => {
         previewToken: token,
       }, familyCtx) as string
       expect(mismatch).toContain("previewToken does not match")
+      expect(mismatch).toMatch(/\(code: preview-token-stale\)$/)
 
       const got = await tool("trip_get").handler({ tripId: seeded.tripId }, familyCtx) as string
       expect(got).toContain("legs: 2")
@@ -1462,6 +1513,7 @@ describe("trip tools", () => {
         legId: "leg_flight_0000000000000001",
       }, familyCtx) as string
       expect(missingTrip).toContain("trip not found")
+      expect(missingTrip).toMatch(/\(code: trip-not-found\)$/)
 
       await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
       const missingLeg = await tool("trip_remove_leg_preview").handler({
@@ -1515,6 +1567,7 @@ describe("trip tools", () => {
         reason: "booking cancelled",
       }, familyCtx) as string
       expect(result).toContain("trip not found")
+      expect(result).toMatch(/\(code: trip-not-found\)$/)
     })
 
     it("rejects empty inputs", async () => {

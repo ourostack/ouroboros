@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Track nerves events
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents: Array<Record<string, unknown>> = vi.hoisted(() => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
@@ -25,6 +25,8 @@ vi.mock("../../repertoire/credential-access", () => ({
   })),
 }))
 
+// tools-base assembles every tool module and tools-credential imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { credentialToolDefinitions } from "../../repertoire/tools-credential"
 
 function findTool(name: string) {
@@ -32,6 +34,22 @@ function findTool(name: string) {
   if (!def) throw new Error(`Tool ${name} not found`)
   return def
 }
+
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = { credential_get: "read", credential_list: "read", credential_generate_password: "read", credential_store: "write", credential_delete: "write" }
+
+  it("gives each tool a card in turn-vault with its effect, and each read tool an explicit low-risk profile", () => {
+    expect(credentialToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of credentialToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, group: "turn-vault", effect: effects[name] })
+      expect(def.ax!.errors!.map((e) => e.code)).toContain("guardrail-blocked")
+      if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+    expect(credentialToolDefinitions.find((d) => d.tool.function.name === "credential_delete")!.ax).toMatchObject({ destructive: true, idempotent: true })
+  })
+})
 
 describe("credential_get", () => {
   beforeEach(() => {
@@ -78,6 +96,7 @@ describe("credential_get", () => {
     const result = await tool.handler({ domain: "unknown.com" })
 
     expect(result).toContain("No credential found")
+    expect(result).toMatch(/\(code: credential-not-found\)$/)
     expect(result).toContain("unknown.com")
   })
 
@@ -88,6 +107,7 @@ describe("credential_get", () => {
     const result = await tool.handler({ domain: "test.com" })
 
     expect(result).toContain("store broken")
+    expect(result).toMatch(/\(code: credential-read-failed\)$/)
   })
 
   it("emits nerves event", async () => {
@@ -179,6 +199,7 @@ describe("credential_store", () => {
     const result = await tool.handler({ domain: "x.com", username: "u", password: "p" })
 
     expect(result).toContain("disk full")
+    expect(result).toMatch(/\(code: credential-store-failed\)$/)
   })
 
   it("sanitizes non-Error store failures without leaking raw command prefixes", async () => {
@@ -192,6 +213,7 @@ describe("credential_store", () => {
     })
 
     expect(result).toContain("command failed")
+    expect(result).toMatch(/\(code: credential-store-failed\)$/)
     expect(result).not.toContain("Command failed:")
   })
 
@@ -211,6 +233,7 @@ describe("credential_store", () => {
     })
 
     expect(result).toContain("command failed")
+    expect(result).toMatch(/\(code: credential-store-failed\)$/)
     expect(result).not.toContain("bw create item")
     expect(result).not.toContain(leakedEncodedPayload)
     expect(result).not.toContain("secret123")
@@ -224,6 +247,7 @@ describe("credential_store", () => {
     const result = await tool.handler({ domain: "x.com", username: "u", password: "secret123" })
 
     expect(result).toContain("[redacted]")
+    expect(result).toMatch(/\(code: credential-store-failed\)$/)
     expect(result).not.toContain("secret123")
   })
 
@@ -252,8 +276,11 @@ describe("credential_store", () => {
     const blankPassword = await tool.handler({ domain: "x.com", username: "u", password: "   " })
 
     expect(blankDomain).toContain("domain must be a non-empty string")
+    expect(blankDomain).toMatch(/\(code: credential-store-failed\)$/)
     expect(blankUsername).toContain("username must be a non-empty string")
+    expect(blankUsername).toMatch(/\(code: credential-store-failed\)$/)
     expect(blankPassword).toContain("password must be a non-empty string")
+    expect(blankPassword).toMatch(/\(code: credential-store-failed\)$/)
     expect(mockStore).not.toHaveBeenCalled()
   })
 
@@ -262,6 +289,7 @@ describe("credential_store", () => {
     const result = await tool.handler({ domain: "x.com", username: "u", password: "secret123", notes: true } as any)
 
     expect(result).toContain("notes must be a string if provided")
+    expect(result).toMatch(/\(code: credential-store-failed\)$/)
     expect(mockStore).not.toHaveBeenCalled()
   })
 
@@ -350,8 +378,11 @@ describe("credential_generate_password", () => {
     const badSymbols = await tool.handler({ domain: "airbnb.com", symbols: "sometimes" } as any)
 
     expect(blankDomain).toContain("domain must be a non-empty string")
+    expect(blankDomain).toMatch(/\(code: password-generation-failed\)$/)
     expect(badLength).toContain("length must be an integer between 12 and 128")
+    expect(badLength).toMatch(/\(code: password-generation-failed\)$/)
     expect(badSymbols).toContain("symbols must be true or false")
+    expect(badSymbols).toMatch(/\(code: password-generation-failed\)$/)
   })
 
   it("emits nerves events without logging the generated password", async () => {
@@ -419,6 +450,7 @@ describe("credential_list", () => {
     const result = await tool.handler({})
 
     expect(result).toContain("read error")
+    expect(result).toMatch(/\(code: credential-list-failed\)$/)
   })
 
   it("emits nerves event", async () => {
@@ -467,6 +499,7 @@ describe("credential_delete", () => {
     const result = await tool.handler({ domain: "missing.com" })
 
     expect(result).toContain("No credential found")
+    expect(result).toMatch(/\(code: credential-not-found\)$/)
   })
 
   it("handles errors gracefully", async () => {
@@ -476,6 +509,7 @@ describe("credential_delete", () => {
     const result = await tool.handler({ domain: "x.com" })
 
     expect(result).toContain("permission denied")
+    expect(result).toMatch(/\(code: credential-delete-failed\)$/)
   })
 
   it("does not require confirmation (trust gating is sufficient)", () => {

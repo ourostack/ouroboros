@@ -865,6 +865,10 @@ describe("agent entrypoint", () => {
     try {
       await import("../../heart/agent-entry")
       await vi.waitFor(() => expect(startPrivateRuntimeWorker).toHaveBeenCalledOnce())
+      // Separate "the entry has not finished installing its worker handler" from "the dispatch was dropped":
+      // a timeout here means the import chain stalled; a later timeout means the readiness call never ran.
+      const ipcState = (globalThis as unknown as Record<symbol, { workerMessageHandler: unknown }>)[Symbol.for("ouro.agentEntry.ipcState")]
+      await vi.waitFor(() => expect(ipcState.workerMessageHandler, "agent-entry worker handler not installed").not.toBeNull())
       messageHandler?.({ type: "message", dispatchId: "dispatch-cancelled", externalEvent: { source: "sanctuary-health" } })
       await vi.waitFor(() => expect(ensureSanctuarySourceRuntimeReady).toHaveBeenCalledWith("sanctuary", "sanctuary-health"))
       expect(controller.handleMessage).not.toHaveBeenCalled()

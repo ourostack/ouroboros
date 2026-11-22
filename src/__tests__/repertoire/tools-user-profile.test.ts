@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Track nerves events
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents: Array<Record<string, unknown>> = vi.hoisted(() => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
@@ -38,6 +38,8 @@ vi.mock("../../repertoire/credential-access", () => ({
   getCredentialStore: () => mockBwStore,
 }))
 
+// tools-base assembles every tool module and tools-user-profile imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { userProfileToolDefinitions } from "../../repertoire/tools-user-profile"
 import type { ToolContext } from "../../repertoire/tools-base"
 
@@ -46,6 +48,22 @@ function findTool(name: string) {
   if (!def) throw new Error(`Tool "${name}" not found in userProfileToolDefinitions`)
   return def
 }
+
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = { user_profile_store: "write", user_profile_get: "read", user_profile_delete: "write" }
+
+  it("gives each tool a card in turn-vault with its effect, and each read tool an explicit low-risk profile", () => {
+    expect(userProfileToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of userProfileToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, group: "turn-vault", effect: effects[name] })
+      expect(def.ax!.errors!.map((e) => e.code)).toContain("guardrail-blocked")
+      if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+    expect(userProfileToolDefinitions.find((d) => d.tool.function.name === "user_profile_delete")!.ax).toMatchObject({ destructive: true, idempotent: true })
+  })
+})
 
 describe("userProfileToolDefinitions", () => {
   it("exports an array of 3 tool definitions", () => {
@@ -107,12 +125,14 @@ describe("user_profile_store handler", () => {
       ctx,
     )
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
     expect(mockUpdateUserProfileFields).not.toHaveBeenCalled()
   })
 
   it("rejects when no context", async () => {
     const result = await tool.handler({ fields: "{}" })
     expect(result).toContain("context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
     expect(mockUpdateUserProfileFields).not.toHaveBeenCalled()
   })
 
@@ -124,6 +144,7 @@ describe("user_profile_store handler", () => {
     }
     const result = await tool.handler({ fields: "not-json{" }, ctx)
     expect(result).toContain("invalid")
+    expect(result).toMatch(/\(code: profile-fields-invalid\)$/)
   })
 
   it("emits nerves events", async () => {
@@ -168,6 +189,7 @@ describe("user_profile_get handler", () => {
     }
     const result = await tool.handler({ field: "email" }, ctx)
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
     expect(mockGetUserProfileField).not.toHaveBeenCalled()
   })
 
@@ -180,6 +202,7 @@ describe("user_profile_get handler", () => {
     }
     const result = await tool.handler({ field: "dateOfBirth" }, ctx)
     expect(result).toContain("not set")
+    expect(result).toMatch(/\(code: profile-field-not-set\)$/)
   })
 
   it("emits nerves events", async () => {
@@ -223,6 +246,7 @@ describe("user_profile_delete handler", () => {
     }
     const result = await tool.handler({}, ctx)
     expect(result).toContain("no profile")
+    expect(result).toMatch(/\(code: profile-not-found\)$/)
   })
 
   it("rejects non-family trust level", async () => {
@@ -233,6 +257,7 @@ describe("user_profile_delete handler", () => {
     }
     const result = await tool.handler({}, ctx)
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
     expect(mockDeleteUserProfile).not.toHaveBeenCalled()
   })
 

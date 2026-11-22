@@ -256,11 +256,11 @@ describe("mail tools", () => {
     await expect(tool("mail_send").handler({ draft_id: "draft_missing", confirmation: "CONFIRM_SEND" }, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
     await expect(tool("mail_send").handler({}, trustedContext()))
-      .resolves.toBe("draft_id is required.")
+      .resolves.toBe("draft_id is required. (code: missing-draft-id)")
     await expect(tool("mail_screener").handler({}, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
     await expect(tool("mail_decide").handler({ action: "restore" }, trustedContext()))
-      .resolves.toBe("reason is required.")
+      .resolves.toBe("reason is required. (code: missing-reason)")
     await expect(tool("mail_decide").handler({ action: "restore", reason: "family action" }, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
     await expect(tool("mail_screener").handler({}, friendContext()))
@@ -941,7 +941,7 @@ describe("mail tools", () => {
     await expect(tool("mail_decide").handler({
       action: "allow-sender",
       reason: "missing target proof",
-    }, trustedContext())).resolves.toBe("candidate_id or message_id is required.")
+    }, trustedContext())).resolves.toBe("candidate_id or message_id is required. (code: missing-candidate)")
     await expect(tool("mail_decide").handler({
       message_id: "mail_missing",
       action: "allow-sender",
@@ -951,12 +951,12 @@ describe("mail tools", () => {
       candidate_id: sourceCandidate!,
       action: "not-real",
       reason: "invalid action proof",
-    }, trustedContext())).resolves.toBe("action is required and must be a supported mail decision.")
+    }, trustedContext())).resolves.toBe("action is required and must be a supported mail decision. (code: invalid-action)")
     await expect(tool("mail_decide").handler({
       candidate_id: sourceCandidate!,
       action: "allow-sender",
       reason: " ",
-    }, trustedContext())).resolves.toBe("reason is required.")
+    }, trustedContext())).resolves.toBe("reason is required. (code: missing-reason)")
 
     await expect(tool("mail_compose").handler({
       to: " ",
@@ -1344,7 +1344,7 @@ describe("mail tools", () => {
       draft_id: " ",
       confirmation: "CONFIRM_SEND",
       reason: "missing draft id",
-    }, trustedContext())).resolves.toBe("draft_id is required.")
+    }, trustedContext())).resolves.toBe("draft_id is required. (code: missing-draft-id)")
 
     await expect(tool("mail_send").handler({
       draft_id: draftId!,
@@ -1660,7 +1660,7 @@ describe("mail tools", () => {
     const sentRecent = await tool("mail_recent").handler({ placement: "sent", reason: "sent folder check" }, trustedContext())
     expect(sentRecent).toBe("No matching mail.")
 
-    await expect(tool("mail_search").handler({}, trustedContext())).resolves.toBe("query is required.")
+    await expect(tool("mail_search").handler({}, trustedContext())).resolves.toBe("query is required. (code: missing-query)")
     await expect(tool("mail_search").handler({ query: "absent" }, trustedContext())).resolves.toBe("No matching mail.")
     const search = await tool("mail_search").handler({ query: "long body", limit: "bad" }, trustedContext())
     expect(search).toContain(seeded.longId)
@@ -1670,9 +1670,9 @@ describe("mail tools", () => {
     expect(friendNativeSearch).toContain(seeded.longId)
 
     await expect(tool("mail_body").handler({ message_id: "", reason: "test" }, trustedContext()))
-      .resolves.toBe("message_id is required.")
+      .resolves.toBe("message_id is required. (code: missing-message-id)")
     await expect(tool("mail_body").handler({ reason: "test" }, trustedContext()))
-      .resolves.toBe("message_id is required.")
+      .resolves.toBe("message_id is required. (code: missing-message-id)")
     await expect(tool("mail_body").handler({ message_id: "mail_missing", reason: "test" }, trustedContext()))
       .resolves.toContain("No visible mail message found")
     const longThread = await tool("mail_body").handler({ message_id: seeded.longId, reason: "clip", max_chars: "200" }, trustedContext())
@@ -1941,7 +1941,7 @@ describe("mail tools", () => {
     expect(missingSeed).toContain("not in the scanned pool")
 
     const emptyArg = await tool("mail_thread").handler({ message_id: "", reason: "x" }, trustedContext()) as string
-    expect(emptyArg).toBe("message_id is required.")
+    expect(emptyArg).toBe("message_id is required. (code: missing-message-id)")
 
     const body = await tool("mail_body").handler({ message_id: replyId, reason: "open reply" }, trustedContext()) as string
     expect(body).toContain("body (untrusted external content)")
