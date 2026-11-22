@@ -1,9 +1,0 @@
-{
-  "product": "harness",
-  "sources": [
-    { "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-ok.cjs", "source": "walkers/fixtures/mcp-ok.ts" },
-    { "walker": "ts-parser", "module": "walkers/fixtures/cli/cli-parse.cjs", "source": "walkers/fixtures/cli/cli-parse.ts", "parser": "parseCommand", "kinds": "walkers/fixtures/cli/cli-types.ts#Command" },
-    { "walker": "argv-entries", "module": "dist", "source": "walkers/fixtures/entries/src", "claims": [{ "entry": "walkers/fixtures/entries/src/ouro-entry.mts", "parser": "walkers/fixtures/entries/src/parse.ts" }] }
-  ],
-  "groups": []
-}
