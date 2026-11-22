@@ -582,9 +582,12 @@ export function buildBlueBubblesSemanticCapture(
   if (observationClock === false) return null
 
   const kind = input.event.kind === "message" ? "message" : input.event.mutationType
-  const eventGuid = requiredIdentifier(input.event.messageGuid)
+  // BlueBubbles looks messages up by exact GUID. The identity key folds case so
+  // spellings deduplicate, but the capture keeps the provider's spelling so
+  // recovery can fetch the message again.
+  const eventGuid = providerGuid(input.event.messageGuid)
   const targetGuid = input.event.kind === "mutation"
-    ? requiredIdentifier(input.event.targetMessageGuid)
+    ? providerGuid(input.event.targetMessageGuid)
       ?? (input.event.mutationType === "unsend" ? eventGuid : null)
     : null
   const reaction = input.event.kind === "mutation" ? input.event.reaction : undefined
@@ -1338,13 +1341,13 @@ function blueBubblesSemanticCaptureHash(capture: BlueBubblesSemanticCaptureV1): 
     event: {
       provider: capture.event.provider,
       kind: capture.event.kind,
-      eventGuid: capture.event.eventGuid,
+      eventGuid: caseFoldedGuid(capture.event.eventGuid),
       fromMe: capture.event.fromMe,
       actor: capture.event.actor,
       participants: capture.event.participants,
       text: capture.event.text,
       textSha256: capture.event.textSha256,
-      targetGuid: capture.event.targetGuid,
+      targetGuid: caseFoldedGuid(capture.event.targetGuid),
       targetAuthorship: capture.event.targetAuthorship,
       canonicalAction: capture.event.canonicalAction,
       canonicalValue: capture.event.canonicalValue,
@@ -2481,6 +2484,16 @@ function requiredIdentifier(value: unknown): string | null {
   if (value === null || value === undefined) return null
   const normalized = normalizeIngressIdentifier(value)
   return normalized || null
+}
+
+function providerGuid(value: unknown): string | null {
+  if (typeof value !== "string") return requiredIdentifier(value)
+  return value.trim() || null
+}
+
+/** Captures from older builds stored lower-case GUIDs; compare them case-insensitively. */
+function caseFoldedGuid(value: string | null): string | null {
+  return value === null ? null : value.toLowerCase()
 }
 
 function normalizeProviderNamespace(value: unknown): string | null {

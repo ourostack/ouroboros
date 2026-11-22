@@ -825,13 +825,22 @@ export function createBlueBubblesClient(
       })
 
       await assertHostAccount()
-      const url = buildRepairUrl(config.serverUrl, event.messageGuid, config.password)
-
-      try {
-        const response = await fetch(url, {
+      const fetchRepair = (messageGuid: string): Promise<Response> => fetch(
+        buildRepairUrl(config.serverUrl, messageGuid, config.password),
+        {
           method: "GET",
           signal: AbortSignal.timeout(channelConfig.requestTimeoutMs),
-        })
+        },
+      )
+
+      try {
+        let response = await fetchRepair(event.messageGuid)
+        // BlueBubbles GUIDs are upper case and looked up exactly. Captures from
+        // older builds stored them lower-cased, so retry once with the provider spelling.
+        const providerGuid = event.messageGuid.toUpperCase()
+        if (response.status === 404 && providerGuid !== event.messageGuid) {
+          response = await fetchRepair(providerGuid)
+        }
 
         if (!response.ok) {
           const errorText = await response.text().catch(() => "")

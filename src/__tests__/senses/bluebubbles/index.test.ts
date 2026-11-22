@@ -4196,7 +4196,7 @@ describe("BlueBubbles sense runtime", () => {
         schemaVersion: 1,
         event: expect.objectContaining({
           kind: "message",
-          eventGuid: "b20d4e2b-2e6e-48b5-95cd-6e24a368e4a7",
+          eventGuid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
           actor: expect.objectContaining({ externalId: "casey@example.test" }),
         }),
       }),
@@ -4429,6 +4429,85 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it("replays a recovered inbound whose text reached the session but never got a reply before the process died", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    // The turn saves the friend's message before the model runs. A process that
+    // died mid-turn leaves it as the unanswered tail of the session.
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "earlier question" },
+        { role: "assistant", content: "earlier answer" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_skip",
+    }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    const friendTurns = firstRunAgentMessages().filter((message: any) => (
+      message.role === "user" && JSON.stringify(message.content).includes(dmTopLevelPayload.data.text)
+    ))
+    expect(friendTurns).toHaveLength(1)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_completed" }),
+    )
+  })
+
+  it("skips a recovered inbound that a later reply in the session already answered", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+        { role: "assistant", content: "answered before the restart" },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_observed" }),
+    )
+  })
+
+  it("rebuilds a recovered turn from the durable capture when BlueBubbles no longer has the message", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    await queueStoredSemanticCapture()
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      requiresRepair: false,
+      repairNotice: "BlueBubbles repair failed: Message does not exist!",
+    }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(lastUserMessageContent())).toContain(dmTopLevelPayload.data.text)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
   it("reaps an unreleased claim after process death and recovers exactly once across fresh runtimes", async () => {
@@ -5401,7 +5480,7 @@ describe("BlueBubbles sense runtime", () => {
       beforeTimestamp: expect.any(Number),
     }))
     expect(mocks.writeSemanticCapture.mock.calls.some((call: unknown[]) => (
-      call[1]?.event?.eventGuid === "post-snapshot-with-missed-webhook"
+      call[1]?.event?.eventGuid === "POST-SNAPSHOT-WITH-MISSED-WEBHOOK"
     ))).toBe(false)
     closableServer.close()
   })
@@ -7818,7 +7897,7 @@ describe("BlueBubbles sense runtime", () => {
     await vi.advanceTimersByTimeAsync(0)
     await flushAsyncWork()
     expect(mocks.writeSemanticCapture.mock.calls.some((call: unknown[]) => (
-      call[1]?.event?.eventGuid === "missed-before-restart"
+      call[1]?.event?.eventGuid === "MISSED-BEFORE-RESTART"
     ))).toBe(true)
     const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     expect(recovery).toEqual(expect.objectContaining({ recovered: 0, failed: 0 }))
@@ -14444,7 +14523,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       },
     })
     expect(capture.event).toEqual(expect.objectContaining({
-      eventGuid: "recoverable-unknown-route",
+      eventGuid: "RECOVERABLE-UNKNOWN-ROUTE",
       sessionKey: "chat_identifier:unknown",
       chatGuid: null,
       chatIdentifier: null,
@@ -14467,7 +14546,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
 
     expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
-      messageGuid: "recoverable-unknown-route",
+      messageGuid: "RECOVERABLE-UNKNOWN-ROUTE",
       chat: expect.objectContaining({
         sessionKey: "chat_identifier:unknown",
         chatGuid: undefined,
