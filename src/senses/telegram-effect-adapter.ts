@@ -6,6 +6,7 @@ import { bindPrivilegedFailsafeArtifact, ExternalEventScanCache, type ExternalEv
 import { loadSessionEnvelopeFile, projectedSessionEventIds, selectEffectiveSessionEvents, type SessionEnvelope, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
+import { renderTelegramMarkdown, renderTelegramMarkdownSafe, splitTelegramMarkdown } from "./telegram-markdown"
 
 export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked the person I work for. Your message is still unread and unprocessed; I’ll only read it if they welcome you in."
 export const FIXED_USENET_SYSTEM_FAILSAFE = "Quick heads-up: I paused downloads because the server was discarding most of what it fetched. Nothing needs doing this second — I’ll investigate and follow up when I’m back online."
@@ -95,56 +96,13 @@ function requireText(value: string, label: string): string {
   return value
 }
 
+const sameTexts = (parts: unknown, texts: Array<string | null>): boolean =>
+  Array.isArray(parts) && parts.length === texts.length && parts.every((part, index) => part?.text === texts[index])
+
 function preparedTexts(effect: TelegramEffect): Array<string | null> {
-  if (effect.kind === "text" || effect.kind === "admission_ack") return splitTelegramText(requireText(effect.text, "Telegram text"))
+  if (effect.kind === "text" || effect.kind === "admission_ack") return splitTelegramMarkdown(requireText(effect.text, "Telegram text"))
   if (effect.kind === "card" || effect.kind === "edit") return [requireText(effect.text, "Telegram text")]
   return [effect.text?.trim() || null]
-}
-
-// Bold spans may carry one level of emphasis inside them, because `**bold with
-// *italic* inside**` is ordinary model prose. The inner span is rendered by the
-// same conservative scan, so a bold run that does not resolve cleanly still
-// degrades the whole message to literal text rather than emitting partial
-// markup. Everything else stays as strict as before: a span must open on a
-// letter or digit and close on a non-space, which is what keeps `**/src/**`,
-// `2 ** 3` and `a_b_c` literal.
-const TELEGRAM_BOLD_WITH_NESTING = /`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*_`\n]|\*(?!\*)|_)*\S|[\p{L}\p{N}])\*\*|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu
-const TELEGRAM_EMPHASIS_ONLY = /`([^`\n]+)`|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu
-
-function renderTelegramButlerHtml(text: string): string {
-  return renderTelegramStyledSpan(text, true) ?? escapeTelegramHtml(text)
-}
-
-// Returns null when the span cannot be rendered cleanly, so every caller falls
-// back to escaping rather than emitting half-applied markup.
-function renderTelegramStyledSpan(text: string, allowBold: boolean): string | null {
-  let html = ""
-  let cursor = 0
-  const pattern = allowBold ? TELEGRAM_BOLD_WITH_NESTING : TELEGRAM_EMPHASIS_ONLY
-  pattern.lastIndex = 0
-  for (const match of text.matchAll(pattern)) {
-    const gap = text.slice(cursor, match.index)
-    if (/[*_`]/u.test(gap)) return null
-    html += escapeTelegramHtml(gap)
-    const code = match[1]
-    const bold = allowBold ? match[2] : undefined
-    const italic = allowBold ? match[3] : match[2]
-    const underscored = allowBold ? match[4] : match[3]
-    if (code !== undefined) html += `<code>${escapeTelegramHtml(code)}</code>`
-    else if (bold !== undefined) {
-      const inner = renderTelegramStyledSpan(bold, false)
-      if (inner === null) return null
-      html += `<b>${inner}</b>`
-    // A single-marker span is bold at the top level, which is the long-standing
-    // convention here, but inside a bold run it is the nested emphasis the
-    // author meant - and nesting <b> in <b> would be markup Telegram has no
-    // reason to accept.
-    } else if (italic !== undefined) html += allowBold ? `<b>${escapeTelegramHtml(italic)}</b>` : `<i>${escapeTelegramHtml(italic)}</i>`
-    else html += `<i>${escapeTelegramHtml(underscored!)}</i>`
-    cursor = match.index + match[0].length
-  }
-  const tail = text.slice(cursor)
-  return /[*_`]/u.test(tail) ? null : html + escapeTelegramHtml(tail)
 }
 
 function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect, idempotencyKey: string): void {
@@ -201,6 +159,14 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
     if (targetValid && effectValid) {
       assertEffectTarget(target, effect, artifact.idempotencyKey)
       expectedTexts = preparedTexts(effect)
+      // A text prepared before Markdown splitting was cut by length; it stays valid so an upgrade never strands it.
+      if ((effect.kind === "text" || effect.kind === "admission_ack") && !sameTexts(artifact.parts, expectedTexts)) {
+        const legacy = splitTelegramText(effect.text)
+        if (sameTexts(artifact.parts, legacy)) {
+          expectedTexts = legacy
+          emitNervesEvent({ component: "senses", event: "telegram.legacy_split_accepted", message: "a Telegram text prepared under the earlier length split was accepted", meta: { parts: legacy.length } })
+        }
+      }
     }
   } catch {
     expectedTexts = []
@@ -439,9 +405,15 @@ function canonicalMessageId(result: unknown): number {
 async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, chatId: string, signal?: AbortSignal): Promise<number | undefined> {
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
-    const renderHtml = effect.kind === "text" && artifact.authorClass === "butler" ? renderTelegramButlerHtml : undefined
+    // The agent's own words render as Markdown; fixed control texts go out escaped, as written.
+    const markdown = effect.kind === "text" && artifact.authorClass === "butler"
     const replyToMessageId = effect.kind === "text" && part.index === 0 ? effect.replyToMessageId : undefined
-    const ids = await sendTelegramText(api, chatId, part.text!, { ...(signal ? { signal } : {}), ...(renderHtml ? { renderHtml } : {}), ...(replyToMessageId ? { replyToMessageId } : {}) })
+    const ids = await sendTelegramText(api, chatId, part.text!, {
+      split: (text) => [text],
+      ...(signal ? { signal } : {}),
+      ...(markdown ? { renderHtml: renderTelegramMarkdown, fallbackHtml: renderTelegramMarkdownSafe } : {}),
+      ...(replyToMessageId ? { replyToMessageId } : {}),
+    })
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]
   }
