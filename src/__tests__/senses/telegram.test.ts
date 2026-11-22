@@ -2159,6 +2159,9 @@ describe("Telegram sense", () => {
       await f.app.sendProactive("A second note.")
       expect(sends(f)).toHaveLength(1)
       expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toHaveLength(2)
+      // The same notice again is held once.
+      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
+      expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toHaveLength(2)
 
       reachable = true
       await f.app.sendOwnerNotice({ noticeId: "failure-fixed:8", text: "Sonarr is back up." })
