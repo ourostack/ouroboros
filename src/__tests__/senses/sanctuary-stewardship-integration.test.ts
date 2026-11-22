@@ -58,7 +58,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 interface ModelRequest {
   stream?: boolean
   messages: ChatCompletionMessageParam[]
-  tools?: Array<{ function: { name: string } }>
+  tools?: Array<{ function: { name: string; description?: string } }>
 }
 
 interface ToolStep {
@@ -100,7 +100,10 @@ function modelScript(steps: Array<(request: ModelRequest) => ToolStep>) {
       retriedFreshWorkRest = true
       call = { name: "rest", args: {} }
     } else throw new Error(`Unexpected model continuation after ${calls.length} scripted calls: ${lastToolText(request)}`)
-    const advertised = request.tools?.map((tool) => tool.function.name)
+    // A door is reachable when it is sent or held back for find_tools, which names every held-back door by group.
+    const findTools = request.tools?.find((tool) => tool.function.name === "find_tools")?.function.description ?? ""
+    const heldBack = (findTools.split("by group: ")[1] ?? "").split("; ").flatMap((group) => (group.split(": ")[1] ?? "").split(", "))
+    const advertised = [...(request.tools?.map((tool) => tool.function.name) ?? []), ...heldBack]
     if (call.advertised === false) expect(advertised).not.toContain(call.name)
     else expect(advertised).toContain(call.name)
     calls.push(call)
