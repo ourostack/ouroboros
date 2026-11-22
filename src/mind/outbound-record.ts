@@ -42,8 +42,16 @@ function deferredFileName(deliveryId: string): string {
   return `${createHash("sha256").update(deliveryId).digest("hex").slice(0, 32)}.json`
 }
 
-function recordedText(record: Pick<DeferredOutboundRecord, "content" | "originLabel">): string {
-  return `[you sent this via ${record.originLabel}] ${record.content}`
+const RECORDED_OUTBOUND_PREFIX = "[you sent this via "
+
+/** The assistant text a delivered proactive send leaves in the friend's session. */
+export function recordedOutboundText(record: Pick<DeferredOutboundRecord, "content" | "originLabel">): string {
+  return `${RECORDED_OUTBOUND_PREFIX}${record.originLabel}] ${record.content}`
+}
+
+/** True for a session message written by recordedOutboundText, not by a turn answering the friend. */
+export function isRecordedOutboundText(text: string): boolean {
+  return text.startsWith(RECORDED_OUTBOUND_PREFIX)
 }
 
 function recordError(message: string, meta: Record<string, string | number | null>): void {
@@ -106,7 +114,7 @@ function drainUnderLease(agentRoot: string, friendId: string, channel: string, k
   for (const { name, record } of entries) {
     if (!record) {
       recordError("skipped an unreadable deferred outbound record", { friendId, channel, file: name })
-    } else if (appendSyntheticAssistantMessage(lease.sessionPath, recordedText(record), lease,
+    } else if (appendSyntheticAssistantMessage(lease.sessionPath, recordedOutboundText(record), lease,
       { outbound: { origin: record.origin, deliveryId: record.deliveryId }, createIfMissing: true, sentAt: record.recordedAt })) {
       count += 1
     } else {
@@ -136,7 +144,7 @@ export function recordOutboundInSession(input: {
     try {
       return withImmediateSessionTurnLease(sessionPath, (lease) => {
         drainOutboundRecords(agentRoot, friendId, channel, key, lease)
-        const appended = appendSyntheticAssistantMessage(sessionPath, recordedText(input), lease,
+        const appended = appendSyntheticAssistantMessage(sessionPath, recordedOutboundText(input), lease,
           { outbound: { origin, deliveryId }, createIfMissing: true })
         if (appended) return "recorded" as const
         recordError("could not append an outbound record to its session", { friendId, channel, deliveryId })
