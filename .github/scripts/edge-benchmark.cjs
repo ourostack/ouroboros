@@ -122,7 +122,7 @@ const METRICS = [
   ["cli.wallMs", "`ouro --version` wall time (median)", "ms"],
   ["cli.maxRssKb", "`ouro --version` peak RSS", "kB"],
   ["cli.modules", "`ouro --version` modules loaded", "count"],
-  ["daemon.readyMs", "daemon (no agents) time to socket", "ms"],
+  ["daemon.readyMs", "daemon (no agents) time to socket (median of 3)", "ms"],
   ["daemon.idleRssKb", "daemon (no agents) idle RSS", "kB"],
   ["daemon.idlePssKb", "daemon (no agents) idle PSS", "kB"],
   ["daemon.modules", "daemon (no agents) modules loaded", "count"],
@@ -408,6 +408,27 @@ async function stopTree(pid, timeoutMs = 10_000) {
   if (gone === null) { try { process.kill(pid, "SIGKILL") } catch { /* already gone */ } }
 }
 
+/** Extra time-to-socket takes: a single take flips the ratchet on runner noise (251 ms against 200 ms on a change that never ran the daemon). */
+const EXTRA_SOCKET_TAKES = 2
+
+async function takeTimeToSocket(root, workDir, index) {
+  const home = path.join(workDir, `daemon-take-${index}`)
+  fs.mkdirSync(home, { recursive: true })
+  const socket = path.join(home, "daemon.sock")
+  const child = spawn(process.execPath, [path.join(root, "dist", "heart", "daemon", "daemon-entry.js"), "--socket", socket], {
+    cwd: home,
+    env: benchEnv({ HOME: home }),
+    stdio: "ignore",
+  })
+  try {
+    const ms = await waitFor(() => fs.existsSync(socket), 120_000)
+    if (ms === null) throw new Error("daemon never opened its socket")
+    return ms
+  } finally {
+    await stopTree(child.pid)
+  }
+}
+
 async function measureDaemon(root, workDir, idleSeconds) {
   const home = path.join(workDir, "daemon-home")
   fs.mkdirSync(home, { recursive: true })
@@ -419,23 +440,29 @@ async function measureDaemon(root, workDir, idleSeconds) {
     env: benchEnv({ HOME: home, EDGE_BENCH_OUT: out, EDGE_BENCH_SNAP_AT: String(idleSeconds) }),
     stdio: "ignore",
   })
+  let first
   try {
-    const readyMs = await waitFor(() => fs.existsSync(socket), 120_000)
-    if (readyMs === null) throw new Error("daemon never opened its socket")
+    const firstMs = await waitFor(() => fs.existsSync(socket), 120_000)
+    if (firstMs === null) throw new Error("daemon never opened its socket")
     await sleep(Math.max(0, idleSeconds * 1000 - (Date.now() - started)) + 500)
     const memory = treeMemory(child.pid)
     const snapshot = latestSnapshots(fs.readFileSync(out, "utf8").split("\n")).find((record) => record.pid === child.pid)
-    return {
-      readyMs,
-      processes: memory.processes,
-      idleRssKb: memory.rssKb,
-      idlePssKb: memory.pssKb,
-      idleAnonKb: memory.anonKb,
-      modules: snapshot?.modules ?? null,
-      topPackages: topPackages(snapshot?.byPackage),
-    }
+    first = { firstMs, memory, snapshot }
   } finally {
     await stopTree(child.pid)
+  }
+  // The extra takes start only after the first daemon is gone, so they never compete with it.
+  const takes = [first.firstMs]
+  for (let i = 1; i <= EXTRA_SOCKET_TAKES; i += 1) takes.push(await takeTimeToSocket(root, workDir, i))
+  return {
+    readyMs: median(takes),
+    takes,
+    processes: first.memory.processes,
+    idleRssKb: first.memory.rssKb,
+    idlePssKb: first.memory.pssKb,
+    idleAnonKb: first.memory.anonKb,
+    modules: first.snapshot?.modules ?? null,
+    topPackages: topPackages(first.snapshot?.byPackage),
   }
 }
 
