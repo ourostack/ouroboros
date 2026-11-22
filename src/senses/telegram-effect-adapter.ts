@@ -17,7 +17,7 @@ export type TelegramEffectTarget =
   | { kind: "admission_gate"; admissionId: string; botId: string; userId: string; chatId: string }
 
 export type TelegramEffect =
-  | { kind: "text"; text: string; replyToMessageId?: number }
+  | { kind: "text"; text: string; replyToMessageId?: number; silent?: true }
   | { kind: "admission_ack"; text: typeof FIXED_ADMISSION_ACKNOWLEDGEMENT }
   /** `silent` sends the card without a notification: its buttons work, but the phone shows no banner. */
   | { kind: "card"; text: string; buttons: Array<Array<{ text: string; callbackData: string }>>; silent?: true }
@@ -146,6 +146,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
   const effectValid = effect?.kind === "text" || effect?.kind === "admission_ack"
     ? boundedText(effect.text, 150_000)
       && (effect.kind !== "text" || effect.replyToMessageId === undefined || (Number.isSafeInteger(effect.replyToMessageId) && effect.replyToMessageId > 0))
+      && (effect.kind !== "text" || effect.silent === undefined || effect.silent === true)
     : effect?.kind === "card"
       ? boundedText(effect.text) && (effect.silent === undefined || effect.silent === true) && Array.isArray(effect.buttons) && effect.buttons.length > 0 && effect.buttons.length <= 20
         && effect.buttons.every((row) => Array.isArray(row) && row.length > 0 && row.length <= 8
@@ -414,6 +415,7 @@ async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact
       ...(signal ? { signal } : {}),
       ...(markdown ? { renderHtml: renderTelegramMarkdown, fallbackHtml: renderTelegramMarkdownSafe } : {}),
       ...(replyToMessageId ? { replyToMessageId } : {}),
+      ...(effect.kind === "text" && effect.silent ? { silent: true } : {}),
     })
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]

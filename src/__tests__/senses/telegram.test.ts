@@ -92,12 +92,13 @@ function fixture(input: {
   authorizeEffect?: any
   proactivePacing?: any
   ownerRoute?: any
+  agentRoot?: string
   authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
   admission?: any
   resolveRelationshipAuthorization?: any
 } = {}) {
-  const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
+  const agentRoot = input.agentRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
@@ -2168,6 +2169,74 @@ describe("Telegram sense", () => {
       expect(sends(f)).toHaveLength(1)
       expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toEqual([])
       expect(ownerRoute.mock.calls.slice(-3).map(([item]: any[]) => item.text)).toEqual(["Plex is back up.", "A second note.", "Sonarr is back up."])
+    })
+
+    // Chief, 2026-11-22: Slugger and his only watcher run on one Mac, so the Butler watches him from the house server and
+    // tells Ari once, on Telegram, when he has been down for 15 minutes, and once, silently, when he is back.
+    it("tells the owner once on Telegram when the primary agent has been down three checks in a row, and silently when it is back", async () => {
+      let up = false
+      const ownerRoute = Object.assign(vi.fn(async () => ({ status: "delivered" as const })), {
+        probe: vi.fn(async () => up ? { status: "delivered" as const } : { status: "unreachable" as const, detail: "connect ETIMEDOUT" }),
+      })
+      const f = fixture({ ownerRoute })
+      const bodies = () => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body)
+      await f.app.checkOwnerRoute()
+      await f.app.checkOwnerRoute()
+      expect(bodies()).toEqual([])
+      await f.app.checkOwnerRoute()
+      await f.app.checkOwnerRoute()
+      expect(bodies().map((body) => body.text)).toEqual(["Slugger (your phone bot) has been unreachable for 15 min; agents can't reach you through him."])
+      expect(bodies()[0]).not.toHaveProperty("disable_notification")
+      up = true
+      await f.app.checkOwnerRoute()
+      await f.app.checkOwnerRoute()
+      expect(bodies()).toHaveLength(2)
+      expect(bodies()[1]).toMatchObject({ disable_notification: true })
+      expect(String(bodies()[1].text)).toContain("Slugger is reachable again")
+      // A new outage alerts again, and the count survives a restart.
+      up = false
+      await f.app.checkOwnerRoute()
+      await f.app.checkOwnerRoute()
+      const restarted = fixture({ ownerRoute, agentRoot: f.agentRoot })
+      await restarted.app.checkOwnerRoute()
+      expect(restarted.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage")).toHaveLength(1)
+    })
+
+    it("checks every five minutes while it runs, and a failed check does not stop the next", async () => {
+      vi.useFakeTimers()
+      try {
+        let finishPolling!: () => void
+        const probe = vi.fn().mockRejectedValueOnce(new Error("probe broke")).mockResolvedValue({ status: "delivered" })
+        const f = fixture({ ownerRoute: Object.assign(vi.fn(), { probe }), pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+        const running = f.app.run()
+        await vi.advanceTimersByTimeAsync(5 * 60_000)
+        await vi.advanceTimersByTimeAsync(5 * 60_000)
+        expect(probe).toHaveBeenCalledTimes(2)
+        const stopping = f.app.stop()
+        finishPolling()
+        await stopping
+        await running
+        await vi.advanceTimersByTimeAsync(5 * 60_000)
+        expect(probe).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("reads a damaged watch record as no failures yet", async () => {
+      const f = fixture({ ownerRoute: Object.assign(vi.fn(), { probe: async () => ({ status: "unreachable" as const, detail: "down" }) }) })
+      fs.mkdirSync(path.join(f.agentRoot, "state", "telegram"), { recursive: true })
+      fs.writeFileSync(path.join(f.agentRoot, "state", "telegram", "owner-route-watch.json"), JSON.stringify({ failures: "two", alertedAt: 5 }))
+      await f.app.checkOwnerRoute()
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "owner-route-watch.json"), "utf8"))).toEqual({ failures: 1, alertedAt: null })
+    })
+
+    it("checks nothing without a route that can be probed", async () => {
+      const f = fixture({ ownerRoute: vi.fn(async () => ({ status: "delivered" as const })) })
+      await f.app.checkOwnerRoute()
+      const plain = fixture()
+      await plain.app.checkOwnerRoute()
+      expect(f.api.request).not.toHaveBeenCalledWith("sendMessage", expect.anything(), undefined)
     })
 
     it("sends a critical notice held before the route existed to Telegram, saying so, when the primary agent is down", async () => {
