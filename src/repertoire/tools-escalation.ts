@@ -18,7 +18,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "report_failure",
-      description: "File a failure report for the engineers who fix you, when a tool you need is missing or errors in a way you cannot work around. File it at once and ask the owner for nothing. Report the actual result (queued, or saved locally pending authorization); never claim delivery or a GitHub issue from a local save. A repeat retries the same report.",
+      description: "File a failure report for the engineers who fix you, when a tool you need is missing or errors in a way you cannot work around. Finding that no tool covers what the owner asked is exactly this case: file the report before you settle, so the gap reaches someone who can fill it. File it at once and ask the owner for nothing. Report the actual result (queued, or saved locally pending authorization); never claim delivery or a GitHub issue from a local save. A repeat retries the same report.",
       parameters: {
         type: "object",
         properties: {
