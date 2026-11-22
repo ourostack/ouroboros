@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1370",
+      "changes": [
+        "A family speaker's correction hold is advice on every sense, never a refusal: senses that build their own orientation frame (iMessage) skipped the family flag, so Ari's own Apple ID code was refused."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1368",
       "changes": [
         "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
