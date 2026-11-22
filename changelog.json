@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1370",
+      "changes": [
+        "ouro hook post-tool-use no longer loads the whole CLI: it sends from a small module, skips subagents, and sends at most one note per Claude Code session every five minutes. Per call it went from about 250-400 ms and 0.24 s of CPU to about 90-130 ms and 0.09 s."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1368",
       "changes": [
         "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
