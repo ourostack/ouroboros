@@ -201,9 +201,10 @@ describe("npm publish idempotency", () => {
     it("surfaces a registry read error during the wait", () => {
       const local = tarball("local", SAME_FILES)
       let views = 0
+      // view 1 is the initial lookup, view 2 the immediate post-publish read; the third is inside the wait.
       const fake = fakeNpm({ local, remote: null, publish: () => STAGED })
       const npm = (args: string[]): NpmResult =>
-        args[0] === "view" && ++views >= 2 ? fail("npm error code ETIMEDOUT") : fake.npm(args)
+        args[0] === "view" && ++views >= 3 ? fail("npm error code ETIMEDOUT") : fake.npm(args)
       expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, npm, noSleep))
         .toThrow(`could not read ${SPEC} from npm`)
     })
