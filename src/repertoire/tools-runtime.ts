@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { getAgentName, getAgentStateRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "../heart/daemon/socket-client"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode, type ToolContext, type ToolDefinition, type ToolErrorCard } from "./tools-base"
 
 /**
  * `restart_runtime` is the agent-callable counterpart to `ouro down && ouro up`.
@@ -62,7 +62,7 @@ function recordRestart(agentName: string, nowMs: number): void {
 
 async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?: ToolContext): Promise<string> {
   if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
-    return JSON.stringify({ error: "reason is required (one-line audit string)" })
+    return JSON.stringify({ error: "reason is required (one-line audit string)", code: "missing-reason" })
   }
   const reason = args.reason.trim()
 
@@ -75,7 +75,7 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
     })
     return JSON.stringify({
       refused: true,
-      code: "autonomous_turn_restart_refused",
+      code: "autonomous-restart-refused",
       error: `restart_runtime is not allowed from an autonomous ${ctx.autonomousTurnKind} turn: restarting the daemon kills in-flight work for every agent and habit. A tool error or missing capability is not evidence of a dead runtime. Record or report the problem (note it, surface it to the owner) instead of restarting.`,
     })
   }
@@ -84,7 +84,7 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
   if (lastMs !== null && lastMs <= nowMs && nowMs - lastMs < RESTART_COOLDOWN_MS) {
     return JSON.stringify({
       refused: true,
-      code: "restart_cooldown",
+      code: "restart-cooldown",
       error: `a restart was already requested ${Math.round((nowMs - lastMs) / 60000)} minutes ago; agent-requested restarts are limited to one per 6 hours. Record or report the problem instead.`,
       retryAfterMs: RESTART_COOLDOWN_MS - (nowMs - lastMs),
     })
@@ -113,6 +113,7 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
   } catch (error) {
     return JSON.stringify({
       error: "failed to reach daemon socket",
+      code: "daemon-unreachable",
       detail: error instanceof Error ? error.message : String(error),
     })
   }
@@ -120,13 +121,13 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string, ctx?:
 
 async function reviveSense(args: ReviveSenseArgs, agentName: string): Promise<string> {
   if (args.agent !== undefined) {
-    return "cross-agent revive is unsupported; revive_sense can only revive this agent's own senses."
+    return withCode("cross-agent revive is unsupported; revive_sense can only revive this agent's own senses.", "cross-agent-unsupported")
   }
   if (typeof args.sense !== "string" || args.sense.trim().length === 0) {
-    return JSON.stringify({ error: "sense is required (for example, 'bluebubbles')" })
+    return JSON.stringify({ error: "sense is required (for example, 'bluebubbles')", code: "missing-sense" })
   }
   if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
-    return JSON.stringify({ error: "reason is required (one-line audit string)" })
+    return JSON.stringify({ error: "reason is required (one-line audit string)", code: "missing-reason" })
   }
 
   const sense = args.sense.trim()
@@ -151,6 +152,7 @@ async function reviveSense(args: ReviveSenseArgs, agentName: string): Promise<st
       if (response.error === "Unknown daemon command kind 'daemon.sense_revive'.") {
         return JSON.stringify({
           error: "daemon does not support this command; try restart_runtime",
+          code: "revive-unsupported",
           detail: response.error,
           agent: agentName,
           sense,
@@ -158,6 +160,7 @@ async function reviveSense(args: ReviveSenseArgs, agentName: string): Promise<st
       }
       return JSON.stringify({
         error: response.error ?? "daemon failed to revive sense",
+        code: "revive-failed",
         agent: agentName,
         sense,
       })
@@ -173,12 +176,16 @@ async function reviveSense(args: ReviveSenseArgs, agentName: string): Promise<st
   } catch (error) {
     return JSON.stringify({
       error: "failed to reach daemon socket",
+      code: "daemon-unreachable",
       detail: error instanceof Error ? error.message : String(error),
       agent: agentName,
       sense,
     })
   }
 }
+
+const MISSING_REASON_ERROR: ToolErrorCard = { code: "missing-reason", means: "reason is empty; every restart or revive needs a one-line reason for the audit log.", fix: "Call again with reason saying what is wedged and since when." }
+const DAEMON_UNREACHABLE_ERROR: ToolErrorCard = { code: "daemon-unreachable", means: "The daemon's socket didn't answer, so no command reached it.", fix: "Don't retry in a loop; note the problem for the owner, since the daemon may already be down or restarting." }
 
 export const runtimeToolDefinitions: ToolDefinition[] = [
   {
@@ -205,6 +212,12 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
       return restartRuntime({ reason: args.reason }, agentName, ctx)
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts the hosting runtime" },
+    ax: { id: "tool:restart_runtime", group: "turn-runtime", when: "Pick this only when the daemon itself is wedged for every chat, such as a jammed recovery queue; never for one failing tool.", effect: "write", errors: [
+      MISSING_REASON_ERROR,
+      { code: "autonomous-restart-refused", means: "This is an autonomous turn, such as a habit, and a restart would kill every agent's in-flight work.", fix: "Don't restart; note the problem and surface it to the owner, who can restart from a conversation." },
+      { code: "restart-cooldown", means: "A restart was already requested in the last 6 hours; retryAfterMs says how long is left.", fix: "Don't restart again; note what is still wrong and report it to the owner instead." },
+      DAEMON_UNREACHABLE_ERROR,
+    ] },
   },
   {
     tool: {
@@ -231,11 +244,20 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (ctx?.context?.friend?.trustLevel !== "family") {
-        return "revive_sense requires family trust before I can revive runtime senses."
+        return withCode("revive_sense requires family trust before I can revive runtime senses.", "family-required")
       }
       const agentName = getAgentName()
       return reviveSense({ agent: args.agent, sense: args.sense, reason: args.reason }, agentName)
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "revives a managed runtime sense" },
+    ax: { id: "tool:revive_sense", group: "turn-runtime", when: "Pick this when one of your own senses, such as bluebubbles, is stuck or failed while the rest of the daemon is fine.", effect: "write", errors: [
+      { code: "family-required", means: "The person in this conversation isn't family, and only family may revive senses.", fix: "Don't retry; tell the person a family member has to ask for this." },
+      { code: "cross-agent-unsupported", means: "agent was passed, but revive_sense only revives this agent's own senses.", fix: "Call again without agent; another agent's sense is revived from that agent." },
+      { code: "missing-sense", means: "sense is empty.", fix: "Call again with the sense's name, such as bluebubbles." },
+      MISSING_REASON_ERROR,
+      { code: "revive-unsupported", means: "The running daemon is too old to revive one sense.", fix: "Use restart_runtime instead, if a restart is justified." },
+      { code: "revive-failed", means: "The daemon refused the revive; error gives its reason, such as no sense by that name.", fix: "Check the sense's name in the error and the daemon's status, then report it if the name is right." },
+      DAEMON_UNREACHABLE_ERROR,
+    ] },
   },
 ]

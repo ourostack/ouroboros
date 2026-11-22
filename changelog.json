@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1316",
+      "changes": [
+        "restart_runtime, revive_sense, habit_cancel and steward_policy_manage carry Ouro AX cards, and their errors end with a code the card explains."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1315",
       "changes": [
         "The Shepherd, bundle and Copilot app session tools now carry Ouro AX cards, and their failures return the code a card names."

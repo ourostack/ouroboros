@@ -43,7 +43,7 @@
     "tool:flight_search",
     "tool:friend_link_code",
 
-    "tool:habit_cancel",
+
     "tool:intention_capture",
     "tool:intention_manage",
     "tool:let_go",
@@ -77,15 +77,13 @@
     "tool:report_failure",
     "tool:resolve_await",
     "tool:rest",
-    "tool:restart_runtime",
-    "tool:revive_sense",
+
     "tool:send_message",
     "tool:send_result",
     "tool:session_summary",
     "tool:set_reasoning_effort",
     "tool:settle",
     "tool:speak",
-    "tool:steward_policy_manage",
     "tool:stripe_create_card",
     "tool:stripe_deactivate_card",
     "tool:stripe_list_cards",

@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents: Array<Record<string, unknown>> = vi.hoisted(() => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
@@ -23,6 +23,8 @@ vi.mock("../../heart/daemon/socket-client", () => ({
   sendDaemonCommand: (...args: unknown[]) => mockSendDaemonCommand(...args),
 }))
 
+// tools-base assembles every tool module and tools-runtime imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { runtimeToolDefinitions } from "../../repertoire/tools-runtime"
 import type { ToolContext } from "../../repertoire/tools-base"
 
@@ -49,6 +51,17 @@ function friendCtx(): ToolContext {
     } as any,
   }
 }
+
+
+describe("Ouro AX cards", () => {
+  it("gives restart_runtime and revive_sense write cards in turn-runtime", () => {
+    for (const def of runtimeToolDefinitions) {
+      expect(def.ax).toMatchObject({ id: `tool:${def.tool.function.name}`, group: "turn-runtime", effect: "write" })
+      expect(def.ax!.errors!.map((e) => e.code)).toEqual(expect.arrayContaining(["missing-reason", "daemon-unreachable"]))
+    }
+    expect(runtimeToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(["restart_runtime", "revive_sense"])
+  })
+})
 
 describe("restart_runtime tool", () => {
   beforeEach(() => {
@@ -88,6 +101,7 @@ describe("restart_runtime tool", () => {
       const t = findTool("restart_runtime")
       const result = JSON.parse(await t.handler({}))
       expect(result.error).toContain("reason is required")
+      expect(result.code).toBe("missing-reason")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
 
@@ -96,6 +110,7 @@ describe("restart_runtime tool", () => {
       const r1 = JSON.parse(await t.handler({ reason: "" }))
       const r2 = JSON.parse(await t.handler({ reason: "   " }))
       expect(r1.error).toContain("reason is required")
+      expect(r1.code).toBe("missing-reason")
       expect(r2.error).toContain("reason is required")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
@@ -144,6 +159,7 @@ describe("restart_runtime tool", () => {
       const t = findTool("restart_runtime")
       const result = JSON.parse(await t.handler({ reason: "x" }))
       expect(result.error).toBe("failed to reach daemon socket")
+      expect(result.code).toBe("daemon-unreachable")
       expect(result.detail).toContain("ECONNREFUSED")
     })
 
@@ -152,6 +168,7 @@ describe("restart_runtime tool", () => {
       const t = findTool("restart_runtime")
       const result = JSON.parse(await t.handler({ reason: "x" }))
       expect(result.error).toBe("failed to reach daemon socket")
+      expect(result.code).toBe("daemon-unreachable")
       expect(result.detail).toBe("socket gone")
     })
   })
@@ -235,6 +252,7 @@ describe("revive_sense tool", () => {
       const r2 = JSON.parse(await t.handler({ sense: "   ", reason: "OOM recovery test" }, familyCtx()))
 
       expect(r1.error).toContain("sense is required")
+      expect(r1.code).toBe("missing-sense")
       expect(r2.error).toContain("sense is required")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
@@ -245,6 +263,7 @@ describe("revive_sense tool", () => {
       const r2 = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "   " }, familyCtx()))
 
       expect(r1.error).toContain("reason is required")
+      expect(r1.code).toBe("missing-reason")
       expect(r2.error).toContain("reason is required")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
@@ -300,6 +319,7 @@ describe("revive_sense tool", () => {
       const result = await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, friendCtx())
 
       expect(result).toContain("family trust")
+      expect(result).toMatch(/\(code: family-required\)$/)
       expect(result).toContain("revive")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
@@ -309,6 +329,7 @@ describe("revive_sense tool", () => {
       const result = await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" })
 
       expect(result).toContain("family trust")
+      expect(result).toMatch(/\(code: family-required\)$/)
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
 
@@ -321,6 +342,7 @@ describe("revive_sense tool", () => {
       }, familyCtx())
 
       expect(result).toContain("cross-agent")
+      expect(result).toMatch(/\(code: cross-agent-unsupported\)$/)
       expect(result).toContain("unsupported")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
@@ -336,6 +358,7 @@ describe("revive_sense tool", () => {
       const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "missing sense test" }, familyCtx()))
 
       expect(result.error).toBe("No managed sense 'bluebubbles' is registered for agent 'slugger'.")
+      expect(result.code).toBe("revive-failed")
       expect(result.sense).toBe("bluebubbles")
       expect(result.agent).toBe("slugger")
     })
@@ -346,6 +369,7 @@ describe("revive_sense tool", () => {
       const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "missing sense test" }, familyCtx()))
 
       expect(result.error).toBe("daemon failed to revive sense")
+      expect(result.code).toBe("revive-failed")
       expect(result.sense).toBe("bluebubbles")
       expect(result.agent).toBe("slugger")
     })
@@ -359,6 +383,7 @@ describe("revive_sense tool", () => {
       const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "old daemon test" }, familyCtx()))
 
       expect(result.error).toBe("daemon does not support this command; try restart_runtime")
+      expect(result.code).toBe("revive-unsupported")
       expect(result.detail).toBe("Unknown daemon command kind 'daemon.sense_revive'.")
     })
 
@@ -368,6 +393,7 @@ describe("revive_sense tool", () => {
       const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "socket test" }, familyCtx()))
 
       expect(result.error).toBe("failed to reach daemon socket")
+      expect(result.code).toBe("daemon-unreachable")
       expect(result.detail).toContain("ECONNREFUSED")
       expect(result.agent).toBe("slugger")
       expect(result.sense).toBe("bluebubbles")
@@ -407,7 +433,7 @@ describe("revive_sense tool", () => {
     it.each(["await", "habit", "instinct", "external-event", "scheduler"] as const)("refuses in a %s turn without touching the daemon", async (kind) => {
       const t = findTool("restart_runtime")
       const result = JSON.parse(await t.handler({ reason: "runtime unavailable" }, { signin: vi.fn(), autonomousTurnKind: kind }))
-      expect(result).toMatchObject({ refused: true, code: "autonomous_turn_restart_refused" })
+      expect(result).toMatchObject({ refused: true, code: "autonomous-restart-refused" })
       expect(result.error).toContain(kind)
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
       expect(nervesEvents.some((e) => e.event === "repertoire.runtime_restart_refused")).toBe(true)
@@ -418,7 +444,7 @@ describe("revive_sense tool", () => {
       const first = JSON.parse(await t.handler({ reason: "wedged" }, familyCtx()))
       expect(first.requested).toBe(true)
       const second = JSON.parse(await t.handler({ reason: "wedged again" }, familyCtx()))
-      expect(second).toMatchObject({ refused: true, code: "restart_cooldown" })
+      expect(second).toMatchObject({ refused: true, code: "restart-cooldown" })
       expect(second.retryAfterMs).toBeGreaterThan(0)
       expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
     })
@@ -447,8 +473,10 @@ describe("revive_sense tool", () => {
     it("persists the cooldown across a module reload and expires it after 6 hours", async () => {
       await findTool("restart_runtime").handler({ reason: "wedged" }, familyCtx())
       vi.resetModules()
+      // tools-base assembles every tool module and tools-runtime imports withCode from it, so load tools-base first, as the runtime does.
+      await import("../../repertoire/tools-base")
       const reloaded = (await import("../../repertoire/tools-runtime")).runtimeToolDefinitions.find((d) => d.tool.function.name === "restart_runtime")!
-      expect(JSON.parse(await reloaded.handler({ reason: "again" }, familyCtx()))).toMatchObject({ code: "restart_cooldown" })
+      expect(JSON.parse(await reloaded.handler({ reason: "again" }, familyCtx()))).toMatchObject({ code: "restart-cooldown" })
       const file = path.join(stateRoot, "daemon", "restart-runtime-cooldown.json")
       fs.writeFileSync(file, JSON.stringify({ requestedAtMs: Date.now() - 7 * 60 * 60 * 1000 }))
       expect(JSON.parse(await reloaded.handler({ reason: "later" }, familyCtx())).requested).toBe(true)
