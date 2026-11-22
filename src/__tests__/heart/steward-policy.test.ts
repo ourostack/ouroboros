@@ -64,23 +64,31 @@ afterEach(async () => {
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
+
+describe("Ouro AX card", () => {
+  it("gives steward_policy_manage a write card in turn-steward, since most actions write", () => {
+    expect(stewardPolicyToolDefinition.ax).toMatchObject({ id: "tool:steward_policy_manage", group: "turn-steward", effect: "write" })
+    expect(stewardPolicyToolDefinition.ax!.errors!.map((e) => e.code)).toEqual(expect.arrayContaining(["owner-request-required", "authorization-denied", "bad-argument"]))
+  })
+})
+
 describe("steward policy", () => {
   it("covers the direct tool contract, validation boundaries, and risk profiles", async () => {
     const agentRoot = root()
     const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "request-ari-1", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth", profileVersion: 7 }), actor: ari }
     const context = { signin: async () => undefined, agentRoot, currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization }
-    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, undefined)).toThrow("runtime")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, { signin: async () => undefined, agentRoot } as any)).toThrow("relationship")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, undefined)).toThrow(/runtime.*\(code: runtime-unavailable\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, { signin: async () => undefined, agentRoot } as any)).toThrow(/relationship.*\(code: relationship-authority-required\)$/)
     expect(stewardPolicyToolDefinition.handler({ action: "read" }, context as any)).toContain('"version":0')
-    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0 }, { ...context, relationshipAuthorization: { ...relationshipAuthorization, actor: undefined } } as any)).toThrow("mutation requires")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: "bad" }, context as any)).toThrow("nonnegative")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0, provenance: "bogus" }, context as any)).toThrow("provenance")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0 }, { ...context, relationshipAuthorization: { ...relationshipAuthorization, actor: undefined } } as any)).toThrow(/mutation requires.*\(code: relationship-authority-required\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: "bad" }, context as any)).toThrow(/nonnegative.*\(code: bad-argument\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0, provenance: "bogus" }, context as any)).toThrow(/provenance.*\(code: bad-argument\)$/)
     await expect(stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0, provenance: "stated" }, context as any)).rejects.toThrow("key must be nonempty")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "observed" }, context as any)).toThrow("provenance")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated" }, context as any)).toThrow("targetsJson is required")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: "{}" }, context as any)).toThrow("JSON string array")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: '["books",1]' }, context as any)).toThrow("JSON string array")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "unknown", expectedVersion: 0 }, context as any)).toThrow("action is invalid")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "observed" }, context as any)).toThrow(/provenance.*\(code: bad-argument\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated" }, context as any)).toThrow(/targetsJson is required.*\(code: bad-argument\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: "{}" }, context as any)).toThrow(/JSON string array.*\(code: bad-argument\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: '["books",1]' }, context as any)).toThrow(/JSON string array.*\(code: bad-argument\)$/)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "unknown", expectedVersion: 0 }, context as any)).toThrow(/action is invalid.*\(code: bad-argument\)$/)
     expect(stewardPolicyToolDefinition.riskProfile!({ action: "read" } as any)).toMatchObject({ risk: "low" })
     expect(stewardPolicyToolDefinition.riskProfile!({ action: "set_desired_state" } as any)).toMatchObject({ risk: "high" })
     const granted = await stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", key: "restart", routineAction: "unraid.container.restart", targetsJson: '["books"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true, expiresAt: "2099-01-01T00:00:00.000Z" }, context as any)
@@ -94,7 +102,7 @@ describe("steward policy", () => {
     const secondGrant = await stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "installed_explicit_policy", key: "restart-video", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)
     expect(secondGrant).toContain("restart-video")
     for (const verificationRequired of [false, undefined, "true", 1] as const) {
-      expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", key: "bad", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired } as any, context as any)).toThrow("verificationRequired must be true")
+      expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", key: "bad", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired } as any, context as any)).toThrow(/verificationRequired must be true.*\(code: bad-argument\)$/)
     }
     await expect(stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).rejects.toThrow("key must be nonempty")
     await expect(stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", key: "bad", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).rejects.toThrow("action must be nonempty")
@@ -177,7 +185,7 @@ describe("steward policy", () => {
       { ...base, relationshipAuthorization: { ...relationshipAuthorization, actor: { ...relationshipAuthorization.actor, sessionEventId: "evt-telegram" } } },
       { ...base, delegatedCommand: undefined },
     ]
-    for (const context of variants) expect(() => stewardPolicyToolDefinition.handler(args, context as any)).toThrow("mutation requires")
+    for (const context of variants) expect(() => stewardPolicyToolDefinition.handler(args, context as any)).toThrow(/mutation requires.*\(code: owner-request-required\)$/)
     expect(readStewardPolicy(agentRoot).version).toBe(0)
   })
 
@@ -187,7 +195,7 @@ describe("steward policy", () => {
     const context: Record<string, unknown> = { signin: async () => undefined, agentRoot, currentSession: { friendId: "a2a-peer", channel: "a2a", key: "ctx-books" }, delegatedCommand }
     context.relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "task-1", authorizedContextScopes: [], advertisedToolNames: [], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "a2a-delegated:task-1" },
       authorizeTool: () => { context.delegatedCommand = { ...delegatedCommand }; return { allowed: true as const, receiptId: "auth", profileVersion: 7 } } }
-    await expect(stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "x" }, context as any)).rejects.toThrow("changed before mutation")
+    await expect(stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "x" }, context as any)).rejects.toThrow(/changed before mutation.*\(code: authorization-changed\)$/)
   })
 
   describe("A-006 applied policy audit", () => {
