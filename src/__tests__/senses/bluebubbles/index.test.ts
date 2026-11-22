@@ -4196,7 +4196,7 @@ describe("BlueBubbles sense runtime", () => {
         schemaVersion: 1,
         event: expect.objectContaining({
           kind: "message",
-          eventGuid: "b20d4e2b-2e6e-48b5-95cd-6e24a368e4a7",
+          eventGuid: "B20D4E2B-2E6E-48B5-95CD-6E24A368E4A7",
           actor: expect.objectContaining({ externalId: "casey@example.test" }),
         }),
       }),
@@ -4429,6 +4429,110 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it("replays a recovered inbound whose text reached the session but never got a reply before the process died", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    // The turn saves the friend's message before the model runs. A process that
+    // died mid-turn leaves it as the unanswered tail of the session.
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "earlier question" },
+        { role: "assistant", content: "earlier answer" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_skip",
+    }))
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    const friendTurns = firstRunAgentMessages().filter((message: any) => (
+      message.role === "user" && JSON.stringify(message.content).includes(dmTopLevelPayload.data.text)
+    ))
+    expect(friendTurns).toHaveLength(1)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_completed" }),
+    )
+  })
+
+  it("replays a recovered inbound when the only later assistant message is a proactive send recorded in the session", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    const { recordedOutboundText } = await import("../../../mind/outbound-record")
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+        { role: "assistant", content: recordedOutboundText({ originLabel: "a proactive message", content: "unrelated heads-up" }) },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_completed" }),
+    )
+  })
+
+  it("skips a recovered inbound that a later reply in the session already answered", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+        { role: "assistant", content: "answered before the restart" },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_observed" }),
+    )
+  })
+
+  it("rebuilds a recovered turn from the durable capture when BlueBubbles no longer has the message", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    await queueStoredSemanticCapture()
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      requiresRepair: false,
+      repairNotice: "BlueBubbles repair failed: Message does not exist!",
+    }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(lastUserMessageContent())).toContain(dmTopLevelPayload.data.text)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
 
   it("reaps an unreleased claim after process death and recovers exactly once across fresh runtimes", async () => {
@@ -5401,7 +5505,7 @@ describe("BlueBubbles sense runtime", () => {
       beforeTimestamp: expect.any(Number),
     }))
     expect(mocks.writeSemanticCapture.mock.calls.some((call: unknown[]) => (
-      call[1]?.event?.eventGuid === "post-snapshot-with-missed-webhook"
+      call[1]?.event?.eventGuid === "POST-SNAPSHOT-WITH-MISSED-WEBHOOK"
     ))).toBe(false)
     closableServer.close()
   })
@@ -5839,7 +5943,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
-  it("bootstraps catch-up messages into the inbound sidecar when the session already has the text", async () => {
+  it("bootstraps catch-up messages into the inbound sidecar when the session already answered the text", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -5847,6 +5951,7 @@ describe("BlueBubbles sense runtime", () => {
       messages: [
         { role: "system", content: "system prompt" },
         { role: "user", content: "already handled upstream catchup" },
+        { role: "assistant", content: "answered before the restart" },
       ],
     })
     mocks.listRecentMessages.mockResolvedValueOnce([
@@ -7922,7 +8027,7 @@ describe("BlueBubbles sense runtime", () => {
     await vi.advanceTimersByTimeAsync(0)
     await flushAsyncWork()
     expect(mocks.writeSemanticCapture.mock.calls.some((call: unknown[]) => (
-      call[1]?.event?.eventGuid === "missed-before-restart"
+      call[1]?.event?.eventGuid === "MISSED-BEFORE-RESTART"
     ))).toBe(true)
     const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     expect(recovery).toEqual(expect.objectContaining({ recovered: 0, failed: 0 }))
@@ -8996,7 +9101,7 @@ describe("BlueBubbles sense runtime", () => {
     }
     const releaseBridgeRepair = createDeferred<void>()
     mocks.repairEvent.mockImplementation(async (event: any) => {
-      if (event.messageGuid === "transitive-bridge") await releaseBridgeRepair.promise
+      if (event.messageGuid === "TRANSITIVE-BRIDGE") await releaseBridgeRepair.promise
       return event
     })
 
@@ -9004,7 +9109,7 @@ describe("BlueBubbles sense runtime", () => {
     const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
     expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "transitive-bridge",
+      messageGuid: "TRANSITIVE-BRIDGE",
     }))
     await flushAsyncWork()
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
@@ -9012,9 +9117,9 @@ describe("BlueBubbles sense runtime", () => {
     releaseBridgeRepair.resolve()
     await expect(recovery).resolves.toEqual({ recovered: 1, skipped: 2, failed: 0 })
     expect(mocks.repairEvent.mock.calls.map((call: unknown[]) => call[0].messageGuid)).toEqual([
-      "transitive-bridge",
-      "transitive-identifier-only",
-      "transitive-guid-only",
+      "TRANSITIVE-BRIDGE",
+      "TRANSITIVE-IDENTIFIER-ONLY",
+      "TRANSITIVE-GUID-ONLY",
     ])
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
@@ -9049,7 +9154,7 @@ describe("BlueBubbles sense runtime", () => {
     mocks.semanticCaptures.set(newer.keyHash, newer)
     const releaseNewerRepair = createDeferred<void>()
     mocks.repairEvent.mockImplementation(async (event: any) => {
-      if (event.messageGuid === "unresolved-recovery-newer") await releaseNewerRepair.promise
+      if (event.messageGuid === "UNRESOLVED-RECOVERY-NEWER") await releaseNewerRepair.promise
       return {
         ...event,
         chat: {
@@ -9064,7 +9169,7 @@ describe("BlueBubbles sense runtime", () => {
     const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
     expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "unresolved-recovery-newer",
+      messageGuid: "UNRESOLVED-RECOVERY-NEWER",
     }))
     await flushAsyncWork()
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
@@ -9076,8 +9181,8 @@ describe("BlueBubbles sense runtime", () => {
     }))
     expect(result).toEqual({ recovered: 1, skipped: 1, failed: 0 })
     expect(mocks.repairEvent.mock.calls.map((call: unknown[]) => call[0].messageGuid)).toEqual([
-      "unresolved-recovery-newer",
-      "unresolved-recovery-older",
+      "UNRESOLVED-RECOVERY-NEWER",
+      "UNRESOLVED-RECOVERY-OLDER",
     ])
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
   })
@@ -9125,7 +9230,7 @@ describe("BlueBubbles sense runtime", () => {
     mocks.semanticCaptures.set(newerIdentifier.keyHash, newerIdentifier)
     const releaseNewerRepair = createDeferred<void>()
     mocks.repairEvent.mockImplementation(async (event: any) => {
-      if (event.messageGuid !== "unbound-identifier-newer") return event
+      if (event.messageGuid !== "UNBOUND-IDENTIFIER-NEWER") return event
       await releaseNewerRepair.promise
       return {
         ...event,
@@ -9144,7 +9249,7 @@ describe("BlueBubbles sense runtime", () => {
     const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
     await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
     expect(mocks.repairEvent.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-      messageGuid: "unbound-identifier-newer",
+      messageGuid: "UNBOUND-IDENTIFIER-NEWER",
     }))
     await flushAsyncWork()
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
@@ -9152,9 +9257,9 @@ describe("BlueBubbles sense runtime", () => {
     releaseNewerRepair.resolve()
     await expect(recovery).resolves.toEqual({ recovered: 2, skipped: 1, failed: 0 })
     expect(mocks.repairEvent.mock.calls.map((call: unknown[]) => call[0].messageGuid)).toEqual([
-      "unbound-identifier-newer",
-      "unrelated-guid-between",
-      "unbound-guid-older",
+      "UNBOUND-IDENTIFIER-NEWER",
+      "UNRELATED-GUID-BETWEEN",
+      "UNBOUND-GUID-OLDER",
     ])
     expect(mocks.sendText).toHaveBeenCalledTimes(2)
   })
@@ -9563,7 +9668,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(started).toBe(2)
   })
 
-  it("settles a v1 recovery capture when the session already contains the message text", async () => {
+  it("settles a v1 recovery capture when the session already answered the message", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -9572,6 +9677,7 @@ describe("BlueBubbles sense runtime", () => {
       messages: [
         { role: "system", content: "system prompt" },
         { role: "user", content: "you already saw this" },
+        { role: "assistant", content: "answered before the restart" },
       ],
     })
 
@@ -14494,7 +14600,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
     })
     expect(mocks.repairEvent).toHaveBeenCalledTimes(1)
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
-      messageGuid: "capture-missing-chat",
+      messageGuid: "CAPTURE-MISSING-CHAT",
       requiresRepair: true,
     }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -14548,7 +14654,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       },
     })
     expect(capture.event).toEqual(expect.objectContaining({
-      eventGuid: "recoverable-unknown-route",
+      eventGuid: "RECOVERABLE-UNKNOWN-ROUTE",
       sessionKey: "chat_identifier:unknown",
       chatGuid: null,
       chatIdentifier: null,
@@ -14571,7 +14677,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
 
     expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
-      messageGuid: "recoverable-unknown-route",
+      messageGuid: "RECOVERABLE-UNKNOWN-ROUTE",
       chat: expect.objectContaining({
         sessionKey: "chat_identifier:unknown",
         chatGuid: undefined,
@@ -14698,7 +14804,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       delivery,
     ])
     mocks.repairEvent.mockImplementation(async (event: any) => (
-      event.messageGuid === "recovered-observed-reaction"
+      event.messageGuid === "RECOVERED-OBSERVED-REACTION"
         ? { ...event, shouldNotifyAgent: false }
         : event
     ))
@@ -14718,7 +14824,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       "message_observed",
     ].sort())
     expect(mocks.repairEvent).toHaveBeenCalledWith(expect.objectContaining({
-      messageGuid: "recovered-identifier-edit",
+      messageGuid: "RECOVERED-IDENTIFIER-EDIT",
       chat: expect.objectContaining({
         chatGuid: undefined,
         chatIdentifier: "casey@example.test",
@@ -14729,7 +14835,7 @@ describe("BlueBubbles semantic lifecycle coverage", () => {
       revision: "revision-1",
     }))
     expect(mocks.repairEvent).not.toHaveBeenCalledWith(expect.objectContaining({
-      messageGuid: "recovered-null-text-edit",
+      messageGuid: "RECOVERED-NULL-TEXT-EDIT",
     }))
   })
 
@@ -15159,7 +15265,7 @@ describe("BlueBubbles failed reply retry", () => {
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "error",
       event: "senses.bluebubbles_reply_delivery_abandoned",
-      meta: expect.objectContaining({ messageGuid: stuckGuid.toLowerCase(), failedAttempts: 3 }),
+      meta: expect.objectContaining({ messageGuid: stuckGuid, failedAttempts: 3 }),
     }))
 
     vi.setSystemTime(Date.now() + recoveryBackoffMs)
