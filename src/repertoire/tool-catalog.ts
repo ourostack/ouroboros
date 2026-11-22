@@ -32,6 +32,9 @@ export interface CatalogSource {
   readonly mcpServer?: string
 }
 
+/** The door that loads deferred doors on every provider. */
+export const FIND_TOOLS_NAME = "find_tools"
+
 /** The engine's turn tools: a turn can't end, think or reply without them, so they are never deferred. */
 export const TURN_TOOL_NAMES: ReadonlySet<string> = new Set(["settle", "ponder", "observe", "rest", "speak", "surface"])
 
@@ -125,4 +128,24 @@ export function searchCatalog(
     .sort((a, b) => b.score - a.score || a.index - b.index)
   const floor = scored.length > 0 ? Math.ceil(scored[0]!.score / 3) : 0
   return scored.filter((entry) => entry.score >= floor).slice(0, MAX_RESULTS).map((entry) => entry.name)
+}
+
+const LOADED_HEADER = "loaded; callable on your next step:"
+
+function signature(tool: OpenAI.ChatCompletionFunctionTool): string {
+  const parameters = tool.function.parameters as { properties?: Record<string, unknown>; required?: string[] } | undefined
+  const required = new Set(parameters?.required ?? [])
+  return Object.keys(parameters?.properties ?? {}).map((key) => (required.has(key) ? key : `${key}?`)).join(", ")
+}
+
+/** `find_tools`'s reply: the doors it loaded, one per line, or how to try again. */
+export function formatLoadedDoors(loaded: readonly OpenAI.ChatCompletionFunctionTool[]): string {
+  if (loaded.length === 0) return "no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools."
+  return `${LOADED_HEADER}\n${loaded.map((tool) => `- ${tool.function.name}(${signature(tool)}): ${tool.function.description ?? ""}`).join("\n")}`
+}
+
+/** The door names a `find_tools` reply loaded, read back from its text so the reply itself stays the record. */
+export function loadedDoorNames(reply: string): string[] {
+  if (!reply.startsWith(LOADED_HEADER)) return []
+  return reply.split("\n").slice(1).flatMap((line) => /^- ([A-Za-z0-9_-]+)\(/.exec(line)?.[1] ?? [])
 }

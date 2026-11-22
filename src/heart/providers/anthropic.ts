@@ -9,6 +9,7 @@ import { finalizeSettleStream, ProviderTextOutput, SettleStreamer } from "../str
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
+import { FIND_TOOLS_NAME, loadedDoorNames } from "../../repertoire/tool-catalog";
 
 export type AnthropicThinkingBlock =
   | { type: "thinking"; thinking: string; signature: string }
@@ -119,11 +120,21 @@ function parseToolCallInput(argumentsJson: string): Record<string, unknown> {
   }
 }
 
+export interface AnthropicMessageOptions {
+  /**
+   * Doors this request sends with `defer_loading`. A `find_tools` reply that loaded any of them becomes
+   * `tool_reference` blocks, so the API loads their schemas in place and the cached prompt prefix stays intact.
+   */
+  readonly toolReferences?: ReadonlySet<string>;
+}
+
 export function toAnthropicMessages(
   messages: OpenAI.ChatCompletionMessageParam[],
+  options: AnthropicMessageOptions = {},
 ): { system?: string; messages: Array<Record<string, unknown>> } {
   const systemParts: string[] = [];
   const converted: Array<Record<string, unknown>> = [];
+  const findToolsCallIds = new Set<string>();
 
   for (const msg of messages) {
     if (msg.role === "system") {
@@ -163,6 +174,7 @@ export function toAnthropicMessages(
         for (const toolCall of assistant.tool_calls) {
           /* v8 ignore next -- type narrowing: OpenAI SDK only emits function tool_calls @preserve */
           if (toolCall.type !== "function") continue;
+          if (toolCall.function.name === FIND_TOOLS_NAME) findToolsCallIds.add(toolCall.id);
           blocks.push({
             type: "tool_use",
             id: toolCall.id,
@@ -180,13 +192,17 @@ export function toAnthropicMessages(
 
     if (msg.role === "tool") {
       const tool = msg as OpenAI.ChatCompletionToolMessageParam;
+      const text = toAnthropicTextContent(tool.content);
+      const references = options.toolReferences && findToolsCallIds.has(tool.tool_call_id)
+        ? loadedDoorNames(text).filter((name) => options.toolReferences!.has(name))
+        : [];
       converted.push({
         role: "user",
         content: [
           {
             type: "tool_result",
             tool_use_id: tool.tool_call_id,
-            content: toAnthropicTextContent(tool.content),
+            content: references.length > 0 ? references.map((name) => ({ type: "tool_reference", tool_name: name })) : text,
           },
         ],
       });
@@ -199,7 +215,13 @@ export function toAnthropicMessages(
 // The Anthropic API rejects the whole request when any tool's input_schema has
 // oneOf, allOf or anyOf at the top level, so those keys are dropped here. Each
 // tool's handler still enforces its own either/or rules.
-export function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Array<Record<string, unknown>> {
+// A deferred door is sent with `defer_loading: true`: the API keeps it out of context until find_tools loads it. The
+// API refuses a request where every tool is deferred, so a list with nothing left loaded is sent whole.
+export function toAnthropicTools(
+  tools: OpenAI.ChatCompletionFunctionTool[],
+  deferred: ReadonlySet<string> = new Set(),
+): Array<Record<string, unknown>> {
+  const defer = tools.some((tool) => !deferred.has(tool.function.name));
   return tools.map((tool) => {
     const { oneOf: _oneOf, allOf: _allOf, anyOf: _anyOf, ...schema } =
       (tool.function.parameters as Record<string, unknown>) ?? { type: "object", properties: {} };
@@ -207,6 +229,7 @@ export function toAnthropicTools(tools: OpenAI.ChatCompletionFunctionTool[]): Ar
       name: tool.function.name,
       description: tool.function.description ?? "",
       input_schema: schema,
+      ...(defer && deferred.has(tool.function.name) ? { defer_loading: true } : {}),
     };
   });
 }
