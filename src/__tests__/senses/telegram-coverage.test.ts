@@ -113,6 +113,10 @@ afterEach(() => {
   for (const root of isolatedRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
+
+/** What the effect adapter passes for the agent's own words: Markdown, the safe fallback, and the part kept whole. */
+const MARKDOWN_SEND = { renderHtml: expect.any(Function), fallbackHtml: expect.any(Function), split: expect.any(Function) }
+
 describe("Telegram sense coverage contracts", () => {
   const acceptanceEvent = (name = "senses.telegram_turn_start") => ({
     event: name,
@@ -685,7 +689,7 @@ describe("Telegram sense coverage contracts", () => {
     expect(turnOptions.toolContext).toEqual({ chatActions: { react: expect.any(Function), setReplyTarget: expect.any(Function), sendFile: expect.any(Function) } })
     expect(turnOptions).not.toHaveProperty("approvalCoordinatorFactory")
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
   })
 
@@ -776,7 +780,7 @@ describe("Telegram sense coverage contracts", () => {
       expect.anything(),
       privateCredentials.authorizedChatId,
       "fallback",
-      { renderHtml: expect.any(Function) },
+      { ...MARKDOWN_SEND },
     )
 
     const privateSurfaces = JSON.stringify({ turn: first, logs: mocks.emitNervesEvent.mock.calls })
@@ -1089,7 +1093,7 @@ describe("Telegram sense coverage contracts", () => {
       approvalCoordinatorFactory: f.runtime.coordinator,
     }))
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
 
     mocks.sendTelegramText.mockClear()
@@ -1099,7 +1103,7 @@ describe("Telegram sense coverage contracts", () => {
     })
     await f.getOnMessage()({ updateId: 2, messageId: "3", text: "again" })
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "streamed", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
 
     mocks.sendTelegramText.mockClear()
@@ -1125,8 +1129,8 @@ describe("Telegram sense coverage contracts", () => {
     await f.getOnMessage()({ updateId: 5, messageId: "6", text: "hello" })
 
     expect(mocks.sendTelegramText).toHaveBeenCalledTimes(2)
-    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(1, f.api, "43", failure.text, { renderHtml: expect.any(Function) })
-    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(2, f.api, "43", failure.text, { renderHtml: expect.any(Function) })
+    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(1, f.api, "43", failure.text, { ...MARKDOWN_SEND })
+    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(2, f.api, "43", failure.text, { ...MARKDOWN_SEND })
     expect(mocks.emitNervesEvent.mock.calls.findLast(([entry]) => entry.event === "senses.telegram_turn_end")?.[0].meta).toMatchObject({ deliveryCount: 1 })
   })
 
@@ -1136,7 +1140,7 @@ describe("Telegram sense coverage contracts", () => {
     createTelegramSenseApp({ agentName: "butler", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "I couldn't complete that turn. The failure was recorded; please try again.", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
   })
 
@@ -1232,7 +1236,7 @@ describe("Telegram sense coverage contracts", () => {
     await app.sendProactive("  hello  ", controller.signal)
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "43", "hello", {
       signal: controller.signal,
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
     await expect(app.sendProactive("   ")).rejects.toThrow("proactive message is missing")
   })
@@ -1379,10 +1383,10 @@ describe("Telegram sense coverage contracts", () => {
     await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
 
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Delegated command from you.", {
-      renderHtml: expect.any(Function),
+      ...MARKDOWN_SEND,
     })
     expect(f.api.stop).toHaveBeenCalledTimes(3)
   })

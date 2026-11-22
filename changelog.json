@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1351",
+      "version": "0.1.0-alpha.1353",
       "changes": [
         "The Butler's media tools follow trust rungs: a friend can find media and clear a stuck download, while changing quality or release profiles, removing blocklist entries, forcing a stalled download out, retrying blocklisted releases and replacing an existing file stay with family."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1352",
+      "changes": [
+        "Every agent's Telegram replies render Markdown (bold, italic, headings, lists, quotes, links, code, and tables as aligned monospace), split by block and measured after rendering; a refused chunk is resent with only code and links, then as plain text."
       ]
     },
     {
