@@ -277,9 +277,22 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
   /* v8 ignore stop */
 }
 
+/** surface's Ouro AX card, which its definition carries and `toolCards` lists for the census. */
+const surfaceCard: ToolDoorCard = {
+  id: "tool:surface",
+  group: "turn-sessions",
+  when: "Pick this to hand a finished thought back to whoever is waiting on it, by delegationId, or to reach out to a friend unprompted.",
+  effect: "write",
+  errors: [
+    { code: "delivery-blocked", means: "The content carries internal meta markers, so nothing was delivered.", fix: "Rewrite the content as plain words for the person and surface it again." },
+    { code: "orientation-hold", means: "This turn is on a correction hold, so surfacing waits.", fix: "Call orientation_get, settle what the person meant, then surface the thought if it still answers them." },
+  ],
+}
+
 /* v8 ignore start -- surface handler wiring: core logic tested via surface-tool.test.ts; this wires identity/routing deps @preserve */
 export const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
+  ax: surfaceCard,
   handler: async (args, ctx) => {
     const rawContent = args.content ?? ""
     const deliveryHint: SurfaceDeliveryHint = {
@@ -373,10 +386,5 @@ export const surfaceToolDefinition: ToolDefinition = {
 }
 
 /** surface's Ouro AX card. The bare schema above is exported first, so the census reads the card from this list. */
-export const toolCards: ToolDoorCard[] = [
-  { id: "tool:surface", group: "turn-sessions", when: "Pick this to hand a finished thought back to whoever is waiting on it, by delegationId, or to reach out to a friend unprompted.", effect: "write", errors: [
-    { code: "delivery-blocked", means: "The content carries internal meta markers, so nothing was delivered.", fix: "Rewrite the content as plain words for the person and surface it again." },
-    { code: "orientation-hold", means: "This turn is on a correction hold, so surfacing waits.", fix: "Call orientation_get, settle what the person meant, then surface the thought if it still answers them." },
-  ] },
-]
+export const toolCards: ToolDoorCard[] = [surfaceCard]
 /* v8 ignore stop */

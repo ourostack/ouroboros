@@ -326,7 +326,7 @@ export interface ToolDoorCard {
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
   /** The tool's Ouro AX card, which the AX census checks (ax/census.config.json). */
-  ax?: ToolDoorCard;
+  ax: ToolDoorCard;
   handler: ToolHandler;
   integration?: Integration;
   requiredCapability?: import("../heart/core").ProviderCapability;
