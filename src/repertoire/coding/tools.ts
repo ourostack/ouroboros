@@ -3,6 +3,7 @@ import type OpenAI from "openai"
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
 import { prepareCodingContextPack } from "./context-pack"
 import type { ToolContext, ToolDefinition } from "../tools-base"
+import { withCode } from "../tool-error-code"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../arc/obligations"
 import { consumeEvolutionBudget, evaluateEvolutionAction, type EvolutionActionDecision } from "../../arc/evolution"
@@ -59,6 +60,11 @@ async function sendCodingInput(manager: CodingSessionManagerApi, sessionId: stri
 
 async function killCodingSession(manager: CodingSessionManagerApi, sessionId: string): Promise<CodingActionResult> {
   return manager.killSession(sessionId)
+}
+
+/** The manager's action result as JSON, with the card's code added when the session is unknown. */
+function actionResultText(result: CodingActionResult): string {
+  return JSON.stringify(!result.ok && result.message.startsWith("session not found:") ? { ...result, code: "session-not-found" } : result)
 }
 
 /**
@@ -301,18 +307,18 @@ export const codingToolDefinitions: ToolDefinition[] = [
     handler: async (args: Record<string, string>, ctx?: ToolContext): Promise<string> => {
       emitCodingToolEvent("coding_spawn")
       const rawRunner = requireArg(args, "runner")
-      if (!rawRunner) return "runner is required"
+      if (!rawRunner) return withCode("runner is required", "missing-argument")
       const runner = parseRunner(rawRunner)
-      if (!runner) return `invalid runner: ${rawRunner}`
+      if (!runner) return withCode(`invalid runner: ${rawRunner}`, "invalid-runner")
 
       const workdir = requireArg(args, "workdir")
-      if (!workdir) return "workdir is required"
+      if (!workdir) return withCode("workdir is required", "missing-argument")
 
       const prompt = requireArg(args, "prompt")
-      if (!prompt) return "prompt is required"
+      if (!prompt) return withCode("prompt is required", "missing-argument")
 
       const taskRef = requireArg(args, "taskRef")
-      if (!taskRef) return "taskRef is required"
+      if (!taskRef) return withCode("taskRef is required", "missing-argument")
 
       const request: CodingSessionRequest = {
         runner,
@@ -417,6 +423,11 @@ export const codingToolDefinitions: ToolDefinition[] = [
       risk: "high",
       reason: "spawns a separate coding process and may create obligations",
     },
+    ax: { id: "tool:coding_spawn", group: "turn-coding", when: "Pick this to hand a whole coding job to a separate claude or codex worker; for one quick command, shell is enough.", effect: "write", errors: [
+      { code: "missing-argument", means: "runner, workdir, prompt or taskRef is missing or blank; the message names which.", fix: "Call coding_spawn again with all four filled in, the prompt complete enough to work from alone." },
+      { code: "invalid-runner", means: "runner is something other than claude or codex.", fix: "Set runner to claude or codex and spawn again." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so new coding work waits.", fix: "Call orientation_get, settle what the person meant, then spawn if the job is still right." },
+    ] },
   },
   {
     tool: codingStatusTool,
@@ -429,49 +440,68 @@ export const codingToolDefinitions: ToolDefinition[] = [
       }
 
       const session = await getCodingSession(manager, sessionId)
-      if (!session) return `session not found: ${sessionId}`
+      if (!session) return withCode(`session not found: ${sessionId}`, "session-not-found")
       return appendCompletionScrutiny(JSON.stringify(session), session)
     },
     summaryKeys: ["sessionId"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:coding_status", group: "turn-coding", when: "Pick this to check how coding workers are progressing, or list them all, before telling anyone their state; coding_tail shows their output.", effect: "read", idempotent: true, errors: [
+      { code: "session-not-found", means: "No coding session has that id.", fix: "Call coding_status with no sessionId to list the sessions and their ids." },
+    ] },
   },
   {
     tool: codingTailTool,
     handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_tail")
       const sessionId = requireArg(args, "sessionId")
-      if (!sessionId) return "sessionId is required"
+      if (!sessionId) return withCode("sessionId is required", "missing-argument")
 
       const session = await getCodingSession(getCodingSessionManager(), sessionId)
-      if (!session) return `session not found: ${sessionId}`
+      if (!session) return withCode(`session not found: ${sessionId}`, "session-not-found")
       return appendCompletionScrutiny(formatCodingTail(session), session)
     },
     summaryKeys: ["sessionId"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:coding_tail", group: "turn-coding", when: "Pick this to read what a coding worker printed lately, to see why it stalled or what it finished; coding_status gives only its state.", effect: "read", idempotent: true, errors: [
+      { code: "missing-argument", means: "sessionId is missing or blank.", fix: "Get the id from coding_status, then call coding_tail with it." },
+      { code: "session-not-found", means: "That sessionId matches no coding session.", fix: "List the sessions with coding_status and use one of their ids." },
+    ] },
   },
   {
     tool: codingSendInputTool,
     handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_send_input")
       const sessionId = requireArg(args, "sessionId")
-      if (!sessionId) return "sessionId is required"
+      if (!sessionId) return withCode("sessionId is required", "missing-argument")
 
       const input = requireArg(args, "input")
-      if (!input) return "input is required"
+      if (!input) return withCode("input is required", "missing-argument")
 
-      return JSON.stringify(await sendCodingInput(getCodingSessionManager(), sessionId, input))
+      return actionResultText(await sendCodingInput(getCodingSessionManager(), sessionId, input))
     },
     summaryKeys: ["sessionId", "input"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends input to a live coding process" },
+    ax: { id: "tool:coding_send_input", group: "turn-coding", when: "Pick this to answer a coding worker that is waiting on a question, or steer one mid-task; to begin new work, use coding_spawn.", effect: "write", errors: [
+      { code: "missing-argument", means: "sessionId or input is missing or blank; the message names which.", fix: "Call coding_send_input again with both the session's id and the text to send." },
+      { code: "session-not-found", means: "The JSON reply's code says no live session has that id, often because it already ended.", fix: "Check it with coding_status; if it ended, read coding_tail or spawn a new session." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so input to a running worker waits.", fix: "Call orientation_get, settle the correction, then send the input if it still fits." },
+    ] },
   },
   {
     tool: codingKillTool,
     handler: async (args: Record<string, string>): Promise<string> => {
       emitCodingToolEvent("coding_kill")
       const sessionId = requireArg(args, "sessionId")
-      if (!sessionId) return "sessionId is required"
+      if (!sessionId) return withCode("sessionId is required", "missing-argument")
 
-      return JSON.stringify(await killCodingSession(getCodingSessionManager(), sessionId))
+      return actionResultText(await killCodingSession(getCodingSessionManager(), sessionId))
     },
     summaryKeys: ["sessionId"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "terminates a live coding process" },
+    ax: { id: "tool:coding_kill", group: "turn-coding", when: "Pick this to stop a coding worker that is stuck, wrong or no longer wanted; unsaved work in its process is lost.", effect: "write", destructive: true, errors: [
+      { code: "missing-argument", means: "sessionId is missing or blank.", fix: "Find the session's id with coding_status and call coding_kill with it." },
+      { code: "session-not-found", means: "The JSON reply's code says no live session has that id; it may have ended already.", fix: "Confirm with coding_status; a session that already ended needs no kill." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so stopping a worker waits.", fix: "Call orientation_get, settle what the person meant, then kill the session if that is still wanted." },
+    ] },
   },
 ]
