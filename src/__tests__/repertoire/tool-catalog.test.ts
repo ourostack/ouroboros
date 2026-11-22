@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import type OpenAI from "openai"
-import { buildToolCatalog, catalogDoor, searchCatalog, TURN_TOOL_NAMES, type CatalogSource } from "../../repertoire/tool-catalog"
+import { buildToolCatalog, catalogDoor, formatLoadedDoors, loadedDoorNames, searchCatalog, TURN_TOOL_NAMES, type CatalogSource } from "../../repertoire/tool-catalog"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const tool = (name: string, description = ""): OpenAI.ChatCompletionFunctionTool =>
@@ -84,6 +84,26 @@ describe("tool catalog", () => {
       expect(searchCatalog(catalog, [...candidates, tool("stray", "polish the silverware")], "silverware")).toEqual(["stray"])
       const bare = { type: "function", function: { name: "bare_door" } } as OpenAI.ChatCompletionFunctionTool
       expect(searchCatalog(catalog, [...candidates, bare], "bare")).toEqual(["bare_door"])
+    })
+  })
+
+  describe("loaded doors", () => {
+    const withArgs: OpenAI.ChatCompletionFunctionTool = { type: "function", function: { name: "mail_send", description: "send a draft", parameters: { type: "object", properties: { draft: {}, note: {} }, required: ["draft"] } } }
+
+    it("lists each loaded door with its arguments, required ones bare and optional ones marked", () => {
+      expect(formatLoadedDoors([withArgs, tool("ping")])).toBe("loaded; callable on your next step:\n- mail_send(draft, note?): send a draft\n- ping(): ")
+      expect(formatLoadedDoors([{ type: "function", function: { name: "np" } } as OpenAI.ChatCompletionFunctionTool])).toBe("loaded; callable on your next step:\n- np(): ")
+    })
+
+    it("says how to search again when nothing matched", () => {
+      expect(formatLoadedDoors([])).toContain("no matching tools")
+      expect(loadedDoorNames(formatLoadedDoors([]))).toEqual([])
+    })
+
+    it("reads the loaded names back from the reply, and nothing from other text", () => {
+      expect(loadedDoorNames(formatLoadedDoors([withArgs, tool("ping")]))).toEqual(["mail_send", "ping"])
+      expect(loadedDoorNames("- mail_send(draft): not a loaded reply")).toEqual([])
+      expect(loadedDoorNames(`${formatLoadedDoors([tool("ping")])}\nsee also the mail tools`)).toEqual(["ping"])
     })
   })
 })

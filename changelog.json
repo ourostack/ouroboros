@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1348",
+      "version": "0.1.0-alpha.1351",
       "changes": [
         "The Butler's media tools follow trust rungs: a friend can find media and clear a stuck download, while changing quality or release profiles, removing blocklist entries, forcing a stalled download out, retrying blocklisted releases and replacing an existing file stay with family."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1350",
+      "changes": [
+        "Anthropic requests can defer tools with defer_loading and load them through tool_reference blocks from a find_tools reply, keeping the cached prompt; the engine doesn't defer any tools yet, so requests are unchanged."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1349",
+      "changes": [
+        "Friends of the Butler can no longer restart a container; restarts stay with family (household profile version 7)."
       ]
     },
     {

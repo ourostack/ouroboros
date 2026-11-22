@@ -47,7 +47,9 @@ describe("Sanctuary active tool profile", () => {
     const household = packaged.profiles["sanctuary-household"]
     expect(household.toolNames).toEqual(expect.arrayContaining(CHAT_TOOLS))
     expect(household.toolNames).not.toContain("send_file")
-    expect(digest({ ...household, version: 5, toolNames: household.toolNames.filter((name: string) => !CHAT_TOOLS.includes(name)) })).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
+    // v7 (spec R12) took unraid_restart_container off the household; v5 had it right after unraid_check_services.
+    const withRestart = household.toolNames.flatMap((name: string) => (name === "unraid_check_services" ? [name, "unraid_restart_container"] : [name]))
+    expect(digest({ ...household, version: 5, toolNames: withRestart.filter((name: string) => !CHAT_TOOLS.includes(name)) })).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
     expect(digest(packaged.profiles["sanctuary-event"])).toBe("84f54acd06d07c42c01bf0da29697c7ad07004df35d3d582cd367476c4404b56")
   })
 
@@ -63,7 +65,7 @@ describe("Sanctuary active tool profile", () => {
     expect(names).toEqual(expect.arrayContaining(SYNC_TOOLS))
     expect(packaged.version).toBe(2)
     expect(packaged.profiles["sanctuary-owner"].version).toBe(23)
-    expect(packaged.profiles["sanctuary-household"].version).toBe(6)
+    expect(packaged.profiles["sanctuary-household"].version).toBe(7)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "resolve_await", "cancel_await"]))
@@ -84,7 +86,7 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "resolve_await", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("ponder")
-    expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")
+    expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("unraid_restart_container")
     expect(names).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(names.filter((name) => ["jellyseerr_request", "sonarr_add", "radarr_add"].includes(name))).toEqual([])
     expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event", "sanctuary-agent-peer"])
