@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.1366",
+  "version": "0.1.0-alpha.1368",
   "description": "Ouroboros, the agent harness: agents with durable memory that live where you talk (terminal, Teams, iMessage, mail, voice) and use real tools. Start with npx ouro.bot@latest.",
   "homepage": "https://ouroboros.bot/",
   "engines": {

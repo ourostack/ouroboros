@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1368",
+      "changes": [
+        "iMessage: a reply can no longer wait forever for permission to send. A stuck wait now ends at the turn deadline and the message is retried, ouro status shows a stalled reply with its age, and iMessage, Telegram and Shepherd stop within 10 seconds on shutdown. Turns in every sense stop waiting for an earlier stuck turn when they are cancelled."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1366",
       "changes": [
         "shepherd_feedback and shepherd_feedback_status say what they do instead of giving the agent rules, so they pass the Ouro AX census's booklet-words check."
