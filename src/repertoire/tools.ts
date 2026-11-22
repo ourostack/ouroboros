@@ -382,7 +382,18 @@ export function shellRiskProfile(args: Record<string, string>): ToolRiskProfile 
 export function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
   if (name === "shell") return shellRiskProfile(args)
   if (typeof def.riskProfile === "function") return def.riskProfile(args)
-  return def.riskProfile ?? { mutates: "none", risk: "low" }
+  return def.riskProfile ?? riskProfileFromCard(def)
+}
+
+/**
+ * A tool with no riskProfile is judged by its Ouro AX card, and one with neither is treated as a high-risk change, so a
+ * new tool never counts as low risk by omission. The census separately fails a tool that has no card.
+ */
+function riskProfileFromCard(def: ToolDefinition): ToolRiskProfile {
+  const effect = def.ax?.effect
+  if (effect === "read") return { mutates: "none", risk: "low" }
+  const reason = effect ? `its Ouro AX card says ${effect} and it declares no riskProfile` : "it has no Ouro AX card and declares no riskProfile"
+  return { mutates: ["durable_state_write", "external_side_effect"], risk: "high", reason }
 }
 
 export function riskProfileForToolName(name: string, args: Record<string, string>, selection?: ToolSelection): ToolRiskProfile | null {

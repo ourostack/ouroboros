@@ -1210,6 +1210,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
     },
     requiredCapability: "reasoning-effort" as const,
     summaryKeys: ["level"],
+    riskProfile: { mutates: "none", risk: "low", reason: "changes only this session's reasoning effort for later turns" },
     ax: { id: "tool:set_reasoning_effort", group: "turn-sessions", when: "Pick this to think harder on a knotty problem or lighter on routine work in the turns that follow.", effect: "write", idempotent: true, errors: [
       { code: "effort-unavailable", means: "This model or context has no adjustable reasoning effort.", fix: "Carry on at the current effort." },
       { code: "invalid-effort-level", means: "That level isn't one this model accepts; the message lists the accepted ones.", fix: "Call again with one of the listed levels." },

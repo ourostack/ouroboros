@@ -502,6 +502,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["query"],
     // A stale notes index is rebuilt and saved before the search, so this changes the agent's own files.
+    riskProfile: { mutates: "none", risk: "low", reason: "searches the notes; at most it refreshes their own search index" },
     ax: { id: "tool:consult_notes", group: "turn-record", when: "Pick this to search your longer markdown notes by meaning, paging with cursor; diary entries are searched with search_facts.", effect: "write", idempotent: true, errors: [
       { code: "record-read-denied", means: "This caller isn't trusted to read your notes.", fix: "Answer without the notes, or look them up from a chat with a trusted person." },
       { code: "embeddings-not-configured", means: "No embedding provider is set up, so notes can't be searched.", fix: "Search the diary with search_facts, or grep the notes folder for exact words." },
