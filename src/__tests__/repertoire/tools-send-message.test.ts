@@ -626,6 +626,7 @@ describe("send_message tool", () => {
 
     expect(result.toLowerCase()).toContain("blocked")
     expect(result).toContain("blocked: contains internal meta markers")
+    expect(result).toMatch(/ \(code: delivery-blocked\)$/)
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
@@ -642,6 +643,7 @@ describe("send_message tool", () => {
     }, makeTrustedBlueBubblesTurnContext())
 
     expect(result.toLowerCase()).toContain("failed")
+    expect(result).toMatch(/ \(code: delivery-failed\)$/)
     expect(result).toContain("not signed in to this agent's account")
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })

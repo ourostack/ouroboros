@@ -17,14 +17,9 @@
     "tool:observe",
     "tool:orientation_get",
     "tool:ponder",
-    "tool:query_active_work",
-    "tool:query_session",
     "tool:report_failure",
     "tool:rest",
 
-    "tool:send_message",
-    "tool:session_summary",
-    "tool:set_reasoning_effort",
     "tool:settle",
     "tool:speak",
 
