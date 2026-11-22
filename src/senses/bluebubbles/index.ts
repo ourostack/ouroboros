@@ -3112,10 +3112,28 @@ async function handleCapturedBlueBubblesSemanticEvent(
     )
     const retryFailedReply = durableOutbound?.status === "failed"
       && (durableOutbound.failedAttempts ?? 0) < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS
+    const completeVisibleFailedReply = (): BlueBubblesHandleResult => {
+      // The send that timed out reached the chat after all; do not reply twice.
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_inbound_reply_recovery_suppressed",
+        message: "suppressed bluebubbles reply retry because a reply is already in the chat",
+        meta: { messageGuid: captured.normalized.messageGuid, recordId: durableOutbound!.recordId },
+      })
+      publishTerminalReceipt("message_completed", "reply_visible_after_failed_send")
+      semanticHandlingCompleted = true
+      return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "already_processed" }
+    }
     if (
       retryFailedReply
       && Date.now() < Date.parse(durableOutbound.failedAt ?? durableOutbound.updatedAt) + BLUEBUBBLES_REPLY_RETRY_DELAY_MS
     ) {
+      // A send that timed out may still arrive. Close the message as soon as the
+      // reply shows up in the chat; only a retry waits out the delay.
+      const visible = await blueBubblesFailedReplyIsVisible(resolvedDeps, captured.normalized.chat, durableOutbound)
+        .catch(() => false)
+      if (visible) return completeVisibleFailedReply()
       return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
     }
     if (durableOutbound && !retryFailedReply) {
@@ -3257,19 +3275,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
           return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "delivery_failed" }
         }
       }
-      if (failedReplyVisible) {
-        // The send that timed out reached the chat after all; do not reply twice.
-        emitNervesEvent({
-          level: "warn",
-          component: "senses",
-          event: "senses.bluebubbles_inbound_reply_recovery_suppressed",
-          message: "suppressed bluebubbles reply retry because a reply is already in the chat",
-          meta: { messageGuid: captured.normalized.messageGuid, recordId: durableOutbound!.recordId },
-        })
-        publishTerminalReceipt("message_completed", "reply_visible_after_failed_send")
-        semanticHandlingCompleted = true
-        return { handled: true, notifiedAgent: false, kind: captured.normalized.kind, reason: "already_processed" }
-      }
+      if (failedReplyVisible) return completeVisibleFailedReply()
       result = await handleBlueBubblesNormalizedEvent(canonicalEvent, resolvedDeps, source, capturedOptions)
       // A budget or storm-breaker block defers the message; it was never seen.
       // Leave it pending so a later recovery pass retries it once the block lifts.
