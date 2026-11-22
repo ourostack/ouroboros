@@ -39,14 +39,15 @@ export const FAMILY_ONLY_ARGUMENTS: Readonly<Record<string, { argument: string; 
 export const RUNG_STAMPED_TOOLS: ReadonlySet<string> = new Set(["media_manual_import"])
 
 /**
- * The caller's rung: family for a family friend record, the owner profile, or the agent's own turn (a turn with no friend);
+ * The caller's rung: family for a family friend record, the owner profile, or the agent's own turn (no friend and no relationship);
  * friend for anyone else, including unknown trust and a call with no turn context at all.
  */
 export function callerRung(ctx: ToolContext | undefined): Rung {
   if (ctx === undefined) return "friend"
   if (ctx.relationshipAuthorization?.profileId === "sanctuary-owner") return "family"
   const friendId = ctx?.context?.friend?.id ?? ctx?.relationshipAuthorization?.actor?.friendId
-  if (friendId === undefined) return "family"
+  // No friend and no relationship is the agent's own turn; a relationship with no friend behind it is not trusted as family.
+  if (friendId === undefined) return ctx.relationshipAuthorization === undefined ? "family" : "friend"
   const trust = ctx?.context?.friend?.trustLevel ?? ctx?.relationshipAuthorization?.actor?.trustLevel
   return trust === "family" ? "family" : "friend"
 }

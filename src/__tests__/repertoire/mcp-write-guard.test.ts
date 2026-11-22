@@ -114,6 +114,7 @@ describe("guardMcpArgs", () => {
       expect(callerRung(family)).toBe("family")
       expect(callerRung(ctxFor("owner-1", "sanctuary-owner", "Ari"))).toBe("family")
       expect(callerRung({ signin: async () => undefined } as any)).toBe("family")
+      expect(callerRung({ signin: async () => undefined, relationshipAuthorization: { profileId: "sanctuary-agent-peer" } } as any)).toBe("friend")
       expect(callerRung({ signin: async () => undefined, relationshipAuthorization: { profileId: "sanctuary-agent-peer", actor: { friendId: "a1", trustLevel: "family" } } } as any)).toBe("family")
       expect(callerRung({ signin: async () => undefined, relationshipAuthorization: { profileId: "sanctuary-agent-peer", actor: { friendId: "a1", trustLevel: "acquaintance" } } } as any)).toBe("friend")
       expect(callerRung(friend)).toBe("friend")
