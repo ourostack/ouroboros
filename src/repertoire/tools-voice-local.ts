@@ -98,6 +98,10 @@ export function createVoiceLocalAudioToolDefinition(deps: LocalAudioToolDeps): T
         },
       },
     },
+    // Only joining reaches into a call; checking or leaving one must never be held back.
+    riskProfile: (args) => (args.action === "status" || args.action === "leave"
+      ? { mutates: "none", risk: "low" }
+      : { mutates: "external_side_effect", risk: "high", reason: "joins a live call on this Mac" }),
     handler: async (args, ctx) => {
       const gate = ctx ? localAudioToolGate(ctx) : ({ ok: false, reason: "no session context" } as const)
       if (!gate.ok) return withCode(`${TOOL_NAME} is not available: ${gate.reason}.`, "not-available")
