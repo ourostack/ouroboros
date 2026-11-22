@@ -252,6 +252,25 @@ export function ownerNoticeEffects(effects, start, end) {
   })
 }
 
+/**
+ * The keys an owner route recorded after `before` (state/telegram/routed-owner-notices.json). The ledger drops a key and
+ * appends it again when it is routed again, and drops its oldest keys past its cap, so what is older stays in order and
+ * everything after the first key out of that order is new.
+ */
+export function routedSince(before, after) {
+  const old = Array.isArray(before) ? before : []
+  const now = Array.isArray(after) ? after : []
+  let at = 0
+  let kept = 0
+  for (const key of now) {
+    const found = old.indexOf(key, at)
+    if (found === -1) break
+    at = found + 1
+    kept += 1
+  }
+  return now.slice(kept)
+}
+
 const AWAIT_NOTICE_KEY = /^owner-notice:await:(.+):(resolved|expired|asked_owner):(\d{4}-\d{2}-\d{2}T[^:]*:[^:]*:[^:]*Z)$/
 const unquote = (value) => String(value ?? "").replace(/^["']|["']$/g, "")
 
@@ -1367,11 +1386,12 @@ async function runCases(host, { cases = CASES.map((entry) => entry.id), plant, w
   }
   const runEnd = host.now()
   const finalObservation = await host.observe()
-  const { leaks, info } = classifyOwnerNotices(finalObservation.effects, runStart, runEnd, { replayFriends: [host.friends.principal, host.friends.stranger, host.friends.escalation], awaits: [...(finalObservation.awaiting ?? []), ...(finalObservation.done ?? [])] })
+  const routed = routedSince(baseline.routed, finalObservation.routed).map((key) => ({ idempotencyKey: key, createdAt: new Date(runEnd).toISOString() }))
+  const { leaks, info } = classifyOwnerNotices([...finalObservation.effects, ...routed], runStart, runEnd, { replayFriends: [host.friends.principal, host.friends.stranger, host.friends.escalation], awaits: [...(finalObservation.awaiting ?? []), ...(finalObservation.done ?? [])] })
   const readable = finalObservation.effectsReadable === true
   const clean = readable && leaks.length === 0
   const detail = readable ? [...leaks.map((leak) => `${leak.key} (${leak.reason})`), ...info.map((entry) => `info: ${entry.key} (${entry.reason})`)].join(", ") : "state/telegram/effects is not readable, so the absence of a leak cannot be shown"
-  const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner-notice Telegram effect attributable to the replay run was recorded", clean, detail)] }
+  const telegram = { id: "no-telegram", status: clean ? "pass" : "fail", checks: [check("no owner notice attributable to the replay run went to Telegram or to the owner's primary agent", clean, detail)] }
   const policyChecks = ownerPolicyUntouched(baseline, finalObservation)
   const policy = { id: "owner-policy-untouched", status: policyChecks.every((entry) => entry.ok) ? "pass" : "fail", checks: policyChecks }
   const all = [...results, policy, telegram, ...(restored ? [restored] : []), ...(friendRestored ? [friendRestored] : [])]
@@ -2103,6 +2123,11 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
       const effects = list(effectsDir).filter((name) => name.endsWith(".json")).flatMap((name) => {
         try { const record = readJson(path.join(effectsDir, name)); return [{ idempotencyKey: record.idempotencyKey, createdAt: record.createdAt }] } catch { return [] }
       })
+      let routed = []
+      try {
+        const parsed = readJson(path.join(state, "telegram", "routed-owner-notices.json"))
+        if (Array.isArray(parsed)) routed = parsed.filter((key) => typeof key === "string")
+      } catch { /* none routed yet */ }
       const outbox = {}
       const outboxBodies = {}
       for (const friendId of list(path.join(state, "outbox"))) {
@@ -2111,6 +2136,7 @@ export function makeHost({ bundle = DEFAULT_BUNDLE, trustDir = DEFAULT_TRUST_DIR
         outboxBodies[friendId] = outbox[friendId].map((id) => { try { return readJson(path.join(dir, `${id}.json`)).body } catch { return "" } }).join("\n---\n")
       }
       return {
+        routed,
         outbox,
         outboxBodies,
         stewardSha: hashOf(policy),
