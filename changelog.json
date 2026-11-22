@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1340",
+      "changes": [
+        "media_fill_missing now finishes its job in one call: up to three passes in three minutes, never grabbing anything twice, with a result that says what is still missing and why. media_search_now says in one sentence what it does, and its result says what it started."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1338",
       "changes": [
         "The @ouro.bot/cli npm page and search results now show a one-sentence description and the ouroboros.bot homepage, instead of the README's header HTML."
