@@ -7,4 +7,4 @@ import { defaultPostToolUseDeps, isPostToolUseHook, runPostToolUseHook } from ".
 // (hook-post-tool-use.ts). Every other command loads it.
 const argv = process.argv.slice(2)
 if (isPostToolUseHook(argv)) void runPostToolUseHook(argv[3], defaultPostToolUseDeps())
-else void import("./ouro-cli-main")
+else void import("./ouro-cli-main").then(({ runOuroEntry }) => runOuroEntry(argv))
