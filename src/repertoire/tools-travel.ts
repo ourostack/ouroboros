@@ -66,7 +66,7 @@ export const travelToolDefinitions: ToolDefinition[] = [
           properties: {
             country_code: {
               type: "string",
-              description: "ISO 3166 alpha-2 country code (e.g. 'US', 'GB', 'AF')",
+              description: "ISO 3166 alpha-2 country code (e.g. 'US', 'FR', 'AF')",
             },
           },
           required: ["country_code"],

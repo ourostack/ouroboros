@@ -509,6 +509,84 @@ describe("getTravelAdvisory", () => {
     expect(result.advisoryLevel).toBe(2)
   })
 
+  it("resolves GB to the United Kingdom, not Gabon whose FIPS tag is GB", async () => {
+    const rss = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Gabon - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">GB</category>
+  </item>
+  <item>
+    <title>United Kingdom - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Feb 2026</pubDate>
+    <category domain="Country-Tag">UK</category>
+  </item>
+</channel></rss>`
+    mockFetchText(rss)
+    expect((await getTravelAdvisory("GB")).countryName).toBe("United Kingdom")
+    mockFetchText(rss)
+    expect((await getTravelAdvisory("GA")).countryName).toBe("Gabon")
+    mockFetchText(rss)
+    expect((await getTravelAdvisory("UK")).countryName).toBe("United Kingdom")
+  })
+
+  it("reports a diverging ISO code with no advisory as not found instead of answering another country's", async () => {
+    // ISO MC is Monaco, but the feed's MC tag is Macau.
+    mockFetchText(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Macau - Level 1: Exercise Normal Precautions</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">MC</category>
+  </item>
+</channel></rss>`)
+    await expect(getTravelAdvisory("MC")).rejects.toThrow(/No travel advisory found/)
+  })
+
+  it("matches a whole country name, not a prefix of another (NE is Niger, not Nigeria)", async () => {
+    mockFetchText(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Nigeria - Level 3: Reconsider Travel</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">NI</category>
+  </item>
+  <item>
+    <title>Niger - Level 4: Do Not Travel</title>
+    <pubDate>Mon, 01 Feb 2026</pubDate>
+    <category domain="Country-Tag">NG</category>
+  </item>
+</channel></rss>`)
+    expect((await getTravelAdvisory("NE")).countryName).toBe("Niger")
+  })
+
+  it("matches feed spellings with accents, curly apostrophes and a leading The", async () => {
+    mockFetchText(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Côte d’Ivoire - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">IV</category>
+  </item>
+  <item>
+    <title>The Bahamas - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">BF</category>
+  </item>
+</channel></rss>`)
+    expect((await getTravelAdvisory("CI")).countryName).toBe("Côte d’Ivoire")
+    mockFetchText(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>The Bahamas - Level 2: Exercise Increased Caution</title>
+    <pubDate>Mon, 01 Mar 2026</pubDate>
+    <category domain="Country-Tag">BF</category>
+  </item>
+</channel></rss>`)
+    expect((await getTravelAdvisory("BS")).countryName).toBe("The Bahamas")
+  })
+
   it("still matches FIPS codes directly when they match", async () => {
     // AF is both ISO and FIPS for Afghanistan
     mockFetchText(SAMPLE_RSS)
@@ -573,12 +651,13 @@ describe("isoToCountryName", () => {
     const expected: Record<string, string> = {
       AG: "Antigua and Barbuda",
       BH: "Bahrain",
-      BS: "Bahamas",
+      BS: "The Bahamas",
       BW: "Botswana",
-      CD: "Congo (Kinshasa)",
-      CI: "Cote d'Ivoire",
+      CD: "Democratic Republic of the Congo",
+      CI: "Côte d’Ivoire",
       CL: "Chile",
       CN: "China",
+      GB: "United Kingdom",
       DK: "Denmark",
       DO: "Dominican Republic",
       DZ: "Algeria",

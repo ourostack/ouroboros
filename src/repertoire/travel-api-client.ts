@@ -182,55 +182,150 @@ export const TRAVEL_ADVISORY_RSS_URL = "https://travel.state.gov/_res/rss/TAsTWs
  *
  * The RSS feed Country-Tag uses FIPS codes. Callers typically pass ISO codes.
  * When the codes match (e.g. AF for Afghanistan), no lookup is needed.
- * This table handles the ~30 codes where they diverge.
+ * A code that diverges must be listed even when its country has no advisory, because the
+ * bare tag then belongs to another country (ISO GB is the UK, but the feed's GB is Gabon;
+ * the UK's tag is UK). Values are the country names as the feed titles spell them, and a
+ * country with no advisory is listed so that it is reported as not found rather than
+ * answered with another country's advisory.
  */
 const ISO_FIPS_DIVERGENCE: Record<string, string> = {
-  AG: "Antigua and Barbuda", // FIPS: AC
-  AT: "Austria",       // FIPS: AU
-  AU: "Australia",     // FIPS: AS
-  BD: "Bangladesh",    // FIPS: BG
-  BH: "Bahrain",       // FIPS: BA
-  BN: "Brunei",        // FIPS: BX
-  BO: "Bolivia",       // FIPS: BL
-  BS: "Bahamas",       // FIPS: BF
-  BW: "Botswana",      // FIPS: BC
-  CD: "Congo (Kinshasa)", // FIPS: CG
-  CH: "Switzerland",   // FIPS: SZ
-  CI: "Cote d'Ivoire", // FIPS: IV
-  CL: "Chile",         // FIPS: CI
-  CN: "China",         // FIPS: CH
-  CZ: "Czechia",       // FIPS: EZ
-  DE: "Germany",       // FIPS: GM
-  DK: "Denmark",       // FIPS: DA
-  DO: "Dominican Republic", // FIPS: DR
-  DZ: "Algeria",       // FIPS: AG
-  ES: "Spain",         // FIPS: SP
-  FI: "Finland",       // FIPS: FI → same, but title might say "Finland"
-  GQ: "Equatorial Guinea", // FIPS: EK
-  HR: "Croatia",       // FIPS: HR → same
-  IE: "Ireland",       // FIPS: EI
-  IL: "Israel",        // FIPS: IS
-  JP: "Japan",         // FIPS: JA
-  KP: "North Korea",   // FIPS: KN
-  KR: "South Korea",   // FIPS: KS
-  LT: "Lithuania",     // FIPS: LH
-  MA: "Morocco",       // FIPS: MO
-  MM: "Burma",         // FIPS: BM (State Dept uses "Burma (Myanmar)")
-  NG: "Nigeria",       // FIPS: NI
-  NO: "Norway",        // FIPS: NO → same
-  PH: "Philippines",   // FIPS: RP
-  PT: "Portugal",      // FIPS: PO
-  RO: "Romania",       // FIPS: RO → same
-  SE: "Sweden",        // FIPS: SW
-  SG: "Singapore",     // FIPS: SN
-  TL: "Timor-Leste",   // FIPS: TT
-  TR: "Turkey",        // FIPS: TU
-  TW: "Taiwan",        // FIPS: TW → same
-  UA: "Ukraine",       // FIPS: UP
-  VA: "Holy See",      // FIPS: VT
-  VN: "Vietnam",       // FIPS: VM
-  YE: "Yemen",         // FIPS: YM
-  ZA: "South Africa",  // FIPS: SF
+  AD: "Andorra",
+  AG: "Antigua and Barbuda",
+  AI: "Anguilla",
+  AQ: "Antarctica",
+  AS: "American Samoa",
+  AT: "Austria",
+  AU: "Australia",
+  AW: "Aruba",
+  AZ: "Azerbaijan",
+  BA: "Bosnia and Herzegovina",
+  BD: "Bangladesh",
+  BF: "Burkina Faso",
+  BG: "Bulgaria",
+  BH: "Bahrain",
+  BI: "Burundi",
+  BJ: "Benin",
+  BL: "Saint Barthelemy",
+  BM: "Bermuda",
+  BN: "Brunei",
+  BO: "Bolivia",
+  BS: "The Bahamas",
+  BW: "Botswana",
+  BY: "Belarus",
+  BZ: "Belize",
+  CD: "Democratic Republic of the Congo",
+  CF: "Central African Republic",
+  CG: "Republic of Congo",
+  CH: "Switzerland",
+  CI: "Côte d’Ivoire",
+  CL: "Chile",
+  CN: "China",
+  CR: "Costa Rica",
+  CW: "Curaçao",
+  CZ: "Czechia",
+  DE: "Germany",
+  DK: "Denmark",
+  DM: "Dominica",
+  DO: "Dominican Republic",
+  DZ: "Algeria",
+  EE: "Estonia",
+  ES: "Spain",
+  GA: "Gabon",
+  GB: "United Kingdom",
+  GD: "Grenada",
+  GE: "Georgia",
+  GF: "French Guiana",
+  GG: "Guernsey",
+  GM: "The Gambia",
+  GN: "Guinea",
+  GQ: "Equatorial Guinea",
+  HN: "Honduras",
+  HT: "Haiti",
+  IE: "Ireland",
+  IL: "Israel",
+  IQ: "Iraq",
+  IS: "Iceland",
+  JP: "Japan",
+  KH: "Cambodia",
+  KI: "Kiribati",
+  KM: "Comoros",
+  KN: "Saint Kitts and Nevis",
+  KP: "North Korea",
+  KR: "South Korea",
+  KW: "Kuwait",
+  KY: "Cayman Islands",
+  LB: "Lebanon",
+  LC: "Saint Lucia",
+  LI: "Liechtenstein",
+  LK: "Sri Lanka",
+  LR: "Liberia",
+  LS: "Lesotho",
+  LT: "Lithuania",
+  LV: "Latvia",
+  MA: "Morocco",
+  MC: "Monaco",
+  ME: "Montenegro",
+  MG: "Madagascar",
+  MH: "Marshall Islands",
+  MM: "Burma",
+  MN: "Mongolia",
+  MO: "Macau",
+  MP: "Northern Mariana Islands",
+  MS: "Montserrat",
+  MU: "Mauritius",
+  MW: "Malawi",
+  NA: "Namibia",
+  NE: "Niger",
+  NG: "Nigeria",
+  NI: "Nicaragua",
+  NU: "Niue",
+  OM: "Oman",
+  PA: "Panama",
+  PF: "French Polynesia",
+  PG: "Papua New Guinea",
+  PH: "Philippines",
+  PM: "Saint Pierre and Miquelon",
+  PS: "Palestinian Territories",
+  PT: "Portugal",
+  PW: "Palau",
+  PY: "Paraguay",
+  RS: "Serbia",
+  RU: "Russia",
+  SB: "Solomon Islands",
+  SC: "Seychelles",
+  SD: "Sudan",
+  SE: "Sweden",
+  SG: "Singapore",
+  SK: "Slovakia",
+  SN: "Senegal",
+  SR: "Suriname",
+  SS: "South Sudan",
+  ST: "São Tomé and Príncipe",
+  SV: "El Salvador",
+  SX: "Sint Maarten",
+  SZ: "Eswatini",
+  TC: "Turks and Caicos Islands",
+  TD: "Chad",
+  TG: "Togo",
+  TJ: "Tajikistan",
+  TK: "Tokelau",
+  TL: "Timor-Leste",
+  TM: "Turkmenistan",
+  TN: "Tunisia",
+  TO: "Tonga",
+  TR: "Turkey",
+  TT: "Trinidad and Tobago",
+  UA: "Ukraine",
+  VA: "Holy See",
+  VG: "British Virgin Islands",
+  VI: "U.S. Virgin Islands",
+  VN: "Vietnam",
+  VU: "Vanuatu",
+  XK: "Kosovo",
+  YE: "Yemen",
+  ZA: "South Africa",
+  ZM: "Zambia",
+  ZW: "Zimbabwe",
 }
 
 /**
@@ -238,6 +333,15 @@ const ISO_FIPS_DIVERGENCE: Record<string, string> = {
  * but ONLY when that code diverges from the FIPS code used in the RSS feed.
  * Returns undefined for codes where ISO == FIPS (no title fallback needed).
  */
+const normalizeCountryName = (name: string): string =>
+  name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[’']/g, "'").toLowerCase().replace(/^the\s+/, "").trim()
+
+function titleMatchesCountry(titleCountry: string, expected: string): boolean {
+  const title = normalizeCountryName(titleCountry)
+  const name = normalizeCountryName(expected)
+  return title === name || title.startsWith(`${name} (`)
+}
+
 export function isoToCountryName(isoCode: string): string | undefined {
   return ISO_FIPS_DIVERGENCE[isoCode.toUpperCase()]
 }
@@ -320,10 +424,12 @@ export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvi
       }
 
       // Title-based match: when ISO differs from FIPS, match by country name.
-      // Uses startsWith to handle names like "Burma (Myanmar)" matching "Burma".
+      // Names match whole, ignoring case, accents, apostrophe style and a leading "The", or with a
+      // parenthetical like "Burma (Myanmar)" after them; a prefix alone is not enough
+      // ("Niger" is not "Nigeria", "Guinea" is not "Guinea-Bissau").
       if (expectedCountryName && !titleFallbackMatch) {
         const titleCountry = parseCountryName(title)
-        if (titleCountry.toLowerCase().startsWith(expectedCountryName.toLowerCase())) {
+        if (titleMatchesCountry(titleCountry, expectedCountryName)) {
           titleFallbackMatch = {
             countryCode,
             countryName: titleCountry,
