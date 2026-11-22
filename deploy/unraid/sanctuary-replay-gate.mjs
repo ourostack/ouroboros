@@ -315,9 +315,21 @@ const digestIds = (entry) => { try { const ids = JSON.parse(entry.args).finding_
 const refusedBeforeRunning = (call) => /^error: McpCallRejectedError\b/.test(call.result) || /"nothingRan"\s*:\s*true/.test(call.result)
 // A dry run (the replay guard forces one where the tool declares dry_run) returns a plan and changes nothing.
 const ranAsDryRun = (call) => /"result"\s*:\s*"dry_run"/.test(call.result)
+// Results with which a blocklist tool says it changed nothing: it kept every download, found none to remove, wanted the
+// owner's words or queue ids first, or refused the item. Anything else, an unreadable result included, counts as a removal.
+const NOTHING_REMOVED = new Set(["kept_downloads", "nothing_to_blocklist", "owner_words_need_queue_ids", "owner_words_required", "family_only", "blocklist_id_not_for_item", "service_id_required"])
+const removedNothing = (call) => {
+  const result = parseResult(call)
+  if (!result || typeof result !== "object") return false
+  if (NOTHING_REMOVED.has(result.result)) return true
+  // media_blocklist with no remove_ids only lists the item's blocklist.
+  let args = null
+  try { args = JSON.parse(call.args ?? "") } catch { return false }
+  return call.name === "media_blocklist" && !(Array.isArray(args?.remove_ids) && args.remove_ids.length) && result.result === undefined && Array.isArray(result.entries)
+}
 const deleted = (trace) => {
   const ran = trace.filter((call) => !refusedBeforeRunning(call) && !ranAsDryRun(call))
-  return callsNamed(ran, /^media_blocklist/).length > 0 || ran.some((call) => /"method"\s*:\s*"DELETE"|\bDELETE\b/.test(call.args))
+  return callsNamed(ran, /^media_blocklist/).some((call) => !removedNothing(call)) || ran.some((call) => /"method"\s*:\s*"DELETE"|\bDELETE\b/.test(call.args))
 }
 
 const WORK_WORDS = "channel more perihelion from murderbot energy. name the Murderbot characters whose energy fits"
@@ -1424,6 +1436,22 @@ export function selfTestFixtures() {
     "sweep-catches-stall": {
       pass: { trace: [call("1", "house_sweep", {}, JSON.stringify(sweepRun)), call("2", "house_digest_send", { finding_ids: ["downloads:sonarr:7"] }, '{"sent":true}')], reply: "Sent the digest.", before: emptyObservation({ queue: [stalledNamed] }), after: emptyObservation({ queue: [stalledNamed] }), sink: [{ at, noticeId: "house-sweep:replay:1:ab", friendId: "p", text: "- Sonarr download of The Chef Show is stuck at 40%" }] },
       fail: { trace: [call("1", "house_sweep", {}, JSON.stringify(sweepRun))], reply: "All is well.", before: emptyObservation({ queue: [stalledNamed] }), after: emptyObservation({ queue: [stalledNamed] }) },
+      // A blocklist call that kept every download removed nothing (alpha.1347's rollback, 2026-11-22); one that removed, or
+      // whose result can't be read, still fails.
+      ...Object.fromEntries([
+        ["passKeptDownloads", "media_blocklist_stalled", { kind: "movie" }, JSON.stringify({ result: "kept_downloads", kept: [{ queue_id: 7 }] })],
+        ["passNothingToBlocklist", "media_blocklist_stalled", { kind: "series" }, JSON.stringify({ result: "nothing_to_blocklist" })],
+        ["passBlocklistListed", "media_blocklist", { kind: "series", service_id: 3 }, JSON.stringify({ kind: "series", service_id: 3, count: 0, entries: [] })],
+        ["failRemovedStalled", "media_blocklist_stalled", { kind: "series" }, JSON.stringify({ removed: [{ queue_id: 7 }], command: "search" })],
+        ["failRemovedEntry", "media_blocklist", { kind: "series", service_id: 3, remove_ids: [5] }, JSON.stringify({ result: "removed", removed: [5], count: 0, entries: [] })],
+        ["failListShapeWithRemoveIds", "media_blocklist", { kind: "series", service_id: 3, remove_ids: [5] }, JSON.stringify({ count: 0, entries: [] })],
+        ["failUnreadableResult", "media_blocklist_stalled", { kind: "series" }, "not json"],
+        ["failUnreadableArgs", "media_blocklist", "{", JSON.stringify({ count: 0, entries: [] })],
+      ].map(([name, tool, args, result]) => [name, {
+        trace: [call("1", "house_sweep", {}, JSON.stringify(sweepRun)), call("2", tool, args, result), call("3", "house_digest_send", { finding_ids: ["downloads:sonarr:7"] }, '{"sent":true}')],
+        reply: "Sent the digest.", before: emptyObservation({ queue: [stalledNamed] }), after: emptyObservation({ queue: [stalledNamed] }),
+        sink: [{ at, noticeId: "house-sweep:replay:1:ab", friendId: "p", text: "- Sonarr download of The Chef Show is stuck at 40%" }],
+      }])),
     },
     "sweep-quiet-when-clean": {
       pass: { trace: [call("1", "house_sweep", {}, JSON.stringify(cleanRun))], reply: "Nothing needs you.", before: emptyObservation(), after: emptyObservation() },
