@@ -22,6 +22,7 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
       },
     },
   },
+  riskProfile: { mutates: "none", risk: "low", reason: "ends the call the caller asked to end, so a correction hold never keeps the line open" },
   ax: { id: "tool:voice_end_call", group: "turn-voice", when: "Pick this once goodbyes are said or the caller asks to hang up; settling alone leaves the phone line open.", effect: "write", idempotent: true, errors: [
     { code: "no-active-call", means: "This turn isn't part of a live voice call, so there was no call to end.", fix: "Nothing to hang up; end the conversation with a normal reply." },
   ] },

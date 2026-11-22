@@ -1011,6 +1011,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    riskProfile: { mutates: "none", risk: "low", reason: "reviews the bundle and issues the confirmation token the first push needs" },
     ax: {
       id: "tool:bundle_first_push_review", group: "turn-bundle", effect: "write",
       when: "Pick this before the first sync to a new remote: it shows the human what private records would leave this machine.",
