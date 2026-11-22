@@ -4476,7 +4476,7 @@ describe("BlueBubbles sense runtime", () => {
       messages: [
         { role: "system", content: "system prompt" },
         { role: "user", content: dmTopLevelPayload.data.text },
-        { role: "assistant", content: recordedOutboundText({ originLabel: "inner dialog", content: "unrelated heads-up" }) },
+        { role: "assistant", content: recordedOutboundText({ originLabel: "a proactive message", content: "unrelated heads-up" }) },
       ],
     })
 
