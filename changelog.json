@@ -10,7 +10,8 @@
     {
       "version": "0.1.0-alpha.1365",
       "changes": [
-        "With an owner route, the approvals the Butler needs from its owner (tool approval prompts, admission cards) go to the owner's primary agent first as urgent; the card still reaches Telegram so its buttons work, silently when the primary agent has it."
+        "With an owner route, the approvals the Butler needs from its owner (tool approval prompts, admission cards) go to the owner's primary agent first as urgent; the card still reaches Telegram so its buttons work, silently when the primary agent has it.",
+        "Update the Ouro UI files to Ouro UI core v1.11.0 and Ouro UI v1.3.450."
       ]
     },
     {
