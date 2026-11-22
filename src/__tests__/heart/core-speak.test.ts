@@ -296,7 +296,7 @@ describe("speak interception in runAgent", () => {
     expect(callbacks.flushNow).not.toHaveBeenCalled()
 
     const errMsg = messages.find((m: any) =>
-      m.role === "tool" && m.content === "speak requires a non-empty `message` string."
+      m.role === "tool" && m.content === "speak requires a non-empty `message` string. (code: empty-message)"
     )
     expect(errMsg).toBeDefined()
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
