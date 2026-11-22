@@ -3,8 +3,9 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildRsvpSnapshot, type RsvpSnapshot } from "../../rsvp/snapshot"
-import { rsvpToolDefinitions } from "../../repertoire/tools-rsvp"
+// tools-base assembles every tool module and tools-rsvp imports withCode from it, so load tools-base first, as the runtime does.
 import { baseToolDefinitions } from "../../repertoire/tools-base"
+import { rsvpToolDefinitions } from "../../repertoire/tools-rsvp"
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -50,6 +51,13 @@ describe("RSVP repertoire tools", () => {
     expect(names).toContain("rsvp_summary")
   })
 
+  it("gives each RSVP tool a read card in the turn-rsvp group", () => {
+    for (const definition of rsvpToolDefinitions) {
+      expect(definition.ax).toMatchObject({ id: `tool:${definition.tool.function.name}`, group: "turn-rsvp", effect: "read" })
+      expect(definition.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+  })
+
   it("answers pending questions from a native snapshot file without calling a model summarizer", async () => {
     const root = tempRoot()
     const snapshotPath = path.join(root, "snapshot.json")
@@ -77,7 +85,7 @@ describe("RSVP repertoire tools", () => {
       `RSVP snapshot ${value.snapshotId}: 1 attending / 0 declined / 1 pending / 0 unknown (2 total), fetched 2026-07-09T12:00:00.000Z`,
     )
     await expect(tool!.handler({ snapshot_path: path.join(root, "missing-summary.json") })).resolves.toBe(
-      "RSVP snapshot not found.",
+      "RSVP snapshot not found. (code: snapshot-not-found)",
     )
   })
 
@@ -90,19 +98,19 @@ describe("RSVP repertoire tools", () => {
     const tool = rsvpToolDefinitions.find((definition) => definition.tool.function.name === "rsvp_query")
 
     await expect(tool!.handler({})).resolves.toBe(
-      "RSVP snapshot not found.",
+      "RSVP snapshot not found. (code: snapshot-not-found)",
     )
     await expect(tool!.handler({ snapshot_path: "   " })).resolves.toBe(
-      "RSVP snapshot not found.",
+      "RSVP snapshot not found. (code: snapshot-not-found)",
     )
     await expect(tool!.handler({ snapshot_path: path.join(root, "missing.json"), status: "pending" })).resolves.toBe(
-      "RSVP snapshot not found.",
+      "RSVP snapshot not found. (code: snapshot-not-found)",
     )
     await expect(tool!.handler({ snapshot_path: invalidSnapshot, status: "pending" })).resolves.toBe(
-      "RSVP snapshot could not be read or failed integrity validation.",
+      "RSVP snapshot could not be read or failed integrity validation. (code: snapshot-invalid)",
     )
     await expect(tool!.handler({ snapshot_path: malformed, status: "pending" })).resolves.toBe(
-      "RSVP snapshot could not be read or failed integrity validation.",
+      "RSVP snapshot could not be read or failed integrity validation. (code: snapshot-invalid)",
     )
   })
 })

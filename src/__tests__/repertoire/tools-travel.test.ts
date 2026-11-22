@@ -16,13 +16,15 @@ vi.mock("../../repertoire/travel-api-client", () => ({
 }))
 
 // Track nerves events
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents: Array<Record<string, unknown>> = vi.hoisted(() => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
   }),
 }))
 
+// tools-base assembles every tool module and tools-travel imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { travelToolDefinitions } from "../../repertoire/tools-travel"
 
 function findTool(name: string) {
@@ -52,6 +54,17 @@ describe("travelToolDefinitions", () => {
   it("no tools have integration gate (base tools)", () => {
     for (const def of travelToolDefinitions) {
       expect(def.integration).toBeUndefined()
+    }
+  })
+})
+
+describe("travel tool cards", () => {
+  it("gives each tool a read card backed by an explicit low-risk profile", () => {
+    for (const def of travelToolDefinitions) {
+      expect(def.ax?.id).toBe(`tool:${def.tool.function.name}`)
+      expect(def.ax?.group).toBe("turn-travel")
+      expect(def.ax?.effect).toBe("read")
+      expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
     }
   })
 })
@@ -91,6 +104,7 @@ describe("weather_lookup handler", () => {
     const result = await handler({})
 
     expect(result).toContain("city")
+    expect(result).toMatch(/ \(code: missing-location\)$/)
     expect(mockGetWeather).not.toHaveBeenCalled()
     expect(mockGetWeatherByCity).not.toHaveBeenCalled()
   })
@@ -111,6 +125,7 @@ describe("weather_lookup handler", () => {
     const result = await handler({ city: "fail" })
 
     expect(result).toContain("API down")
+    expect(result).toMatch(/ \(code: weather-lookup-failed\)$/)
   })
 })
 
@@ -150,6 +165,7 @@ describe("travel_advisory handler", () => {
     const result = await handler({ country_code: "XX" })
 
     expect(result).toContain("Not found")
+    expect(result).toMatch(/ \(code: advisory-lookup-failed\)$/)
   })
 })
 
@@ -205,5 +221,6 @@ describe("geocode_search handler", () => {
     const result = await handler({ query: "fail" })
 
     expect(result).toContain("Geocode failed")
+    expect(result).toMatch(/ \(code: geocode-failed\)$/)
   })
 })
