@@ -3,19 +3,6 @@
   "gaps": [
     "cli:git",
     "cli:git install",
-    "cli:git status",
-
-    "tool:complete_adoption",
-
-    "tool:find_tools",
-
-
-    "tool:list_directory",
-
-
-
-
-    "tool:voice_join_local_audio"
-
+    "cli:git status"
   ]
 }
