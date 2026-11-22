@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1372",
+      "changes": [
+        "Every in-turn tool carries an Ouro AX card, a call's outcome is typed, and an unknown tool names the real tools it could mean; the Ouro AX X-ray now checks the in-turn tools in CI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1371",
       "changes": [
         "iMessage: a message whose reply never went out (the process died or the turn ended early) is now answered on recovery instead of being marked handled, and recovery finds messages saved by older builds."
