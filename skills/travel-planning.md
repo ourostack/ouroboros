@@ -1,3 +1,6 @@
+---
+tools: [geocode_search, weather_lookup, travel_advisory, credential_get, credential_list, credential_store, credential_generate_password, credential_delete]
+---
 # Travel Planning Skill
 
 Compose all travel infrastructure to plan and book trips effectively.
