@@ -14,7 +14,6 @@ import {
   SANCTUARY_CONTAINER_LOGS_QUERY,
   SANCTUARY_DISKS_QUERY,
   SANCTUARY_NOTIFICATIONS_QUERY,
-  SANCTUARY_PARITY_HISTORY_QUERY,
   SANCTUARY_STORAGE_QUERY,
 } from "../../repertoire/tools-unraid"
 import { normalizeSanctuaryMediaText } from "../../senses/sanctuary-media-optimization"
@@ -63,7 +62,6 @@ async function syntheticRead(document: string, variables: Record<string, unknown
       array: { parityCheckStatus: { status: "COMPLETED", date: "2026-01-10T03:00:00.000Z", duration: 40_000, errors: 0, progress: 100, correcting: false, paused: false, running: false } },
     }
   }
-  if (document === SANCTUARY_PARITY_HISTORY_QUERY) return { parityHistory: [{ date: "2026-01-10T03:00:00.000Z", errors: 0, status: "COMPLETED" }] }
   if (document === SANCTUARY_NOTIFICATIONS_QUERY) return { notifications: { list: [] } }
   // The only query left is SANCTUARY_SYSTEM_QUERY.
   return { vars: { id: SERVER_ID, name: "eval-tower", version: "7.1.0" }, info: { time: OBSERVED_AT, os: { uptime: 864_000 }, versions: { core: { unraid: "7.1.0", api: "4.0.0" } } }, array: { state: "STARTED" } }
