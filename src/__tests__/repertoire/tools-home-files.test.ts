@@ -240,11 +240,11 @@ describe("file tools work from the agent's home", () => {
       const out = await run("grep", { pattern: "hit" })
       expect(out).toBe(`a.md:1: ${("hit" + "z".repeat(1000)).slice(0, 497)}...`)
     })
-    it("shows context lines, searches a single file, and returns empty for a missing path", async () => {
+    it("shows context lines, searches a single file, and names the path it tried for a missing one", async () => {
       put("a.md", "x\nhit\ny\nz")
       expect(await run("grep", { pattern: "hit", path: "a.md", context_lines: 1 })).toBe(
         "-a.md:1: x\na.md:2: hit\n-a.md:3: y")
-      expect(await run("grep", { pattern: "hit", path: "nope" })).toBe("")
+      expect(await run("grep", { pattern: "hit", path: "nope" })).toMatch(/^error: no file or folder at .*\/nope \(from the relative path nope\) \(code: not-found\)$/u)
     })
     it("include filters files", async () => {
       put("a.md", "hit")

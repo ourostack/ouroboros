@@ -1169,7 +1169,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
     riskProfile: sendMessageRiskProfile,
-    ax: { id: "tool:send_message", group: "turn-sessions", when: "Pick this to reach someone in a different chat or channel than this one, or a phone call by voice; to keep thinking privately, use ponder.", effect: "write", errors: [
+    ax: { id: "tool:send_message", eager: true, group: "turn-sessions", when: "Pick this to reach someone in a different chat or channel than this one, or a phone call by voice; to keep thinking privately, use ponder.", effect: "write", errors: [
       { code: "delivery-blocked", means: "The message wasn't sent: no routable chat exists for that session, or the text carries internal markers.", fix: "Check the friend and channel with query_session, and remove internal notes from the content." },
       { code: "delivery-failed", means: "The channel tried to send and failed, or the person can't be reached that way.", fix: "Try again once, or reach them on another channel they use." },
       { code: "orientation-hold", means: "This turn is on a correction hold, so messages to other chats wait.", fix: "Call orientation_get, settle what the person meant, then send if it still fits." },
