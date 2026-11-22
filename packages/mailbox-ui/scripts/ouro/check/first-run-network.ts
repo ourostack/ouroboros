@@ -57,16 +57,25 @@ export function offline(probe: string, sys: System = system): Block {
 }
 
 /**
+ * How long a host's lookup may take. A fresh Mac's first lookup of a host can sit out the resolver's own limit for an
+ * answer that doesn't come (login.windows.net, on GitHub's macOS runners), and the network's ranges and its probe carry
+ * the hold without that host's own addresses; the evidence names a host given up on.
+ */
+export const RESOLVE_MS = 3_000;
+
+/**
  * The network's hosts (as they resolve now) and its address ranges refused, until lifted. `refuse`: a load fails at
  * once, as with no network. `hang`: it waits, as on a network too slow to answer.
  * @claim "`refuse`: a load fails at once" registry/ouro/check/first-run-network.ts verify:fileLine(registry/ouro/check/first-run-network.ts, /mode === "hang" \? "block drop" : "block return"/)
  */
 export function unreachable(o: Network, what = "the sign-in unreachable", mode: "refuse" | "hang" = "refuse", sys: System = system): Block {
-  const resolved = o.hosts.flatMap((n) => [...sys.run("dscacheutil", ["-q", "host", "-a", "name", n]).stdout.matchAll(/^ipv?6?_address: (\S+)$/gm)].map((m) => m[1]!));
+  const looked = o.hosts.map((n) => ({ n, r: sys.run("dscacheutil", ["-q", "host", "-a", "name", n], { timeout: RESOLVE_MS }) }));
+  const resolved = looked.flatMap(({ r }) => [...r.stdout.matchAll(/^ipv?6?_address: (\S+)$/gm)].map((m) => m[1]!));
+  const slow = looked.filter(({ r }) => r.status === null).map(({ n }) => n);
   const all = [...new Set([...o.ranges, ...resolved])];
   const v4 = all.filter((a) => !a.includes(":"));
   const v6 = all.filter((a) => a.includes(":"));
   const verb = mode === "hang" ? "block drop" : "block return";
   const rules = [v4.length ? `${verb} out quick inet proto { tcp udp } to { ${v4.join(", ")} }` : "", v6.length ? `${verb} out quick inet6 proto { tcp udp } to { ${v6.join(", ")} }` : ""].filter(Boolean).join("\n") + "\n";
-  return load(rules, o.probe, `${what} (${all.length} address ranges refused)`, sys);
+  return load(rules, o.probe, `${what} (${all.length} address ranges refused${slow.length ? `; ${slow.join(", ")} not resolved in ${RESOLVE_MS / 1000} s` : ""})`, sys);
 }

@@ -131,7 +131,7 @@ export function windowsSystem(o: WindowsOptions, base: System = system): System 
           return base.run("curl.exe", args.map((a) => (a === "/dev/null" ? "NUL" : a)), opts);
         case "dscacheutil": {
           const name = args.at(-1)!;
-          const ips = ps(`(Resolve-DnsName -Name ${quote(name)} -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | ForEach-Object IPAddress) -join ' '`, 30_000).stdout.match(/\S+/g) ?? [];
+          const ips = ps(`(Resolve-DnsName -Name ${quote(name)} -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | ForEach-Object IPAddress) -join ' '`, opts.timeout ?? 30_000).stdout.match(/\S+/g) ?? [];
           return answer(0, ips.map((ip) => `${ip.includes(":") ? "ipv6_address" : "ip_address"}: ${ip}`).join("\n"));
         }
         case "defaults":
