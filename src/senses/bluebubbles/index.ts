@@ -618,6 +618,12 @@ interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
   orientationConversationKind: OrientationConversationKind
   latestTurnCapability: BlueBubblesLatestTurnCapability
   publishAcceptedReceipt: () => void
+  /**
+   * Record that a turn the friend already heard from ended without its final
+   * reply. Called as soon as the deadline or shutdown ends it, before the
+   * turn's cleanup, so a process that exits during cleanup does not replay it.
+   */
+  publishSpokenTurnEnded: (reason: "turn_timeout" | "shutdown") => void
   /** The turn answers a reaction, so the agent may choose to stay silent. */
   isReactionSignal?: boolean
 }
@@ -1447,12 +1453,15 @@ export function createBlueBubblesCallbacks(
         return
       }
       if (!await canRunOutbound()) return
+      // Count the message as seen once it is handed to the transport: a send
+      // still in flight, or one that timed out, may reach the friend anyway, and
+      // a turn that ends now must not be replayed into repeating it.
+      recordVisibleActivity()
       await client.sendText({
         chat,
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
-      recordVisibleActivity()
       // Note: do NOT call client.setTyping(chat, false) here — the agent is
       // still mid-turn, so the typing indicator stays ACTIVE.
       emitNervesEvent({
@@ -2309,6 +2318,7 @@ async function handleBlueBubblesNormalizedEvent(
         // A turn the friend already heard from must not replay in the next
         // process; end it with a result so it is recorded instead.
         if (spokeBeforeFinalTransport && resolveTimeout) {
+          options.publishSpokenTurnEnded("shutdown")
           resolveTimeout({ handled: true, notifiedAgent: false, kind: event.kind, reason: "shutdown", spokeBeforeEnd: true })
         } else {
           rejectLifecycle(reason)
@@ -2380,6 +2390,7 @@ async function handleBlueBubblesNormalizedEvent(
         const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
         recoveryTimedOut = true
         if (!finalTransportInvoked) {
+          if (spokeBeforeFinalTransport) options.publishSpokenTurnEnded("turn_timeout")
           resolveTimeout?.({
             handled: true,
             notifiedAgent: false,
@@ -2535,6 +2546,9 @@ async function handleBlueBubblesNormalizedEvent(
           }
         },
         signal: controller.signal,
+        // The deadline, supersession and shutdown handlers record this
+        // turn's outcome, so a turn they cancel need not wait its turn.
+        stopQueueWaitOnAbort: true,
         runAgentOptions: {
           mcpManager,
           orientationFrame,
@@ -3275,6 +3289,19 @@ async function handleCapturedBlueBubblesSemanticEvent(
     publishTerminalReceipt("message_completed")
     acceptedReceiptPublished = true
   }
+  let spokenTurnEndPublished = false
+  const publishSpokenTurnEnded = (reason: string): void => {
+    if (spokenTurnEndPublished) return
+    spokenTurnEndPublished = true
+    semanticHandlingCompleted = true
+    try {
+      publishTerminalReceipt("message_observed", `${reason}_after_visible_speech`)
+    /* v8 ignore start -- a failed write already kept the claim live and was logged, which also stops a replay @preserve */
+    } catch {
+      // Nothing more to do here.
+    }
+    /* v8 ignore stop */
+  }
   try {
     options.lifecycleSignal?.throwIfAborted()
     if (captured.capture.event.fromMe) {
@@ -3431,6 +3458,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         orientationEvidence: captured.capture.event,
         orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
         publishAcceptedReceipt,
+        publishSpokenTurnEnded,
         ...(interaction?.mutationType === "reaction" ? { isReactionSignal: true } : {}),
       }
       let failedReplyVisible = false
@@ -3488,11 +3516,12 @@ async function handleCapturedBlueBubblesSemanticEvent(
             spokeBeforeEnd: result.spokeBeforeEnd === true,
           },
         })
-        publishTerminalReceipt(
-          "message_observed",
-          result.spokeBeforeEnd ? `${result.reason}_after_visible_speech` : `${result.reason}_retries_exhausted`,
-        )
-        semanticHandlingCompleted = true
+        if (result.spokeBeforeEnd) {
+          publishSpokenTurnEnded(result.reason)
+        } else {
+          publishTerminalReceipt("message_observed", `${result.reason}_retries_exhausted`)
+          semanticHandlingCompleted = true
+        }
         return result
       }
       if (result.reason === "delivery_failed") {

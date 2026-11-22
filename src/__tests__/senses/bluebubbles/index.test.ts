@@ -5922,6 +5922,103 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
+  it("records a turn whose mid-turn message was still sending when the deadline fired, so recovery does not repeat it", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const speakLands = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockImplementationOnce(() => speakLands.promise)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && mocks.sendText.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    // The deadline fires while the message is on its way; it lands afterwards.
+    await vi.advanceTimersByTimeAsync(600_000)
+    speakLands.resolve({ messageGuid: "speak-guid" })
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      reason: "turn_timeout",
+      spokeBeforeEnd: true,
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "turn_timeout", spokeBeforeEnd: true }),
+    }))
+  })
+
+  it("records a turn whose mid-turn message was still sending when shutdown stopped it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const speakLands = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockImplementationOnce(() => speakLands.promise)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    const stopping = bluebubbles.stopBlueBubblesApp(server)
+    speakLands.resolve({ messageGuid: "speak-guid" })
+    await stopping
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "shutdown", spokeBeforeEnd: true }),
+    }))
+  })
+
+  it("records a spoken turn stopped by shutdown before waiting for the turn's cleanup", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const releaseTurn = createDeferred<never>()
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      // A provider that ignores the abort keeps the turn running for a while.
+      return releaseTurn.promise
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    const stopping = bluebubbles.stopBlueBubblesApp(server)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The process may exit here, before the turn's cleanup finishes.
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+
+    releaseTurn.reject(new Error("provider stopped"))
+    await stopping
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+  })
+
   it("stops paginating catch-up once a full page reaches the catch-up cutoff", async () => {
     const now = Date.now()
     mocks.listRecentMessages.mockResolvedValueOnce(Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
