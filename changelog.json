@@ -2,9 +2,40 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1359",
+      "version": "0.1.0-alpha.1367",
       "changes": [
-        "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 40 doors that say one today on the baseline."
+        "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 38 doors that say one today on the baseline."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1366",
+      "changes": [
+        "shepherd_feedback and shepherd_feedback_status say what they do instead of giving the agent rules, so they pass the Ouro AX census's booklet-words check."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1365",
+      "changes": [
+        "With an owner route, the approvals the Butler needs from its owner (tool approval prompts, admission cards) go to the owner's primary agent first as urgent; the card still reaches Telegram so its buttons work, silently when the primary agent has it.",
+        "Update the Ouro UI files to Ouro UI core v1.11.0 and Ouro UI v1.3.450."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1364",
+      "changes": [
+        "The Butler can send the messages it starts itself (house notices, external events, unprompted messages) to the owner's primary agent over A2A instead of to Telegram, set by senses.telegram.ownerNoticesTo in agent.json; replies stay on Telegram, and while the peer can't be reached only urgent messages go to Telegram, marked as a fallback."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1363",
+      "changes": [
+        "File tools (read_file, write_file, edit_file, grep) and shell take an optional cwd that relative paths start from, and a path that names nothing says which absolute path was tried."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1361",
+      "changes": [
+        "The Butler's release gate treats an owner notice the replay run caused as a leak whether it went to Telegram or, with an owner route on, to the owner's primary agent."
       ]
     },
     {

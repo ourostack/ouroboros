@@ -19,7 +19,8 @@ export type TelegramEffectTarget =
 export type TelegramEffect =
   | { kind: "text"; text: string; replyToMessageId?: number }
   | { kind: "admission_ack"; text: typeof FIXED_ADMISSION_ACKNOWLEDGEMENT }
-  | { kind: "card"; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }
+  /** `silent` sends the card without a notification: its buttons work, but the phone shows no banner. */
+  | { kind: "card"; text: string; buttons: Array<Array<{ text: string; callbackData: string }>>; silent?: true }
   | { kind: "edit"; messageId: number; text: string }
   | { kind: "callback_ack"; callbackQueryId: string; text?: string; showAlert?: boolean }
 
@@ -146,7 +147,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
     ? boundedText(effect.text, 150_000)
       && (effect.kind !== "text" || effect.replyToMessageId === undefined || (Number.isSafeInteger(effect.replyToMessageId) && effect.replyToMessageId > 0))
     : effect?.kind === "card"
-      ? boundedText(effect.text) && Array.isArray(effect.buttons) && effect.buttons.length > 0 && effect.buttons.length <= 20
+      ? boundedText(effect.text) && (effect.silent === undefined || effect.silent === true) && Array.isArray(effect.buttons) && effect.buttons.length > 0 && effect.buttons.length <= 20
         && effect.buttons.every((row) => Array.isArray(row) && row.length > 0 && row.length <= 8
           && row.every((button) => boundedText(button?.text, 256) && boundedText(button?.callbackData, 64) && Buffer.byteLength(button.callbackData, "utf8") <= 64))
       : effect?.kind === "edit"
@@ -419,12 +420,13 @@ async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact
   }
   if (effect.kind === "card") {
     const reply_markup = { inline_keyboard: effect.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) }
+    const quiet = effect.silent ? { disable_notification: true } : {}
     let result: unknown
     try {
-      result = await api.request("sendMessage", { chat_id: chatId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML", reply_markup }, signal)
+      result = await api.request("sendMessage", { chat_id: chatId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML", reply_markup, ...quiet }, signal)
     } catch (error) {
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-      result = await api.request("sendMessage", { chat_id: chatId, text: effect.text, reply_markup }, signal)
+      result = await api.request("sendMessage", { chat_id: chatId, text: effect.text, reply_markup, ...quiet }, signal)
     }
     return canonicalMessageId(result)
   }

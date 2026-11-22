@@ -10,8 +10,6 @@
     "cli:shepherd resume",
     "cli:vault item status",
     "cli:vault unlock",
-    "mcp:shepherd_feedback",
-    "mcp:shepherd_feedback_status",
     "tool:coding_spawn",
     "tool:complete_adoption",
     "tool:create_session",
