@@ -9,6 +9,7 @@ import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
 import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramAcceptanceAuditOwnerDigest } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
+import { splitTelegramMarkdown } from "../../senses/telegram-markdown"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
 import { createObligation, markObligationReturnReady, readObligation } from "../../arc/obligations"
@@ -1430,8 +1431,9 @@ describe("Telegram sense", () => {
 
   it("rejects a newly generated schema-valid receipt above the row-byte bound", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-oversized-incoming-receipt-"))
-    const text = "x".repeat(120_000)
-    expect(splitTelegramText(text)).toHaveLength(100)
+    // A hundred paragraphs, each too long to share a message: a hundred messages.
+    const text = Array.from({ length: 100 }, () => "x".repeat(1_300)).join("\n\n")
+    expect(splitTelegramMarkdown(text)).toHaveLength(100)
     let messageId = 100
     const api: TelegramBotApi = { request: vi.fn(async () => ({ message_id: ++messageId })), stop: vi.fn() }
     const runTurn = vi.fn(async (options: any) => {
@@ -1558,7 +1560,8 @@ describe("Telegram sense", () => {
   it("binds each successful Telegram chunk to its ordered message id", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-ordered-chunks-"))
     const text = "x".repeat(7_000)
-    const chunks = splitTelegramText(text)
+    const chunks = splitTelegramMarkdown(text)
+    expect(chunks).toHaveLength(2)
     const api = deliveryApi({ message_id: 71 }, { message_id: 72 })
     const runTurn = vi.fn(async (options: any) => {
       await options.deliverySink.onDelivery({ kind: "settle", text })
@@ -2093,7 +2096,7 @@ describe("Telegram sense", () => {
 
       vi.setSystemTime(Date.parse("2026-10-20T16:00:00.000Z")) // 9am
       await f.app.sendOwnerNotice({ noticeId: "day-1", text: "Downloads are flowing again." })
-      expect(sends()).toEqual(["The parity check failed.", "While you were away:\n- Sonarr restarted itself.\n- The shelf is down.", "Downloads are flowing again."])
+      expect(sends()).toEqual(["The parity check failed.", "While you were away:\n• Sonarr restarted itself.\n• The shelf is down.", "Downloads are flowing again."])
       // That was three today (the critical one counts too); the fourth waits.
       await f.app.sendProactive("A fourth note.")
       expect(sends()).toHaveLength(3)

@@ -19,7 +19,8 @@ import {
   type TelegramEffectArtifact,
 } from "../../senses/telegram-effect-adapter"
 import type { SessionEnvelope } from "../../heart/session-events"
-import { TelegramApiError } from "../../senses/telegram-client"
+import { splitTelegramText, TelegramApiError } from "../../senses/telegram-client"
+import { splitTelegramMarkdown } from "../../senses/telegram-markdown"
 import { withSessionTurnLease } from "../../mind/session-transaction"
 
 const roots: string[] = []
@@ -155,7 +156,8 @@ describe("Telegram effect adapter", () => {
     await execute({ idempotencyKey: "reply:overlapping", target, authorClass: "butler", effect: { kind: "text", text: overlapping } })
     await execute({ idempotencyKey: "reply:unmatched-underscore", target, authorClass: "butler", effect: { kind: "text", text: unmatchedUnderscore } })
 
-    const spanning = `Prefix *${"word ".repeat(300)}suffix*`
+    // Longer than one message, so the block is cut by word and the span crosses the cut.
+    const spanning = `Prefix *${"word ".repeat(900)}suffix*`
     const spanningResult = await execute({ idempotencyKey: "reply:cross-chunk", target, authorClass: "butler", effect: { kind: "text", text: spanning } })
     expect(spanningResult.parts).toHaveLength(2)
     expect(spanningResult.parts.map((part) => part.text).join("")).toBe(spanning)
@@ -164,7 +166,8 @@ describe("Telegram effect adapter", () => {
     expect(htmlBodies[0]).toBe(unmatched)
     expect(htmlBodies[1]).toBe("Keep **bold *italic** tail* literal &lt;now&gt; &amp; later")
     expect(htmlBodies[2]).toBe(unmatchedUnderscore)
-    expect(htmlBodies.slice(3).join("")).toBe(spanning)
+    // The cut falls on a space; a message's edge whitespace is not sent (Telegram trims it too).
+    expect(htmlBodies.slice(3).map((body) => String(body).trim()).join(" ")).toBe(spanning)
     expect(htmlBodies.every((body) => !String(body).includes("<b>") && !String(body).includes("<i>"))).toBe(true)
   })
 
@@ -225,11 +228,19 @@ describe("Telegram effect adapter", () => {
     expect(sent).not.toContain("<i>")
   })
 
-  it("falls back from Butler HTML to the identical raw Markdown chunk on Telegram 400", async () => {
+  it("on Telegram 400 resends the chunk with only code and links kept, then as the identical raw Markdown", async () => {
     const store = journal()
     const raw = "**bold** and _italic_ with `code` & <unsafe>"
+    const safe = vi.fn()
+      .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+      .mockResolvedValueOnce({ message_id: 81 })
+    const safeResult = await createTelegramAuthorizedEffectExecutor({ store, api: { request: safe }, authorize: () => authorization })({ idempotencyKey: "reply:html-safe", target, authorClass: "butler", effect: { kind: "text", text: raw } })
+    expect(safe.mock.calls[1]).toEqual(["sendMessage", { chat_id: "42", text: "**bold** and _italic_ with <code>code</code> &amp; &lt;unsafe&gt;", parse_mode: "HTML" }, undefined])
+    expect(safeResult.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted", messageId: 81 })])
+
     const request = vi.fn()
       .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+      .mockRejectedValueOnce(new TelegramApiError("bad html again", { status: 400, errorCode: 400 }))
       .mockResolvedValueOnce({ message_id: 82 })
     const delivered = vi.fn()
     const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
@@ -238,11 +249,42 @@ describe("Telegram effect adapter", () => {
 
     expect(request.mock.calls).toEqual([
       ["sendMessage", { chat_id: "42", text: "<b>bold</b> and <i>italic</i> with <code>code</code> &amp; &lt;unsafe&gt;", parse_mode: "HTML" }, undefined],
+      ["sendMessage", { chat_id: "42", text: "**bold** and _italic_ with <code>code</code> &amp; &lt;unsafe&gt;", parse_mode: "HTML" }, undefined],
       ["sendMessage", { chat_id: "42", text: raw }, undefined],
     ])
     expect(result.effect).toEqual({ kind: "text", text: raw })
     expect(result.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted", messageId: 82 })])
     expect(delivered).toHaveBeenCalledWith(82, raw)
+  })
+
+  it("surfaces a failure other than a 400 on the safe-HTML resend without sending plain text", async () => {
+    const store = journal()
+    const request = vi.fn()
+      .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+      .mockRejectedValueOnce(new TelegramApiError("rate limited", { status: 429, errorCode: 429 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    await expect(execute({ idempotencyKey: "reply:html-safe-429", target, authorClass: "butler", effect: { kind: "text", text: "**x**" } })).rejects.toThrow("rate limited")
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it("still sends a text that was prepared under the earlier length split, and refuses parts that match neither split", async () => {
+    const store = journal()
+    const text = `${"a ".repeat(800)}\n\n${"b ".repeat(800)}`
+    const legacy = splitTelegramText(text)
+    expect(legacy).not.toEqual(splitTelegramMarkdown(text))
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "reply:legacy", target, authorClass: "butler", effect: { kind: "text", text }, authorization })
+    const file = path.join((store as unknown as { root: string }).root, `${prepared.id}.json`)
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"))
+    const withParts = (texts: string[]) => JSON.stringify({ ...stored, parts: texts.map((part, index) => ({ index, text: part, state: "prepared", updatedAt: stored.updatedAt })) })
+
+    fs.writeFileSync(file, withParts(legacy), { mode: 0o600 })
+    const request = vi.fn(async () => ({ message_id: 90 + request.mock.calls.length }))
+    const sent = await executeTelegramEffect(store, prepared.id, { request }, () => authorization)
+    expect(sent.parts.map((part) => part.text)).toEqual(legacy)
+    expect(request).toHaveBeenCalledTimes(legacy.length)
+
+    fs.writeFileSync(file, withParts(["a", "b"]), { mode: 0o600 })
+    expect(() => store.read(prepared.id)).toThrow("invalid")
   })
 
   it("preserves backtick-delimited commands byte-for-byte", async () => {
@@ -378,7 +420,7 @@ describe("Telegram effect adapter", () => {
 
   it("never resends accepted chunks after a later chunk becomes indeterminate", async () => {
     const store = journal()
-    const prepared = prepareTelegramEffect(store, { idempotencyKey: "reply:req-2", target, authorClass: "butler", effect: { kind: "text", text: `${"a".repeat(1_200)} ${"b".repeat(1_200)}` }, authorization })
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "reply:req-2", target, authorClass: "butler", effect: { kind: "text", text: `${"a".repeat(3_000)}\n\n${"b".repeat(3_000)}` }, authorization })
     let call = 0
     await expect(executeTelegramEffect(store, prepared.id, { request: vi.fn(async () => {
       call += 1
