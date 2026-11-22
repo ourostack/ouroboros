@@ -73,6 +73,8 @@
     {"id": "turn-habits", "when": "Stop one of the agent's recurring habits during a turn, when the person who started the turn asks for it."},
     {"id": "turn-steward", "when": "Read or change the household steward's policy during a turn, under the owner's own authenticated request."},
     {"id": "turn-sessions", "when": "Join up an agent's conversations already under way, so shared work in one is visible from the others."},
-    {"id": "turn-mail", "when": "Read and answer the agent's email inside a turn: check, search, open, draft, send, and sort unknown senders."}
+    {"id": "turn-mail", "when": "Read and answer the agent's email inside a turn: check, search, open, draft, send, and sort unknown senders."},
+    {"id": "turn-awaits", "when": "Wait on something that happens later, like a reply or a delivery: file the wait, record each check, or drop it."},
+    {"id": "turn-attachments", "when": "Work with photos, voice notes and documents people sent: find one, get it as a file on disk, or ask about an image."}
   ]
 }

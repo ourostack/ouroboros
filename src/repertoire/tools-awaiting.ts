@@ -182,7 +182,7 @@ function formatOwnerQuestion(question: string, choices: string[]): string {
 function failedAskOwner(agentName: string, name: string, error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error)
   emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_ask_owner_error", message: "ask_owner could not reach the owner", meta: { agent: agentName, name, error: detail } })
-  return JSON.stringify({ error: `the owner message could not be sent (${detail}); the await is still pending, so ask_owner can be retried` })
+  return JSON.stringify({ error: `the owner message could not be sent (${detail}); the await is still pending, so ask_owner can be retried`, code: "owner-unreachable" })
 }
 
 /** At most this many ask_owner closures per requester in a rolling day, so one requester cannot make the Butler pester the owner. */
@@ -275,18 +275,18 @@ function delivered(alert: AwaitAlertResult | null): boolean {
  */
 async function askOwnerTool(name: string, observation: string, question: unknown, choices: unknown, existing: AwaitFile, agentRoot: string, agentName: string): Promise<string> {
   const parsed = parseAskOwner(question, choices)
-  if (!parsed.ok) return JSON.stringify({ error: parsed.error })
+  if (!parsed.ok) return JSON.stringify({ error: parsed.error, code: "invalid-ask-owner" })
   const inFlightKey = `${agentRoot}\0${name}`
-  if (askOwnerInFlight.has(inFlightKey)) return JSON.stringify({ error: `await "${name}" is already being asked; wait for the owner's reply instead of asking again` })
+  if (askOwnerInFlight.has(inFlightKey)) return JSON.stringify({ error: `await "${name}" is already being asked; wait for the owner's reply instead of asking again`, code: "ask-in-flight" })
   askOwnerInFlight.add(inFlightKey)
   try {
     const filerId = existing.filed_for_friend_id ?? null
     const filer = await lookupFiler(agentRoot, filerId)
     if (!filer.isOwner && recentAskCount(agentRoot, filerId, Date.now()) >= ASK_OWNER_DAILY_LIMIT) {
-      return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling` })
+      return JSON.stringify({ error: `ask_owner limit reached: this requester has already had my owner asked ${ASK_OWNER_DAILY_LIMIT} times in the last day; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling`, code: "ask-limit-reached" })
     }
     if (!filer.isOwner && recentAskCount(agentRoot, undefined, Date.now()) >= ASK_OWNER_NON_OWNER_DAILY_LIMIT) {
-      return JSON.stringify({ error: `ask_owner limit reached: my owner has already been asked ${ASK_OWNER_NON_OWNER_DAILY_LIMIT} times today on behalf of other requesters; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling` })
+      return JSON.stringify({ error: `ask_owner limit reached: my owner has already been asked ${ASK_OWNER_NON_OWNER_DAILY_LIMIT} times today on behalf of other requesters; do not retry ask_owner, resolve with verdict 'no' with an observation and keep polling`, code: "ask-limit-reached" })
     }
     const isA2A = existing.filed_from === "a2a"
     const noticeId = `await:${name}:asked_owner:${String(existing.created_at)}`
@@ -367,23 +367,23 @@ interface FileAwaitArgs {
 
 function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, sessionFriendId: string | null, sessionChannel: string | null, sessionKey: string | null, requestId: string | null): string {
   const nameError = validateName(args.name)
-  if (nameError) return JSON.stringify({ error: nameError })
+  if (nameError) return JSON.stringify({ error: nameError, code: "invalid-await-name" })
 
   if (!args.condition || !args.condition.trim()) {
-    return JSON.stringify({ error: "condition is required" })
+    return JSON.stringify({ error: "condition is required", code: "missing-condition" })
   }
   if (!args.cadence || !args.cadence.trim()) {
-    return JSON.stringify({ error: "cadence is required" })
+    return JSON.stringify({ error: "cadence is required", code: "missing-cadence" })
   }
   // Any ISO timestamp with a zone is accepted and stored in canonical form ("2026-10-12T12:09:00Z" becomes "...:00.000Z"); the alpha.910 replay refused four valid forms in a row.
   if (args.wake_at && (!/(?:Z|[+-]\d\d:?\d\d)$/i.test(args.wake_at) || !Number.isFinite(Date.parse(args.wake_at)))) {
-    return JSON.stringify({ error: "wake_at must be an ISO timestamp with a time zone, like 2026-10-12T12:09:00Z" })
+    return JSON.stringify({ error: "wake_at must be an ISO timestamp with a time zone, like 2026-10-12T12:09:00Z", code: "invalid-wake-at" })
   }
   const wakeAt = args.wake_at ? new Date(args.wake_at).toISOString() : null
 
   const filePath = awaitFilePath(agentRoot, args.name)
   if (fs.existsSync(filePath)) {
-    return JSON.stringify({ error: `await "${args.name}" already exists` })
+    return JSON.stringify({ error: `await "${args.name}" already exists`, code: "await-exists" })
   }
 
   const mode: AwaitMode = args.mode === "quick" ? "quick" : "full"
@@ -494,25 +494,25 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   // The words for whoever asked; without them they get the condition and observation, which read as unsourced notes.
   const content = typeof message === "string" && message.trim() ? message.trim() : undefined
   const nameError = validateName(name)
-  if (nameError) return JSON.stringify({ error: nameError })
+  if (nameError) return JSON.stringify({ error: nameError, code: "invalid-await-name" })
 
   const existing = readAwaitDefinition(agentRoot, name)
   if (!existing) {
     if (verdict === "ask_owner" && readAwaitDoneDefinition(agentRoot, name)?.status === "asked_owner") {
-      return JSON.stringify({ error: `await "${name}" has already asked the owner and is closed; wait for the owner's reply instead of asking again` })
+      return JSON.stringify({ error: `await "${name}" has already asked the owner and is closed; wait for the owner's reply instead of asking again`, code: "already-asked-owner" })
     }
-    return JSON.stringify({ error: `await "${name}" not found in awaiting/` })
+    return JSON.stringify({ error: `await "${name}" not found in awaiting/`, code: "await-not-found" })
   }
   if (existing.status !== "pending") {
-    return JSON.stringify({ error: `await "${name}" is not pending (status: ${existing.status})` })
+    return JSON.stringify({ error: `await "${name}" is not pending (status: ${existing.status})`, code: "await-not-pending" })
   }
 
   if (verdict !== "yes" && verdict !== "no" && verdict !== "ask_owner") {
-    return JSON.stringify({ error: `verdict must be exactly "yes", "no", or "ask_owner" (got ${JSON.stringify(verdict)}); use "no" with an observation while still waiting` })
+    return JSON.stringify({ error: `verdict must be exactly "yes", "no", or "ask_owner" (got ${JSON.stringify(verdict)}); use "no" with an observation while still waiting`, code: "invalid-verdict" })
   }
 
   if (!observation || !observation.trim()) {
-    return JSON.stringify({ error: "observation is required" })
+    return JSON.stringify({ error: "observation is required", code: "missing-observation" })
   }
 
   if (verdict === "ask_owner") return askOwnerTool(name, observation, ask?.question, ask?.choices, existing, agentRoot, agentName)
@@ -596,14 +596,14 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
 
 export function cancelAwaitTool(name: string, reason: string | undefined, agentRoot: string, agentName: string): string {
   const nameError = validateName(name)
-  if (nameError) return JSON.stringify({ error: nameError })
+  if (nameError) return JSON.stringify({ error: nameError, code: "invalid-await-name" })
 
   const existing = readAwaitDefinition(agentRoot, name)
   if (!existing) {
-    return JSON.stringify({ error: `await "${name}" not found in awaiting/` })
+    return JSON.stringify({ error: `await "${name}" not found in awaiting/`, code: "await-not-found" })
   }
   if (existing.status !== "pending") {
-    return JSON.stringify({ error: `await "${name}" is not pending (status: ${existing.status})` })
+    return JSON.stringify({ error: `await "${name}" is not pending (status: ${existing.status})`, code: "await-not-pending" })
   }
 
   const updates: Record<string, unknown> = {
@@ -797,7 +797,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       const event = ctx?.currentExternalEvent
       const eventFriendId = event ? ctx?.context?.friend.id ?? null : null
-      if (event && !eventFriendId) return JSON.stringify({ error: "external event await authority has no exact owner relationship" })
+      if (event && !eventFriendId) return JSON.stringify({ error: "external event await authority has no exact owner relationship", code: "no-event-owner" })
       return fileAwait(
         {
           name: a.name,
@@ -817,6 +817,14 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         event ? null : ctx?.relationshipAuthorization?.requestId ?? null,
       )
     },
+    ax: { id: "tool:await_condition", group: "turn-awaits", when: "Pick this when something will happen later outside your control, like a reply or a delivery, and someone should hear once it does.", effect: "write", errors: [
+      { code: "invalid-await-name", means: "name was empty or had characters other than letters, digits, underscores and hyphens.", fix: "Call again with a name such as dentist_reply or pr-1234-merged." },
+      { code: "missing-condition", means: "condition was empty.", fix: "Call again with condition saying, in plain words, what counts as done." },
+      { code: "missing-cadence", means: "cadence was empty.", fix: "Call again with how often to check, such as 15m or 1h." },
+      { code: "invalid-wake-at", means: "wake_at wasn't an ISO time with a time zone.", fix: "Pass a time such as 2026-10-12T12:09:00Z, or leave wake_at out." },
+      { code: "await-exists", means: "A pending await already has that name.", fix: "Pick another name, or cancel_await the old one first if it is stale." },
+      { code: "no-event-owner", means: "This turn handles an outside event that has no exact owner relationship, so it can't file an await.", fix: "Handle the event now without an await, or tell the owner what to watch for." },
+    ] },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "files a durable await condition" },
   },
   {
@@ -842,7 +850,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
     handler: async (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
-      if (isHouseCareAwait(a.name) && a.verdict !== "no") return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and never resolves: finish every tick with verdict 'no' and a one-line observation, and send any owner digest with house_digest_send` })
+      if (isHouseCareAwait(a.name) && a.verdict !== "no") return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and never resolves: finish every tick with verdict 'no' and a one-line observation, and send any owner digest with house_digest_send`, code: "house-care-only-no" })
       if (ctx?.relationshipAuthorization) {
         const awaitName = String(a.name ?? "")
         const { session, requestId } = relationshipScopeFor(ctx, awaitName)
@@ -857,19 +865,34 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         } else if (session && requestId) {
           if (existing?.filed_for_friend_id !== session.friendId || existing.filed_from !== session.channel
             || existing.filed_from_key !== session.key || existing.request_id !== requestId) {
-            return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
+            return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event", code: "outside-request" })
           }
           binding = inspectRelationshipFollowUp(agentRoot, { friendId: session.friendId, channel: session.channel, key: session.key, requestId, awaitName })
         }
         if (binding && !binding.active) {
           if (isBrokenBindingReason(binding.reason)) failBrokenAwait(agentRoot, agentName, awaitName, binding.reason)
           else cancelStaleAwait(agentRoot, agentName, awaitName, binding.reason)
-          return JSON.stringify({ error: binding.reason })
+          return JSON.stringify({ error: binding.reason, code: "await-binding-inactive" })
         }
-        if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
+        if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event", code: "outside-request" })
       }
       return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName, { question: a.question, choices: a.choices }, a.message)
     },
+    ax: { id: "tool:resolve_await", group: "turn-awaits", when: "Pick this on every check of a waiting condition to record what you saw: met, not yet, or stuck until your owner decides.", effect: "write", errors: [
+      { code: "invalid-await-name", means: "name was empty or had characters other than letters, digits, underscores and hyphens.", fix: "Call again with a name such as dentist_reply or pr-1234-merged." },
+      { code: "await-not-found", means: "No pending await has that name.", fix: "Check the name of the await this tick is about; it may already be resolved or cancelled." },
+      { code: "await-not-pending", means: "The await exists but is no longer pending, so there is nothing to resolve.", fix: "Stop checking it; its status in the reply says how it ended." },
+      { code: "invalid-verdict", means: "verdict wasn't exactly yes, no or ask_owner.", fix: "Use no with an observation while still waiting; yes only once the condition holds." },
+      { code: "missing-observation", means: "observation was empty.", fix: "Call again with one line saying what you saw on this check." },
+      { code: "house-care-only-no", means: "The daily house-care sweep never resolves; it takes only verdict no.", fix: "Resolve it with verdict no and a one-line observation; send any owner digest with house_digest_send." },
+      { code: "outside-request", means: "This conversation may touch only the await filed for its own current request, and this one isn't it.", fix: "Leave other awaits alone; the conversation that filed one, or its own tick, resolves it." },
+      { code: "await-binding-inactive", means: "The request or event this await served is gone, expired or no longer matches, so I closed the await; the reason is the error text.", fix: "Stop checking it; file a new await only if someone still needs the answer." },
+      { code: "already-asked-owner", means: "This await already asked the owner and is closed.", fix: "Wait for the owner's reply instead of asking again." },
+      { code: "invalid-ask-owner", means: "ask_owner needs a question and 2 to 4 non-empty choices without |; the error says which part is wrong.", fix: "Call again with question in plain words and 2 to 4 short choices." },
+      { code: "ask-in-flight", means: "The owner is being asked about this await right now.", fix: "Wait for the owner's reply; don't ask again." },
+      { code: "ask-limit-reached", means: "The owner has been asked too often in the last day, for this requester or for all of them.", fix: "Resolve with verdict no and an observation, and keep checking; don't retry ask_owner." },
+      { code: "owner-unreachable", means: "The question to the owner couldn't be sent; the await is still pending.", fix: "Try ask_owner again on the next check." },
+    ] },
     riskProfile: {
       mutates: ["durable_state_write", "external_side_effect"] as const,
       risk: "high",
@@ -895,7 +918,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
     handler: (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
-      if (isHouseCareAwait(a.name)) return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and cannot be cancelled` })
+      if (isHouseCareAwait(a.name)) return JSON.stringify({ error: `${HOUSE_CARE_AWAIT} is the package-managed daily house-care sweep and cannot be cancelled`, code: "house-care-fixed" })
       if (ctx?.relationshipAuthorization) {
         const { session, requestId } = relationshipScopeFor(ctx, String(a.name ?? ""))
         if (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {
@@ -904,10 +927,17 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
           key: session.key,
           requestId,
           awaitName: String(a.name ?? ""),
-        })) return JSON.stringify({ error: "cancel_await is limited to the current relationship request" })
+        })) return JSON.stringify({ error: "cancel_await is limited to the current relationship request", code: "outside-request" })
       }
       return cancelAwaitTool(a.name, a.reason, agentRoot, agentName)
     },
+    ax: { id: "tool:cancel_await", group: "turn-awaits", when: "Pick this to stop watching a condition nobody needs any more, quietly, without telling the person who asked; use resolve_await if it was met.", effect: "write", errors: [
+      { code: "invalid-await-name", means: "name was empty or had characters other than letters, digits, underscores and hyphens.", fix: "Call again with a name such as dentist_reply or pr-1234-merged." },
+      { code: "await-not-found", means: "No pending await has that name.", fix: "Check the name; it may already be resolved or cancelled." },
+      { code: "await-not-pending", means: "The await is no longer pending, so there is nothing to cancel.", fix: "Leave it; its status in the reply says how it ended." },
+      { code: "house-care-fixed", means: "The daily house-care sweep is managed by the package and can't be cancelled.", fix: "Leave it pending; resolve each of its checks with verdict no." },
+      { code: "outside-request", means: "This conversation may touch only the await filed for its own current request, and this one isn't it.", fix: "Leave other awaits alone; the conversation that filed one, or its own tick, resolves it." },
+    ] },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "archives a durable await condition" },
   },
 ]
