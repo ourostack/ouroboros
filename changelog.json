@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1364",
+      "changes": [
+        "shepherd_feedback and shepherd_feedback_status say what they do instead of giving the agent rules, so they pass the Ouro AX census's booklet-words check."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1363",
       "changes": [
         "File tools (read_file, write_file, edit_file, grep) and shell take an optional cwd that relative paths start from, and a path that names nothing says which absolute path was tried."
