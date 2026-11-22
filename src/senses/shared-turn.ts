@@ -500,7 +500,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
         await releaseRuntimeMcpServersAfterTurn(owner)
       }
     }
-  })
+  }, options.signal)
 }
 
 async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {
