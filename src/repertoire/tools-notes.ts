@@ -10,6 +10,7 @@ import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryPr
 import { resolveRecordDiaryRoot } from "../mind/record-paths";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
 import type { ToolContext, ToolDefinition } from "./tools-base";
+import { withCode } from "./tool-error-code";
 import { withRelationshipPreference } from "./relationship-authorization";
 import type { RelationshipPolicyProvenance } from "@ouro.bot/friends";
 import { REACH_CHANNELS } from "../heart/reach-channel";
@@ -49,6 +50,10 @@ export const notesToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: () => JSON.stringify(listSkills()),
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:list_skills", group: "turn-skills", when: "Pick this to see which skill guides exist before taking on unfamiliar work; then load_skill opens the one that fits.", effect: "read", idempotent: true, errors: [
+      { code: "not-allowed", means: "This relationship's tool selection doesn't include skills.", fix: "Work from what you already know, or take it up in a chat with your owner." },
+    ] },
   },
   {
     tool: {
@@ -67,10 +72,14 @@ export const notesToolDefinitions: ToolDefinition[] = [
       try {
         return loadSkill(a.name);
       } catch (e) {
-        return `error: ${e}`;
+        return withCode(`error: ${e}`, "skill-not-found");
       }
     },
     summaryKeys: ["name"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:load_skill", group: "turn-skills", when: "Pick this to read a skill's full steps once list_skills has shown you its exact name.", effect: "read", idempotent: true, errors: [
+      { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the folders checked.", fix: "Call list_skills and load one of the names it returns, spelled exactly." },
+    ] },
   },
   {
     tool: {
@@ -106,12 +115,12 @@ export const notesToolDefinitions: ToolDefinition[] = [
             timeout: 60000,
           },
         );
-        if (result.error) return `error: ${result.error}`;
+        if (result.error) return withCode(`error: ${result.error}`, "claude-not-started");
         if (result.status !== 0)
-          return `claude exited with code ${result.status}: ${result.stderr}`;
+          return withCode(`claude exited with code ${result.status}: ${result.stderr}`, "claude-failed");
         return result.stdout || "(no output)";
       } catch (e) {
-        return `error: ${e}`;
+        return withCode(`error: ${e}`, "claude-not-started");
       }
     },
     summaryKeys: ["prompt"],
@@ -120,6 +129,10 @@ export const notesToolDefinitions: ToolDefinition[] = [
       risk: "low",
       reason: "runs Claude Code in plan mode with only read/search/list tools",
     },
+    ax: { id: "tool:claude", group: "turn-skills", when: "Pick this for a second opinion or code review from Claude Code reading this codebase; to have code changed, use coding_spawn.", effect: "read", errors: [
+      { code: "claude-not-started", means: "Claude Code didn't run or answer: it isn't installed here, or it took over 60 seconds.", fix: "Ask a smaller question, or read the files yourself with read_file and grep." },
+      { code: "claude-failed", means: "Claude Code ran and exited with an error, shown with its stderr.", fix: "Read the stderr; if it is a sign-in or setup problem, answer without Claude Code." },
+    ] },
   },
   {
     tool: {
@@ -138,7 +151,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     handler: async (a) => {
       try {
         const key = getIntegrationsConfig().perplexityApiKey;
-        if (!key) return "error: perplexityApiKey not configured in the agent vault runtime/config item";
+        if (!key) return withCode("error: perplexityApiKey not configured in the agent vault runtime/config item", "search-not-configured");
         const res = await fetch("https://api.perplexity.ai/search", {
           method: "POST",
           headers: {
@@ -147,7 +160,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
           },
           body: JSON.stringify({ query: a.query, max_results: 5 }),
         });
-        if (!res.ok) return `error: ${res.status} ${res.statusText}`;
+        if (!res.ok) return withCode(`error: ${res.status} ${res.statusText}`, "search-failed");
         const data = (await res.json()) as {
           results?: { title: string; url: string; snippet: string }[];
         };
@@ -156,10 +169,15 @@ export const notesToolDefinitions: ToolDefinition[] = [
           .map((r) => `${r.title}\n${r.url}\n${r.snippet}`)
           .join("\n\n");
       } catch (e) {
-        return `error: ${e}`;
+        return withCode(`error: ${e}`, "search-failed");
       }
     },
     summaryKeys: ["query"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:web_search", group: "turn-web", when: "Pick this to find web pages about a subject when you have no address yet; fetch_url then reads one result in full.", effect: "read", idempotent: true, errors: [
+      { code: "search-not-configured", means: "No Perplexity key is in the agent's vault, so web search is off.", fix: "Fetch a page you know the address of with fetch_url, or tell your owner search needs a perplexityApiKey." },
+      { code: "search-failed", means: "The search service answered with an error status or couldn't be reached.", fix: "Try once more with a simpler query; if it fails again, use fetch_url on a known source." },
+    ] },
   },
   {
     tool: {
@@ -178,7 +196,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     handler: async (a) => {
       try {
         const query = (a.query || "").trim();
-        if (!query) return "query is required";
+        if (!query) return withCode("query is required", "missing-argument");
 
         const resultLines: string[] = [];
 
@@ -196,10 +214,15 @@ export const notesToolDefinitions: ToolDefinition[] = [
 
         return resultLines.join("\n");
       } catch (e) {
-        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`;
+        return withCode(`error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`, "diary-unreadable");
       }
     },
     summaryKeys: ["query"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:search_facts", group: "turn-record", when: "Pick this to look up what your diary already says about a subject before you ask someone to repeat it; consult_diary also lists recent entries.", effect: "read", idempotent: true, errors: [
+      { code: "missing-argument", means: "query is empty.", fix: "Call search_facts again with words describing what you want to recall." },
+      { code: "diary-unreadable", means: "The diary or its search index couldn't be read; the message gives the cause.", fix: "Try consult_diary with no query to read recent entries instead." },
+    ] },
   },
   {
     tool: {
@@ -234,10 +257,14 @@ export const notesToolDefinitions: ToolDefinition[] = [
         }));
         return JSON.stringify({ items });
       } catch (e) {
-        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`;
+        return withCode(`error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`, "diary-unreadable");
       }
     },
     summaryKeys: ["query", "limit"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:consult_diary", group: "turn-record", when: "Pick this to read your newest diary entries, or matches with their ids and tags as JSON; search_facts gives a compact list.", effect: "read", idempotent: true, errors: [
+      { code: "diary-unreadable", means: "Reading or searching the diary failed; the message says why.", fix: "Call it once more without a query; if that fails too, carry on without the diary." },
+    ] },
   },
   {
     tool: {
@@ -258,7 +285,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     handler: async (a, ctx) => {
       const entry = (a.entry || "").trim();
-      if (!entry) return "entry is required";
+      if (!entry) return withCode("entry is required", "missing-argument");
 
       let provenance: DiaryEntryProvenance | undefined;
       if (ctx?.context) {
@@ -290,6 +317,10 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["entry", "about"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes Desk record diary fact" },
+    ax: { id: "tool:diary_write", group: "turn-record", when: "Pick this to keep a conclusion or lesson you will want in later chats; facts about one person go in save_friend_note.", effect: "write", errors: [
+      { code: "missing-argument", means: "entry is empty.", fix: "Call diary_write again with the entry written to stand alone." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so diary writes wait.", fix: "Call orientation_get, settle what the person meant, then write the entry if it is still true." },
+    ] },
   },
   {
     tool: {
@@ -308,8 +339,8 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     handler: async (a, ctx) => {
       /* v8 ignore start -- friend_list defensive plumbing: ctx + listAll guards, trust/limit branch fan-out, and empty-set status messages aren't all combined in tests; full coverage lives at the friend-store unit-test layer @preserve */
-      if (!ctx?.friendStore) return "i can't list friends -- friend store not available"
-      if (!ctx.friendStore.listAll) return "the configured friend store does not support listing."
+      if (!ctx?.friendStore) return withCode("i can't list friends -- friend store not available", "friend-store-unavailable")
+      if (!ctx.friendStore.listAll) return withCode("the configured friend store does not support listing.", "friend-store-unavailable")
       const all = await ctx.friendStore.listAll()
       const trustFilter = a.trust
       const filtered = trustFilter
@@ -333,6 +364,10 @@ export const notesToolDefinitions: ToolDefinition[] = [
       /* v8 ignore stop */
     },
     summaryKeys: ["trust", "limit"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:friend_list", group: "turn-friends", when: "Pick this to see everyone you know with their ids and trust levels; get_friend_note opens one person's full record.", effect: "read", idempotent: true, errors: [
+      { code: "friend-store-unavailable", means: "This turn has no friend store, or one that can't list people.", fix: "Use the friend ids you already have, or ask in a chat that has your friends loaded." },
+    ] },
   },
   {
     tool: {
@@ -352,14 +387,20 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     handler: async (a, ctx) => {
       const friendId = (a.friendId || "").trim();
-      if (!friendId) return "friendId is required";
-      if (!ctx?.friendStore) return "i can't read friend notes -- friend store not available";
+      if (!friendId) return withCode("friendId is required", "missing-argument");
+      if (!ctx?.friendStore) return withCode("i can't read friend notes -- friend store not available", "friend-store-unavailable");
 
       const friend = await ctx.friendStore.get(friendId);
-      if (!friend) return `friend not found: ${friendId}`;
+      if (!friend) return withCode(`friend not found: ${friendId}`, "friend-not-found");
       return JSON.stringify(friend, null, 2);
     },
     summaryKeys: ["friendId"],
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:get_friend_note", group: "turn-friends", when: "Pick this to read one person's saved record, notes and preferences by id when they aren't in this chat; friend_list finds ids.", effect: "read", idempotent: true, errors: [
+      { code: "missing-argument", means: "friendId is empty.", fix: "Find the person's id with friend_list, then call again." },
+      { code: "friend-not-found", means: "No friend record has that id.", fix: "Look the person up with friend_list and use the id it shows." },
+      { code: "friend-store-unavailable", means: "This turn has no friend store to read from.", fix: "Answer from what this chat already shows about the person." },
+    ] },
   },
   {
     tool: {
@@ -389,31 +430,31 @@ export const notesToolDefinitions: ToolDefinition[] = [
         meta: { type: a.type },
       });
       if (!ctx?.context) {
-        return "i can't save notes -- no friend context available";
+        return withCode("i can't save notes -- no friend context available", "no-friend-context");
       }
       if (!ctx.friendStore) {
-        return "i can't save notes -- friend store not available";
+        return withCode("i can't save notes -- friend store not available", "no-friend-context");
       }
       const friendId = ctx.context.friend?.id;
-      if (!friendId) return "i can't save notes -- no friend identity available";
+      if (!friendId) return withCode("i can't save notes -- no friend identity available", "no-friend-context");
 
-      if (a.type !== "name" && isOwnPersonaNote(a.key, a.content)) return OWN_PERSONA_NOTE_REFUSAL;
+      if (a.type !== "name" && isOwnPersonaNote(a.key, a.content)) return withCode(OWN_PERSONA_NOTE_REFUSAL, "persona-note");
 
       const actor = ctx.relationshipAuthorization?.actor;
       const isSanctuaryRelationship = ctx.context.friend?.capabilityProfileId?.startsWith("sanctuary-") === true;
       const preferenceSource = a.source as RelationshipPolicyProvenance | undefined;
       const isReachChannel = a.type === "tool_preference" && a.key === "reachChannel";
       if ((isSanctuaryRelationship || isReachChannel) && a.type === "tool_preference" && !["stated", "observed", "default"].includes(String(preferenceSource))) {
-        return "i need exact preference provenance: source must be stated, observed, or default";
+        return withCode("i need exact preference provenance: source must be stated, observed, or default", "preference-source-required");
       }
       if (isReachChannel && !(REACH_CHANNELS as readonly string[]).includes(a.content ?? "")) {
-        return "i can only reach people on bluebubbles or teams";
+        return withCode("i can only reach people on bluebubbles or teams", "invalid-reach-channel");
       }
       if (isSanctuaryRelationship && a.type === "tool_preference" && !isReachChannel && !["communication", "timing"].includes(a.key ?? "")) {
-        return "Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy";
+        return withCode("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy", "preference-not-allowed");
       }
       if (actor?.trustLevel === "friend" && (actor.friendId !== friendId || a.type !== "tool_preference" || !["communication", "timing", "reachChannel"].includes(a.key ?? ""))) {
-        return "household members may only save their own communication or timing preferences; preferences never grant authority";
+        return withCode("household members may only save their own communication or timing preferences; preferences never grant authority", "preference-not-allowed");
       }
 
       // Validate parameters (input-shape guards stay harness-side so we keep the
@@ -427,8 +468,8 @@ export const notesToolDefinitions: ToolDefinition[] = [
       // structured FriendOpResult back to the tool's first-person strings.
       if ((isSanctuaryRelationship || isReachChannel) && a.type === "tool_preference" && preferenceSource) {
         const current = await ctx.friendStore.get(friendId);
-        if (!current) return "i can't find the friend record on disk";
-        if (current.relationshipPolicy?.preferences[a.key!] && a.override !== "true") return `relationship preference '${a.key}' already exists; call again with override: true to replace it`;
+        if (!current) return withCode("i can't find the friend record on disk", "friend-not-found");
+        if (current.relationshipPolicy?.preferences[a.key!] && a.override !== "true") return withCode(`relationship preference '${a.key}' already exists; call again with override: true to replace it`, "override-required");
         const sourceKind = preferenceSource === "observed" ? "observed pattern" : preferenceSource === "default" ? "default fallback" : "explicit turn";
         const turnSource = `${ctx.currentSession?.channel ?? "relationship"} ${sourceKind} ${actor?.sessionEventId ?? "unknown-event"}`;
         await ctx.friendStore.put(friendId, withRelationshipPreference(current, { category: a.key!, value: a.content, provenance: preferenceSource, source: turnSource }));
@@ -451,9 +492,9 @@ export const notesToolDefinitions: ToolDefinition[] = [
           return `updated friend's name to '${a.content}' (stored as name, not a note)`;
         case "override_required":
           // result.message embeds the existing value; append the harness merge instruction.
-          return `${result.message}. if you want to replace it, call again with override: true. or merge both values into content and override.`;
+          return withCode(`${result.message}. if you want to replace it, call again with override: true. or merge both values into content and override.`, "override-required");
         case "not_found":
-          return "i can't find the friend record on disk";
+          return withCode("i can't find the friend record on disk", "friend-not-found");
         /* v8 ignore next 2 -- invalid is pre-empted by the harness validation above; kept for exhaustiveness @preserve */
         case "invalid":
           return result.message ?? "i can't save that note";
@@ -463,5 +504,14 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["type", "key", "content"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes friend notes/preferences" },
+    ax: { id: "tool:save_friend_note", group: "turn-friends", when: "Pick this to remember a fact, name or preference about the person you're talking with; your own lessons go in diary_write.", effect: "write", errors: [
+      { code: "no-friend-context", means: "This turn has no friend, friend store or friend id to save against.", fix: "Save it in a chat with that person, or keep it with diary_write instead." },
+      { code: "persona-note", means: "The note is about your own personality or voice, not about this person.", fix: "Leave it out of friend notes; house lessons go in psyche/TACIT.md, other psyche changes wait for your owner." },
+      { code: "preference-source-required", means: "A relationship or reachChannel preference needs source set to stated, observed or default.", fix: "Call again with source: stated if they said it, or observed if you inferred it." },
+      { code: "preference-not-allowed", means: "This key or speaker can't save that preference: only communication, timing or reachChannel, and only about the speaker.", fix: "Save it as a note, or leave authority questions to steward policy." },
+      { code: "invalid-reach-channel", means: "reachChannel must be bluebubbles or teams.", fix: "Call again with content bluebubbles or teams." },
+      { code: "override-required", means: "A value is already saved under that key; the message shows it.", fix: "Call again with override: true, merging the old value into content if both still hold." },
+      { code: "friend-not-found", means: "The friend's record is missing on disk.", fix: "Check the person with friend_list before saving again." },
+    ] },
   },
 ]

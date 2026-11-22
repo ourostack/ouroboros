@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1311",
+      "changes": [
+        "list_skills, load_skill, claude, web_search, search_facts, consult_diary, diary_write, friend_list, get_friend_note and save_friend_note have Ouro AX cards; their failures end with a code, and the seven that only read state a low-risk profile."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1310",
       "changes": [
         "The chat, voice-call and Telegram contact tools now carry Ouro AX cards, and their refusals end with a code the card names."
