@@ -564,8 +564,10 @@ describe("A-006 real Sanctuary stewardship composition", () => {
     expect(f.sent).toHaveLength(1)
   }, 30_000)
 
+  // Spec R12: restarts left the friend rung (household profile v7), so a friend's restart is refused even under the owner's
+  // on-demand standing grant. `allowed` stays as a parameter so a later profile that grants it again is one row away.
   it.each([
-    { label: "on-demand standing grant", desired: "on_demand", grant: true, restricted: false, allowed: true },
+    { label: "on-demand standing grant", desired: "on_demand", grant: true, restricted: false, allowed: false },
     { label: "missing grant", desired: "expected_on", grant: false, restricted: false, allowed: false },
     { label: "current profile exclusion", desired: "expected_on", grant: true, restricted: true, allowed: false },
   ])("returns the household $label outcome to that exact requester without an approval card", async ({ desired, grant, restricted, allowed }) => {
@@ -574,7 +576,7 @@ describe("A-006 real Sanctuary stewardship composition", () => {
     const denied = "I need permission before I can restart Jellyfin for you."
     const calls = modelScript([
       () => ({ name: "unraid_list_containers", args: {} }),
-      () => ({ name: "unraid_restart_container", args: { container: "jellyfin" }, advertised: restricted ? false : undefined }),
+      () => ({ name: "unraid_restart_container", args: { container: "jellyfin" }, advertised: allowed ? undefined : false }),
       (request) => {
         const text = lastToolText(request)
         const succeeded = text.startsWith("{") && JSON.parse(text).ok === true

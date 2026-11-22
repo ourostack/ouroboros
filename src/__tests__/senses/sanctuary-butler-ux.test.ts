@@ -601,7 +601,7 @@ describe("Ouro Butler household UX", () => {
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
-        version: 6,
+        version: 7,
         contextScopes: expect.arrayContaining(["household.status"]),
         toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: ["telegram.request_return"],
@@ -797,7 +797,10 @@ describe("Ouro Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "react", "set_reply_target", "unraid_list_containers", "unraid_get_storage", "sanctuary_search_media_catalog", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
+    expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "react", "set_reply_target", "unraid_list_containers", "unraid_get_storage", "sanctuary_search_media_catalog", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "settle", "speak"])
+    // A friend can no longer restart a container (spec R12): the tool is not advertised and its call is refused.
+    expect(household.evaluator.advertisedToolNames).not.toContain("unraid_restart_container")
+    expect(await execTool("unraid_restart_container", { container: "plex" }, { ...household.context, sanctuary: { restartContainer: async () => ({ ok: true }) } } as any)).toContain("relationship authorization required")
     expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
     expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_media_optimization")
     expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_install_state")

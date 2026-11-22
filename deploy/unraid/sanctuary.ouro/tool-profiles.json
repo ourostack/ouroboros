@@ -99,7 +99,7 @@
       ]
     },
     "sanctuary-household": {
-      "version": 6,
+      "version": 7,
       "contextScopes": [
         "household.status",
         "own_requests"
@@ -118,7 +118,6 @@
         "unraid_get_disks",
         "unraid_get_system",
         "unraid_check_services",
-        "unraid_restart_container",
         "settle",
         "speak",
         "react",
