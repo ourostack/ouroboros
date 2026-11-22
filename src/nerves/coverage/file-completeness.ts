@@ -173,6 +173,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Loaded first by the CLI entry points, before any project module, so it cannot import nerves; the entry's own
   // start event reports the compile cache directory it chose.
   "daemon/compile-cache",
+  // The CLI's entry point only picks a module: the per-tool hook (which emits daemon.hook_post_tool_use) or the CLI
+  // (ouro-cli-main.ts, which emits the entry's start events). It stays this small so the hook loads nothing else.
+  "heart/daemon/ouro-entry.ts",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

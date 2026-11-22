@@ -16,6 +16,7 @@ describe("ouro CLI entrypoint", () => {
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "shepherd", "status", "--agent", "missing"])
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("ouro", { machine: true })
     expect(runOuroCli).toHaveBeenCalledWith(["shepherd", "status", "--agent", "missing"])
@@ -31,6 +32,7 @@ describe("ouro CLI entrypoint", () => {
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "msg", "--to", "inbox-agent", "hello"])
     const exitCode = process.exitCode
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     expect(runOuroCli).not.toHaveBeenCalled()
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("needs --why"))
@@ -59,6 +61,7 @@ describe("ouro CLI entrypoint", () => {
       "--dry-run",
     ])
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     expect(runOuroCli).not.toHaveBeenCalled()
     expect(stdout).toHaveBeenCalledWith(expect.stringContaining("Other people will see this"))
@@ -82,6 +85,7 @@ describe("ouro CLI entrypoint", () => {
     ])
 
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
 
     expect(runOuroCli).toHaveBeenCalledWith(["status"])
@@ -115,6 +119,7 @@ describe("ouro CLI entrypoint", () => {
     ])
 
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     await Promise.resolve()
 
@@ -142,6 +147,7 @@ describe("ouro CLI entrypoint", () => {
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "mailbox"])
 
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     await Promise.resolve()
 
@@ -176,6 +182,7 @@ describe("ouro CLI entrypoint", () => {
     ])
 
     await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
     await Promise.resolve()
     await Promise.resolve()
 
@@ -190,5 +197,22 @@ describe("ouro CLI entrypoint", () => {
     expect(exitSpy).toHaveBeenCalledWith(1)
 
     argvSpy.mockRestore()
+  })
+
+  it("answers the per-tool hook without loading the CLI", async () => {
+    vi.resetModules()
+    const runOuroCli = vi.fn(async () => "ok")
+    const runPostToolUseHook = vi.fn(async () => "quiet")
+    const deps = { stand: "in" }
+    vi.doMock("../../../heart/daemon/daemon-cli", () => ({ runOuroCli }))
+    vi.doMock("../../../heart/daemon/hook-post-tool-use", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../../../heart/daemon/hook-post-tool-use")>()),
+      runPostToolUseHook, defaultPostToolUseDeps: () => deps,
+    }))
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "ouro-entry.js", "hook", "post-tool-use", "--agent", "hook-standin"])
+    await import("../../../heart/daemon/ouro-entry")
+    await vi.dynamicImportSettled()
+    expect(runPostToolUseHook).toHaveBeenCalledWith("hook-standin", deps)
+    expect(runOuroCli).not.toHaveBeenCalled()
   })
 })

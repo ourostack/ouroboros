@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1372",
       "changes": [
-        "Senses: a turn can no longer wait forever to send; an iMessage turn that ends without a reply stays pending for replay or records a visible failure; SIGTERM stops iMessage and Shepherd within 3 s; ouro status shows a reply stuck waiting to send."
+        "ouro hook post-tool-use no longer loads the whole CLI: it sends from a small module, skips subagents, and sends at most one note per Claude Code session every five minutes. Measured on a stand-in agent with no daemon, the hook's node process went from a median 178 ms, 0.20 s of CPU and 80 MB to 86 ms, 0.07 s and 44 MB (bare node is 67 ms)."
       ]
     },
     {
