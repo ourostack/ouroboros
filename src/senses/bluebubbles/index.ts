@@ -235,6 +235,18 @@ class BlueBubblesObservationScope {
 
 const openObservationScopes = new Set<BlueBubblesObservationScope>()
 
+/**
+ * Runs `work` with a scope that settles its reservations once `work` ends.
+ * Returns `work`'s own promise so callers see no extra await.
+ */
+function withObservationScope<T>(work: (scope: BlueBubblesObservationScope) => Promise<T>): Promise<T> {
+  const scope = new BlueBubblesObservationScope()
+  const running = work(scope)
+  const close = (): void => scope.close()
+  void running.then(close, close)
+  return running
+}
+
 function isGenerationReservation(reservation: BlueBubblesObservationReservation): boolean {
   for (const generation of semanticObservationGenerations.values()) {
     if (generation.reservation === reservation) return true
@@ -3788,7 +3800,7 @@ export async function recoverQueuedBlueBubblesMessages(
     const activeSnapshot = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed, activeSnapshot),
+      detail: formatBlueBubblesRuntimeDetail(pendingSnapshot, failed, activeSnapshot),
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingSnapshot,
@@ -3821,17 +3833,12 @@ interface BlueBubblesCatchUpOptions {
   lifecycleSignal?: AbortSignal
 }
 
-export async function catchUpMissedBlueBubblesMessages(
+export function catchUpMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
   previousState?: BlueBubblesRuntimeState,
   options: BlueBubblesCatchUpOptions = {},
 ): Promise<BlueBubblesCatchUpResult> {
-  const scope = new BlueBubblesObservationScope()
-  try {
-    return await catchUpMissedBlueBubblesMessagesInScope(scope, deps, previousState, options)
-  } finally {
-    scope.close()
-  }
+  return withObservationScope((scope) => catchUpMissedBlueBubblesMessagesInScope(scope, deps, previousState, options))
 }
 
 async function catchUpMissedBlueBubblesMessagesInScope(
@@ -4080,16 +4087,11 @@ export interface BlueBubblesCapturedRecoveryResult {
   failed: number
 }
 
-export async function recoverCapturedBlueBubblesInboundMessages(
+export function recoverCapturedBlueBubblesInboundMessages(
   deps: Partial<RuntimeDeps> = {},
   options: { lifecycleSignal?: AbortSignal } = {},
 ): Promise<BlueBubblesCapturedRecoveryResult> {
-  const scope = new BlueBubblesObservationScope()
-  try {
-    return await recoverCapturedBlueBubblesInboundMessagesInScope(scope, deps, options)
-  } finally {
-    scope.close()
-  }
+  return withObservationScope((scope) => recoverCapturedBlueBubblesInboundMessagesInScope(scope, deps, options))
 }
 
 async function recoverCapturedBlueBubblesInboundMessagesInScope(

@@ -2064,6 +2064,8 @@ describe("BlueBubbles sense runtime", () => {
     await expect(live).resolves.toEqual(expect.objectContaining({ reason: "turn_timeout" }))
 
     for (let attempt = 2; attempt <= 3; attempt++) {
+      // Recovery spaces retries of one message by the autonomy budget's 10 minute duplicate window.
+      await vi.advanceTimersByTimeAsync(60_000)
       const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
       await vi.advanceTimersByTimeAsync(600_000)
       await recovery
@@ -6276,7 +6278,7 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("settles timed-out upstream catch-up turns as observed after repair succeeds", async () => {
+  it("keeps a timed-out upstream catch-up turn pending for replay after repair succeeds", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -6313,10 +6315,8 @@ describe("BlueBubbles sense runtime", () => {
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"catchup-timeout-guid\"")
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "message_observed" }),
-    )
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_error",
       meta: expect.objectContaining({
@@ -9425,7 +9425,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("settles captured inbound recovery timeouts as observed without marking them processed", async () => {
+  it("keeps a captured inbound whose recovery turn timed out pending, and the next pass answers it", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -9458,14 +9458,17 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
     expect(timeoutTurnCalls()[0]?.[0]?.signal.aborted).toBe(true)
-    expect(mocks.semanticHandled.get(capture.keyHash)).toEqual(expect.objectContaining({ outcome: "message_observed" }))
+    expect(mocks.semanticHandled.get(capture.keyHash)).toBeUndefined()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "captured-timeout-guid")).toBe(false)
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"captured-timeout-guid\"")
-    const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
-    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 0 }))
+    // Recovery spaces retries of one message by the autonomy budget's 10 minute duplicate window.
+    await vi.advanceTimersByTimeAsync(60_000)
+    const queued = bluebubbles.recoverQueuedBlueBubblesMessages()
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(queued).resolves.toEqual(expect.objectContaining({ recovered: 1, failed: 0, pendingRecoveryCount: 0 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "senses.bluebubbles_turn_timeout",
@@ -12326,7 +12329,7 @@ describe("BlueBubbles sense runtime", () => {
     ])
   })
 
-  it("publishes observed truth and discards late staged state when timeout wins before final transport", async () => {
+  it("keeps the message pending and discards late staged state when timeout wins before final transport", async () => {
     vi.useFakeTimers()
     const releaseProvider = createDeferred<void>()
     const promoteFailoverState = vi.fn()
@@ -12387,10 +12390,8 @@ describe("BlueBubbles sense runtime", () => {
       reason: "turn_timeout",
     }))
     expect(leaseReleased).toHaveBeenCalledTimes(1)
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "message_observed" }),
-    )
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
     expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "late unseen reply" }))
     expect(mocks.postTurnPersist).not.toHaveBeenCalled()
     expect(mocks.accumulateFriendTokens).not.toHaveBeenCalled()
@@ -15114,6 +15115,7 @@ describe("BlueBubbles reaction capture-only policy", () => {
     expect(snapshotBlueBubblesActiveTurns("testagent", 1)).toEqual({
       activeTurnCount: 0,
       stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
       oldestActiveTurnStartedAt: undefined,
       oldestActiveTurnAgeMs: undefined,
     })
