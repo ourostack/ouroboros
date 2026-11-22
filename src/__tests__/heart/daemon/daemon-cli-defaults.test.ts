@@ -1001,6 +1001,51 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("hands a runtime replacement started inside the daemon's launchd job to a detached ouro up", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-handoff-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalXpc = process.env.XPC_SERVICE_NAME
+    const child = { pid: 4242, unref: vi.fn() }
+    const spawn = vi.fn(() => child)
+    const execSync = vi.fn()
+
+    try {
+      process.env.XPC_SERVICE_NAME = "bot.ouro.daemon"
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      const handoff = deps.handOffDaemonRuntimeReplacement?.()
+
+      const logPath = path.join(tempHome, ".ouro-cli", "daemon", "logs", "runtime-replacement-helper.log")
+      expect(handoff).toEqual({ pid: 4242, logPath })
+      expect(fs.existsSync(logPath)).toBe(true)
+      expect(spawn).toHaveBeenCalledWith(process.execPath, [process.argv[1], "up"], expect.objectContaining({ detached: true }))
+      expect(child.unref).toHaveBeenCalled()
+      expect(execSync).not.toHaveBeenCalled()
+    } finally {
+      if (originalXpc === undefined) delete process.env.XPC_SERVICE_NAME
+      else process.env.XPC_SERVICE_NAME = originalXpc
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("uses the CurrentVersion symlink for version-managed production daemon plists", async () => {
     vi.resetModules()
 

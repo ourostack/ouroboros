@@ -474,4 +474,71 @@ describe("ensureCurrentDaemonRuntime", () => {
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
+
+  it("hands a stale-version replacement to a detached helper instead of stopping the daemon it runs inside", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.1155",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.1137"),
+      stopDaemon: vi.fn(async () => {}),
+      prepareDaemonRuntimeReplacement: vi.fn(),
+      handOffRuntimeReplacement: vi.fn(() => ({ pid: 4242, logPath: "/fixture/helper.log" })),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result).toEqual({
+      ok: true,
+      alreadyRunning: true,
+      handedOff: true,
+      message: "this command runs inside the background service it would replace, so a detached helper (pid 4242) is replacing 0.1.0-alpha.1137 -> 0.1.0-alpha.1155; it logs to /fixture/helper.log",
+      verifyStartupStatus: false,
+      startedPid: null,
+      startupFailureReason: null,
+    })
+    expect(deps.handOffRuntimeReplacement).toHaveBeenCalledTimes(1)
+    expect(deps.stopDaemon).not.toHaveBeenCalled()
+    expect(deps.prepareDaemonRuntimeReplacement).not.toHaveBeenCalled()
+    expect(deps.startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("names the drift and an unknown helper pid when handing off a non-version replacement", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localConfigFingerprint: "cfg-local",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({ version: "0.1.0-alpha.20", configFingerprint: "cfg-running" })),
+      stopDaemon: vi.fn(async () => {}),
+      handOffRuntimeReplacement: vi.fn(() => ({ pid: null, logPath: "/fixture/helper.log" })),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.handedOff).toBe(true)
+    expect(result.message).toBe("this command runs inside the background service it would replace, so a detached helper (pid unknown) is replacing it after runtime drift: config fingerprint; it logs to /fixture/helper.log")
+    expect(deps.stopDaemon).not.toHaveBeenCalled()
+  })
+
+  it("replaces in place when no detached helper takes the replacement", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => {}),
+      handOffRuntimeReplacement: vi.fn(() => null),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.handedOff).toBeUndefined()
+    expect(result.startedPid).toBe(777)
+    expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
+  })
 })

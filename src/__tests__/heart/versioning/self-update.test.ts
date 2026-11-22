@@ -384,6 +384,58 @@ describe("runSelfUpdate", () => {
     expect(dev.deps.runningDaemonVersion).not.toHaveBeenCalled()
   })
 
+  it("starts the daemon again when its launch agent was unloaded but its plist is still installed", async () => {
+    // 2026-11-16: an agent ran `ouro up` from inside the daemon; the bootout
+    // killed that `ouro up` before it loaded the new plist, and every hourly
+    // pass then reported "current" for six days while nothing ran.
+    const m = machine({ latest: "0.1.0-alpha.805", daemonVersion: null })
+    m.deps.isDaemonLaunchAgentUnloaded = vi.fn(() => true)
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("current")
+    expect(result.summary).toBe("current at 0.1.0-alpha.805 (unreachable: npmjs: socket closed); the daemon's launch agent was unloaded while its plist was still installed, so started it again and it is healthy")
+    expect(m.deps.restartDaemon).toHaveBeenCalledWith("0.1.0-alpha.805")
+    expect(m.state).toMatchObject({ outcome: "current" })
+  })
+
+  it("reports a failed restart of an unloaded launch agent without rolling back the version", async () => {
+    const m = machine({ latest: "0.1.0-alpha.805", daemonVersion: null })
+    m.deps.isDaemonLaunchAgentUnloaded = vi.fn(() => true)
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false, detail: "daemon did not answer after ouro up" })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("current")
+    expect(result.summary).toBe("current at 0.1.0-alpha.805 (unreachable: npmjs: socket closed); the daemon's launch agent was unloaded while its plist was still installed, and starting it again failed: daemon did not answer after ouro up")
+    expect(m.current).toBe("0.1.0-alpha.805")
+    expect(m.intent).toBeNull()
+    expect(m.state?.failedVersions).toEqual([])
+  })
+
+  it("says so when an unloaded launch agent's restart fails without detail", async () => {
+    const m = machine({ latest: "0.1.0-alpha.805", daemonVersion: null })
+    m.deps.isDaemonLaunchAgentUnloaded = vi.fn(() => true)
+    vi.mocked(m.deps.restartDaemon).mockResolvedValueOnce({ ok: false })
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.summary).toContain("and starting it again failed: no detail")
+  })
+
+  it("leaves a stopped daemon stopped when its launch agent is still loaded, or in dev mode", async () => {
+    const loaded = machine({ latest: "0.1.0-alpha.805", daemonVersion: null })
+    loaded.deps.isDaemonLaunchAgentUnloaded = vi.fn(() => false)
+    expect((await runSelfUpdate(loaded.deps)).summary).toBe("current at 0.1.0-alpha.805 (unreachable: npmjs: socket closed)")
+    expect(loaded.deps.restartDaemon).not.toHaveBeenCalled()
+
+    const dev = machine({ latest: "0.1.0-alpha.805", daemonVersion: null, devMode: true })
+    dev.deps.isDaemonLaunchAgentUnloaded = vi.fn(() => true)
+    expect((await runSelfUpdate(dev.deps)).outcome).toBe("current")
+    expect(dev.deps.isDaemonLaunchAgentUnloaded).not.toHaveBeenCalled()
+    expect(dev.deps.restartDaemon).not.toHaveBeenCalled()
+  })
+
   it("does not write state when another pass holds the lock", async () => {
     const m = machine({ locked: true })
     const result = await runSelfUpdate(m.deps)

@@ -43,6 +43,13 @@ export interface SelfUpdateDeps {
   runningDaemonVersion: () => Promise<string | null>
   /** Restart a running daemon on the active version and confirm it answers with that version. */
   restartDaemon: (expectedVersion: string) => Promise<{ ok: boolean; detail?: string }>
+  /**
+   * True when the daemon's launch agent plist is installed but launchd has no
+   * job loaded for it. Nothing will ever start that daemon: an `ouro up` that
+   * booted the label out was killed before it bootstrapped the new plist.
+   * `ouro down` leaves the job loaded, so this does not undo a human's stop.
+   */
+  isDaemonLaunchAgentUnloaded?: () => boolean
   /** True while `ouro dev` owns the daemon; the updater must not replace a dev daemon. */
   isDevMode: () => boolean
   acquireLock: () => (() => void) | null
@@ -211,8 +218,24 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
       })
     }
     const failedSources = lookup.answers.filter((answer) => !answer.version).map((answer) => `${answer.source}: ${answer.error}`)
+    let summary = `current at ${currentVersion}${failedSources.length ? ` (unreachable: ${failedSources.join("; ")})` : ""}`
+    // 2026-11-16: an interrupted replacement left the daemon's job unloaded and
+    // every pass reported "current" for six days while nothing ran.
+    if (!daemonVersion && !deps.isDevMode() && deps.isDaemonLaunchAgentUnloaded?.()) {
+      const restart = await deps.restartDaemon(currentVersion)
+      emitNervesEvent({
+        level: restart.ok ? "warn" : "error",
+        component: "daemon",
+        event: "daemon.self_update_unloaded_daemon_restarted",
+        message: "the daemon's launch agent was unloaded with its plist installed; ran ouro up to load it again",
+        meta: { currentVersion, ok: restart.ok, detail: restart.detail ?? null },
+      })
+      summary += restart.ok
+        ? "; the daemon's launch agent was unloaded while its plist was still installed, so started it again and it is healthy"
+        : `; the daemon's launch agent was unloaded while its plist was still installed, and starting it again failed: ${restart.detail ?? "no detail"}`
+    }
     return finish("current", {
-      summary: `current at ${currentVersion}${failedSources.length ? ` (unreachable: ${failedSources.join("; ")})` : ""}`,
+      summary,
       latestVersion: latest,
       source: lookupSource,
     })

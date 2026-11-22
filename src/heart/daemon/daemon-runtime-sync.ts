@@ -17,6 +17,12 @@ export interface DaemonRuntimeSyncDeps {
   }>
   stopDaemon: () => Promise<void>
   prepareDaemonRuntimeReplacement?: () => Promise<void> | void
+  /**
+   * Starts a detached helper to do the replacement when this command runs
+   * inside the daemon's own process tree, where stopping the daemon would kill
+   * it mid-replacement. Returns null when the replacement should run here.
+   */
+  handOffRuntimeReplacement?: () => { pid: number | null; logPath: string } | null
   cleanupStaleSocket: (socketPath: string) => void
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
@@ -31,6 +37,8 @@ export interface DaemonRuntimeSyncDeps {
 export interface DaemonRuntimeSyncResult {
   ok: boolean
   alreadyRunning: boolean
+  /** True when a detached helper took over the replacement and the old daemon is still running for now. */
+  handedOff?: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
@@ -179,6 +187,37 @@ export async function ensureCurrentDaemonRuntime(
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
+      const handoff = deps.handOffRuntimeReplacement?.() ?? null
+      if (handoff) {
+        const target = includesVersionDrift
+          ? `${runningVersion} -> ${deps.localVersion}`
+          : `it after runtime drift: ${publicDriftSummary}`
+        result = {
+          ok: true,
+          alreadyRunning: true,
+          handedOff: true,
+          message: `this command runs inside the background service it would replace, so a detached helper (pid ${handoff.pid ?? "unknown"}) is replacing ${target}; it logs to ${handoff.logPath}`,
+          verifyStartupStatus: false,
+          startedPid: null,
+          startupFailureReason: null,
+        }
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.runtime_sync_decision",
+          message: "evaluated daemon runtime sync outcome",
+          meta: {
+            socketPath: deps.socketPath,
+            localVersion: deps.localVersion,
+            runningVersion,
+            action: "stale_replace_handed_off",
+            driftKeys: driftReasons.map((entry) => entry.key),
+            helperPid: handoff.pid,
+            helperLogPath: handoff.logPath,
+          },
+        })
+        return result
+      }
       try {
         deps.onProgress?.("stopping the older background service")
         await deps.stopDaemon()

@@ -6,6 +6,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseStatusPayload } from "../daemon/cli-render"
 import { DEFAULT_DAEMON_SOCKET_PATH, checkDaemonSocketAlive, sendDaemonCommand } from "../daemon/socket-client"
+import { DAEMON_PLIST_LABEL } from "../daemon/launchd"
 import { activateVersion, getCurrentVersion, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "./ouro-version-manager"
 import { installRelease, lookupLatestRelease, selfUpdateE2eOverrides, type ReleaseSourceDeps } from "./release-sources"
 import type { SelfUpdateDeps } from "./self-update"
@@ -190,6 +191,17 @@ export function createDefaultSelfUpdateDeps(options: { homeDir?: string; socketP
       return { ok: false, detail: seen ? `daemon answered with ${seen}, expected ${expectedVersion}` : "daemon did not answer after ouro up" }
     },
     isDevMode: () => fs.existsSync(path.join(cliHome, "dev-config.json")),
+    isDaemonLaunchAgentUnloaded: () => {
+      // The package end-to-end test must never start a daemon on the host machine.
+      if (process.platform !== "darwin" || process.env.OURO_SELF_UPDATE_E2E === "1") return false
+      if (!fs.existsSync(path.join(homeDir, "Library", "LaunchAgents", `${DAEMON_PLIST_LABEL}.plist`))) return false
+      try {
+        execFileSync("launchctl", ["print", `gui/${os.userInfo().uid}/${DAEMON_PLIST_LABEL}`], { stdio: "ignore", timeout: 10_000 })
+        return false
+      } catch {
+        return true
+      }
+    },
     acquireLock: () => acquireLock(cliHome),
     diskSpace: () => {
       try {

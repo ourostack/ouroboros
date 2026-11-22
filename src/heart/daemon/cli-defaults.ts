@@ -40,6 +40,7 @@ import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTail
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { readLocalPresenceSettings } from "./presence"
+import { handOffDaemonRuntimeReplacement, type RuntimeReplacementHandoff } from "./runtime-replacement-handoff"
 import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps, type ServiceSupervision } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -507,6 +508,21 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
   // finished unlinking its Unix socket. Give that cleanup a short chance to
   // settle before the replacement daemon binds the same socket path.
   execSync("/bin/sleep 1", { stdio: "ignore" })
+}
+
+function defaultHandOffDaemonRuntimeReplacement(): RuntimeReplacementHandoff | null {
+  return handOffDaemonRuntimeReplacement({
+    platform: process.platform,
+    env: process.env,
+    execPath: process.execPath,
+    entryPath: process.argv[1],
+    logPath: path.join(getOuroCliHome(), "daemon", "logs", "runtime-replacement-helper.log"),
+    openLog: (logPath) => {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true })
+      return fs.openSync(logPath, "a")
+    },
+    spawn: (file, args, options) => spawn(file, args, options),
+  })
 }
 
 async function defaultPromptInput(question: string): Promise<string> {
@@ -980,6 +996,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     describeGit: async () => (await import("./portable-git-install")).describeGitAvailability(),
     ensureSkillManagement: defaultEnsureSkillManagement,
     prepareDaemonRuntimeReplacement: defaultPrepareDaemonRuntimeReplacement,
+    handOffDaemonRuntimeReplacement: defaultHandOffDaemonRuntimeReplacement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore start -- dev-mode defaults: tests inject mocks for mode detection and binary resolution @preserve */
     detectMode: () => detectRuntimeMode(getRepoRoot()),
