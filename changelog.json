@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1316",
+      "changes": [
+        "Publish recovery also waits and compares contents when npm answers E403 over a version that is not yet readable"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1315",
       "changes": [
         "The Shepherd, bundle and Copilot app session tools now carry Ouro AX cards, and their failures return the code a card names."
