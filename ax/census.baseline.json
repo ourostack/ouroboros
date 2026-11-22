@@ -42,6 +42,7 @@
     "tool:flight_hold",
     "tool:flight_search",
     "tool:friend_link_code",
+
     "tool:habit_cancel",
     "tool:intention_capture",
     "tool:intention_manage",
@@ -89,6 +90,7 @@
     "tool:stripe_deactivate_card",
     "tool:stripe_list_cards",
     "tool:surface",
+
     "tool:trip_attach_evidence",
     "tool:trip_calendar",
     "tool:trip_ensure_ledger",
@@ -106,5 +108,6 @@
     "tool:user_profile_get",
     "tool:user_profile_store",
     "tool:voice_join_local_audio"
+
   ]
 }

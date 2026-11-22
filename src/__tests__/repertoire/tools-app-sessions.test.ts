@@ -93,7 +93,7 @@ describe("the tool set", () => {
   })
 
   it("needs an agent runtime, and reports a failed verb as an error with its code", async () => {
-    expect(await call(tools.listWorkflowsTool, {}, null)).toEqual({ error: "the app-sessions tools need an agent runtime" })
+    expect(await call(tools.listWorkflowsTool, {}, null)).toEqual({ error: "the app-sessions tools need an agent runtime", code: "no-agent-runtime" })
     replies({ workflows: { code: 1, body: { ok: false, code: "app-down", error: "the app is not running. Fix: open it." } } })
     expect(await call(tools.listWorkflowsTool)).toEqual({ error: "the app is not running. Fix: open it.", code: "app-down" })
   })
@@ -197,13 +197,13 @@ describe("finding Shepherd", () => {
     delete process.env.SHEPHERD_BIN
     process.env.PATH = ""
     process.env.HOME = root
-    expect(await call(tools.listSessionsAndChatsTool)).toEqual({ error: expect.stringContaining("Shepherd is not installed") })
-    expect(await call(tools.listSessionsAndChatsTool)).toEqual({ error: expect.stringContaining("npx github:ourostack/shepherd#v0.8.1") })
+    expect(await call(tools.listSessionsAndChatsTool)).toEqual({ error: expect.stringContaining("Shepherd is not installed"), code: "shepherd-not-installed" })
+    expect(await call(tools.listSessionsAndChatsTool)).toEqual({ error: expect.stringContaining("npx github:ourostack/shepherd#v0.8.1"), code: "shepherd-not-installed" })
   })
 
   it("names a SHEPHERD_BIN that does not exist", async () => {
     process.env.SHEPHERD_BIN = path.join(root, "missing", "shepherd.mjs")
-    expect(await call(tools.getSessionsStatusTool)).toEqual({ error: expect.stringContaining("does not exist") })
+    expect(await call(tools.getSessionsStatusTool)).toEqual({ error: expect.stringContaining("does not exist"), code: "shepherd-not-installed" })
   })
 
   it("runs the shepherd on PATH when SHEPHERD_BIN is not set", async () => {
@@ -235,12 +235,17 @@ describe("app_sessions_restart", () => {
     client.restartStatus.mockResolvedValue({ state: "idle" })
     client.restartEnqueue.mockResolvedValue({ state: "queued" })
     expect(await call(tools.appSessionsRestartTool)).toEqual({ state: "idle" })
-    expect(await call(tools.appSessionsRestartTool, { action: "enqueue", why: " " })).toMatchObject({ error: expect.stringContaining("say why") })
+    expect(await call(tools.appSessionsRestartTool, { action: "enqueue", why: " " })).toMatchObject({ error: expect.stringContaining("say why"), code: "why-required" })
     expect(await call(tools.appSessionsRestartTool, { action: "enqueue", why: "update" })).toEqual({ state: "queued" })
     expect(client.restartEnqueue).toHaveBeenCalledWith("update", "ouroboros", {})
     await call(tools.appSessionsRestartTool, { action: "enqueue", why: "x" }, { agentRoot } as ToolContext)
     expect(client.restartEnqueue).toHaveBeenLastCalledWith("x", "an agent", {})
     await call(tools.appSessionsRestartTool, { action: "enqueue" })
+  })
+
+  it("reports a Housesitter failure under app-sessions-failed", async () => {
+    client.restartStatus.mockRejectedValueOnce(new Error("Housesitter isn't answering"))
+    expect(await call(tools.appSessionsRestartTool)).toEqual({ error: "Housesitter isn't answering", code: "app-sessions-failed" })
   })
 })
 
@@ -249,6 +254,6 @@ describe("app_sessions_digest", () => {
     digest.readDigestText.mockReturnValueOnce("all well")
     expect(await call(tools.appSessionsDigestTool)).toEqual({ digest: "all well" })
     digest.readDigestText.mockReturnValueOnce(null)
-    expect(await call(tools.appSessionsDigestTool)).toMatchObject({ error: expect.stringContaining("no status digest") })
+    expect(await call(tools.appSessionsDigestTool)).toMatchObject({ error: expect.stringContaining("no status digest"), code: "no-digest-yet" })
   })
 })
