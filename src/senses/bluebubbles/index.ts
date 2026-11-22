@@ -24,7 +24,7 @@ import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { withSessionTurnLease, type SessionTurnLease } from "../../mind/session-transaction"
-import { drainOutboundRecords, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
+import { drainOutboundRecords, isRecordedOutboundText, OUTBOUND_ORIGIN_LABELS, recordOutboundInSession } from "../../mind/outbound-record"
 import { resolveAlertKey } from "../../heart/awaiting/await-alert"
 import type { OutboundOrigin } from "../../heart/session-events"
 import {
@@ -835,14 +835,17 @@ function sessionUserMessageIndex(
 
 /**
  * A turn saves the friend's message before the model runs, so the text alone
- * does not prove the message was answered. Only a later assistant message does.
+ * does not prove the message was answered. Only a later assistant reply does;
+ * a proactive send recorded in the session afterwards does not count.
  */
 function sessionAlreadyAnsweredMessage(
   event: BlueBubblesNormalizedMessage,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
 ): boolean {
   const index = sessionUserMessageIndex(event, existingMessages)
-  return index >= 0 && existingMessages.slice(index + 1).some((message) => message.role === "assistant")
+  return index >= 0 && existingMessages.slice(index + 1).some((message) => (
+    message.role === "assistant" && !isRecordedOutboundText(extractMessageText(message.content))
+  ))
 }
 
 /** Drop the unanswered copy a dead turn left at the tail, so the replay adds the message once. */

@@ -4466,6 +4466,31 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("replays a recovered inbound when the only later assistant message is a proactive send recorded in the session", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const capture = await queueStoredSemanticCapture()
+    const { recordedOutboundText } = await import("../../../mind/outbound-record")
+    mocks.loadSession.mockReturnValue({
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: dmTopLevelPayload.data.text },
+        { role: "assistant", content: recordedOutboundText({ originLabel: "inner dialog", content: "unrelated heads-up" }) },
+      ],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(result).toEqual({ recovered: 1, skipped: 0, failed: 0 })
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({ keyHash: capture.keyHash, outcome: "message_completed" }),
+    )
+  })
+
   it("skips a recovered inbound that a later reply in the session already answered", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
