@@ -188,6 +188,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                              host=headers.get("Host", "") if headers else "")
 
     def send(self, status: int, body: bytes = b"", content_type: str = "text/html; charset=utf-8", headers: dict | None = None) -> None:
+        # The event is recorded (and state.json written) before any byte is sent, so a client that has the response can
+        # never read a state that lacks the request it just made.
+        self.record(status)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -196,12 +199,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
-        self.record(status)
 
     def send_error(self, code, message=None, explain=None):
         """A malformed request line or an unsupported method is answered by the base class; it is still an event."""
-        super().send_error(code, message, explain)
         self.record(code)
+        super().send_error(code, message, explain)
 
     def run(self, handler) -> None:
         try:
