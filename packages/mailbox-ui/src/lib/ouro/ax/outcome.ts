@@ -5,6 +5,7 @@ export type { AxRef, NextStep, Outcome, OutcomeExits, OutcomeFields, OutcomeHuma
 // first statement, which would take the JSDoc below with it.
 
 import { ONLY_YOU, type Audience, type Effect } from "./effects.ts";
+import { preciseFailureProblem } from "./precise-copy.ts";
 import { errorLine, errorMessage, type AxErrorBody, type AxErrorShape } from "./problem.ts";
 import type { ExitTable } from "./exit-codes.ts";
 
@@ -68,6 +69,8 @@ interface NextStep {
 interface OutcomeHuman {
   reason: string;
   resume: NextStep;
+  /** Why the reason is precise though it is short or holds a vague phrase; the vague-failure check and the X-ray pass it with this reason. */
+  preciseFailure?: string;
 }
 
 /** The envelope an action returns. */
@@ -195,6 +198,8 @@ function validateOutcome(v: unknown): Validation {
   const e: unknown = v.error;
   const hasError = isRecord(e) && isText(e["code"]) && isText(e["message"]);
   if (e !== undefined && !hasError) errors.push("error needs a code and a message");
+  if (isRecord(e) && preciseFailureProblem(e)) errors.push(`error.${preciseFailureProblem(e)}`);
+  if (isRecord(v.human) && preciseFailureProblem(v.human)) errors.push(`human.${preciseFailureProblem(v.human)}`);
   switch (v.state) {
     case "done":
       if (holds === false) errors.push("done, but the postcondition does not hold");

@@ -5,6 +5,7 @@ export type { CheckDef, CheckFix, CheckResult, CheckRow, CheckState, Checks, Che
 // first statement, which would take the JSDoc below with it.
 
 import type { NextStep } from "./outcome.ts";
+import { preciseFailureProblem } from "./precise-copy.ts";
 import { devCommandsIn } from "./dev-commands.ts";
 import { BASE_EXIT_CODES, FINDINGS_EXIT_CODE, type ExitTable } from "./exit-codes.ts";
 import { createProgress, markOf, nextStepsText, paint, terminalStyle, timeText, type ProgressStream, type TerminalStyle, type Timers } from "./terminal.ts";
@@ -31,8 +32,8 @@ type CheckState = "passed" | "warned" | "failed" | "errored" | "skipped";
  */
 type CheckResult =
   | { state: "passed"; detail?: string }
-  | { state: "warned" | "failed"; detail: string; fix: CheckFix }
-  | { state: "skipped"; detail: string; kind?: string; fix?: CheckFix };
+  | { state: "warned" | "failed"; detail: string; fix: CheckFix; preciseFailure?: string }
+  | { state: "skipped"; detail: string; kind?: string; fix?: CheckFix; preciseFailure?: string };
 
 interface CheckDef<C> {
   /** Stable, for `--json` and `needs`. */
@@ -71,6 +72,8 @@ interface CheckRow {
   fix: CheckFix | null;
   kind: string | null;
   durationMs: number;
+  /** Why the detail is precise though it is short or holds a vague phrase; the vague-failure check and the X-ray pass it with this reason. */
+  preciseFailure?: string;
 }
 
 /** One run's facts, the same for the person's text and the agent's `--json`. */
@@ -226,9 +229,11 @@ function rowOf<C>(def: ChecksDef<C>, check: CheckDef<C>, result: RowResult, dura
   if (fix && isCommandFix(fix) && fix.command.trim() === def.command.trim()) {
     throw new Error(`${def.command}: ${check.id}'s fix is \`${def.command}\`, the command just run. Fix: name the command that changes something.`);
   }
+  const precise = "preciseFailure" in result ? { preciseFailure: result.preciseFailure } : {};
+  if (preciseFailureProblem(precise)) throw new Error(`${def.command}: ${check.id}'s ${preciseFailureProblem(precise)}. Fix: say why the detail is precise, or leave preciseFailure out.`);
   const dev = devCommandsIn(fix)[0];
   if (dev) throw new Error(`${def.command}: ${check.id}'s fix \`${dev.text}\` asks for ${dev.match}, which only works in a source checkout. Fix: name the command the installed tool runs, or mark the fix sourceCheckout: true.`);
-  return { id: check.id, label: check.label, state: result.state, detail: result.detail ?? "", fix, kind: result.state === "skipped" ? (result.kind ?? null) : null, durationMs };
+  return { id: check.id, label: check.label, state: result.state, detail: result.detail ?? "", fix, kind: result.state === "skipped" ? (result.kind ?? null) : null, durationMs, ...(precise.preciseFailure ? { preciseFailure: precise.preciseFailure.trim() } : {}) };
 }
 
 /** A check that ran this long shows its time beside it without `verbose`. */
