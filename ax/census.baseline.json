@@ -7,23 +7,17 @@
 
     "tool:complete_adoption",
 
-    "tool:file_ouroboros_bug",
     "tool:find_tools",
-    "tool:friend_link_code",
 
 
-    "tool:let_go",
     "tool:list_directory",
     "tool:observe",
-    "tool:orientation_get",
     "tool:ponder",
-    "tool:report_failure",
     "tool:rest",
 
     "tool:settle",
     "tool:speak",
 
-    "tool:surface",
 
 
     "tool:voice_join_local_audio"

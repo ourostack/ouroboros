@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 import { authRequired } from "./auth-required"
 import { githubRequest } from "./github-client"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -30,7 +31,7 @@ export const githubToolDefinitions: ToolDefinition[] = [
       })
       if (!ctx?.githubToken) {
         const recovery = authRequired(ctx, "github", "I need access to GitHub.")
-        return `${recovery}\nNot filed on GitHub. human-required: sign in at https://github.com/ourostack/ouroboros/issues/new and submit the title/body after checking for private data. agent-runnable: call report_failure to retain the failure locally if no authorized filing route is available.`
+        return withCode(`${recovery}\nNot filed on GitHub. human-required: sign in at https://github.com/ourostack/ouroboros/issues/new and submit the title/body after checking for private data. agent-runnable: call report_failure to retain the failure locally if no authorized filing route is available.`, "auth-required")
       }
       const owner = "ourostack"
       const repo = "ouroboros"
@@ -44,5 +45,9 @@ export const githubToolDefinitions: ToolDefinition[] = [
     integration: "github",
     summaryKeys: ["title"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "files a GitHub issue" },
+    ax: { id: "tool:file_ouroboros_bug", group: "turn-escalation", when: "Pick this to open a public GitHub issue on the harness repo when you hold GitHub access; without it, report_failure keeps the problem locally.", effect: "write", errors: [
+      { code: "auth-required", means: "This turn has no GitHub authorization, so nothing was filed; the message gives the sign-in or manual route.", fix: "Call report_failure with the same facts, and pass on the manual route if the person wants a public issue." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so new issues wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
 ]

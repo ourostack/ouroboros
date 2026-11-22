@@ -59,6 +59,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(result).toContain("AUTH_UNAVAILABLE:github")
     expect(result).toContain("human-required")
     expect(result).toContain("https://github.com/ourostack/ouroboros/issues/new")
+    expect(result).toMatch(/ \(code: auth-required\)$/)
     expect(result).not.toContain("AUTH_REQUIRED")
     expect(githubRequest).not.toHaveBeenCalled()
   })
