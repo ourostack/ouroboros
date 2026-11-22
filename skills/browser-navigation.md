@@ -1,3 +1,6 @@
+---
+tools: [web_search, credential_get, credential_store, credential_generate_password]
+---
 # Browser Navigation Skill
 
 When to use browser tools and how to navigate effectively.

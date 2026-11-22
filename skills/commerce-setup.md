@@ -1,3 +1,6 @@
+---
+tools: [vault_setup, stripe_list_cards, flight_search]
+---
 # Commerce Setup Wizard
 
 Step-by-step guide for setting up the agent's commerce infrastructure: payment, booking, and accommodation APIs.
