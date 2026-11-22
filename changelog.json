@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1370",
       "changes": [
-        "iMessage: a message whose reply never went out (the process died or the turn ended early) is now answered on recovery instead of being marked handled, and recovery finds messages saved by older builds."
+        "A family speaker's correction hold is advice on every sense, never a refusal: senses that build their own orientation frame (iMessage) skipped the family flag, so Ari's own Apple ID code was refused."
       ]
     },
     {
