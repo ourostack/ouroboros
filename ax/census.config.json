@@ -78,6 +78,8 @@
     {"id": "turn-attachments", "when": "Work with photos, voice notes and documents people sent: find one, get it as a file on disk, or ask about an image."},
     {"id": "turn-payments", "when": "Spend money for a family member during a turn: approve a checkout, then make a virtual card, and audit what happened."},
     {"id": "turn-evolution", "when": "Track a change to the agent's own harness during a turn: capture friction as a case, decide, verify, deliver, ratify, close."},
-    {"id": "turn-config", "when": "See and change the agent's own settings in agent.json, with defaults, effects and allowed values."}
+    {"id": "turn-config", "when": "See and change the agent's own settings in agent.json, with defaults, effects and allowed values."},
+    {"id": "turn-external-events", "when": "Settle an external event the agent was woken for: record what it means and whether the owner hears."},
+    {"id": "turn-continuity", "when": "Keep track over time: recall and mark turning points, watch cares, jot intentions, see who is around."}
   ]
 }

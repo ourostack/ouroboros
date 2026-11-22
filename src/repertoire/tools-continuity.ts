@@ -8,6 +8,7 @@ import { bindCareIncident, createCare, projectCareEvidence, readActiveCares, rea
 import { readPresence, readPeerPresence } from "../arc/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
 import type { ToolContext, ToolDefinition } from "./tools-base";
+import { withCode } from "./tool-error-code";
 import { readStewardPolicy } from "../heart/steward-policy";
 import { parseAwaitFile } from "../heart/awaiting/await-parser";
 
@@ -47,10 +48,10 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
   const recordPath = path.resolve(String(a.recordPath ?? ""));
   const relative = path.relative(agentEventRoot, recordPath);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !recordPath.endsWith(".json")) {
-    throw new Error("External event receipt does not belong to the current agent");
+    throw new Error(withCode("External event receipt does not belong to the current agent", "receipt-not-this-turn"));
   }
   const record = readExternalEventRecord(recordPath);
-  if (record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
+  if (record.agent !== agentName) throw new Error(withCode("External event receipt does not belong to the current agent", "receipt-not-this-turn"));
   const turnContext = ctx?.currentExternalEvent;
   const turnEvent = turnContext
     ? [turnContext, ...(turnContext.relatedEvents ?? [])].find((event) => path.resolve(event.recordPath) === recordPath)
@@ -66,13 +67,13 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
   // The receipt's own observationRevision is deliberately NOT compared: a newer observation can
   // land on the receipt while this generation is still being worked, and the lease revision is
   // the one the agent actually investigated.
-  if (!turnEvent) throw new Error("External event disposition is not authorized for this exact turn lease");
-  if (turnEvent.agent !== agentName || record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
-  if (turnEvent.eventId !== record.eventId) throw new Error("External event disposition event id does not match the turn lease");
-  if (turnEvent.generation !== expectedGeneration || record.generation !== expectedGeneration) throw new Error("External event disposition generation does not match the turn lease");
-  if (turnEvent.observationRevision !== classifiedRevision) throw new Error("External event disposition revision does not match the exact turn lease");
-  if (record.disposition != null) throw new Error("External event generation is already dispositioned");
-  if (record.executionState === "dead_letter") throw new Error("External event receipt is dead-lettered and cannot be dispositioned");
+  if (!turnEvent) throw new Error(withCode("External event disposition is not authorized for this exact turn lease", "receipt-not-this-turn"));
+  if (turnEvent.agent !== agentName || record.agent !== agentName) throw new Error(withCode("External event receipt does not belong to the current agent", "receipt-not-this-turn"));
+  if (turnEvent.eventId !== record.eventId) throw new Error(withCode("External event disposition event id does not match the turn lease", "receipt-not-this-turn"));
+  if (turnEvent.generation !== expectedGeneration || record.generation !== expectedGeneration) throw new Error(withCode("External event disposition generation does not match the turn lease", "receipt-not-this-turn"));
+  if (turnEvent.observationRevision !== classifiedRevision) throw new Error(withCode("External event disposition revision does not match the exact turn lease", "receipt-not-this-turn"));
+  if (record.disposition != null) throw new Error(withCode("External event generation is already dispositioned", "receipt-closed"));
+  if (record.executionState === "dead_letter") throw new Error(withCode("External event receipt is dead-lettered and cannot be dispositioned", "receipt-closed"));
   const classification = String(a.classification);
   const decision = String(a.decision);
   const nextWake = String(a.nextWake);
@@ -85,7 +86,7 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
     || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
     || !["silent", "act", "ask", "report"].includes(decision)
     || !["on_change", "on_escalation", "on_recovery", "at"].includes(nextWake)) {
-    throw new Error("External event disposition is invalid");
+    throw new Error(withCode("External event disposition is invalid", "disposition-invalid"));
   }
   const wake = nextWake === "at" ? { kind: "at" as const, at: String(a.wakeAt ?? "") } : { kind: nextWake as "on_change" | "on_escalation" | "on_recovery" };
   const actionRefs = Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [];
@@ -97,23 +98,23 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
     stewardPolicy = { kind: "none" };
   } else {
     const key = String(a.stewardPolicyKey ?? "").trim();
-    if (!key) throw new Error("External event disposition is invalid");
+    if (!key) throw new Error(withCode("External event disposition is invalid", "disposition-invalid"));
     if (policy.version !== policyVersion || (!policy.desiredStates[key] && !policy.routineActionGrants[key])) {
-      throw new Error("External event steward policy is not the exact current key/version");
+      throw new Error(withCode("External event steward policy is not the exact current key/version", "policy-not-current"));
     }
     stewardPolicy = { kind: "current", key, version: policyVersion };
   }
   if (typeof a.careId === "string" && a.careId) {
     const care = readCares(agentRoot).find((candidate) => candidate.id === a.careId);
     const binding = care?.incidentBindings?.find((candidate) => candidate.source === record.source && candidate.incidentKey === record.eventId && candidate.classifiedRevision === classifiedRevision);
-    if (!care || !binding) throw new Error("External event Care does not belong to this agent and incident revision");
+    if (!care || !binding) throw new Error(withCode("External event Care does not belong to this agent and incident revision", "care-not-bound"));
   }
   if (classification === "adopted" && !(typeof a.careId === "string" && a.careId)) {
-    throw new Error("External event adopted disposition requires a Care");
+    throw new Error(withCode("External event adopted disposition requires a Care", "care-not-bound"));
   }
   if (nextWake === "at") {
     const awaitId = typeof a.awaitId === "string" ? a.awaitId : "";
-    if (!/^[A-Za-z0-9_-]+$/u.test(awaitId)) throw new Error("External event timed disposition requires a current pending Await");
+    if (!/^[A-Za-z0-9_-]+$/u.test(awaitId)) throw new Error(withCode("External event timed disposition requires a current pending Await", "await-mismatch"));
     const awaitPath = path.join(agentRoot, "awaiting", `${awaitId}.md`);
     let pendingAwait;
     try {
@@ -121,15 +122,15 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe Await");
       pendingAwait = parseAwaitFile(fs.readFileSync(awaitPath, "utf8"), awaitPath);
     } catch {
-      throw new Error("External event timed disposition requires a current pending Await");
+      throw new Error(withCode("External event timed disposition requires a current pending Await", "await-mismatch"));
     }
     const expectedOwnerId = ctx?.context?.friend.id;
     if (pendingAwait.filed_from !== "external-event" || pendingAwait.filed_from_key !== record.recordPath
       || (expectedOwnerId && pendingAwait.filed_for_friend_id !== expectedOwnerId)) {
-      throw new Error("External event timed disposition Await is not owned by this exact external event");
+      throw new Error(withCode("External event timed disposition Await is not owned by this exact external event", "await-mismatch"));
     }
     if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt)) {
-      throw new Error("External event timed disposition Await does not match the exact wake time");
+      throw new Error(withCode("External event timed disposition Await does not match the exact wake time", "await-mismatch"));
     }
   }
   const authority = ctx?.externalEventAuthority?.authorizeDisposition({
@@ -144,17 +145,17 @@ function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolC
     actionRefs,
     verificationRefs,
   });
-  if (!authority?.allowed) throw new Error(`External event disposition authority denied: ${authority?.reason ?? "authority unavailable"}`);
+  if (!authority?.allowed) throw new Error(withCode(`External event disposition authority denied: ${authority?.reason ?? "authority unavailable"}`, "authority-denied"));
 
   return {
     recordPath,
     finish: async () => {
       let ownerMessage: import("../heart/external-events/router").ExternalEventOwnerMessage | undefined;
       if (decision === "ask" || decision === "report") {
-        if (!ownerText) throw new Error("ask and report need owner_message: the short plain text the owner will read");
-        if (Buffer.byteLength(ownerText, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
-        if (OWNER_MESSAGE_FORBIDDEN.test(ownerText)) throw new Error("owner_message must be plain words for the owner, with no internal ids, leases, generations, revisions, receipts or hidden characters");
-        if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
+        if (!ownerText) throw new Error(withCode("ask and report need owner_message: the short plain text the owner will read", "owner-message-invalid"));
+        if (Buffer.byteLength(ownerText, "utf8") > 1_200) throw new Error(withCode("External event owner message must be phone-sized", "owner-message-invalid"));
+        if (OWNER_MESSAGE_FORBIDDEN.test(ownerText)) throw new Error(withCode("owner_message must be plain words for the owner, with no internal ids, leases, generations, revisions, receipts or hidden characters", "owner-message-invalid"));
+        if (!ctx?.externalEventEffects) throw new Error(withCode("External event owner delivery is unavailable", "owner-delivery-unavailable"));
         // The whole dispatched batch shares one owner message; the delivery port settles later decisions as covered by it.
         const relatedEvents = [turnContext!, ...(turnContext!.relatedEvents ?? [])]
           .filter((event) => path.resolve(event.recordPath) !== recordPath)
@@ -210,17 +211,17 @@ export const continuityToolDefinitions: ToolDefinition[] = [
     handler: (a, ctx) => {
       const input = a as unknown as Record<string, unknown>;
       if (input.batch !== undefined) {
-        if (Object.keys(input).some((key) => key !== "batch")) throw new Error("External event disposition single and batch forms are mutually exclusive");
-        if (!Array.isArray(input.batch) || input.batch.length < 1 || input.batch.length > 32) throw new Error("External event disposition batch must contain 1 to 32 items");
-        if (input.batch.some((item) => !item || typeof item !== "object" || Array.isArray(item))) throw new Error("External event disposition batch item is invalid");
+        if (Object.keys(input).some((key) => key !== "batch")) throw new Error(withCode("External event disposition single and batch forms are mutually exclusive", "disposition-invalid"));
+        if (!Array.isArray(input.batch) || input.batch.length < 1 || input.batch.length > 32) throw new Error(withCode("External event disposition batch must contain 1 to 32 items", "disposition-invalid"));
+        if (input.batch.some((item) => !item || typeof item !== "object" || Array.isArray(item))) throw new Error(withCode("External event disposition batch item is invalid", "disposition-invalid"));
         const recordPaths = input.batch.map((item) => path.resolve(String((item as Record<string, unknown>).recordPath ?? "")));
-        if (new Set(recordPaths).size !== recordPaths.length) throw new Error("External event disposition batch contains a duplicate receipt");
+        if (new Set(recordPaths).size !== recordPaths.length) throw new Error(withCode("External event disposition batch contains a duplicate receipt", "disposition-invalid"));
         const activeFrame = ctx?.currentExternalEvent
           ? [ctx.currentExternalEvent, ...(ctx.currentExternalEvent.relatedEvents ?? [])]
           : [];
         const activeRecordPaths = new Set(activeFrame.map((event) => path.resolve(event.recordPath)));
         if (activeRecordPaths.size !== recordPaths.length || recordPaths.some((recordPath) => !activeRecordPaths.has(recordPath))) {
-          throw new Error("External event disposition batch must contain every lease in the active turn frame");
+          throw new Error(withCode("External event disposition batch must contain every lease in the active turn frame", "batch-incomplete"));
         }
         const prepared = input.batch.map((item) => prepareExternalEventDisposition(item as Record<string, unknown>, ctx));
         return (async () => {
@@ -239,6 +240,18 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       return prepared.finish().then((handled) => JSON.stringify(handled, null, 2));
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "records the agent's classification on an existing external-event receipt" },
+    ax: { id: "tool:external_event_disposition", group: "turn-external-events", when: "Pick this once you have investigated an external event this turn, to record what it means and whether the owner hears about it.", effect: "write", errors: [
+      { code: "receipt-not-this-turn", means: "The receipt or its generation, event id or revision doesn't match a lease handed to this turn.", fix: "Copy recordPath, expectedGeneration and classifiedRevision exactly from this turn's external-event message." },
+      { code: "receipt-closed", means: "This generation already has a disposition, or the daemon dead-lettered it.", fix: "Stop; nothing more is needed for this generation." },
+      { code: "disposition-invalid", means: "A field is missing or not one of its allowed values, or the single and batch forms are mixed.", fix: "Send either one disposition or one batch, with reason and each enum field set to an allowed value." },
+      { code: "batch-incomplete", means: "The batch leaves out a lease of this turn or names one that isn't in it.", fix: "Send one batch item for every lease the turn listed, and only those." },
+      { code: "policy-not-current", means: "stewardPolicyKey and stewardPolicyVersion don't match the live steward policy.", fix: "Read the current policy's key and version again, or set stewardPolicyKind to none." },
+      { code: "care-not-bound", means: "adopted needs a careId, and that Care must be bound to this incident revision.", fix: "Bind the incident with care_manage bind_incident first, then pass that Care's id." },
+      { code: "await-mismatch", means: "nextWake at needs a pending Await filed for this event at the same wake time.", fix: "Call await_condition for this event, then pass its awaitId and the same wakeAt." },
+      { code: "authority-denied", means: "The runtime refused this disposition for this event; the message gives the reason.", fix: "Choose a disposition the reason allows, usually ask or report to the owner." },
+      { code: "owner-message-invalid", means: "ask and report need owner_message as short plain words, with no internal ids or bookkeeping terms.", fix: "Write one phone-sized message the owner can read cold, without ids, leases or receipts." },
+      { code: "owner-delivery-unavailable", means: "This turn can't deliver a message to the owner.", fix: "Use decision silent or act for now and record why in reason." },
+    ] },
   },
   {
     tool: {
@@ -266,6 +279,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_episodes", message: `queried ${episodes.length} episodes`, meta: { count: episodes.length } });
       return JSON.stringify(episodes, null, 2);
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_episodes", group: "turn-continuity", when: "Pick this to recall recent significant events from your continuity log, filtered by kind or time, before retelling what happened lately.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "limit isn't a number, or kind or since isn't text.", fix: "Pass limit as a number such as 20, and since as an ISO time." },
+    ] },
   },
   {
     tool: {
@@ -298,6 +315,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(episode, null, 2);
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes continuity episode state" },
+    ax: { id: "tool:capture_episode", group: "turn-continuity", when: "Pick this to mark a turning point worth remembering with why it mattered; later chats find it through query_episodes.", effect: "write", errors: [
+      { code: "invalid-arguments", means: "summary or whyItMattered is missing.", fix: "Call capture_episode again with both a summary and why it mattered." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so new episodes wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
   {
     tool: {
@@ -316,6 +337,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_presence", message: `presence: self + ${peers.length} peers`, meta: { peerCount: peers.length } });
       return JSON.stringify({ self, peers }, null, 2);
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_presence", group: "turn-continuity", when: "Pick this to see your own current availability and lane, and which peer agents are around, before handing off or waiting on one.", effect: "read", idempotent: true, errors: [
+      { code: "not-allowed", means: "This relationship's tool selection doesn't include presence.", fix: "Carry on without it; presence matters only for coordinating with other agents." },
+    ] },
   },
   {
     tool: {
@@ -338,6 +363,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_cares", message: `queried ${cares.length} cares`, meta: { count: cares.length } });
       return JSON.stringify(cares, null, 2);
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_cares", group: "turn-continuity", when: "Pick this to list what you are watching over, active cares by default or every status, before creating one with care_manage.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "status isn't text.", fix: "Pass status as active, watching, resolved, dormant or all." },
+    ] },
   },
   {
     tool: {
@@ -397,7 +426,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       } else if (a.action === "resolve") {
         result = resolveCare(agentRoot, a.id);
       } else if (a.action === "bind_incident") {
-        if (!a.expectedUpdatedAt) throw new Error("bind_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result");
+        if (!a.expectedUpdatedAt) throw new Error(withCode("bind_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result", "expected-updated-at-required"));
         result = bindCareIncident(agentRoot, a.id, {
           source: a.source,
           incidentKey: a.incidentKey,
@@ -405,7 +434,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           ...(a.correlationKey ? { correlationKey: a.correlationKey } : {}),
         }, { expectedUpdatedAt: a.expectedUpdatedAt });
       } else if (a.action === "resolve_incident") {
-        if (!a.expectedUpdatedAt) throw new Error("resolve_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result");
+        if (!a.expectedUpdatedAt) throw new Error(withCode("resolve_incident requires expectedUpdatedAt: copy the Care's current updatedAt from the last care_manage result", "expected-updated-at-required"));
         result = resolveCareIncident(agentRoot, a.id, {
           source: a.source,
           incidentKey: a.incidentKey,
@@ -449,6 +478,11 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(result, null, 2);
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates or updates care state" },
+    ax: { id: "tool:care_manage", group: "turn-continuity", when: "Pick this to start, change or close a care, or tie a machine incident to one; query_cares finds existing ids first.", effect: "write", errors: [
+      { code: "expected-updated-at-required", means: "bind_incident and resolve_incident need the Care's current updatedAt.", fix: "Copy updatedAt from the last care_manage or query_cares result into expectedUpdatedAt." },
+      { code: "invalid-arguments", means: "action is missing or not one of create, update, resolve, bind_incident, resolve_incident or upsert_incident.", fix: "Call care_manage again with one of those actions and its fields." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so care changes wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
   {
     tool: {
@@ -474,6 +508,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_relationships", message: `queried relationships`, meta: { agentName: a.agentName ?? "all" } });
       return JSON.stringify(agents, null, 2);
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_relationships", group: "turn-continuity", when: "Pick this to see what you know about other agents you work with, one by name or all; people are in friend_list.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "agentName isn't text.", fix: "Pass the agent's name as text, or leave it out to list all agents." },
+    ] },
   },
   {
     tool: {
@@ -504,6 +542,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(intention, null, 2);
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes intention state" },
+    ax: { id: "tool:intention_capture", group: "turn-continuity", when: "Pick this to jot something small you mean to do or check later, with an optional nudge time; bigger concerns become cares.", effect: "write", errors: [
+      { code: "invalid-arguments", means: "content is missing.", fix: "Call intention_capture again with what you mean to do as content." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so new intentions wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
   {
     tool: {
@@ -530,5 +572,9 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(result, null, 2);
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates intention state" },
+    ax: { id: "tool:intention_manage", group: "turn-continuity", when: "Pick this to close an intention, as resolve when done or dismiss when it no longer matters, using its id.", effect: "write", errors: [
+      { code: "invalid-arguments", means: "action isn't resolve or dismiss, or id is missing.", fix: "Call intention_manage again with action resolve or dismiss and the intention's id." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so intention changes wait.", fix: "Call orientation_get, settle what the person meant, then go ahead if it is still right." },
+    ] },
   },
 ]
