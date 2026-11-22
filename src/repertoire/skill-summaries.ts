@@ -25,6 +25,22 @@ export function whenLine(markdown: string): string | null {
   return line ? clip(line) : null
 }
 
+/**
+ * The in-turn tools a skill says it uses: a frontmatter `tools:` line, as `[a, b]` or `a, b`. Loading the skill
+ * loads these tools too, so following its steps needs no search first. A name the turn can't offer is ignored there.
+ */
+export function declaredTools(markdown: string): string[] {
+  const lines = markdown.split(/\r?\n/)
+  if (lines[0]?.trim() !== "---") return []
+  const end = lines.indexOf("---", 1)
+  if (end < 0) return []
+  const line = lines.slice(1, end).find((entry) => /^tools:/i.test(entry))
+  if (!line) return []
+  const names = line.replace(/^tools:\s*/i, "").replace(/^\[|\]$/g, "").split(",")
+    .map((name) => name.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+  return [...new Set(names)]
+}
+
 function clip(text: string): string {
   const sentence = text.trim().match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text.trim()
   return sentence.length > MAX_WHEN_LENGTH ? `${sentence.slice(0, MAX_WHEN_LENGTH - 1)}…` : sentence
