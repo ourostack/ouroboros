@@ -969,12 +969,33 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
   let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string; attachmentIds?: readonly string[] }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
   const configuredOwnerTarget = (): Extract<TelegramEffectTarget, { kind: "approved_relationship" }> => ({ kind: "approved_relationship", friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
-  const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
+  const fallbackText = (text: string): string => `${OWNER_ROUTE_FALLBACK_PREFIX}\n\n${text}`
+  const executeOnTelegram = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
     api,
     authorize: authorizeEffect,
     barrier: acceptanceAuditBarrier,
   })
+  /**
+   * An approval card the agent wants from the owner (a tool approval's prompt, a newcomer's admission card) goes to the owner
+   * route first, as urgent. The card still goes to Telegram so its buttons work: silently when the primary agent has it,
+   * and with the fallback line when it can't be reached. A resend of a card already in the journal is left as it was.
+   */
+  const executeAuthorizedEffect: typeof executeOnTelegram = async (input) => {
+    const route = options.ownerRoute
+    if (!route || input.effect.kind !== "card" || input.target.kind !== "approved_relationship" || input.target.friendId !== configuredOwnerFriendId
+      || !/^(?:approval:.+:prompt|owner-card:.+)$/u.test(input.idempotencyKey) || getEffectJournal().readByIdempotencyKey(input.idempotencyKey)) {
+      return executeOnTelegram(input)
+    }
+    const effect = input.effect
+    const choices = effect.buttons.flat().map((button) => button.text).join(", ")
+    const outcome = await route(ownerRouteItem(input.idempotencyKey, `${effect.text}\n\nOptions: ${choices}. The buttons are on the card in the Butler's Telegram chat.`, true))
+    emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_approval", message: "offered an approval card to the owner's primary agent", meta: { agentName: options.agentName, outcome: outcome.status } })
+    return executeOnTelegram({
+      ...input,
+      effect: outcome.status === "delivered" ? { ...effect, silent: true as const } : { ...effect, text: fallbackText(effect.text) },
+    })
+  }
   const recordConfiguredOwnerEffect = async (artifact: TelegramEffectArtifact, causalEventId?: string): Promise<void> => {
     await recordAcceptedEffects(
       getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot),
@@ -1195,7 +1216,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   // Keys the owner's primary agent accepted, so a retry is already sent (as with the effect journal for Telegram).
   const routedKeysPath = path.join(agentRoot, "state", "telegram", "routed-owner-notices.json")
-  const fallbackText = (text: string): string => `${OWNER_ROUTE_FALLBACK_PREFIX}\n\n${text}`
   /**
    * Offers a self-started message to the owner route. Returns null when it is handled (the peer has it, or it waits in the
    * held file for the peer), or the text Telegram should send: the message itself with no route, or, for an urgent message

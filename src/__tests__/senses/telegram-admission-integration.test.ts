@@ -147,6 +147,44 @@ describe("Telegram admission integration", () => {
     expect(fs.existsSync(currentSession)).toBe(true)
   })
 
+  // Ari, 2026-11-22: only his primary agent notifies his phone. An approval the Butler wants goes to that agent first; the
+  // card still goes to Telegram so its buttons work, silently when the agent has it.
+  it.each([
+    ["delivered", { status: "delivered" as const }, true, "Unknown Telegram contact"],
+    ["unreachable", { status: "unreachable" as const, detail: "down" }, false, "Slugger can't be reached, so this comes to you directly."],
+  ])("offers the owner card to the primary agent first (%s)", async (_label, outcome, silent, cardStart) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-admission-route-")); roots.push(root)
+    let pollOptions!: TelegramLongPollOptions
+    let nextMessageId = 100
+    const requests: Array<{ method: string; body: Record<string, unknown> }> = []
+    const ownerRoute = vi.fn(async () => outcome)
+    createTelegramSenseApp({
+      agentName: "butler",
+      credentials: { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+      _agentRoot: root,
+      api: { request: vi.fn(async (method: string, body: Record<string, unknown>) => { requests.push({ method, body: structuredClone(body) }); return { message_id: nextMessageId++ } }), stop: vi.fn() },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: new FileTelegramUpdateInboxStore(path.join(root, "telegram-inbox.json")),
+      createLongPoll: (options) => { pollOptions = options; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
+      runTurn: vi.fn(),
+      migrateIdentity: async () => undefined,
+      ownerRoute,
+      admission: { ownerFriendId: "ari", resolveOwner: vi.fn(async ({ userId, chatId }) => userId === "42" && chatId === "42" ? { friendId: "ari" } : null), resolveApprovedFriend: vi.fn(async () => null), claimFriend: vi.fn(), revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })), createDisplayCode: () => "PINE-4821" },
+      authorizeRelationshipEffect: vi.fn(async (input) => ({ allowed: true, receiptId: "friends:test", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: input.target.kind === "approved_relationship" && input.target.friendId === "ari" ? "42" : "888" } })),
+    })
+    await pollOptions.onUnknownMessage!({ updateId: 11, messageId: 22, botId: "777", userId: "888", chatId: "888", text: "hi", displayLabel: "Sam", hasAttachments: false, attachments: [] })
+    // The acknowledgement to the newcomer is not the owner's, so it never goes to the primary agent.
+    expect(ownerRoute).toHaveBeenCalledTimes(1)
+    const [item] = ownerRoute.mock.calls[0] as unknown as [{ key: string; urgency: string; text: string; dedupeKey: string }]
+    expect(item).toMatchObject({ key: expect.stringMatching(/^owner-card:/u), urgency: "now", dedupeKey: expect.stringMatching(/^butler-owner-card-/u) })
+    expect(item.text).toContain("Options: Allow, Deny, Block. The buttons are on the card in the Butler's Telegram chat.")
+    const card = requests[1]!.body
+    expect(card.chat_id).toBe("42")
+    expect(Boolean(card.disable_notification)).toBe(silent)
+    expect(String(card.text).startsWith(cardStart)).toBe(true)
+  })
+
   it("keeps unknown content pre-model, sends typed admission effects, then runs it once after owner approval", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-admission-app-")); roots.push(root)
     let pollOptions!: TelegramLongPollOptions
