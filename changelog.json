@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1314",
+      "changes": [
+        "The Sanctuary tools now carry Ouro AX cards, and their failures end with the code a card names."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1313",
       "changes": [
         "The Teams, Graph and Azure DevOps tools now carry Ouro AX cards, and their refusals end with a code the card names."
