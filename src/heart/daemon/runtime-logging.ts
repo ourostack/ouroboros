@@ -11,7 +11,7 @@ import {
 import { setNervesEmitter } from "@ouro.bot/friends"
 
 import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
-import { getAgentDaemonLoggingConfigPath, getAgentDaemonLogsDir, getAgentName } from "../identity"
+import { getAgentDaemonLoggingConfigPath, getAgentDaemonLogsDir, getAgentName, getAgentRoot } from "../identity"
 import { getOuroCliHome } from "../versioning/ouro-version-manager"
 
 export type RuntimeSink = "terminal" | "ndjson"
@@ -122,22 +122,28 @@ function machineDaemonLogsDir(homeDir?: string): string {
   return path.join(getOuroCliHome(homeDir), "daemon", "logs")
 }
 
-function resolveLoggingPathTarget(explicit?: string): LoggingPathTarget {
+function resolveLoggingPathTarget(explicit: string | undefined, homeDir?: string): LoggingPathTarget {
   if (explicit && explicit.trim().length > 0) {
     return { kind: "agent", agentName: explicit.trim() }
   }
+  let agentName: string
   try {
-    return { kind: "agent", agentName: getAgentName() }
+    agentName = getAgentName()
   } catch {
     return { kind: "machine" }
   }
+  // An --agent argv naming no bundle (a typo, a stand-in) must not create one just to hold a log.
+  const bundleRoot = homeDir
+    ? path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
+    : getAgentRoot(agentName)
+  return fs.existsSync(bundleRoot) ? { kind: "agent", agentName } : { kind: "machine" }
 }
 
 export function configureDaemonRuntimeLogger(
   processName: RuntimeProcessName,
   options: ConfigureDaemonRuntimeLoggerOptions = {},
 ): void {
-  const pathTarget: LoggingPathTarget = options.machine ? { kind: "machine" } : resolveLoggingPathTarget(options.agentName)
+  const pathTarget: LoggingPathTarget = options.machine ? { kind: "machine" } : resolveLoggingPathTarget(options.agentName, options.homeDir)
   const configPath = options.configPath
     ?? (pathTarget.kind === "machine"
       ? machineDaemonLoggingConfigPath(options.homeDir)
