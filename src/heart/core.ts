@@ -2479,7 +2479,8 @@ export async function runAgent(
         const calledHeldBack = activeTools === candidateActiveTools
           ? deferralPool.filter((tool) => !activeToolNames.has(tool.function.name) && result.toolCalls.some((call) => call.name === tool.function.name))
           : []
-        for (const tool of calledHeldBack) if (!loadedDeferredTools.includes(tool.function.name)) loadedDeferredTools.push(tool.function.name)
+        // Not advertised means not yet loaded, so each is new to the loaded list.
+        for (const tool of calledHeldBack) loadedDeferredTools.push(tool.function.name)
         const callableTools = [...activeTools, ...calledHeldBack]
         const callableToolNames = new Set(callableTools.map((tool) => tool.function.name))
         const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, callableTools)

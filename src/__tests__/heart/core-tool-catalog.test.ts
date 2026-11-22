@@ -160,6 +160,16 @@ describe("the tool catalog in runAgent", () => {
     expect(loaded.slice(loaded.indexOf("loaded;"))).not.toContain("not_a_tool")
   })
 
+  it("loads a skill's tools once when the skill loads twice", async () => {
+    const skills = await import("../../repertoire/skills")
+    vi.mocked(skills.loadSkill).mockReturnValue("---\ntools: [coding_spawn]\n---\nsteps")
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "delegating" }, "l1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("load_skill", { name: "delegating" }, "l2")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    await run([{ role: "user", content: "delegate this" }])
+    expect(toolNames(2).filter((name) => name === "coding_spawn")).toHaveLength(1)
+  })
+
   it("leaves a skill's reply alone when it declares no tools", async () => {
     const skills = await import("../../repertoire/skills")
     vi.mocked(skills.loadSkill).mockReturnValue("just steps")
