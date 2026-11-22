@@ -52,6 +52,12 @@ export interface AgentSenseConfig {
   digest?: DigestConfig
   /** app-sessions only: set when `agent.json` still carries the retired `issueDrains` list, which Desk polls now and this sense ignores. */
   retiredIssueDrains?: true
+  /**
+   * telegram only: the owner's primary agent, reached over A2A, that gets every message this agent starts itself (house
+   * notices, external events, unprompted messages) instead of the owner's Telegram. Replies to the owner stay on Telegram.
+   * `did` pins the peer: a card at `cardUrl` under another key is refused.
+   */
+  ownerNoticesTo?: { cardUrl: string; did: string }
 }
 
 /**
@@ -319,6 +325,20 @@ export function normalizeAppSessionsConfig(rawSense: Record<string, unknown>, co
   return result
 }
 
+function normalizeOwnerNoticesTo(value: unknown, configFile: string): { cardUrl: string; did: string } {
+  const fail = (message: string): never => {
+    emitNervesEvent({ level: "error", event: "config_identity.error", component: "config/identity", message: "agent config has an invalid Telegram owner route", meta: { path: configFile } })
+    throw new Error(`agent.json at ${configFile}: ${message}`)
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("senses.telegram.ownerNoticesTo must be { cardUrl, did }.")
+  const { cardUrl, did } = value as Record<string, unknown>
+  let protocol = ""
+  try { protocol = typeof cardUrl === "string" ? new URL(cardUrl).protocol : "" } catch { protocol = "" }
+  if (protocol !== "http:" && protocol !== "https:") return fail("senses.telegram.ownerNoticesTo.cardUrl must be an http or https URL.")
+  if (typeof did !== "string" || !did.startsWith("did:key:")) return fail("senses.telegram.ownerNoticesTo.did must be a did:key.")
+  return { cardUrl: cardUrl as string, did }
+}
+
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
   const defaults: AgentSensesConfig = {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
@@ -413,6 +433,11 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     }
     if (senseName === "app-sessions") {
       defaults[senseName] = { enabled, ...normalizeAppSessionsConfig(rawSense as Record<string, unknown>, configFile) }
+      continue
+    }
+    const ownerNoticesTo = (rawSense as Record<string, unknown>).ownerNoticesTo
+    if (senseName === "telegram" && ownerNoticesTo !== undefined) {
+      defaults[senseName] = { enabled, ownerNoticesTo: normalizeOwnerNoticesTo(ownerNoticesTo, configFile) }
       continue
     }
     defaults[senseName] = { enabled }
