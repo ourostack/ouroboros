@@ -18,7 +18,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "report_failure",
-      description: "File a failure report for the engineers who fix you, when a tool you need is missing or errors in a way you cannot work around. File it at once and ask the owner for nothing. The result says what happened: queued, or saved locally pending authorization; a local save is not a delivery or a GitHub issue. A repeat retries the same report.",
+      description: "File a failure report for the engineers who fix you, when a tool you need is missing or errors in a way you cannot work around. Finding that no tool covers what the owner asked is exactly this case: file the report before you settle, so the gap reaches someone who can fill it. File it at once and ask the owner for nothing. The result says what happened: queued, or saved locally pending authorization; a local save is not a delivery or a GitHub issue. A repeat retries the same report.",
       parameters: {
         type: "object",
         properties: {
@@ -55,6 +55,7 @@ export const reportFailureToolDefinition: ToolDefinition = {
     }
     return JSON.stringify({ filed: true, reportId: result.id, shortId: result.shortId, duplicate: result.duplicate, recipients: result.recipients })
   },
+  riskProfile: { mutates: "none", risk: "low", reason: "files a de-duplicated failure report, which must stay possible during a correction hold and in habits" },
   ax: { id: "tool:report_failure", group: "turn-escalation", when: "Pick this when a tool you need is missing or keeps failing in a way you can't get around, to hand it to the engineers who fix you.", effect: "write", errors: [
     { code: "no-agent-runtime", means: "This turn runs without an agent home, so there is nowhere to file from.", fix: "Tell the person plainly what failed; the report can be filed from a normal chat later." },
     { code: "report-not-filed", means: "The report was refused, usually because ari_words, tried or error is missing; the message gives the reason.", fix: "Fill in all three fields and call report_failure again." },

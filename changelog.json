@@ -2,9 +2,33 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1367",
+      "version": "0.1.0-alpha.1371",
       "changes": [
         "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 37 doors that say one today on the baseline; report_failure's description says what a local save means instead of giving a rule."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1370",
+      "changes": [
+        "A family speaker's correction hold is advice on every sense, never a refusal: senses that build their own orientation frame (iMessage) skipped the family flag, so Ari's own Apple ID code was refused."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1369",
+      "changes": [
+        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1368",
+      "changes": [
+        "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1367",
+      "changes": [
+        "A tool with no riskProfile is no longer quietly low risk: the dispatcher takes its risk from its Ouro AX card, and one with no card counts as high risk."
       ]
     },
     {

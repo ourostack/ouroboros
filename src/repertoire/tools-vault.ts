@@ -38,6 +38,7 @@ export const vaultToolDefinitions: ToolDefinition[] = [
       ].join("\n"), "human-required")
     },
     summaryKeys: [],
+    riskProfile: { mutates: "none", risk: "low", reason: "returns the setup steps and changes nothing" },
     ax: { id: "tool:vault_setup", group: "turn-vault", when: "Pick this when someone asks you to create or unlock your own vault; the reply gives them the terminal steps.", effect: "person-only", idempotent: true, errors: [
       { code: "human-required", means: "Creating or unlocking a vault needs a secret typed by a person, so this tool never does it itself.", fix: "Ask the person to run ouro vault create only if the agent has no vault yet, else ouro vault unlock; never ask for the secret." },
       { code: "guardrail-blocked", means: "Only the agent's family may set up its vault, and the person asking isn't family.", fix: "Don't pass on the vault commands; tell them a family member has to ask." },
