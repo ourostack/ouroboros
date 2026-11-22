@@ -313,7 +313,7 @@ describe("bridge_manage tool", () => {
       } as any,
     )
 
-    expect(result).toBe("no session found for that friend/channel/key combination.")
+    expect(result).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
     expect(mockAttachSession).not.toHaveBeenCalled()
   })
 
@@ -334,7 +334,7 @@ describe("bridge_manage tool", () => {
           },
         } as any,
       ),
-    ).toBe("objective is required for bridge begin.")
+    ).toBe("objective is required for bridge begin. (code: missing-objective)")
   })
 
   it("requires an objective when begin omits it entirely", async () => {
@@ -354,7 +354,7 @@ describe("bridge_manage tool", () => {
           },
         } as any,
       ),
-    ).toBe("objective is required for bridge begin.")
+    ).toBe("objective is required for bridge begin. (code: missing-objective)")
   })
 
   it("uses an explicit empty-session snapshot when attaching a session with no non-system messages", async () => {
@@ -406,7 +406,7 @@ describe("bridge_manage tool", () => {
         { action: "attach", bridgeId: "bridge-1", channel: "teams", key: "conv-2" },
         { signin: vi.fn() } as any,
       ),
-    ).toBe("friendId and channel are required for bridge attach.")
+    ).toBe("friendId and channel are required for bridge attach. (code: missing-attach-target)")
   })
 
   it("supports status, promote_task, complete, and cancel actions through the shared manager", async () => {
@@ -510,7 +510,7 @@ describe("bridge_manage tool", () => {
 
     expect(
       await tool.handler({ action: "status", bridgeId: "bridge-missing" }, { signin: vi.fn() } as any),
-    ).toBe("bridge not found: bridge-missing")
+    ).toBe("bridge not found: bridge-missing (code: bridge-not-found)")
   })
 
   it("falls back to a bridgeId error when action is omitted", async () => {
@@ -519,7 +519,7 @@ describe("bridge_manage tool", () => {
 
     expect(
       await tool.handler({}, { signin: vi.fn() } as any),
-    ).toBe("bridgeId is required for this bridge action.")
+    ).toBe("bridgeId is required for this bridge action. (code: missing-bridge-id)")
   })
 
   it("returns clear errors for missing bridge context, bridge ids, attach inputs, and missing sessions", async () => {
@@ -527,13 +527,13 @@ describe("bridge_manage tool", () => {
     const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "bridge_manage")!
 
     expect(await tool.handler({ action: "begin", objective: "bridge it" }, { signin: vi.fn() } as any)).toBe(
-      "bridge_manage begin requires an active session context.",
+      "bridge_manage begin requires an active session context. (code: no-active-session)",
     )
     expect(await tool.handler({ action: "status" }, { signin: vi.fn() } as any)).toBe(
-      "bridgeId is required for this bridge action.",
+      "bridgeId is required for this bridge action. (code: missing-bridge-id)",
     )
     expect(await tool.handler({ action: "attach", bridgeId: "bridge-1", friendId: "friend-2" }, { signin: vi.fn() } as any)).toBe(
-      "friendId and channel are required for bridge attach.",
+      "friendId and channel are required for bridge attach. (code: missing-attach-target)",
     )
 
     const search_facts = await import("../../heart/session-transcript")
@@ -543,7 +543,7 @@ describe("bridge_manage tool", () => {
         { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
         { signin: vi.fn() } as any,
       ),
-    ).toBe("no session found for that friend/channel/key combination.")
+    ).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
   })
 
   it("falls back to the same missing-session response when shared search_facts throws during attach", async () => {
@@ -557,7 +557,7 @@ describe("bridge_manage tool", () => {
         { action: "attach", bridgeId: "bridge-1", friendId: "friend-2", channel: "teams", key: "conv-2" },
         { signin: vi.fn() } as any,
       ),
-    ).toBe("no session found for that friend/channel/key combination.")
+    ).toBe("no session found for that friend/channel/key combination. (code: session-not-found)")
   })
 
   it("returns an explicit fallback for unknown bridge actions", async () => {

@@ -71,6 +71,7 @@
     {"id": "turn-app-sessions", "when": "Run the coding sessions and chats in this Mac's GitHub Copilot app: list, read, message, start, answer, archive and schedule them."},
     {"id": "turn-runtime", "when": "Unstick the agent's own runtime during a turn: revive one stuck sense, or restart the whole daemon as a last resort."},
     {"id": "turn-habits", "when": "Stop one of the agent's recurring habits during a turn, when the person who started the turn asks for it."},
-    {"id": "turn-steward", "when": "Read or change the household steward's policy during a turn, under the owner's own authenticated request."}
+    {"id": "turn-steward", "when": "Read or change the household steward's policy during a turn, under the owner's own authenticated request."},
+    {"id": "turn-sessions", "when": "Join up an agent's conversations already under way, so shared work in one is visible from the others."}
   ]
 }
