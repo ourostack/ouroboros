@@ -58,7 +58,7 @@ import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
 import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
-import { buildOrientationFrame, type OrientationFrame } from "../heart/orientation-frame"
+import { buildOrientationFrame, withSpeakerTrust, type OrientationFrame } from "../heart/orientation-frame"
 import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
@@ -1143,14 +1143,17 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     sessionMessages.push(msg)
   }
   const currentUserMessages = [...input.messages, ...promotedPendingUserMessages].filter((message) => message.role === "user")
-  const orientationFrame = input.runAgentOptions?.orientationFrame
-    ?? (currentUserMessages.length > 0
+  const familySpeaker = resolvedContext.friend.trustLevel === "family"
+  const suppliedOrientationFrame = input.runAgentOptions?.orientationFrame
+  const orientationFrame = suppliedOrientationFrame
+    ? withSpeakerTrust(suppliedOrientationFrame, familySpeaker)
+    : (currentUserMessages.length > 0
       ? buildOrientationFrame({
           channel: input.channel,
           messages: sessionMessages,
           currentUserMessages,
           structuredOutputs: session.structuredOutputs ?? [],
-          familySpeaker: resolvedContext.friend.trustLevel === "family",
+          familySpeaker,
         })
       : undefined)
 
