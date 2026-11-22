@@ -322,6 +322,17 @@ function deriveActionPolicy(
   }
 }
 
+/**
+ * Family trust belongs to the speaker, not to whichever sense built the frame. BlueBubbles builds its own
+ * richer frame, which skipped the family flag: on 2026-11-22 Ari's "452841 - go!" over iMessage armed a
+ * blocking hold and his Apple ID code was never typed. The pipeline applies this to every frame.
+ */
+export function withSpeakerTrust(frame: OrientationFrame, familySpeaker: boolean): OrientationFrame {
+  const policy = frame.actionPolicy
+  if (!familySpeaker || policy.mode !== "correction_hold" || policy.advisory) return frame
+  return { ...frame, actionPolicy: { ...policy, clearedBy: CORRECTION_HOLD_ADVISORY, advisory: true } }
+}
+
 // A reply names the message it answers. The sense stamps that message's text on the
 // user message, so "yes" binds to what was replied to, not to the latest thing said.
 // The author says whose words they were; a person can quote their own earlier message.
