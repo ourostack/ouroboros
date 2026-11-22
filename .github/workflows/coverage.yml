@@ -89,7 +89,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL --retry 2 --max-time 20 https://raw.githubusercontent.com/ourostack/.github/main/tools/yield-to-default-branch/yield.mjs -o "$RUNNER_TEMP/yield.mjs" \
+          curl -fsSL --retry 2 --max-time 20 https://raw.githubusercontent.com/ourostack/.github/ff8a2591b456ea68a62919f5e9b29e056de1faa6/tools/yield-to-default-branch/yield.mjs -o "$RUNNER_TEMP/yield.mjs" \
             && node "$RUNNER_TEMP/yield.mjs" || echo "::warning::the yield step could not run; the pull request proceeds"
 
   # The vitest coverage suite split across 16 runners (about 2 to 3 minutes of
