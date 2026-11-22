@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1367",
       "changes": [
-        "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 38 doors that say one today on the baseline."
+        "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 37 doors that say one today on the baseline; report_failure's description says what a local save means instead of giving a rule."
       ]
     },
     {

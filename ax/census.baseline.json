@@ -18,7 +18,6 @@
     "tool:credential_store",
     "tool:friend_link_code",
     "tool:house_digest_send",
-    "tool:report_failure",
     "tool:restart_runtime",
     "tool:sanctuary_get_media_optimization",
     "tool:sanctuary_search_media_catalog",
