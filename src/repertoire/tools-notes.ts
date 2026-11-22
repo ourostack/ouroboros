@@ -77,7 +77,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["name"],
     riskProfile: { mutates: "none", risk: "low" },
-    ax: { id: "tool:load_skill", group: "turn-skills", when: "Pick this to read a skill's full steps once list_skills has shown you its exact name.", effect: "read", idempotent: true, errors: [
+    ax: { id: "tool:load_skill", eager: true, group: "turn-skills", when: "Pick this to read a skill's full steps once list_skills has shown you its exact name.", effect: "read", idempotent: true, errors: [
       { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the folders checked.", fix: "Call list_skills and load one of the names it returns, spelled exactly." },
     ] },
   },

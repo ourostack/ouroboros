@@ -4,7 +4,13 @@
     {
       "version": "0.1.0-alpha.1357",
       "changes": [
-        "File tools (read_file, write_file, edit_file, grep) and shell take an optional cwd that relative paths start from, and a path that names nothing says which absolute path was tried."
+        "send_message, read_file, edit_file, grep, shell and load_skill are marked to stay loaded once tools are deferred."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1356",
+      "changes": [
+        "The replay gate checks the friend rungs (a friend can clear a stuck download as a dry-run plan and cannot change quality or release profiles), and a blocklist call that removed nothing no longer counts as a deletion."
       ]
     },
     {
