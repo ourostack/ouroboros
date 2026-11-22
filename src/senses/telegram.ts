@@ -1216,6 +1216,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   // Keys the owner's primary agent accepted, so a retry is already sent (as with the effect journal for Telegram).
   const routedKeysPath = path.join(agentRoot, "state", "telegram", "routed-owner-notices.json")
+<<<<<<< HEAD
+=======
+  const fallbackText = (text: string): string => `${OWNER_ROUTE_FALLBACK_PREFIX}\n\n${text}`
+>>>>>>> origin/main
   /**
    * Offers a self-started message to the owner route. Returns null when it is handled (the peer has it, or it waits in the
    * held file for the peer), or the text Telegram should send: the message itself with no route, or, for an urgent message
