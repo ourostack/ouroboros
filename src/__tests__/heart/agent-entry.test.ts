@@ -77,14 +77,16 @@ function createWorkerControllerMock() {
 
 function mockWorkerModules(
   startPrivateRuntimeWorker = vi.fn(async () => createWorkerControllerMock()),
-  options: { mockProviderCredentials?: boolean } = {},
+  options: { mockProviderCredentials?: boolean; ensureSanctuarySourceRuntimeReady?: () => Promise<void> } = {},
 ) {
   vi.doMock("../../senses/private-runtime-worker", () => ({ startPrivateRuntimeWorker }))
   // agent-entry imports sanctuary-runtime after the worker starts. Unmocked, that pulls the real tool graph in
   // before the worker would have loaded it, and its a2a/tools-base cycle throws "a2aToolDefinitions is not
   // iterable" after the test has ended, so agent-entry's catch calls process.exit(1). Tests that assert on
-  // readiness override this mock.
-  vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: vi.fn(async () => undefined) }))
+  // readiness pass their own function here: a second doMock of the same module, made later in the test, does
+  // not always win, and the readiness test then failed about 1 run in 3.
+  const ensureSanctuarySourceRuntimeReady = options.ensureSanctuarySourceRuntimeReady ?? vi.fn(async () => undefined)
+  vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady }))
   if (options.mockProviderCredentials !== false) mockProviderCredentialModule()
   return { startPrivateRuntimeWorker }
 }
@@ -845,10 +847,9 @@ describe("agent entrypoint", () => {
       return process
     }) as never)
     const controller = createWorkerControllerMock()
-    const { startPrivateRuntimeWorker } = mockWorkerModules(vi.fn(async () => controller))
     const readiness = new Promise<void>((resolve) => { (globalThis as any).__resolveSanctuaryReadiness = resolve })
     const ensureSanctuarySourceRuntimeReady = vi.fn(() => readiness)
-    vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady }))
+    const { startPrivateRuntimeWorker } = mockWorkerModules(vi.fn(async () => controller), { ensureSanctuarySourceRuntimeReady })
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger: vi.fn() }))
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
