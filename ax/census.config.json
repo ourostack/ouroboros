@@ -56,8 +56,8 @@
     {"id": "turn-web", "when": "Read the public web: search for pages on a subject, or fetch one page by its address as plain text."},
     {"id": "turn-coding", "when": "Hand coding work to a separate claude or codex worker, then watch it, answer it or stop it."},
     {"id": "turn-chat", "when": "Act inside the chat a turn came from: react to a message, pick where the reply lands, send a file."},
-    {"id": "turn-voice", "when": "Control the live phone or voice call a turn belongs to: play a sound into it or hang it up."},
-    {"id": "turn-skills", "when": "Learn how to do something: list and load skill guides, or ask Claude Code a read-only question."},
+    {"id": "turn-voice", "when": "Handle voice calls: play a sound into the live call a turn belongs to, hang it up, or join, leave or check a call on this Mac."},
+    {"id": "turn-skills", "when": "Learn how to do something: list and load skill guides, load a tool held back from this turn, or ask Claude Code a read-only question."},
     {"id": "turn-record", "when": "Keep and recall what the agent has learned: write diary entries, search them, read recent ones."},
     {"id": "turn-friends", "when": "Know the people the agent talks with: list them, read one person's record, save what you learn about them."},
     {"id": "turn-travel", "when": "Help with travel during a turn: weather, country advisories, places, flight offers and bookings, and the private trip ledger."},
@@ -84,6 +84,7 @@
     {"id": "turn-sessions", "when": "See and reach the agent's other chats: live work across sessions, habit runs, transcripts, cross-chat messages."},
     {"id": "turn-orientation", "when": "Get your bearings in a turn: see what a terse or corrective message refers to, and drop stale held work."},
     {"id": "turn-flow", "when": "Pace a turn: tell the person something midway, give the final answer, stay quiet, close a private turn, or save a question for later."},
+    {"id": "hatch", "when": "Hatch a new agent in ouro hatch: look around the temp bundle, write its files, then finish the adoption."},
     {"id": "turn-escalation", "when": "Hand a failure you can't get around to the engineers: a local failure report, or a GitHub issue."}
   ]
 }

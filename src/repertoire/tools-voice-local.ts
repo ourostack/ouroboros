@@ -4,6 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { LocalAudioJoinRequest } from "../senses/voice/local-audio-transport"
 import type { LocalAudioLaunchDeps, LocalAudioLaunchResult } from "../senses/voice/local-audio-join"
 import type { ToolDefinition } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 /**
  * The tool that lets a family-trusted owner ask the agent to join a call on this Mac through the
@@ -99,23 +100,23 @@ export function createVoiceLocalAudioToolDefinition(deps: LocalAudioToolDeps): T
     },
     handler: async (args, ctx) => {
       const gate = ctx ? localAudioToolGate(ctx) : ({ ok: false, reason: "no session context" } as const)
-      if (!gate.ok) return `${TOOL_NAME} is not available: ${gate.reason}.`
+      if (!gate.ok) return withCode(`${TOOL_NAME} is not available: ${gate.reason}.`, "not-available")
       const provided = Object.keys(args).find((key) => DEVICE_ARGUMENTS.has(key))
       if (provided) {
         emitNervesEvent({ level: "warn", component: "tools", event: "tool.voice_local_audio_device_refused", message: "local audio tool refused a device argument", meta: { argument: provided } })
-        return "This tool only uses the BlackHole virtual devices and never listens to a physical microphone or any other device. Remove the device argument."
+        return withCode("This tool only uses the BlackHole virtual devices and never listens to a physical microphone or any other device. Remove the device argument.", "device-argument")
       }
       const action = readString(args, "action") ?? "join"
-      if (!ACTIONS.has(action)) return "action must be join, leave, or status."
+      if (!ACTIONS.has(action)) return withCode("action must be join, leave, or status.", "invalid-action")
       const agentName = ctx?.agentName
-      if (!agentName) return `${TOOL_NAME} is not available: no agent name for this session.`
+      if (!agentName) return withCode(`${TOOL_NAME} is not available: no agent name for this session.`, "not-available")
       if (action === "leave") return deps.leave(agentName)
       if (action === "status") return deps.status(agentName)
 
       const silentConsent = readString(args, "silent_consent")
       if (silentConsent && !ownerConsentsToSilentJoin(ctx!.currentUserMessage, silentConsent)) {
         emitNervesEvent({ level: "warn", component: "tools", event: "tool.voice_local_audio_silent_refused", message: "silent join refused: consent not in the owner's current message", meta: { agentName } })
-        return "I can't do a silent join from here: the consent has to be one whole sentence of the owner's current message, copied exactly, that says everyone consented to a silent join, and I can't confirm that. Join with the spoken announcement instead, or the owner can run `ouro voice join --silent-consent \"...\"` themselves."
+        return withCode("I can't do a silent join from here: the consent has to be one whole sentence of the owner's current message, copied exactly, that says everyone consented to a silent join, and I can't confirm that. Join with the spoken announcement instead, or the owner can run `ouro voice join --silent-consent \"...\"` themselves.", "silent-consent-refused")
       }
       const friend = ctx!.context!.friend
       const channel = ctx!.context!.channel.channel
@@ -141,7 +142,7 @@ export function createVoiceLocalAudioToolDefinition(deps: LocalAudioToolDeps): T
         meta: { agentName, silent: String(Boolean(request.silentConsent)), ownerAlone: String(Boolean(request.ownerAlone)), notify: String(Boolean(notify)) },
       })
       const result = await deps.launch(request)
-      if (!result.ok) return `I did not join the call: ${result.message}`
+      if (!result.ok) return withCode(`I did not join the call: ${result.message}`, "join-failed")
       return [
         result.message,
         request.silentConsent
@@ -151,6 +152,13 @@ export function createVoiceLocalAudioToolDefinition(deps: LocalAudioToolDeps): T
         notify ? "The owner is notified when I join and when I leave." : "I could not notify the owner's session (no session to notify), so tell them yourself.",
       ].join(" ")
     },
+    ax: { id: "tool:voice_join_local_audio", group: "turn-voice", when: "Pick this when the owner, in a direct chat, asks you to join, leave or check a call on this Mac in FaceTime, Zoom or another app.", effect: "write", errors: [
+      { code: "not-available", means: "This turn can't use it: only a family-trust owner in a direct cli, iMessage or Telegram chat can, never an automatic, delegated or live-call turn.", fix: "Tell the owner, now or when next in a direct chat, to ask from there or run ouro voice join themselves." },
+      { code: "device-argument", means: "A device was named; the tool only ever uses the BlackHole virtual devices.", fix: "Call again without any device argument." },
+      { code: "invalid-action", means: "action was not join, leave or status.", fix: "Call again with action join, leave or status." },
+      { code: "silent-consent-refused", means: "silent_consent isn't one whole sentence of the owner's current message saying everyone agreed to a silent join.", fix: "Join with the spoken announcement, or copy the owner's exact sentence if they did write one." },
+      { code: "join-failed", means: "The join didn't start, for the reason given, such as a missing BlackHole device.", fix: "Tell the owner the reason and what to set up, then try again once they have." },
+    ] },
   }
 }
 
