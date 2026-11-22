@@ -1259,12 +1259,12 @@ describe("OURO_CLI_TRUST_MANIFEST — rollback and versions", () => {
       expect(guardInvocation("write_file", { path: target }, ctx(target, family("telegram")))).toEqual({ allowed: true })
     })
 
-    describe("TACIT is written only from family turns and the agent's own inner turns", () => {
+    describe("TACIT is written only from family turns and the agent's own private-runtime turns", () => {
       const target = "/bundle/psyche/TACIT.md"
       it.each([
         ["a family human", family("telegram")],
         ["a family agent on a2a", family("a2a", { friendKind: "agent" })],
-        ["the agent's own inner turn, with no friend", {}],
+        ["the agent's own private-runtime turn, with no friend", {}],
       ])("allows %s", async (_label, who) => {
         const { guardInvocation } = await import("../../repertoire/guardrails")
         for (const tool of ["write_file", "edit_file"]) {

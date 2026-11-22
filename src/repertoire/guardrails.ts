@@ -165,7 +165,7 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
       // A symlink or a hard link would carry the write to some other file.
       const tacit = lstatIfPresent(path.join(agentRoot, "psyche", "TACIT.md"))
       if (tacit && (tacit.isSymbolicLink() || tacit.nlink > 1)) return false
-      // Only my own inner turns (no friend) and family turns write TACIT.
+      // Only my own private-runtime turns (no friend) and family turns write TACIT.
       return context.friendId === undefined || context.trustLevel === "family"
     }
   } catch {
