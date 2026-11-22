@@ -949,8 +949,8 @@ describe("BlueBubbles semantic identity and cutover", () => {
     })
     expect(reactionCapture?.event).toEqual(expect.objectContaining({
       kind: "reaction",
-      eventGuid: "mutation-event",
-      targetGuid: "target-message",
+      eventGuid: "MUTATION-EVENT",
+      targetGuid: "TARGET-MESSAGE",
       targetAuthorship: "agent",
       canonicalAction: "add",
       canonicalValue: "custom",
@@ -1013,7 +1013,7 @@ describe("BlueBubbles semantic identity and cutover", () => {
       }),
       targetAuthorship: null,
     })
-    expect(unsendCapture?.event.targetGuid).toBe("mutation-event")
+    expect(unsendCapture?.event.targetGuid).toBe("MUTATION-EVENT")
     expect(unsendCapture?.event.effectiveAt).toBeNull()
 
     for (const mutationType of ["read", "delivery"] as const) {
@@ -1583,6 +1583,44 @@ describe("BlueBubbles durable semantic store", () => {
         entry === `write:${finalName}` || entry.startsWith(`rename:`)
       ))).toBe(false)
     }
+  })
+
+  it("keeps the provider's GUID case in a capture while keying and deduplicating it case-insensitively", async () => {
+    const store = await loadSemanticStore()
+    const upper = makeSemanticCapture("FE9BFF1D-762F-4A21-9D2C-6C63E33E008A")
+    const lower = makeSemanticCapture("fe9bff1d-762f-4a21-9d2c-6c63e33e008a")
+
+    // BlueBubbles looks messages up by exact GUID, so recovery needs the original spelling.
+    expect(upper.event.eventGuid).toBe("FE9BFF1D-762F-4A21-9D2C-6C63E33E008A")
+    expect(upper.keyHash).toBe(lower.keyHash)
+    expect(upper.canonicalKey).toBe(lower.canonicalKey)
+
+    // A capture written by an older build in lower case is the same event, not a collision.
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", lower, semanticStoreDeps()))
+      .toBe("semantic_capture_published")
+    expect(store.writeBlueBubblesSemanticCapture("synthetic-agent", upper, semanticStoreDeps()))
+      .toBe("semantic_capture_duplicate")
+    expect(store.readBlueBubblesSemanticCapture("synthetic-agent", upper.keyHash)).toEqual(lower)
+  })
+
+  it("keeps a reaction target GUID's case in the capture", () => {
+    const capture = buildBlueBubblesSemanticCapture({
+      cutover: { schemaVersion: 1, providerNamespace: PROVIDER_NAMESPACE, effectiveAt: CUTOVER_AT },
+      capturedAt: CAPTURED_AT,
+      event: {
+        ...makeMessageEvent(),
+        kind: "mutation",
+        mutationType: "unsend",
+        messageGuid: "UNSEND-EVENT-ABC",
+        targetMessageGuid: "TARGET-MESSAGE-XYZ",
+        shouldNotifyAgent: true,
+        textForAgent: "unsent a message",
+      } as never,
+      targetAuthorship: null,
+    })
+    expect(capture?.event.eventGuid).toBe("UNSEND-EVENT-ABC")
+    expect(capture?.event.targetGuid).toBe("TARGET-MESSAGE-XYZ")
+    expect(capture?.canonicalKey).toContain("target-message-xyz")
   })
 
   it("treats excluded capture aliases as equivalent duplicates and included evidence mismatches as collisions", async () => {
