@@ -48,8 +48,6 @@ export default defineConfig({
       "node_modules/**",
       "packages/**",
       ".claude/**",
-      // The AX census's walker fixtures include fake test files, to prove the walkers skip them.
-      ".github/scripts/ax-census/**/fixtures/**",
       "src/__tests__/integration/**",
       // Needs Docker; `npm run test:eval-sandbox` runs it.
       "src/__tests__/eval/e2e.integration.test.ts",
