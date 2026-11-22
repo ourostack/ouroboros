@@ -5816,6 +5816,63 @@ describe("BlueBubbles sense runtime", () => {
     latestTurns.clearPending(fence)
   })
 
+  it("keeps the message pending when the turn deadline cancels a final send that never reached the transport", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    let sendStarted = false
+    mocks.sendTextBeforeTransport.mockImplementationOnce((params: { signal?: AbortSignal }) => {
+      sendStarted = true
+      return new Promise((_resolve, reject) => {
+        params.signal?.addEventListener("abort", () => reject(params.signal?.reason), { once: true })
+      })
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && !sendStarted; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(sendStarted).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({ notifiedAgent: false, reason: "turn_timeout" }))
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+  })
+
+  it("stops waiting to start a turn when the sense shuts down, leaving the message pending", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const releaseRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseRepair.promise
+      return event
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+    const fence = latestTurns.reserveObservation({
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
+    })
+    releaseRepair.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    await bluebubbles.stopBlueBubblesApp(server)
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    latestTurns.clearPending(fence)
+  })
+
   it("stops the sense at once on shutdown, leaving an in-flight message pending for the next process", async () => {
     const tempAgentRoot = makeTempDir()
     mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
