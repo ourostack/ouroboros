@@ -215,7 +215,7 @@ describe("Sanctuary active tool profile", () => {
     }
     const base = { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/testagent.ouro", telegramContactManager: manager,
       relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["telegram_contact_manage"], authorizeTool: async () => ({ allowed: true as const, receiptId: "owner" }) } } as any
-    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, base))).toMatchObject({ ok: false })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, base))).toMatchObject({ ok: false, code: "owner-only" })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, { ...base, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "guest", trustLevel: "friend" } } }))).toMatchObject({ ok: false })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, { ...base, telegramContactManager: undefined, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "ari", trustLevel: "family" } } }))).toMatchObject({ ok: false })
     const owner = { ...base, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner" } } }
@@ -226,7 +226,7 @@ describe("Sanctuary active tool profile", () => {
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "unblock", admissionId: "   " }, owner))).toMatchObject({ ok: false })
     expect(await execTool("telegram_contact_manage", {}, owner)).toContain("invalid tool arguments")
     expect(JSON.parse(await resolveToolDefinition("telegram_contact_manage")!.handler({}, owner))).toEqual({
-      ok: false, error: "Telegram contact management arguments are invalid",
+      ok: false, error: "Telegram contact management arguments are invalid", code: "invalid-contact-request",
     })
     expect(manager.list).toHaveBeenCalledOnce()
     expect(manager.revoke).toHaveBeenCalledOnce()
