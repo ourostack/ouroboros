@@ -1108,7 +1108,10 @@ export async function mediaSearchNow(a) {
   if (!found.item) return { result: found.result, kind: a.kind, candidates: found.candidates }
   const { item } = found
   const command = await runSearch(a.kind, item.id)
-  return { kind: a.kind, service_id: item.id, title: item.title, command, queue: queueReport(await itemQueue(a.kind, item.id), a.kind) }
+  const queue = queueReport(await itemQueue(a.kind, item.id), a.kind)
+  const rows = queue.length
+  const summary = `${a.kind === "series" ? "Sonarr" : "Radarr"} started a search for ${item.title}; ${rows === 0 ? "nothing is downloading for it yet" : `${rows} download${rows === 1 ? " is" : "s are"} in its queue`}.`
+  return { result: "search_started", kind: a.kind, service_id: item.id, title: item.title, command, queue, summary }
 }
 
 // Whether a download may be removed without the owner naming it. A download that has never
@@ -1492,7 +1495,11 @@ export async function mediaManualImport(a) {
 // Sonarr parse whose own numbering agrees with the episode's TVDB or scene code.
 
 const FILL_MAX_GRABS = 3
-const FILL_DEADLINE_MS = 150_000
+// One call runs up to FILL_MAX_PASSES passes inside FILL_BUDGET_MS; with the action grace that stays inside the 240 s tool timeout.
+const FILL_BUDGET_MS = 180_000
+const FILL_MAX_PASSES = 3
+// A later pass starts only with at least this much of the budget left.
+const FILL_MIN_PASS_MS = 20_000
 const FILL_RECENT_GRAB_MS = 15 * 60_000
 const FILL_EVIDENCE_ROWS = 5
 // A torrent with no ETA is called stalled only after its remaining size has not moved for this long.
@@ -1706,16 +1713,34 @@ export async function mediaFillMissing(a, opts = {}) {
   if (!found.item) return { result: found.result, candidates: found.candidates, message: "Name the series by its Sonarr service_id or exact title." }
   const seriesId = found.item.id
   // One pass per series at a time: a retry after a timeout must not grab beside a pass still running.
-  if (fillRunning.has(seriesId)) return { result: "already_running", series_id: seriesId, message: "A media_fill_missing pass for this series is still working. Wait a minute and call again; do not act by hand." }
+  if (fillRunning.has(seriesId)) return { result: "already_running", series_id: seriesId, message: "A media_fill_missing call for this series is still running; its result covers this request." }
   fillRunning.add(seriesId)
   try {
-    return await fillPass(a, seriesId, found.item.title, opts)
+    const budgetMs = opts.deadlineMs ?? FILL_BUDGET_MS
+    const startedAt = Date.now()
+    const actions = []
+    // What earlier passes grabbed counts as in flight in later ones, even before Sonarr's queue and history show it.
+    const held = []
+    let out
+    let passes = 0
+    while (passes < FILL_MAX_PASSES) {
+      const leftMs = budgetMs - (Date.now() - startedAt)
+      if (passes > 0 && leftMs < FILL_MIN_PASS_MS) break
+      out = await fillPass(a, seriesId, found.item.title, { ...opts, deadlineMs: leftMs, held })
+      passes += 1
+      actions.push(...out.actions)
+      held.push(...(out.held ?? []))
+      // Another pass helps only when this one ran out of time or grab room; a failed step is reported, not retried.
+      if (!out.incomplete || out.errors) break
+    }
+    const { held: _held, ...result } = out
+    return { ...result, actions, passes }
   } finally {
     fillRunning.delete(seriesId)
   }
 }
 
-async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadlineMs = FILL_DEADLINE_MS } = {}) {
+async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadlineMs, held = [] }) {
   const startedAt = Date.now()
   const remainingMs = () => deadlineMs - (Date.now() - startedAt)
   const timeLeft = () => remainingMs() > 0
@@ -1740,7 +1765,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   if (!wanted.length) {
     return { ...base, goal_met: true, in_flight: [], not_found: [], actions: [],
              summary: `Nothing monitored is missing: ${have.length} of ${base.on_shelf.of} aired episodes are on the shelf.`,
-             next_step: "Goal met. Stop here and tell the owner; do not search or grab anything else." }
+             next_step: "Goal met: nothing is left to get." }
   }
 
   const actions = []
@@ -1792,6 +1817,13 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     else { inFlight.push({ ...info, state: importDone(d.row) ? "importing" : "downloading" }); ids.forEach((id) => covered.add(id)) }
   }
 
+  for (const h of held) {
+    const ids = wanted.map((e) => e.id).filter((id) => h.ids.includes(id) && !covered.has(id))
+    if (!ids.length) continue
+    inFlight.push({ title: h.title, download_id: h.download_id, episodes: ids.map((id) => sxe(byId.get(id))), state: "just_grabbed" })
+    ids.forEach((id) => covered.add(id))
+  }
+  const passHeld = []
   // Search for everything not covered by a moving download, stalled ones included.
   const need = wanted.filter((e) => !covered.has(e.id))
   const searched = []
@@ -1899,6 +1931,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     actions.push({ action: "grabbed", title: c.raw.title ?? null, indexer: c.raw.indexer ?? null, seeders: c.raw.seeders ?? null, matched_by: c.basis,
                    episodes: ids.map((id) => sxe(byId.get(id))), download_id: res.downloadId ?? null, ...(seeded ? {} : { may_never_finish: true }) })
     inFlight.push({ title: c.raw.title ?? null, download_id: res.downloadId ?? null, episodes: ids.map((id) => sxe(byId.get(id))), state: "just_grabbed" })
+    passHeld.push({ title: c.raw.title ?? null, download_id: res.downloadId ?? null, ids })
     // Only after the replacement is grabbed, and only for a confirmed stall it fully covers with a seeded release.
     if (!seeded) continue
     for (const s of stalled.filter((x) => !x.replaced && x.confirmed && x.ids.every((id) => ids.includes(id)))) {
@@ -1959,20 +1992,22 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     deferred.size || unsearched.length ? `${deferred.size + unsearched.length} episode(s) not handled yet in this pass.` : "",
     errors.length ? `${errors.length} step(s) failed: ${errors.map((x) => x.step).join("; ")}.` : "",
   ].filter(Boolean).join(" ")
-  const nextStep = incomplete
-    ? "This pass did not finish everything. Tell the owner what it did, then call media_fill_missing again to continue; do not act by hand."
+  const nextStep = incomplete && errors.length
+    ? "Some steps failed (listed in errors); calling media_fill_missing again retries them."
+    : incomplete
+    ? "Time ran out before every episode was handled; calling media_fill_missing again continues from the ones listed as deferred or unsearched."
     : stuck.length || notFound.length
-      ? "Tell the owner exactly this outcome with the evidence; do not grab, import or blocklist anything by hand. Call media_fill_missing again later to retry."
+      ? "Everything findable is requested; what is still missing is listed with why. Calling media_fill_missing later retries those."
       : unseeded.length
-        ? "Tell the owner what was grabbed and that it has no seeders, so it may never finish. File a follow-up with await_condition to call media_fill_missing again later. Do not search or grab anything else now."
-        : "Work is in progress. Tell the owner what is downloading; call media_fill_missing again later to import and confirm. Do not search or grab anything else now."
+        ? "Everything findable is requested; the unseeded grab waits for peers and may never finish. An await_condition watch can bring this back to media_fill_missing later."
+        : "Work is in progress: everything findable is requested and downloading. Calling media_fill_missing later imports and confirms it."
   const blockedHint = !blockedReport.length ? ""
-    : ownerRetry ? " The owner's retry could not take the blocklisted release back (see errors and blocklisted_matches); tell the owner that plainly."
-    : " The only matching release is on the blocklist: tell the owner, and if the owner then asks to get it anyway, call media_fill_missing again with retry_blocklisted set to the owner's own words. Do not remove blocklist entries or grab by hand."
+    : ownerRetry ? " The owner's retry could not take the blocklisted release back (see errors and blocklisted_matches)."
+    : " The only matching release is on the blocklist; media_fill_missing with retry_blocklisted set to the asker's own words takes it off and grabs it."
   return { ...base, goal_met: false, in_flight: inFlight, not_found: notFound, actions,
            ...(deferred.size ? { deferred: need.filter((e) => deferred.has(e.id)).map(code) } : {}), ...(unsearched.length ? { unsearched: unsearched.map(code) } : {}),
            searched, ...(blockedReport.length ? { blocklisted_matches: blockedReport } : {}), ...(rejected.size ? { rejected_releases: [...rejected.values()].slice(0, 12) } : {}), ...(evidence ? { indexer_evidence: evidence } : {}),
-           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep + blockedHint }
+           ...(errors.length ? { errors } : {}), ...(incomplete ? { incomplete: true } : {}), summary, next_step: nextStep + blockedHint, held: passHeld }
 }
 
 // ------------------------------------------------- tool: quality profiles
@@ -2220,7 +2255,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_search_now",
-    description: "Trigger a Sonarr/Radarr search for a series or movie that is already in the library, and report its queue. Use this whenever something already in Sonarr/Radarr needs a search, re-search or another look; no Jellyseerr request id is needed. Identify it by service_id, tmdb_id, or exact title. Never adds anything new: zero or several matches come back as 'not_found' or 'ambiguous' with candidates. Never tell anyone to click Search in the web UI.",
+    description: "Asks Sonarr or Radarr to search again for a series or movie already in the library (by service_id, tmdb_id or title) and returns what it started and the item's queue.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["series", "movie"] },
       service_id: { type: "number", description: "Sonarr series id or Radarr movie id." },
@@ -2242,7 +2277,7 @@ const TOOL_LIST = [
   {
     name: "media_fill_missing",
     _meta: { [TIMEOUT_META_KEY]: 240_000 },
-    description: "Get a series' missing episodes, start to finish, in one call. Use this first whenever someone asks why episodes are missing or asks to get them. It re-reads Sonarr, finds the monitored aired episodes without files, searches the indexers, matches releases to episodes by episode title and air year as well as Sonarr's parse (so streaming-volume numbering cannot fool it), prefers seeded releases, skips packs of episodes already on the shelf, grabs with the right episode mapping, imports finished downloads by title, and replaces a stalled download when a usable alternative exists. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step. Safe to call again: it never grabs what is already in flight. When goal_met is true, stop. Relay summary and follow next_step as they are; do not redo its steps by hand. Never offer to clear, cancel or blocklist a stalled download it chose to keep; it replaces that download itself once a seeded alternative exists. Until goal_met is true, call it again whenever next_step leaves more to do. When blocklisted_matches comes back, call again with retry_blocklisted set to the asker's words for those episodes and get them.",
+    description: "Gets a series' missing episodes in one call: it re-reads Sonarr, searches the indexers, grabs the best seeded release for each monitored aired episode (matched by episode title and air year as well as Sonarr's numbering), imports finished downloads, and replaces a stalled download it keeps by itself once a seeded alternative exists, over up to 3 passes in 3 minutes. It never grabs what is already in flight. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step; goal_met is true when nothing is left to get, and blocklisted_matches lists episodes whose only release is blocklisted.",
     inputSchema: { type: "object", properties: {
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
