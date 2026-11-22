@@ -7,6 +7,7 @@ import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(),
+  loadAgentConfig: vi.fn(() => ({ senses: { telegram: { enabled: true } } }) as any),
   readRuntimeCredentialConfig: vi.fn(),
   readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: {} })),
   openSanctuaryResidentAuthority: vi.fn(),
@@ -24,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   emitNervesEvent: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "butler" }))
+vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "butler", loadAgentConfig: mocks.loadAgentConfig }))
 vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig: mocks.readMachineRuntimeCredentialConfig }))
 vi.mock("../../senses/sanctuary-authority-resident", () => ({ openSanctuaryResidentAuthority: mocks.openSanctuaryResidentAuthority }))
 vi.mock("../../senses/shared-turn", async (importOriginal) => ({
@@ -1373,6 +1374,8 @@ describe("Telegram sense coverage contracts", () => {
     mocks.openSanctuaryResidentAuthority.mockReturnValue({
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, authorityTransport,
     })
+    // The Butler names its owner route in agent.json; building the app reads it and sends nothing.
+    mocks.loadAgentConfig.mockReturnValueOnce({ senses: { telegram: { enabled: true, ownerNoticesTo: { cardUrl: "http://127.0.0.1:9/.well-known/agent-card.json", did: "did:key:z6MkppLXDVabJRdmx5bFg1W8SKxMLwbccrxW8Y5PhYmKkGKt" } } } })
     const sanctuary = await startTelegramSenseApp("sanctuary")
     expect(mocks.openSanctuaryResidentAuthority).toHaveBeenCalledWith({ telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42" }, {})
     await sanctuary.stop()

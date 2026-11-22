@@ -64,6 +64,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
+import { OWNER_ROUTE_FALLBACK_PREFIX, ownerRouteForAgent, ownerRouteItem, type OwnerRoute } from "./telegram-owner-route"
 import { foldHeldNotices, isCriticalNoticeKey, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, readReleasedHeldKeys, recordProactiveSend, recordReleasedHeldKeys, writeHeldNotices, type ProactivePacing } from "./telegram-handoff"
 import type { ToolContext } from "../repertoire/tools-base"
 import { ExternalEventScanCache, getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
@@ -495,6 +496,12 @@ export interface CreateTelegramSenseAppOptions {
   acceptanceReceiptRoot?: string
   /** Daily cap and quiet hours for unprompted owner messages; production turns it on, tests opt in. */
   proactivePacing?: ProactivePacing
+  /**
+   * Where the messages this agent starts itself go instead of the owner's Telegram: the owner's primary agent over A2A
+   * (`senses.telegram.ownerNoticesTo`). Replies to the owner stay on Telegram. While the peer can't be reached, only an
+   * urgent message goes to Telegram, saying so; the rest wait in the held file and go to the peer once it is back.
+   */
+  ownerRoute?: OwnerRoute
   /** Test seam for observing receipt evidence across a rejected turn. */
   _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
   /** Test seam for simulating a ledger mutation after its pre-read metadata check. */
@@ -962,12 +969,33 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
   let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string; attachmentIds?: readonly string[] }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
   const configuredOwnerTarget = (): Extract<TelegramEffectTarget, { kind: "approved_relationship" }> => ({ kind: "approved_relationship", friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
-  const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
+  const fallbackText = (text: string): string => `${OWNER_ROUTE_FALLBACK_PREFIX}\n\n${text}`
+  const executeOnTelegram = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
     api,
     authorize: authorizeEffect,
     barrier: acceptanceAuditBarrier,
   })
+  /**
+   * An approval card the agent wants from the owner (a tool approval's prompt, a newcomer's admission card) goes to the owner
+   * route first, as urgent. The card still goes to Telegram so its buttons work: silently when the primary agent has it,
+   * and with the fallback line when it can't be reached. A resend of a card already in the journal is left as it was.
+   */
+  const executeAuthorizedEffect: typeof executeOnTelegram = async (input) => {
+    const route = options.ownerRoute
+    if (!route || input.effect.kind !== "card" || input.target.kind !== "approved_relationship" || input.target.friendId !== configuredOwnerFriendId
+      || !/^(?:approval:.+:prompt|owner-card:.+)$/u.test(input.idempotencyKey) || getEffectJournal().readByIdempotencyKey(input.idempotencyKey)) {
+      return executeOnTelegram(input)
+    }
+    const effect = input.effect
+    const choices = effect.buttons.flat().map((button) => button.text).join(", ")
+    const outcome = await route(ownerRouteItem(input.idempotencyKey, `${effect.text}\n\nOptions: ${choices}. The buttons are on the card in the Butler's Telegram chat.`, true))
+    emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_approval", message: "offered an approval card to the owner's primary agent", meta: { agentName: options.agentName, outcome: outcome.status } })
+    return executeOnTelegram({
+      ...input,
+      effect: outcome.status === "delivered" ? { ...effect, silent: true as const } : { ...effect, text: fallbackText(effect.text) },
+    })
+  }
   const recordConfiguredOwnerEffect = async (artifact: TelegramEffectArtifact, causalEventId?: string): Promise<void> => {
     await recordAcceptedEffects(
       getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot),
@@ -1186,11 +1214,53 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     else emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_pacing", message: "held a house notice for quiet hours or the daily message cap", meta: { agentName: options.agentName, reason: pacingReason } })
     return true
   }
+  // Keys the owner's primary agent accepted, so a retry is already sent (as with the effect journal for Telegram).
+  const routedKeysPath = path.join(agentRoot, "state", "telegram", "routed-owner-notices.json")
+  /**
+   * Offers a self-started message to the owner route. Returns null when it is handled (the peer has it, or it waits in the
+   * held file for the peer), or the text Telegram should send: the message itself with no route, or, for an urgent message
+   * the peer can't take, the message marked as a fallback.
+   */
+  const routeSelfStarted = async (text: string, key: string, critical = isCriticalNoticeKey(key), signal?: AbortSignal): Promise<string | null> => {
+    if (!options.ownerRoute) return text
+    // Older held notices go first, so the peer hears them in order.
+    await releaseHeldNotices(signal)
+    const item = ownerRouteItem(key, text, critical)
+    const outcome = await options.ownerRoute(item)
+    if (outcome.status === "delivered") {
+      recordReleasedHeldKeys(routedKeysPath, [key])
+      return null
+    }
+    if (item.urgency === "now") {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_owner_route_fallback", message: "the owner's primary agent can't be reached; an urgent message goes to Telegram", meta: { agentName: options.agentName, dedupeKey: item.dedupeKey, detail: outcome.detail } })
+      return fallbackText(text)
+    }
+    const held = readHeldNotices(heldNoticesPath)
+    if (!held.some((notice) => notice.key === key)) writeHeldNotices(heldNoticesPath, [...held, { key, text }])
+    emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_owner_route", message: "held a house notice until the owner's primary agent can be reached", meta: { agentName: options.agentName, dedupeKey: item.dedupeKey } })
+    return null
+  }
+  /** With an owner route, held notices go to the peer one by one; a critical one it can't take goes to Telegram as a fallback. */
+  const releaseHeldNoticesToRoute = async (route: OwnerRoute, signal?: AbortSignal): Promise<void> => {
+    const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+    for (const notice of readHeldNotices(heldNoticesPath)) {
+      const critical = isCriticalNoticeKey(notice.key)
+      const outcome = await route(ownerRouteItem(notice.key, notice.text, critical))
+      if (outcome.status !== "delivered" && !critical) continue
+      writeHeldNotices(heldNoticesPath, readHeldNotices(heldNoticesPath).filter((entry) => entry.key !== notice.key))
+      if (outcome.status === "delivered") {
+        recordReleasedHeldKeys(routedKeysPath, [notice.key])
+        continue
+      }
+      await recordAcceptedEffects(sessionPath, [await deliverButlerEffect(fallbackText(notice.text), notice.key, signal)])
+    }
+  }
   let heldNoticeRelease: Promise<void> = Promise.resolve()
   const releaseHeldNotices = async (signal?: AbortSignal): Promise<void> => {
     // Nearly always nothing is held: return without queueing, so ordinary turns and the reconcile tick pay nothing.
     if (readHeldNotices(heldNoticesPath).length === 0) return
     const release = heldNoticeRelease.then(async () => {
+      if (options.ownerRoute) return releaseHeldNoticesToRoute(options.ownerRoute, signal)
       const held = readHeldNotices(heldNoticesPath)
       if (ownerChatIsHandedOff()) return
       const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
@@ -1996,9 +2066,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           return
         }
         const key = `proactive:${randomUUID()}`
-        if (holdNoticeDuringHandoff(proactiveText, key)) return
+        const telegramText = await routeSelfStarted(proactiveText, key, undefined, signal)
+        if (telegramText === null) return
+        if (holdNoticeDuringHandoff(telegramText, key)) return
         await releaseHeldNotices(signal)
-        const effect = await deliverButlerEffect(proactiveText, key, signal)
+        const effect = await deliverButlerEffect(telegramText, key, signal)
         countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
@@ -2018,8 +2090,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         const held = readHeldNotices(heldNoticesPath)
         const releasedKeys = readReleasedHeldKeys(releasedHeldKeysPath)
+        const routedKeys = readReleasedHeldKeys(routedKeysPath)
         const ownerMessageExists = (candidate: string): boolean => held.some((notice) => notice.key === candidate)
           || releasedKeys.includes(candidate)
+          || routedKeys.includes(candidate)
           || getEffectJournal().readByIdempotencyKey(candidate) !== null
         if (ownerMessageExists(key)) {
           // A retry after the message went out (or was held): finish the original send, never send a reworded second one.
@@ -2043,9 +2117,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           })
           return { status: "covered", effectKey: coveredBy }
         }
-        if (holdNoticeDuringHandoff(text, key, [key, ...relatedKeys].some(isCriticalNoticeKey))) return { status: "sent", effectKey: key }
+        const critical = [key, ...relatedKeys].some(isCriticalNoticeKey)
+        const telegramText = await routeSelfStarted(text, key, critical, input.signal)
+        if (telegramText === null) return { status: "sent", effectKey: key }
+        if (holdNoticeDuringHandoff(telegramText, key, critical)) return { status: "sent", effectKey: key }
         await releaseHeldNotices(input.signal)
-        const effect = await deliverButlerEffect(text, key, input.signal)
+        const effect = await deliverButlerEffect(telegramText, key, input.signal)
         countProactiveSend()
         await recordAcceptedEffects(sessionPath, [effect])
         return { status: "sent", effectKey: key }
@@ -2059,9 +2136,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (Buffer.byteLength(noticeId) > 512) throw new Error("Telegram owner notice id is invalid")
       await runWithAcceptanceAuditOwner(async () => {
         const text = requiredText(input.text, "owner notice")
-        if (holdNoticeDuringHandoff(text, `owner-notice:${noticeId}`)) return
+        const telegramText = await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
+        if (telegramText === null) return
+        if (holdNoticeDuringHandoff(telegramText, `owner-notice:${noticeId}`)) return
         await releaseHeldNotices(input.signal)
-        const effect = await deliverButlerEffect(text, `owner-notice:${noticeId}`, input.signal)
+        const effect = await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
         countProactiveSend()
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
@@ -2333,6 +2412,7 @@ export async function startTelegramSenseApp(agentName: string, waitForAuthority 
       authorityTransport,
       // The owner is in Los Angeles; a container without TZ would otherwise run quiet hours on UTC.
       proactivePacing: { timeZone: process.env.TZ || "America/Los_Angeles" },
+      ...((): { ownerRoute?: OwnerRoute } => { const ownerRoute = ownerRouteForAgent(agentName, getAgentRoot(agentName)); return ownerRoute ? { ownerRoute } : {} })(),
       ...(await createProductionTelegramRelationshipComposition(agentName, credentials, undefined, authorityTransport)),
       ...(agentName === "sanctuary" ? { privilegedFailsafe: {
         eventRoot: getExternalEventRoot(),
