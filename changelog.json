@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1347",
+      "changes": [
+        "media_blocklist_stalled takes dry_run: it reports which stalled downloads it would remove and re-search, and changes nothing. The replay gate then runs it as a dry run and does not count a dry run as a removal."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1346",
       "changes": [
         "find_tools, voice_join_local_audio, complete_adoption and list_directory have Ouro AX cards, their failures end with a code, and the census now finds a card for every in-turn tool."
