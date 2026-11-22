@@ -89,7 +89,23 @@ function readPackageIdentity(cwd) {
   return { name: manifest.name, version: manifest.version };
 }
 
-function publishPackageIdempotently({ cwd, tag }, npm = runNpm) {
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+// A previous run's publish can be staged (E409) before the registry serves it. Wait,
+// bounded, for it to become readable so its contents can be compared; waiting never
+// makes different contents acceptable.
+function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (lookupPublishedVersion(spec, npm) !== null) return true;
+    sleep(intervalMs);
+  }
+  return lookupPublishedVersion(spec, npm) !== null;
+}
+
+function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
+  const { attempts = 40, intervalMs = 15000, sleep = sleepSync } = wait;
   const { name, version } = readPackageIdentity(cwd);
   const spec = `${name}@${version}`;
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "npm-publish-"));
@@ -99,7 +115,13 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm) {
       const published = npm(["publish", "--access", "public", "--tag", tag], cwd);
       if (published.status === 0) return { outcome: "published", spec };
       if (lookupPublishedVersion(spec, npm) === null) {
-        throw new Error(`npm publish ${spec} failed: ${published.stderr.trim()}`);
+        const staged = /\bE409\b/.test(`${published.stderr}${published.stdout}`);
+        if (!staged || !waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep })) {
+          throw new Error(
+            `npm publish ${spec} failed: ${published.stderr.trim()}` +
+              (staged ? ` (staged by another publish but still unreadable after ${attempts} polls)` : ""),
+          );
+        }
       }
       console.error(`npm publish ${spec} failed, but the registry now holds ${spec}; verifying its contents`);
     }

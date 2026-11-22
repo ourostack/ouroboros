@@ -160,4 +160,52 @@ describe("npm publish idempotency", () => {
     expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm))
       .toThrow(`npm publish ${SPEC} failed: npm error code E500 boom`)
   })
+
+  describe("E409 while the staged version is not yet readable", () => {
+    const STAGED = fail("npm error code E409\nnpm error Cannot publish over previously staged version")
+    const noSleep = { attempts: 3, intervalMs: 0, sleep: () => {} }
+
+    function stagedFake(landed: string | null, local: string) {
+      let views = 0
+      const fake = fakeNpm({ local, remote: null, publish: () => STAGED })
+      const inner = fake.npm
+      const npm = (args: string[]): NpmResult => {
+        if (args[0] === "view" && ++views >= 4) fake.state.remote = landed
+        return inner(args)
+      }
+      return { ...fake, npm }
+    }
+
+    it("accepts identical contents once the staged version becomes readable", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", SAME_FILES), local)
+      expect(publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
+        .toEqual({ outcome: "already-published", spec: SPEC })
+      expect(publishCalls(fake.calls)).toHaveLength(1)
+    })
+
+    it("fails on different contents after the wait instead of accepting E409", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", CHANGED_FILES), local)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
+        .toThrow(`${SPEC} is already on npm with different contents: content differs: dist/cli.js`)
+    })
+
+    it("fails saying it is staged but unreadable when it never appears", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(null, local)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm, noSleep))
+        .toThrow("staged by another publish but still unreadable after 3 polls")
+    })
+
+    it("surfaces a registry read error during the wait", () => {
+      const local = tarball("local", SAME_FILES)
+      let views = 0
+      const fake = fakeNpm({ local, remote: null, publish: () => STAGED })
+      const npm = (args: string[]): NpmResult =>
+        args[0] === "view" && ++views >= 2 ? fail("npm error code ETIMEDOUT") : fake.npm(args)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, npm, noSleep))
+        .toThrow(`could not read ${SPEC} from npm`)
+    })
+  })
 })
