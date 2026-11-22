@@ -91,6 +91,7 @@ function fixture(input: {
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
   authorizeEffect?: any
   proactivePacing?: any
+  ownerRoute?: any
   authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
   admission?: any
@@ -134,6 +135,7 @@ function fixture(input: {
     identityKey: "k".repeat(43),
     migrateIdentity: async () => undefined,
     ...(input.proactivePacing ? { proactivePacing: input.proactivePacing } : {}),
+    ...(input.ownerRoute ? { ownerRoute: input.ownerRoute } : {}),
     api,
     offsetStore: { load: () => 0, save: vi.fn() },
     createLongPoll,
@@ -2119,6 +2121,60 @@ describe("Telegram sense", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // Ari, 2026-11-22: "my desired end state is to only be getting notifications on my phone by the one primary bot".
+  describe("with an owner route to the primary agent", () => {
+    const sends = (f: ReturnType<typeof fixture>) => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
+    const heldPath = (f: ReturnType<typeof fixture>) => path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json")
+
+    it("sends what it starts itself to the primary agent, and keeps replies on Telegram", async () => {
+      const ownerRoute = vi.fn(async () => ({ status: "delivered" as const }))
+      const f = fixture({ ownerRoute })
+      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
+      await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 3, text: "The shelf is down." })).resolves.toMatchObject({ status: "sent" })
+      await f.app.sendProactive("Downloads are flowing again.")
+      expect(sends(f)).toEqual([])
+      expect(ownerRoute.mock.calls.map(([item]: any[]) => [item.urgency, item.dedupeKey, item.text])).toEqual([
+        ["today", "butler-failure-fixed-7", "Plex is back up."],
+        ["today", "butler-sanctuary-health-endpoint-media", "The shelf is down."],
+        ["today", expect.stringMatching(/^butler-proactive-/u), "Downloads are flowing again."],
+      ])
+      // A retry of a routed decision is already sent: the primary agent is not told twice.
+      await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:media", generation: 3, text: "The shelf is still down." })).resolves.toMatchObject({ status: "already_sent" })
+      expect(ownerRoute).toHaveBeenCalledTimes(3)
+      await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "how is the house?" })
+      expect(sends(f)).toEqual(["All systems nominal."])
+    })
+
+    it("while the primary agent can't be reached, sends only urgent messages to Telegram, saying so, and holds the rest until it is back", async () => {
+      let reachable = false
+      const ownerRoute = vi.fn(async () => reachable ? { status: "delivered" as const } : { status: "unreachable" as const, detail: "connect ECONNREFUSED" })
+      const f = fixture({ ownerRoute, proactivePacing: { timeZone: "America/Los_Angeles" } })
+      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
+      await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "parity:stale-or-failed", generation: 1, text: "The parity check failed." })
+      expect(sends(f)).toEqual(["Slugger can't be reached, so this comes to you directly.\n\nThe parity check failed."])
+      expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toEqual([{ key: "owner-notice:failure-fixed:7", text: "Plex is back up." }])
+      // Still unreachable: the held notice stays held and nothing more reaches Telegram.
+      await f.app.sendProactive("A second note.")
+      expect(sends(f)).toHaveLength(1)
+      expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toHaveLength(2)
+
+      reachable = true
+      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:8", text: "Sonarr is back up." })
+      expect(sends(f)).toHaveLength(1)
+      expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8"))).toEqual([])
+      expect(ownerRoute.mock.calls.slice(-3).map(([item]: any[]) => item.text)).toEqual(["Plex is back up.", "A second note.", "Sonarr is back up."])
+    })
+
+    it("sends a critical notice held before the route existed to Telegram, saying so, when the primary agent is down", async () => {
+      const f = fixture({ ownerRoute: async () => ({ status: "unreachable" as const, detail: "down" }) })
+      fs.mkdirSync(path.dirname(heldPath(f)), { recursive: true })
+      fs.writeFileSync(heldPath(f), JSON.stringify([{ key: "external-event:[\"sanctuary-health\",\"disk:sdb:smart\",1]", text: "Disk sdb is failing SMART." }, { key: "owner-notice:x", text: "Quiet note." }]))
+      await f.app.sendOwnerNotice({ noticeId: "y", text: "Another quiet note." })
+      expect(sends(f)).toEqual(["Slugger can't be reached, so this comes to you directly.\n\nDisk sdb is failing SMART."])
+      expect(JSON.parse(fs.readFileSync(heldPath(f), "utf8")).map((n: any) => n.key)).toEqual(["owner-notice:x", "owner-notice:y"])
+    })
   })
 
   it("hands a held notice that fails to send to the effect journal without failing startup or blocking the next notice", async () => {
