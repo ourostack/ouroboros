@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1353",
+      "changes": [
+        "The replay gate checks the friend rungs: a friend can clear a stuck download (a dry-run plan naming a stalled item, nothing deleted) and cannot change quality or release profiles."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1350",
       "changes": [
         "Anthropic requests can defer tools with defer_loading and load them through tool_reference blocks from a find_tools reply, keeping the cached prompt; the engine doesn't defer any tools yet, so requests are unchanged."
