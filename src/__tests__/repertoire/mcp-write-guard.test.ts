@@ -84,6 +84,8 @@ describe("guardMcpArgs", () => {
       ["media_quality_profile", { kind: "movie", action: "set_upgrade" }, "dry_run"],
       ["media_release_profile", { kind: "series", action: "set", dry_run: "false" }, "dry_run"],
       ["media_blocklist", { kind: "series", service_id: 3, remove_ids: [7] }, "remove_ids"],
+      // A bare id instead of a list is still a removal.
+      ["media_blocklist", { kind: "series", service_id: 3, remove_ids: 7 }, "remove_ids"],
       ["media_blocklist_stalled", { kind: "series", owner_words: "yes remove it" }, "owner_words"],
       ["media_fill_missing", { series: "Bluey", retry_blocklisted: ["S01E02"] }, "retry_blocklisted"],
     ])("refuses a friend %s with %j, naming the argument", (toolName, args, argument) => {
@@ -98,6 +100,7 @@ describe("guardMcpArgs", () => {
       ["media_blocklist", { kind: "series", service_id: 3, remove_ids: [] }],
       ["media_blocklist_stalled", { kind: "series" }],
       ["media_blocklist_stalled", { kind: "series", owner_words: "  " }],
+      ["media_blocklist_stalled", { kind: "series", owner_words: null }],
       ["media_fill_missing", { series: "Bluey" }],
       ["media_search", { q: "Bluey" }],
       ["media_search_now", { kind: "series", service_id: 3 }],
