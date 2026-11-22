@@ -32,6 +32,15 @@ function habitCancelTool() {
   return definition
 }
 
+
+describe("Ouro AX card", () => {
+  it("gives habit_cancel a destructive write card in turn-habits that names its codes", () => {
+    const def = habitToolDefinitions.find((entry) => entry.tool.function.name === "habit_cancel")!
+    expect(def.ax).toMatchObject({ id: "tool:habit_cancel", group: "turn-habits", effect: "write", destructive: true })
+    expect(def.ax!.errors!.map((e) => e.code)).toEqual(["bad-argument", "no-ingress-evidence", "evidence-mismatch", "actor-not-trusted", "no-agent-root"])
+  })
+})
+
 describe("grounded habit cancellation tool", () => {
   it("registers an exact two-argument durable terminal projection", () => {
     const definition = habitCancelTool()
@@ -68,7 +77,7 @@ describe("grounded habit cancellation tool", () => {
       await expect(definition.handler(args, {
         signin: async () => undefined,
         agentRoot: temporary.agentRoot,
-      })).rejects.toThrow(/current ingress evidence/i)
+      })).rejects.toThrow(/current ingress evidence.*\(code: no-ingress-evidence\)$/i)
       await expect(definition.handler(args, {
         signin: async () => undefined,
         agentRoot: temporary.agentRoot,
@@ -77,7 +86,7 @@ describe("grounded habit cancellation tool", () => {
           provider: "bluebubbles",
           captureKeyHash: "b".repeat(64),
         },
-      })).rejects.toThrow(/evidence.*mismatch/i)
+      })).rejects.toThrow(/evidence.*mismatch.*\(code: evidence-mismatch\)$/i)
       await expect(definition.handler(args, {
         signin: async () => undefined,
         agentRoot: temporary.agentRoot,
@@ -86,7 +95,7 @@ describe("grounded habit cancellation tool", () => {
           provider: "bluebubbles",
           captureKeyHash: CAPTURE_HASH,
         } as any,
-      })).rejects.toThrow(/current ingress evidence/i)
+      })).rejects.toThrow(/current ingress evidence.*\(code: no-ingress-evidence\)$/i)
       await expect(definition.handler(args, {
         signin: async () => undefined,
         agentRoot: temporary.agentRoot,
@@ -95,7 +104,7 @@ describe("grounded habit cancellation tool", () => {
           provider: "other-provider",
           captureKeyHash: CAPTURE_HASH,
         } as any,
-      })).rejects.toThrow(/current ingress evidence/i)
+      })).rejects.toThrow(/current ingress evidence.*\(code: no-ingress-evidence\)$/i)
       await expect(definition.handler({ habit: "rsvp-demo", evidence: "bridge-synthetic" }, {
         signin: async () => undefined,
         agentRoot: temporary.agentRoot,
@@ -104,7 +113,7 @@ describe("grounded habit cancellation tool", () => {
           provider: "bluebubbles",
           captureKeyHash: CAPTURE_HASH,
         },
-      })).rejects.toThrow(/capture:/i)
+      })).rejects.toThrow(/capture:.*\(code: bad-argument\)$/i)
       expectLifecycleUntouched(temporary.agentRoot)
     } finally {
       temporary.cleanup()
@@ -128,22 +137,22 @@ describe("grounded habit cancellation tool", () => {
         habit: "rsvp-demo",
         evidence: `capture:${CAPTURE_HASH}`,
         actor: "invented",
-      }, context)).rejects.toThrow(/unexpected.*actor/i)
+      }, context)).rejects.toThrow(/unexpected.*actor.*\(code: bad-argument\)$/i)
       await expect(definition.handler({
         habit: "rsvp-demo",
         evidence: `capture:${CAPTURE_HASH}`,
         request: "invented",
-      }, context)).rejects.toThrow(/unexpected.*request/i)
+      }, context)).rejects.toThrow(/unexpected.*request.*\(code: bad-argument\)$/i)
       await expect(definition.handler({
         habit: "rsvp-demo",
         evidence: `capture:${CAPTURE_HASH}`,
         actorDisplayName: "invented",
-      }, context)).rejects.toThrow(/unexpected.*actorDisplayName/i)
+      }, context)).rejects.toThrow(/unexpected.*actorDisplayName.*\(code: bad-argument\)$/i)
       await expect(definition.handler({
         habit: "rsvp-demo",
         evidence: `capture:${CAPTURE_HASH}`,
         requestText: "invented",
-      }, context)).rejects.toThrow(/unexpected.*requestText/i)
+      }, context)).rejects.toThrow(/unexpected.*requestText.*\(code: bad-argument\)$/i)
       for (const evidence of [
         "capture:",
         `capture:${"A".repeat(64)}`,
@@ -219,7 +228,7 @@ describe("grounded habit cancellation tool", () => {
           friend: { trustLevel: "family" },
           isGroupChat: true,
         } as any,
-      })).rejects.toThrow(/trusted current-ingress actor authority/i)
+      })).rejects.toThrow(/trusted current-ingress actor authority.*\(code: actor-not-trusted\)$/i)
 
       expect(findByExternalId).toHaveBeenCalledTimes(1)
       expect(findByExternalId).toHaveBeenCalledWith(
@@ -306,7 +315,7 @@ describe("grounded habit cancellation tool", () => {
             captureKeyHash: capture.capture.keyHash,
           },
           ...(testCase.friendStore ? { friendStore: testCase.friendStore } : {}),
-        })).rejects.toThrow(/trusted current-ingress actor authority/i)
+        })).rejects.toThrow(/trusted current-ingress actor authority.*\(code: actor-not-trusted\)$/i)
         expect(fs.readFileSync(
           path.join(temporary.agentRoot, "habits", `${SYNTHETIC_HABIT_ID}.md`),
           "utf8",
@@ -329,22 +338,22 @@ describe("grounded habit cancellation tool", () => {
     await expect(definition.handler({ evidence: validArgs.evidence }, {
       signin: async () => undefined,
       currentIngressEvidence: ingress,
-    })).rejects.toThrow(/exactly habit and evidence/i)
+    })).rejects.toThrow(/exactly habit and evidence.*\(code: bad-argument\)$/i)
     await expect(definition.handler({ habit: " ", evidence: validArgs.evidence }, {
       signin: async () => undefined,
       currentIngressEvidence: ingress,
-    })).rejects.toThrow(/exactly habit and evidence/i)
+    })).rejects.toThrow(/exactly habit and evidence.*\(code: bad-argument\)$/i)
     await expect(definition.handler(validArgs, {
       signin: async () => undefined,
       currentIngressEvidence: { ...ingress, extra: true } as any,
-    })).rejects.toThrow(/authoritative current ingress/i)
+    })).rejects.toThrow(/authoritative current ingress.*\(code: no-ingress-evidence\)$/i)
     await expect(definition.handler(validArgs, {
       signin: async () => undefined,
       currentIngressEvidence: { ...ingress, captureKeyHash: "invalid" },
-    })).rejects.toThrow(/authoritative current ingress/i)
+    })).rejects.toThrow(/authoritative current ingress.*\(code: no-ingress-evidence\)$/i)
     await expect(definition.handler(validArgs, {
       signin: async () => undefined,
       currentIngressEvidence: ingress,
-    })).rejects.toThrow(/agent root/i)
+    })).rejects.toThrow(/agent root.*\(code: no-agent-root\)$/i)
   })
 })
