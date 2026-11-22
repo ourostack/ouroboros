@@ -1,5 +1,5 @@
 {
-  "generator": "ouro-actions 1.11.0",
+  "generator": "ouro-actions 1.12.0",
   "set": "ouro",
   "tool": "ouro",
   "commands": [

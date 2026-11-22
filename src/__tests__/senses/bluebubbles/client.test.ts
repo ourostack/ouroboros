@@ -2023,6 +2023,60 @@ describe("BlueBubbles client", () => {
     )
   })
 
+  it("retries a 404 repair with the upper-case GUID that older captures lower-cased", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes("/api/v1/message/fe9bff1d-762f-4a21-9d2c-6c63e33e008a")) {
+        return new Response(JSON.stringify({ status: 404, message: "Message does not exist!" }), { status: 404 })
+      }
+      return new Response(JSON.stringify({
+        data: {
+          guid: "FE9BFF1D-762F-4A21-9D2C-6C63E33E008A",
+          text: "see, this is why i have trust issues lol",
+          handle: { address: "owner@example.test", service: "iMessage" },
+          isFromMe: false,
+          chats: [{ guid: "any;-;owner@example.test", style: 45, chatIdentifier: "owner@example.test", displayName: "" }],
+        },
+      }), { status: 200 })
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+    const client = createBlueBubblesClient(
+      { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" },
+      { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 },
+    )
+
+    const result = await client.repairEvent({
+      kind: "message",
+      eventType: "new-message",
+      messageGuid: "fe9bff1d-762f-4a21-9d2c-6c63e33e008a",
+      timestamp: 1,
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "owner@example.test",
+        rawId: "owner@example.test",
+        displayName: "owner@example.test",
+      },
+      chat: dmChat,
+      text: "see, this is why i have trust issues lol",
+      textForAgent: "see, this is why i have trust issues lol",
+      attachments: [],
+      hasPayloadData: false,
+      requiresRepair: true,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]![0])).toContain("/api/v1/message/FE9BFF1D-762F-4A21-9D2C-6C63E33E008A")
+    expect(result).toEqual(expect.objectContaining({
+      kind: "message",
+      messageGuid: "FE9BFF1D-762F-4A21-9D2C-6C63E33E008A",
+      requiresRepair: false,
+    }))
+    expect(result.repairNotice).toBeUndefined()
+  })
+
   it("falls back to HTTP status/unknown when the repair endpoint errors without a readable body", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response("", { status: 503 }),
