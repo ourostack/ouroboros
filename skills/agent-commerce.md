@@ -1,3 +1,6 @@
+---
+tools: [user_profile_get, user_profile_store, stripe_list_cards, stripe_create_card, stripe_deactivate_card, commerce_checkout_preview, commerce_checkout_commit, commerce_receipt_get, flight_search, flight_hold, flight_book, flight_cancel]
+---
 # Agent Commerce Skill
 
 How to book, purchase, and pay for things on behalf of humans.
