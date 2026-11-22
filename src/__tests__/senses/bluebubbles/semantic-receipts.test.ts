@@ -1254,6 +1254,15 @@ describe("BlueBubbles semantic identity and cutover", () => {
     semantic.classifyBlueBubblesRecoveryRecord(legacyB, cutover)
     semantic.classifyBlueBubblesRecoveryRecord(legacyB, cutover)
     expect(legacyCalls()).toHaveLength(2)
+
+    // A record with no JSON form can't be fingerprinted, so it is never hidden.
+    const circular: Record<string, unknown> = { mutationType: "reaction" }
+    circular.self = circular
+    for (const unfingerprintable of [undefined, circular, undefined, circular]) {
+      expect(semantic.classifyBlueBubblesRecoveryRecord(unfingerprintable, cutover))
+        .toEqual({ disposition: "audit_only", reason: "legacy_or_actorless" })
+    }
+    expect(legacyCalls()).toHaveLength(6)
   })
 })
 
