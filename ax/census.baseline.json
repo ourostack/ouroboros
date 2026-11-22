@@ -6,10 +6,7 @@
     "cli:git status",
     "tool:capture_episode",
     "tool:care_manage",
-    "tool:commerce_access_log",
-    "tool:commerce_checkout_commit",
-    "tool:commerce_checkout_preview",
-    "tool:commerce_receipt_get",
+
     "tool:complete_adoption",
     "tool:consult_notes",
     "tool:credential_delete",
@@ -28,10 +25,6 @@
     "tool:external_event_disposition",
     "tool:file_ouroboros_bug",
     "tool:find_tools",
-    "tool:flight_book",
-    "tool:flight_cancel",
-    "tool:flight_hold",
-    "tool:flight_search",
     "tool:friend_link_code",
 
 
@@ -58,9 +51,7 @@
     "tool:set_reasoning_effort",
     "tool:settle",
     "tool:speak",
-    "tool:stripe_create_card",
-    "tool:stripe_deactivate_card",
-    "tool:stripe_list_cards",
+
     "tool:surface",
 
 

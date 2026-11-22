@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext } from "./tools-base"
+import { withCode, type ToolDefinition, type ToolContext, type ToolErrorCard } from "./tools-base"
 import { createStripeClient, type StripeClient } from "./stripe-client"
 import { emitNervesEvent } from "../nerves/runtime"
 import { consumeReservedCommerceAuthority, markReservedCommerceAuthorityAttempted } from "../commerce/store"
@@ -14,10 +14,10 @@ async function getStripeClient(): Promise<StripeClient> {
 
 function requireFamilyContext(ctx?: ToolContext): { friendId: string } | string {
   if (!ctx?.context?.friend?.id) {
-    return "no friend context — cannot access payment tools."
+    return withCode("no friend context — cannot access payment tools.", "no-friend-context")
   }
   if (ctx.context.friend.trustLevel !== "family") {
-    return "payment tools require family trust level."
+    return withCode("payment tools require family trust level.", "family-required")
   }
   return { friendId: ctx.context.friend.id }
 }
@@ -37,7 +37,7 @@ function consumeReservedCommerce(ctx: ToolContext | undefined, toolName: string)
     toolName,
     friendId: ctx.context?.friend?.id,
   })
-  return result.ok ? null : `commerce authority consume error: ${result.reason}`
+  return result.ok ? null : withCode(`commerce authority consume error: ${result.reason}`, "commerce-consume-rejected")
 }
 
 function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): string | null {
@@ -49,8 +49,15 @@ function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): 
     toolName,
     friendId: ctx.context?.friend?.id,
   })
-  return result.ok ? null : `commerce authority attempt error: ${result.reason}`
+  return result.ok ? null : withCode(`commerce authority attempt error: ${result.reason}`, "commerce-attempt-rejected")
 }
+
+const NO_FRIEND_ERROR: ToolErrorCard = { code: "no-friend-context", means: "This call came from outside any conversation with a known person, so there is nobody to act for.", fix: "Use this tool only inside a conversation with the person you are acting for." }
+const FAMILY_REQUIRED_ERROR: ToolErrorCard = { code: "family-required", means: "The person in this conversation isn't family, and only family may spend or change bookings.", fix: "Don't retry; tell the person a family member has to ask for this." }
+const GUARDRAIL_ERROR: ToolErrorCard = { code: "guardrail-blocked", means: "The trust guardrail stopped the call before it ran, because this person may not use it.", fix: "Don't retry here; say what you can't do and leave it to someone with the trust it needs." }
+const AUTHORITY_REQUIRED_ERROR: ToolErrorCard = { code: "commerce-authority-required", means: "No confirmed checkout matches this call's merchant, tool, amount, currency and constraints.", fix: "Run commerce_checkout_preview for exactly this call, get the person's confirmation, then commerce_checkout_commit." }
+const ATTEMPT_REJECTED_ERROR: ToolErrorCard = { code: "commerce-attempt-rejected", means: "The confirmed checkout couldn't be marked as in use, so nothing was sent to the provider.", fix: "Open the checkout with commerce_receipt_get to see its status, and start a new preview if it has expired or been used." }
+const CONSUME_REJECTED_ERROR: ToolErrorCard = { code: "commerce-consume-rejected", means: "The provider call went through, but the checkout couldn't be marked used afterwards.", fix: "Tell the person what went through, and check the checkout with commerce_receipt_get before any retry." }
 
 export const stripeToolDefinitions: ToolDefinition[] = [
   {
@@ -126,11 +133,15 @@ export const stripeToolDefinitions: ToolDefinition[] = [
         })
       } catch (err) {
         /* v8 ignore next -- defensive: Stripe errors are always Error instances @preserve */
-        return `card creation error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`card creation error: ${err instanceof Error ? err.message : String(err)}`, "card-creation-failed")
       }
     },
     summaryKeys: ["type", "spend_limit", "currency"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "creates a virtual payment card" },
+    ax: { id: "tool:stripe_create_card", group: "turn-payments", when: "Pick this to make a single-use or capped virtual card for one confirmed purchase, after commerce_checkout_commit.", effect: "write", errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR, AUTHORITY_REQUIRED_ERROR, ATTEMPT_REJECTED_ERROR, CONSUME_REJECTED_ERROR,
+      { code: "card-creation-failed", means: "Stripe refused or lost the request; the text gives its reason, and the checkout stays marked in use.", fix: "Call stripe_list_cards to see whether a card was made before trying again with a new checkout." },
+    ] },
   },
 
   {
@@ -173,11 +184,15 @@ export const stripeToolDefinitions: ToolDefinition[] = [
         })
       } catch (err) {
         /* v8 ignore next -- defensive: Stripe errors are always Error instances @preserve */
-        return `card deactivation error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`card deactivation error: ${err instanceof Error ? err.message : String(err)}`, "card-deactivation-failed")
       }
     },
     summaryKeys: ["card_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "deactivates a virtual payment card" },
+    ax: { id: "tool:stripe_deactivate_card", group: "turn-payments", when: "Pick this to switch off a virtual card that is spent or no longer wanted, so nothing more can be charged to it.", effect: "write", idempotent: true, errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "card-deactivation-failed", means: "Stripe couldn't switch the card off; the text gives its reason.", fix: "Check the card id against stripe_list_cards, then try again with the right one." },
+    ] },
   },
 
   {
@@ -217,10 +232,15 @@ export const stripeToolDefinitions: ToolDefinition[] = [
         })))
       } catch (err) {
         /* v8 ignore next -- defensive: Stripe errors are always Error instances @preserve */
-        return `card listing error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`card listing error: ${err instanceof Error ? err.message : String(err)}`, "card-listing-failed")
       }
     },
     summaryKeys: [],
+    riskProfile: { mutates: "none", risk: "low", reason: "lists active virtual cards" },
+    ax: { id: "tool:stripe_list_cards", group: "turn-payments", when: "Pick this to see which virtual cards are still active and their limits, before making a new one or switching one off.", effect: "read", idempotent: true, errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "card-listing-failed", means: "Stripe couldn't be reached or refused the request; the text gives its reason.", fix: "Try once more; if it still fails, tell the person card details are unavailable right now." },
+    ] },
   },
 ]
 

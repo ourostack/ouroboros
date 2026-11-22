@@ -91,6 +91,8 @@ describe("tool agent-root fallbacks", () => {
       const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
       return { ...actual, getAgentRoot: () => tmp!.agentRoot }
     })
+    // tools-base assembles every tool module and tools-commerce imports withCode from it, so load tools-base first, as the runtime does.
+    await import("../../repertoire/tools-base")
     const { commerceToolDefinitions } = await import("../../repertoire/tools-commerce")
     const preview = commerceToolDefinitions.find((entry) => entry.tool.function.name === "commerce_checkout_preview")?.handler
     if (!preview) throw new Error("missing commerce_checkout_preview")

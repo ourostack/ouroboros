@@ -8,11 +8,11 @@ import {
   readCommerceRecord,
 } from "../commerce/store"
 import type { CommerceMandateItem } from "../commerce/types"
-import type { ToolContext, ToolDefinition } from "./tools-base"
+import { withCode, type ToolContext, type ToolDefinition, type ToolErrorCard } from "./tools-base"
 
 function requireFamilyContext(ctx?: ToolContext): { friendId: string; agentRoot: string } | string {
-  if (!ctx?.context?.friend?.id) return "no friend context — cannot use commerce tools."
-  if (ctx.context.friend.trustLevel !== "family") return "commerce tools require family trust level."
+  if (!ctx?.context?.friend?.id) return withCode("no friend context — cannot use commerce tools.", "no-friend-context")
+  if (ctx.context.friend.trustLevel !== "family") return withCode("commerce tools require family trust level.", "family-required")
   /* v8 ignore next -- no-agentRoot fallback depends on process argv; normal tool calls inject agentRoot @preserve */
   if (ctx.agentRoot) return { friendId: ctx.context.friend.id, agentRoot: ctx.agentRoot }
   return { friendId: ctx.context.friend.id, agentRoot: getAgentRoot() }
@@ -65,6 +65,10 @@ function validateToolConstraints(toolName: string, constraints: Record<string, s
   if (!constraints?.type) throw new Error("constraints_json.type is required for stripe_create_card")
   if (!constraints.merchant_categories) throw new Error("constraints_json.merchant_categories is required for stripe_create_card")
 }
+
+const NO_FRIEND_ERROR: ToolErrorCard = { code: "no-friend-context", means: "This call came from outside any conversation with a known person, so there is nobody to act for.", fix: "Use this tool only inside a conversation with the person you are acting for." }
+const FAMILY_REQUIRED_ERROR: ToolErrorCard = { code: "family-required", means: "The person in this conversation isn't family, and only family may spend or change bookings.", fix: "Don't retry; tell the person a family member has to ask for this." }
+const GUARDRAIL_ERROR: ToolErrorCard = { code: "guardrail-blocked", means: "The trust guardrail stopped the call before it ran, because this person may not use it.", fix: "Don't retry here; say what you can't do and leave it to someone with the trust it needs." }
 
 export const commerceToolDefinitions: ToolDefinition[] = [
   {
@@ -130,11 +134,15 @@ export const commerceToolDefinitions: ToolDefinition[] = [
 	          next: `Ask the family user to send the confirmationMessage exactly in a new turn after reviewing merchant, amount, currency, tool, and constraints; then call commerce_checkout_commit from that same turn.`,
 	        }, null, 2)
       } catch (error) {
-        return `commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`
+        return withCode(`commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`, "preview-failed")
       }
     },
     summaryKeys: ["merchant", "amount", "currency"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates a purchase mandate preview" },
+    ax: { id: "tool:commerce_checkout_preview", group: "turn-payments", when: "Pick this first for any purchase or booking: it records merchant, amount and tool, and returns the exact message the person must send.", effect: "write", errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "preview-failed", means: "An argument is malformed, such as an inexact amount or items_json that isn't an array; the text names it.", fix: "Fix the argument the text names and preview again." },
+    ] },
   },
   {
     tool: {
@@ -178,11 +186,15 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           use: "Call the approved payment or booking tool with the exact merchant/tool/amount/currency/constraint arguments; Ouro will consume the matching authority without exposing a bearer token.",
         }, null, 2)
       } catch (error) {
-        return `commerce commit error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error store failures */ String(error)}`
+        return withCode(`commerce commit error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error store failures */ String(error)}`, "commit-failed")
       }
     },
     summaryKeys: ["checkout_id"],
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "confirms a purchase mandate" },
+    ax: { id: "tool:commerce_checkout_commit", group: "turn-payments", when: "Pick this in the turn where the person sent the preview's confirmation message word for word, to turn it into one-use authority.", effect: "write", errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "commit-failed", means: "The checkout is missing, expired, already used, or the message or digest doesn't match; the text says which.", fix: "If it expired or was used, preview again; otherwise wait for the person to send the confirmation message exactly." },
+    ] },
   },
   {
     tool: {
@@ -209,9 +221,13 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       const guard = requireFamilyContext(ctx)
       if (typeof guard === "string") return guard
       const record = readCommerceRecord(guard.agentRoot, args.checkout_id)
-      return record ? JSON.stringify(record, null, 2) : `commerce checkout not found: ${args.checkout_id}`
+      return record ? JSON.stringify(record, null, 2) : withCode(`commerce checkout not found: ${args.checkout_id}`, "checkout-not-found")
     },
     summaryKeys: ["checkout_id"],
+    ax: { id: "tool:commerce_receipt_get", group: "turn-payments", when: "Pick this to read one checkout's full record, such as its status and approved amount, by checkout id; each read is logged.", effect: "write", errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "checkout-not-found", means: "No checkout with that id is stored on this agent.", fix: "Find the right checkoutId in commerce_access_log, or start over with commerce_checkout_preview." },
+    ] },
   },
   {
     tool: {
@@ -240,5 +256,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       return JSON.stringify(readCommerceAccessLog(guard.agentRoot, Number.isInteger(limit) ? limit : 20), null, 2)
     },
     summaryKeys: ["limit"],
+    riskProfile: { mutates: "none", risk: "low", reason: "reads the commerce access log" },
+    ax: { id: "tool:commerce_access_log", group: "turn-payments", when: "Pick this to audit recent reads and changes of checkout records, oldest first, when something about a purchase looks wrong.", effect: "read", idempotent: true, errors: [NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR] },
   },
 ]

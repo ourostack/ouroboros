@@ -37,6 +37,8 @@ vi.mock("../../repertoire/credential-access", () => ({
   }),
 }))
 
+// tools-base assembles every tool module and tools-flight imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { flightToolDefinitions, resetDuffelClient } from "../../repertoire/tools-flight"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import {
@@ -102,6 +104,20 @@ function reserveFlightAuthority(input: { agentRoot: string; toolName: "flight_ho
   return { preview, reserved }
 }
 
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = { flight_search: "read", flight_hold: "write", flight_book: "write", flight_cancel: "write" }
+
+  it("gives each tool a card with its effect, and each read tool an explicit low-risk profile", () => {
+    expect(flightToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of flightToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, effect: effects[name] })
+      if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+  })
+})
+
 describe("flightToolDefinitions", () => {
   it("exports 4 tool definitions", () => {
     expect(flightToolDefinitions).toHaveLength(4)
@@ -122,6 +138,7 @@ describe("flight_search handler — no context", () => {
   it("returns error when no friend context is provided", async () => {
     const result = await tool.handler({ origin: "SFO", destination: "JFK", departure_date: "2026-05-01" })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 
   it("returns error when ctx has no friend", async () => {
@@ -130,6 +147,7 @@ describe("flight_search handler — no context", () => {
       { context: {} } as any,
     )
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 
@@ -167,6 +185,7 @@ describe("flight_hold handler", () => {
       commerceAuthority: { checkoutId: "missing", reservationToken: "missing" },
     })
     expect(result).toContain("commerce authority attempt error")
+    expect(result).toMatch(/\(code: commerce-attempt-rejected\)$/)
   })
 
   it("consumes reserved commerce authority for successful holds", async () => {
@@ -206,6 +225,7 @@ describe("flight_hold handler", () => {
       commerce_authority: "commerce:checkout:digest",
     }, friendCtx)
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
   })
 
   it("returns error when no friend context", async () => {
@@ -216,6 +236,7 @@ describe("flight_hold handler", () => {
       commerce_authority: "commerce:checkout:digest",
     })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 
@@ -328,6 +349,7 @@ describe("flight_book handler", () => {
     }, friendCtx)
 
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
     expect(mockCreateOrder).not.toHaveBeenCalled()
   })
 
@@ -341,6 +363,7 @@ describe("flight_book handler", () => {
     }, familyCtx)
 
     expect(result).toContain("profile")
+    expect(result).toMatch(/\(code: passenger-profile-missing\)$/)
   })
 
   it("reports a reserved-commerce attempt error before booking if reservation state is missing", async () => {
@@ -368,6 +391,7 @@ describe("flight_book handler", () => {
     })
 
     expect(result).toContain("commerce authority attempt error")
+    expect(result).toMatch(/\(code: commerce-attempt-rejected\)$/)
     expect(mockCreateOrder).not.toHaveBeenCalled()
   })
 
@@ -435,6 +459,7 @@ describe("flight_book handler", () => {
     })
 
     expect(result).toContain("does not match approved")
+    expect(result).toMatch(/\(code: order-total-mismatch\)$/)
     expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("attempted")
   })
 
@@ -471,6 +496,7 @@ describe("flight_book handler", () => {
     })
 
     expect(result).toContain("commerce authority consume error")
+    expect(result).toMatch(/\(code: commerce-consume-rejected\)$/)
   })
 
   it("emits nerves events", async () => {
@@ -498,6 +524,7 @@ describe("flight_book — no context", () => {
   it("returns error when no friend context", async () => {
     const result = await tool.handler({ offer_id: "off_123", amount: "350", currency: "usd" })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 
@@ -523,10 +550,12 @@ describe("flight_cancel handler", () => {
   it("requires family trust", async () => {
     const result = await tool.handler({ order_id: "ord_123" }, friendCtx)
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
   })
 
   it("returns error when no friend context", async () => {
     const result = await tool.handler({ order_id: "ord_123" })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })

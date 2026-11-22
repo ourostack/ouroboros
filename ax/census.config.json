@@ -75,6 +75,7 @@
     {"id": "turn-sessions", "when": "Join up an agent's conversations already under way, so shared work in one is visible from the others."},
     {"id": "turn-mail", "when": "Read and answer the agent's email inside a turn: check, search, open, draft, send, and sort unknown senders."},
     {"id": "turn-awaits", "when": "Wait on something that happens later, like a reply or a delivery: file the wait, record each check, or drop it."},
-    {"id": "turn-attachments", "when": "Work with photos, voice notes and documents people sent: find one, get it as a file on disk, or ask about an image."}
+    {"id": "turn-attachments", "when": "Work with photos, voice notes and documents people sent: find one, get it as a file on disk, or ask about an image."},
+    {"id": "turn-payments", "when": "Spend money for a family member during a turn: approve a checkout, then make a virtual card, and audit what happened."}
   ]
 }

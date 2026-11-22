@@ -33,6 +33,8 @@ vi.mock("../../repertoire/credential-access", () => ({
   }),
 }))
 
+// tools-base assembles every tool module and tools-stripe imports withCode from it, so load tools-base first, as the runtime does.
+import "../../repertoire/tools-base"
 import { stripeToolDefinitions, resetStripeClient } from "../../repertoire/tools-stripe"
 import { execTool } from "../../repertoire/tools"
 import {
@@ -90,6 +92,20 @@ function confirmedStripeCheckout(agentRoot: string) {
   return preview
 }
 
+
+describe("Ouro AX cards", () => {
+  const effects: Record<string, string> = { stripe_create_card: "write", stripe_deactivate_card: "write", stripe_list_cards: "read" }
+
+  it("gives each tool a card with its effect, and each read tool an explicit low-risk profile", () => {
+    expect(stripeToolDefinitions.map((d) => d.tool.function.name).sort()).toEqual(Object.keys(effects).sort())
+    for (const def of stripeToolDefinitions) {
+      const name = def.tool.function.name
+      expect(def.ax).toMatchObject({ id: `tool:${name}`, effect: effects[name] })
+      if (effects[name] === "read") expect(def.riskProfile).toMatchObject({ mutates: "none", risk: "low" })
+    }
+  })
+})
+
 describe("stripeToolDefinitions", () => {
   it("exports 3 tool definitions", () => {
     expect(stripeToolDefinitions).toHaveLength(3)
@@ -123,6 +139,7 @@ describe("stripe_create_card — no context", () => {
   it("returns error when no friend context", async () => {
     const result = await tool.handler({ type: "single_use", spend_limit: "100", currency: "usd", merchant_categories: "travel" })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 
   it("returns error when ctx has no friend", async () => {
@@ -131,6 +148,7 @@ describe("stripe_create_card — no context", () => {
       { context: {} } as any,
     )
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 
@@ -182,6 +200,7 @@ describe("stripe_create_card handler", () => {
     }, ctx)
 
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
     expect(mockCreateVirtualCard).not.toHaveBeenCalled()
   })
 
@@ -272,6 +291,7 @@ describe("stripe_create_card handler", () => {
     })
 
     expect(result).toContain("commerce authority attempt error")
+    expect(result).toMatch(/\(code: commerce-attempt-rejected\)$/)
     expect(mockCreateVirtualCard).not.toHaveBeenCalled()
   })
 
@@ -315,6 +335,7 @@ describe("stripe_create_card handler", () => {
     }, familyContext(tmp.agentRoot))
 
     expect(result).toContain("commerce authority consume error")
+    expect(result).toMatch(/\(code: commerce-consume-rejected\)$/)
   })
 
   it("keeps commerce authority attempted when card creation fails ambiguously", async () => {
@@ -330,6 +351,7 @@ describe("stripe_create_card handler", () => {
     }, familyContext(tmp.agentRoot))
 
     expect(result).toContain("Stripe API error")
+    expect(result).toMatch(/\(code: card-creation-failed\)$/)
     expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("attempted")
   })
 
@@ -403,6 +425,7 @@ describe("stripe_deactivate_card handler", () => {
 
     const result = await tool.handler({ card_id: "ic_123" }, ctx)
     expect(result).toContain("family")
+    expect(result).toMatch(/\(code: family-required\)$/)
   })
 })
 
@@ -412,6 +435,7 @@ describe("stripe_deactivate_card — no context", () => {
   it("returns error when no friend context", async () => {
     const result = await tool.handler({ card_id: "ic_123" })
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 
@@ -421,6 +445,7 @@ describe("stripe_list_cards — no context", () => {
   it("returns error when no friend context", async () => {
     const result = await tool.handler({})
     expect(result).toContain("no friend context")
+    expect(result).toMatch(/\(code: no-friend-context\)$/)
   })
 })
 

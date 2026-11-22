@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolContext } from "./tools-base"
+import { withCode, type ToolDefinition, type ToolContext, type ToolErrorCard } from "./tools-base"
 import { createDuffelClient, type DuffelClient } from "./duffel-client"
 import { getUserProfileField } from "./user-profile"
 import { getCredentialStore } from "./credential-access"
@@ -17,17 +17,17 @@ async function getDuffelClient(): Promise<DuffelClient> {
 
 function requireFamilyContext(ctx?: ToolContext): { friendId: string } | string {
   if (!ctx?.context?.friend?.id) {
-    return "no friend context — cannot access flight tools."
+    return withCode("no friend context — cannot access flight tools.", "no-friend-context")
   }
   if (ctx.context.friend.trustLevel !== "family") {
-    return "booking and cancellation require family trust level."
+    return withCode("booking and cancellation require family trust level.", "family-required")
   }
   return { friendId: ctx.context.friend.id }
 }
 
 function requireFriendContext(ctx?: ToolContext): { friendId: string } | string {
   if (!ctx?.context?.friend?.id) {
-    return "no friend context — cannot search flights."
+    return withCode("no friend context — cannot search flights.", "no-friend-context")
   }
   return { friendId: ctx.context.friend.id }
 }
@@ -47,7 +47,7 @@ function consumeReservedCommerce(ctx: ToolContext | undefined, toolName: string)
     toolName,
     friendId: ctx.context?.friend?.id,
   })
-  return result.ok ? null : `commerce authority consume error: ${result.reason}`
+  return result.ok ? null : withCode(`commerce authority consume error: ${result.reason}`, "commerce-consume-rejected")
 }
 
 function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): string | null {
@@ -59,7 +59,7 @@ function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): 
     toolName,
     friendId: ctx.context?.friend?.id,
   })
-  return result.ok ? null : `commerce authority attempt error: ${result.reason}`
+  return result.ok ? null : withCode(`commerce authority attempt error: ${result.reason}`, "commerce-attempt-rejected")
 }
 
 function normalizeCurrency(raw: string): string {
@@ -70,6 +70,13 @@ function orderMatchesApprovedTotal(input: { totalAmount: string; totalCurrency: 
   const orderAmount = parseExactAmount(input.totalAmount)
   return orderAmount === amount && normalizeCurrency(input.totalCurrency) === normalizeCurrency(currency)
 }
+
+const NO_FRIEND_ERROR: ToolErrorCard = { code: "no-friend-context", means: "This call came from outside any conversation with a known person, so there is nobody to act for.", fix: "Use this tool only inside a conversation with the person you are acting for." }
+const FAMILY_REQUIRED_ERROR: ToolErrorCard = { code: "family-required", means: "The person in this conversation isn't family, and only family may spend or change bookings.", fix: "Don't retry; tell the person a family member has to ask for this." }
+const GUARDRAIL_ERROR: ToolErrorCard = { code: "guardrail-blocked", means: "The trust guardrail stopped the call before it ran, because this person may not use it.", fix: "Don't retry here; say what you can't do and leave it to someone with the trust it needs." }
+const AUTHORITY_REQUIRED_ERROR: ToolErrorCard = { code: "commerce-authority-required", means: "No confirmed checkout matches this call's merchant, tool, amount, currency and constraints.", fix: "Run commerce_checkout_preview for exactly this call, get the person's confirmation, then commerce_checkout_commit." }
+const ATTEMPT_REJECTED_ERROR: ToolErrorCard = { code: "commerce-attempt-rejected", means: "The confirmed checkout couldn't be marked as in use, so nothing was sent to the provider.", fix: "Open the checkout with commerce_receipt_get to see its status, and start a new preview if it has expired or been used." }
+const CONSUME_REJECTED_ERROR: ToolErrorCard = { code: "commerce-consume-rejected", means: "The provider call went through, but the checkout couldn't be marked used afterwards.", fix: "Tell the person what went through, and check the checkout with commerce_receipt_get before any retry." }
 
 export const flightToolDefinitions: ToolDefinition[] = [
   {
@@ -125,10 +132,15 @@ export const flightToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(offers, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive @preserve */
-        return `flight search error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`flight search error: ${err instanceof Error ? err.message : String(err)}`, "flight-search-failed")
       }
     },
     summaryKeys: ["origin", "destination", "departure_date"],
+    riskProfile: { mutates: "none", risk: "low", reason: "searches flight offers; it reserves and pays for nothing" },
+    ax: { id: "tool:flight_search", group: "turn-travel", when: "Pick this to find priced flight offers between two airports on a date, before any hold or booking; it reserves nothing.", effect: "read", errors: [
+      NO_FRIEND_ERROR, GUARDRAIL_ERROR,
+      { code: "flight-search-failed", means: "The flight provider couldn't be reached or rejected the search; the text gives its reason.", fix: "Check the airport codes and date format, then search again; if it still fails, say flight search is down." },
+    ] },
   },
 
   {
@@ -180,6 +192,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
     },
     summaryKeys: ["offer_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "requests an airline offer hold" },
+    ax: { id: "tool:flight_hold", group: "turn-travel", when: "Pick this to keep a chosen offer's price without paying yet, once the person confirmed a checkout for that hold.", effect: "write", errors: [NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR, AUTHORITY_REQUIRED_ERROR, ATTEMPT_REJECTED_ERROR, CONSUME_REJECTED_ERROR] },
   },
 
   {
@@ -220,7 +233,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
         // Get passenger data from profile
         const legalName = await getUserProfileField(guard.friendId, "legalName", store) as UserProfileName | undefined
         if (!legalName) {
-          return "passenger profile not found — please store your profile first using user_profile_store."
+          return withCode("passenger profile not found — please store your profile first using user_profile_store.", "passenger-profile-missing")
         }
 
         const dateOfBirth = await getUserProfileField(guard.friendId, "dateOfBirth", store) as string | undefined
@@ -245,7 +258,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
           currency,
         })
         if (!orderMatchesApprovedTotal(result, amount, currency)) {
-          return `booking error: completed order total ${result.totalAmount} ${result.totalCurrency} does not match approved ${args.amount} ${args.currency}`
+          return withCode(`booking error: completed order total ${result.totalAmount} ${result.totalCurrency} does not match approved ${args.amount} ${args.currency}`, "order-total-mismatch")
         }
 
         const consumeError = consumeReservedCommerce(ctx, "flight_book")
@@ -254,11 +267,17 @@ export const flightToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(result, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive @preserve */
-        return `booking error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`booking error: ${err instanceof Error ? err.message : String(err)}`, "booking-failed")
       }
     },
     summaryKeys: ["offer_id", "amount"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "books travel through an external provider" },
+    ax: { id: "tool:flight_book", group: "turn-travel", when: "Pick this to buy a chosen offer for the stored passenger, only after commerce_checkout_commit confirmed that exact amount.", effect: "write", errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR, AUTHORITY_REQUIRED_ERROR, ATTEMPT_REJECTED_ERROR, CONSUME_REJECTED_ERROR,
+      { code: "passenger-profile-missing", means: "No passenger name and passport are stored for this person, so the airline has no traveller.", fix: "Ask the person for their legal name and passport details, save them with user_profile_store, then book." },
+      { code: "order-total-mismatch", means: "The airline booked the order, but its total differs from the approved amount.", fix: "Tell the person the booked total now, and ask whether to keep it or cancel it with flight_cancel." },
+      { code: "booking-failed", means: "The provider refused or lost the booking; the text gives its reason, and the checkout stays marked in use.", fix: "Check with commerce_receipt_get before retrying, and search again if the offer has expired." },
+    ] },
   },
 
   {
@@ -294,11 +313,15 @@ export const flightToolDefinitions: ToolDefinition[] = [
         return JSON.stringify(result, null, 2)
       } catch (err) {
         /* v8 ignore next -- defensive @preserve */
-        return `cancellation error: ${err instanceof Error ? err.message : String(err)}`
+        return withCode(`cancellation error: ${err instanceof Error ? err.message : String(err)}`, "cancellation-failed")
       }
     },
     summaryKeys: ["order_id"],
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "cancels travel through an external provider" },
+    ax: { id: "tool:flight_cancel", group: "turn-travel", when: "Pick this to call off a flight order that is already booked, by its order id, when the person asks to cancel the trip.", effect: "write", destructive: true, errors: [
+      NO_FRIEND_ERROR, FAMILY_REQUIRED_ERROR, GUARDRAIL_ERROR,
+      { code: "cancellation-failed", means: "The provider couldn't cancel the order; the text gives its reason.", fix: "Check the order id with the person, and if it is right, tell them to cancel through the airline." },
+    ] },
   },
 ]
 
