@@ -92,6 +92,19 @@ describe("edit_file tool", () => {
     expect(content).toBe("the slow red fox")
   })
 
+  it("says it could not read a file that exists but can't be read", async () => {
+    const filePath = path.join(tmpDir, "locked.txt")
+    fs.writeFileSync(filePath, "secret", "utf-8")
+    editFileReadTracker.add(filePath)
+    fs.chmodSync(filePath, 0o000)
+    try {
+      const result = await getEditFileHandler()({ path: filePath, old_string: "secret", new_string: "open" })
+      expect(result).toMatch(/^error: could not read file: EACCES/u)
+    } finally {
+      fs.chmodSync(filePath, 0o644)
+    }
+  })
+
   it("preserves oversized replacement content exactly without applying the structured record cap", async () => {
     const filePath = path.join(tmpDir, "oversized-replace.txt")
     fs.writeFileSync(filePath, "before\nPLACEHOLDER\nafter", "utf-8")

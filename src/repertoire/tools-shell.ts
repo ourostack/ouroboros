@@ -68,11 +68,12 @@ export const shellToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "shell",
-        description: "Run a shell command in your home; cd does not persist between calls, and a failed command comes back with how it ended, its stdout and its stderr. Keeps the last 2000 lines or 30,000 characters of output and saves the full output to a file it names when it cuts.",
+        description: "Run a shell command in your home, or in cwd when you pass one; cd does not persist between calls, and a failed command comes back with how it ended, its stdout and its stderr. Keeps the last 2000 lines or 30,000 characters of output and saves the full output to a file it names when it cuts.",
         parameters: {
           type: "object",
           properties: {
             command: { type: "string" },
+            cwd: { type: "string", description: "folder to run the command in, relative to your home or absolute (defaults to your home)" },
             timeout_ms: {
               type: "number",
               description: "Timeout in milliseconds. Default: 30000. Max: 600000.",
@@ -113,9 +114,16 @@ export const shellToolDefinitions: ToolDefinition[] = [
         })
       }
 
+      // A cwd starts from home when relative, the way the file tools' paths do; a folder that isn't there is said plainly.
+      const runIn = a.cwd ? path.resolve(shellHome(ctx), a.cwd) : undefined
+      if (runIn !== undefined && !fs.statSync(runIn, { throwIfNoEntry: false })?.isDirectory()) {
+        emitNervesEvent({ component: "tools", event: "tool.shell_cwd_missing", message: "a shell call named a cwd that is not a folder", meta: { relative: !path.isAbsolute(a.cwd) } })
+        return withCode(`error: no folder at ${runIn}${path.isAbsolute(a.cwd) ? "" : ` (from the relative cwd ${a.cwd})`}`, "not-found")
+      }
+
       // Background mode: spawn and return immediately
       if ((a as { background?: boolean }).background === true) {
-        const session = spawnBackgroundShell(a.command, shellOwner(ctx))
+        const session = spawnBackgroundShell(a.command, shellOwner(ctx), runIn)
         return JSON.stringify({ id: session.id, command: session.command, status: session.status })
       }
 
@@ -137,7 +145,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
       const timeout = Math.min(baseTimeout, MAX_TIMEOUT)
       const home = shellHome(ctx)
       const raw = await new Promise<string>((resolve, reject) => {
-        const child = exec(a.command, { encoding: "utf-8", timeout, cwd: home, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
+        const child = exec(a.command, { encoding: "utf-8", timeout, cwd: runIn ?? home, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
           if (error) {
             // A failing command's output gets the same tail cap and saved file, and the agent sees all of it: how it ended,
             // what it printed and what it complained about. Node's own message keeps only stderr.
@@ -162,6 +170,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
     ax: { id: "tool:shell", eager: true, group: "turn-shell", when: "Pick this to run a program or script in your home; for plain file reads and searches, read_file, grep and glob are safer.", effect: "consequential", confirm: "Approve shell with exact arguments <the call's arguments as JSON>?", errors: [
       { code: "command-failed", means: "The command ran and exited non-zero; its stdout and stderr follow the first line.", fix: "Read stderr, fix the command or its input, and run it again." },
       { code: "command-timed-out", means: "The command ran past its timeout and was stopped; whatever it printed follows.", fix: "Run it again with a larger timeout_ms, at most 600000, or with background: true and watch it with shell_status." },
+      { code: "not-found", means: "cwd names no folder; the result gives the absolute path tried.", fix: "Pass cwd as a folder that exists, relative to your home or absolute." },
       { code: "command-not-started", means: "The shell couldn't start the command at all, so nothing ran.", fix: "Check the program's name and that it is installed, then run it again." },
       { code: "guardrail-blocked", means: "The line writes to a protected path, names the sync key's folder, or runs a command this person isn't trusted for.", fix: "Change the command so it stays off protected paths, or run it from a chat with your owner." },
       { code: "orientation-hold", means: "This turn is on a correction hold and the command changes things, so it waits.", fix: "Call orientation_get, settle what the person meant, then run the command if it is still right." },

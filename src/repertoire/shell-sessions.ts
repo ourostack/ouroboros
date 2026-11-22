@@ -23,10 +23,11 @@ interface LiveSession {
 const sessions = new Map<string, LiveSession>()
 const MAX_OUTPUT_LINES = 200
 
-export function spawnBackgroundShell(command: string, owner: ShellSessionOwner): ShellSession {
+/** Runs in `cwd` when given, else in the owner's home. */
+export function spawnBackgroundShell(command: string, owner: ShellSessionOwner, cwd?: string): ShellSession {
   const id = randomUUID()
   const proc = spawn("sh", ["-c", command], {
-    cwd: owner.agentRoot,
+    cwd: cwd ?? owner.agentRoot,
     stdio: ["pipe", "pipe", "pipe"],
   })
 

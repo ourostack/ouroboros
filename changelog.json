@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1362",
+      "version": "0.1.0-alpha.1364",
       "changes": [
         "The Butler can send the messages it starts itself (house notices, external events, unprompted messages) to the owner's primary agent over A2A instead of to Telegram, set by senses.telegram.ownerNoticesTo in agent.json; replies stay on Telegram, and while the peer can't be reached only urgent messages go to Telegram, marked as a fallback."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1363",
+      "changes": [
+        "File tools (read_file, write_file, edit_file, grep) and shell take an optional cwd that relative paths start from, and a path that names nothing says which absolute path was tried."
       ]
     },
     {
