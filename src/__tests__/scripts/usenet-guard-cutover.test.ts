@@ -442,9 +442,8 @@ case "$*" in
 esac
 `, { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
-cat >/dev/null
 case "$*" in
-  *@tsv*) exit 1 ;;
+  *@tsv*) cat >/dev/null; exit 1 ;;
   *) exec ${JSON.stringify(realJq)} "$@" ;;
 esac
 `, { mode: 0o700 })
