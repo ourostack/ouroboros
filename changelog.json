@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1369",
+      "changes": [
+        "iMessage no longer stops replying in a chat after runtime sync re-reads a message that already has an outcome; that message used to hold every later reply in the chat forever."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1368",
       "changes": [
         "The Butler files a report with report_failure when it lacks a tool, instead of only saying no (#1660)"
