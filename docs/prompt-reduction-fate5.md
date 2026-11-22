@@ -52,5 +52,4 @@ Each pair is baseline versus candidate; the prompt wording for the behavior is u
 
 ## Not done
 
-No tool was removed or hidden. Deferred loading is a separate decision: see
-`docs/deferred-tool-loading-design.md`.
+No tool was removed or hidden. Deferred loading came later, through the tool catalog (`src/repertoire/tool-catalog.ts`).

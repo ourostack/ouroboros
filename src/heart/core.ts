@@ -7,7 +7,8 @@ import { learnContextWindow } from "./model-limits";
 import { sourceGroundingFinding, withUnverifiedDisclosure, type TurnToolRecord } from "./source-grounding";
 import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
-import { FIND_TOOLS_NAME, deferredNamesCalledInHistory, deferredToolLoadingEnabled, formatFindToolsResult, partitionTools, recordDeferredToolsLoaded, searchDeferredTools } from "../repertoire/deferred-tools";
+import { FIND_TOOLS_NAME, buildToolCatalog, formatLoadedDoors, namesLoadedInHistory, partitionCatalog, recordFindTools, searchCatalog } from "../repertoire/tool-catalog";
+import { declaredTools } from "../repertoire/skill-summaries";
 import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
@@ -143,6 +144,11 @@ export interface ProviderTurnRequest {
   toolChoiceRequired?: boolean;
   reasoningEffort?: string;
   eagerSettleStreaming?: boolean;
+  /**
+   * Every door the catalog held back this step, loaded or not. A provider with native deferral (Anthropic) sends them
+   * all, marked deferred, so its tool list stays the same all conversation; others ignore it and send `activeTools`.
+   */
+  deferredTools?: OpenAI.ChatCompletionFunctionTool[];
   /** Structured system prompt for providers that support cache_control (e.g. Anthropic). */
   systemPrompt?: SystemPrompt;
 }
@@ -1944,6 +1950,7 @@ export async function runAgent(
   providerRuntime.resetTurnState(messages);
 
   const loadedDeferredTools: string[] = []
+  const ordinaryDefinitionsByName = new Map(toolSelection.ordinary.map((definition) => [definition.tool.function.name, definition]))
     while (!done) {
     // Channel-based tool filtering:
     // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
@@ -1961,14 +1968,20 @@ export async function runAgent(
     const scopedOrdinaryActiveTools = relationshipToolNames
       ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
       : unscopedOrdinaryActiveTools
-    // Deferred loading narrows only what is advertised; the scoped list above is still the authority on what may exist.
-    const deferralPossible = deferredToolLoadingEnabled() && !options?.hardDisableTools && options?.toolProfile !== "sanctuary-health-private"
+    // The catalog narrows only what is advertised; the scoped list above is still the authority on what may exist.
+    // Doors whose card isn't eager wait for find_tools (or a skill that declares them).
+    // A caller that hands the turn its own tool list has already chosen the menu, so only the default selection defers.
+    const deferralPossible = !options?.hardDisableTools && options?.tools === undefined && options?.toolProfile !== "sanctuary-health-private"
     const deferralKeep = new Set(requiredToolCallNames)
     for (const effect of unresolvedHistoricalEffects) deferralKeep.add(effect.name)
-    const deferralPool = deferralPossible ? partitionTools(scopedOrdinaryActiveTools, [], deferralKeep).deferred : []
-    const deferralHistory = deferralPossible ? deferredNamesCalledInHistory(messages, deferralPool) : []
+    const toolCatalog = buildToolCatalog(scopedOrdinaryActiveTools.map((tool) => {
+      const definition = ordinaryDefinitionsByName.get(tool.function.name)
+      return { tool, ax: definition?.ax, mcpServer: definition?.mcpServer }
+    }))
+    const deferralPool = deferralPossible ? partitionCatalog(scopedOrdinaryActiveTools, toolCatalog, [], deferralKeep).deferred : []
+    const deferralHistory = deferralPossible ? namesLoadedInHistory(messages, new Set(deferralPool.map((tool) => tool.function.name))) : []
     const ordinaryActiveTools = deferralPossible
-      ? partitionTools(scopedOrdinaryActiveTools, [...new Set([...loadedDeferredTools, ...deferralHistory])], deferralKeep).active
+      ? partitionCatalog(scopedOrdinaryActiveTools, toolCatalog, [...new Set([...loadedDeferredTools, ...deferralHistory])], deferralKeep).active
       : scopedOrdinaryActiveTools
     const candidateActiveTools = options?.hardDisableTools
       ? []
@@ -2060,6 +2073,8 @@ export async function runAgent(
           return await providerRuntime.streamTurn({
             messages: attemptMessages,
             activeTools,
+            // A step narrowed to one tool (a step report, a forced repeat) sends no held-back doors either.
+            ...(deferralPool.length > 0 && activeTools === candidateActiveTools ? { deferredTools: deferralPool } : {}),
             callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
@@ -2459,11 +2474,19 @@ export async function runAgent(
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
         const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
-        const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
+        // A held-back door called by name (find_tools's description lists every one) counts as found: it is checked
+        // against its own schema, runs, and stays loaded. A step narrowed to one tool admits none.
+        const calledHeldBack = activeTools === candidateActiveTools
+          ? deferralPool.filter((tool) => !activeToolNames.has(tool.function.name) && result.toolCalls.some((call) => call.name === tool.function.name))
+          : []
+        for (const tool of calledHeldBack) if (!loadedDeferredTools.includes(tool.function.name)) loadedDeferredTools.push(tool.function.name)
+        const callableTools = [...activeTools, ...calledHeldBack]
+        const callableToolNames = new Set(callableTools.map((tool) => tool.function.name))
+        const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, callableTools)
         const invalidCall = validatedCalls.find((entry) => "error" in entry)
         if (invalidCall) {
           streamCallbackBuffer?.discard()
-          const unadvertisedCall = validatedCalls.find((entry) => !activeToolNames.has(entry.call.name))
+          const unadvertisedCall = validatedCalls.find((entry) => !callableToolNames.has(entry.call.name))
           const rejections: string[] = []
           for (const entry of validatedCalls) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
@@ -2473,7 +2496,7 @@ export async function runAgent(
             rejections.push(rejection)
             options?.toolBoundaryObserver?.({
               name: entry.call.name,
-              reason: activeToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
+              reason: callableToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
               globallyResolvable: typeof resolveToolDefinition(entry.call.name)?.handler === "function",
               invoked: false,
               sideEffect: false,
@@ -2964,14 +2987,16 @@ export async function runAgent(
             // The pre-batch schema gate guarantees a string query.
             const query = args.query as string
             callbacks.onToolStart(FIND_TOOLS_NAME, { query })
-            const matched = searchDeferredTools(deferralPool, query)
-            for (const tool of matched) if (!loadedDeferredTools.includes(tool.function.name)) loadedDeferredTools.push(tool.function.name)
-            const found = formatFindToolsResult(matched)
+            const matchedNames = searchCatalog(toolCatalog, deferralPool, query)
+            const matched = deferralPool.filter((tool) => matchedNames.includes(tool.function.name))
+              .sort((a, b) => matchedNames.indexOf(a.function.name) - matchedNames.indexOf(b.function.name))
+            for (const name of matchedNames) if (!loadedDeferredTools.includes(name)) loadedDeferredTools.push(name)
+            const found = formatLoadedDoors(matched)
             pushGenerated({ role: "tool", tool_call_id: tc.id, content: found })
             providerRuntime.appendToolOutput(tc.id, found)
             if (matched.length > 0) lastIterationMadeProgress = true
             callbacks.onToolEnd(FIND_TOOLS_NAME, query, matched.length > 0)
-            recordDeferredToolsLoaded(query, matched)
+            recordFindTools({ query, matched: matched.length, deferred: deferralPool.length })
             continue
           }
           if (tc.name === "speak") {
@@ -3225,6 +3250,13 @@ export async function runAgent(
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
+          }
+          if (success && tc.name === "load_skill") {
+            // A skill names the doors its steps use; they load with it so the agent needn't find them one by one.
+            const declared = declaredTools(toolResult)
+            const skillDoors = deferralPool.filter((tool) => declared.includes(tool.function.name))
+            for (const tool of skillDoors) if (!loadedDeferredTools.includes(tool.function.name)) loadedDeferredTools.push(tool.function.name)
+            if (skillDoors.length > 0) toolResult = `${toolResult}\n\n${formatLoadedDoors(skillDoors)}`
           }
           if (success && toolImages.length > 0) {
             const visible = canModelSeeToolImages(providerRuntime.model)

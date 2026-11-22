@@ -33,6 +33,7 @@ describe("tool catalog", () => {
     const long = `${"word ".repeat(60)}end`
     const door = catalogDoor({ tool: tool("bare", long) })
     expect(door.group).toBe("other")
+    expect(door.eager).toBe(true)
     expect(door.when.length).toBe(200)
     expect(door.when.endsWith("…")).toBe(true)
     expect(catalogDoor({ tool: { type: "function", function: { name: "nodesc" } } as OpenAI.ChatCompletionFunctionTool }).when).toBe("")
