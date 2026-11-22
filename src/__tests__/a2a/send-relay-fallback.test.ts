@@ -148,7 +148,7 @@ describe("a2a_send_message falls back to the peer's relay", () => {
     writeRelayContact(tmp.agentRoot, { did: peer.did, fetchedAt: new Date().toISOString(), contact: { ...contact, sendCredential: "revoked" } })
 
     const out = await sendMessage()({ friend_id: record.id, message: "hi" }, localCtx(tmp.agentRoot, store))
-    expect(out).toMatch(/or through its relay \(.*\); the message was not delivered$/)
+    expect(out).toMatch(/or through its relay \(.*\); the message was not delivered \(code: send-failed\)$/)
     expect(readRelayContact(tmp.agentRoot, peer.did)?.stale).toBe(true)
   })
 
