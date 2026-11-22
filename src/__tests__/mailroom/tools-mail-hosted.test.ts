@@ -2568,13 +2568,13 @@ describe("hosted mail tools", () => {
     expect(indexTool).toBeTruthy()
 
     await expect(indexTool!.handler({}, strangerContext()))
-      .resolves.toBe("mail is private; this tool is only available in trusted contexts.")
+      .resolves.toBe("mail is private; this tool is only available in trusted contexts. (code: not-trusted)")
     await expect(indexTool!.handler({ scope: "delegated" }, friendContext()))
-      .resolves.toBe("delegated human mail requires family trust.")
+      .resolves.toBe("delegated human mail requires family trust. (code: family-only)")
     await expect(indexTool!.handler({ scope: "all" }, friendContext()))
-      .resolves.toBe("delegated human mail requires family trust.")
+      .resolves.toBe("delegated human mail requires family trust. (code: family-only)")
     await expect(indexTool!.handler({ source: "hey" }, friendContext()))
-      .resolves.toBe("delegated human mail requires family trust.")
+      .resolves.toBe("delegated human mail requires family trust. (code: family-only)")
   })
 
   it("returns mail_index_refresh reader resolution errors before indexing", async () => {
@@ -2595,7 +2595,7 @@ describe("hosted mail tools", () => {
     expect(indexTool).toBeTruthy()
 
     const result = await indexTool!.handler({}, trustedContext())
-    expect(result).toBe("AUTH_REQUIRED:mailroom: Run `ouro connect mail --agent slugger`.")
+    expect(result).toBe("AUTH_REQUIRED:mailroom: Run `ouro connect mail --agent slugger`. (code: mail-unavailable)")
   })
 
   it("resolves mail_index_refresh default scopes and audit reasons", async () => {
@@ -2691,7 +2691,7 @@ describe("hosted mail tools", () => {
     expect(indexTool).toBeTruthy()
 
     const result = await indexTool!.handler({ reason: "non-error smoke" }, trustedContext())
-    expect(result).toBe("mail search index refresh failed: raw hosted index exploded")
+    expect(result).toBe("mail search index refresh failed: raw hosted index exploded (code: index-refresh-failed)")
     expect(recordAccess).not.toHaveBeenCalled()
   })
 
@@ -2729,7 +2729,7 @@ describe("hosted mail tools", () => {
       },
     })
 
-    expect(status).toBe("mail is private; this tool is only available in trusted contexts.")
+    expect(status).toBe("mail is private; this tool is only available in trusted contexts. (code: not-trusted)")
   })
 
   it("requires family trust for delegated mail status surfaces", async () => {
@@ -2738,7 +2738,7 @@ describe("hosted mail tools", () => {
     const statusTool = mailToolDefinitions.find((definition) => definition.tool.function.name === "mail_status")
     expect(statusTool).toBeTruthy()
 
-    await expect(statusTool!.handler({}, friendContext())).resolves.toBe("delegated human mail requires family trust.")
+    await expect(statusTool!.handler({}, friendContext())).resolves.toBe("delegated human mail requires family trust. (code: family-only)")
   })
 
   it("returns reader resolution errors for mail_status when Mailroom is not configured", async () => {
@@ -2759,7 +2759,7 @@ describe("hosted mail tools", () => {
     expect(statusTool).toBeTruthy()
 
     const status = await statusTool!.handler({}, trustedContext())
-    expect(status).toBe("AUTH_REQUIRED:mailroom: Run `ouro connect mail --agent slugger`.")
+    expect(status).toBe("AUTH_REQUIRED:mailroom: Run `ouro connect mail --agent slugger`. (code: mail-unavailable)")
   })
 
   it("renders hosted lane truth and recent browser-downloaded archives in mail_status", async () => {
