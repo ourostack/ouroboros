@@ -1139,7 +1139,9 @@ export function syncIntervals(events) {
     const end = sorted.findIndex((event, index) => index > start && ends.includes(event.event))
     if (end < 0) return { ms: null, problem: `no end was logged after ${startName}`, next: start + 1 }
     const ended = sorted[end].event
-    return ended === ends[0] ? { ms: sorted[end].at - sorted[start].at, next: end + 1 } : { ms: null, problem: `it ended with ${ended}`, next: end + 1 }
+    if (ended === ends[0]) return { ms: sorted[end].at - sorted[start].at, next: end + 1 }
+    // A post-turn push_end straight after push_start is the commit skipped for a busy sync lock: nothing was timed.
+    return { ms: null, problem: `it ended with ${ended}`, ...(startName === "heart.sync_push_start" && ended === "heart.sync_push_end" ? { skipped: true } : {}), next: end + 1 }
   }
   const pull = span("heart.sync_pull_start", PULL_ENDS, 0)
   const commit = span("heart.sync_push_start", COMMIT_ENDS, pull.next)
@@ -1177,12 +1179,16 @@ export async function syncLatencyResult(host) {
     if (timed.error) return { id: "sync-latency", status: "fail", checks: [check("the read-only turn answered", false, timed.error)] }
     turns.push(timed.intervals)
     const first = turns[0]
-    if (!first.complete || (fast(first.pull) && fast(first.commit))) break
+    if (first.complete && fast(first.pull) && fast(first.commit)) break
+    // A turn whose commit was skipped for a busy lock times nothing, so another turn is taken; any other gap fails now.
+    if (!timed.intervals.complete && !timed.intervals.commit.skipped) break
   }
   const median = (key) => {
-    const spans = turns.map((intervals) => intervals[key])
+    const all = turns.map((intervals) => intervals[key])
+    // Skipped commits are left out; when every turn's commit was skipped, that is the result.
+    const spans = all.some((span) => !span.skipped) ? all.filter((span) => !span.skipped) : all
     const missing = spans.find((span) => span.ms === null)
-    if (missing) return missing
+    if (missing) return missing.skipped ? { ...missing, problem: `every turn's commit was skipped while another sync held the lock (${missing.problem})` } : missing
     const ms = spans.map((span) => span.ms).sort((a, b) => a - b)
     return { ms: ms[Math.floor(ms.length / 2)], detail: ms.length > 1 ? `median ${ms[Math.floor(ms.length / 2)]} ms of ${ms.join(", ")} ms` : `${ms[0]} ms` }
   }

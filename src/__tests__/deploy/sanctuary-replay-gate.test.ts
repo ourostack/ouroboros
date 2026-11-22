@@ -2476,10 +2476,11 @@ describe("bundle sync around the run (M1c)", () => {
   }
 
   /** Sync's events for one read-only turn, as the Butler's daemon logs them: the commit ends, then the network push (not timed) much later. */
-  function logTurn(bundle: string, startMs: number, pullMs: number, commitMs: number, overrides: Record<string, string> = {}) {
+  /** One turn's sync events; a null commitMs is a commit skipped for a busy lock (push_end with no commit_end). */
+  function logTurn(bundle: string, startMs: number, pullMs: number, commitMs: number | null, overrides: Record<string, string> = {}) {
     const line = (event: string, at: number) => JSON.stringify({ ts: new Date(at).toISOString(), level: "info", event: overrides[event] ?? event, trace_id: "t", component: "heart", message: "", meta: { agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro" } })
-    const committed = startMs + pullMs + 500 + commitMs
-    const lines = [line("heart.sync_pull_start", startMs), line("heart.sync_pull_end", startMs + pullMs), line("heart.sync_push_start", startMs + pullMs + 500), line("heart.sync_commit_end", committed), line("heart.sync_push_end", committed + 9000)]
+    const committed = startMs + pullMs + 500 + (commitMs ?? 0)
+    const lines = [line("heart.sync_pull_start", startMs), line("heart.sync_pull_end", startMs + pullMs), line("heart.sync_push_start", startMs + pullMs + 500), ...(commitMs === null ? [] : [line("heart.sync_commit_end", committed)]), line("heart.sync_push_end", committed + (commitMs === null ? 1 : 9000))]
     fs.appendFileSync(path.join(bundle, "state", "daemon", "logs", "a2a.ndjson"), `${lines.join("\n")}\n`)
   }
 
@@ -2510,7 +2511,7 @@ describe("bundle sync around the run (M1c)", () => {
   const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_OPTIONAL_LOCKS=0", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro", "ls-remote", "origin", "refs/heads/main"]
 
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
-  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number] | [number, number][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
+  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number | null] | [number, number | null][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
     const clock = { t: Date.now() }
     const tacitFile = path.join(repo.bundle, "psyche", "TACIT.md")
     const wroteTacit = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "edit_file", arguments: JSON.stringify({ path: "psyche/TACIT.md", old_string: "a", new_string: "b" }) } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
@@ -2534,9 +2535,9 @@ describe("bundle sync around the run (M1c)", () => {
             const latency = opts.latency ?? [120, 80]
             // A list gives each latency turn its own timing; the clock moves on so a turn reads only its own events.
             if (Array.isArray(latency[0])) {
-              logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number][])[latencyTurn++]!)
+              logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number | null][])[latencyTurn++]!)
               clock.t += 10_000
-            } else logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number]))
+            } else logTurn(repo.bundle, clock.t + 10, ...(latency as [number, number | null]))
           }
           return { text: "it's ten past nine" }
         }
@@ -2962,6 +2963,25 @@ describe("bundle sync around the run (M1c)", () => {
       const fast = bracketHost(fastRepo)
       expect(byResult(await gate.runSuite(fast.host, { cases: ["handoff-greeting"], log: () => undefined }), "sync-latency")).toMatchObject({ status: "pass", checks: [{ detail: "120 ms" }, { detail: "80 ms" }] })
       expect(fast.log.filter((entry) => entry === "open:10")).toHaveLength(1)
+    }, 60_000)
+
+    it("takes another turn when a commit was skipped for a busy sync lock, and fails only when every turn's was", async () => {
+      // alpha.1338's ship (2026-11-22): one post-turn commit was skipped while another sync held the lock, and the case failed on that single turn.
+      const repo = syncRepo()
+      repo.cutover()
+      const busyOnce = bracketHost(repo, { latency: [[1400, null], [1300, 90], [1200, 70]] })
+      const suite = await gate.runSuite(busyOnce.host, { cases: ["handoff-greeting"], log: () => undefined })
+      expect(byResult(suite, "sync-latency")).toMatchObject({ status: "pass", checks: [{ ok: true, detail: "median 1300 ms of 1200, 1300, 1400 ms" }, { ok: true, detail: "median 90 ms of 70, 90 ms" }] })
+      expect(busyOnce.log.filter((entry) => entry === "open:10")).toHaveLength(3)
+
+      const alwaysRepo = syncRepo()
+      alwaysRepo.cutover()
+      const always = bracketHost(alwaysRepo, { latency: [[100, null], [100, null], [100, null]] })
+      const result = byResult(await gate.runSuite(always.host, { cases: ["handoff-greeting"], log: () => undefined }), "sync-latency")!
+      expect(result.status).toBe("fail")
+      expect(result.checks[1]).toMatchObject({ ok: false, detail: "every turn's commit was skipped while another sync held the lock (it ended with heart.sync_push_end)" })
+      expect(always.log.filter((entry) => entry === "open:10")).toHaveLength(3)
+      expect(gate.syncIntervals([{ event: "heart.sync_pull_start", at: 0 }, { event: "heart.sync_paused", at: 1 }]).pull.skipped).toBeUndefined()
     }, 60_000)
 
     it("fails when the turn logs no sync events within the wait, or the turn errors, and skips it when the window was refused", async () => {

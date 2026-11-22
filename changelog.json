@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1341",
+      "version": "0.1.0-alpha.1343",
       "changes": [
-        "media_blocklist_stalled has a dry run that returns what it would clear and changes nothing, so a replay identity's call is previewed instead of refused."
+        "media_blocklist_stalled takes dry_run: it reports which stalled downloads it would remove and re-search, and changes nothing. The replay gate then runs it as a dry run and does not count a dry run as a removal."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1342",
+      "changes": [
+        "The Butler's replay gate takes another timed turn when a post-turn commit was skipped because another sync held the lock, instead of failing sync-latency on that one turn."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1340",
+      "changes": [
+        "media_fill_missing now finishes its job in one call: up to three passes in three minutes, never grabbing anything twice, with a result that says what is still missing and why. media_search_now says in one sentence what it does, and its result says what it started."
       ]
     },
     {

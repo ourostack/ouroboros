@@ -1242,7 +1242,7 @@ describe("media MCP — media_fill_missing", () => {
     episodes = episodes.map((e) => (e.seasonNumber === 2 ? { ...e, hasFile: e.id !== 14476, monitored: e.id !== 14476 } : e))
     const out = await mod.mediaFillMissing({ service_id: 191, season_number: 2 }, { nowMs: now })
     expect(out).toMatchObject({ goal_met: true, on_shelf: { count: 4, of: 5 }, not_monitored_missing: [{ episode_id: 14476, code: "S02E05", title: "Late Night Burger" }] })
-    expect(out.next_step).toContain("Goal met. Stop here")
+    expect(out.next_step).toBe("Goal met: nothing is left to get.")
     expect(calls.some((c) => c.url.includes("/release") || c.url.includes("/queue"))).toBe(false)
   })
 
@@ -1260,7 +1260,7 @@ describe("media MCP — media_fill_missing", () => {
     expect(out.indexer_evidence.map((x: any) => x.query)).toEqual(["The Chef Show 2020", "The Chef Show S04"])
     expect(out.indexer_evidence[0]).toEqual({ query: "The Chef Show 2020", results: 2, top: [{ title: "The Chef Show S02 1080p WEB X264 STARZ", seeders: 3, indexer: "Lime" }, { title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", seeders: 0, indexer: "LimeTorrents" }] })
     expect(out.summary).toContain("stalled with no peers and no other usable release (The Chef Show [Season 2] (2020) [WEB-DL 1080p] at 75.9%)")
-    expect(out.next_step).toContain("do not grab, import or blocklist anything by hand")
+    expect(out.next_step).toContain("what is still missing is listed with why")
     // Seen again 31 minutes later at the same size: the stall is confirmed, and still nothing is touched.
     const later = await mod.mediaFillMissing({ series: "The Chef Show" }, { nowMs: now + 31 * 60_000 })
     expect(later.in_flight[0].stall_confirmed).toBeUndefined()
@@ -1409,7 +1409,7 @@ describe("media MCP — media_fill_missing", () => {
     expect(out.errors).toEqual([expect.objectContaining({ step: "grab The Chef Show Season 2 2020 1080p NF WEB-DL", error: "sonarr_http_500" })])
     expect(out.in_flight[0]).toMatchObject({ state: "stalled" })
     expect(out.incomplete).toBe(true)
-    expect(out.next_step).toContain("call media_fill_missing again")
+    expect(out.next_step).toContain("Some steps failed")
   })
 
   it("never replaces a stalled download with an unseeded release, even one that also covers other episodes", async () => {
@@ -1445,9 +1445,41 @@ describe("media MCP — media_fill_missing", () => {
     expect((await mod.mediaFillMissing({ series: "The Chef Show" }, { nowMs: now })).result).toBeUndefined()
   })
 
-  it("defers episodes past the grab cap instead of calling them not found", async () => {
+  it("finishes the job in one call: a second pass grabs what the first pass's grab cap deferred, without grabbing anything twice", async () => {
     releases["seasonNumber=2"] = s2Titles.map((t, i) => rel(`g-${i}`, `The Chef Show ${t} 1080p`, 5 + i))
     const out = await mod.mediaFillMissing({ series: "The Chef Show", season_number: 2 }, { nowMs: now })
+    const grabbed = out.actions.filter((x: any) => x.action === "grabbed")
+    expect(grabbed).toHaveLength(5)
+    expect(new Set(grabbed.map((x: any) => x.title)).size).toBe(5)
+    expect(posts().filter((c) => c.url.endsWith("/release"))).toHaveLength(5)
+    expect(out.passes).toBe(2)
+    expect(out.incomplete).toBeUndefined()
+    expect(out.held).toBeUndefined()
+    expect(out.in_flight.filter((x: any) => x.state === "just_grabbed")).toHaveLength(5)
+  })
+
+  it("runs at most three passes in one call", async () => {
+    const titles = Array.from({ length: 12 }, (_, i) => `Kitchen Story Number ${["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve"][i]}`)
+    episodes = titles.map((title, i) => ({ id: 900 + i, seasonNumber: 2, episodeNumber: i + 1, title, airDate: "2020-09-24", airDateUtc: "2020-09-24T07:00:00Z", hasFile: false, monitored: true }))
+    releases["seasonNumber=2"] = titles.map((t, i) => rel(`k-${i}`, `The Chef Show ${t} 1080p`, 5 + i))
+    const out = await mod.mediaFillMissing({ series: "The Chef Show", season_number: 2 }, { nowMs: now })
+    expect(out.passes).toBe(3)
+    expect(out.actions.filter((x: any) => x.action === "grabbed")).toHaveLength(9)
+    expect(out.incomplete).toBe(true)
+    expect(out.deferred).toHaveLength(3)
+  })
+
+  it("says in its result what media_search_now started", async () => {
+    const out = await mod.mediaSearchNow({ kind: "series", service_id: 191 })
+    expect(out).toMatchObject({ result: "search_started", service_id: 191 })
+    expect(out.summary).toMatch(/^Sonarr started a search for The Chef Show; (nothing is downloading for it yet|\d+ downloads? (is|are) in its queue)\.$/u)
+  })
+
+  it("stops after one pass when too little of the budget is left for another, and defers the rest instead of calling them not found", async () => {
+    releases["seasonNumber=2"] = s2Titles.map((t, i) => rel(`g-${i}`, `The Chef Show ${t} 1080p`, 5 + i))
+    const out = await mod.mediaFillMissing({ series: "The Chef Show", season_number: 2 }, { nowMs: now, deadlineMs: 10_000 })
+    expect(out.passes).toBe(1)
+    expect(out.next_step).toContain("Time ran out")
     expect(out.actions.filter((x: any) => x.action === "grabbed")).toHaveLength(3)
     expect(out.deferred.map((e: any) => e.code)).toHaveLength(2)
     expect(out.not_found).toEqual([])
@@ -1547,7 +1579,7 @@ describe("media MCP — the tool rules live in the tool descriptions", () => {
       ["media_queue", /resolve_await/iu],
       ["media_quality_profile", /prefer .?assign/iu],
       ["media_quality_profile", /media_search_now/iu],
-      ["media_fill_missing", /never offer to clear/iu],
+      ["media_fill_missing", /replaces a stalled download it keeps by itself/iu],
       ["media_fill_missing", /goal_met/iu],
       ["media_episodes", /this turn/iu],
       ["media_release_search", /scene_code/iu],
