@@ -38,7 +38,7 @@ import { execFileSync } from "child_process"
 import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
-import type { ToolDefinition, ToolHandler } from "./tools-base"
+import type { ToolDefinition, ToolErrorCard, ToolHandler } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { detectBundleState } from "../heart/bundle-state"
@@ -215,7 +215,7 @@ const initGitHandler: ToolHandler = (args) => {
     })
     return json({
       ok: false,
-      error: "bundle already has a .git directory — pass force: true to re-init",
+      error: "bundle already has a .git directory — pass force: true to re-init", code: "already-initialized",
       alreadyInit: true,
     })
   }
@@ -237,7 +237,7 @@ const initGitHandler: ToolHandler = (args) => {
         message: "git init failed",
         meta: { bundleRoot, ok: false },
       })
-      return json({ ok: false, error: `git init failed: ${init.stderr}` })
+      return json({ ok: false, error: `git init failed: ${init.stderr}`, code: "git-failed" })
     }
     /* v8 ignore stop */
   }
@@ -291,7 +291,7 @@ const addRemoteHandler: ToolHandler = (args) => {
   }
 
   if (!isGitRepo(bundleRoot)) {
-    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first" })
+    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first", code: "not-a-repo" })
   }
 
   if (!REMOTE_URL_PATTERN.test(url)) {
@@ -302,7 +302,7 @@ const addRemoteHandler: ToolHandler = (args) => {
       message: "bundle_add_remote refused: invalid url",
       meta: { bundleRoot, url },
     })
-    return finish(false, { error: `invalid remote url: ${url || "(empty)"}` })
+    return finish(false, { error: `invalid remote url: ${url || "(empty)"}`, code: "invalid-remote-url" })
   }
 
   const existing = getRemoteUrl(bundleRoot, name)
@@ -315,7 +315,7 @@ const addRemoteHandler: ToolHandler = (args) => {
       meta: { bundleRoot, name, existing },
     })
     return finish(false, {
-      error: `remote "${name}" already points to ${existing} — pass force: true to overwrite`,
+      error: `remote "${name}" already points to ${existing} — pass force: true to overwrite`, code: "remote-exists",
       previousUrl: existing,
     })
   }
@@ -324,13 +324,13 @@ const addRemoteHandler: ToolHandler = (args) => {
     const setUrl = gitExec(bundleRoot, ["remote", "set-url", name, url])
     /* v8 ignore next 3 -- git remote set-url failure requires a permissions/git-state edge case @preserve */
     if (setUrl.code !== 0) {
-      return finish(false, { error: `git remote set-url failed: ${setUrl.stderr}` })
+      return finish(false, { error: `git remote set-url failed: ${setUrl.stderr}`, code: "git-failed" })
     }
   } else {
     const add = gitExec(bundleRoot, ["remote", "add", name, url])
     /* v8 ignore next 3 -- git remote add failure requires a permissions/git-state edge case @preserve */
     if (add.code !== 0) {
-      return finish(false, { error: `git remote add failed: ${add.stderr}` })
+      return finish(false, { error: `git remote add failed: ${add.stderr}`, code: "git-failed" })
     }
   }
 
@@ -366,16 +366,16 @@ const listFirstCommitHandler: ToolHandler = () => {
   }
 
   if (!isGitRepo(bundleRoot)) {
-    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first" })
+    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first", code: "not-a-repo" })
   }
   if (hasHead(bundleRoot)) {
-    return finish(false, { error: "bundle already has commits — bundle_list_first_commit only applies before the first commit" })
+    return finish(false, { error: "bundle already has commits — bundle_list_first_commit only applies before the first commit", code: "already-committed" })
   }
 
   const ls = gitExec(bundleRoot, ["ls-files", "-o", "--exclude-standard"])
   /* v8 ignore next 3 -- git ls-files failure requires a corrupt repo @preserve */
   if (ls.code !== 0) {
-    return finish(false, { error: `git ls-files failed: ${ls.stderr}` })
+    return finish(false, { error: `git ls-files failed: ${ls.stderr}`, code: "git-failed" })
   }
 
   const files = ls.stdout
@@ -440,17 +440,17 @@ const doFirstCommitHandler: ToolHandler = (args) => {
   }
 
   if (!isGitRepo(bundleRoot)) {
-    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first" })
+    return finish(false, { error: "bundle is not a git repo — run bundle_init_git first", code: "not-a-repo" })
   }
   if (hasHead(bundleRoot)) {
-    return finish(false, { error: "bundle already has commits — first commit already exists" })
+    return finish(false, { error: "bundle already has commits — first commit already exists", code: "already-committed" })
   }
 
   // Resolve the file list — either explicit or the default set from ls-files.
   let filesToStage: string[]
   if (hasExplicitFiles) {
     if (!Array.isArray(rawFiles)) {
-      return finish(false, { error: "files must be an array of relative paths" })
+      return finish(false, { error: "files must be an array of relative paths", code: "invalid-files" })
     }
     if (rawFiles.length === 0) {
       // Directive A: explicit enumeration required. Empty list is a refusal.
@@ -461,14 +461,14 @@ const doFirstCommitHandler: ToolHandler = (args) => {
         message: "bundle_do_first_commit refused: empty file list",
         meta: { bundleRoot },
       })
-      return finish(false, { error: "refused: files array must be non-empty — pass explicit file paths or omit the argument to stage everything" })
+      return finish(false, { error: "refused: files array must be non-empty — pass explicit file paths or omit the argument to stage everything", code: "invalid-files" })
     }
     filesToStage = rawFiles as string[]
   } else {
     const ls = gitExec(bundleRoot, ["ls-files", "-o", "--exclude-standard"])
     /* v8 ignore next 3 -- git ls-files failure requires a corrupt repo @preserve */
     if (ls.code !== 0) {
-      return finish(false, { error: `git ls-files failed: ${ls.stderr}` })
+      return finish(false, { error: `git ls-files failed: ${ls.stderr}`, code: "git-failed" })
     }
     filesToStage = ls.stdout
       .split("\n")
@@ -478,14 +478,14 @@ const doFirstCommitHandler: ToolHandler = (args) => {
 
   /* v8 ignore next 3 -- empty filesToStage on default path means ls-files returned zero entries, covered by the empty-bundle test path elsewhere @preserve */
   if (filesToStage.length === 0) {
-    return finish(false, { error: "no files to commit" })
+    return finish(false, { error: "no files to commit", code: "nothing-to-commit" })
   }
 
   // Security boundary: every file must resolve inside bundleRoot.
   for (const file of filesToStage) {
     /* v8 ignore next 3 -- defensive non-string entry check: LLM tool call args are JSON-parsed, a non-string would already fail JSON schema validation upstream @preserve */
     if (typeof file !== "string" || file.length === 0) {
-      return finish(false, { error: `invalid file entry: ${JSON.stringify(file)}` })
+      return finish(false, { error: `invalid file entry: ${JSON.stringify(file)}`, code: "invalid-files" })
     }
     const check = assertInsideBundle(bundleRoot, file)
     if (!check.ok) {
@@ -496,7 +496,7 @@ const doFirstCommitHandler: ToolHandler = (args) => {
         message: "bundle_do_first_commit refused: path outside bundle root",
         meta: { bundleRoot, file },
       })
-      return finish(false, { error: check.error })
+      return finish(false, { error: check.error, code: "outside-bundle" })
     }
   }
 
@@ -504,13 +504,13 @@ const doFirstCommitHandler: ToolHandler = (args) => {
   const add = gitExec(bundleRoot, ["add", "--", ...filesToStage])
   /* v8 ignore next 3 -- git add failure on a valid file list requires a corrupt repo or race @preserve */
   if (add.code !== 0) {
-    return finish(false, { error: `git add failed: ${add.stderr}` })
+    return finish(false, { error: `git add failed: ${add.stderr}`, code: "git-failed" })
   }
 
   const commit = gitExec(bundleRoot, ["commit", "-m", message])
   /* v8 ignore next 3 -- git commit failure requires a hook-reject or missing user.email, which createTmpBundle pre-configures @preserve */
   if (commit.code !== 0) {
-    return finish(false, { error: `git commit failed: ${commit.stderr}` })
+    return finish(false, { error: `git commit failed: ${commit.stderr}`, code: "git-failed" })
   }
 
   const rev = gitExec(bundleRoot, ["rev-parse", "HEAD"])
@@ -631,17 +631,17 @@ function makeFirstPushReviewHandler(deps: FirstPushReviewDeps = {}): ToolHandler
     }
 
     if (!isGitRepo(bundleRoot)) {
-      return finish(false, { error: "bundle is not a git repo — run bundle_init_git first" })
+      return finish(false, { error: "bundle is not a git repo — run bundle_init_git first", code: "not-a-repo" })
     }
     const remotes = listRemotes(bundleRoot)
     if (remotes.length === 0) {
-      return finish(false, { error: "no remote configured — run bundle_add_remote first" })
+      return finish(false, { error: "no remote configured — run bundle_add_remote first", code: "no-remote" })
     }
     const remoteName = remotes[0]!
     const remoteUrl = getRemoteUrl(bundleRoot, remoteName)
     /* v8 ignore next 3 -- listRemotes returned a name but get-url failed; only possible under a git race @preserve */
     if (!remoteUrl) {
-      return finish(false, { error: "could not resolve remote url" })
+      return finish(false, { error: "could not resolve remote url", code: "git-failed" })
     }
 
     // Enumerate PII directory counts
@@ -780,18 +780,18 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
         message,
         meta: { bundleRoot, tool: toolName },
       })
-      return finish(false, { error, kind: "confirmation_required" })
+      return finish(false, { error, kind: "confirmation_required", code: "confirmation-required" })
     }
 
     if (!isGitRepo(bundleRoot)) {
-      return finish(false, { error: "bundle is not a git repo" })
+      return finish(false, { error: "bundle is not a git repo", code: "not-a-repo" })
     }
     const remotes = listRemotes(bundleRoot)
     if (!remotes.includes(remote)) {
-      return finish(false, { error: `remote "${remote}" not configured — run bundle_add_remote first` })
+      return finish(false, { error: `remote "${remote}" not configured — run bundle_add_remote first`, code: "no-remote" })
     }
     if (!hasHead(bundleRoot)) {
-      return finish(false, { error: "bundle has no commits — run bundle_do_first_commit first" })
+      return finish(false, { error: "bundle has no commits — run bundle_do_first_commit first", code: "no-commits" })
     }
 
     // Directive D: first push to a remote requires the agent to have
@@ -800,7 +800,7 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
     // "bundle built locally" and "bundle contents on the internet".
     const probe = await probeFirstPush(bundleRoot, remote, config.branch!)
     if (probe.kind === "unreachable") {
-      return finish(false, { error: `I couldn't reach GitHub to check whether this would be my first push, so I didn't sync: ${probe.error}`, kind: "remote_unreachable" })
+      return finish(false, { error: `I couldn't reach GitHub to check whether this would be my first push, so I didn't sync: ${probe.error}`, kind: "remote_unreachable", code: "remote-unreachable" })
     }
     const isFirstPush = probe.kind === "first"
     if (isFirstPush) {
@@ -830,15 +830,15 @@ function makeSyncHandler(toolName: "bundle_push" | "bundle_pull_rebase", deps: {
     // The valid token is the owner's recorded yes, which sync needs before a first push to an empty remote.
     const result = await syncNow(bundleRoot, config, agentName, BUNDLE_TOOL_SYNC_WAIT_MS, { firstPushApproved: isFirstPush })
     const where = { remote, branch: config.branch, firstPush: isFirstPush }
-    if (result.paused) return finish(false, { ...where, paused: true, pausedUntil: result.pausedUntil, error: `sync paused until ${result.pausedUntil}` })
-    if (result.busy) return finish(false, { ...where, busy: true, holderPid: result.holderPid, error: result.error })
+    if (result.paused) return finish(false, { ...where, paused: true, pausedUntil: result.pausedUntil, error: `sync paused until ${result.pausedUntil}`, code: "sync-paused" })
+    if (result.busy) return finish(false, { ...where, busy: true, holderPid: result.holderPid, error: result.error, code: "sync-busy" })
     // One-shot: the token is spent once sync actually ran, not on a busy or paused refusal.
     if (confirmationToken !== undefined && isFirstPush) _confirmationTokens.delete(confirmationToken)
     if (!result.ok) {
       const failure = readPendingFailure(bundleRoot)
       return finish(false, {
         ...where,
-        error: result.error,
+        error: result.error, code: "sync-failed",
         ...(failure?.classification ? { kind: failure.classification } : {}),
         ...(failure?.conflictFiles && failure.conflictFiles.length > 0 ? { conflictFiles: failure.conflictFiles } : {}),
       })
@@ -861,6 +861,23 @@ const pullRebaseHandler = makeSyncHandler("bundle_pull_rebase")
 
 // ─── registry ──────────────────────────────────────────────────────────
 
+const notARepo = (tool: string): ToolErrorCard => ({ code: "not-a-repo", means: "My bundle has no .git directory yet.", fix: `Call bundle_init_git, then ${tool} again.` })
+const gitFailed = (tool: string): ToolErrorCard => ({ code: "git-failed", means: "A git command failed; the error carries git's own words.", fix: `Fix what git names, or call bundle_check_sync_status to see the state, before ${tool} again.` })
+
+/** The refusals bundle_push and bundle_pull_rebase share, since both run the same sync. */
+function syncErrors(tool: string): ToolErrorCard[] {
+  return [
+    notARepo(tool),
+    { code: "no-remote", means: "The bundle has no remote of that name.", fix: `Call bundle_add_remote with the owner's repository URL, then ${tool} again.` },
+    { code: "no-commits", means: "The bundle has no commits to sync.", fix: `Call bundle_list_first_commit and bundle_do_first_commit, then ${tool} again.` },
+    { code: "confirmation-required", means: "This would be the first push, and no valid confirmationToken came with it.", fix: `Call bundle_first_push_review, show the human its warning, and on their yes pass its token to ${tool}.` },
+    { code: "remote-unreachable", means: "GitHub couldn't be reached to tell whether this is a first push, so nothing synced.", fix: `Call ${tool} again later; it changed nothing.` },
+    { code: "sync-busy", means: "Another sync holds the bundle right now.", fix: `Wait a minute and call ${tool} again.` },
+    { code: "sync-paused", means: "Syncing is paused by a pause marker; pausedUntil says until when, and nothing synced.", fix: `Tell the human sync is paused until pausedUntil; don't call ${tool} again before then.` },
+    { code: "sync-failed", means: "The sync ran and failed; kind and conflictFiles say how.", fix: "Tell the human what kind and conflictFiles name; for conflicts, fix those files and sync again." },
+  ]
+}
+
 export const bundleToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -871,7 +888,13 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    ax: {
+      id: "tool:bundle_check_sync_status", group: "turn-bundle", effect: "read",
+      when: "Pick this first whenever the turn packet flags a bundleState issue, to see which bundle_ fix comes next.",
+      errors: [{ code: "tool-changed", means: "The tools for this turn changed before the check ran, so it read nothing.", fix: "Check the current tool list; call bundle_check_sync_status again only if it is still there." }],
+    },
     handler: checkSyncStatusHandler,
+    riskProfile: { mutates: "none", risk: "low" },
   },
   {
     tool: {
@@ -886,6 +909,14 @@ export const bundleToolDefinitions: ToolDefinition[] = [
           },
         },
       },
+    },
+    ax: {
+      id: "tool:bundle_init_git", group: "turn-bundle", effect: "write",
+      when: "Pick this when bundle_check_sync_status says my bundle isn't a git repository yet; force only with the human's yes.",
+      errors: [
+        { code: "already-initialized", means: "The bundle already has a .git directory, so nothing changed.", fix: "Go on with bundle_add_remote; pass force: true only if the human asks to re-run git init." },
+        gitFailed("bundle_init_git"),
+      ],
     },
     handler: initGitHandler,
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "initializes bundle git state" },
@@ -907,6 +938,16 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: {
+      id: "tool:bundle_add_remote", group: "turn-bundle", effect: "write",
+      when: "Pick this once my bundle is a repository and needs the owner's backup repository to sync with.",
+      errors: [
+        notARepo("bundle_add_remote"),
+        { code: "invalid-remote-url", means: "url isn't an https:// or git@ address.", fix: "Ask the human for the repository's https or SSH URL and pass it exactly." },
+        { code: "remote-exists", means: "A remote with that name already points somewhere else; previousUrl says where.", fix: "Show the human both URLs; pass force: true only if they say to replace it." },
+        gitFailed("bundle_add_remote"),
+      ],
+    },
     handler: addRemoteHandler,
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates bundle git remote configuration" },
   },
@@ -919,7 +960,17 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         parameters: { type: "object", properties: {} },
       },
     },
+    ax: {
+      id: "tool:bundle_list_first_commit", group: "turn-bundle", effect: "read",
+      when: "Pick this before bundle_do_first_commit, to show the human exactly which files the very first commit would take.",
+      errors: [
+        notARepo("bundle_list_first_commit"),
+        { code: "already-committed", means: "The bundle already has commits, so there is no first commit to plan.", fix: "Call bundle_check_sync_status; ordinary changes sync with bundle_push." },
+        gitFailed("bundle_list_first_commit"),
+      ],
+    },
     handler: listFirstCommitHandler,
+    riskProfile: { mutates: "none", risk: "low" },
   },
   {
     tool: {
@@ -936,6 +987,18 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: {
+      id: "tool:bundle_do_first_commit", group: "turn-bundle", effect: "write",
+      when: "Pick this after the human has seen bundle_list_first_commit's list and agreed, to record the bundle's very first commit.",
+      errors: [
+        notARepo("bundle_do_first_commit"),
+        { code: "already-committed", means: "The bundle already has a first commit.", fix: "Skip this step; go on with bundle_first_push_review and bundle_push." },
+        { code: "invalid-files", means: "files is empty, isn't a list of path strings, or holds a bad entry.", fix: "Pass relative paths from bundle_list_first_commit, or omit files to stage that whole list." },
+        { code: "outside-bundle", means: "A path in files leads outside the bundle, so nothing was staged.", fix: "Pass only paths inside the bundle, as bundle_list_first_commit shows them." },
+        { code: "nothing-to-commit", means: "There are no files to commit.", fix: "Call bundle_list_first_commit to check; if it is empty, there is nothing to do." },
+        gitFailed("bundle_do_first_commit"),
+      ],
+    },
     handler: doFirstCommitHandler,
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates a bundle git commit" },
   },
@@ -947,6 +1010,15 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, Desk record, Arc, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push or bundle_pull_rebase on first push. Required before the first push to any new remote.",
         parameters: { type: "object", properties: {} },
       },
+    },
+    ax: {
+      id: "tool:bundle_first_push_review", group: "turn-bundle", effect: "write",
+      when: "Pick this before the first sync to a new remote: it shows the human what private records would leave this machine.",
+      errors: [
+        notARepo("bundle_first_push_review"),
+        { code: "no-remote", means: "The bundle has no remote yet, so there is nothing to review a push to.", fix: "Call bundle_add_remote with the owner's repository URL, then review again." },
+        gitFailed("bundle_first_push_review"),
+      ],
     },
     handler: firstPushReviewHandler,
   },
@@ -964,6 +1036,11 @@ export const bundleToolDefinitions: ToolDefinition[] = [
         },
       },
     },
+    ax: {
+      id: "tool:bundle_push", group: "turn-bundle", effect: "write",
+      when: "Pick this to send my bundle's new commits to its remote; it runs the same merge-only sync as bundle_pull_rebase.",
+      errors: syncErrors("bundle_push"),
+    },
     handler: pushHandler,
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "pushes bundle state to a remote" },
   },
@@ -980,6 +1057,11 @@ export const bundleToolDefinitions: ToolDefinition[] = [
           },
         },
       },
+    },
+    ax: {
+      id: "tool:bundle_pull_rebase", group: "turn-bundle", effect: "write",
+      when: "Pick this to bring the remote's changes into my bundle; despite its name it merges, the same sync bundle_push runs.",
+      errors: syncErrors("bundle_pull_rebase"),
     },
     handler: pullRebaseHandler,
     riskProfile: {
