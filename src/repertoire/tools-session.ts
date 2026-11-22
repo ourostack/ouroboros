@@ -39,6 +39,7 @@ import {
   type CrossChatDirectDeliveryResult,
 } from "../heart/cross-chat-delivery";
 import type { ToolContext, ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
+import { withCode } from "./tool-error-code";
 import { assertRelationshipToolOwner } from "./tool-arguments";
 import { listVisibleBackgroundOperations } from "../heart/mail-import-discovery";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
@@ -197,12 +198,15 @@ function renderCrossChatDeliveryStatus(
         ? "blocked"
         : "failed"
 
-  return renderProgressStory(buildProgressStory({
+  const story = renderProgressStory(buildProgressStory({
     scope: "shared-work",
     phase,
     objective: `message to ${target}`,
     outcomeText: `${lead}\n${result.detail}`,
   }))
+  if (result.status === "blocked") return withCode(story, "delivery-blocked")
+  if (result.status === "failed") return withCode(story, "delivery-failed")
+  return story
 }
 
 function normalizeHabitSendStatus(status: CrossChatDeliveryResult["status"]): "delivered_now" | "queued" | "blocked" | "failed" | "unavailable" {
@@ -672,6 +676,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         ? `${activeWork}\n\n${formatButlerOperationalVisibility(readButlerOperationalVisibility(), { section: args.section as ButlerVisibilitySection | undefined, offset: numeric(args.offset, 0, 0, 10_000), limit: numeric(args.limit, 10, 1, 20) })}`
         : activeWork
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_active_work", group: "turn-sessions", when: "Pick this first for any whole-self status question, to see every live session, coding lane and owed return at once.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "section isn't one of the listed sections, or offset or limit isn't text.", fix: "Pass section as all, health, policy, awaits, telegram, events, actions or provider." },
+    ] },
   },
   {
     tool: {
@@ -724,6 +732,9 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       reason: "reads habit run summaries from local receipts and session artifacts",
     },
     summaryKeys: ["runId", "habitName", "operationId", "which"],
+    ax: { id: "tool:session_summary", group: "turn-sessions", when: "Pick this to learn how a habit run went, by exact runId or by habit name and which run, without opening session files.", effect: "read", idempotent: true, errors: [
+      { code: "invalid-arguments", means: "A selector isn't text or which isn't allowed; runId mixed with other selectors comes back as invalid_selector JSON.", fix: "Pass runId alone, or habitName or operationId with an optional which such as latest." },
+    ] },
   },
   {
     tool: {
@@ -761,7 +772,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           level: "warn", component: "tools", event: "tool.session_path_rejected",
           message: "session query rejected invalid coordinates", meta: { reason: "invalid friend or channel" },
         })
-        return NO_SESSION_FOUND_MESSAGE
+        return withCode(NO_SESSION_FOUND_MESSAGE, "session-not-found")
       }
 
       assertRelationshipToolOwner(ctx)
@@ -776,7 +787,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       if (mode === "status") {
         if (friendId !== "self" || channel !== "inner") {
-          return "status mode is only available for self/private runtime."
+          return withCode("status mode is only available for self/private runtime.", "status-self-only")
         }
 
         const agentRoot = ctx?.agentRoot ?? getAgentRoot(ctx?.agentName)
@@ -804,7 +815,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           level: "warn", component: "tools", event: "tool.session_path_rejected",
           message: "session query rejected an unconfined path", meta: { reason: error.message },
         })
-        return NO_SESSION_FOUND_MESSAGE
+        return withCode(NO_SESSION_FOUND_MESSAGE, "session-not-found")
       }
       const sessionTail = await summarizeSessionTailSafely({
         sessionPath: sessFile,
@@ -817,7 +828,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       })
 
       if (sessionTail.kind === "missing") {
-        return NO_SESSION_FOUND_MESSAGE
+        return withCode(NO_SESSION_FOUND_MESSAGE, "session-not-found")
       }
       if (sessionTail.kind === "empty") {
         return EMPTY_SESSION_MESSAGE
@@ -825,6 +836,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       return sessionTail.summary
     },
+    riskProfile: { mutates: "none", risk: "low" },
+    ax: { id: "tool:query_session", group: "turn-sessions", when: "Pick this to read the recent transcript of another chat by friend and channel, or your private runtime's progress with status mode.", effect: "read", idempotent: true, errors: [
+      { code: "session-not-found", means: "No session exists for that friend, channel and key, or the coordinates aren't valid.", fix: "Check the friend's id with friend_list and the channel name, and leave key out unless you know it." },
+      { code: "status-self-only", means: "mode status works only for friendId self on channel inner.", fix: "Use mode transcript for other chats, or friendId self with channel inner for status." },
+    ] },
   },
   {
     tool: {
@@ -1153,6 +1169,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
     riskProfile: sendMessageRiskProfile,
+    ax: { id: "tool:send_message", group: "turn-sessions", when: "Pick this to reach someone in a different chat or channel than this one, or a phone call by voice; to keep thinking privately, use ponder.", effect: "write", errors: [
+      { code: "delivery-blocked", means: "The message wasn't sent: no routable chat exists for that session, or the text carries internal markers.", fix: "Check the friend and channel with query_session, and remove internal notes from the content." },
+      { code: "delivery-failed", means: "The channel tried to send and failed, or the person can't be reached that way.", fix: "Try again once, or reach them on another channel they use." },
+      { code: "orientation-hold", means: "This turn is on a correction hold, so messages to other chats wait.", fix: "Call orientation_get, settle what the person meant, then send if it still fits." },
+    ] },
   },
   {
     tool: {
@@ -1172,11 +1193,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
     },
     handler: (args, ctx) => {
       if (!ctx?.supportedReasoningEfforts || !ctx.setReasoningEffort) {
-        return "reasoning effort adjustment is not available in this context.";
+        return withCode("reasoning effort adjustment is not available in this context.", "effort-unavailable");
       }
       const level = (args.level || "").trim();
       if (!ctx.supportedReasoningEfforts.includes(level)) {
-        return `invalid reasoning effort level "${level}". accepted levels: ${ctx.supportedReasoningEfforts.join(", ")}`;
+        return withCode(`invalid reasoning effort level "${level}". accepted levels: ${ctx.supportedReasoningEfforts.join(", ")}`, "invalid-effort-level");
       }
       ctx.setReasoningEffort(level);
       emitNervesEvent({
@@ -1189,5 +1210,9 @@ export const sessionToolDefinitions: ToolDefinition[] = [
     },
     requiredCapability: "reasoning-effort" as const,
     summaryKeys: ["level"],
+    ax: { id: "tool:set_reasoning_effort", group: "turn-sessions", when: "Pick this to think harder on a knotty problem or lighter on routine work in the turns that follow.", effect: "write", idempotent: true, errors: [
+      { code: "effort-unavailable", means: "This model or context has no adjustable reasoning effort.", fix: "Carry on at the current effort." },
+      { code: "invalid-effort-level", means: "That level isn't one this model accepts; the message lists the accepted ones.", fix: "Call again with one of the listed levels." },
+    ] },
   },
 ]

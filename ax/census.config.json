@@ -80,6 +80,7 @@
     {"id": "turn-evolution", "when": "Track a change to the agent's own harness during a turn: capture friction as a case, decide, verify, deliver, ratify, close."},
     {"id": "turn-config", "when": "See and change the agent's own settings in agent.json, with defaults, effects and allowed values."},
     {"id": "turn-external-events", "when": "Settle an external event the agent was woken for: record what it means and whether the owner hears."},
-    {"id": "turn-continuity", "when": "Keep track over time: recall and mark turning points, watch cares, jot intentions, see who is around."}
+    {"id": "turn-continuity", "when": "Keep track over time: recall and mark turning points, watch cares, jot intentions, see who is around."},
+    {"id": "turn-sessions", "when": "See and reach the agent's other chats: live work across sessions, habit runs, transcripts, cross-chat messages."}
   ]
 }
