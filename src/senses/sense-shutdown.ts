@@ -1,7 +1,10 @@
 import { emitNervesEvent } from "../nerves/runtime"
 
-/** How long a sense may spend ending its in-flight turns after SIGTERM before it exits anyway. */
-export const SENSE_SHUTDOWN_GRACE_MS = 10_000
+/**
+ * How long a sense may spend ending its in-flight turns after SIGTERM before it exits anyway.
+ * Kept under the daemon's 4 s stop timeout so the daemon sees the exit and starts the replacement.
+ */
+export const SENSE_SHUTDOWN_GRACE_MS = 3_000
 
 type ShutdownProcess = Pick<NodeJS.Process, "once" | "removeListener" | "exit">
 

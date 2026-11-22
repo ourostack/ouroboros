@@ -5790,6 +5790,34 @@ describe("BlueBubbles sense runtime", () => {
     await expect(bluebubbles.stopBlueBubblesApp(server)).resolves.toBe(0)
   })
 
+  it("records a turn that already spoke when shutdown stopped it, so the next process does not repeat it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    const response = createMockResponse()
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), response.res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    await bluebubbles.stopBlueBubblesApp(server)
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "shutdown", spokeBeforeEnd: true }),
+    }))
+  })
+
   it("stops paginating catch-up once a full page reaches the catch-up cutoff", async () => {
     const now = Date.now()
     mocks.listRecentMessages.mockResolvedValueOnce(Array.from({ length: 50 }, (_, index) => makeCatchUpMessage({
