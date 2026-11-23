@@ -136,6 +136,7 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
       sshN += 1
       if (script.ssh) { const r = script.ssh(cmd, sshN); if (r) return r }
       if (cmd.includes("@@CUTOVER")) return ok("@@CUTOVER:0\n")
+      if (cmd.includes("name=^ouro-eval-")) return ok()
       if (cmd.includes("manifest inspect")) return ok()
       if (cmd.includes("docker inspect")) return ok("ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.868\n")
       if (cmd.includes(" preflight ")) return ok("PREFLIGHT GREEN — run `upgrade` (detached).\n")
@@ -442,6 +443,33 @@ describe("butler-ship orchestrator", () => {
     await expect(a.run()).rejects.toThrow(/backing up host scripts failed/)
     const b = await harness({ gh: (a2) => (a2.includes("Accept: application/vnd.github.raw") ? nok("404") : (undefined as unknown as Res)) })
     await expect(b.run()).rejects.toThrow(/fetching deploy\/unraid\/sanctuary-butler-upgrade.mjs at abc123 failed/)
+  })
+
+  it("refuses before the gate while eval containers run, changing nothing", async () => {
+    const h = await harness({ ssh: (cmd) => (cmd.includes("name=^ouro-eval-") ? ok("ouro-eval-8318ca89-agent\nouro-eval-8318ca89-household\n") : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(/eval containers are running on sanctuary before the gate \(ouro-eval-8318ca89-agent, ouro-eval-8318ca89-household\)/)
+    expect(h.calls.some((c) => c.includes(" upgrade ") || c.includes(" run >"))).toBe(false)
+  })
+
+  it("finds eval containers by their ouro.eval label as well as by the old ouro-eval- names", async () => {
+    const { EVAL_CONTAINERS_PROBE } = await lib()
+    expect(EVAL_CONTAINERS_PROBE).toBe("docker ps --filter label=ouro.eval=1 --format '{{.Names}}' && docker ps --filter name=^ouro-eval- --format '{{.Names}}'")
+    const h = await harness({ ssh: (cmd) => (cmd.includes("label=ouro.eval=1") ? ok("eval-sandbox-0a1b2c3d-agent\n") : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(/eval containers are running on sanctuary before the gate \(eval-sandbox-0a1b2c3d-agent\)/)
+  })
+
+  it("checks again right before the upgrade, because an eval can start during the gate", async () => {
+    let probes = 0
+    const h = await harness({ ssh: (cmd) => (cmd.includes("name=^ouro-eval-") ? (probes++ === 0 ? ok() : ok("ouro-eval-1daaed8f-household\n")) : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(/before the upgrade \(ouro-eval-1daaed8f-household\)/)
+    expect(h.calls.some((c) => c.includes(" upgrade 0."))).toBe(false)
+  })
+
+  it("refuses when the eval-container listing fails", async () => {
+    const h = await harness({ ssh: (cmd) => (cmd.includes("name=^ouro-eval-") ? { code: 255, stdout: "", stderr: "ssh: connection reset" } : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(/couldn't list eval containers before the gate \(ssh: connection reset\)/)
+    const silent = await harness({ ssh: (cmd) => (cmd.includes("name=^ouro-eval-") ? { code: 1, stdout: "", stderr: "" } : (undefined as unknown as Res)) })
+    await expect(silent.run()).rejects.toThrow(/couldn't list eval containers before the gate \(exit 1\)/)
   })
 
   it("stops on a red or unreadable preflight and on a start failure", async () => {

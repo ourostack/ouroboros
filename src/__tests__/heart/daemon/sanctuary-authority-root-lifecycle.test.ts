@@ -1100,6 +1100,28 @@ describe("fixed root installation effects", () => {
     await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/poller/u)
     expect(host.exec.mock.calls.some((call) => call[1][0] === "stop")).toBe(false)
   })
+  it("skips a container that exits between the listing and its inspect, as the 1435 upgrade met", async () => {
+    const f = fixture()
+    const listed = '{"Names":"ouro-eval-1daaed8f-household"}\n'
+    let listings = 0
+    host.exec.mockImplementation((_file, args) => {
+      if (args[0] === "ps") return listings++ === 0 ? listed : ""
+      if (args[0] === "inspect") throw new Error("Command failed: /usr/bin/docker inspect ouro-eval-1daaed8f-household")
+      return ""
+    })
+    const failure = await f.lifecycle.effect("freeze-resident").apply().then(() => null, (error: unknown) => String(error))
+    expect(failure ?? "").not.toMatch(/inspect ouro-eval/u)
+    expect(host.exec.mock.calls.some((call) => call[1][0] === "inspect" && call[1][1] === "ouro-eval-1daaed8f-household")).toBe(true)
+  })
+  it("still fails when a container that is still running can't be inspected", async () => {
+    const f = fixture()
+    host.exec.mockImplementation((_file, args) => {
+      if (args[0] === "ps") return '{"Names":"stuck"}\n'
+      if (args[0] === "inspect") throw new Error("Command failed: /usr/bin/docker inspect stuck")
+      return ""
+    })
+    await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/inspect stuck/u)
+  })
   it("refuses unsafe requests, changed bot identity, corrupt cursor and unknown effects", async () => {
     const f = fixture()
     expect(() => f.lifecycle.effect("arbitrary-root-command")).toThrow(/effect/u)

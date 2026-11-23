@@ -67,6 +67,9 @@ type Behaviour = {
   householdHangs?: boolean
   onNetwork?: () => void
   state?: object
+  /** The containers on the host that match the ps filter, as `docker ps --format {{.Names}}` prints them. */
+  butler?: string
+  failPs?: boolean
 }
 
 /**
@@ -89,6 +92,10 @@ function fakeDocker(behaviour: Behaviour = {}) {
       if (args.at(-1)?.includes("openssl")) {
         for (const name of ["ca.pem", "server.pem", "server.key"]) fs.writeFileSync(path.join(at.get("/out")!, name), name, { mode: 0o600 })
         return ""
+      }
+      if (args[0] === "ps") {
+        if (behaviour.failPs) throw new Error("Cannot connect to the Docker daemon")
+        return behaviour.butler ?? ""
       }
       if (args[0] === "network" && args[1] === "create") behaviour.onNetwork?.()
       if (args[0] === "rm" || args[0] === "network" && args[1] === "rm") {
@@ -200,8 +207,15 @@ describe("runSandboxed", () => {
     expect(obs.gaps).toEqual(expect.arrayContaining([...DECLARED_GAPS]))
 
     const network = calls.find((args) => args[0] === "network" && args[1] === "create")!
-    expect(network).toEqual(["network", "create", "--internal", "--label", "ouro-eval", expect.stringMatching(/^ouro-eval-[0-9a-f]{8}$/)])
+    // Its own name space, outside the `ouro-` names the Butler's tooling owns, and labelled as eval's and as this run's.
     const runId = network.at(-1)!
+    expect(runId).toMatch(/^eval-sandbox-[0-9a-f]{8}$/)
+    expect(network).toEqual(["network", "create", "--internal", "--label", "ouro.eval=1", "--label", `ouro.eval.run=${runId}`, runId])
+    for (const container of calls.filter((args) => args[0] === "run")) {
+      expect(container).toEqual(expect.arrayContaining(["--label", "ouro.eval=1", "--label", `ouro.eval.run=${runId}`]))
+    }
+    // Nothing the run creates, container, network or folder, uses the old shared `ouro-eval-` names.
+    expect(calls.flat().filter((arg) => /(^|[/:])ouro-eval-(?!sandbox:|household:)/.test(arg))).toEqual([])
 
     const sidecar = named(calls, "-household")
     const limits = ["--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--pids-limit", "512", "--ulimit", `fsize=${256 * 1024 * 1024}`]
@@ -229,14 +243,14 @@ describe("runSandboxed", () => {
     const steps = calls.filter((args) => args[0] === "rm" || (args[0] === "network" && args[1] === "rm") || args.at(-1)?.startsWith("chown -R"))
       .map((args) => args[0] === "run" ? "reclaim" : args.at(-1)!)
     expect(steps).toEqual([`${runId}-agent`, `${runId}-household`, "reclaim", `${runId}-agent`, `${runId}-household`, runId])
-    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))).toEqual([])
   })
 
   it("writes the books CLI's synthetic settings and the turn file, and opens the writable mounts to the containers", async () => {
     let seen: { settings: unknown; turn: unknown; modes: Record<string, number>; seeded: string } | undefined
     const { docker } = fakeDocker({
       runTurn: async () => {
-        const work = fs.readdirSync(root).find((name) => name.startsWith("ouro-eval-"))!
+        const work = fs.readdirSync(root).find((name) => name.startsWith("eval-sandbox-"))!
         const bundle = path.join(root, work, "bundle")
         seen = {
           settings: JSON.parse(fs.readFileSync(path.join(bundle, "books/credentials.json"), "utf8")),
@@ -264,7 +278,7 @@ describe("runSandboxed", () => {
     let seeded = ""
     const { docker } = fakeDocker({
       runTurn: async () => {
-        const work = fs.readdirSync(root).find((name) => name.startsWith("ouro-eval-"))!
+        const work = fs.readdirSync(root).find((name) => name.startsWith("eval-sandbox-"))!
         seeded = fs.readdirSync(path.join(root, work, "bundle/books/work"), { recursive: true }).map(String).sort().join(" ")
         return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
       },
@@ -281,6 +295,37 @@ describe("runSandboxed", () => {
     await expect(runSandboxed({ ...input(docker), case: c })).rejects.toThrow(/must end with the owner's message/)
     await expect(runSandboxed({ case: testCase({ prefix: [] }), bundleDir, seedBundleDir, host: hostRuntime(), budget: { take: () => true } })).rejects.toThrow(/must end/)
     expect(calls).toEqual([])
+  })
+
+  // 2026-11-23: an eval run's vanishing container broke the live Butler's upgrade on the host they shared (#1760).
+  for (const name of ["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback"]) {
+    it(`refuses a host with the Butler's ${name} container and no host lock, before creating anything`, async () => {
+      const { docker, calls } = fakeDocker({ butler: `${name}\n` })
+      await expect(runSandboxed(input(docker))).rejects.toThrow(new RegExp(`live Butler \\(${name}\\).*host lock`))
+      expect(calls).toEqual([["ps", "--all", "--filter", "name=^/?ouro-butler(-staging|-rollback)?$", "--format", "{{.Names}}"]])
+      expect(fs.readdirSync(root).filter((entry) => entry.startsWith("eval-sandbox-"))).toEqual([])
+    })
+  }
+
+  it("refuses the Butler's host when the host lock is not held, or cannot be read", async () => {
+    const unlocked = fakeDocker({ butler: "ouro-butler\n" })
+    await expect(runSandboxed(input(unlocked.docker, { hostLock: { held: async () => false } }))).rejects.toThrow(/host lock/)
+    const broken = fakeDocker({ butler: "ouro-butler\n" })
+    await expect(runSandboxed(input(broken.docker, { hostLock: { held: async () => { throw new Error("lock file unreadable") } } }))).rejects.toThrow(/lock file unreadable/)
+    expect(broken.calls.filter((args) => args[0] !== "ps")).toEqual([])
+  })
+
+  it("runs on the Butler's host while the host lock is held", async () => {
+    const { docker } = fakeDocker({ butler: "ouro-butler\n" })
+    const obs = await runSandboxed(input(docker, { hostLock: { held: async () => true } }))
+    expect(obs.outcome).toBe("settled")
+  })
+
+  it("creates nothing when Docker cannot list the host's containers", async () => {
+    const { docker, calls } = fakeDocker({ failPs: true })
+    await expect(runSandboxed(input(docker))).rejects.toThrow(/Docker daemon/)
+    expect(calls).toHaveLength(1)
+    expect(fs.readdirSync(root).filter((entry) => entry.startsWith("eval-sandbox-"))).toEqual([])
   })
 
   it("refuses a seeded file that is no fixture, and cleans up without a network to remove", async () => {
@@ -301,7 +346,7 @@ describe("runSandboxed", () => {
     expect(removals).toHaveLength(2)
     expect(removals[0]).toMatch(/-household$/)
     // The household had shelved its books as its own user; the folder is handed back and removed all the same.
-    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))).toEqual([])
   })
 
   it("reports an agent container that exits before its turn is done as a sandbox error, not a pass", async () => {
@@ -386,7 +431,7 @@ describe("runSandboxed", () => {
     expect(obs.timeline).toEqual([{ kind: "call", name: "shell", args: "{\"command\":\"books library remove 187\"}", result: "{\"ok\":true}" }])
     // The folder is still handed back and removed.
     expect(calls.some((args) => args.at(-1)?.startsWith("chown -R"))).toBe(true)
-    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toEqual([])
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))).toEqual([])
   })
 
   it("ends a run whose household outlives its removal without reading its state", async () => {
@@ -399,7 +444,7 @@ describe("runSandboxed", () => {
   it("fails a run that leaves more in its writable places than can be read back", async () => {
     const { docker } = fakeDocker({
       runTurn: async () => {
-        const work = fs.readdirSync(root).find((name) => name.startsWith("ouro-eval-"))!
+        const work = fs.readdirSync(root).find((name) => name.startsWith("eval-sandbox-"))!
         fs.mkdirSync(path.join(root, work, "bundle/books/work", ...Array.from({ length: 40 }, () => "d")), { recursive: true })
         return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
       },
@@ -414,7 +459,7 @@ describe("runSandboxed", () => {
     await expect(runSandboxed(input(docker))).rejects.toThrow(/docker is not installed/)
     expect(calls.some((args) => args.at(-1)?.startsWith("chown -R"))).toBe(true)
     // With the hand-back failing too, the household's shelf stays where the host cannot delete it, and is reported.
-    const [left] = fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))
+    const [left] = fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))
     fs.chmodSync(path.join(root, left!, "household", "library"), 0o700)
   })
 
@@ -433,7 +478,7 @@ describe("runSandboxed", () => {
     const obs = await runSandboxed(input(docker))
     expect(obs.outcome).toBe("settled")
     fs.chmodSync(root, 0o700)
-    expect(fs.readdirSync(root).filter((name) => name.startsWith("ouro-eval-"))).toHaveLength(1)
+    expect(fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))).toHaveLength(1)
   })
 })
 
