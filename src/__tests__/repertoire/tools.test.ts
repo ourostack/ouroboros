@@ -1255,7 +1255,7 @@ describe("settleTool", () => {
     expect(settleTool.type).toBe("function")
     expect(settleTool.function.name).toBe("settle")
     // Description should frame as response delivery with turn-ending semantics
-    expect(settleTool.function.description).toMatch(/deliver your response.*end your turn/i)
+    expect(settleTool.function.description).toMatch(/^delivers answer to the person and ends the turn/)
     expect(settleTool.function.description).not.toContain("instead of calling another tool")
     expect(settleTool.function.parameters).toEqual({
       type: "object",

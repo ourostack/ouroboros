@@ -26,6 +26,9 @@ const CHAT_TOOLS = ["react", "set_reply_target"]
 const FILE_TOOLS = ["send_file"]
 // Added to the owner in v19 with the home tools; the agent peer gets fetch_url alone.
 const OWNER_ONLY_HOME_TOOLS = ["ls", "note", "diary_write"]
+// Owner v24 and agent peer v14: the prompt lists the owner's skills and says to load them with load_skill, so the owner has it. It reads
+// skill markdown the owner could already read with read_file.
+const SKILL_TOOLS = ["load_skill"]
 const withoutMediaMcp = (names: string[]) => names.filter((name) => !SANCTUARY_MEDIA_MCP_TOOLS.includes(name as typeof SANCTUARY_MEDIA_MCP_TOOLS[number]))
 
 describe("Sanctuary active tool profile", () => {
@@ -35,21 +38,23 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(23)
-    expect(owner.toolNames).toHaveLength(82)
-    expect(new Set(owner.toolNames).size).toBe(82)
+    expect(owner.version).toBe(24)
+    expect(owner.toolNames).toHaveLength(83)
+    expect(new Set(owner.toolNames).size).toBe(83)
+    expect(owner.toolNames).toEqual(expect.arrayContaining(SKILL_TOOLS))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...CHAT_TOOLS, ...FILE_TOOLS]))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...HOUSE_CARE_TOOLS, ...SYNC_TOOLS]))
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
-    expect(digest({ ...owner, version: 7, toolNames: withoutMediaMcp(owner.toolNames).filter((name: string) => name !== "sanctuary_host_execute" && name !== "report_failure" && !HOUSE_CARE_TOOLS.includes(name) && !SYNC_TOOLS.includes(name) && !SANCTUARY_OWNER_ADDITIONS.includes(name) && !CHAT_TOOLS.includes(name) && !FILE_TOOLS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
+    expect(digest({ ...owner, version: 7, toolNames: withoutMediaMcp(owner.toolNames).filter((name: string) => name !== "sanctuary_host_execute" && name !== "report_failure" && !HOUSE_CARE_TOOLS.includes(name) && !SYNC_TOOLS.includes(name) && !SANCTUARY_OWNER_ADDITIONS.includes(name) && !CHAT_TOOLS.includes(name) && !FILE_TOOLS.includes(name) && !SKILL_TOOLS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
     const household = packaged.profiles["sanctuary-household"]
     expect(household.toolNames).toEqual(expect.arrayContaining(CHAT_TOOLS))
     expect(household.toolNames).not.toContain("send_file")
     // v7 (spec R12) took unraid_restart_container off the household; v5 had it right after unraid_check_services.
     const withRestart = household.toolNames.flatMap((name: string) => (name === "unraid_check_services" ? [name, "unraid_restart_container"] : [name]))
-    expect(digest({ ...household, version: 5, toolNames: withRestart.filter((name: string) => !CHAT_TOOLS.includes(name)) })).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
+    // v8 (spec R12b) gave the household the media MCP tools, after everything it had.
+    expect(digest({ ...household, version: 5, toolNames: withoutMediaMcp(withRestart).filter((name: string) => !CHAT_TOOLS.includes(name)) })).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
     expect(digest(packaged.profiles["sanctuary-event"])).toBe("84f54acd06d07c42c01bf0da29697c7ad07004df35d3d582cd367476c4404b56")
   })
 
@@ -64,8 +69,8 @@ describe("Sanctuary active tool profile", () => {
     expect(names).toContain("send_message")
     expect(names).toEqual(expect.arrayContaining(SYNC_TOOLS))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(23)
-    expect(packaged.profiles["sanctuary-household"].version).toBe(7)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(24)
+    expect(packaged.profiles["sanctuary-household"].version).toBe(8)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "resolve_await", "cancel_await"]))
@@ -96,7 +101,7 @@ describe("Sanctuary active tool profile", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const peer = packaged.profiles["sanctuary-agent-peer"]
-    expect(peer.version).toBe(13)
+    expect(peer.version).toBe(14)
     expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container" && !SYNC_TOOLS.includes(name) && !OWNER_ONLY_HOME_TOOLS.includes(name)))
     expect(peer.contextScopes).toEqual(owner.contextScopes)
     expect(peer.effectScopes).toEqual(owner.effectScopes)
@@ -135,7 +140,7 @@ describe("Sanctuary active tool profile", () => {
     expect(widened.filter((name) => SYNC_TOOLS.includes(name))).toEqual([])
   })
 
-  it("surfaces the packaged media MCP tools to the owner and withholds them from the household", () => {
+  it("surfaces the packaged media MCP tools to the owner and the household, and nothing else of MCP to the household", () => {
     setAgentName("sanctuary")
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const mcpManager = {
@@ -149,9 +154,9 @@ describe("Sanctuary active tool profile", () => {
         tools: SANCTUARY_MEDIA_MCP_TOOLS.map((name) => ({ name, description: `${name} description`, inputSchema: { type: "object", properties: {} } })),
       }],
     }
-    const resolve = (profile: string) => getToolsForChannel(
-      getChannelCapabilities("telegram"), undefined, undefined, new Set(["reasoning-effort"]), mcpManager, undefined,
-      { agentName: "sanctuary", relationshipAuthorization: { profileId: profile, advertisedToolNames: packaged.profiles[profile].toolNames } },
+    const resolve = (profile: string, manager: typeof mcpManager = mcpManager, extra: string[] = []) => getToolsForChannel(
+      getChannelCapabilities("telegram"), undefined, undefined, new Set(["reasoning-effort"]), manager, undefined,
+      { agentName: "sanctuary", relationshipAuthorization: { profileId: profile, advertisedToolNames: [...packaged.profiles[profile].toolNames, ...extra] } },
     ).map((tool) => tool.function.name)
 
     // The server is named `media` precisely so its tools surface under their own
@@ -161,13 +166,24 @@ describe("Sanctuary active tool profile", () => {
     expect(ownerNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
     expect(ownerNames.toSorted()).toEqual(packaged.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
 
-    // MCP tools are owner-gated in tool selection, so an authorized household
-    // name still must not resolve.
+    // Spec R12b: a friend finds media and makes it available, so the household gets the media tools too;
+    // their family-only arguments are refused for a friend by mcp-write-guard.
+    const householdNames = resolve("sanctuary-household")
     for (const name of SANCTUARY_MEDIA_MCP_TOOLS) {
-      expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain(name)
+      expect(packaged.profiles["sanctuary-household"].toolNames).toContain(name)
       expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain(name)
-      expect(resolve("sanctuary-household")).not.toContain(name)
+      expect(householdNames).toContain(name)
+      expect(resolve("sanctuary-event")).not.toContain(name)
     }
+
+    // Of MCP, the household gets only the Butler's own media server: not another server, and not a media server
+    // from anywhere but the bundle, even when its tools' names are slipped into the advertised list.
+    const entry = mcpManager.entries[0]!
+    const other = { ...mcpManager, entries: [entry, { ...entry, server: "shared", tools: [{ name: "status", description: "Status", inputSchema: { type: "object", properties: {} } }] }] }
+    expect(resolve("sanctuary-household", other, ["shared_status"])).not.toContain("shared_status")
+    expect(resolve("sanctuary-owner", other, ["shared_status"])).toContain("shared_status")
+    const plugin = { ...mcpManager, entries: [{ ...entry, source: "plugin" as never, pluginId: "someone-else" }] }
+    for (const name of SANCTUARY_MEDIA_MCP_TOOLS) expect(resolve("sanctuary-household", plugin)).not.toContain(name)
 
     // Without a manager the same profile resolves none of them, so a failed MCP
     // connection degrades to "tool absent" rather than a broken tool list.

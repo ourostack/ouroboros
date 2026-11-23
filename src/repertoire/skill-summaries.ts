@@ -46,7 +46,8 @@ function clip(text: string): string {
   return sentence.length > MAX_WHEN_LENGTH ? `${sentence.slice(0, MAX_WHEN_LENGTH - 1)}…` : sentence
 }
 
-function skillPath(name: string): string | null {
+/** Where a skill's markdown is: the agent's skills, its protocol mirrors, then the harness's own. */
+export function skillPath(name: string): string | null {
   const roots: Array<() => string> = [
     () => path.join(getAgentRoot(), "skills"),
     () => path.join(getAgentRoot(), "skills", "protocols"),

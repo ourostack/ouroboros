@@ -4,9 +4,10 @@
  *
  * It copies only the case's `include` paths from the bundle under test, and takes `psyche/TACIT.md` (what the Butler
  * learned about the household), `arc/`, `awaiting/`, `habits/`, `tool-profiles.json`, `bundle-meta.json` and
- * `provider-readiness.json` from the public seed bundle. It never copies `friends/`, `state/`, `desk/`, the books
- * CLI's `credentials.json`, `ledger.ndjson`, `removed/` or `work/`, any `.git`, or a symbolic link; those that the
- * turn writes start empty. The run's synthetic settings and owner are written later, by the sandbox and the turn.
+ * `provider-readiness.json` from the public seed bundle. It never copies `friends/`, `state/`, `desk/`, an old fact store
+ * (`psyche/memory/`), the books CLI's `credentials.json`, `ledger.ndjson`, `removed/` or `work/`, any `.git`, or a
+ * symbolic link; those that the turn writes start empty. The run's synthetic settings and owner are written later, by
+ * the sandbox and the turn.
  * What differs from the live bundle comes back as `gaps`, which every report lists.
  */
 import fs from "node:fs"
@@ -16,9 +17,10 @@ import { emitNervesEvent } from "../../nerves/runtime"
 /** Package-managed files and folders, always from the public seed bundle. */
 const FROM_SEED = ["psyche/TACIT.md", "arc", "awaiting", "habits", "tool-profiles.json", "bundle-meta.json", "provider-readiness.json"]
 /** Never copied from the bundle under test, wherever they sit in an included path. */
-const PRIVATE = ["friends", "state", "desk", "books/credentials.json", "books/ledger.ndjson", "books/removed", "books/work"]
+const PRIVATE = ["friends", "state", "desk", "psyche/memory", "books/credentials.json", "books/ledger.ndjson", "books/removed", "books/work"]
 /** Folders the turn and the books CLI write, created empty. */
-const EMPTY = ["friends", "state", "desk", "arc", "books/work", "books/removed"]
+// The desk starts without entries but with the `_record` folders a fresh production agent root has (the bundle manifest).
+const EMPTY = ["friends", "state", "desk/_record/diary/daily", "desk/_record/notes", "arc", "books/work", "books/removed"]
 
 export type ProjectionInput = { bundleDir: string; seedBundleDir: string; include: string[]; out: string }
 

@@ -100,7 +100,7 @@ function deniedResidentCalls(root: string) {
     get_friend_note: { friendId: RESIDENT_OWNER }, session_summary: { runId: "resident-run" },
     query_session: { friendId: RESIDENT_OWNER, channel: "cli", key: "resident-target" }, set_reasoning_effort: { level: "high" },
     restart_runtime: { reason: "resident recovery fixture" }, revive_sense: { sense: "telegram", reason: "resident recovery fixture" },
-    ls: { path: root }, fetch_url: { url: "https://example.invalid/forbidden" }, note: { content: "forbidden" }, diary_write: { entry: "forbidden" },
+    ls: { path: root }, fetch_url: { url: "https://example.invalid/forbidden" }, note: { content: "forbidden" }, diary_write: { entry: "forbidden" }, load_skill: { name: "forbidden" },
   }
   expect(Object.keys(args).toSorted()).toEqual([...SANCTUARY_OWNER_ADDITIONS].toSorted())
   return SANCTUARY_OWNER_ADDITIONS.map((name) => residentCall(name, args[name]))
@@ -298,6 +298,8 @@ describe("Ouro Butler household UX", () => {
     const spies = new Map(SANCTUARY_OWNER_ADDITIONS.map((name) => [name, vi.spyOn(resolveToolDefinition(name)!, "handler")]))
     for (const name of ["restart_runtime", "revive_sense"]) spies.get(name)!.mockImplementation(async () => { throw new Error(`production ${name} must not run`) })
     const message = vi.spyOn(resolveToolDefinition("send_message")!, "handler")
+    fs.mkdirSync(path.join(fixture.root, "skills"), { recursive: true })
+    fs.writeFileSync(path.join(fixture.root, "skills", "resident-skill.md"), "# Resident skill\n\nresident skill marker\n")
     const background = `exec ${JSON.stringify(process.execPath)} -e ${JSON.stringify(`const fs=require("node:fs");console.log(Array.from({length:240},(_,i)=>"resident line "+i).join("\\n"));console.log("resident-background");const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(fixture.root, "resident-release"))}))clearInterval(timer)},10)`)}`
     const scripted = residentRuntime(async (step) => {
       if (step === 1) return [
@@ -324,6 +326,7 @@ describe("Ouro Butler household UX", () => {
           residentCall("search_facts", { query: "resident diary" }), residentCall("consult_diary", {}),
           residentCall("consult_notes", { query: "resident note" }), residentCall("get_friend_note", { friendId: RESIDENT_OWNER }),
           residentCall("session_summary", { runId: "resident-run" }),
+          residentCall("load_skill", { name: "resident-skill" }),
           residentCall("query_session", { friendId: RESIDENT_OWNER, channel: "cli", key: "resident-target" }),
           residentCall("send_message", { friendId: RESIDENT_OWNER, channel: "cli", key: "resident-target", content: "resident queued message" }),
         ]
@@ -355,6 +358,7 @@ describe("Ouro Butler household UX", () => {
     expect(scripted.outputs.get("consult_diary")).toContain("resident diary marker")
     expect(scripted.outputs.get("consult_notes")).toContain("resident note marker")
     expect(scripted.outputs.get("get_friend_note")).toContain("resident friend marker")
+    expect(scripted.outputs.get("load_skill")).toContain("resident skill marker")
     expect.soft(scripted.outputs.get("session_summary")).toContain("resident habit marker")
     expect.soft(scripted.outputs.get("query_session")).toContain("resident transcript marker")
     expect.soft(fixture.summarize).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("resident transcript marker"), expect.stringContaining("family"))
@@ -597,13 +601,13 @@ describe("Ouro Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 23,
+        version: 24,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["bundle_push", "bundle_pull_rebase", "steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
-        version: 7,
+        version: 8,
         contextScopes: expect.arrayContaining(["household.status"]),
         toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: ["telegram.request_return"],
