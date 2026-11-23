@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { writeJsonAtomicSync } from "../heart/atomic-file"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { TurnSpoke } from "./turn-attempts"
 
 /**
  * The shared inbound rule every sense follows (the rule iMessage got on 2026-11-22): an inbound message is
@@ -33,6 +34,8 @@ export interface PendingInbound<T> {
   attempts: number
   /** Part of a reply may already have reached the person, so a replay must not say it again. */
   spoke: boolean
+  /** What went out and when, for each send noted with `markSpoke`. */
+  spokeRecords?: TurnSpoke[]
   payload: T
 }
 
@@ -57,8 +60,8 @@ export interface InboundJournal<T> {
   beginAttempt(id: string): number
   /** Give back the attempt of a turn that a clean shutdown stopped: it did not fail, so it should not use up the inbound. */
   refundAttempt(id: string): void
-  /** Note that part of the reply may have reached the person. */
-  markSpoke(id: string): void
+  /** Note that part of the reply may have reached the person, and what it was when the sense knows. */
+  markSpoke(id: string, spoke?: TurnSpoke): void
   /** Record the inbound's one outcome. False when it was not pending (never recorded, or already settled). */
   settle(id: string, outcome: InboundOutcome, detail?: string): boolean
   /** Pending inbounds, oldest first. */
@@ -168,8 +171,8 @@ export function openInboundJournal<T>(agentRoot: string, sense: string, options:
     refundAttempt(id) {
       update(id, (entry) => ({ ...entry, attempts: Math.max(0, entry.attempts - 1) }))
     },
-    markSpoke(id) {
-      update(id, (entry) => ({ ...entry, spoke: true }))
+    markSpoke(id, spoke) {
+      update(id, (entry) => ({ ...entry, spoke: true, ...(spoke ? { spokeRecords: [...(entry.spokeRecords ?? []), spoke] } : {}) }))
     },
     settle(id, outcome, detail) {
       const entry = get(id)

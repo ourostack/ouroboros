@@ -27,6 +27,7 @@ import { erroredTurnReply, handleInboundTurn, type InboundTurnInput } from "./pi
 export { erroredTurnReply }
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
+import { outwardSendTracker, type TurnSpoke } from "./turn-attempts"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
@@ -239,6 +240,11 @@ export interface RunSenseTurnOptions {
   stopQueueWaitOnAbort?: boolean
   /** Called once the turn has its place in the process-wide turn queue, before it runs. */
   onTurnStart?: () => void
+  /**
+   * Called just before a tool that messages a person runs (after its guards pass), so a sense can note the send on
+   * disk and never replay the turn into sending it again. Throwing stops that call before it runs.
+   */
+  onOutwardSend?: (spoke: TurnSpoke) => void
   /** Optional frontend event stream for attached clients and durable journals. */
   frontendEventSink?: FrontendTurnEventSink
 }
@@ -661,6 +667,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       : cleaned
   }
 
+  const outwardSends = options.onOutwardSend ? outwardSendTracker(options.onOutwardSend) : null
   const deliveryErrorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
   const emitFrontendEvent = (event: FrontendTurnEvent): void => {
     options.frontendEventSink?.onEvent(event)
@@ -718,9 +725,13 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       emitFrontendEvent({ type: "reasoning_delta", data: { text: chunk } })
     },
     onToolStart: (name: string, args: Record<string, string>) => {
+      outwardSends?.started(name, args)
       toolInvocationCount += 1
       if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1
       emitFrontendEvent({ type: "tool_started", data: { name, args } })
+    },
+    onToolDispatch: (name: string) => {
+      outwardSends?.dispatched(name)
     },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"

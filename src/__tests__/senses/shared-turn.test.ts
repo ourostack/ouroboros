@@ -495,6 +495,26 @@ describe("runSenseTurn", () => {
     expect((await input.sessionLoader.loadOrCreate()).messages[0]).toEqual(messages[0])
   })
 
+  it("notes a tool that messages a person through onOutwardSend just before it runs, and nothing else", async () => {
+    setupSettledTurn()
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const noted: string[] = []
+    const plain = mockHandleInboundTurn.getMockImplementation()!
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onToolStart("send_message", { friendId: "ari", channel: "telegram", content: "the build is out" })
+      input.callbacks.onToolDispatch("send_message")
+      input.callbacks.onToolStart("read_file", { path: "/tmp/a" })
+      input.callbacks.onToolDispatch("read_file")
+      input.callbacks.onToolStart("surface", { content: "refused before its handler" })
+      return plain(input)
+    })
+    await runSenseTurn({ agentName: "test-agent", friendId: "friend-1", channel: "a2a", sessionKey: "default", userMessage: "hi", onOutwardSend: (spoke) => noted.push(spoke.kind) })
+    expect(noted).toEqual(["tool:send_message"])
+
+    // Without the option, the same calls are just tool calls.
+    await expect(runSenseTurn({ agentName: "test-agent", friendId: "friend-1", channel: "a2a", sessionKey: "default", userMessage: "hi" })).resolves.toBeDefined()
+  })
+
   it("picks up a saved surface on a person's Telegram or voice turn, never on an agent's MCP or a2a turn", async () => {
     const saved = [{ from: "test-agent", friendId: "friend-1", channel: "deferred", key: "return", content: "your sign-in is done", timestamp: 1 }]
     mockDrainDeferredReturns.mockReturnValue(saved)

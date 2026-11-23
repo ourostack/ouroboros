@@ -642,9 +642,27 @@ describe("handleInboundTurn", () => {
 
       expect(callbacks.onToolStart).toHaveBeenCalledWith("send_mail", { to: "ana" })
       expect(callbacks.onToolDispatch).toHaveBeenCalledWith("send_mail")
-      // Settled before the handler runs, so a crash or shutdown during the tool cannot hand the messages to a retry.
+      // Settled before the handler runs, so a crash or shutdown during the tool cannot hand the messages to a retry,
+      // and after the sense's own hook, which may stop the call.
       expect(claim.settle).toHaveBeenCalledWith()
-      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeGreaterThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
+    })
+
+    it("keeps claimed pending messages unsettled when the sense stops the call before its handler", async () => {
+      const claim = claimOf()
+      // The sense could not note the send on disk, so the tool never runs and the turn has not acted on the messages.
+      const callbacks = { ...makeCallbacks(), onToolDispatch: vi.fn(() => { throw new Error("disk full") }) }
+      const runAgent = vi.fn(async (_messages: unknown, turnCallbacks: DispatchingCallbacks) => {
+        turnCallbacks.onToolStart("send_mail", { to: "ana" })
+        expect(() => turnCallbacks.onToolDispatch?.("send_mail")).toThrow("disk full")
+        return { usage: usageData, outcome: "errored", errorClassification: "network-error" }
+      })
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent as unknown as InboundTurnInput["runAgent"], callbacks })
+
+      await handleInboundTurn(input)
+
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed: false })
     })
 
     it("puts claimed pending messages back when the turn's tool calls were all refused before a handler ran", async () => {
@@ -682,7 +700,8 @@ describe("handleInboundTurn", () => {
       expect(callbacks.onToolDispatch).toHaveBeenCalledTimes(2)
       // Once at the first dispatch, then the no-op settle after persisting.
       expect(claim.settle).toHaveBeenCalledTimes(2)
-      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeGreaterThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolDispatch.mock.invocationCallOrder[1]!)
       expect(claim.settle.mock.invocationCallOrder[1]).toBeGreaterThan(callbacks.onToolDispatch.mock.invocationCallOrder[1]!)
     })
 
