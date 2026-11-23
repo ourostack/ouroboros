@@ -826,6 +826,27 @@ describe("streamChatCompletion", () => {
     expect(result.usage).toBeUndefined()
   })
 
+  it("keeps the cached input tokens the provider reports, and adds no field when it reports none", async () => {
+    const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: 384 }, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    const result = await streamChatCompletion(client, { messages: [], stream: true }, makeCallbacks())
+    expect(result.usage).toEqual({ input_tokens: 500, cached_input_tokens: 384, output_tokens: 20, reasoning_tokens: 0, total_tokens: 520 })
+    const plain = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: {}, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    expect((await streamChatCompletion(plain, { messages: [], stream: true }, makeCallbacks())).usage).not.toHaveProperty("cached_input_tokens")
+    // A reported 0 is a count and is kept; a gateway's null is not a count and is left out.
+    const zero = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: 0 }, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    expect((await streamChatCompletion(zero, { messages: [], stream: true }, makeCallbacks())).usage!.cached_input_tokens).toBe(0)
+    const nulled = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: null }, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    expect((await streamChatCompletion(nulled, { messages: [], stream: true }, makeCallbacks())).usage).not.toHaveProperty("cached_input_tokens")
+  })
+
   it("defaults reasoning_tokens to 0 when completion_tokens_details is missing", async () => {
     const client = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
       { choices: [{ delta: {} }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } },
@@ -1216,6 +1237,19 @@ describe("streamResponsesApi", () => {
     expect(result.usage!.output_tokens).toBe(200)
     expect(result.usage!.reasoning_tokens).toBe(80)
     expect(result.usage!.total_tokens).toBe(700)
+  })
+
+  it("keeps the cached input tokens from response.completed, and adds no field when it reports none", async () => {
+    const client = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.completed", response: {
+        usage: { input_tokens: 500, input_tokens_details: { cached_tokens: 256 }, output_tokens: 200, total_tokens: 700 },
+      }},
+    ])) } }
+    expect((await streamResponsesApi(client, {}, makeCallbacks())).usage).toEqual({ input_tokens: 500, cached_input_tokens: 256, output_tokens: 200, reasoning_tokens: 0, total_tokens: 700 })
+    const plain = { responses: { create: vi.fn().mockReturnValue(makeResponsesStream([
+      { type: "response.completed", response: { usage: { input_tokens: 500, input_tokens_details: {}, output_tokens: 200, total_tokens: 700 } } },
+    ])) } }
+    expect((await streamResponsesApi(plain, {}, makeCallbacks())).usage).not.toHaveProperty("cached_input_tokens")
   })
 
   it("defaults reasoning_tokens to 0 when output_tokens_details is missing", async () => {
