@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto"
-import { requestPrivateWake } from "../../heart/daemon/socket-client"
+import { deliverToPrivateRuntime } from "../../heart/delegated-work-report"
 import { getAgentRoot, loadAgentConfig } from "../../heart/identity"
-import { getPrivateRuntimePendingDir, queuePendingMessage } from "../../mind/pending"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { realSchedule } from "../shepherd/cmux"
 import * as os from "node:os"
@@ -61,26 +60,19 @@ export function replyContent(id: string, name: string | null, replies: AppMessag
   ].join("\n")
 }
 
-/** Queue the reply for the private runtime and wake it, as Shepherd does with its returns. */
+/** Queue the reply for the private runtime and wake it, the shared path every delegated-work report takes. */
 export function privateRuntimeDeliver(agent: string, now: () => number): Deliver {
   return async (content, refs) => {
-    const at = now()
-    queuePendingMessage(getPrivateRuntimePendingDir(agent), {
-      from: "app-sessions", friendId: "self", channel: "app-sessions", key: "replies", content, timestamp: at, expiresAt: at + INBOUND_TTL_MS, mode: "reflect",
-    })
     const key = createHash("sha256").update(refs.join("\n")).digest("hex").slice(0, 32)
-    try {
-      const response = await requestPrivateWake(agent, undefined, {
+    await deliverToPrivateRuntime({
+      agent, from: "app-sessions", channel: "app-sessions", key: "replies", content, now: now(), ttlMs: INBOUND_TTL_MS,
+      wake: {
         reason: "Copilot app session reply",
         triggerSource: APP_SESSIONS_WAKE_TRIGGER,
-        budgetClass: "interactive",
         idempotencyKey: `app-sessions:${agent}:${key}`,
         originRefs: [...refs.slice(0, 20).map(id => ({ kind: "app-session-reply", id })), { kind: "sense", id: "app-sessions" }],
-      })
-      if (response && !response.ok) throw new Error(response.error ?? "the daemon refused the wake")
-    } catch (error) {
-      emitNervesEvent({ level: "warn", component: "senses", event: "senses.app_sessions_wake_error", message: "could not wake the private runtime for a Copilot app reply; it waits for the next private turn", meta: { agent, error: (error as Error).message } })
-    }
+      },
+    })
   }
 }
 

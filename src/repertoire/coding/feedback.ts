@@ -1,5 +1,5 @@
 import { getAgentName, getAgentRoot } from "../../heart/identity"
-import { requestPrivateWake } from "../../heart/daemon/socket-client"
+import { reportDelegatedWork, type DelegatedWorkStatus } from "../../heart/delegated-work-report"
 import { advanceObligation } from "../../arc/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { CodingSession, CodingSessionUpdate } from "./types"
@@ -13,7 +13,7 @@ export interface CodingFeedbackTarget {
 }
 
 const TERMINAL_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>(["completed", "failed", "killed"])
-const OBLIGATION_WAKE_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>([
+const REPORTED_UPDATE_KINDS = new Set<CodingSessionUpdate["kind"]>([
   "waiting_input",
   "stalled",
   "completed",
@@ -67,31 +67,6 @@ function formatSessionLabel(session: CodingSession): string {
     ? ` for ${session.originSession.channel}/${session.originSession.key}`
     : ""
   return `${session.runner} ${session.id}${origin}`
-}
-
-function codingFeedbackOriginSessionId(session: CodingSession): string {
-  return session.originSession
-    ? `${session.originSession.friendId}/${session.originSession.channel}/${session.originSession.key}`
-    : "detached"
-}
-
-function buildCodingFeedbackPrivateWakeOptions(input: {
-  agentName: string
-  obligationId: string
-  update: CodingSessionUpdate
-}): NonNullable<Parameters<typeof requestPrivateWake>[2]> {
-  return {
-    reason: "coding feedback private attention",
-    triggerSource: "coding-feedback",
-    budgetClass: "interactive",
-    idempotencyKey: `coding-feedback:${input.agentName}:${input.obligationId}:${input.update.session.id}:${input.update.kind}`,
-    originRefs: [
-      { kind: "coding-session", id: input.update.session.id },
-      { kind: "coding-update", id: input.update.kind },
-      { kind: "obligation", id: input.obligationId },
-      { kind: "session", id: codingFeedbackOriginSessionId(input.update.session) },
-    ],
-  }
 }
 
 function extractPullRequestLabel(snippet: string | null): string | null {
@@ -299,30 +274,6 @@ function syncObligationFromUpdate(update: CodingSessionUpdate): void {
   }
 }
 
-async function requestPrivateWakeForObligation(update: CodingSessionUpdate): Promise<void> {
-  const obligationId = update.session.obligationId
-  if (!obligationId || !OBLIGATION_WAKE_UPDATE_KINDS.has(update.kind)) {
-    return
-  }
-
-  try {
-    const agentName = getAgentName()
-    await requestPrivateWake(agentName, undefined, buildCodingFeedbackPrivateWakeOptions({ agentName, obligationId, update }))
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "repertoire",
-      event: "repertoire.coding_feedback_wake_error",
-      message: "coding feedback wake request failed",
-      meta: {
-        sessionId: update.session.id,
-        kind: update.kind,
-        reason: error instanceof Error ? error.message : String(error),
-      },
-    })
-  }
-}
-
 export function attachCodingSessionFeedback(
   manager: CodingSessionFeedbackManagerLike,
   session: CodingSession,
@@ -354,10 +305,9 @@ export function attachCodingSessionFeedback(
   const spawnedUpdate = { kind: "spawned", session } as const
   syncObligationFromUpdate(spawnedUpdate)
   sendMessage(formatReportBackMessage(spawnedUpdate, formatUpdateMessage(spawnedUpdate)))
-  unsubscribe = manager.subscribe(session.id, async (update) => {
+  unsubscribe = manager.subscribe(session.id, (update) => {
     syncObligationFromUpdate(update)
     sendMessage(formatReportBackMessage(update, formatUpdateMessage(update)))
-    await requestPrivateWakeForObligation(update)
     if (TERMINAL_UPDATE_KINDS.has(update.kind)) {
       closed = true
       unsubscribe?.()
@@ -368,4 +318,25 @@ export function attachCodingSessionFeedback(
     closed = true
     unsubscribe?.()
   }
+}
+
+/**
+ * Every coding session's manager calls this on each update, whatever chat (or none) started the session: a finished,
+ * failed, stopped, waiting or stalled session wakes the agent with its result and tells it to pass that on now.
+ */
+export async function reportCodingSessionUpdate(update: CodingSessionUpdate, now = Date.now()): Promise<void> {
+  if (!REPORTED_UPDATE_KINDS.has(update.kind)) return
+  const session = update.session
+  await reportDelegatedWork({
+    agent: getAgentName(),
+    kind: "coding session",
+    id: session.id,
+    title: session.taskRef,
+    status: update.kind as DelegatedWorkStatus,
+    result: pickUpdateSnippet(update),
+    origin: session.originSession ?? null,
+    detailHint: `Read the full output with coding_tail (sessionId ${session.id}).`,
+    obligationId: session.obligationId,
+    now,
+  })
 }
