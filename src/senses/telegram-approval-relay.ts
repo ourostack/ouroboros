@@ -19,6 +19,7 @@ import * as path from "node:path"
 import { parseDidKey, ready, type DidKeyIdentity, type SeenLedgerLike, type Sodium } from "@ouro.bot/friends/a2a-client"
 
 import { APPROVAL_RELAY_FILE, checkRelayedDecision, readApprovalRelaySwitch } from "../a2a/approval-relay"
+import { approvalRelaySocketPath } from "../a2a/approval-relay-forward"
 import { loadSelfA2AIdentity } from "../a2a/identity"
 import { operatorTrustFile } from "../a2a/operator-trust"
 import { loadAgentConfig } from "../heart/identity"
@@ -84,10 +85,7 @@ export async function handleRelayedApprovalAnswer(deps: RelayedAnswerDeps, messa
   })
 }
 
-/** The socket the A2A process forwards tagged envelopes to, alone in a folder only this agent's user can enter. */
-export function approvalRelaySocketPath(agentRoot: string): string {
-  return path.join(agentRoot, "state", "approvals", "relay", "sock")
-}
+export { approvalRelaySocketPath } from "../a2a/approval-relay-forward"
 
 const MAX_REQUEST_BYTES = 256 * 1024
 /** macOS takes a socket path of at most 104 bytes and mishandles a longer one, so a longer path is refused instead. */
