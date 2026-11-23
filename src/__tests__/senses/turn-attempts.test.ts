@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { describeTurnSpokes, openTurnAttempts, outwardSendObserver, turnSpoke, turnSpokeForTool } from "../../senses/turn-attempts"
+import { describeTurnSpokes, openTurnAttempts, outwardSendTracker, turnSpoke, turnSpokeForTool } from "../../senses/turn-attempts"
 
 const roots: string[] = []
 function agentRoot(): string {
@@ -101,6 +101,9 @@ describe("turn attempts that survive a restart", () => {
     })
     // Routing to its own private runtime reaches nobody.
     expect(turnSpokeForTool("send_message", { friendId: "self", channel: "inner", content: "note" })).toBeNull()
+    expect(turnSpokeForTool("send_message", { friendId: " self ", channel: "inner", content: "note" })).toBeNull()
+    expect(turnSpokeForTool("shepherd_send", { content: "y" })?.kind).toBe("tool:shepherd_send")
+    expect(turnSpokeForTool("send_result", { content: "done" })?.kind).toBe("tool:send_result")
     expect(turnSpokeForTool("surface", { content: "ready" })?.kind).toBe("tool:surface")
     expect(turnSpokeForTool("teams_send_message", { message: "hello" })?.textLength).toBe(5)
     expect(turnSpokeForTool("mail_send", { draftId: "d1" })).toMatchObject({ kind: "tool:mail_send", textHash: null, textLength: null })
@@ -116,13 +119,23 @@ describe("turn attempts that survive a restart", () => {
     expect(describeTurnSpokes([turnSpoke("speak", "hi", null, 0), turnSpoke("tool:surface", null, null, 1000)])).toBe("2 sends (speak at 1970-01-01T00:00:00.000Z, tool:surface at 1970-01-01T00:00:01.000Z)")
   })
 
-  it("notes a person-messaging tool from the turn's events when it starts, and nothing else", () => {
+  it("notes a person-messaging tool only once it passes its guards and is about to run", () => {
     const noted: string[] = []
-    const sink = outwardSendObserver((spoke) => noted.push(spoke.kind))
-    sink.onEvent({ type: "tool_started", data: { name: "send_message", args: { friendId: "ari", channel: "telegram", content: "hi" } } })
-    sink.onEvent({ type: "tool_started", data: { name: "house_digest_send" } })
-    sink.onEvent({ type: "tool_started", data: { name: "read_file", args: { path: "/tmp/a" } } })
-    sink.onEvent({ type: "tool_completed", data: { name: "surface", summary: "", success: true } })
-    expect(noted).toEqual(["tool:send_message", "tool:house_digest_send"])
+    const tracker = outwardSendTracker((spoke) => noted.push(`${spoke.kind}:${spoke.textLength}`))
+    tracker.started("send_message", { friendId: "ari", channel: "telegram", content: "hi" })
+    tracker.dispatched("send_message")
+    // Refused before its handler: started, never dispatched.
+    tracker.started("surface", { content: "ready" })
+    tracker.started("read_file", { path: "/tmp/a" })
+    tracker.dispatched("read_file")
+    // A dispatch with no matching start still counts by its name.
+    tracker.dispatched("house_digest_send")
+    expect(noted).toEqual(["tool:send_message:2", "tool:house_digest_send:null"])
+  })
+
+  it("lets a failed note stop the call", () => {
+    const tracker = outwardSendTracker(() => { throw new Error("disk full") })
+    tracker.started("surface", { content: "ready" })
+    expect(() => tracker.dispatched("surface")).toThrow("disk full")
   })
 })

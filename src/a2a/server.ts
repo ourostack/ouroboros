@@ -6,7 +6,7 @@ import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
 import { MAX_INBOUND_ATTEMPTS, openInboundJournal, type PendingInbound } from "../senses/inbound-journal"
-import { describeTurnSpokes, outwardSendObserver, type TurnSpoke } from "../senses/turn-attempts"
+import { describeTurnSpokes, type TurnSpoke } from "../senses/turn-attempts"
 import { buildA2AAgentCard } from "./card"
 import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
 import type { A2AIdentity } from "./identity"
@@ -52,8 +52,8 @@ export interface A2ATurnRunnerInput {
   /** Call when the turn gets its place in the turn queue: its deadline starts again from there. */
   onTurnStart?: () => void
   /**
-   * Call before anything from this turn may reach a person (a tool that messages someone), so a replay after a crash
-   * does not send it again. It writes to disk before it returns.
+   * Call just before anything from this turn may reach a person (a tool that messages someone runs), so a replay
+   * after a crash does not send it again. It writes to disk before it returns, and a throw stops that tool call.
    */
   onOutwardSend?: (spoke: TurnSpoke) => void
 }
@@ -243,7 +243,7 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
     ...(input.signal ? { signal: input.signal, stopQueueWaitOnAbort: true } : {}),
     onTurnStart: input.onTurnStart,
     // A tool that messages a person is noted before it runs, so a replay never sends it twice.
-    ...(input.onOutwardSend ? { frontendEventSink: outwardSendObserver(input.onOutwardSend) } : {}),
+    ...(input.onOutwardSend ? { onOutwardSend: input.onOutwardSend } : {}),
     identity: {
       provider: "a2a-agent",
       externalId: input.peerAgentId,

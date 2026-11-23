@@ -58,7 +58,7 @@ async function setup(options: { sendText?: (...args: any[]) => Promise<any>; not
         agentRoot: root,
         idempotencyKey: "bluebubbles-inbound-reply:capture-1",
         attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" },
-        speakIdempotencyKeyPrefix: "bluebubbles-inbound-reply:capture-1:attempt-1",
+        speakIdempotencyKeyPrefix: "bluebubbles-inbound-reply:capture-1:turn-1",
       },
     }),
     noteSend: (spoke) => {
@@ -71,11 +71,12 @@ async function setup(options: { sendText?: (...args: any[]) => Promise<any>; not
 
 describe("BlueBubbles mid-turn sends", () => {
   it("notes a mid-turn message with its own outbound record before sending it, then marks it accepted", async () => {
-    const { callbacks, noted, order, read } = await setup()
+    const { callbacks, noted, order, read, sendText } = await setup()
     callbacks.onTextChunk("checking on that now")
     await callbacks.flushNow!()
 
     expect(order).toEqual(["note", "visible", "send"])
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ tempGuid: expect.stringMatching(/^ouro-speak-[0-9a-f]{32}$/) }))
     expect(noted).toEqual([expect.objectContaining({ kind: "speak", outboundRecordId: expect.stringMatching(/^bbout_[0-9a-f]{32}$/), textLength: 20 })])
     expect(read(noted[0].outboundRecordId)).toMatchObject({ status: "accepted", messageGuid: "speak-guid", textLength: 20, contentStored: false })
 
@@ -122,36 +123,51 @@ describe("BlueBubbles mid-turn sends", () => {
     await callbacks.flushNow!()
     expect(noted).toEqual([expect.objectContaining({ kind: "speak", outboundRecordId: null })])
     expect(sendText).toHaveBeenCalledTimes(1)
+    expect(sendText.mock.calls[0]![0]).not.toHaveProperty("tempGuid")
   })
 
-  it("notes a tool that messages a person when it starts, and only such tools", async () => {
+  it("notes a tool that messages a person just before it runs, and only such tools", async () => {
     const { callbacks, noted } = await setup()
     callbacks.onToolStart("send_message", { friendId: "ari", channel: "telegram", content: "the build is out" })
+    expect(noted).toEqual([])
+    callbacks.onToolDispatch!("send_message")
     callbacks.onToolStart("read_file", { path: "/tmp/a" })
-    callbacks.onToolStart("send_message", { friendId: "self", channel: "inner", content: "note to self" })
+    callbacks.onToolDispatch!("read_file")
+    // Refused before its handler: it never dispatches, so nothing was sent.
+    callbacks.onToolStart("surface", { content: "ready" })
     expect(noted).toEqual([expect.objectContaining({ kind: "tool:send_message", outboundRecordId: null, textLength: 16 })])
   })
 
-  it("lets the tool run, and says so loudly, when its send cannot be noted", async () => {
+  it("stops a tool that messages a person when its send cannot be noted first", async () => {
     const { callbacks } = await setup({ noteSend: () => { throw new Error("disk full") } })
-    expect(() => callbacks.onToolStart("surface", { content: "ready" })).not.toThrow()
-    expect(() => callbacks.onToolStart("house_digest_send", {})).not.toThrow()
-    const failures = mockEmitNervesEvent.mock.calls.map(([event]) => event).filter((event) => event.event === "senses.bluebubbles_turn_send_note_failed")
-    expect(failures).toEqual([
-      expect.objectContaining({ level: "error", meta: { name: "surface", reason: "disk full" } }),
-      expect.objectContaining({ meta: { name: "house_digest_send", reason: "disk full" } }),
-    ])
+    callbacks.onToolStart("surface", { content: "ready" })
+    expect(() => callbacks.onToolDispatch!("surface")).toThrow("disk full")
   })
 
-  it("records a thrown non-error from noting a tool's send", async () => {
-    const { callbacks } = await setup({ noteSend: () => { throw "no space" } })
-    callbacks.onToolStart("surface", { content: "ready" })
-    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_turn_send_note_failed", meta: { name: "surface", reason: "no space" } }))
+  it("marks a mid-turn message's record failed when its send cannot be noted", async () => {
+    const { createBlueBubblesCallbacks } = await import("../../../senses/bluebubbles")
+    const root = agentRoot()
+    const sendText = vi.fn(async () => ({ messageGuid: "never" }))
+    let reserved: string | null = null
+    const failures: unknown[] = [new Error("disk full"), "no space"]
+    for (const failure of failures) {
+      const callbacks = createBlueBubblesCallbacks({ sendText, setTyping: vi.fn(async () => {}), markChatRead: vi.fn(async () => {}) } as any, chat, { getReplyToMessageGuid: () => undefined } as any, false, undefined, {
+        enableActivitySignals: false,
+        durableOutbound: { agentRoot: root, idempotencyKey: "k", attachment: { serverUrl: "http://bluebubbles.local", accountId: "default" }, speakIdempotencyKeyPrefix: `k:turn-${String(failure)}` },
+        noteSend: (spoke) => { reserved = spoke.outboundRecordId; throw failure },
+      })
+      callbacks.onTextChunk("checking on that now")
+      await expect(callbacks.flushNow!()).rejects.toBe(failure)
+      const { readBlueBubblesOutboundRecord } = await import("../../../senses/bluebubbles/outbound-state")
+      expect(readBlueBubblesOutboundRecord(root, reserved!)).toMatchObject({ status: "failed", failureReason: expect.stringMatching(/^not sent: (disk full|no space)$/) })
+    }
+    expect(sendText).not.toHaveBeenCalled()
   })
 
   it("does nothing for a person-messaging tool when the turn notes no sends", async () => {
     const { createBlueBubblesCallbacks } = await import("../../../senses/bluebubbles")
     const callbacks = createBlueBubblesCallbacks({ setTyping: vi.fn(async () => {}), markChatRead: vi.fn(async () => {}) } as any, chat, { getReplyToMessageGuid: () => undefined } as any, false, undefined, { enableActivitySignals: false })
     expect(() => callbacks.onToolStart("surface", { content: "ready" })).not.toThrow()
+    expect(() => callbacks.onToolDispatch!("surface")).not.toThrow()
   })
 })

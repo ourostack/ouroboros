@@ -2114,11 +2114,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
       outcome: "message_observed",
-      detailCode: "restart_after_visible_speech",
+      detailCode: "replay_after_visible_speech",
     }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_turn_abandoned",
-      meta: expect.objectContaining({ reason: "restart", spokeBeforeEnd: true, sends: [expect.objectContaining({ kind: "speak", outboundRecordId: saved!.spoke[0]!.outboundRecordId })] }),
+      meta: expect.objectContaining({ reason: "replay", spokeBeforeEnd: true, sends: [expect.objectContaining({ kind: "speak", outboundRecordId: saved!.spoke[0]!.outboundRecordId })] }),
     }))
     expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
     expect(openTurnAttempts(tempAgentRoot, "bluebubbles").get(keyHash!)).toBeNull()
@@ -2130,6 +2130,7 @@ describe("BlueBubbles sense runtime", () => {
     let toolStarted = false
     mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
       input.callbacks.onToolStart("send_message", { friendId: "ari", channel: "telegram", content: "the build is out" })
+      input.callbacks.onToolDispatch("send_message")
       toolStarted = true
       return new Promise(() => undefined)
     })
@@ -2146,7 +2147,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
       outcome: "message_observed",
-      detailCode: "restart_after_visible_speech",
+      detailCode: "replay_after_visible_speech",
     }))
   })
 
@@ -2195,6 +2196,7 @@ describe("BlueBubbles sense runtime", () => {
     mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
     mocks.handleInboundTurn.mockImplementationOnce((input: any) => {
       input.callbacks.onToolStart("surface", { content: "ready" })
+      input.callbacks.onToolDispatch("surface")
       return rejectWhenTurnAborts(input)
     })
 

@@ -3,7 +3,6 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { writeJsonAtomicSync } from "../heart/atomic-file"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { FrontendTurnEventSink } from "./shared-turn"
 
 /**
  * Per-inbound turn state that a crash or restart must not lose: how many turns were started for the inbound, and
@@ -75,14 +74,16 @@ export function describeTurnSpokes(spoke: readonly TurnSpoke[]): string {
   return `${spoke.length} ${spoke.length === 1 ? "send" : "sends"} (${sends})`
 }
 
-/** Tools that send something to a person outside the turn's own reply. Calling one counts as having spoken. */
+/** Tools that send something to a person or another agent outside the turn's own reply. Running one counts as having spoken. */
 const PERSON_MESSAGING_TOOLS: ReadonlySet<string> = new Set([
   "send_message",
   "surface",
   "teams_send_message",
   "mail_send",
   "send_file",
+  "send_result",
   "house_digest_send",
+  "shepherd_send",
 ])
 
 /**
@@ -91,20 +92,30 @@ const PERSON_MESSAGING_TOOLS: ReadonlySet<string> = new Set([
  */
 export function turnSpokeForTool(name: string, args: Record<string, string>, nowMs: number = Date.now()): TurnSpoke | null {
   if (!PERSON_MESSAGING_TOOLS.has(name)) return null
-  if (name === "send_message" && args.friendId === "self") return null
+  if (name === "send_message" && args.friendId?.trim() === "self") return null
   const text = args.content ?? args.message ?? args.caption ?? null
   return turnSpoke(`tool:${name}`, text, null, nowMs)
 }
 
 /**
- * A turn event sink that notes each tool call that may message a person, when it starts and so before it can send.
- * Senses that run turns through `runSenseTurn` pass it as `frontendEventSink`.
+ * Notes each tool call that may message a person just before its handler runs: `started` remembers the call's
+ * arguments, and `dispatched` fires only for a call that passed its guards. A call refused before its handler sends
+ * nothing and is not noted. `onSpoke` may throw (a failed disk write), which stops the call before it runs.
  */
-export function outwardSendObserver(onSpoke: (spoke: TurnSpoke) => void): FrontendTurnEventSink {
+export function outwardSendTracker(onSpoke: (spoke: TurnSpoke) => void): {
+  started(name: string, args: Record<string, string>): void
+  dispatched(name: string): void
+} {
+  // Tool calls in a turn run one at a time, so the last started call is the one being dispatched.
+  let last: { name: string; args: Record<string, string> } | null = null
   return {
-    onEvent(event) {
-      if (event.type !== "tool_started") return
-      const spoke = turnSpokeForTool(String(event.data.name), (event.data.args ?? {}) as Record<string, string>)
+    started(name, args) {
+      last = { name, args }
+    },
+    dispatched(name) {
+      const args = last?.name === name ? last.args : {}
+      last = null
+      const spoke = turnSpokeForTool(name, args)
       if (spoke) onSpoke(spoke)
     },
   }
