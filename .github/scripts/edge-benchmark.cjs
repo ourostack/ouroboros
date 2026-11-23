@@ -318,6 +318,12 @@ function renderReport(current, baseline, baselineLabel) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * How often the socket is looked for. At the 50 ms default a daemon that is ready at 150 ms reads 150 or 200 ms depending
+ * on where it lands between looks, and that one step is +33%, past the 25% ratchet, with no change to the daemon.
+ */
+const SOCKET_POLL_MS = 5
+
 async function waitFor(predicate, timeoutMs, intervalMs = 50) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
@@ -487,7 +493,7 @@ async function takeTimeToSocket(root, workDir, index) {
     stdio: "ignore",
   })
   try {
-    const ms = await waitFor(() => fs.existsSync(socket), 120_000)
+    const ms = await waitFor(() => fs.existsSync(socket), 120_000, SOCKET_POLL_MS)
     if (ms === null) throw new Error("daemon never opened its socket")
     return ms
   } finally {
@@ -508,7 +514,7 @@ async function measureIdleDaemon(root, workDir, idleSeconds) {
   })
   let first
   try {
-    const firstMs = await waitFor(() => fs.existsSync(socket), 120_000)
+    const firstMs = await waitFor(() => fs.existsSync(socket), 120_000, SOCKET_POLL_MS)
     if (firstMs === null) throw new Error("daemon never opened its socket")
     await sleep(Math.max(0, idleSeconds * 1000 - (Date.now() - started)) + 500)
     const memory = treeMemory(child.pid)
@@ -909,4 +915,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { parseArgs, interleaveOrder, runSides, measureCli, unixSocketPath, median, medianBaseline, readBaseline, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
+module.exports = { SOCKET_POLL_MS, parseArgs, interleaveOrder, runSides, measureCli, unixSocketPath, median, medianBaseline, readBaseline, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
