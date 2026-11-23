@@ -27,6 +27,8 @@ export interface PendingInbound<T> {
   id: string
   sense: string
   receivedAt: string
+  /** Breaks ties between inbounds this process recorded in the same millisecond, so they replay in arrival order. */
+  sequence?: number
   /** Turns started for this inbound, across processes. */
   attempts: number
   /** Part of a reply may already have reached the person, so a replay must not say it again. */
@@ -68,6 +70,9 @@ export interface InboundJournal<T> {
 export interface InboundJournalOptions {
   now?: () => number
 }
+
+/** Counts inbounds recorded by this process; see PendingInbound.sequence. */
+let recordSequence = 0
 
 function journalDir(agentRoot: string, sense: string): string {
   return path.join(agentRoot, "state", "senses", sense)
@@ -137,7 +142,8 @@ export function openInboundJournal<T>(agentRoot: string, sense: string, options:
       }
       entries.push(entry)
     }
-    return entries.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt))
+    const sequenceOf = (entry: PendingInbound<T>): number => entry.sequence ?? 0
+    return entries.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt) || sequenceOf(a) - sequenceOf(b))
   }
 
   return {
@@ -149,7 +155,8 @@ export function openInboundJournal<T>(agentRoot: string, sense: string, options:
         emitNervesEvent({ component: "senses", event: "senses.inbound_duplicate", message: "an inbound that already has an outcome arrived again; it is not run again", meta: { sense, id, outcome: settled.outcome } })
         return null
       }
-      const entry: PendingInbound<T> = { id, sense, receivedAt: new Date(now()).toISOString(), attempts: 0, spoke: false, payload }
+      recordSequence += 1
+      const entry: PendingInbound<T> = { id, sense, receivedAt: new Date(now()).toISOString(), sequence: recordSequence, attempts: 0, spoke: false, payload }
       writeJsonAtomicSync(pendingPath(id), entry)
       emitNervesEvent({ component: "senses", event: "senses.inbound_recorded", message: "recorded an inbound before its turn", meta: { sense, id } })
       return entry

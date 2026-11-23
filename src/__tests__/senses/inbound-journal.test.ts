@@ -94,6 +94,17 @@ describe("the shared inbound journal", () => {
     expect(oldestPendingAgeMs()).toBe(5_000)
   })
 
+  it("keeps the order inbounds arrived in when they arrive in the same millisecond", () => {
+    const root = agentRoot()
+    const now = Date.parse("2026-11-22T20:00:00.000Z")
+    const journal = openInboundJournal<{ n: number }>(root, "test-sense", { now: () => now })
+    for (const id of ["first", "second", "third", "fourth"]) journal.record(id, { n: 0 })
+    // One recorded before inbounds carried a sequence sorts ahead of its millisecond.
+    const pendingDir = path.join(root, "state", "senses", "test-sense", "pending-inbound")
+    fs.writeFileSync(path.join(pendingDir, "unsequenced.json"), JSON.stringify({ id: "unsequenced", sense: "test-sense", receivedAt: new Date(now).toISOString(), attempts: 0, spoke: false, payload: { n: 0 } }))
+    expect(openInboundJournal(root, "test-sense", { now: () => now }).pending().map((entry) => entry.id)).toEqual(["unsequenced", "first", "second", "third", "fourth"])
+  })
+
   it("finishes an outcome that was recorded just before a crash instead of replaying it", () => {
     const root = agentRoot()
     const journal = openInboundJournal<{ text: string }>(root, "test-sense")
