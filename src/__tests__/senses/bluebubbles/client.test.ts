@@ -2427,7 +2427,7 @@ describe("BlueBubbles client", () => {
   it("adds repaired voice-note transcripts to agent text when the provider cannot use raw audio", async () => {
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: hello from audio"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): hello from audio"],
       notices: [],
     })
     vi.doMock("../../../senses/bluebubbles/media", () => ({
@@ -2513,7 +2513,7 @@ describe("BlueBubbles client", () => {
         kind: "message",
         requiresRepair: false,
         inputPartsForAgent: undefined,
-        textForAgent: expect.stringContaining("[voice note transcript: hello from audio]"),
+        textForAgent: expect.stringContaining("[voice note (machine transcript; may mishear words): hello from audio]"),
       }),
     )
     expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
@@ -2530,7 +2530,7 @@ describe("BlueBubbles client", () => {
     vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "openai-codex", model: "gpt-5.4" }, agentFacing: { provider: "openai-codex", model: "gpt-5.4" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: hello from codex"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): hello from codex"],
       notices: [],
     })
     vi.doMock("../../../senses/bluebubbles/media", () => ({
@@ -2615,7 +2615,7 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: expect.stringContaining("[voice note transcript: hello from codex]"),
+        textForAgent: expect.stringContaining("[voice note (machine transcript; may mishear words): hello from codex]"),
         inputPartsForAgent: undefined,
       }),
     )
@@ -2633,7 +2633,7 @@ describe("BlueBubbles client", () => {
     vi.mocked(loadAgentConfig).mockReturnValue({ humanFacing: { provider: "minimax", model: "minimax-text-01" }, agentFacing: { provider: "minimax", model: "minimax-text-01" } } as any)
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: hello from minimax"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): hello from minimax"],
       notices: [],
     })
     vi.doMock("../../../senses/bluebubbles/media", () => ({
@@ -2710,7 +2710,7 @@ describe("BlueBubbles client", () => {
       expect.objectContaining({
         kind: "message",
         requiresRepair: false,
-        textForAgent: expect.stringContaining("[voice note transcript: hello from minimax]"),
+        textForAgent: expect.stringContaining("[voice note (machine transcript; may mishear words): hello from minimax]"),
         inputPartsForAgent: undefined,
       }),
     )
@@ -2812,7 +2812,7 @@ describe("BlueBubbles client", () => {
   it("appends hydrated media suffixes cleanly when the repaired agent text is empty", async () => {
     const hydrateBlueBubblesAttachments = vi.fn().mockResolvedValue({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: hello"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): hello"],
       notices: [],
     })
     vi.doMock("../../../senses/bluebubbles/media", () => ({
@@ -2888,7 +2888,7 @@ describe("BlueBubbles client", () => {
     expect(result).toEqual(
       expect.objectContaining({
         requiresRepair: false,
-        textForAgent: expect.stringContaining("[voice note transcript: hello]"),
+        textForAgent: expect.stringContaining("[voice note (machine transcript; may mishear words): hello]"),
       }),
     )
     expect(result.textForAgent).toContain("attachment:bluebubbles:audio-1")
