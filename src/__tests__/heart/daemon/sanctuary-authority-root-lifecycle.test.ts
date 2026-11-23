@@ -29,7 +29,7 @@ const rollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-exe
 // A bare "timed out in 5000ms" names no phase, so at 4.5s (inside vitest's unchanged 5s limit) this writes the
 // phase marks and the worst event-loop stall seen so far to stderr, then keeps awaiting the body: the test still
 // owns its work, and its budget is unchanged. It records bounded observations only: it cannot attribute a cause
-// and cannot fire if the event loop is blocked synchronously; in that case the completion report below says so.
+// and cannot fire if the event loop is blocked synchronously. The completion report below records only elapsed time and that no watchdog line was written: it does not show the loop was blocked (the sampler can miss a final blocked interval), and a body that never completes emits nothing.
 async function withPhaseReport<T>(label: string, body: (mark: (phase: string) => void) => Promise<T>): Promise<T> {
   const started = performance.now()
   const marks: string[] = []
@@ -44,8 +44,7 @@ async function withPhaseReport<T>(label: string, body: (mark: (phase: string) =>
   }, 4_500)
   try { return await body(mark) } finally {
     clearInterval(sampler); clearTimeout(watchdog)
-    // The watchdog timer cannot run while the loop is blocked, so a run that blocked and then finished (or failed)
-    // late leaves no 4500ms line; this one is written from the body's own completion instead.
+    // Written from the body's own completion when it ran past 4.5s without the watchdog line; bounded observation only.
     const elapsed = Math.round(performance.now() - started)
     if (elapsed > 4_500 && !fired) process.stderr.write(`sanctuary lifecycle case finished late with no 4500ms report (${label}): ${elapsed}ms; worst event-loop stall ${Math.round(worstStall)}ms; phases: ${marks.join(", ") || "none"}\n`)
   }

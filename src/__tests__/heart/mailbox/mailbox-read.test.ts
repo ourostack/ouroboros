@@ -570,14 +570,17 @@ describe("mailbox direct reads", () => {
   })
 
   it("reads Sentinel latest, latest-ready, and bounded history without mutating receipt files", async () => {
-    const bundlesRoot = makeBundleRoot()
-    const agentRoot = path.join(bundlesRoot, "slugger.ouro")
-    writeAgentConfig(agentRoot)
-    scaffoldDeskRecord(agentRoot)
-    writeFlightRecorderResume(agentRoot, readyResume())
     const started = performance.now()
     const phases: string[] = []
+    const mark = (phase: string): void => { phases.push(`${phase}@${Math.round(performance.now() - started)}ms`) }
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "slugger.ouro")
     try {
+      mark("bundle-root")
+      writeAgentConfig(agentRoot)
+      scaffoldDeskRecord(agentRoot)
+      writeFlightRecorderResume(agentRoot, readyResume())
+      mark("setup")
       for (let index = 1; index <= 22; index += 1) {
         await refreshContextLossSentinel("slugger", agentRoot, {
           trigger: "manual_cli",
@@ -587,7 +590,7 @@ describe("mailbox direct reads", () => {
           daemonHealthResults: [],
           gitStatus: () => ({ ok: true, porcelain: "" }),
         })
-        if (index % 5 === 0 || index === 22) phases.push(`refresh-${index}@${Math.round(performance.now() - started)}ms`)
+        if (index % 5 === 0 || index === 22) mark(`refresh-${index}`)
       }
       const paths = contextLossSentinelPaths(agentRoot)
       const pinnedMtime = new Date("2026-06-09T20:11:00.000Z")
@@ -614,11 +617,14 @@ describe("mailbox direct reads", () => {
         Array.from({ length: 20 }, (_, index) => `sentinel-mailbox-${String(index + 3).padStart(2, "0")}`),
       )
       expect(fileStats(paths.rootDir)).toEqual(before)
-      phases.push(`read@${Math.round(performance.now() - started)}ms`)
+      mark("read")
     } finally {
-      // Observation only: a bare 5s timeout names no phase, so a slow run records where its time went.
-      if (performance.now() - started > 2_000) process.stderr.write(`mailbox sentinel read case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ") || "none"}\n`)
-      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      // Bounded observation only: a bare 5s timeout names no phase. This is written when the body finishes, so a
+      // body that never completes still emits nothing; it is written even if cleanup throws.
+      try { fs.rmSync(bundlesRoot, { recursive: true, force: true }) } finally {
+        mark("cleanup")
+        if (performance.now() - started > 2_000) process.stderr.write(`mailbox sentinel read case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ")}\n`)
+      }
     }
   })
 
