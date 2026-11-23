@@ -114,7 +114,9 @@ function residentRuntime(script: (step: number) => Promise<ReturnType<typeof res
     capabilities: new Set(reasoning ? ["reasoning-effort"] : []),
     supportedReasoningEfforts: reasoning ? ["high"] : [],
     streamTurn: async (request) => {
-      requests.push({ names: request.activeTools.map((tool) => tool.function.name), reasoningEffort: request.reasoningEffort })
+      // The menu a request reaches: the doors sent loaded plus the ones the catalog holds back for find_tools.
+      const reachable = [...request.activeTools, ...(request.deferredTools ?? [])].map((tool) => tool.function.name).filter((name) => name !== "find_tools")
+      requests.push({ names: [...new Set(reachable)], reasoningEffort: request.reasoningEffort })
       return { content: "", toolCalls: await script(requests.length), outputItems: [] }
     },
     appendToolOutput: (id, output) => { outputs.set(id, output) },

@@ -9,7 +9,7 @@ import { finalizeSettleStream, ProviderTextOutput, SettleStreamer } from "../str
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
-import { FIND_TOOLS_NAME, loadedDoorNames } from "../../repertoire/tool-catalog";
+import { FIND_TOOLS_NAME, doorsFoundInHistory, loadedDoorNames } from "../../repertoire/tool-catalog";
 
 export type AnthropicThinkingBlock =
   | { type: "thinking"; thinking: string; signature: string }
@@ -234,6 +234,26 @@ export function toAnthropicTools(
   });
 }
 
+/**
+ * The tools an Anthropic request sends: the loaded ones, then every held-back door marked deferred, in one fixed order,
+ * so loading a door never changes the tool list (the front of the cached prefix). A door `find_tools` loaded stays
+ * deferred and is loaded by its `tool_reference`; a held-back door the engine made callable another way (a skill that
+ * declares it, a call from an earlier turn) has no reference, so it is sent loaded.
+ */
+export function anthropicToolPlan(
+  activeTools: readonly OpenAI.ChatCompletionFunctionTool[],
+  deferredTools: readonly OpenAI.ChatCompletionFunctionTool[] = [],
+  messages: readonly OpenAI.ChatCompletionMessageParam[],
+): { tools: OpenAI.ChatCompletionFunctionTool[]; deferred: Set<string> } {
+  const pool = new Set(deferredTools.map((tool) => tool.function.name))
+  const found = new Set(doorsFoundInHistory(messages))
+  const callable = new Set(activeTools.map((tool) => tool.function.name))
+  return {
+    tools: [...activeTools.filter((tool) => !pool.has(tool.function.name)), ...deferredTools],
+    deferred: new Set([...pool].filter((name) => !callable.has(name) || found.has(name))),
+  }
+}
+
 function toAnthropicUsage(raw: Record<string, unknown>): UsageData {
   const inputTokens = Number(raw.input_tokens ?? 0) || 0;
   const cacheCreateTokens = Number(raw.cache_creation_input_tokens ?? 0) || 0;
@@ -331,13 +351,14 @@ async function streamAnthropicMessages(
   request: ProviderTurnRequest,
   options: { claudeCodePreamble: boolean } = { claudeCodePreamble: true },
 ): Promise<TurnResult> {
-  const { system, messages } = toAnthropicMessages(request.messages);
+  const toolPlan = anthropicToolPlan(request.activeTools, request.deferredTools, request.messages);
+  const { system, messages } = toAnthropicMessages(request.messages, { toolReferences: toolPlan.deferred });
   const additionalSystemParts = request.messages
     .filter((message) => message.role === "system")
     .slice(1)
     .map((message) => toAnthropicTextContent((message as OpenAI.ChatCompletionSystemMessageParam).content).trim())
     .filter((text) => text.length > 0);
-  const anthropicTools = toAnthropicTools(request.activeTools);
+  const anthropicTools = toAnthropicTools(toolPlan.tools, toolPlan.deferred);
 
   const modelCaps = getModelCapabilities(model);
   const maxTokens = modelCaps.maxOutputTokens ?? 16384;

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { toAnthropicMessages, toAnthropicTools } from "../../heart/providers/anthropic"
+import { anthropicToolPlan, toAnthropicMessages, toAnthropicTools } from "../../heart/providers/anthropic"
 import { formatLoadedDoors } from "../../repertoire/tool-catalog"
 
 const tool = (name: string, description = ""): OpenAI.ChatCompletionFunctionTool =>
@@ -58,5 +58,31 @@ describe("Anthropic deferred tool loading", () => {
       { role: "tool", tool_call_id: "c1", content: formatLoadedDoors([tool("mail_send")]) },
     ]
     expect((toAnthropicMessages(messages).messages[1]!.content as Array<Record<string, unknown>>)[0]!.content).toBe(formatLoadedDoors([tool("mail_send")]))
+  })
+
+  it("sends every held-back door, deferred, after the loaded ones, so the tool list stays the same as doors load", () => {
+    const pool = [tool("mail_send"), tool("mail_search"), tool("coding_spawn")]
+    const before = anthropicToolPlan([tool("settle"), tool("find_tools")], pool, [])
+    expect(before.tools.map((entry) => entry.function.name)).toEqual(["settle", "find_tools", "mail_send", "mail_search", "coding_spawn"])
+    expect([...before.deferred]).toEqual(["mail_send", "mail_search", "coding_spawn"])
+    const found: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: null, tool_calls: [call("f1", "find_tools")] },
+      { role: "tool", tool_call_id: "f1", content: formatLoadedDoors([tool("mail_send")]) },
+    ]
+    const after = anthropicToolPlan([tool("settle"), tool("find_tools"), tool("mail_send")], pool, found)
+    expect(after.tools.map((entry) => entry.function.name)).toEqual(before.tools.map((entry) => entry.function.name))
+    expect([...after.deferred]).toEqual([...before.deferred])
+  })
+
+  it("loads outright a held-back door the engine made callable without a find_tools reply, such as a skill's", () => {
+    const plan = anthropicToolPlan([tool("settle"), tool("find_tools"), tool("coding_spawn")], [tool("mail_send"), tool("coding_spawn")], [])
+    expect(plan.tools.map((entry) => entry.function.name)).toEqual(["settle", "find_tools", "mail_send", "coding_spawn"])
+    expect([...plan.deferred]).toEqual(["mail_send"])
+  })
+
+  it("sends the active tools as they are when nothing is held back", () => {
+    const plan = anthropicToolPlan([tool("settle")], undefined, [])
+    expect(plan.tools.map((entry) => entry.function.name)).toEqual(["settle"])
+    expect(plan.deferred.size).toBe(0)
   })
 })

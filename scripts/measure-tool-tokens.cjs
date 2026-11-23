@@ -70,12 +70,22 @@ async function main() {
   const { toAnthropicTools } = require(path.join(distRoot, "heart", "providers", "anthropic.js"))
   const { toResponsesTools } = require(path.join(distRoot, "heart", "streaming.js"))
   const { getChannelCapabilities } = require("@ouro.bot/friends")
+  const { buildToolCatalog, partitionCatalog } = require(path.join(distRoot, "repertoire", "tool-catalog.js"))
   const counter = tokenCounter()
   const butlerRoot = path.join(repoRoot, "deploy", "unraid", "sanctuary.ouro")
   const profiles = JSON.parse(fs.readFileSync(path.join(butlerRoot, "tool-profiles.json"), "utf8")).profiles
   const media = await mcpToolsList(path.join(butlerRoot, "mcp", "media-mcp.mjs"))
   const mcpView = { manager: {}, owner: { agentName: "sanctuary", agentRoot: bundle }, entries: [{ server: "media", tools: media, source: "agent", configDigest: "measure", generation: 1 }] }
-  const select = (channel, context, view) => toolSelectionSchemas(selectToolsForChannel(getChannelCapabilities(channel), undefined, undefined, new Set(), view, undefined, { agentRoot: bundle, ...context }))
+  // Each shape is what a turn starts with: every selected door ("before"), and the eager doors plus find_tools that the
+  // catalog loads up front ("after"). Anthropic still sends the held-back doors, but marked defer_loading, so they
+  // stay out of the model's context until find_tools loads them.
+  const select = (channel, context, view) => {
+    const selection = selectToolsForChannel(getChannelCapabilities(channel), undefined, undefined, new Set(), view, undefined, { agentRoot: bundle, ...context })
+    const tools = toolSelectionSchemas(selection)
+    const definitions = new Map(selection.ordinary.map((definition) => [definition.tool.function.name, definition]))
+    const catalog = buildToolCatalog(tools.map((tool) => ({ tool, ax: definitions.get(tool.function.name)?.ax, mcpServer: definitions.get(tool.function.name)?.mcpServer })))
+    return { tools, loaded: partitionCatalog(tools, catalog, [], new Set()).active }
+  }
   const butlerProfile = (profileId) => ({ agentName: "sanctuary", relationshipAuthorization: { profileId, advertisedToolNames: profiles[profileId].toolNames } })
 
   const shapes = {
@@ -92,17 +102,19 @@ async function main() {
     responses: (tools) => toResponsesTools(tools),
   }
   const report = { counter: counter.name, shapes: {} }
-  for (const [shape, tools] of Object.entries(shapes)) {
-    report.shapes[shape] = { tools: tools.length, tokens: Object.fromEntries(Object.entries(paths).map(([name, wire]) => [name, counter.count(JSON.stringify(wire(tools)))])) }
+  const count = (tools) => Object.fromEntries(Object.entries(paths).map(([name, wire]) => [name, counter.count(JSON.stringify(wire(tools)))]))
+  for (const [shape, { tools, loaded }] of Object.entries(shapes)) {
+    report.shapes[shape] = { tools: tools.length, tokens: count(tools), loaded: loaded.length, loadedTokens: count(loaded) }
   }
   if (process.argv.includes("--json")) {
     console.log(JSON.stringify(report, null, 2))
     return
   }
   console.log(`tool-definition tokens per request (${counter.name}); anthropic = Messages API, chat-completions = Copilot Claude/MiniMax/openai-compatible, responses = Copilot GPT/openai-codex`)
-  console.log(`${"shape".padEnd(28)} tools  anthropic  chat-completions  responses`)
+  console.log(`${"shape".padEnd(28)} ${"tools".padStart(9)}  ${"anthropic".padStart(13)}  ${"chat-completions".padStart(16)}  ${"responses".padStart(13)}   (every door -> loaded up front)`)
+  const cell = (before, after, width) => `${before} -> ${after}`.padStart(width)
   for (const [shape, row] of Object.entries(report.shapes)) {
-    console.log(`${shape.padEnd(28)} ${String(row.tools).padStart(5)}  ${String(row.tokens.anthropic).padStart(9)}  ${String(row.tokens["chat-completions"]).padStart(16)}  ${String(row.tokens.responses).padStart(9)}`)
+    console.log(`${shape.padEnd(28)} ${cell(row.tools, row.loaded, 9)}  ${cell(row.tokens.anthropic, row.loadedTokens.anthropic, 13)}  ${cell(row.tokens["chat-completions"], row.loadedTokens["chat-completions"], 16)}  ${cell(row.tokens.responses, row.loadedTokens.responses, 13)}`)
   }
 }
 

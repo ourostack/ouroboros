@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1374",
+      "version": "0.1.0-alpha.1375",
       "changes": [
         "The Butler checks Slugger's card every 5 minutes. After 3 failed checks it tells the owner once on Telegram that Slugger is unreachable, and silently when he is back."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1374",
+      "changes": [
+        "Every agent now loads tools through the Ouro AX tool catalog: eager doors up front and the rest through find_tools (Anthropic loads them natively with tool_reference), cutting tool-definition tokens per request by about 85%. OURO_DEFERRED_TOOLS is gone."
       ]
     },
     {
