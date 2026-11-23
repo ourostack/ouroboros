@@ -27,7 +27,7 @@ import { opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegr
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
-import { SANCTUARY_MCP_PROVIDED_TOOLS, SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
+import { SANCTUARY_MCP_PROVIDED_TOOLS, SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleCheckBackTool, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
 import { authorizeRelationshipAccess, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { getProviderRuntime, runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
 import { getAgentRoot } from "../identity"
@@ -1533,7 +1533,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         providerCapabilities: [...runtime.capabilities], schemaDigest: digest(schemas), schemaToolNames,
         ordinaryDefinitionCount: selection.ordinary.length, engineSchemaCount: selection.engine.length,
         profileExact: true, schemasExact: isDeepStrictEqual([...schemaToolNames].sort(), [...expectedNames].sort()),
-        handlersExact: selection.ordinary.every((definition) => typeof definition.handler === "function") && selection.engine.every((schema) => [ponderTool, settleTool, speakTool, restTool].includes(schema)),
+        handlersExact: selection.ordinary.every((definition) => typeof definition.handler === "function") && selection.engine.every((schema) => [ponderTool, settleTool, settleCheckBackTool, speakTool, restTool].includes(schema)),
         poisonedSchemaIntersectionCount: toolSelectionSchemas(poisoned).filter((schema) => !schemaToolNames.includes(schema.function.name)).length,
         excludedToolNames: excludedAttempts.map((receipt) => receipt.name),
         excludedSchemaIntersectionCount: schemaToolNames.filter((name) => excludedNames.includes(name)).length,

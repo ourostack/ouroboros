@@ -104,23 +104,22 @@ describe("Phase 2: tool description enrichment", () => {
 
     it("settle description contains substantive response guidance", () => {
       const desc = settleTool.function.description ?? ""
-      expect(desc).toMatch(/if you're settling with 'I'll look into that,' you probably should be using a tool instead/i)
+      expect(desc).toContain("an answer like 'I'll look into that' means a tool call is the next step")
     })
 
     it("settle description communicates turn-ending semantics", () => {
       const desc = settleTool.function.description ?? ""
-      expect(desc).toMatch(/end.?s? your turn|hands control back/i)
+      expect(desc).toMatch(/ends the turn, handing control back/)
     })
 
-    it("settle description discourages mid-task status updates", () => {
+    it("settle description sends mid-task progress to speak", () => {
       const desc = settleTool.function.description ?? ""
-      expect(desc).toMatch(/do not settle with status updates/i)
+      expect(desc).toContain("progress while i keep working goes through speak")
     })
 
     it("settle description treats process feedback as non-terminal loop input", () => {
       const desc = settleTool.function.description ?? ""
-      expect(desc).toContain("process feedback during active work is loop input")
-      expect(desc).toContain("not a settle reason")
+      expect(desc).toContain("feedback that arrives during active work is input to the loop")
     })
 
     it("claude description contains second opinions guidance", () => {
