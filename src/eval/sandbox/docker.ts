@@ -7,10 +7,11 @@
  * - the household sidecar (`household.py`, uid 10002), answering as `calibre-web`, `smtp` and the libgen mirror
  *   names over TLS signed by a test authority made for the run, whose key is deleted once it has signed. Its state
  *   folder is a host folder the agent container never mounts, and its admin port listens on its own loopback only.
- * - the agent container (uid 10001, `HOME=/home/ouro`, `--agent sanctuary`), running the real Telegram turn
- *   (`guest-entry.js`) on the projected bundle at the production path. The bundle is mounted read-only except the
- *   places the turn and the books CLI write: `books/work`, `books/removed`, `books/ledger.ndjson`, `state`,
- *   `friends` and `arc`. The test authority replaces the system trust store, and `books/credentials.json` is
+ * - the agent container (uid 10001, `HOME=/home/ouro`, `--agent <agent>`), running the real Telegram turn
+ *   (`guest-entry.js`) on the profile's bundle at the production path, `$HOME/AgentBundles/<agent>.ouro`. The bundle is
+ *   mounted read-only except the profile's writable paths. The Butler is the default profile; its writable paths are
+ *   where the turn and the books CLI write: `books/work`, `books/removed`, `books/ledger.ndjson`, `state`, `friends`,
+ *   `arc` and `desk/_record`. The test authority replaces the system trust store, and `books/credentials.json` is
  *   synthetic. Its provider is the host's runtime, served over the container's stdin and stdout, so no credential
  *   enters the container. Its `node` is execute-only, which leaves the guest undumpable: the shell the model runs
  *   cannot reach the guest's stdio, memory or trace, so it cannot speak on that channel.
@@ -39,7 +40,7 @@ import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../tr
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { DECLARED_GAPS } from "./declared-gaps"
 import { agentImageOf, type SandboxImages } from "./images"
-import { projectBundle } from "./projection"
+import { type AgentProfile, bundleMounts, checkProfile, sanctuaryProfile } from "./agent-profile"
 import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
 
 export const SANDBOX_IMAGE = "ouro-eval-sandbox:local"
@@ -56,9 +57,6 @@ export type { SandboxImages } from "./images"
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
-const BUNDLE = "/home/ouro/AgentBundles/sanctuary.ouro"
-/** What the turn and the books CLI write; everything else in the bundle is read-only. */
-export const WRITABLE = ["books/work", "books/removed", "books/ledger.ndjson", "state", "friends", "arc", "desk/_record"]
 const HARDENING = [
   "--log-driver", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
   "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--ulimit", `fsize=${SNAPSHOT_LIMITS.bytes}`,
@@ -135,6 +133,11 @@ export type SandboxInput = {
   guest?: { entry: InterviewGuestEntry; turn: unknown; image?: string }
   /** Lets the run share a host with the live Butler; without it, such a host is refused. */
   hostLock?: HostLock
+  /**
+   * The agent the container runs: its name, its bundle and what the turn may write (`agent-profile.ts`). The Butler's
+   * by default, its bundle projected from `bundleDir` over `seedBundleDir`.
+   */
+  profile?: AgentProfile
 }
 
 /**
@@ -253,6 +256,8 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
   const docker = input.docker ?? dockerCli()
   const images: SandboxImages = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   const agentImage = agentImageOf(images, input.guest?.image)
+  const profile = input.profile ?? sanctuaryProfile({ bundleDir: input.bundleDir, seedBundleDir: input.seedBundleDir })
+  checkProfile(profile)
   const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
   const runLabels = ["--label", EVAL_LABEL, "--label", `ouro.eval.run=${runId}`]
   const last = input.case.prefix.at(-1)
@@ -284,7 +289,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     ])
   }
   try {
-    const { gaps } = projectBundle({ bundleDir: input.bundleDir, seedBundleDir: input.seedBundleDir, include: input.case.bundle.include, out: bundle })
+    const { gaps } = profile.bundleSource({ include: input.case.bundle.include, out: bundle })
     fs.writeFileSync(path.join(bundle, "books/credentials.json"), `${JSON.stringify(booksSettings(), null, 1)}\n`)
     for (const dir of [fixtures, tls, household]) fs.mkdirSync(dir)
     const helper = ["run", "--rm", ...runLabels, "--network", "none", "--user", self, ...HARDENING]
@@ -306,7 +311,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     const turnFile = path.join(work, "turn.json")
     fs.writeFileSync(turnFile, JSON.stringify(input.guest ? input.guest.turn : { prefix: input.case.prefix.slice(0, -1), userText: last.content }))
     fs.chmodSync(household, 0o777)
-    for (const entry of WRITABLE) openUp(path.join(bundle, entry))
+    for (const entry of profile.writable) openUp(path.join(bundle, entry))
 
     await docker.run(["network", "create", "--internal", ...runLabels, runId])
     networkMade = true
@@ -323,14 +328,14 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     ])
     await waitForReady(sidecar, input.readyTimeoutMs ?? 60_000)
 
-    const before = snapshotFiles(bundle, WRITABLE)
+    const before = snapshotFiles(bundle, [...profile.writable])
     started.push(agentName)
     const agent = docker.start([
       "run", "-i", "--rm", "--name", agentName, ...runLabels, "--network", runId, "--user", "10001:10001", ...HARDENING,
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
-      "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
+      ...bundleMounts(profile, bundle),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      agentImage, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
+      agentImage, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", profile.agent]),
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)
@@ -355,7 +360,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${stuck} did not stop within ${graceMs} ms of its removal` }
     } else {
       try {
-        created = createdSince(before, snapshotFiles(bundle, WRITABLE))
+        created = createdSince(before, snapshotFiles(bundle, [...profile.writable]))
       } catch (error) {
         turn = { timeline: [], finalReply: "", outcome: `sandbox-error: ${(error as Error).message}` }
       }
