@@ -4,7 +4,7 @@ import * as path from "node:path"
 import OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
-import { transcribeAudioFile, VOICE_NOTE_TRANSCRIPT_PREFIX } from "../../heart/attachments/transcribe-audio"
+import { transcribeAudioFile, voiceNoteWords } from "../../heart/attachments/transcribe-audio"
 import { IMAGE_DESCRIPTION_TEXT, imageDescriptionPrompt } from "../../heart/attachments/understand"
 import { getModelCapabilities } from "../../heart/model-capabilities"
 import { normalizeImageForVision } from "../../heart/attachments/image-normalize"
@@ -276,17 +276,14 @@ export async function hydrateBlueBubblesAttachments(
           })
           continue
         }
-        const transcript = (await transcribeAudio({
+        const words = voiceNoteWords(name, await transcribeAudio({
           attachment,
           buffer: downloaded.buffer,
           contentType: downloaded.contentType,
           timeoutMs: channelConfig.requestTimeoutMs,
-        })).trim()
-        if (!transcript) {
-          notices.push(`attachment hydration failed for ${name}: empty audio transcript`)
-          continue
-        }
-        transcriptAdditions.push(`${VOICE_NOTE_TRANSCRIPT_PREFIX}${transcript}`)
+        }))
+        if (words.line) transcriptAdditions.push(words.line)
+        if (words.notice) notices.push(words.notice)
         continue
       }
 
