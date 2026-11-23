@@ -19,6 +19,9 @@ import type { ProviderRuntime } from "../../../../heart/core"
 import type { TurnResult } from "../../../../heart/streaming"
 import { emitNervesEvent } from "../../../../nerves/runtime"
 import type { TraceCall, TraceReply } from "../../../domain/case"
+import type { JsonObject } from "../../../../heart/approval-store"
+import type { McpToolInfo } from "../../../../repertoire/mcp-client"
+import { mcpToolSchema } from "../../../../repertoire/mcp-tools"
 import { messageOf, NO_CALLBACKS } from "../loop"
 
 type Message = OpenAI.ChatCompletionMessageParam
@@ -39,22 +42,17 @@ function textOf(content: unknown): string {
 }
 
 /** A function tool the arm declares, as its request carries it. */
-type ArmTool = { name: string; description?: string; parameters?: Record<string, unknown> }
+type ArmTool = { name: string; description?: string; parameters?: JsonObject }
 
 /**
- * The arm's own tool, passed through to the host's runtime under the arm's name, in the harness's shape. It is the
- * arm's door, not the harness's: the arm runs each call to it, and nothing in the harness does, so the census counts
- * it as a passthrough (ax/census.config.json). Only a tool from the arm's request body may come through here.
+ * The arm's own tools, passed to the host's runtime as a connected MCP server's tools are: through `mcpToolSchema`,
+ * the census's passthrough (ax/census.config.json). They are the arm's doors, not the harness's: the arm runs each
+ * call to one, and nothing in the harness does. A tool named as its own server keeps its name; one with no
+ * description or schema gets the passthrough's (a fidelity note), and the arms' tools have both.
  */
-function wireTool(tool: ArmTool): Tool {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      ...(tool.description !== undefined ? { description: tool.description } : {}),
-      ...(tool.parameters !== undefined ? { parameters: tool.parameters } : {}),
-    },
-  }
+function wireTools(tools: ArmTool[]): Tool[] {
+  const infos: McpToolInfo[] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", inputSchema: tool.parameters ?? { type: "object", properties: {} } }))
+  return infos.map((tool) => mcpToolSchema({ server: tool.name }, tool))
 }
 
 /**
@@ -102,7 +100,7 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
   }
   const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
   for (const tool of tools) if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
-  const activeTools = (tools as ArmTool[]).map((tool) => wireTool(tool))
+  const activeTools = wireTools(tools as ArmTool[])
   return { messages: [...(leading.length > 0 ? [{ role: "system" as const, content: leading.join("\n\n") }] : []), ...rest], activeTools }
 }
 

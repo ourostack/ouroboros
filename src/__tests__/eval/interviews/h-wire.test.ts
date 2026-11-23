@@ -53,10 +53,11 @@ describe("the H wire's Responses translation", () => {
       ],
       activeTools: [{ type: "function", function: { name: "exec_command", description: "Run a command.", parameters: { type: "object", properties: { cmd: { type: "string" } } } } }],
     })
-    // The case's conversation goes in once, before the first user message only; a tool may have no description or schema.
+    // The case's conversation goes in once, before the first user message only. A tool with no description or schema
+    // gets what a connected MCP server's would, since it goes through the same passthrough.
     expect(responsesRequest({ input: [{ type: "message", role: "user", content: "job" }, { type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "debrief" }], tools: [{ type: "function", name: "t" }] }, PREFIX)).toEqual({
       messages: [...PREFIX, { role: "user", content: "job" }, { role: "system", content: "s" }, { role: "user", content: "debrief" }],
-      activeTools: [{ type: "function", function: { name: "t" } }],
+      activeTools: [{ type: "function", function: { name: "t", description: "MCP tool: t (server: t)", parameters: { type: "object", properties: {} } } }],
     })
     // A call with no assistant text before it starts its own assistant message; no instructions and no tools are fine.
     expect(responsesRequest({ input: [{ type: "message", role: "user", content: "hi" }, { type: "function_call", call_id: "c", name: "t", arguments: "{}" }] }, [])).toEqual({

@@ -26,7 +26,7 @@
       "module": "dist",
       "source": "src",
       "handlers": ["src/repertoire/tools.ts"],
-      "passthrough": ["src/repertoire/mcp-tools.ts#mcpToolSchema", "src/eval/interviews/guest/h/wire.ts#wireTool"],
+      "passthrough": ["src/repertoire/mcp-tools.ts#mcpToolSchema"],
       "approvals": ["src/repertoire/tools.ts#classifyApprovalForInvocation"],
       "reshape": ["src/heart/streaming.ts#toResponsesTools", "src/senses/voice/realtime-tool-schema.ts#realtimeToolsFromDefinitions"]
     }
