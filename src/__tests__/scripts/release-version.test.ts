@@ -208,6 +208,69 @@ describe("planRelease", { timeout: 30_000 }, () => {
     expect(plan.entries[0].changes).toEqual(["bump a dependency (#3)"])
   })
 
+  it("does not take a moved or reformatted version line for a version change", () => {
+    const root = makeRepo()
+    const anchor = head(root)
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const { version, ...rest } = readJson(root, "package.json")
+    json(root, "package.json", { ...rest, version })
+    commit(root, "move package.json's version line (#4)")
+    write(root, "changes/next.md", "Next.\n")
+    commit(root, "next (#5)")
+    const plan = planRelease({ root })
+    expect(plan).toMatchObject({ anchor, baseVersion: BASE, version: "0.1.0-alpha.13" })
+    expect(entryPairs(plan).map(([v]) => v)).toEqual(["0.1.0-alpha.13", "0.1.0-alpha.12", "0.1.0-alpha.11"])
+  })
+
+  it("does not take a reformatted version line for the first anchor either", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-version-"))
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    writeReleaseFiles(root, BASE, [{ version: BASE, changes: ["base release"] }])
+    commit(root, "base release (#2)")
+    const anchor = head(root)
+    const { version, ...rest } = readJson(root, "package.json")
+    json(root, "package.json", { ...rest, version })
+    write(root, "changes/README.md", "How change notes work.\n")
+    commit(root, "change notes arrive, and package.json's version line moves (#3)")
+    write(root, "changes/next.md", "Next.\n")
+    commit(root, "next (#4)")
+    expect(planRelease({ root })).toMatchObject({ anchor, version: "0.1.0-alpha.12" })
+  })
+
+  it("reads a change note in a push as the push left it", () => {
+    const root = makeRepo()
+    const before = head(root)
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first commit of a rebase merge")
+    write(root, "changes/first.md", "First, reworded.\n\nMore.\n")
+    commit(root, "second commit of a rebase merge")
+    write(root, "changes/gone.md", "Gone.\n")
+    commit(root, "third commit of a rebase merge")
+    fs.renameSync(path.join(root, "changes/gone.md"), path.join(root, "gone.md.aside"))
+    commit(root, "fourth commit of a rebase merge")
+    expect(entryPairs(planRelease({ root, before }))).toEqual([["0.1.0-alpha.13", ["First, reworded.", "More.", "Gone."]]])
+  })
+
+  it("releases nothing for a commit that only removes change notes", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const before = head(root)
+    fs.renameSync(path.join(root, "changes/first.md"), path.join(root, "first.md.aside"))
+    commit(root, "tidy old notes (#4)")
+    expect(planRelease({ root, before })).toMatchObject({ release: false, version: "0.1.0-alpha.11" })
+  })
+
+  it("reads notes whose names are not ASCII", () => {
+    const root = makeRepo()
+    write(root, "changes/caf\u00e9.md", "Caf\u00e9.\n")
+    commit(root, "cafe (#3)")
+    expect(entryPairs(planRelease({ root }))).toEqual([["0.1.0-alpha.11", ["Caf\u00e9."]]])
+  })
+
   it("plans from the commit, not from release files a previous apply already wrote", () => {
     const root = makeRepo()
     write(root, "changes/first.md", "First.\n")
@@ -260,40 +323,26 @@ describe("planRelease", { timeout: 30_000 }, () => {
     }
   })
 
-  it("rebuilds earlier entries one per published release, using the release tags", () => {
+  it("rebuilds earlier entries one per commit, whatever tags exist, so every job writes the same changelog", () => {
     const root = makeRepo()
     write(root, "changes/a.md", "A.\n")
     commit(root, "a (#3)")
-    git(root, "tag", "v0.1.0-alpha.11")
     write(root, "changes/b.md", "B.\n")
     commit(root, "b, first of a rebase merge")
     write(root, "changes/c.md", "C.\n")
     commit(root, "c, second of a rebase merge")
-    git(root, "tag", "v0.1.0-alpha.13")
     const before = head(root)
     write(root, "changes/d.md", "D.\n")
     commit(root, "d (#5)")
 
-    const plan = planRelease({ root, before })
-    expect(plan.version).toBe("0.1.0-alpha.14")
-    expect(entryPairs(plan)).toEqual([
+    const untagged = planRelease({ root, before })
+    git(root, "tag", "v0.1.0-alpha.11", "HEAD~3")
+    git(root, "tag", "v0.1.0-alpha.13", "HEAD~1")
+    const tagged = planRelease({ root, before })
+    expect(tagged).toEqual(untagged)
+    expect(untagged.version).toBe("0.1.0-alpha.14")
+    expect(entryPairs(untagged)).toEqual([
       ["0.1.0-alpha.14", ["D."]],
-      ["0.1.0-alpha.13", ["B.", "C."]],
-      ["0.1.0-alpha.11", ["A."]],
-    ])
-  })
-
-  it("keeps a release that has no tag yet as its own entry, and ignores a tag that names the wrong version", () => {
-    const root = makeRepo()
-    write(root, "changes/a.md", "A.\n")
-    commit(root, "a (#3)")
-    git(root, "tag", "v0.1.0-alpha.99")
-    write(root, "changes/b.md", "B.\n")
-    commit(root, "b (#4)")
-    const before = head(root)
-    write(root, "changes/c.md", "C.\n")
-    commit(root, "c (#5)")
-    expect(entryPairs(planRelease({ root, before }))).toEqual([
       ["0.1.0-alpha.13", ["C."]],
       ["0.1.0-alpha.12", ["B."]],
       ["0.1.0-alpha.11", ["A."]],
@@ -478,19 +527,21 @@ describe("runReleaseVersionCli", { timeout: 30_000 }, () => {
     expect(readJson(root, "changelog.json").versions[0]).toEqual({ version: "0.1.0-alpha.12", changes: ["First.", "Second."] })
   })
 
-  it("lets a manual run rebuild a released commit, and refuses one that releases nothing", () => {
+  it("lets a manual run rebuild only the commit npm published HEAD's version from", () => {
     const root = makeRepo()
-    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: [`version=${BASE}\nrelease=true`] })
     write(root, "changes/first.md", "First.\n")
     commit(root, "first (#3)")
-    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
+    const released = head(root)
+    expect(capture(root, ["dispatch", released])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
+    const unpublished = capture(root, ["dispatch", ""])
+    expect(unpublished.code).toBe(1)
+    expect(unpublished.err.join("\n")).toContain("npm has no 0.1.0-alpha.11")
     write(root, "docs/x.md", "docs\n")
     commit(root, "docs (#4)")
-    const refused = capture(root, ["dispatch"])
-    expect(refused.code).toBe(1)
-    expect(refused.err.join("\n")).toContain("releases nothing")
-    git(root, "tag", "v0.1.0-alpha.11")
-    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
+    const moved = capture(root, ["dispatch", released])
+    expect(moved.code).toBe(1)
+    expect(moved.err.join("\n")).toContain(`0.1.0-alpha.11 was published from ${released.slice(0, 12)}`)
+    expect(capture(root, ["dispatch"])).toMatchObject({ code: 2 })
   })
 
   it("fails with usage for an unknown command and with the reason for a planning error", () => {

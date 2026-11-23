@@ -9,15 +9,16 @@
 //
 // A push publishes once: the version of the newest releasable commit it brought, with every change note from all of
 // its commits in that version's changelog entry. A push of several commits (a rebase merge) therefore skips the
-// numbers of its earlier commits. Earlier entries are rebuilt from history: the release tags (v<version>, which the
-// GitHub release job puts on each push's last commit) mark where each published push ended, and a release that has
-// no tag yet gets an entry per commit. A commit's entry is the notes it added under changes/, or its subject.
+// numbers of its earlier commits. Earlier entries are rebuilt from history, one per numbered commit, from git alone,
+// so every job writes the same changelog whenever it runs. A commit's entry is the notes it added under changes/, or
+// its subject; this push's notes are read as its last commit left them.
 //
 //   node scripts/release-version.cjs version          prints HEAD's version
 //   node scripts/release-version.cjs push <before>    for the push before..HEAD, prints version=<v> and
 //                                                      release=true|false, for GITHUB_OUTPUT
-//   node scripts/release-version.cjs dispatch          the same for a manual run on HEAD; fails when HEAD's code is
-//                                                      not what HEAD's version shipped
+//   node scripts/release-version.cjs dispatch <sha>    the same for a manual run on HEAD, given the commit npm
+//                                                      published HEAD's version from (gitHead); fails unless that
+//                                                      is HEAD, so an image never carries code npm did not ship
 //   node scripts/release-version.cjs apply [<before>]  writes the version and changelog into the release files,
 //                                                      prints the version
 
@@ -71,12 +72,18 @@ function parseChangeNote(text) {
   return items
 }
 
+// Removing a change note (tidying old ones) releases nothing; adding or editing one does.
+function releasingFiles(changes) {
+  return changes.filter((change) => !(change.status === "D" && isChangeNotePath(change.file))).map((change) => change.file)
+}
+
 function isReleasableCommit(files) {
   return versionBumpRequired(files) || wrapperPackageChanged(files) || files.some(isChangeNotePath)
 }
 
 function gitRunner(root, execFileSyncImpl) {
-  return (...args) => execFileSyncImpl("git", args, {
+  // quotePath off: a path that is not ASCII is printed as is, not quoted and escaped.
+  return (...args) => execFileSyncImpl("git", ["-c", "core.quotePath=false", ...args], {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -127,20 +134,6 @@ function readBlobs(root, execFileSyncImpl, specs) {
   return blobs
 }
 
-// Commits that carry a release tag, as commit -> versions named by its v<version> tags.
-function releaseTags(git) {
-  const tagged = new Map()
-  for (const line of lines(git("for-each-ref", "refs/tags", "--format=%(refname:strip=2)%1f%(objectname)%1f%(*objectname)"))) {
-    const [name, object, peeled] = line.split("\x1f")
-    const match = /^v(.+)$/.exec(name)
-    if (!match) continue
-    const commit = peeled || object
-    if (!tagged.has(commit)) tagged.set(commit, new Set())
-    tagged.get(commit).add(match[1])
-  }
-  return tagged
-}
-
 // The commit the push started from, when git knows it as an ancestor of HEAD. Otherwise (a new branch's all-zero
 // sha, a typo, a missing argument) the push is taken to be HEAD alone.
 function resolvePushStart(git, before) {
@@ -170,13 +163,26 @@ function planRelease(input = {}) {
     throw new Error("the release version needs main's full history; check out with fetch-depth: 0")
   }
   const head = git("rev-parse", "HEAD").trim()
-  const lastVersionChange = (ref) =>
-    git("log", "--first-parent", "-G", VERSION_LINE, "--format=%H", "-1", ref, "--", "package.json").trim()
+  const versionAt = (sha) => {
+    try {
+      return JSON.parse(git("show", `${sha}:package.json`)).version
+    } catch {
+      return undefined
+    }
+  }
+  // -G finds every commit whose diff touches the version line; only those whose version differs from their first
+  // parent's changed it (moving or reformatting the line does not).
+  const changesVersion = (sha) => {
+    const version = versionAt(sha)
+    return version !== undefined && version !== versionAt(`${sha}^1`)
+  }
+  const versionLineCommits = (...range) =>
+    lines(git("log", "--first-parent", "-G", VERSION_LINE, "--format=%H", ...range, "--", "package.json"))
+  const lastVersionChange = (ref) => versionLineCommits(ref).find(changesVersion)
   const anchor = lastVersionChange("HEAD")
   if (!anchor) {
     throw new Error("no commit sets package.json's version, so there is no release to count from")
   }
-  const versionAt = (sha) => JSON.parse(git("show", `${sha}:package.json`)).version
   const baseVersion = versionAt(anchor)
 
   // Counting starts where change notes do: the first commit that added changes/README.md, and the version in force
@@ -189,31 +195,21 @@ function planRelease(input = {}) {
   if (!firstAnchor) {
     throw new Error(`no commit before ${NOTES_README} arrived sets package.json's version, so there is no release to count from`)
   }
-  const versionChanges = new Set(lines(git("log", "--first-parent", "-G", VERSION_LINE, "--format=%H", `${firstAnchor}..HEAD`, "--", "package.json")))
-  const tags = releaseTags(git)
+  const versionChanges = new Set(versionLineCommits(`${firstAnchor}..HEAD`).filter(changesVersion))
   const pushStart = resolvePushStart(git, input.before)
   const inPush = pushStart
     ? new Set(lines(git("rev-list", "--first-parent", `${pushStart}..HEAD`)))
     : null
   const isInPush = (sha) => (inPush ? inPush.has(sha) : true)
 
-  // Number every releasable commit, then group them into the releases that published them.
+  // Number every releasable commit. This push's commits publish together; every earlier one is its own entry.
   const commits = firstParentCommits(git, `${firstAnchor}..HEAD`)
   let notesExist = firstAnchor === notesStart
   let base = versionAt(firstAnchor)
   let count = 0
   let current = base
-  const numbered = []
-  const groups = []
-  let pending = []
-  const flushTogether = () => {
-    if (pending.length > 0) groups.push(pending)
-    pending = []
-  }
-  const flushApart = () => {
-    for (const commit of pending) groups.push([commit])
-    pending = []
-  }
+  const earlier = []
+  const pushCommits = []
 
   for (const commit of commits) {
     for (const change of commit.changes) {
@@ -222,13 +218,12 @@ function planRelease(input = {}) {
       if (change.status === "D") notesExist = false
     }
     if (versionChanges.has(commit.sha)) {
-      flushApart()
       base = versionAt(commit.sha)
       count = 0
       current = base
       continue
     }
-    if (notesExist && isReleasableCommit(commit.files)) {
+    if (notesExist && isReleasableCommit(releasingFiles(commit.changes))) {
       count += 1
       current = versionAfter(base, count)
       const entry = {
@@ -237,20 +232,22 @@ function planRelease(input = {}) {
         subject: commit.subject,
         notes: commit.changes.filter((change) => change.status === "A" && isChangeNotePath(change.file)).map((change) => change.file),
       }
-      numbered.push(entry)
-      pending.push(entry)
+      if (isInPush(commit.sha)) pushCommits.push(entry)
+      else earlier.push(entry)
     }
-    if (isInPush(commit.sha)) continue
-    if (tags.get(commit.sha)?.has(current)) flushTogether()
-    if (commit.sha === pushStart) flushApart()
   }
-  // What is left is this push's own commits, which publish together.
-  const pushCommits = pending
-  flushTogether()
+  const groups = [...earlier.map((entry) => [entry]), ...(pushCommits.length > 0 ? [pushCommits] : [])]
 
-  const blobs = readBlobs(root, execFileSyncImpl, numbered.flatMap((commit) => commit.notes.map((file) => `${commit.sha}:${file}`)))
+  // A group's notes as its last commit left them, or as they were added when a later commit removed them.
+  const noteSpecs = (group) => group.flatMap((commit) => commit.notes.map((file) => ({
+    file,
+    at: `${group[group.length - 1].sha}:${file}`,
+    added: `${commit.sha}:${file}`,
+  })))
+  const specs = groups.flatMap(noteSpecs)
+  const blobs = readBlobs(root, execFileSyncImpl, [...new Set(specs.flatMap((spec) => [spec.at, spec.added]))])
   const entries = groups.map((group) => {
-    const notes = group.flatMap((commit) => commit.notes.flatMap((file) => parseChangeNote(blobs.get(`${commit.sha}:${file}`) ?? "")))
+    const notes = noteSpecs(group).flatMap((spec) => parseChangeNote(blobs.get(spec.at) ?? blobs.get(spec.added) ?? ""))
     const last = group[group.length - 1]
     return {
       version: last.version,
@@ -265,7 +262,6 @@ function planRelease(input = {}) {
     baseVersion,
     version: current,
     release: pushCommits.length > 0 || isInPush(anchor),
-    headTagged: tags.get(head)?.has(current) ?? false,
     entries,
   }
 }
@@ -302,12 +298,13 @@ function runReleaseVersionCli(argv = process.argv.slice(2), deps = {}) {
   const log = deps.log ?? console.log
   const error = deps.error ?? console.error
   const [command, before] = argv
-  if (!["version", "push", "dispatch", "apply"].includes(command) || (command === "push" && !before)) {
-    error("usage: node scripts/release-version.cjs version | push <before> | dispatch | apply [<before>]")
+  if (!["version", "push", "dispatch", "apply"].includes(command) || (command === "push" && !before) ||
+    (command === "dispatch" && argv.length < 2)) {
+    error("usage: node scripts/release-version.cjs version | push <before> | dispatch <published-sha> | apply [<before>]")
     return 2
   }
   try {
-    const plan = planRelease({ root, before, execFileSyncImpl: deps.execFileSyncImpl })
+    const plan = planRelease({ root, before: command === "dispatch" ? undefined : before, execFileSyncImpl: deps.execFileSyncImpl })
     if (command === "version") {
       log(plan.version)
     } else if (command === "apply") {
@@ -315,10 +312,15 @@ function runReleaseVersionCli(argv = process.argv.slice(2), deps = {}) {
       error(`release files written for ${plan.version} (base ${plan.baseVersion} at ${plan.anchor.slice(0, 12)})`)
       log(plan.version)
     } else if (command === "dispatch") {
-      if (!plan.release && !plan.headTagged) {
+      const published = String(before).trim()
+      if (!published) {
+        throw new Error(`npm has no ${plan.version}, so there is no published release to rebuild an image for. A push to main publishes it.`)
+      }
+      if (published !== plan.head) {
         throw new Error(
-          `${plan.head.slice(0, 12)} releases nothing: ${plan.version} shipped an earlier commit's code, so an image ` +
-          `built here would carry the wrong code under that tag. Run it on the commit tagged v${plan.version}.`,
+          `${plan.version} was published from ${published.slice(0, 12)}, not ${plan.head.slice(0, 12)}, so an image ` +
+          `built here would carry code npm never shipped under that tag. A manual run only rebuilds main's head when ` +
+          `main's head published its version.`,
         )
       }
       log(`version=${plan.version}\nrelease=true`)
