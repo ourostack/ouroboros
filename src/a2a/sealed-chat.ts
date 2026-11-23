@@ -176,7 +176,8 @@ export async function openApprovalAnswer(input: OpenChatMessageInput): Promise<O
     return { ok: false, reason }
   }
   if (result.state === "rejected") return refuse(result.reason)
-  const answer = result.friendsKind === "message" ? result.message?.approvalAnswer : undefined
+  // Only a message receipt carries `message`: any other kind reaches a store, and these stores throw.
+  const answer = result.message?.approvalAnswer
   if (!answer) return refuse("not_an_approval_answer")
   /* v8 ignore next -- rejectUnboundEnvelopes is forced on, so a completed receipt always has its binding id @preserve */
   if (!result.bindingId) return refuse("unbound_approval_answer")

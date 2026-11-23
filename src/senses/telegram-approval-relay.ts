@@ -132,6 +132,7 @@ export async function startApprovalRelaySocket(input: {
         },
       )
     })
+    /* v8 ignore next -- a client that resets mid-request; whether that surfaces as an error is up to the OS @preserve */
     socket.on("error", () => socket.destroy())
   })
   await new Promise<void>((resolve, reject) => {

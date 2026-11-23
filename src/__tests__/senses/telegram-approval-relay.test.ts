@@ -134,6 +134,14 @@ describe("relayDeny", () => {
     expect(f.onDecision).toHaveBeenCalledTimes(1)
   })
 
+  it("marks a card saved without its prompt text by a generic line", async () => {
+    const f = fixture()
+    await sent(f)
+    const g = fixture({ records: f.records().map(({ prompt: _prompt, ...record }) => record) })
+    expect(await g.transport.relayDeny(relayed())).toEqual({ status: "settled", approvalId: "approval-1" })
+    expect(g.edits[0]).toBe(`Approval request\n\n${TELEGRAM_APPROVAL_RELAYED_NOTE}`)
+  })
+
   it("finds nothing for a prompt that was never delivered", async () => {
     const f = fixture()
     await f.transport.sendApproval({ approvalId: "approval-1", decisionToken: TOKEN, prompt: "Restart plex?" })
@@ -183,6 +191,7 @@ describe("a relayed deny across a restart", () => {
     ["a flip to approve", (r: Records[number]) => ({ ...r, decisionAttempt: { ...r.decisionAttempt!, decision: "approve" as const } })],
     ["an extra relay key", (r: Records[number]) => ({ ...r, decisionAttempt: { ...r.decisionAttempt!, relay: { ...r.decisionAttempt!.relay!, actor: "owner" } as never } })],
     ["a stripped relay", (r: Records[number]) => ({ ...r, decisionAttempt: { ...r.decisionAttempt!, relay: undefined } })],
+    ["a relay that isn't an object", (r: Records[number]) => ({ ...r, decisionAttempt: { ...r.decisionAttempt!, relay: ["did", "bind"] as never } })],
   ])("refuses to recover a relayed attempt with %s", async (_name, tamper) => {
     const g = fixture({ records: (await crashed()).map(tamper) })
     await expect(g.transport.recoverDecisionAttempt("approval-1")).rejects.toThrow("decision attempt is invalid")
