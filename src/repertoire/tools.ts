@@ -22,7 +22,7 @@ import { assertRelationshipToolOwner, freezeToolValue, validateAdvertisedToolArg
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
-import { observeTool, ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
+import { observeTool, ponderTool, restTool, SETTLE_DESCRIPTION, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import { houseCareToolDefinitions } from "./tools-house-care";
 import { shepherdToolDefinitions, shepherdToolsEnabled } from "./tools-shepherd";
@@ -90,6 +90,23 @@ const SANCTUARY_OWNER_SYNC_TOOLS: ReadonlySet<string> = new Set(["bundle_push", 
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition, ToolExecutionOutcome, ToolSelection } from "./tools-base";
+
+/**
+ * settle for a turn that may also file await_condition: two more arguments leave a watch behind, filed exactly as
+ * await_condition would file it. Offered only where await_condition is, so elsewhere the arguments don't exist.
+ * Built from settleTool, so the door is defined once.
+ */
+export const settleCheckBackTool: OpenAI.ChatCompletionFunctionTool = withCheckBack(settleTool)
+
+function withCheckBack(tool: OpenAI.ChatCompletionFunctionTool): OpenAI.ChatCompletionFunctionTool {
+  const variant = structuredClone(tool)
+  variant.function.description = `${SETTLE_DESCRIPTION} with check_back_at and condition, it also files an await that wakes at that time, so the follow-up happens without anyone asking again.`
+  Object.assign(variant.function.parameters!.properties as Record<string, unknown>, {
+    check_back_at: { type: "string", description: "optional: when to look at this again, an ISO time with a zone such as 2026-11-23T15:00:00Z. give condition with it." },
+    condition: { type: "string", description: "optional, with check_back_at: one sentence of what to check then." },
+  })
+  return variant
+}
 
 // Re-export surface tool schema for consumers (e.g. heart/core.ts)
 export { surfaceToolDef } from "./tools-surface";
@@ -172,6 +189,9 @@ export function selectToolsForChannel(
         ...chatToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []),
         ...(owner ? bundleToolDefinitions.filter((definition) => SANCTUARY_OWNER_SYNC_TOOLS.has(definition.tool.function.name)) : []),
         ...(ownerLike ? mcp : []),
+        // A friend gets only the Butler's own media server, and of it only what the profile lists;
+        // mcp-write-guard keeps the family-only arguments to family.
+        ...(profileId === "sanctuary-household" ? mcp.filter((definition) => definition.mcpBinding?.server === "media" && definition.mcpBinding.source === "builtin") : []),
       ]
       : []
   } else {
@@ -219,9 +239,11 @@ export function selectToolsForChannel(
     &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))
+  // settle can leave a check-back only where the turn may file await_condition itself.
+  const offersCheckBack = ordinary.some((definition) => definition.tool.function.name === "await_condition")
   const engine = [
     ...(context?.noSend ? [] : [ponderTool]),
-    ...(inner ? [restTool] : [observeTool, settleTool]),
+    ...(inner ? [restTool] : [observeTool, offersCheckBack ? settleCheckBackTool : settleTool]),
     ...(capabilities?.chatStyle ? [speakTool] : []),
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))

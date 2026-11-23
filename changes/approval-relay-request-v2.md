@@ -1,0 +1,1 @@
+While the relay switch is on, the Butler hands an approval prompt to Ari's primary agent as a sealed request only its harness can open, so Ari can answer it in iMessage. A peer that hangs is given up on after 15 seconds and Ari gets the Telegram card.
