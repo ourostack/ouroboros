@@ -18,6 +18,19 @@ export const BUNDLE_SYNC_FIRST_RELEASE = "0.1.0-alpha.991"
 export const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/
 export const CASE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
+// Eval sandboxes (ouro-eval-*) start and stop containers on the host. The upgrade's root lifecycle scans the running
+// containers, and the 1435 ship's upgrade and rollback both failed when one stopped mid-scan, leaving the Butler down.
+export const EVAL_CONTAINERS_PROBE = "docker ps --filter name=^ouro-eval- --format '{{.Names}}'"
+
+/** Refuses to go on while eval containers run on the host; nothing has changed yet when it throws. */
+export async function assertNoEvalContainers(host, deps, when) {
+  const probe = await deps.ssh(host, EVAL_CONTAINERS_PROBE)
+  if (probe.code !== 0) throw new ShipError(`couldn't list eval containers ${when} (${(probe.stderr || "").trim() || `exit ${probe.code}`}); nothing was changed`)
+  const running = probe.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+  if (running.length) throw new ShipError(`eval containers are running on ${host} ${when} (${running.join(", ")}); the upgrade's container scan races them, so stop the eval run and ship again. Nothing was changed`)
+  deps.log(`  ok   no eval containers running ${when}`)
+}
+
 export function logPath(version) {
   return `/var/log/ouro-upgrade-${version}.log`
 }
@@ -293,6 +306,7 @@ export async function ship(opts, deps, timing = {}) {
   const pre = await deps.ssh(host, `${REMOTE_NODE} ${REMOTE_UPGRADE} preflight ${version}`)
   pre.stdout.split("\n").forEach((l) => deps.log(l))
   if (pre.code !== 0 || /^PREFLIGHT RED/m.test(pre.stdout) || !/^PREFLIGHT GREEN/m.test(pre.stdout)) throw new ShipError("preflight is not green; nothing was changed")
+  await assertNoEvalContainers(host, deps, "before the gate")
   if (dryRun) { deps.log("\ndry run complete: steps 1 to 3 and 5 passed"); return { dryRun: true, exitCode: 0 } }
 
   // A case can only show the candidate is worse if it passes on the live version: run the release's own gate (staged in step 4)
@@ -310,6 +324,7 @@ export async function ship(opts, deps, timing = {}) {
   }
 
   say("7. start the detached upgrade")
+  await assertNoEvalContainers(host, deps, "before the upgrade")
   const log = logPath(version)
   const flags = `${noGate ? " --no-gate" : ""}${plant ? ` --plant ${plant}` : ""}`
   const env = baseline.cases ? `OURO_REPLAY_BASELINE=${baseline.log} ` : ""
