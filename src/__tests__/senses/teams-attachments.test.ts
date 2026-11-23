@@ -126,7 +126,7 @@ describe("ingestTeamsAttachments", () => {
 
 describe("teamsInboundText", () => {
   it("adds the attachment lines and any notices after what was typed", async () => {
-    mocks.attachmentTurnLines.mockResolvedValue(["[attachments]\n- a", "voice note transcript: hi"])
+    mocks.attachmentTurnLines.mockResolvedValue(["[attachments]\n- a", "voice note (machine transcript; may mishear words): hi"])
     const fetchImpl = vi.fn().mockResolvedValueOnce(new Response("ogg")).mockResolvedValueOnce(new Response("", { status: 500 })) as unknown as typeof fetch
     const text = await teamsInboundText("listen", {
       agentName: "butler",
@@ -138,7 +138,7 @@ describe("teamsInboundText", () => {
         { contentType: "audio/ogg", contentUrl: "https://example.com/b.ogg", name: "b.ogg" },
       ],
     })
-    expect(text).toBe("listen\n[attachments]\n- a\nvoice note transcript: hi\nattachment unavailable: b.ogg (download failed with HTTP 500)")
+    expect(text).toBe("listen\n[attachments]\n- a\nvoice note (machine transcript; may mishear words): hi\nattachment unavailable: b.ogg (download failed with HTTP 500)")
     expect(mocks.attachmentTurnLines).toHaveBeenCalledWith([expect.objectContaining({ displayName: "a.ogg" })], { agentName: "butler", agentRoot: root, userText: "listen", timeoutMs: 120_000 })
   })
 })
