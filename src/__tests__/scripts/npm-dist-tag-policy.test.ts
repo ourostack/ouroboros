@@ -3,6 +3,7 @@ import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 const {
+  assessLatestAfterPublish,
   planPublishTag,
   resolvePublishTag,
 } = require(path.resolve(__dirname, "../../../scripts/npm-dist-tag-policy.cjs"))
@@ -157,5 +158,14 @@ describe("npm dist-tag policy", () => {
     expect(() => resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
       latestVersion: "definitely-not-semver",
     })).toThrow("@ouro.bot/cli: latest dist-tag points at invalid version definitely-not-semver")
+  })
+
+  it("checks after a publish that latest did not end up behind the version just published", () => {
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.12" })).toMatchObject({ ok: true })
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.13" })).toMatchObject({ ok: true })
+    const behind = assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "0.1.0-alpha.11" })
+    expect(behind.ok).toBe(false)
+    expect(behind.reason).toContain("latest reads 0.1.0-alpha.11, behind 0.1.0-alpha.12")
+    expect(assessLatestAfterPublish({ publishedVersion: "0.1.0-alpha.12", latestVersion: "" }).ok).toBe(false)
   })
 })

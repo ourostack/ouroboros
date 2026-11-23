@@ -60,7 +60,9 @@ interface TransactionModule {
 const roots: string[] = []
 const image = (character: string) => `sha256:${character.repeat(64)}`
 const canonicalVersionTag = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798"
-const templateUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+const templateUrl = "https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml"
+// What templates carried before releases moved off main; an installed template or an open journal may still have it.
+const mainTemplateUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
 const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
 const communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
@@ -445,6 +447,7 @@ describe("root-owned DockerMan template transaction", () => {
       template().replace("<Name>ouro-butler</Name>", '<Name extra="value">ouro-butler</Name>'),
       template("wrong-image"), template(canonicalVersionTag, "wrong-name"),
       template().replace(icon, "https://example.invalid/icon"),
+      template().replace(templateUrl, "https://example.invalid/sanctuary.xml"),
       template().replace("<WebUI/>", '<WebUI extra="x"/>'),
     ]) {
       const state = fixture("prior")
@@ -836,6 +839,23 @@ describe("root-owned DockerMan template transaction", () => {
     expect(transaction.inspectDockerManTemplateTransaction(state.options)).toEqual(record)
     expect(transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toEqual(record)
     expect(Array.from(new Set([readFileSync(state.journalPath, "utf8")]))).toHaveLength(1)
+  })
+
+  it("still prepares, rolls back and commits a template that carries main's older template URL", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace(templateUrl, mainTemplateUrl))
+    const record = transaction.prepareDockerManTemplateTransaction(state.input, state.options)
+    expect(record.target.templateUrl).toBe(mainTemplateUrl)
+    expect(transaction.inspectDockerManTemplateTransaction(state.options)).toEqual(record)
+    expect(transaction.rollbackDockerManTemplateTransaction(state.options)).toBe(true)
+
+    transaction.prepareDockerManTemplateTransaction(state.input, state.options)
+    transaction.markDockerManTemplateTransactionCommitting(state.options)
+    const proof = finalProof(state.targetPath)
+    proof.dockerMan.templateUrl = mainTemplateUrl
+    proof.communityApps.templateUrl = mainTemplateUrl
+    expect(transaction.commitDockerManTemplateTransaction(proof, state.options)).toBe(true)
   })
 
   it("restores exact prior bytes and metadata, including an explicitly absent prior template", async () => {

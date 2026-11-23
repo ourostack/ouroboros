@@ -44,6 +44,7 @@ function isChangeNotePath(file) {
 
 module.exports = {
   NOTES_DIR,
+  NOTES_README,
   isChangeNotePath,
   isShippedMailboxUiAsset,
   pathRequiresChangelogFreshness,

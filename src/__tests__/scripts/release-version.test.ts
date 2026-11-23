@@ -58,8 +58,17 @@ function makeRepo(): string {
   write(root, "src/a.ts", "export const a = 1\n")
   commit(root, "older release (#1)")
   writeReleaseFiles(root, BASE, [{ version: BASE, changes: ["base release"] }, { version: "0.1.0-alpha.9", changes: ["older"] }])
+  write(root, "changes/README.md", "How change notes work.\n")
   commit(root, "base release (#2)")
   return root
+}
+
+function head(root: string): string {
+  return git(root, "rev-parse", "HEAD").trim()
+}
+
+function entryPairs(plan: { entries: Array<{ version: string; changes: string[] }> }): Array<[string, string[]]> {
+  return plan.entries.map((entry) => [entry.version, entry.changes])
 }
 
 describe("versionAfter", () => {
@@ -185,7 +194,7 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const plan = planRelease({ root })
     expect(plan.baseVersion).toBe(lineStart)
     expect(plan.version).toBe("0.2.0-alpha.1")
-    expect(plan.entries).toHaveLength(1)
+    expect(plan.entries.map((entry: { version: string }) => entry.version)).toEqual(["0.2.0-alpha.1", "0.1.0-alpha.11"])
   })
 
   it("ignores dependency-only edits to package.json when finding the anchor", () => {
@@ -207,6 +216,137 @@ describe("planRelease", { timeout: 30_000 }, () => {
     expect(planRelease({ root }).version).toBe("0.1.0-alpha.11")
   })
 
+  it("publishes one version for a push of several commits, with every note in it, even when its last commit releases nothing", () => {
+    const root = makeRepo()
+    const before = head(root)
+    write(root, "src/a.ts", "export const a = 2\n")
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first commit of a rebase merge")
+    write(root, "changes/second.md", "Second.\n")
+    commit(root, "second commit of a rebase merge")
+    write(root, "docs/readme.md", "docs only\n")
+    commit(root, "last commit of a rebase merge, docs only")
+
+    const plan = planRelease({ root, before })
+    expect(plan.release).toBe(true)
+    expect(plan.version).toBe("0.1.0-alpha.12")
+    expect(entryPairs(plan)).toEqual([["0.1.0-alpha.12", ["First.", "Second."]]])
+  })
+
+  it("publishes nothing for a push whose commits release nothing", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const before = head(root)
+    write(root, "docs/readme.md", "docs only\n")
+    commit(root, "docs (#4)")
+    write(root, "src/__tests__/a.test.ts", "test\n")
+    commit(root, "tests (#5)")
+    const plan = planRelease({ root, before })
+    expect(plan.release).toBe(false)
+    expect(plan.version).toBe("0.1.0-alpha.11")
+  })
+
+  it("treats a missing or unknown push start as a push of HEAD alone", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    write(root, "changes/second.md", "Second.\n")
+    commit(root, "second (#4)")
+    for (const before of [undefined, "0000000000000000000000000000000000000000", "not-a-commit"]) {
+      const plan = planRelease({ root, before })
+      expect(plan.release).toBe(true)
+      expect(entryPairs(plan)).toEqual([["0.1.0-alpha.12", ["Second."]], ["0.1.0-alpha.11", ["First."]]])
+    }
+  })
+
+  it("rebuilds earlier entries one per published release, using the release tags", () => {
+    const root = makeRepo()
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a (#3)")
+    git(root, "tag", "v0.1.0-alpha.11")
+    write(root, "changes/b.md", "B.\n")
+    commit(root, "b, first of a rebase merge")
+    write(root, "changes/c.md", "C.\n")
+    commit(root, "c, second of a rebase merge")
+    git(root, "tag", "v0.1.0-alpha.13")
+    const before = head(root)
+    write(root, "changes/d.md", "D.\n")
+    commit(root, "d (#5)")
+
+    const plan = planRelease({ root, before })
+    expect(plan.version).toBe("0.1.0-alpha.14")
+    expect(entryPairs(plan)).toEqual([
+      ["0.1.0-alpha.14", ["D."]],
+      ["0.1.0-alpha.13", ["B.", "C."]],
+      ["0.1.0-alpha.11", ["A."]],
+    ])
+  })
+
+  it("keeps a release that has no tag yet as its own entry, and ignores a tag that names the wrong version", () => {
+    const root = makeRepo()
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a (#3)")
+    git(root, "tag", "v0.1.0-alpha.99")
+    write(root, "changes/b.md", "B.\n")
+    commit(root, "b (#4)")
+    const before = head(root)
+    write(root, "changes/c.md", "C.\n")
+    commit(root, "c (#5)")
+    expect(entryPairs(planRelease({ root, before }))).toEqual([
+      ["0.1.0-alpha.13", ["C."]],
+      ["0.1.0-alpha.12", ["B."]],
+      ["0.1.0-alpha.11", ["A."]],
+    ])
+  })
+
+  it("keeps the entries worked out before a new release line once the line starts", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const lineStart = "0.2.0-alpha.0"
+    writeReleaseFiles(root, lineStart, [{ version: lineStart, changes: ["new line"] }, ...readJson(root, "changelog.json").versions])
+    commit(root, "start 0.2 (#4)")
+    write(root, "changes/next.md", "Next.\n")
+    commit(root, "next (#5)")
+
+    const plan = planRelease({ root })
+    expect(plan.version).toBe("0.2.0-alpha.1")
+    expect(entryPairs(plan)).toEqual([["0.2.0-alpha.1", ["Next."]], ["0.1.0-alpha.11", ["First."]]])
+    applyRelease({ root, plan })
+    expect(readJson(root, "changelog.json").versions.map((entry: { version: string }) => entry.version)).toEqual([
+      "0.2.0-alpha.1",
+      lineStart,
+      "0.1.0-alpha.11",
+      BASE,
+      "0.1.0-alpha.9",
+    ])
+  })
+
+  it("releases a new line's own version when the push lands it", () => {
+    const root = makeRepo()
+    const before = head(root)
+    const lineStart = "0.2.0-alpha.0"
+    writeReleaseFiles(root, lineStart, [{ version: lineStart, changes: ["new line"] }, ...readJson(root, "changelog.json").versions])
+    commit(root, "start 0.2 (#3)")
+    const plan = planRelease({ root, before })
+    expect(plan).toMatchObject({ release: true, version: lineStart, entries: [] })
+  })
+
+  it("counts nothing that landed before change notes existed", () => {
+    const root = makeRepo()
+    fs.renameSync(path.join(root, "changes/README.md"), path.join(root, "README-moved.md"))
+    commit(root, "base without change notes")
+    write(root, "src/a.ts", "export const a = 2\n")
+    commit(root, "old-style change that carried no note (#3)")
+    fs.renameSync(path.join(root, "README-moved.md"), path.join(root, "changes/README.md"))
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "change notes start here (#4)")
+    const plan = planRelease({ root })
+    expect(plan.version).toBe("0.1.0-alpha.11")
+    expect(entryPairs(plan)).toEqual([["0.1.0-alpha.11", ["First."]]])
+  })
+
   it("refuses a shallow clone, which cannot see the anchor", () => {
     const root = makeRepo()
     write(root, "changes/first.md", "First.\n")
@@ -214,6 +354,25 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const shallow = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-version-shallow-"))
     git(shallow, "clone", "-q", "--depth", "1", `file://${root}`, "clone")
     expect(() => planRelease({ root: path.join(shallow, "clone") })).toThrow("fetch-depth: 0")
+  })
+
+  it("refuses a history without change notes, and one where they arrived before any version", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-version-nonotes-"))
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    write(root, "changes/README.md", "notes\n")
+    json(root, "package.json", { name: "x" })
+    commit(root, "notes before any version")
+    json(root, "package.json", { name: "x", version: "0.1.0-alpha.1" })
+    commit(root, "first version")
+    expect(() => planRelease({ root })).toThrow("no commit before changes/README.md arrived sets package.json's version")
+
+    const bare = makeRepo()
+    fs.renameSync(path.join(bare, "changes/README.md"), path.join(bare, "README-moved.md"))
+    git(bare, "add", "-A")
+    git(bare, "commit", "-q", "--amend", "--no-edit")
+    expect(() => planRelease({ root: bare })).toThrow("changes/README.md is not in this history")
   })
 
   it("refuses a history with no version anywhere in package.json", () => {
@@ -293,29 +452,45 @@ describe("runReleaseVersionCli", { timeout: 30_000 }, () => {
     expect(readJson(root, "package.json").version).toBe("0.1.0-alpha.11")
   })
 
-  it("prints the release notes for HEAD's version", () => {
+  it("says whether a push releases, as lines for GITHUB_OUTPUT", () => {
     const root = makeRepo()
-    write(root, "changes/first.md", "First.\n\nSecond line.\n")
-    commit(root, "first (#3)")
-    expect(capture(root, ["notes"])).toMatchObject({ code: 0, out: ["First.\n\nSecond line."] })
-  })
-
-  it("prints the anchor's committed notes when HEAD is the anchor", () => {
-    const root = makeRepo()
-    expect(capture(root, ["notes"])).toMatchObject({ code: 0, out: ["base release"] })
-  })
-
-  it("prints the commit that released HEAD's version, which is HEAD only when HEAD releases", () => {
-    const root = makeRepo()
-    const anchor = git(root, "rev-parse", "HEAD").trim()
-    expect(capture(root, ["commit"]).out).toEqual([anchor])
+    const before = head(root)
     write(root, "changes/first.md", "First.\n")
     commit(root, "first (#3)")
-    const first = git(root, "rev-parse", "HEAD").trim()
-    expect(capture(root, ["commit"]).out).toEqual([first])
+    expect(capture(root, ["push", before])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
+    const released = head(root)
     write(root, "docs/x.md", "docs\n")
     commit(root, "docs (#4)")
-    expect(capture(root, ["commit"]).out).toEqual([first])
+    const quiet = capture(root, ["push", released])
+    expect(quiet).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=false"] })
+    expect(quiet.err.join("\n")).toContain("releases nothing")
+    expect(capture(root, ["push"])).toMatchObject({ code: 2 })
+  })
+
+  it("applies a push's release with every note since its start", () => {
+    const root = makeRepo()
+    const before = head(root)
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first")
+    write(root, "changes/second.md", "Second.\n")
+    commit(root, "second")
+    expect(capture(root, ["apply", before])).toMatchObject({ code: 0, out: ["0.1.0-alpha.12"] })
+    expect(readJson(root, "changelog.json").versions[0]).toEqual({ version: "0.1.0-alpha.12", changes: ["First.", "Second."] })
+  })
+
+  it("lets a manual run rebuild a released commit, and refuses one that releases nothing", () => {
+    const root = makeRepo()
+    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: [`version=${BASE}\nrelease=true`] })
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
+    write(root, "docs/x.md", "docs\n")
+    commit(root, "docs (#4)")
+    const refused = capture(root, ["dispatch"])
+    expect(refused.code).toBe(1)
+    expect(refused.err.join("\n")).toContain("releases nothing")
+    git(root, "tag", "v0.1.0-alpha.11")
+    expect(capture(root, ["dispatch"])).toMatchObject({ code: 0, out: ["version=0.1.0-alpha.11\nrelease=true"] })
   })
 
   it("fails with usage for an unknown command and with the reason for a planning error", () => {

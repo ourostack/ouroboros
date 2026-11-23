@@ -1,7 +1,7 @@
 const { appendFileSync, existsSync, readFileSync } = require("node:fs")
 
 // Pull requests carry a change note, never a version: the release job on main sets the version and changelog.
-const NOTE_HINT = "add a new file changes/<short-name>.md saying what changed for the people who use it, one paragraph per change"
+const NOTE_HINT = "add a new file changes/<branch-name>.md saying what changed for the people who use it, one paragraph per change"
 const DROP_BUMP_HINT = "run `npm run release:drop-bump`, then `git push` (it moves an old-style bump's changelog lines into a change note and merges main)"
 
 function hintFor(detail) {

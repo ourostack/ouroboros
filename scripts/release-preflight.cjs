@@ -126,7 +126,8 @@ const DROP_BUMP_HINT =
   "Run `npm run release:drop-bump` (then `git push`): it moves this branch's changelog.json lines into a change note " +
   "under changes/, puts the release files back and merges main."
 
-// What the branch started from: its merge base's version, changelog versions and change notes.
+// What the branch started from: its merge base's version, changelog versions and change notes, and the notes on the
+// base ref's tip, whose names a new note must not take.
 function readBaseState(baseRef, execSyncImpl) {
   const quiet = { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
   const mergeBase = execSyncImpl(`git merge-base ${shellQuote(baseRef)} HEAD`, quiet).trim()
@@ -145,6 +146,7 @@ function readBaseState(baseRef, execSyncImpl) {
     version: packageJson ? JSON.parse(packageJson).version : undefined,
     changelogVersions: Array.isArray(versions) ? versions.map((entry) => entry?.version) : undefined,
     notes: new Set(splitLines(execSyncImpl(`git ls-tree -r --name-only ${shellQuote(mergeBase)} -- changes/`, quiet))),
+    tipNotes: new Set(splitLines(execSyncImpl(`git ls-tree -r --name-only ${shellQuote(baseRef)} -- changes/`, quiet))),
   }
 }
 
@@ -165,7 +167,7 @@ function assessReleaseVersionUnchanged(input) {
   }
   if (semver.valid(input.baseVersion) && semver.valid(input.headVersion) &&
     semver.gt(input.headVersion, input.baseVersion) && releaseLine(input.headVersion) !== releaseLine(input.baseVersion)) {
-    return { ok: true, message: `release version: this branch starts a new release line at ${input.headVersion}` }
+    return { ok: true, newLine: true, message: `release version: this branch starts a new release line at ${input.headVersion}` }
   }
   return {
     ok: false,
@@ -176,32 +178,57 @@ function assessReleaseVersionUnchanged(input) {
 }
 
 // Every pull request that changes something a person would notice adds its own change note: a new Markdown file in
-// changes/, one paragraph or bullet per change. The release job folds the notes into changelog.json.
+// changes/, one paragraph or bullet per change. The release job folds the notes into changelog.json. A branch that
+// starts a new release line (input.newLineVersion) writes that version's changelog.json entry itself instead, because
+// the release job publishes the line's first version straight from the commit.
 function assessChangeNote(input) {
   const baseVersions = input.baseChangelogVersions
   const addedVersions = baseVersions && Array.isArray(input.changelog?.versions)
     ? input.changelog.versions.map((entry) => entry?.version).filter((version) => !baseVersions.includes(version))
     : []
-  if (addedVersions.length > 0) {
+  const strayVersions = addedVersions.filter((version) => version !== input.newLineVersion)
+  if (strayVersions.length > 0) {
     return {
       ok: false,
       message:
-        `changelog.json gains an entry for ${addedVersions.join(", ")} on this branch; the release job writes changelog.json ` +
+        `changelog.json gains an entry for ${strayVersions.join(", ")} on this branch; the release job writes changelog.json ` +
         `from change notes now. ${DROP_BUMP_HINT}`,
     }
   }
 
-  const notes = input.changedFiles
-    .filter((file) => isChangeNotePath(file) && !input.existingNotes.has(file))
+  const read = (file) => {
+    try {
+      return input.readNote(file)
+    } catch {
+      return null
+    }
+  }
+  const changedNotes = input.changedFiles.filter(isChangeNotePath)
+  const edited = changedNotes.filter((file) => input.existingNotes.has(file) && read(file) !== null)
+  if (edited.length > 0) {
+    return {
+      ok: false,
+      message:
+        `change note ${formatPathList(edited)} already landed, and its release already used it; put this branch's note ` +
+        "in a new file, named after this branch.",
+    }
+  }
+  const tipNotes = input.tipNotes ?? new Set()
+  const notes = changedNotes
+    .filter((file) => !input.existingNotes.has(file))
     .flatMap((file) => {
-      let text
-      try {
-        text = input.readNote(file)
-      } catch {
-        return []
-      }
-      return [{ file, changes: parseChangeNote(text) }]
+      const text = read(file)
+      return text === null ? [] : [{ file, changes: parseChangeNote(text) }]
     })
+  const taken = notes.filter((note) => tipNotes.has(note.file))
+  if (taken.length > 0) {
+    return {
+      ok: false,
+      message:
+        `${formatPathList(taken.map((note) => note.file))} already exists on ${input.baseRef ?? "origin/main"}: another ` +
+        "change took that name. Rename this branch's note to a new file, named after this branch.",
+    }
+  }
   const empty = notes.filter((note) => note.changes.length === 0)
   if (empty.length > 0) {
     return { ok: false, message: `change note ${formatPathList(empty.map((note) => note.file))} says nothing; write what changed for the people who use it` }
@@ -211,14 +238,18 @@ function assessChangeNote(input) {
   if (notes.length > 0) {
     return { ok: true, message: `change note: ${notes.map((note) => note.file).join(", ")}` }
   }
+  if (input.newLineVersion && addedVersions.includes(input.newLineVersion)) {
+    return { ok: true, message: `change note: changelog.json's entry for the new release line ${input.newLineVersion}` }
+  }
   if (needsNote.length === 0) {
     return { ok: true, message: "change note: not needed (no releasable implementation paths)" }
   }
   return {
     ok: false,
     message:
-      `add a change note for ${formatPathList(needsNote)}: a new file changes/<short-name>.md saying what changed for the ` +
-      "people who use it, one paragraph or bullet per change. The release job adds it to changelog.json.",
+      `add a change note for ${formatPathList(needsNote)}: a new file changes/<branch-name>.md, named after this ` +
+      "branch, saying what changed for the people who use it, one paragraph or bullet per change. The release job adds " +
+      "it to changelog.json.",
   }
 }
 
@@ -455,7 +486,10 @@ function runReleasePreflight(options = {}, deps = {}) {
 
   const changeNoteResult = assessChangeNote({
     changedFiles,
+    baseRef,
     existingNotes: baseState.notes,
+    tipNotes: baseState.tipNotes,
+    newLineVersion: versionResult.ok && versionResult.newLine ? packageJson.version : undefined,
     baseChangelogVersions: baseState.changelogVersions,
     changelog,
     readNote: (file) => readFileSyncImpl(path.join(packageRoot, file), "utf8"),

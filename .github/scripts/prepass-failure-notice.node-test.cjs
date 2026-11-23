@@ -8,14 +8,14 @@ const { buildNotice, main } = require("./prepass-failure-notice.cjs")
 const preflightLog = [
   "lockfile versions aligned (0.1.0-alpha.1204)",
   "release preflight: FAIL",
-  "add a change note for src/a.ts: a new file changes/<short-name>.md saying what changed for the people who use it, one paragraph or bullet per change.",
+  "add a change note for src/a.ts: a new file changes/<branch-name>.md saying what changed for the people who use it, one paragraph or bullet per change.",
 ].join("\n")
 
 test("a missing change note is named with its fix and says the cancels are a result", () => {
   const { annotation, summary } = buildNotice({ step: "Release preflight", log: preflightLog })
   assert.match(annotation, /^::error title=Release preflight failed, so the shards were cancelled::/)
   assert.match(annotation, /add a change note for src\/a\.ts/)
-  assert.match(annotation, /Fix: add a new file changes\/<short-name>\.md/)
+  assert.match(annotation, /Fix: add a new file changes\/<branch-name>\.md/)
   assert.doesNotMatch(annotation, /release:bump/)
   assert.match(annotation, /not the cause/)
   assert.match(summary, /^## Release preflight failed/)

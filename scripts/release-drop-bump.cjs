@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-// For a branch made while pull requests still bumped the version: moves the branch's changelog.json lines into a
-// change note under changes/, puts every release file's version back to where the branch started, commits that, and
-// merges main. The release job on main sets the version now (scripts/release-version.cjs), so a branch that still
+// For a branch made while pull requests still bumped the version: moves the changelog.json entries the branch added
+// into a change note under changes/ (keeping any fix it made to an older entry), puts every release file's version
+// back to where the branch started, commits that, and merges main. The release job on main sets the version now (scripts/release-version.cjs), so a branch that still
 // carries a bump conflicts with every other merge.
 //
 //   npm run release:drop-bump                      (then git push)
@@ -39,18 +39,20 @@ function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "change"
 }
 
-// The changelog lines this branch added since `baseChangelog`: whole entries for versions the base lacks, and lines
-// added to an entry the base has.
-function addedChangelogLines(baseChangelog, headChangelog) {
-  const baseEntries = new Map((baseChangelog.versions ?? []).map((entry) => [entry?.version, entry?.changes ?? []]))
+// Splits the branch's changelog.json against `baseChangelog`: the lines of the entries it added (versions the base
+// lacks), which go into the change note, and the changelog without those entries, which keeps any fix the branch made
+// to an older entry.
+function splitChangelog(baseChangelog, headChangelog) {
+  const baseVersions = new Set((baseChangelog.versions ?? []).map((entry) => entry?.version))
+  const added = (headChangelog.versions ?? []).filter((entry) => !baseVersions.has(entry?.version))
   const lines = []
-  for (const entry of [...(headChangelog.versions ?? [])].reverse()) {
-    const before = baseEntries.get(entry?.version) ?? []
+  for (const entry of [...added].reverse()) {
     for (const change of entry?.changes ?? []) {
-      if (!before.includes(change) && !lines.includes(change)) lines.push(change)
+      if (!lines.includes(change)) lines.push(change)
     }
   }
-  return lines
+  const kept = { ...headChangelog, versions: (headChangelog.versions ?? []).filter((entry) => baseVersions.has(entry?.version)) }
+  return { lines, kept }
 }
 
 function freeNotePath(root, slug) {
@@ -78,8 +80,11 @@ function dropBump(options, deps) {
   const mergeBase = git("merge-base", options.baseRef, "HEAD").trim()
   const baseVersion = JSON.parse(git("show", `${mergeBase}:package.json`)).version
   const baseChangelogText = git("show", `${mergeBase}:changelog.json`)
+  const baseChangelog = JSON.parse(baseChangelogText)
   const headVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version
-  const lines = addedChangelogLines(JSON.parse(baseChangelogText), JSON.parse(fs.readFileSync(path.join(root, "changelog.json"), "utf8")))
+  const { lines, kept } = splitChangelog(baseChangelog, JSON.parse(fs.readFileSync(path.join(root, "changelog.json"), "utf8")))
+  // Byte for byte the base's file when the branch changed nothing else in it, so merging main stays clean.
+  const changelogText = JSON.stringify(kept) === JSON.stringify(baseChangelog) ? baseChangelogText : `${JSON.stringify(kept, null, 2)}\n`
 
   if (headVersion === baseVersion && lines.length === 0) {
     say(`no version bump to drop: this branch keeps ${baseVersion} and adds no changelog.json lines`)
@@ -89,7 +94,7 @@ function dropBump(options, deps) {
   const notePath = lines.length > 0 ? freeNotePath(root, slugify(branch)) : null
   const writeVersion = prepareReleaseVersion({ root, version: baseVersion })
   writeVersion()
-  fs.writeFileSync(path.join(root, "changelog.json"), baseChangelogText)
+  fs.writeFileSync(path.join(root, "changelog.json"), changelogText)
   if (notePath) {
     fs.mkdirSync(path.join(root, "changes"), { recursive: true })
     fs.writeFileSync(path.join(root, notePath), `${lines.join("\n\n")}\n`)
@@ -133,8 +138,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  addedChangelogLines,
   parseArgs,
   runDropBumpCli,
   slugify,
+  splitChangelog,
 }

@@ -20,8 +20,8 @@ env:
   IMAGE: ghcr.io/ourostack/ouroboros-butler
 
 jobs:
-  # A merge that releases nothing (docs, tests, workflows) publishes nothing: its version came from an
-  # earlier commit, whose image already carries that tag.
+  # A push that releases nothing (docs, tests, workflows) publishes nothing: its version came from an
+  # earlier push, whose image already carries that tag.
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -35,21 +35,22 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Decide whether this commit releases a version
+      # A push publishes when any commit it brought releases something (a rebase merge's last commit may not), under
+      # the version npm's publish job works out from the same push. A manual run rebuilds a commit that released a
+      # version, and stops on one that did not, which would put the wrong code under an earlier version's tag.
+      - name: Decide whether this push releases a version
         id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
-          VERSION=$(node scripts/release-version.cjs version)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          RELEASE_COMMIT=$(node scripts/release-version.cjs commit)
-          if [ "$RELEASE_COMMIT" != "$GITHUB_SHA" ]; then
-            echo "This commit releases nothing; $VERSION came from $RELEASE_COMMIT, so it publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "release=false" >> "$GITHUB_OUTPUT"
+            PLAN=$(node scripts/release-version.cjs dispatch)
           else
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            PLAN=$(node scripts/release-version.cjs push "$BEFORE")
+          fi
+          printf '%s\n' "$PLAN" | tee -a "$GITHUB_OUTPUT"
+          if printf '%s\n' "$PLAN" | grep -qx 'release=false'; then
+            echo "This push releases nothing, so it publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
   build:
@@ -115,9 +116,11 @@ jobs:
       # and changelog are written into this checkout before the build, as the npm publish job does.
       - name: Build release assets
         if: steps.release-gate.outputs.publish == 'true'
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           npm ci
-          test "$(node scripts/release-version.cjs apply)" = "$PACKAGE_VERSION"
+          test "$(node scripts/release-version.cjs apply "$BEFORE")" = "$PACKAGE_VERSION"
           node scripts/changelog-gate.cjs
           npm run build
 

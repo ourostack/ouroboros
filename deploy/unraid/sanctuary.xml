@@ -12,7 +12,7 @@
   <Category>Tools:Utilities</Category>
   <Beta>true</Beta>
   <WebUI/>
-  <TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>
+  <TemplateURL>https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png</Icon>
   <ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>
   <PostArgs/>

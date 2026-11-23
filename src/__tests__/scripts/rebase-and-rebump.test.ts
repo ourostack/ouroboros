@@ -140,6 +140,22 @@ describe("scripts/release-drop-bump.cjs", { timeout: 30_000 }, () => {
     expect(JSON.parse(read(work, "package.json")).version).toBe(BASE)
   })
 
+  it("keeps the branch's fix to an older changelog entry and moves only its new entry into the note", () => {
+    const { work } = makeRepos()
+    git(work, "checkout", "-q", "-b", "fix/typo")
+    bump(work, "0.1.0-alpha.11", "Mine.")
+    const changelog = JSON.parse(read(work, "changelog.json"))
+    json(work, "changelog.json", { ...changelog, versions: changelog.versions.map((entry: { version: string; changes: string[] }) => (entry.version === BASE ? { ...entry, changes: ["base, with its typo fixed"] } : entry)) })
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "mine, and a typo fix")
+
+    run(work, ["node", "scripts/release-drop-bump.cjs", "--no-merge"])
+
+    expect(read(work, "changes/fix-typo.md")).toBe("Mine.\n")
+    expect(JSON.parse(read(work, "changelog.json")).versions).toEqual([{ version: BASE, changes: ["base, with its typo fixed"] }])
+    expect(JSON.parse(read(work, "package.json")).version).toBe(BASE)
+  })
+
   it("does nothing on a branch that never bumped", () => {
     const { work } = makeRepos()
     git(work, "checkout", "-q", "-b", "clean")

@@ -57,7 +57,8 @@ describe("Ouro Butler Community Apps release", () => {
     expect(template).toContain("<Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>")
     expect(template).toContain("<Support>https://github.com/ourostack/ouroboros/issues</Support>")
     expect(template).toContain("<Project>https://ouroboros.bot</Project>")
-    expect(template).toContain("<TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>")
+    // The release carries the template the release job wrote; main's copy keeps the version it was committed with.
+    expect(template).toContain("<TemplateURL>https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml</TemplateURL>")
     expect(template).toContain("<Icon>https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png</Icon>")
     expect(template).not.toContain("REPLACE_WITH_EXACT_LOCAL_IMAGE_ID")
     expect(template).not.toMatch(/<Registry\s*\/>/u)
@@ -297,5 +298,12 @@ describe("Ouro Butler Community Apps release", () => {
     expect(runbook).not.toContain("SAB readiness")
     expect(runbook).not.toContain("Confirm Config.Image equals the exact reviewed local image ID")
     expect(runbook).toContain("Confirm `Config.Image` equals the canonical package-version tag and `.Image` equals the exact reviewed local image ID.")
+  })
+
+  it("checks the installed template's URL against the release URL and main's older one", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    expect(runbook).toContain('$expectedUrls = ["https://github.com/ourostack/ouroboros/releases/latest/download/sanctuary.xml", "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"];')
+    expect(runbook).toContain("!in_array((string)$xml->TemplateURL, $expectedUrls, true)")
+    expect(runbook).not.toContain("$expectedUrl =")
   })
 })

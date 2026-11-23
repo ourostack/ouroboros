@@ -32,6 +32,7 @@ type ExecResponse = {
   baseCliVersion?: string
   baseChangelogVersions?: string[] | null
   existingNotes?: string[]
+  tipNotes?: string[]
   auditOutput?: string
   auditFailureOutput?: string
 }
@@ -77,6 +78,10 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
 
     if (command === "git ls-tree -r --name-only 'base-sha' -- changes/") {
       return (response.existingNotes ?? []).join("\n")
+    }
+
+    if (command === "git ls-tree -r --name-only 'origin/main' -- changes/") {
+      return (response.tipNotes ?? response.existingNotes ?? []).join("\n")
     }
 
     if (command.includes("npm audit --audit-level=moderate") && !command.includes("--offline")) {
@@ -643,11 +648,67 @@ describe("release-preflight", () => {
     expect(result.errors.join("\n")).toContain("npm run release:drop-bump")
   })
 
+  it("passes a branch that starts a new release line with its own changelog entry", () => {
+    const result = preflight(
+      {
+        changedFiles: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "packages/ouro.bot/package.json", "changelog.json", "src/heart/daemon/daemon-cli.ts"],
+        baseCliVersion: "0.1.0-alpha.407",
+        baseChangelogVersions: ["0.1.0-alpha.407"],
+      },
+      { cliVersion: "0.2.0-alpha.0", changelogChanges: ["The 0.2 line starts here."] },
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.ok).toBe(true)
+    expect(result.messages).toContain("release version: this branch starts a new release line at 0.2.0-alpha.0")
+    expect(result.messages).toContain("change note: changelog.json's entry for the new release line 0.2.0-alpha.0")
+  })
+
+  it("fails a new release line that also adds changelog entries for other versions", () => {
+    const result = assessChangeNote({
+      changedFiles: ["changelog.json", "package.json"],
+      existingNotes: new Set(),
+      tipNotes: new Set(),
+      baseChangelogVersions: ["0.1.0-alpha.407"],
+      newLineVersion: "0.2.0-alpha.0",
+      changelog: { versions: [{ version: "0.2.0-alpha.0", changes: ["x"] }, { version: "0.1.0-alpha.408", changes: ["y"] }] },
+      readNote: () => "",
+    })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("changelog.json gains an entry for 0.1.0-alpha.408")
+  })
+
+  it("fails a note whose name another change already took on main", () => {
+    const result = preflight(
+      { changedFiles: ["src/mailroom/core.ts", "changes/mailroom.md"], tipNotes: ["changes/mailroom.md"] },
+      { notes: { "changes/mailroom.md": "Mailroom fix.\n" } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("changes/mailroom.md already exists on origin/main")
+    expect(result.errors.join("\n")).toContain("named after this branch")
+  })
+
+  it("fails an edit to a note that already landed, but allows removing one", () => {
+    const edited = preflight(
+      { changedFiles: ["src/mailroom/core.ts", "changes/old.md", "changes/new.md"], existingNotes: ["changes/old.md"] },
+      { notes: { "changes/old.md": "Reworded.\n", "changes/new.md": "New.\n" } },
+    )
+    expect(edited.ok).toBe(false)
+    expect(edited.errors.join("\n")).toContain("changes/old.md already landed")
+
+    const removed = preflight(
+      { changedFiles: ["src/mailroom/core.ts", "changes/gone.md", "changes/new.md"], existingNotes: ["changes/gone.md"] },
+      { notes: { "changes/new.md": "New.\n" } },
+    )
+    expect(removed.errors).toEqual([])
+  })
+
   it("fails releasable implementation changes without a change note", () => {
     const result = preflight({ changedFiles: ["src/mailroom/core.ts"], workingTreeChangedFiles: ["scripts/package-assets.cjs"] })
 
     expect(result.ok).toBe(false)
-    expect(result.errors.join("\n")).toContain("add a change note for scripts/package-assets.cjs, src/mailroom/core.ts: a new file changes/<short-name>.md")
+    expect(result.errors.join("\n")).toContain("add a change note for scripts/package-assets.cjs, src/mailroom/core.ts: a new file changes/<branch-name>.md")
   })
 
   it("counts an untracked note in a local run", () => {
@@ -673,6 +734,7 @@ describe("release-preflight", () => {
       version: "0.1.0-alpha.9",
       changelogVersions: ["0.1.0-alpha.407"],
       notes: new Set(["changes/old.md"]),
+      tipNotes: new Set(["changes/old.md"]),
     })
     expect(readBaseState("origin/main", makeExecSyncImpl({ baseChangelogVersions: null })).changelogVersions).toBeUndefined()
   })
@@ -682,6 +744,7 @@ describe("release-preflight", () => {
     expect(assessReleaseVersionUnchanged({ baseVersion: undefined, headVersion: "0.1.0-alpha.12" }).ok).toBe(true)
     expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "0.2.0-alpha.0" })).toEqual({
       ok: true,
+      newLine: true,
       message: "release version: this branch starts a new release line at 0.2.0-alpha.0",
     })
     expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "1.0.0" }).ok).toBe(true)
