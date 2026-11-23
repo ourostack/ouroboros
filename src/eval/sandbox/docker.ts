@@ -136,8 +136,12 @@ export type SandboxInput = {
   hostLock?: HostLock
 }
 
-/** The guest entries the agent image keeps besides the Telegram turn's. */
-export type InterviewGuestEntry = "interview-guest-entry.js"
+/**
+ * The guest entries the agent image keeps besides the Telegram turn's: the neutral loop's for U and X, and H's, which
+ * runs each arm's own agent loop. `deploy/eval/Dockerfile` keeps each of these and removes every other file.
+ */
+export const INTERVIEW_GUEST_ENTRIES = ["interview-guest-entry.js", "h-guest-entry.js"] as const
+export type InterviewGuestEntry = typeof INTERVIEW_GUEST_ENTRIES[number]
 
 /** A later user turn in the same conversation (the interviews' debrief): its answer and how it ended. */
 export type FollowUp = { finalReply: string; outcome: string; calls: number; toolCalls?: number }

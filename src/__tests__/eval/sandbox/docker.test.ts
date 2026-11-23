@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
-import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, INTERVIEW_GUEST_ENTRIES, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
 import { runGuest } from "../../../eval/sandbox/guest"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
@@ -543,5 +543,14 @@ describe("dockerCli", () => {
     await buildSandboxImage({ repoRoot: "/repo", images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1" }, docker })
     const build = (target: string, tag: string) => ["build", "--file", "/repo/deploy/eval/Dockerfile", "--target", target, "--tag", tag, "/repo"]
     expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
+  })
+
+  it("keeps every interview guest entry, and the folders their code is in, in the agent image", () => {
+    // The image removes every file of dist/eval it does not name, so an entry missing here fails in the container
+    // with "Cannot find module" and never in a unit test; the scripted sandbox runs check what each entry loads.
+    const dockerfile = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/eval/Dockerfile"), "utf8")
+    expect(INTERVIEW_GUEST_ENTRIES).toEqual(["interview-guest-entry.js", "h-guest-entry.js"])
+    for (const entry of ["guest-entry.js", ...INTERVIEW_GUEST_ENTRIES]) expect(dockerfile).toContain(`! -name ${entry} `)
+    expect(dockerfile).toMatch(/find dist\/eval\/interviews -mindepth 1 -maxdepth 1 ! -name guest /)
   })
 })
