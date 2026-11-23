@@ -41,7 +41,7 @@ import { telegramContactToolDefinition } from "./tools-telegram-contacts"
 import { friendLinkToolDefinition } from "./tools-friend-link"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
-export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
+export { ponderTool, observeTool, settleTool, settleCheckBackTool, restTool, speakTool } from "./tools-flow";
 
 // Re-export renderInnerProgressStatus for consumers
 export { renderInnerProgressStatus } from "./tools-session";

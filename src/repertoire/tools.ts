@@ -22,7 +22,7 @@ import { assertRelationshipToolOwner, freezeToolValue, validateAdvertisedToolArg
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
-import { observeTool, ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
+import { observeTool, ponderTool, restTool, settleCheckBackTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import { houseCareToolDefinitions } from "./tools-house-care";
 import { shepherdToolDefinitions, shepherdToolsEnabled } from "./tools-shepherd";
@@ -219,9 +219,11 @@ export function selectToolsForChannel(
     &&
     (!relationship || relationship.advertisedToolNames.includes(definition.tool.function.name))
     && (!definition.requiredCapability || providerCapabilities?.has(definition.requiredCapability) === true))
+  // settle can leave a check-back only where the turn may file await_condition itself.
+  const offersCheckBack = ordinary.some((definition) => definition.tool.function.name === "await_condition")
   const engine = [
     ...(context?.noSend ? [] : [ponderTool]),
-    ...(inner ? [restTool] : [observeTool, settleTool]),
+    ...(inner ? [restTool] : [observeTool, offersCheckBack ? settleCheckBackTool : settleTool]),
     ...(capabilities?.chatStyle ? [speakTool] : []),
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name))

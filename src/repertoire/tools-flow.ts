@@ -88,6 +88,29 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
+/** How often a check-back filed by settle is looked at again after its time, until it is resolved or canceled. */
+export const SETTLE_CHECK_BACK_CADENCE = "1d"
+
+/**
+ * settle for a turn that may also file await_condition: two more arguments leave a watch behind, filed exactly as
+ * await_condition would file it. Offered only where await_condition is, so elsewhere the arguments don't exist.
+ */
+export const settleCheckBackTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    ...settleTool.function,
+    parameters: {
+      type: "object",
+      properties: {
+        ...(settleTool.function.parameters!.properties as Record<string, unknown>),
+        check_back_at: { type: "string", description: "optional: when to look at this again, an ISO time with a zone such as 2026-11-23T15:00:00Z. give condition with it." },
+        condition: { type: "string", description: "optional, with check_back_at: one sentence of what to check then." },
+      },
+      required: ["answer"],
+    },
+  },
+}
+
 export const speakTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
@@ -132,6 +155,8 @@ export const FLOW_TOOL_REFUSALS = {
   settleAlone: withCode("rejected: settle must be the only tool call. finish your work first, then call settle alone.", "settle-alone"),
   observeAlone: withCode("rejected: observe must be the only tool call. call observe alone when you want to stay silent.", "observe-alone"),
   restAlone: withCode("rejected: rest must be the only tool call. finish your work first, then call rest alone.", "rest-alone"),
+  settleCheckBackIncomplete: withCode("settle takes check_back_at and condition together: give both to leave a check-back, or neither. nothing was sent.", "check-back-incomplete"),
+  settleCheckBackNotFiled: (detail: string): string => withCode(`settle couldn't leave the check-back: ${detail}. nothing was sent; fix it and settle again, or settle without check_back_at.`, "check-back-not-filed"),
   settleHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restHeldWork: withCode("current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.", "held-work-unsurfaced"),
   restFreshWork: withCode("fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.", "fresh-work-pending"),
@@ -147,6 +172,8 @@ export const FLOW_TOOL_REFUSALS = {
 export const toolCards: ToolDoorCard[] = [
   { id: "tool:settle", group: "turn-flow", when: "Pick this to give your final answer and hand the turn back: the work is done, you're blocked, or the person asked something that needs an answer now. For progress while you keep working, use speak.", effect: "write", errors: [
     { code: "settle-alone", means: "settle came in one batch with other tool calls, so nothing in the batch ran.", fix: "Make the other calls first, read their results, then call settle on its own." },
+    { code: "check-back-incomplete", means: "settle had check_back_at or condition but not both, so nothing was sent.", fix: "Give both to leave a check-back, or neither." },
+    { code: "check-back-not-filed", means: "The check-back couldn't be filed (the reason is in the reply), so nothing was sent.", fix: "Fix what the reply names, such as the time's format, then settle again, or settle without check_back_at." },
   ] },
   { id: "tool:speak", group: "turn-flow", when: "Pick this to tell the person something now, like progress on long work, while you keep working; settle gives the final answer.", effect: "write", errors: [
     { code: "empty-message", means: "The message was empty, so nothing was sent.", fix: "Call speak again with the words you mean to send." },

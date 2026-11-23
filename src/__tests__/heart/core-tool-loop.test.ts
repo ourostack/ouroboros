@@ -865,6 +865,96 @@ describe("runAgent tool loop guard", () => {
     }))
   })
 
+  describe("settle's check-back", { timeout: 30_000 }, () => {
+    const settleCall = (args: Record<string, unknown>, id = "call_check_back") => makeStream([makeChunk(undefined, [{
+      index: 0, id, function: { name: "settle", arguments: JSON.stringify(args) },
+    }])])
+    const toolContents = (messages: any[]) => messages.filter((message) => message.role === "tool").map((message) => String(message.content))
+    // A refused attempt is answered to the provider only, so the refusal is read from the next request.
+    const refusal = () => toolContents((mockCreate.mock.calls[1]![0] as { messages: any[] }).messages).at(-1)!
+    const run = async (execTool: ReturnType<typeof vi.fn>, toolContext: Record<string, unknown> = { signin: async () => undefined }) => {
+      const messages: any[] = [{ role: "user", content: "remind me about the plumber" }]
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, { execTool, toolContext })
+      return { messages, result }
+    }
+
+    it("files the check-back through await_condition and says so in settle's receipt", async () => {
+      mockCreate.mockImplementation(() => settleCall({ answer: "I'll check at 3", check_back_at: "2026-11-23T15:00:00Z", condition: "the plumber has confirmed" }))
+      const execTool = vi.fn(async (_name: string, args: any) => JSON.stringify({ filed: args.name }))
+      const { messages, result } = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(1)
+      const [name, args] = execTool.mock.calls[0]!
+      expect(name).toBe("await_condition")
+      expect(args).toEqual({ name: expect.stringMatching(/^check-back-[0-9a-z]+$/), condition: "the plumber has confirmed", cadence: "1d", wake_at: "2026-11-23T15:00:00Z" })
+      expect(toolContents(messages)).toEqual([`(delivered; check-back ${(args as any).name} filed for 2026-11-23T15:00:00Z)`])
+    })
+
+    it.each([
+      ["only a time", { check_back_at: "2026-11-23T15:00:00Z" }],
+      ["only a condition", { condition: "the plumber has confirmed" }],
+      ["a blank time", { check_back_at: " ", condition: "the plumber has confirmed" }],
+    ])("refuses %s without sending or filing anything", async (_label, extra) => {
+      mockCreate
+        .mockReturnValueOnce(settleCall({ answer: "I'll check", ...extra }, "call_half"))
+        .mockReturnValueOnce(settleCall({ answer: "I'll check" }, "call_plain"))
+      const execTool = vi.fn()
+      const { messages, result } = await run(execTool)
+      expect(execTool).not.toHaveBeenCalled()
+      expect(result.outcome).toBe("settled")
+      expect(refusal()).toContain("(code: check-back-incomplete)")
+      expect(toolContents(messages)).toEqual(["(delivered)"])
+    })
+
+    it.each([
+      ["await_condition's refusal", async () => JSON.stringify({ error: "wake_at must be an ISO time" }), "wake_at must be an ISO time"],
+      ["a reply that isn't JSON", async () => "rejected: not now", "rejected: not now"],
+      ["a reply with no receipt", async () => JSON.stringify({ ok: true }), "await_condition gave no receipt"],
+      ["a thrown error", async () => { throw new Error("disk full") }, "disk full"],
+      ["a thrown non-error", async () => { throw "gone" }, "gone"],
+    ])("refuses the settle on %s and names the reason", async (_label, impl, reason) => {
+      mockCreate
+        .mockReturnValueOnce(settleCall({ answer: "I'll check", check_back_at: "soon", condition: "the plumber has confirmed" }, "call_refused"))
+        .mockReturnValueOnce(settleCall({ answer: "I'll check" }, "call_plain"))
+      const execTool = vi.fn(impl)
+      const { messages, result } = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(refusal()).toContain(`settle couldn't leave the check-back: ${reason}.`)
+      expect(refusal()).toContain("(code: check-back-not-filed)")
+      expect(toolContents(messages)).toEqual(["(delivered)"])
+    })
+
+    it("files it under the turn's relationship, and refuses with the reason when that fails", async () => {
+      const relationshipContext = () => ({
+        signin: async () => undefined,
+        agentName: "testagent",
+        agentRoot: "/mock/repo/testagent",
+        relationshipAuthorization: {
+          profileId: "sanctuary-household",
+          authorizedContextScopes: [],
+          advertisedToolNames: ["await_condition", "settle"],
+          authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "check-back-relationship" })),
+        },
+      })
+      const args = { answer: "I'll check at 3", check_back_at: "2026-11-23T15:00:00Z", condition: "the plumber has confirmed" }
+      mockCreate.mockImplementation(() => settleCall(args))
+      const filed = vi.fn(async (_name: string, awaitArgs: any) => JSON.stringify({ filed: awaitArgs.name }))
+      const first = await run(filed, relationshipContext())
+      expect(first.result.outcome).toBe("settled")
+      expect(filed).toHaveBeenCalledWith("await_condition", expect.objectContaining({ wake_at: "2026-11-23T15:00:00Z" }), expect.anything())
+      expect(toolContents(first.messages)[0]).toMatch(/^\(delivered; check-back check-back-[0-9a-z]+ filed for 2026-11-23T15:00:00Z\)$/)
+
+      mockCreate.mockReset()
+      mockCreate
+        .mockReturnValueOnce(settleCall(args, "call_refused"))
+        .mockReturnValueOnce(settleCall({ answer: "I'll check" }, "call_plain"))
+      const second = await run(vi.fn(async () => { throw new Error("disk full") }), relationshipContext())
+      expect(second.result.outcome).toBe("settled")
+      expect(refusal()).toContain("settle couldn't leave the check-back: disk full.")
+    })
+  })
+
   it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
     mockCreate.mockImplementation(() => makeStream([
       makeChunk(undefined, [{
