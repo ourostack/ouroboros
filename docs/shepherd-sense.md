@@ -15,14 +15,14 @@ all-trigger admission path remain unqualified. Disable Shepherd to stop legacy
 automation; do not infer safety from a stored mandate or an unsupported-capability
 badge.
 
-Ouro Mailbox's machine-level **Supervision** view (`#/supervision`) shows one
+`ouro shepherd status` includes the machine-level **supervision** view: one
 explicitly selected owner's terminal observations, source failures, historical
 judgments, custody barriers, and transport outcomes. It ages observations locally
 and retains history when a source fails. "Agent reports finished" is not proof of
 merge, publication, or deployment. Stored mandate/pause assessments are not
 enforced dispatch decisions. Receipt-less `sent` records are explicitly legacy
-reports, not qualified host-admission evidence. The page only reads; its command
-buttons copy local commands and never resolve or retry an input from the browser.
+reports, not qualified host-admission evidence. Reading it never resolves or
+retries an input.
 
 Local administration requires this OS user's existing, non-revoked local-family
 identity. It never creates or promotes an owner. Same-UID administration is a

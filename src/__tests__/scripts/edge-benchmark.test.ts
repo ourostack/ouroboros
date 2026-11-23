@@ -209,3 +209,63 @@ describe("edge-benchmark ratchet", () => {
     }
   })
 })
+
+describe("edge-benchmark same-runner baseline", () => {
+  const fs = require("fs") as typeof import("fs")
+  const os = require("os") as typeof import("os")
+  const linuxArm = { platform: "linux", arch: "arm64" }
+
+  /** A package root whose `ouro --version` busy-waits `delayMs`, then logs its name, standing in for a built harness. */
+  const fakeRoot = (dir: string, name: string, delayMs: number, log: string) => {
+    const root = path.join(dir, name)
+    fs.mkdirSync(path.join(root, "dist", "heart", "daemon"), { recursive: true })
+    fs.writeFileSync(path.join(root, "dist", "heart", "daemon", "ouro-entry.js"),
+      `const end = Date.now() + ${delayMs}\nwhile (Date.now() < end) {}\nrequire("fs").appendFileSync(${JSON.stringify(log)}, ${JSON.stringify(name)} + "\\n")\nconsole.log("0.0.0")\n`)
+    return root
+  }
+
+  it("refuses a socket path too long for macOS, instead of waiting two minutes for a socket that can't open", () => {
+    // A macOS runner's temp dir is 57 characters; a side's name in the work dir pushed a take's socket to 108 (run 45222427891).
+    const macTmp = "/private/var/folders/9d/l02zfgrs7c16twd3wbpdmhkc0000gn/T"
+    expect(bench.unixSocketPath(`${macTmp}/ouro-edge-NxAnQk/daemon-take-1`)).toBe(`${macTmp}/ouro-edge-NxAnQk/daemon-take-1/daemon.sock`)
+    expect(() => bench.unixSocketPath(`${macTmp}/ouro-edge-baseline-NxAnQk/daemon-take-1`)).toThrow("socket path is 108 bytes")
+  })
+
+  it("alternates which side goes first, round by round", () => {
+    expect(bench.interleaveOrder(0, 2)).toEqual([0, 1])
+    expect(bench.interleaveOrder(1, 2)).toEqual([1, 0])
+    expect(bench.interleaveOrder(2, 2)).toEqual([0, 1])
+    expect(bench.interleaveOrder(1, 1)).toEqual([0])
+  })
+
+  it("measures the baseline beside the change when given one, and needs an output for each", () => {
+    expect(bench.runSides({ tarball: "head.tgz", out: "head.json" })).toEqual([{ name: "current", tarball: "head.tgz", root: undefined, out: "head.json" }])
+    expect(bench.runSides({ tarball: "head.tgz", out: "head.json", baselineTarball: "base.tgz", baselineOut: "base.json" })).toEqual([
+      { name: "baseline", tarball: "base.tgz", root: undefined, out: "base.json" },
+      { name: "current", tarball: "head.tgz", root: undefined, out: "head.json" },
+    ])
+    expect(bench.parseArgs(["run", "--root", ".", "--out", "o.json", "--baseline-root", "../main", "--baseline-out", "b.json"])).toMatchObject({ baselineRoot: "../main", baselineOut: "b.json" })
+    expect(() => bench.runSides({ tarball: "head.tgz" })).toThrow("--out is required")
+    expect(() => bench.runSides({ tarball: "head.tgz", root: ".", out: "o.json" })).toThrow("give exactly one of --tarball or --root")
+    expect(() => bench.runSides({ tarball: "head.tgz", out: "o.json", baselineTarball: "base.tgz" })).toThrow("--baseline-out is required")
+    expect(() => bench.runSides({ tarball: "head.tgz", out: "o.json", baselineOut: "b.json" })).toThrow("give exactly one of --baseline-tarball or --baseline-root")
+  })
+
+  it("interleaves the two builds' `ouro --version` runs and catches a real slowdown", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "edge-sides-"))
+    try {
+      const log = path.join(dir, "order.log")
+      const base = fakeRoot(dir, "base", 100, log)
+      const slow = fakeRoot(dir, "head", 400, log)
+      const workDirs = ["base-work", "head-work"].map((name) => { fs.mkdirSync(path.join(dir, name)); return path.join(dir, name) })
+      const [baseline, current] = await bench.measureCli([base, slow], workDirs, 4)
+      expect(fs.readFileSync(log, "utf8").trim().split("\n")).toEqual(["base", "head", "head", "base", "base", "head", "head", "base"])
+      expect(baseline.wallMsRuns).toHaveLength(4)
+      expect(current.wallMsRuns).toHaveLength(4)
+      const violations = bench.ratchetViolations({ host: linuxArm, cli: current }, { host: linuxArm, cli: baseline })
+      expect(violations.map((row: { key: string }) => row.key)).toEqual(["cli.wallMs"])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

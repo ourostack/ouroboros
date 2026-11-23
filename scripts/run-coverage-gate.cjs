@@ -161,42 +161,6 @@ function main() {
     process.exit(1)
   }
 
-  // Install workspace deps before running workspace tests (root npm ci doesn't install them)
-  if (!process.argv.slice(2).includes("--skip-mailbox-ui-install")) runNpm(["install", "--prefix", "packages/mailbox-ui"])
-  const mailboxUiTypecheckExit = runNpm(["run", "typecheck:mailbox-ui"]).status ?? 1
-  if (mailboxUiTypecheckExit !== 0) {
-    const summary = {
-      overall_status: "fail",
-      lint: { status: "pass" },
-      changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "fail" },
-      mailbox_ui_tests: { status: "skip" },
-      code_coverage: { status: "skip" },
-      nerves_coverage: { status: "skip" },
-      required_actions: [{ type: "ui-typecheck", target: "packages/mailbox-ui", reason: "npm run typecheck:mailbox-ui failed" }],
-    }
-    writeJson(summaryPath, summary)
-    console.log(`coverage gate: fail (${summaryPath})`)
-    process.exit(1)
-  }
-
-  const mailboxUiExit = runNpm(["run", "test:mailbox-ui"]).status ?? 1
-  if (mailboxUiExit !== 0) {
-    const summary = {
-      overall_status: "fail",
-      lint: { status: "pass" },
-      changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "fail" },
-      code_coverage: { status: "skip" },
-      nerves_coverage: { status: "skip" },
-      required_actions: [{ type: "ui-tests", target: "packages/mailbox-ui", reason: "npm run test:mailbox-ui failed" }],
-    }
-    writeJson(summaryPath, summary)
-    console.log(`coverage gate: fail (${summaryPath})`)
-    process.exit(1)
-  }
-
   const vitestExit = runNpm(["run", "test:coverage:vitest"]).status ?? 1
   const captureArtifacts = inspectCaptureArtifacts(runDir)
 
@@ -213,8 +177,6 @@ function main() {
       overall_status: "fail",
       lint: { status: "pass" },
       changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "pass" },
       code_coverage: { status: "pass" },
       nerves_coverage: {
         status: "fail",
@@ -281,8 +243,6 @@ function main() {
   const summary = {
     overall_status: overallStatus,
     lint: { status: "pass" },
-    mailbox_ui_typecheck: { status: "pass" },
-    mailbox_ui_tests: { status: "pass" },
     code_coverage: {
       status: codeCoverageStatus,
     },

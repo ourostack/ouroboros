@@ -126,10 +126,6 @@ describe("daemon command plane branches", () => {
         : options?.externalEventRoot ?? `${socketPath}.external-events`,
       privilegedEventSpoolRoot: options?.privilegedEventSpoolRoot,
       privilegedEventScanner: options?.privilegedEventScanner,
-      mailboxServerFactory: vi.fn(async () => ({
-        url: "http://127.0.0.1:6876",
-        stop: async () => undefined,
-      })),
       onStopCommandComplete: options?.onStopCommandComplete,
       orphanStartupDrain: options?.orphanStartupDrain,
       ...(options?.socketAnswering ? { socketAnswering: options.socketAnswering } : {}),
@@ -562,10 +558,6 @@ describe("daemon command plane branches", () => {
         send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
         pollInbox: vi.fn(() => []),
       },
-      mailboxServerFactory: vi.fn(async () => ({
-        url: "http://127.0.0.1:6876",
-        stop: async () => undefined,
-      })),
       externalEventRoot,
       externalEventSourceReadiness: vi.fn(async () => undefined),
     } as any)
@@ -592,7 +584,6 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 0,
         senseCount: 0,
-        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
         entryPath: expect.any(String),
         mode: expect.stringMatching(/^(dev|production)$/),
       }),
@@ -743,7 +734,6 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 1,
         senseCount: 3,
-        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       }),
       workers: [
         expect.objectContaining({

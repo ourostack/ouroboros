@@ -67,8 +67,9 @@ const REQUIRED_PACKAGE_ASSET_SOURCES = {
   "vendor/desk/mcp/bootstrap.cjs": "desk.lock.json",
 }
 
+// Output of the removed Mailbox and Outlook pages. Nothing builds either now, so any of it in a package is stale.
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
-  "dist/mailbox-ui/dist/",
+  "dist/mailbox-ui/",
   "dist/outlook-ui/",
 ]
 

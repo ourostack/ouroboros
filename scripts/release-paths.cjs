@@ -4,12 +4,6 @@
 const NOTES_DIR = "changes/"
 const NOTES_README = "changes/README.md"
 
-function isShippedMailboxUiAsset(file) {
-  return file.startsWith("packages/mailbox-ui/") &&
-    (file.startsWith("packages/mailbox-ui/src/") || file === "packages/mailbox-ui/index.html") &&
-    !/\.test\.tsx?$/.test(file)
-}
-
 // Files the package or image ships outside the folders below (package.json's files, and the lockfile the image
 // installs from), so a change to them alone, such as a lockfile-only security fix, still publishes.
 const SHIPPED_FILES = new Set(["npm-shrinkwrap.json", "package-lock.json"])
@@ -24,7 +18,6 @@ function versionBumpRequired(changedFiles) {
       file.startsWith("deploy/unraid/") ||
       file.startsWith("skills/") ||
       file.startsWith("scripts/") ||
-      isShippedMailboxUiAsset(file) ||
       (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
   )
 }
@@ -38,7 +31,6 @@ function pathRequiresChangelogFreshness(file) {
   return file.startsWith("deploy/unraid/") ||
     file.startsWith("scripts/") ||
     file.startsWith("skills/") ||
-    isShippedMailboxUiAsset(file) ||
     (file.startsWith("src/") && !file.startsWith("src/__tests__/")) ||
     (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
 }
@@ -53,7 +45,6 @@ module.exports = {
   NOTES_DIR,
   NOTES_README,
   isChangeNotePath,
-  isShippedMailboxUiAsset,
   pathRequiresChangelogFreshness,
   versionBumpRequired,
   wrapperPackageChanged,

@@ -198,7 +198,7 @@ that current failure while still pointing at `latest-ready.json` as the recovery
 anchor. If the current Flight Recorder itself is broken, Sentinel must not hide
 that gauntlet blocker behind an older latest-ready anchor.
 
-Workbench and Mailbox read Sentinel receipts as projections only. Their read
+Workbench reads Sentinel receipts as projections only. Its read
 paths must not refresh Sentinel, write receipts, or become a second readiness
 authority. Mutating refreshes happen through explicit lifecycle triggers:
 post-turn checkpointing, provider failover, daemon startup/health, session-start

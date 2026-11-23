@@ -41,7 +41,7 @@ mail validation answer shape: when a human asks for Agent Mail golden paths, ans
 - golden path 1, HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.
 - golden path 2, native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.
 - golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available.
-- golden path 4, Ouro Mailbox audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.
+- golden path 4, mail audit: review imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs through the mail tools.
 
 mail validation question discipline: if a human asks a hypothetical such as 'if mail tools return No visible mail yet, what should you infer and what golden paths should you validate?', answer that hypothetical first. Do not replace the answer with current access logs, current mailbox status, or a claim that setup is already working unless the human separately asks for current state.
 

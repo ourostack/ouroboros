@@ -48,9 +48,9 @@ describe("coverage-shards", () => {
     ])
   })
 
-  it("reads per-file wall time from a CI log, skipping the mailbox-ui run", () => {
+  it("reads per-file wall time from a CI log, skipping a run in another package", () => {
     const log = [
-      "2026-11-07T21:10:22.0000000Z \x1b[46m RUN \x1b[49m v4.1.11 /work/packages/mailbox-ui",
+      "2026-11-07T21:10:22.0000000Z \x1b[46m RUN \x1b[49m v4.1.11 /work/packages/ouro.bot",
       "2026-11-07T21:10:23.0000000Z  ✓ src/ignored.test.ts (1 test) 5ms",
       "2026-11-07T21:10:25.0000000Z  RUN  v4.1.12 /work",
       "2026-11-07T21:10:31.5000000Z  \x1b[32m✓\x1b[39m src/__tests__/b.test.ts (4 tests) 4481ms",

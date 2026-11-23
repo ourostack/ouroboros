@@ -10,7 +10,7 @@ manifest.*.zip
 ouro.bot-cli-*.tgz
 .azure/
 .claude/
-packages/mailbox-ui/node_modules/
-packages/mailbox-ui/dist/
 .playwright-mcp/
 .audit/
+# Leftover build output of the removed Mailbox page in checkouts made before its removal.
+packages/mailbox-ui/

@@ -241,12 +241,9 @@ describe("release-preflight", () => {
     expect(versionBumpRequired(["SerpentGuideNotes.md", "assetsplan.md"])).toBe(false)
   })
 
-  it("requires a bump for mailbox-ui assets that ship in the CLI, not for their tests", () => {
-    expect(versionBumpRequired(["packages/mailbox-ui/src/style.css"])).toBe(true)
-    expect(versionBumpRequired(["packages/mailbox-ui/src/lib/ouro/dev.ts"])).toBe(true)
-    expect(versionBumpRequired(["packages/mailbox-ui/index.html"])).toBe(true)
-    expect(versionBumpRequired(["packages/mailbox-ui/src/api.test.ts"])).toBe(false)
-    expect(pathRequiresChangelogFreshness("packages/mailbox-ui/src/style.css")).toBe(true)
+  it("ships nothing from a workspace package other than the ouro.bot wrapper", () => {
+    expect(versionBumpRequired(["packages/some-ui/src/style.css", "packages/some-ui/index.html"])).toBe(false)
+    expect(pathRequiresChangelogFreshness("packages/some-ui/src/style.css")).toBe(false)
   })
 
   it("flags implementation paths that require a fresh changelog entry", () => {

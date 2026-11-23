@@ -26,7 +26,6 @@ function makePayload(workers: Array<{
       health: "ok",
       socketPath: "/tmp/test.sock",
         daemonPid: 12345,
-      mailboxUrl: "http://localhost:6876",
       version: "0.1.0-alpha.1",
       lastUpdated: "2026-04-09T12:00:00Z",
       repoRoot: "/repo",

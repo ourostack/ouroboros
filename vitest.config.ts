@@ -88,8 +88,6 @@ export default defineConfig({
         "src/heart/private-runtime/index.ts",
         "src/heart/private-runtime/types.ts",
         "src/nerves/observation.ts",
-        "src/heart/mailbox/mailbox-render.ts",
-        "src/heart/mailbox/mailbox-read.ts",
         "src/heart/daemon/cli-types.ts",
         "src/heart/daemon/doctor-types.ts",
         "src/heart/daemon/daemon-cli.ts",

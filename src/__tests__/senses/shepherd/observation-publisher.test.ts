@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { readMailboxSupervision } from "../../../heart/mailbox/mailbox-supervision"
+import { readShepherdSupervision } from "../../../heart/shepherd/supervision-read"
 import { createShepherdObservationPublisher } from "../../../senses/shepherd/observation-publisher"
 import { appendReturn, returnsLogPath, type ReturnRecord } from "../../../senses/shepherd/returns"
 import { enqueueNotice, declareNoticeTargets, recordNoticeDelivery } from "../../../senses/shepherd/notice-outbox"
@@ -44,15 +44,15 @@ describe("sense-owned observation publisher", () => {
   it("distinguishes absent host state, unavailable host state, and an idempotently stopped empty publisher", () => {
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
     expect(publisher.refresh()).toBe(true)
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.totalCount).toBeNull()
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sessions.totalCount).toBeNull()
     expect(publisher.observe({ at: now, sessions: [], error: "host_unavailable" })).toBe(true)
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sourceErrors).toContainEqual(
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sourceErrors).toContainEqual(
       expect.objectContaining({ source: "host", code: "host_unavailable" }))
     const empty = createShepherdObservationPublisher({ agentRoot: root, agentName: "empty", host: "cmux" })
     empty.stop()
     empty.stop()
     expect(empty.refresh()).toBe(false)
-    expect(readMailboxSupervision("empty", { agentRoot: root }).sourceErrors).toContainEqual(
+    expect(readShepherdSupervision("empty", { agentRoot: root }).sourceErrors).toContainEqual(
       expect.objectContaining({ source: "host", code: "sense_stopped" }))
   })
 
@@ -66,19 +66,19 @@ describe("sense-owned observation publisher", () => {
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
     const observe = () => publisher.observe({ at: now, sessions: [{ session: { ...session, cwd: root }, activity: "idle", observedAt: now }] })
     observe()
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({ authority: "active", capability: "unsupported" })
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({ authority: "active", capability: "unsupported" })
     await updateShepherdMandate(root, {
       operation: "grant", expectedRevision: 1, context: context("specific"),
       target: { project: root, host: "cmux", session: session.id, instance: session.instance },
       task: "Finish approved tests", expiresAt: new Date(now + 60_000).toISOString(),
     })
     observe()
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
       authority: "ambiguous", withheldReason: expect.stringContaining("Multiple stored mandates"),
     })
     await setShepherdSessionPause(root, { actorId: "owner", requestId: "pause", expectedRevision: 0, target, paused: true }, [target])
     observe()
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sessions.items[0]).toMatchObject({
       authority: "paused", withheldReason: "Stored terminal pause is set",
     })
   })
@@ -93,7 +93,7 @@ describe("sense-owned observation publisher", () => {
     fs.mkdirSync(path.dirname(checkInStorePath(root)), { mode: 0o700 })
     fs.writeFileSync(checkInStorePath(root), "not a database", { mode: 0o600 })
     expect(publisher.observe({ at: now, sessions: [{ session, activity: "idle", observedAt: now }] })).toBe(true)
-    const view = readMailboxSupervision("slugger", { agentRoot: root })
+    const view = readShepherdSupervision("slugger", { agentRoot: root })
     expect(view.sourceHealth).toMatchObject({ guidance: "error", mandates: "error", notices: "error", custody: "error" })
     expect(view.sessions.items[0].authority).toBe("unknown")
   })
@@ -108,13 +108,13 @@ describe("sense-owned observation publisher", () => {
       { session: { ...bare, id: " ", ref: " " }, activity: "shell", observedAt: now },
       { session: { ...session, title: "", instance: undefined }, activity: "idle", observedAt: now },
     ] })).toBe(true)
-    const view = readMailboxSupervision("slugger", { agentRoot: root })
+    const view = readShepherdSupervision("slugger", { agentRoot: root })
     expect(view.sessions.items[0]).toMatchObject({ label: "other", project: null, instance: null, harness: null, authority: "unknown" })
     expect(view.sessions.items[1].label).toBe("(unnamed)")
     expect(view.sessions.items[2].label).toBe(session.ref)
     const count = view.timeline.totalCount
     publisher.observe({ at: now, sessions: [{ session: bare, activity: "shell", observedAt: null }] })
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).timeline.totalCount).toBe(count)
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).timeline.totalCount).toBe(count)
   })
 
   it.each([
@@ -126,7 +126,7 @@ describe("sense-owned observation publisher", () => {
     fs.writeFileSync(returnsLogPath(root), `${JSON.stringify(input)}\n`)
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
     expect(publisher.refresh()).toBe(true)
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sourceHealth.returns).toBe("error")
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sourceHealth.returns).toBe("error")
   })
 
   it.each(["hardlink", "directory", "oversized", "changed", "growth"] as const)("rejects an unsafe %s returns source", async fault => {
@@ -145,7 +145,7 @@ describe("sense-owned observation publisher", () => {
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
     vi.mocked(fs.fstatSync).mockImplementation(actual.fstatSync)
     vi.mocked(fs.readSync).mockImplementation(actual.readSync)
-    expect(readMailboxSupervision("slugger", { agentRoot: root }).sourceHealth.returns).toBe("error")
+    expect(readShepherdSupervision("slugger", { agentRoot: root }).sourceHealth.returns).toBe("error")
   })
 
   it.each(["invalid", "oversized", "write", "assembly"] as const)("refuses %s publication without refreshing the last good replica", fault => {
@@ -196,7 +196,7 @@ describe("sense-owned observation publisher", () => {
     await recordNoticeDelivery(root, [noticeId], "unknown", { state: "unknown", at: record.at })
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
     expect(publisher.refresh()).toBe(true)
-    const view = readMailboxSupervision("slugger", { agentRoot: root })
+    const view = readShepherdSupervision("slugger", { agentRoot: root })
     expect(view.timeline.items.map(event => event.kind)).toEqual(expect.arrayContaining(["recovery", "observation", "notification_unknown", "notification_queued"]))
     expect(view.timeline.items).toContainEqual(expect.objectContaining({ summary: "Input refused; no terminal input" }))
   })
@@ -221,7 +221,7 @@ describe("sense-owned observation publisher", () => {
       const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux" })
       expect(publisher.refresh()).toBe(true)
       lap("publish")
-      expect(readMailboxSupervision("slugger", { agentRoot: root }).timeline).toMatchObject({ totalCount: null, truncated: true })
+      expect(readShepherdSupervision("slugger", { agentRoot: root }).timeline).toMatchObject({ totalCount: null, truncated: true })
       lap("read")
     } finally {
       if (performance.now() - started > 2_000) process.stderr.write(`observation-publisher undisplayed-page case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ")}\n`)
@@ -249,7 +249,7 @@ describe("sense-owned observation publisher", () => {
     } finally { store.close() }
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })
     publisher.observe({ at: now, sessions: [{ session, activity: "idle", observedAt: now }] })
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.timeline.items.find(event => event.id === `input:${ids[0]}`))
       .toMatchObject({ kind: "legacy_input_reported", summary: expect.stringContaining("no qualified") })
     expect(view.timeline.items.find(event => event.id === `input:${ids[1]}`)).toMatchObject({ kind: "input_admitted" })
@@ -259,7 +259,7 @@ describe("sense-owned observation publisher", () => {
     appendReturn(root, record)
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })
     expect(publisher.observe({ at: now, sessions: [{ session, activity: "idle", observedAt: now }] })).toBe(true)
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.counts?.idle).toBe(1)
     expect(view.sessions.items[0]).toMatchObject({
       session: "SF-1", instance: "process:1:2", label: "token=[redacted]",
@@ -276,7 +276,7 @@ describe("sense-owned observation publisher", () => {
   it("includes unreadable terminals once, with unknown observation rather than dropping them", () => {
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })
     publisher.observe({ at: now, sessions: [{ session, activity: "unknown", observedAt: null, error: "read_failed" }] })
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.sessions.items).toHaveLength(1)
     expect(view.counts).toEqual({ working: 0, idle: 0, shell: 0, unknown: 1 })
     expect(view.sourceErrors).toContainEqual(expect.objectContaining({ source: "host", code: "row_read_failed" }))
@@ -290,7 +290,7 @@ describe("sense-owned observation publisher", () => {
     fs.appendFileSync(returnsLogPath(root), "{broken\n")
     clock += 40_000
     publisher.refresh()
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: clock })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: clock })
     expect(view.sourceHealth.returns).toBe("error")
     expect(view.freshness.status).toBe("stale")
     expect(view.timeline.items.some(event => event.kind === "judgment")).toBe(true)
@@ -311,7 +311,7 @@ describe("sense-owned observation publisher", () => {
     await recordNoticeDelivery(root, [noticeId], "private-recipient", { state: "sent", at: record.at })
     const publisher = createShepherdObservationPublisher({ agentRoot: root, agentName: "slugger", host: "cmux", now: () => now })
     publisher.observe({ at: now, sessions: [{ session, activity: "idle", observedAt: now }] })
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.custody.claims.items[0]).toMatchObject({ id: claim!.id, state: "claimed" })
     expect(view.custody.revision).toBeGreaterThanOrEqual(1)
     expect(view.timeline.items.map(event => event.kind)).toEqual(expect.arrayContaining([
@@ -325,7 +325,7 @@ describe("sense-owned observation publisher", () => {
     publisher.observe({ at: now, sessions: Array.from({ length: 220 }, (_, index) => ({
       session: { ...session, id: `SF-${index}` }, activity: "idle", observedAt: now,
     })) })
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.sessions).toMatchObject({ totalCount: 220, truncated: true })
     expect(view.sessions.items).toHaveLength(200)
     expect(view.counts?.idle).toBe(200)
@@ -337,7 +337,7 @@ describe("sense-owned observation publisher", () => {
     publisher.stop()
     expect(publisher.observe({ at: now + 1, sessions: [] })).toBe(false)
     expect(publisher.refresh()).toBe(false)
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.counts).toBeNull()
     expect(view.sessions.items).toHaveLength(1)
     expect(view.sourceErrors).toContainEqual(expect.objectContaining({ code: "sense_stopped" }))
