@@ -90,6 +90,8 @@ export function approvalRelaySocketPath(agentRoot: string): string {
 }
 
 const MAX_REQUEST_BYTES = 256 * 1024
+/** A connection that sends no byte for this long before its request line is in is dropped. */
+export const RELAY_SOCKET_IDLE_TIMEOUT_MS = 10_000
 
 /**
  * Listens on `relay.sock` (mode 0600, so only this agent's own user can connect). Each connection sends one
@@ -98,6 +100,8 @@ const MAX_REQUEST_BYTES = 256 * 1024
 export async function startApprovalRelaySocket(input: {
   socketPath: string
   handle: (message: A2AMessage) => Promise<RelayReply>
+  /** Tests: how long a connection may wait between bytes before its request line is in. */
+  idleTimeoutMs?: number
 }): Promise<{ close(): Promise<void> }> {
   fs.mkdirSync(path.dirname(input.socketPath), { recursive: true })
   try {
@@ -107,25 +111,34 @@ export async function startApprovalRelaySocket(input: {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
   }
   const server = net.createServer((socket) => {
-    let buffered = ""
-    let answered = false
-    const answer = (reply: RelayReply): void => {
-      if (answered) return
-      answered = true
-      socket.end(`${JSON.stringify({ reply })}\n`)
+    const chunks: Buffer[] = []
+    let bytes = 0
+    /** Stop reading: a request is answered once, and nothing after its first line is ever read. */
+    const stopReading = (): void => {
+      socket.setTimeout(0)
+      socket.removeAllListeners("data")
+      socket.pause()
     }
-    socket.setEncoding("utf8")
-    socket.on("data", (chunk: string) => {
-      buffered += chunk
-      if (Buffer.byteLength(buffered) > MAX_REQUEST_BYTES) return answer("refused:malformed_request")
-      const newline = buffered.indexOf("\n")
-      if (newline < 0 || answered) return
+    const refuse = (): void => {
+      stopReading()
+      socket.end(`${JSON.stringify({ reply: "refused:malformed_request" satisfies RelayReply })}\n`, () => socket.destroy())
+    }
+    // A client that connects and sends nothing, or dribbles, is dropped; the wait while an answer is decided isn't idle.
+    socket.setTimeout(input.idleTimeoutMs ?? RELAY_SOCKET_IDLE_TIMEOUT_MS, () => socket.destroy())
+    socket.on("data", (chunk: Buffer) => {
+      const newline = chunk.indexOf(0x0a)
+      const take = newline < 0 ? chunk : chunk.subarray(0, newline)
+      bytes += take.length
+      if (bytes > MAX_REQUEST_BYTES) return refuse()
+      chunks.push(take)
+      if (newline < 0) return
+      stopReading()
       let message: unknown
-      try { message = (JSON.parse(buffered.slice(0, newline)) as { message?: unknown }).message } catch { return answer("refused:malformed_request") }
-      if (!message || typeof message !== "object" || Array.isArray(message)) return answer("refused:malformed_request")
-      answered = true
+      try { message = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { message?: unknown }).message } catch { return refuse() }
+      if (!message || typeof message !== "object" || Array.isArray(message)) return refuse()
       input.handle(message as A2AMessage).then(
-        (reply) => socket.end(`${JSON.stringify({ reply })}\n`),
+        // Reading is paused, so the client's close would never be seen: close this side once the reply is flushed.
+        (reply) => socket.end(`${JSON.stringify({ reply })}\n`, () => socket.destroy()),
         (error: unknown) => {
           emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_relay_socket_error", message: "a relayed approval answer failed while it was being decided", meta: { error: String(error) } })
           socket.destroy()
@@ -137,7 +150,13 @@ export async function startApprovalRelaySocket(input: {
   })
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
-    server.listen(input.socketPath, () => resolve())
+    // The socket file is created inside listen(), synchronously, so this umask covers it and no other code runs between.
+    const previous = process.umask(0o177)
+    try {
+      server.listen(input.socketPath, () => resolve())
+    } finally {
+      process.umask(previous)
+    }
   })
   fs.chmodSync(input.socketPath, 0o600)
   emitNervesEvent({ component: "senses", event: "senses.telegram_relay_socket_listening", message: "listening for relayed approval answers", meta: { socketPath: input.socketPath } })
@@ -176,7 +195,8 @@ export function createApprovalRelayDoor(input: {
         const deps: RelayedAnswerDeps = {
           agentRoot: input.agentRoot,
           sodium,
-          self: () => (identity ??= loadIdentity()),
+          // A failed load is forgotten, so the next answer tries again instead of failing forever.
+          self: () => (identity ??= loadIdentity().catch((error: unknown) => { identity = undefined; throw error })),
           routeDid: () => loadAgentConfig({ agentName: input.agentName, agentRoot: input.agentRoot }).senses?.telegram.ownerNoticesTo?.did,
           runtime: input.runtime,
           seen: relayAnswerSeenLedger(input.agentRoot),
