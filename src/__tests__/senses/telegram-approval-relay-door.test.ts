@@ -12,7 +12,7 @@ import { APPROVAL_RELAY_FILE } from "../../a2a/approval-relay"
 import { openApprovalAnswer, sealChatMessage } from "../../a2a/sealed-chat"
 import type { A2AMessage } from "../../a2a/types"
 import {
-  approvalRelayRequestFor, approvalRelaySocketPath, createApprovalRelayDoor, handleRelayedApprovalAnswer, ownerRouteDid, relayAnswerSeenLedger, startApprovalRelaySocket,
+  approvalRelayRequestFor, approvalRelaySocketPath, createApprovalRelayDoor, handleRelayedApprovalAnswer, MAX_RELAY_CONNECTIONS, MAX_SOCKET_PATH_BYTES, ownerRouteDid, relayAnswerSeenLedger, startApprovalRelaySocket,
   type RelayedAnswerDeps, type RelayReply,
 } from "../../senses/telegram-approval-relay"
 
@@ -45,7 +45,7 @@ function sealAnswer(from: DidKeyIdentity, to: DidKeyIdentity, answer: ApprovalAn
 }
 
 function setup(options: { switchDid?: string | null; routeDid?: string | null } = {}) {
-  tmp = createTmpBundle({ agentName: `door-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` })
+  tmp = createTmpBundle({ agentName: `door-${Math.random().toString(36).slice(2, 8)}` })
   const butler = mint()
   const slugger = mint()
   const switchDid = options.switchDid === undefined ? slugger.did : options.switchDid
@@ -147,7 +147,7 @@ async function ask(socketPath: string, payload: string): Promise<string> {
 
 describe("startApprovalRelaySocket", () => {
   async function listen(handle: (message: A2AMessage) => Promise<RelayReply>, idleTimeoutMs?: number) {
-    tmp = createTmpBundle({ agentName: `sock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` })
+    tmp = createTmpBundle({ agentName: `sock-${Math.random().toString(36).slice(2, 8)}` })
     const socketPath = approvalRelaySocketPath(tmp.agentRoot)
     fs.mkdirSync(path.dirname(socketPath), { recursive: true })
     const server = await startApprovalRelaySocket({ socketPath, handle, ...(idleTimeoutMs ? { idleTimeoutMs } : {}) })
@@ -179,14 +179,15 @@ describe("startApprovalRelaySocket", () => {
   it("answers one JSON line with one reply line, on a socket only this user can open", async () => {
     const handle = vi.fn(async () => "denied" as const)
     const socketPath = await listen(handle)
-    expect(socketPath.endsWith(path.join("state", "approvals", "relay.sock"))).toBe(true)
+    expect(socketPath.endsWith(path.join("state", "approvals", "relay", "sock"))).toBe(true)
+    expect(fs.statSync(path.dirname(socketPath)).mode & 0o777).toBe(0o700)
     expect(fs.statSync(socketPath).mode & 0o777).toBe(0o600)
     expect(await ask(socketPath, `${JSON.stringify({ message: { kind: "message", parts: [] } })}\n`)).toBe('{"reply":"denied"}\n')
     expect(handle).toHaveBeenCalledWith({ kind: "message", parts: [] })
   })
 
   it("replaces a socket left behind by an earlier run", async () => {
-    tmp = createTmpBundle({ agentName: `stale-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `stale-${Math.random().toString(36).slice(2, 8)}` })
     const socketPath = approvalRelaySocketPath(tmp.agentRoot)
     fs.mkdirSync(path.dirname(socketPath), { recursive: true })
     const leftover = net.createServer()
@@ -198,7 +199,7 @@ describe("startApprovalRelaySocket", () => {
   })
 
   it("never deletes an ordinary file at the socket path, and fails to start instead", async () => {
-    tmp = createTmpBundle({ agentName: `file-${Date.now()}` })
+    tmp = createTmpBundle({ agentName: `file-${Math.random().toString(36).slice(2, 8)}` })
     const socketPath = approvalRelaySocketPath(tmp.agentRoot)
     fs.mkdirSync(path.dirname(socketPath), { recursive: true })
     fs.writeFileSync(socketPath, "keep me")
@@ -277,15 +278,69 @@ describe("startApprovalRelaySocket", () => {
     expect(await ask(socketPath, '{"message":{}}\n')).toBe('{"reply":"denied"}\n')
   })
 
-  it("creates the socket file under a umask that leaves it closed to group and other, then puts the umask back", async () => {
-    const before = process.umask()
+  it("never touches the process umask, and tightens a folder an earlier run left open", async () => {
+    tmp = createTmpBundle({ agentName: `open-${Math.random().toString(36).slice(2, 8)}` })
+    const socketPath = approvalRelaySocketPath(tmp.agentRoot)
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o755 })
+    fs.chmodSync(path.dirname(socketPath), 0o755)
     const umask = vi.spyOn(process, "umask")
     try {
-      await listen(async () => "denied")
-      expect(umask.mock.calls.map((call) => call[0])).toEqual([0o177, before])
-      expect(process.umask()).toBe(before)
+      const server = await startApprovalRelaySocket({ socketPath, handle: async () => "denied" })
+      closers.push(() => server.close())
+      expect(umask).not.toHaveBeenCalled()
+      expect(fs.statSync(path.dirname(socketPath)).mode & 0o777).toBe(0o700)
     } finally {
       umask.mockRestore()
+    }
+  })
+
+  it("refuses a socket path the OS would cut short", async () => {
+    tmp = createTmpBundle({ agentName: `long-${Math.random().toString(36).slice(2, 8)}` })
+    const socketPath = path.join(tmp.agentRoot, "x".repeat(MAX_SOCKET_PATH_BYTES), "sock")
+    await expect(startApprovalRelaySocket({ socketPath, handle: async () => "denied" })).rejects.toThrow(`over ${MAX_SOCKET_PATH_BYTES} bytes`)
+  })
+
+  it("refuses to listen through a symlinked folder or in another user's folder", async () => {
+    tmp = createTmpBundle({ agentName: `link-${Math.random().toString(36).slice(2, 8)}` })
+    const socketPath = approvalRelaySocketPath(tmp.agentRoot)
+    const elsewhere = path.join(tmp.agentRoot, "elsewhere")
+    fs.mkdirSync(elsewhere)
+    fs.mkdirSync(path.dirname(path.dirname(socketPath)), { recursive: true })
+    fs.symlinkSync(elsewhere, path.dirname(socketPath))
+    await expect(startApprovalRelaySocket({ socketPath, handle: async () => "denied" })).rejects.toThrow("isn't a folder this user owns")
+    fs.rmSync(path.dirname(socketPath))
+    const uid = vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1)
+    try {
+      await expect(startApprovalRelaySocket({ socketPath, handle: async () => "denied" })).rejects.toThrow("isn't a folder this user owns")
+    } finally {
+      uid.mockRestore()
+    }
+  })
+
+  it(`holds at most ${MAX_RELAY_CONNECTIONS} connections at once, so a slow client can't shut the door`, async () => {
+    const socketPath = await listen(async () => "denied")
+    const held = await Promise.all(Array.from({ length: MAX_RELAY_CONNECTIONS }, () => new Promise<net.Socket>((resolve) => {
+      const socket = net.createConnection(socketPath, () => resolve(socket))
+      socket.on("error", () => undefined)
+    })))
+    try {
+      // The server counts a connection once it accepts it; give it a moment to accept the held ones.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      // One more is closed as soon as it arrives, before it can send anything.
+      const turnedAway = await new Promise<string>((resolve) => {
+        const socket = net.createConnection(socketPath)
+        let data = ""
+        socket.setEncoding("utf8")
+        socket.on("data", (chunk: string) => { data += chunk })
+        socket.on("error", () => undefined)
+        socket.on("close", () => resolve(data))
+      })
+      expect(turnedAway).toBe("")
+      held[0]!.destroy()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(await ask(socketPath, '{"message":{}}\n')).toBe('{"reply":"denied"}\n')
+    } finally {
+      for (const socket of held) socket.destroy()
     }
   })
 
