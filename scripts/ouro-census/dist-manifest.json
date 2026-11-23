@@ -1,0 +1,24 @@
+{
+  "tool": "ouro-census",
+  "version": "0.1.0",
+  "checker": "7e7b32a663a58af2a4a0f64d42ebe9c6e82c00e7dce69431d43a2cf44c9caa3b",
+  "files": {
+    "base.mts": "b5ef17d10c1540c3e7007ad252e7bd23131efadcad9ba3380f6afc683845b0c0",
+    "baseline.mts": "51fdb3ed75db9071566f0207d172344d18a81967cbb87331e346df4fb442071d",
+    "cards.mts": "60e786192d06d4d34874ad62904f68dfd23cac02fa3fb2ee06856ef15a1aabd5",
+    "census.mts": "3e602daa098a76be0810412b03919de1e6b8377a2e029c7e28e09dde8de9b161",
+    "checker.mts": "b2ec5853d13a57f26d67e621ff5c5ffed6e9e86c90696a8545dda5bb764c0d8a",
+    "child.mts": "4d750174dade6503a7fa97a1c84d9243916db9c92e88c7b59e4cc1398bf99b7f",
+    "guard.mjs": "dc1f6da80c7168e042f90c3ca5333337351b7177ac476d679f34e818e0b16f0c",
+    "report.mts": "8ea2498edd3ff10363ed90a32feee6c58bc0796acb0475da0afad2246e6641f4",
+    "types.mts": "d579d5c92d1e25465b46a6cf3453ebea158464079489a4f1ebe9d11269b2f52f",
+    "walkers/argv-entries.mts": "d73195babaff3036cc4f5d59b227560f6a92d2f4fd54b772b85a060bb8ebdae6",
+    "walkers/cli-cards.mts": "0bc8b21d7da196a09cf302ebeda14f6ef3631b4e7a396e70cf21ac7f61ec533c",
+    "walkers/literals.mts": "023ecc7251b016043f6d85948dd363ed7cfb4ab024a3998d24617018870ebd43",
+    "walkers/mcp-schemas.mts": "4ea014694750d9c0e80a85bfcdf2442ce5524904cc9874532720793263f4c991",
+    "walkers/registry.mts": "70bd619f12394d2b3c15f889fec3e0ea1922ab766b74fc518b29be80635adfe2",
+    "walkers/tool-schemas.mts": "0fe572444af16b75b952c158b76f8214194a2d90eb01efe81d82bc6b4c6d1482",
+    "walkers/ts-argv.mts": "b427cee6802aa2f5d76afdb1511ab24fc62d6b86bdb264aff5495d74ba36915c",
+    "walkers/ts-parser.mts": "0ce06b5c80a9179f6b6f178ef23bf55be0f4906bdfaa1ce8396ddb2bbd827820"
+  }
+}

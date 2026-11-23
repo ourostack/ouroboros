@@ -87,7 +87,7 @@ async function sendSenseTurnWithRetry(
   /* v8 ignore stop */
 }
 
-/** What can go wrong at a tool, as the calling agent reads it: the census's `ErrorCard` (`.github/scripts/ax-census/types.mts`). */
+/** What can go wrong at a tool, as the calling agent reads it: the census's `ErrorCard` (`scripts/ouro-census/types.mts`). */
 export interface McpErrorCard {
   code: string
   means: string

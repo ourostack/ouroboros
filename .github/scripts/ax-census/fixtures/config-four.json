@@ -1,1 +1,0 @@
-{ "product": "harness", "sources": [{ "walker": "mcp-schemas", "module": "walkers/fixtures/mcp-four.cjs", "source": "walkers/fixtures/mcp-four.ts" }], "groups": [] }
