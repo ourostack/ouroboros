@@ -79,11 +79,13 @@ vi.mock("../../mind/note-search", () => ({
 }))
 
 const mockQueuePendingMessage = vi.fn()
+const mockWithdrawDeferredReturn = vi.fn(() => 1)
 vi.mock("../../mind/pending", async () => {
   const actual = await vi.importActual<typeof import("../../mind/pending")>("../../mind/pending")
   return {
     ...actual,
     queuePendingMessage: (...args: any[]) => mockQueuePendingMessage(...args),
+    withdrawDeferredReturn: (...args: any[]) => mockWithdrawDeferredReturn(...args),
     getPrivateRuntimePendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
   }
 })
@@ -475,7 +477,7 @@ describe("rest tool in runAgent", () => {
   const notSent = "deferred — not sent now; saved for their next message. iMessage did not send (send_error). (code: surface-not-sent)"
 
   it("rest is refused once while this turn's surface to a person came back not sent, then accepted", async () => {
-    // Regression for 2026-11-23: an inner turn surfaced news for a person, got a result
+    // Regression for 2026-11-22: an inner turn surfaced news for a person, got a result
     // that did not reach them, and rested in the same turn.
     mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_surface", "surface", { content: "Your sign-in is done.", friendId: "friend-1" })))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // refused: the surface was not sent
@@ -518,6 +520,26 @@ describe("rest tool in runAgent", () => {
     // A later surface to the same friend that also came back unsent is the one rest reports.
     const second = "deferred — not sent now; saved for their next message. friend-1 has no chat session with you yet. (code: surface-not-sent)"
     expect(unsentSurfaceResult([surface(notSent), surface(second)])).toBe(second)
+    // Each friend is tracked on its own: reaching one friend leaves another friend's unsent surface standing.
+    expect(unsentSurfaceResult([surface(notSent, "friend-1"), surface(second, "friend-2"), surface("delivered — sent to Telegram now", "friend-2")])).toBe(notSent)
+    // Friend ids compare trimmed and case-blind, and a send that may have gone out counts as reaching them.
+    expect(unsentSurfaceResult([surface(notSent, " Friend-1 "), surface("delivered — sent to Telegram now", "friend-1")])).toBeNull()
+    expect(unsentSurfaceResult([surface(notSent), surface("unconfirmed — the iMessage send failed partway, so it may have reached them; don't resend unless they say they didn't get it")])).toBeNull()
+  })
+
+  it("names the saved surfaces that a later send in the turn made redundant", async () => {
+    const { surfacesReachedLater } = await import("../../heart/core")
+    const surface = (result: string, friendId: string, content = "the news") => ({ name: "surface", args: { friendId, content }, result })
+    const reached = "delivered — sent to Telegram now"
+    expect(surfacesReachedLater([])).toEqual([])
+    expect(surfacesReachedLater([surface(notSent, "friend-1")])).toEqual([])
+    expect(surfacesReachedLater([surface(notSent, " friend-1 "), surface(notSent, "friend-2"), surface(reached, "Friend-1", "other words")]))
+      .toEqual([{ friendId: "friend-1", content: "the news" }])
+    // Only the copies saved since the friend was last reached.
+    expect(surfacesReachedLater([surface(notSent, "friend-1", "old"), surface(reached, "friend-1"), surface(notSent, "friend-1", "new"), surface(reached, "friend-1")]))
+      .toEqual([{ friendId: "friend-1", content: "new" }])
+    // A surface addressed by delegationId names no friend, so nothing is withdrawn for it.
+    expect(surfacesReachedLater([{ name: "surface", args: { content: "x" }, result: notSent }, { name: "surface", args: { content: "x" }, result: reached }])).toEqual([])
   })
 
   it("rest goes through at once when the turn reached the same friend another way after an unsent surface", async () => {
@@ -536,6 +558,8 @@ describe("rest tool in runAgent", () => {
     expect(mockCreate).toHaveBeenCalledTimes(3)
     const restEnds = (callbacks.onToolEnd as any).mock.calls.filter((c: any[]) => c[0] === "rest")
     expect(restEnds.map((c: any[]) => c[2])).toEqual([true])
+    // The call reached them, so the copy saved for their next message is withdrawn.
+    expect(mockWithdrawDeferredReturn).toHaveBeenCalledWith("testagent", "friend-1", "Your sign-in is done.")
   })
 
   // ── Sole-call rejection ──────────────────────────────────

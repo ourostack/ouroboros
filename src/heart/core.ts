@@ -42,6 +42,7 @@ export function validateToolCallBatchAtProductionBoundary(calls: ToolCallBoundar
   })
 }
 import { trimMessages } from "../mind/context";
+import { withdrawDeferredReturn } from "../mind/pending";
 import {
   applyPromptBudget,
   assessRequiredPromptEvidenceBudget,
@@ -734,23 +735,46 @@ function stripThinkBlocksForViolationCheck(input: string): string {
   return out.trim()
 }
 
+const surfaceFriendKey = (record: TurnToolRecord): string => (record.args.friendId ?? "").trim().toLowerCase()
+const isUnsentSurface = (record: TurnToolRecord): boolean =>
+  record.name === "surface" && /\(code: surface-not-sent\)$/u.test(record.result)
+/** A surface or send_message that reached the friend now, or may have (unconfirmed). */
+const reachedSurfaceFriend = (record: TurnToolRecord): boolean =>
+  (record.name === "surface" && /^(?:delivered|forwarded|unconfirmed)\b/u.test(record.result))
+  || (record.name === "send_message" && /^delivered now$/mu.test(record.result) && !/\(code: [a-z0-9-]+\)$/u.test(record.result))
+
 /**
- * This turn's newest surface result that came back not sent (it ends with the surface-not-sent code), unless a later
- * surface or send_message reached the same friend. Rest uses it to say once that the person was not told.
+ * This turn's newest surface result that came back not sent (it ends with the surface-not-sent code), among the
+ * friends no later surface or send_message reached. Rest uses it to say once that the person was not told.
  */
 export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
-  let unsent: { result: string; friendId: string } | null = null
+  const unsent = new Map<string, string>()
   for (const record of records) {
-    const friendId = (record.args.friendId ?? "").toLowerCase()
-    if (record.name === "surface" && /\(code: surface-not-sent\)$/u.test(record.result)) {
-      unsent = { result: record.result, friendId }
-      continue
+    const friend = surfaceFriendKey(record)
+    if (isUnsentSurface(record)) {
+      unsent.delete(friend)
+      unsent.set(friend, record.result)
+    } else if (reachedSurfaceFriend(record)) {
+      unsent.delete(friend)
     }
-    const reached = (record.name === "surface" && /^(?:delivered|forwarded)\b/u.test(record.result))
-      || (record.name === "send_message" && /^delivered now$/mu.test(record.result) && !/\(code: [a-z0-9-]+\)$/u.test(record.result))
-    if (unsent && reached && friendId === unsent.friendId) unsent = null
   }
-  return unsent?.result ?? null
+  return [...unsent.values()].at(-1) ?? null
+}
+
+/**
+ * When the newest record reached a friend, the surfaces to that friend saved since they were last reached: their
+ * saved copies are now redundant. A surface addressed only by delegationId names no friend and is left alone.
+ */
+export function surfacesReachedLater(records: TurnToolRecord[]): Array<{ friendId: string; content: string }> {
+  const latest = records.at(-1)
+  if (!latest || !reachedSurfaceFriend(latest) || !surfaceFriendKey(latest)) return []
+  let saved: Array<{ friendId: string; content: string }> = []
+  for (const record of records.slice(0, -1)) {
+    if (surfaceFriendKey(record) !== surfaceFriendKey(latest)) continue
+    if (isUnsentSurface(record)) saved.push({ friendId: record.args.friendId!.trim(), content: record.args.content ?? "" })
+    else if (reachedSurfaceFriend(record)) saved = []
+  }
+  return saved
 }
 
 function hasFreshPendingWork(options?: RunAgentOptions): boolean {
@@ -3303,6 +3327,9 @@ export async function runAgent(
           }
           if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
           turnToolRecords.push({ name: tc.name, args, result: toolResult });
+          for (const saved of surfacesReachedLater(turnToolRecords)) {
+            try { withdrawDeferredReturn(getAgentName(), saved.friendId, saved.content) } catch { /* a stale saved copy only repeats the news */ }
+          }
           const modelResult = shieldDelegatedBanner(fitToolOutputForModel(tc.name, rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger)));
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
           providerRuntime.appendToolOutput(tc.id, modelResult);

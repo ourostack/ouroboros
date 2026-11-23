@@ -166,6 +166,8 @@ describe("Phase 2: tool description enrichment", () => {
       expect(desc).toContain("iMessage, Telegram or Teams chat active in the last 30 days")
       expect(desc).toContain("never into an MCP, CLI or agent session")
       expect(desc).toContain("comes back deferred: not sent, saved for their next message")
+      expect(desc).toContain("comes back unconfirmed: it may have reached them, so don't send it again")
+      expect(desc).toContain("to an agent friend it goes to that agent's newest session")
       expect(desc).not.toContain("send_message")
     })
 

@@ -81,6 +81,7 @@ vi.mock("../../mind/context", async () => {
 
 const mockGetPendingDir = vi.fn().mockReturnValue("/tmp/pending")
 const mockDrainPending = vi.fn().mockReturnValue([])
+const mockDrainDeferredReturns = vi.fn().mockReturnValue([])
 
 vi.mock("../../mind/pending", async () => {
   const actual = await vi.importActual<typeof import("../../mind/pending")>("../../mind/pending")
@@ -88,6 +89,7 @@ vi.mock("../../mind/pending", async () => {
     ...actual,
     getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
     drainPending: (...args: any[]) => mockDrainPending(...args),
+    drainDeferredReturns: (...args: any[]) => mockDrainDeferredReturns(...args),
   }
 })
 
@@ -491,6 +493,26 @@ describe("runSenseTurn", () => {
     expect(input.runAgentOptions.toolContext.currentShepherdSurface).toEqual(target)
     expect(input.messages.at(-1).content).toBe("exact human message")
     expect((await input.sessionLoader.loadOrCreate()).messages[0]).toEqual(messages[0])
+  })
+
+  it("picks up a saved surface on a person's Telegram or voice turn, never on an agent's MCP or a2a turn", async () => {
+    const saved = [{ from: "test-agent", friendId: "friend-1", channel: "deferred", key: "return", content: "your sign-in is done", timestamp: 1 }]
+    mockDrainDeferredReturns.mockReturnValue(saved)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    for (const channel of ["telegram", "voice", "mcp", "a2a"] as const) {
+      mockHandleInboundTurn.mockClear()
+      await runSenseTurn({ agentName: "test-agent", friendId: "friend-1", channel, sessionKey: "s-1", userMessage: "hi" })
+      const input = mockHandleInboundTurn.mock.calls[0]![0]
+      if (channel === "telegram" || channel === "voice") {
+        expect(input.drainDeferredReturns("friend-1"), channel).toEqual(saved)
+        expect(mockDrainDeferredReturns).toHaveBeenLastCalledWith("test-agent", "friend-1")
+      } else {
+        expect(input.drainDeferredReturns, channel).toBeUndefined()
+      }
+    }
+    mockHandleInboundTurn.mockClear()
+    await runSenseTurn({ agentName: "test-agent", friendId: "friend-1", channel: "telegram", sessionKey: "s-1", userMessage: "hi", disablePersistence: true } as any)
+    expect(mockHandleInboundTurn.mock.calls[0]![0].drainDeferredReturns).toBeUndefined()
   })
 
   it("carries authenticated ingress relations on the synthesized user message", async () => {

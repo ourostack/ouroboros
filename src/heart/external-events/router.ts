@@ -50,7 +50,8 @@ export interface ExternalEventDisposition {
 }
 
 export interface ExternalEventOwnerMessage {
-  status: "sent" | "already_sent" | "covered"
+  /** saved: nothing could send it now, so it waits for the owner's next message. */
+  status: "sent" | "saved" | "already_sent" | "covered"
   /** Idempotency key of the owner message that stands for this decision. */
   effectKey: string
 }
@@ -1403,7 +1404,7 @@ function validateDisposition(disposition: ExternalEventDisposition): void {
   for (const ref of [...disposition.actionRefs, ...disposition.verificationRefs]) assertBoundedText(ref, "disposition reference", 512)
   if (disposition.nextWake.kind === "at") assertBoundedText(disposition.nextWake.at, "wake time", 64)
   if (disposition.ownerMessage) {
-    if (!["sent", "already_sent", "covered"].includes(disposition.ownerMessage.status)) throw new Error("External event owner message status is invalid")
+    if (!["sent", "saved", "already_sent", "covered"].includes(disposition.ownerMessage.status)) throw new Error("External event owner message status is invalid")
     if (!disposition.ownerMessage.effectKey) throw new Error("External event owner message key is missing")
     assertBoundedText(disposition.ownerMessage.effectKey, "owner message key", 1_024)
   }
