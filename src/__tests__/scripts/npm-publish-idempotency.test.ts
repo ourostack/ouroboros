@@ -110,7 +110,9 @@ describe("npm publish idempotency", () => {
       expect(message).toContain(`+ ${SPEC}`)
       expect(message).toContain(`stdout:\n+ ${SPEC}\nstderr:\nwarn first`)
       expect(message).not.toContain("x".repeat(301))
-      expect(message).not.toContain("line 29")
+      expect(message).toContain("line 29")
+      expect(message).toContain("... 12 lines omitted ...")
+      expect(message).not.toContain("line 10")
     } finally {
       log.mockRestore()
     }
