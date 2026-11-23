@@ -120,8 +120,9 @@ describe("getGroupedHelp()", () => {
     // connect should appear in the Auth section
     expect(result).toContain("connect")
     expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
-    expect(result).not.toContain("mailbox")
+    // The old page's command is gone; the generated mailbox group lists only its own words.
     expect(result).not.toContain("outlook")
+    expect(result).toMatch(/\n {4}mailbox +See the letters an agent has filed for you\n/)
   })
 
   it("keeps deprecated aliases out of grouped help", () => {
@@ -171,8 +172,9 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
-  it("has no help for the removed mailbox command or its outlook alias", () => {
-    expect(getCommandHelp("mailbox")).toBeNull()
+  it("has no help for the removed outlook alias, and mailbox help names only the generated words", () => {
+    expect(getCommandHelp("mailbox")).toContain("ouro mailbox <list> [--json]")
+    expect(getCommandHelp("mailbox")).not.toMatch(/--open|--port|browser/)
     expect(getCommandHelp("outlook")).toBeNull()
   })
 
@@ -522,7 +524,8 @@ describe("runOuroCli help execution", () => {
       entryPoints: unknown[]
       errors: Array<{ code: string }>
     }
-    expect(help.commands.find((command) => command.name === "mailbox")).toBeUndefined()
+    // The old page's bare `mailbox` command is gone; `mailbox` now names the generated group, carded read-only.
+    expect(help.commands.find((command) => command.name === "mailbox")).toMatchObject({ consent: "read", errors: [expect.objectContaining({ code: "usage" }), expect.objectContaining({ code: "unknown-flag" })] })
     expect(help.commands.find((command) => command.name === "check")).toMatchObject({ example: "ouro check --lane inner" })
     expect(help.entryPoints).toHaveLength(CLI_ENTRY_POINTS.length)
     expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])

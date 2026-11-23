@@ -118,6 +118,17 @@ describe("package asset validation", () => {
     ]) expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain(asset)
     expect(fs.readFileSync("deploy/unraid/Dockerfile", "utf8")).toContain("COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh")
   })
+  it("ships the generated mailbox doors the CLI, MCP server and tool registry read at run time", () => {
+    const doors = ["actions/generated/mailbox/actions.json", "actions/generated/mailbox/commands.json", "actions/generated/mailbox/mcp.json", "actions/generated/mailbox-tools/tools.json"]
+    for (const asset of doors) {
+      expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain(asset)
+      expect(fs.existsSync(asset)).toBe(true)
+    }
+    // Only the JSON doors.ts reads ships; the generated Swift and web files are for other apps.
+    const files = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }).files
+    expect(files.filter((file) => file.startsWith("actions/"))).toEqual(doors)
+    expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual(expect.arrayContaining(doors))
+  })
   it("documents owner-only sequential Jellyfin provisioning without installation authority or weak rollback", () => {
     const readme = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const heading = "Bounded Jellyfin stewardship"
@@ -306,6 +317,10 @@ describe("package asset validation", () => {
       "skills/",
     ])
     expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
+      "actions/generated/mailbox-tools/tools.json",
+      "actions/generated/mailbox/actions.json",
+      "actions/generated/mailbox/commands.json",
+      "actions/generated/mailbox/mcp.json",
       "changelog.json",
       "npm-shrinkwrap.json",
       "package.json",

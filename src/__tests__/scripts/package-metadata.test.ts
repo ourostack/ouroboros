@@ -5,6 +5,7 @@ import * as path from "path"
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
 const wrapperPackageJson = require(path.resolve(__dirname, "../../../packages/ouro.bot/package.json"))
 const {
+  PACKAGE_PAYLOAD_FILE_PATHS,
   PACKAGE_PAYLOAD_PATH_PREFIXES,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
@@ -44,8 +45,7 @@ describe("package metadata", () => {
   it("keeps package asset verification aligned with npm package files", () => {
     expect([...packageJson.files].sort()).toEqual([
       ...PACKAGE_PAYLOAD_PATH_PREFIXES,
-      "changelog.json",
-      "npm-shrinkwrap.json",
+      ...PACKAGE_PAYLOAD_FILE_PATHS.filter((file) => file !== "package.json"),
     ].sort())
   })
 

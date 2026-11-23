@@ -51,6 +51,11 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/psyche/LORE.md",
   "deploy/unraid/sanctuary.ouro/psyche/SOUL.md",
   "deploy/unraid/sanctuary.ouro/psyche/TACIT.md",
+  // The mailbox doors ouro-actions generated; src/heart/letters/doors.ts reads them at run time.
+  "actions/generated/mailbox/actions.json",
+  "actions/generated/mailbox/commands.json",
+  "actions/generated/mailbox/mcp.json",
+  "actions/generated/mailbox-tools/tools.json",
 ]
 
 const REQUIRED_PACKAGE_ASSET_SOURCES = {
@@ -76,6 +81,10 @@ const PACKAGE_PAYLOAD_PATH_PREFIXES = [
 ]
 
 const PACKAGE_PAYLOAD_FILE_PATHS = [
+  "actions/generated/mailbox-tools/tools.json",
+  "actions/generated/mailbox/actions.json",
+  "actions/generated/mailbox/commands.json",
+  "actions/generated/mailbox/mcp.json",
   "changelog.json",
   "npm-shrinkwrap.json",
   "package.json",
@@ -132,7 +141,7 @@ function toPackagePath(filePath) {
 
 function canContainPackagePayload(relativePath) {
   const directoryPrefix = `${toPackagePath(relativePath)}/`
-  return PACKAGE_PAYLOAD_PATH_PREFIXES.some(
+  return PACKAGE_PAYLOAD_FILE_PATHS.some((filePath) => filePath.startsWith(directoryPrefix)) || PACKAGE_PAYLOAD_PATH_PREFIXES.some(
     (payloadPrefix) => payloadPrefix.startsWith(directoryPrefix) || directoryPrefix.startsWith(payloadPrefix),
   )
 }

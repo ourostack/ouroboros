@@ -1,0 +1,22 @@
+{
+  "generator": "ouro-actions 1.12.0",
+  "set": "mailbox",
+  "tools": [
+    {
+      "name": "mailbox_list",
+      "title": "Letters",
+      "description": "List the letters this agent has filed for its person that are still waiting for an answer, oldest first. Read only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "consequentialHint": false
+      }
+    }
+  ],
+  "refusals": {}
+}
