@@ -186,5 +186,35 @@ describe("scripted X interview conversations in the sandbox", () => {
     expect(bodies.flatMap((body) => brandHits(body))).toEqual([])
     expect(results.join("\n")).toContain("189")
   }, 300_000)
+
+  it("runs H's ouro arm as the harness's own Telegram turn in the image, with the label line and the debrief", async () => {
+    // The pass script's own calls, then the debrief's answer: the real turn, through h-guest-entry.js in the built
+    // image, so a module the entry needs that the image does not keep fails here.
+    const script = JSON.parse(fs.readFileSync(path.join(SCRIPTS, "remove-bad-copy.pass.json"), "utf8")) as Script
+    const steps = [...script.steps, { name: "settle", arguments: { answer: "6\nIt went fine.", intent: "complete" } }]
+    const line = labelLine("H", "K")
+    const systems: string[] = []
+    let next = 0
+    const host: ProviderRuntime = {
+      id: "minimax", model: "eval-scripted", client: {}, capabilities: new Set(),
+      resetTurnState: () => undefined, appendToolOutput: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
+      streamTurn: async (request) => {
+        systems.push(`${request.systemPrompt?.volatile ?? ""}\n---\n${String(request.messages[0]?.content ?? "")}`)
+        const step = steps[next]
+        next += 1
+        if (!step) throw new Error(`the H script ran out after ${steps.length} steps`)
+        return { content: "", toolCalls: [{ id: `call-${next}`, name: step.name, arguments: JSON.stringify(step.arguments) }], outputItems: [] }
+      },
+    }
+    const last = c.prefix[c.prefix.length - 1]!
+    const turn = { product: "H", arm: "ouro", labelLine: line, prefix: c.prefix.slice(0, -1), userText: last.content, followUps: [debriefQuestion("H", "K")] }
+    const obs = await runSandboxed({ case: c, bundleDir, seedBundleDir: SEED, host, budget: { take: () => true }, workRoot: root, turnTimeoutMs: 180_000, guest: { entry: "h-guest-entry.js", turn } })
+    expect(obs.outcome).toBe("settled")
+    expect(obs.followUps).toEqual([{ finalReply: "6\nIt went fine.", outcome: "settled", calls: 1, toolCalls: 1 }])
+    expect(evaluate(c, obs).checks.filter((check) => !check.ok)).toEqual([])
+    expect(systems).toHaveLength(steps.length)
+    // Every request carries the label line once in each form of the system prompt the provider may send.
+    for (const system of systems) expect(system.split(line)).toHaveLength(3)
+  }, 300_000)
 })
 
