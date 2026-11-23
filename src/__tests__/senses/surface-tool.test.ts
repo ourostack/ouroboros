@@ -1037,6 +1037,47 @@ describe("surface tool", () => {
       })
     })
 
+    it("surfaceToolDefinition never queues spontaneous outreach into a fresher MCP session, and names send_message for iMessage", async () => {
+      // Reproduces 2026-11-23: an agent's MCP client ran under Ari's friend id, so his
+      // freshest session was MCP. surface queued the news there, where only the next
+      // connecting agent would read it, and the model took "queued" as sent.
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "mcp",
+          key: "mcp-session-1",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/mcp/mcp-session-1.json",
+        },
+        {
+          friendId: "friend-1",
+          friendName: "Ari",
+          channel: "bluebubbles",
+          key: "chat:any;-;owner@example.test",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "Your App Store Connect sign-in is done.",
+        friendId: "friend-1",
+      }, { delegatedOrigins: [] } as any)
+
+      expect(result).not.toMatch(/^queued/u)
+      expect(result).toMatch(/^not sent/u)
+      expect(result).toContain('send_message friendId="friend-1" channel="bluebubbles"')
+      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/mcp\//u),
+        expect.anything(),
+      )
+    })
+
     it("surfaceToolDefinition queues freshest BlueBubbles DM returns without live-sending iMessage", async () => {
       const fs = await import("fs")
       vi.mocked(fs.existsSync).mockImplementation((filePath) =>
