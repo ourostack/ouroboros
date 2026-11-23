@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1376",
+      "changes": [
+        "Every in-turn tool carries an Ouro AX card, a call's outcome is typed, and an unknown tool names the real tools it could mean; the Ouro AX X-ray now checks the in-turn tools in CI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1375",
       "changes": [
         "Senses: an iMessage turn can no longer wait forever to send; an iMessage turn that ends without a reply stays pending for replay or records a visible failure, and one the friend already heard from is never replayed; SIGTERM stops iMessage and Shepherd within 3 s; ouro status shows a reply stuck waiting to send."

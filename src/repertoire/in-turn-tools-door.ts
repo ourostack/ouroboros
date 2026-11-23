@@ -7,7 +7,7 @@ import type { ToolDoorCard } from "./tools-base"
 import { preflightToolCall, registeredToolDefinitions } from "./tools"
 import { observeTool, ponderTool, restTool, settleTool, speakTool, toolCards as flowCards } from "./tools-flow"
 import { typedOutcome, type TypedToolOutcome } from "./tool-error-code"
-import { findToolsDefinition } from "./deferred-tools"
+import { findToolsDefinition } from "./tool-catalog"
 import { specialistToolDefinitions } from "../heart/hatch/specialist-tools"
 
 /** An in-turn tool as tools/list serves it: the function definition the model sees, and its Ouro AX card. */
