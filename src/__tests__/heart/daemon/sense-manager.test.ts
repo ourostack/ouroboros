@@ -2252,6 +2252,76 @@ describe("daemon sense manager", () => {
     ])
   })
 
+  it.each([
+    ["blocked", "error"],
+    ["blocked without a detail", "error"],
+    ["ok", "running"],
+    ["blocked while the upstream is down", "error"],
+  ] as const)("shows BlueBubbles as an error while its sends are recorded as blocked, though the upstream answers (send health %s)", async (sendStatus, rowStatus) => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true, hostUsername: os.userInfo().username },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
+      bluebubblesChannel: { port: 18888, webhookPath: "/hooks/bb" },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    const upstreamDown = sendStatus === "blocked while the upstream is down"
+    fs.writeFileSync(path.join(runtimeDir, "runtime.json"), JSON.stringify({
+      upstreamStatus: upstreamDown ? "error" : "ok", detail: upstreamDown ? "connect ECONNREFUSED" : "upstream reachable", lastCheckedAt: new Date().toISOString(), pendingRecoveryCount: 0,
+    }))
+    const sentDetail = "BlueBubbles could not send: macOS has not allowed BlueBubbles to control Messages"
+    let blockedDetail = "BlueBubbles sends are failing"
+    if (sendStatus === "blocked without a detail") {
+      fs.writeFileSync(path.join(runtimeDir, "send-health.json"), JSON.stringify({ status: "blocked", code: "host_automation_denied" }))
+    } else {
+      // Written by the sense's own recorder, so the path and shape the daemon reads are the ones a send writes.
+      const { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered } = await import("../../../senses/bluebubbles/send-health")
+      const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+      recordBlueBubblesSendBlocked("slugger", { code: "host_automation_denied", detail: sentDetail }, agentRoot, () => Date.parse("2026-11-23T03:47:23.000Z"))
+      if (sendStatus === "ok") recordBlueBubblesSendDelivered("slugger", agentRoot)
+      blockedDetail = `${sentDetail} (failing since 2026-11-23T03:47:23.000Z)`
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [{ name: "slugger:bluebubbles", status: "running" }],
+      },
+    })
+
+    const row = manager.listSenseRows().find((entry) => entry.sense === "bluebubbles")
+    expect(row).toMatchObject({ status: rowStatus })
+    if (upstreamDown) {
+      // An unreachable BlueBubbles is the more basic failure, and explains failing sends.
+      expect(row).toMatchObject({ detail: "connect ECONNREFUSED", failureLayer: "upstream" })
+    } else if (sendStatus !== "ok") {
+      expect(row).toMatchObject({
+        detail: blockedDetail,
+        lastFailure: blockedDetail,
+        failureLayer: "send",
+        recoveryAction: "fix what the detail names on the BlueBubbles host; sends are still tried, and the next one that goes through clears this",
+      })
+    } else {
+      expect(row).toMatchObject({ detail: ":18888 /hooks/bb" })
+      expect(row?.failureLayer).toBeUndefined()
+    }
+  })
+
   it("marks BlueBubbles unhealthy when fresh healthy runtime state has no running listener snapshot", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const freshCheckedAt = new Date().toISOString()

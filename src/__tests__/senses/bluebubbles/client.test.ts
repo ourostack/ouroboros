@@ -24,6 +24,23 @@ vi.mock("../../../senses/bluebubbles/host-account-verifier", () => ({
   verifyBlueBubblesServerAccount: vi.fn(async () => undefined),
 }))
 
+// Send health has its own tests (send-health.test.ts); here only what the client records is checked.
+const sendHealth = vi.hoisted(() => ({ blocked: vi.fn(), delivered: vi.fn() }))
+vi.mock("../../../senses/bluebubbles/send-health", () => ({
+  recordBlueBubblesSendBlocked: (...args: unknown[]) => sendHealth.blocked(...args),
+  recordBlueBubblesSendDelivered: (...args: unknown[]) => sendHealth.delivered(...args),
+}))
+
+// What BlueBubbles' AppleScript path answered on 2026-11-23 once macOS withdrew its Automation consent for Messages.
+const AUTOMATION_DENIED_BODY = JSON.stringify({
+  status: 500,
+  message: "Message Send Error",
+  error: {
+    type: "iMessage Error",
+    message: "Command failed: osascript -e \"tell application \\\"Messages\\\"\" ...\n49:85: execution error: Not authorized to send Apple events to Messages. (-1743)\n",
+  },
+})
+
 const dmChat = {
   chatGuid: "any;-;owner@example.test",
   chatIdentifier: "owner@example.test",
@@ -37,6 +54,8 @@ describe("BlueBubbles client", () => {
 
   beforeEach(() => {
     emitNervesEvent.mockReset()
+    sendHealth.blocked.mockReset()
+    sendHealth.delivered.mockReset()
   })
 
   afterEach(() => {
@@ -3183,6 +3202,122 @@ describe("BlueBubbles client", () => {
         text: "hello",
       }),
     ).rejects.toThrow("BlueBubbles send failed (500): unknown")
+  })
+
+  describe("when macOS withdraws BlueBubbles' Automation consent for Messages", () => {
+    const config = { serverUrl: "http://bluebubbles.local", password: "secret-token", accountId: "default" }
+    const channel = { port: 18790, webhookPath: "/bluebubbles-webhook", requestTimeoutMs: 30000 }
+    const file = { name: "menu.pdf", contentType: "application/pdf", bytes: Buffer.from("%PDF") }
+
+    it("names the failure and says what a person must do, and records that sends are blocked", async () => {
+      global.fetch = vi.fn(async () => new Response(AUTOMATION_DENIED_BODY, { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient, BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      const failure = await client.sendText({ chat: dmChat, text: "hello" }).catch((error: unknown) => error)
+
+      expect(failure).toBeInstanceOf(BlueBubblesSendError)
+      expect(failure).toMatchObject({ errorCode: "host_automation_denied", httpStatus: 500, transportInvoked: true })
+      const message = (failure as Error).message
+      expect(message).toContain("Not authorized to send Apple events to Messages (-1743)")
+      expect(message).toContain("signed in to the \"clawdbot\" macOS account")
+      expect(message).toContain("System Settings → Privacy & Security → Automation → BlueBubbles → Messages")
+      expect(sendHealth.blocked).toHaveBeenCalledWith("slugger", { code: "host_automation_denied", detail: message }, undefined)
+      expect(sendHealth.delivered).not.toHaveBeenCalled()
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.bluebubbles_send_error",
+        meta: expect.objectContaining({ errorCode: "host_automation_denied", status: 500 }),
+      }))
+    })
+
+    it("names the account generically when none is declared", async () => {
+      global.fetch = vi.fn(async () => new Response(AUTOMATION_DENIED_BODY, { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: undefined })
+
+      await expect(client.sendText({ chat: dmChat, text: "hello" })).rejects.toThrow("signed in to the macOS account BlueBubbles runs under")
+    })
+
+    it.each([
+      ["a phone number ending in 1743", "call me at 555-1743"],
+      ["a quote of this outage's error", "it said: 49:85: execution error: Not authorized to send Apple events to Messages. (-1743)"],
+    ])("does not mistake %s in the echoed message body for the denial", async (_label, text) => {
+      // BlueBubbles echoes the osascript command, message body included; only osascript's own last line is its error.
+      const body = JSON.stringify({ status: 500, message: "Message Send Error", error: { type: "iMessage Error", message: `Command failed: osascript -e "send \\"${text}\\" to targetBuddy"\n12:40: execution error: Can’t get participant. (-1728)\n` } })
+      global.fetch = vi.fn(async () => new Response(body, { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await expect(client.sendText({ chat: dmChat, text })).rejects.toMatchObject({ errorCode: "http_500" })
+      expect(sendHealth.blocked).not.toHaveBeenCalled()
+    })
+
+    it("recognizes the denial in a plain-text error body too", async () => {
+      global.fetch = vi.fn(async () => new Response("Command failed: osascript ...\n49:85: execution error: Not authorized to send Apple events to Messages. (-1743)", { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await expect(client.sendText({ chat: dmChat, text: "hello" })).rejects.toMatchObject({ errorCode: "host_automation_denied" })
+    })
+
+    it("records under the bundle the caller names", async () => {
+      global.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", agentRoot: "/tmp/elsewhere/slugger.ouro", hostUsername: "clawdbot" })
+
+      await client.sendText({ chat: dmChat, text: "hello" })
+
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "/tmp/elsewhere/slugger.ouro")
+    })
+
+    it("leaves other server errors as they were and records no block", async () => {
+      global.fetch = vi.fn(async () => new Response("database is locked", { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await expect(client.sendText({ chat: dmChat, text: "hello" })).rejects.toMatchObject({ errorCode: "http_500" })
+      expect(sendHealth.blocked).not.toHaveBeenCalled()
+    })
+
+    it("records a delivered send, which clears a recorded block", async () => {
+      global.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await client.sendText({ chat: dmChat, text: "hello" })
+
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+      expect(sendHealth.blocked).not.toHaveBeenCalled()
+    })
+
+    it("records for the running agent when the client names none", async () => {
+      global.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+
+      await createBlueBubblesClient(config, channel).sendText({ chat: dmChat, text: "hello" })
+
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+    })
+
+    it("records a delivered attachment, which clears a recorded block", async () => {
+      global.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await client.sendAttachment!({ chat: dmChat, file })
+
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+      expect(sendHealth.blocked).not.toHaveBeenCalled()
+    })
+
+    it("names an attachment refused for want of Automation consent, and records the block", async () => {
+      global.fetch = vi.fn(async () => new Response(AUTOMATION_DENIED_BODY, { status: 500 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+      const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
+
+      await expect(client.sendAttachment!({ chat: dmChat, file })).rejects.toThrow("Privacy & Security → Automation → BlueBubbles → Messages")
+      expect(sendHealth.blocked).toHaveBeenCalledWith("slugger", expect.objectContaining({ code: "host_automation_denied" }), undefined)
+    })
   })
 
   describe("react", () => {
