@@ -1,0 +1,1 @@
+settle can leave a check-back: on a turn that may file await_condition, it also takes check_back_at and condition, and files them as an await that wakes at that time. If the check-back can't be filed, nothing is sent and the agent is told why.

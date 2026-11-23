@@ -88,6 +88,26 @@ describe("scripted sandbox runs of the book cases", () => {
     expect(results[5]).toMatch(/state port exit [1-9]/)
   }, 300_000)
 
+  it("saves and reads back a diary entry on a fresh sandbox's desk, as a fresh live agent does (#1734)", async () => {
+    const probe: Script = {
+      caseId: "unreadable-edition", about: "desk record probe", expectFailed: [],
+      steps: [
+        { name: "search_facts", arguments: { query: "harbour almanac" } },
+        { name: "diary_write", arguments: { entry: "probe entry from the sandbox" } },
+        { name: "consult_diary", arguments: {} },
+        { name: "settle", arguments: { answer: "probed", intent: "complete" } },
+      ],
+    }
+    const obs = await runSandboxed({ case: cases.get("unreadable-edition")!, bundleDir, seedBundleDir: SEED, host: scriptedRuntime(probe), budget: { take: () => true }, workRoot: root })
+    const results = obs.timeline.flatMap((entry) => entry.kind === "call" ? [entry.result] : [])
+    expect(obs.outcome).toBe("settled")
+    expect(results.slice(0, 3).join("\n")).not.toMatch(/ENOENT|EROFS|diary-unreadable|read-only/i)
+    // The entry was saved and read back, not just an empty scaffold made.
+    expect(results[1]).toMatch(/saved diary entry \(added=1/)
+    expect(results[2]).toContain("probe entry from the sandbox")
+    expect(obs.created.map((file) => file.path)).toContain("desk/_record/diary/facts.jsonl")
+  }, 300_000)
+
   it.each(scripts)("%s", async (name) => {
     const script = JSON.parse(fs.readFileSync(path.join(SCRIPTS, name), "utf8")) as Script
     const c = cases.get(script.caseId)!

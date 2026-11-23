@@ -1118,7 +1118,7 @@ describe("buildSystem", () => {
     // The agent must understand it receives ouro_workbench via runtime injection.
     expect(result).toContain("when `workbench_*` tools are present this turn, the Workbench app launched me and injected them")
     // It must be told NOT to misread a disabled sense row as blocked.
-    expect(result).toContain("I do NOT treat that as blocked or as a trust-level problem")
+    expect(result).toContain("so it is neither a block nor a trust-level problem")
     // The disabled sense-table row carries the runtime-injection annotation.
     expect(result).toContain("Workbench: disabled (runtime-injected when launched by Workbench app)")
     // It must NOT still claim enabling REQUIRES the agent.json entry.
@@ -1874,7 +1874,7 @@ describe("runtimeInfoSection", () => {
     const result = runtimeInfoSection("bluebubbles")
     expect(result).toContain("iMessage")
     expect(result).toContain("short")
-    expect(result).toContain("i do not use markdown")
+    expect(result).toContain("i write plain text, without markdown")
     expect(result).toContain("process comments from my friend are feedback to absorb")
     expect(result).toContain("timeout/recovery state is internal, not iMessage copy")
   })
@@ -1893,7 +1893,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("i may use only Telegram-native *bold*, _italic_, and `inline code` markdown")
     expect(result).toContain("no markdown links; i write necessary urls in full")
     expect(result).toContain("no headings, tables, or raw html")
-    expect(result).not.toContain("i do not use markdown")
+    expect(result).not.toContain("i write plain text, without markdown")
     expect(result).not.toContain("Microsoft Teams")
     expect(result).not.toContain("i use markdown formatting")
   })
@@ -3467,7 +3467,7 @@ describe("buildSystem with context", () => {
     for (const globalHeading of ["## my provider", "## the pulse", "## trip ledger truth", "## pending messages", "## what i'm holding", "## where my attention is", "## my commitments", "## session summary", "## my desk", "family cross-session", "cross-session truth"]) {
       expect(result).not.toContain(globalHeading)
     }
-    expect(result).not.toContain("My desk is always loaded")
+    expect(result).not.toContain("My desk is loaded in every turn")
   })
 
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
@@ -3551,7 +3551,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("ponder creates or revises typed packets")
     expect(result).toContain("HEARTBEAT_OK")
     expect(result).toContain("HEARTBEAT_OK is real rest")
-    expect(result).toContain("repeated heartbeat/test pokes do not mean i am failing")
+    expect(result).toContain("repeated heartbeat/test pokes don't mean i am failing")
   })
 
   it("buildSystem('inner') keeps the private-runtime delivery rules without an inventory", async () => {
@@ -3565,9 +3565,9 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("## my tools\n")
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
-    expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
+    expect(result).toContain("`surface` returns held work and is not a substitute for it")
     expect(result).not.toContain("I do not call `send_message` or `settle` from a private-runtime turn")
-    expect(result).toContain("I do not call `settle` from a private-runtime turn")
+    expect(result).toContain("`rest` is the private-runtime terminal move; `settle` ends turns that have someone on the other end")
     expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
   })
@@ -4622,7 +4622,7 @@ describe("rhythmStatusSection", () => {
 
     const { rhythmStatusSection } = await import("../../mind/prompt")
     const result = rhythmStatusSection()
-    expect(result).toContain("daily-reflection last fired never")
+    expect(result).toContain("daily-reflection hasn't fired yet")
   })
 
   it("returns empty string when no habits in health file", async () => {
@@ -5121,7 +5121,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     expect(result).toContain('tool_choice is set to "required"')
     expect(result).toContain("I call `settle`")
     expect(result).toContain("`settle` must be the only tool call in that turn")
-    expect(result).toContain("I do not call no-op tools before `settle`")
+    expect(result).toContain("`settle` follows the last real tool call, with no no-op call before it")
   })
 
   it("appears inside '# my tools & capabilities' group", async () => {
@@ -5399,7 +5399,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     expect(result).toContain("The pre-turn record check may surface relevant Desk record or friend-note material")
   })
 
-  it("includes 'My psyche files are always loaded'", async () => {
+  it("includes 'My psyche files are loaded in every turn'", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -5410,10 +5410,10 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
-    expect(result).toContain("My psyche files are always loaded")
+    expect(result).toContain("My psyche files are loaded in every turn")
   })
 
-  it("includes 'My desk is always loaded'", async () => {
+  it("includes 'My desk is loaded in every turn'", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -5424,7 +5424,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
-    expect(result).toContain("My desk is always loaded")
+    expect(result).toContain("My desk is loaded in every turn")
   })
 })
 

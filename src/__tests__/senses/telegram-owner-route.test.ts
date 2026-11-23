@@ -10,6 +10,7 @@ vi.mock("../../a2a/identity", async (importOriginal) => ({ ...await importOrigin
 import { normalizeSenses } from "../../heart/identity"
 import {
   OWNER_ROUTE_FALLBACK_PREFIX,
+  OWNER_ROUTE_SEND_TIMEOUT_MS,
   createA2AOwnerRoute,
   formatOwnerRouteMessage,
   ownerRouteDedupeKey,
@@ -89,7 +90,41 @@ describe("createA2AOwnerRoute", () => {
     const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send })
     const item = ownerRouteItem("proactive:1", "hello", false)
     await expect(route(item)).resolves.toEqual({ status: "delivered" })
-    expect(send).toHaveBeenCalledWith({ cardUrl: CARD_URL, text: formatOwnerRouteMessage(item), identity })
+    expect(send).toHaveBeenCalledWith({ cardUrl: CARD_URL, text: formatOwnerRouteMessage(item), identity, signal: expect.any(AbortSignal) })
+  })
+
+  it("hands the peer's harness a relay request instead of the text, and sends no text with it", async () => {
+    const send = vi.fn()
+    const sendRequest = vi.fn(async () => undefined)
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send, sendRequest })
+    const approvalRequest = { relayToken: "r".repeat(43), code: "K7Q2", actionLine: "Restart plex?", decisions: ["deny"] as ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" }
+    await expect(route({ ...ownerRouteItem("approval:a1:prompt", "Restart plex?", true), approvalRequest })).resolves.toEqual({ status: "delivered" })
+    expect(sendRequest).toHaveBeenCalledWith({ cardUrl: CARD_URL, peerDid: SLUGGER_DID, payload: approvalRequest, identity, signal: expect.any(AbortSignal) })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("gives up on a peer that hangs, so the card still goes inside its window", async () => {
+    const sendRequest = vi.fn(({ signal }: { signal?: AbortSignal }) => new Promise<void>((_, reject) => signal!.addEventListener("abort", () => reject(signal!.reason))))
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, sendRequest: sendRequest as never, timeoutMs: 20 })
+    const approvalRequest = { relayToken: "r".repeat(43), code: "K7Q2", actionLine: "Restart plex?", decisions: ["deny"] as ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" }
+    const outcome = await route({ ...ownerRouteItem("approval:a1:prompt", "Restart plex?", true), approvalRequest })
+    expect(outcome.status).toBe("unreachable")
+    expect(OWNER_ROUTE_SEND_TIMEOUT_MS).toBe(15_000)
+  })
+
+  it("passes the deadline to the card check and names its pinned peer", async () => {
+    const fetchCard = vi.fn(async () => card(SLUGGER_DID) as never)
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard, send: vi.fn(async () => ({}) as never) })
+    expect(route.peerDid).toBe(SLUGGER_DID)
+    await route(ownerRouteItem("proactive:1", "hello", false))
+    expect(fetchCard).toHaveBeenCalledWith(CARD_URL, undefined, expect.any(AbortSignal))
+  })
+
+  it("reports a peer that won't take the relay request as unreachable, so Ari gets the card with a sound", async () => {
+    const sendRequest = vi.fn(async () => { throw new Error("the peer didn't take the approval request: hi") })
+    const route = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send: vi.fn(), sendRequest })
+    const approvalRequest = { relayToken: "r".repeat(43), code: "K7Q2", actionLine: "Restart plex?", decisions: ["deny"] as ["deny"], expiresAt: "2026-11-23T01:45:00.000Z" }
+    await expect(route({ ...ownerRouteItem("approval:a1:prompt", "Restart plex?", true), approvalRequest })).resolves.toEqual({ status: "unreachable", detail: "the peer didn't take the approval request: hi" })
   })
 
   it("refuses a card at that address that serves another DID", async () => {

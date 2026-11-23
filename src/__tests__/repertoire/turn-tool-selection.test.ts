@@ -64,6 +64,28 @@ function addProbe() {
   return { definition, handler }
 }
 
+describe("settle's check-back", () => {
+  beforeEach(() => setAgentName("sanctuary"))
+  afterEach(() => resetIdentity())
+  const settleProperties = (context: ToolContext) =>
+    Object.keys((schemas(context).find((tool) => tool.function.name === "settle")!.function.parameters as { properties: object }).properties)
+
+  it("offers check_back_at and condition wherever await_condition is offered", () => {
+    for (const profileId of ["sanctuary-owner", "sanctuary-household", "sanctuary-agent-peer"]) {
+      expect(settleProperties(relationshipContext(profileId))).toEqual(["answer", "intent", "check_back_at", "condition"])
+    }
+    const settle = schemas(relationshipContext("sanctuary-owner")).find((tool) => tool.function.name === "settle")!
+    expect(settle.function.description).toMatch(/^delivers answer to the person.* with check_back_at and condition, it also files an await that wakes at that time/)
+  })
+
+  it("offers plain settle to a turn that may not file await_condition", () => {
+    const context = relationshipContext("sanctuary-household")
+    const authorization = context.relationshipAuthorization!
+    const withoutAwait = { ...context, relationshipAuthorization: { ...authorization, advertisedToolNames: authorization.advertisedToolNames.filter((name) => name !== "await_condition") } }
+    expect(settleProperties(withoutAwait)).toEqual(["answer", "intent"])
+  })
+})
+
 describe("turn-local canonical tool selection", () => {
   beforeEach(() => setAgentName("sanctuary"))
   afterEach(async () => {
@@ -241,7 +263,8 @@ describe("turn-local canonical tool selection", () => {
       const context = relationshipContext(profileId, [...OWNER_ADDITIONS, "shared_status"])
       const names = schemas(context, view, new Set(["reasoning-effort"])).map((tool) => tool.function.name)
 
-      expect(names.toSorted()).toEqual(registry.profiles[profileId].toolNames.toSorted())
+      // With no media server attached, the household's media tools are absent.
+      expect(names.toSorted()).toEqual(withoutMediaMcp(registry.profiles[profileId].toolNames).toSorted())
       for (const name of [...OWNER_ADDITIONS, "shared_status"]) expect(names).not.toContain(name)
       expect(view.manager.callTool).not.toHaveBeenCalled()
     },

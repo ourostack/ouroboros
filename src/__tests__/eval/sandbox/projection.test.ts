@@ -1,3 +1,4 @@
+import { CANONICAL_BUNDLE_MANIFEST } from "../../../mind/bundle-manifest"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -34,6 +35,8 @@ describe("projectBundle", () => {
       "books/removed/187-old.epub", "books/work/1-abc/copy.epub", "books/.git/HEAD",
       "friends/ari.json", "state/sessions/ari.json", "desk/today.md", "house/notes.md", "diary/today.md",
       "arc/private.md", "tool-profiles.json", ".git/config", "secrets.txt",
+      // An old agent's fact store, which the record migration would move into the now-writable desk (#1734).
+      "psyche/memory/facts.jsonl",
     ]) write(bundleDir, file, `private ${file}`)
     fs.chmodSync(path.join(bundleDir, "books/books"), 0o755)
     for (const file of [
@@ -74,15 +77,24 @@ describe("projectBundle", () => {
 
   it("starts friends, state, desk and the books CLI's writable places empty, and lists what differs from the live bundle", () => {
     const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["agent.json", "psyche", "skills", "books"], out })
-    for (const dir of ["friends", "state", "desk", "books/work", "books/removed"]) {
+    for (const dir of ["friends", "state", "desk/_record/diary/daily", "desk/_record/notes", "books/work", "books/removed"]) {
       expect(fs.readdirSync(path.join(out, dir))).toEqual([])
     }
+    expect(fs.readdirSync(path.join(out, "desk"))).toEqual(["_record"])
+    expect(fs.readdirSync(path.join(out, "desk/_record"))).toEqual(["diary", "notes"])
     expect(fs.readFileSync(path.join(out, "books/ledger.ndjson"), "utf8")).toBe("")
     expect(gaps.join("\n")).toMatch(/TACIT\.md/)
     expect(gaps.join("\n")).toMatch(/friends/)
     expect(gaps.join("\n")).toMatch(/state/)
     expect(gaps.join("\n")).toMatch(/desk/)
     expect(gaps).toEqual(expect.arrayContaining([expect.stringMatching(/books\/credentials\.json/)]))
+  })
+
+  it("has every desk folder a fresh production agent root has", () => {
+    projectBundle({ bundleDir, seedBundleDir, include: ["agent.json", "psyche", "skills", "books"], out })
+    for (const entry of CANONICAL_BUNDLE_MANIFEST.filter((item) => item.kind === "dir" && item.path.startsWith("desk"))) {
+      expect(fs.statSync(path.join(out, entry.path)).isDirectory()).toBe(true)
+    }
   })
 
   it("reports an included path the bundle does not have, and a package-managed file the seed does not have", () => {
