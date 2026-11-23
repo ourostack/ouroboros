@@ -100,15 +100,19 @@ describe("handleRelayedApprovalAnswer", () => {
     expect(await handleRelayedApprovalAnswer(deps, message)).toBe("denied")
     expect(await handleRelayedApprovalAnswer({ ...deps, seen: relayAnswerSeenLedger(agentRoot) }, message)).toBe("refused:not_verified")
     expect(relayDeny).toHaveBeenCalledTimes(1)
+    // The door says only "not verified"; underneath, the ledger is what refused it.
+    const reopened = await openApprovalAnswer({ sodium, self: butler, message, senderDid: slugger.did, senderEd25519Pub: slugger.ed25519Pub, seen: relayAnswerSeenLedger(agentRoot) })
+    expect(reopened).toEqual({ ok: false, reason: "replayed" })
     expect(fs.readdirSync(path.join(agentRoot, "state", "approvals", "relay-seen")).length).toBeGreaterThan(0)
     expect(fs.existsSync(path.join(agentRoot, "state", "a2a", "seen"))).toBe(false)
   })
 
-  it("is off without the switch, and re-reads it for every answer", async () => {
+  it("re-reads the switch for every answer: on for one, then off for the next", async () => {
     const { butler, slugger, deps, relayDeny, agentRoot } = setup()
+    expect(await handleRelayedApprovalAnswer(deps, sealAnswer(slugger, butler))).toBe("denied")
     fs.rmSync(path.join(operatorTrustDir(agentRoot), APPROVAL_RELAY_FILE))
     expect(await handleRelayedApprovalAnswer(deps, sealAnswer(slugger, butler))).toBe("refused:switch_off")
-    expect(relayDeny).not.toHaveBeenCalled()
+    expect(relayDeny).toHaveBeenCalledTimes(1)
   })
 
   it.each([
@@ -142,13 +146,34 @@ async function ask(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("startApprovalRelaySocket", () => {
-  async function listen(handle: (message: A2AMessage) => Promise<RelayReply>) {
+  async function listen(handle: (message: A2AMessage) => Promise<RelayReply>, idleTimeoutMs?: number) {
     tmp = createTmpBundle({ agentName: `sock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` })
     const socketPath = approvalRelaySocketPath(tmp.agentRoot)
     fs.mkdirSync(path.dirname(socketPath), { recursive: true })
-    const server = await startApprovalRelaySocket({ socketPath, handle })
+    const server = await startApprovalRelaySocket({ socketPath, handle, ...(idleTimeoutMs ? { idleTimeoutMs } : {}) })
     closers.push(() => server.close())
     return socketPath
+  }
+
+  /** Streams `total` bytes with no newline and resolves when the server closes the connection, whatever the client saw. */
+  function flood(socketPath: string, total: number): Promise<string> {
+    return new Promise((resolve) => {
+      const socket = net.createConnection(socketPath)
+      let data = ""
+      socket.setEncoding("utf8")
+      socket.on("data", (chunk: string) => { data += chunk })
+      socket.on("error", () => undefined)
+      socket.on("close", () => resolve(data))
+      const chunk = "x".repeat(64 * 1024)
+      let sent = 0
+      const pump = (): void => {
+        while (sent < total && !socket.destroyed) {
+          sent += chunk.length
+          if (!socket.write(chunk)) { socket.once("drain", pump); return }
+        }
+      }
+      socket.on("connect", pump)
+    })
   }
 
   it("answers one JSON line with one reply line, on a socket only this user can open", async () => {
@@ -195,8 +220,73 @@ describe("startApprovalRelaySocket", () => {
   it("refuses a request over 256 KiB", async () => {
     const handle = vi.fn(async () => "denied" as const)
     const socketPath = await listen(handle)
-    expect(await ask(socketPath, "x".repeat(300 * 1024))).toBe('{"reply":"refused:malformed_request"}\n')
+    const seen = await flood(socketPath, 300 * 1024)
+    expect(seen === "" || seen === '{"reply":"refused:malformed_request"}\n').toBe(true)
     expect(handle).not.toHaveBeenCalled()
+  })
+
+  it("stops reading and drops a client that keeps streaming past the limit, without stalling", async () => {
+    const handle = vi.fn(async () => "denied" as const)
+    const socketPath = await listen(handle)
+    const started = Date.now()
+    const seen = await flood(socketPath, 16 * 1024 * 1024)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(seen === "" || seen === '{"reply":"refused:malformed_request"}\n').toBe(true)
+    expect(handle).not.toHaveBeenCalled()
+    // The server still answers the next client at once.
+    expect(await ask(socketPath, '{"message":{}}\n')).toBe('{"reply":"denied"}\n')
+  })
+
+  it("ignores anything after the request line", async () => {
+    const handle = vi.fn(async () => "denied" as const)
+    const socketPath = await listen(handle)
+    expect(await ask(socketPath, `{"message":{}}\n{"message":{"second":true}}\n`)).toBe('{"reply":"denied"}\n')
+    expect(handle).toHaveBeenCalledTimes(1)
+  })
+
+  it("reads a request line that arrives in pieces", async () => {
+    const handle = vi.fn(async () => "denied" as const)
+    const socketPath = await listen(handle)
+    const reply = await new Promise<string>((resolve) => {
+      const socket = net.createConnection(socketPath)
+      let data = ""
+      socket.setEncoding("utf8")
+      socket.on("data", (chunk: string) => { data += chunk })
+      socket.on("close", () => resolve(data))
+      socket.write('{"mess')
+      setTimeout(() => socket.write('age":{"kind":"message"}}\n'), 20)
+    })
+    expect(reply).toBe('{"reply":"denied"}\n')
+    expect(handle).toHaveBeenCalledWith({ kind: "message" })
+  })
+
+  it("drops a client that connects and sends nothing", async () => {
+    const handle = vi.fn(async () => "denied" as const)
+    const socketPath = await listen(handle, 50)
+    const reply = await new Promise<string>((resolve) => {
+      const socket = net.createConnection(socketPath)
+      socket.on("error", () => undefined)
+      socket.on("close", () => resolve("closed"))
+    })
+    expect(reply).toBe("closed")
+    expect(handle).not.toHaveBeenCalled()
+  })
+
+  it("keeps a connection open while its answer is being decided, past the idle timeout", async () => {
+    const socketPath = await listen(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); return "denied" }, 50)
+    expect(await ask(socketPath, '{"message":{}}\n')).toBe('{"reply":"denied"}\n')
+  })
+
+  it("creates the socket file under a umask that leaves it closed to group and other, then puts the umask back", async () => {
+    const before = process.umask()
+    const umask = vi.spyOn(process, "umask")
+    try {
+      await listen(async () => "denied")
+      expect(umask.mock.calls.map((call) => call[0])).toEqual([0o177, before])
+      expect(process.umask()).toBe(before)
+    } finally {
+      umask.mockRestore()
+    }
   })
 
   it("closes the connection without a reply when deciding fails", async () => {
@@ -232,6 +322,22 @@ describe("createApprovalRelayDoor", () => {
     expect(loadIdentity).toHaveBeenCalledTimes(1)
     await door.stop()
     expect(fs.existsSync(socketPath)).toBe(false)
+  })
+
+  it("tries loading its identity again after a failed load", async () => {
+    const { agentRoot, butler, slugger, relayDeny } = setup()
+    const loadIdentity = vi.fn<() => Promise<DidKeyIdentity>>().mockRejectedValueOnce(new Error("vault locked")).mockResolvedValue(butler)
+    const door = createApprovalRelayDoor({ agentName: path.basename(agentRoot, ".ouro"), agentRoot, runtime: { relayDeny }, loadIdentity })
+    closers.push(() => door.stop())
+    const configPath = path.join(agentRoot, "agent.json")
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    config.senses = { ...config.senses, telegram: { ...config.senses?.telegram, enabled: true, ownerNoticesTo: { cardUrl: "https://slugger.example/.well-known/agent-card.json", did: slugger.did } } }
+    fs.writeFileSync(configPath, JSON.stringify(config))
+    await door.start()
+    const socketPath = approvalRelaySocketPath(agentRoot)
+    expect(await ask(socketPath, `${JSON.stringify({ message: sealAnswer(slugger, butler) })}\n`)).toBe("")
+    expect(await ask(socketPath, `${JSON.stringify({ message: sealAnswer(slugger, butler) })}\n`)).toBe('{"reply":"denied"}\n')
+    expect(loadIdentity).toHaveBeenCalledTimes(2)
   })
 
   it("logs a failed start and leaves Telegram running", async () => {

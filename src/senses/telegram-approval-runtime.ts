@@ -46,7 +46,7 @@ export interface TelegramApprovalRuntime {
   close(): void
 }
 
-export type TelegramRelayAnswer = "denied" | "already_decided" | "expired" | "not_pending" | "refused:card_edit_failed"
+export type TelegramRelayAnswer = "denied" | "already_decided" | "expired" | "not_pending"
 
 export function telegramApprovalCommitBarrierHooks(effectBarrier: () => void): NonNullable<Parameters<typeof commitApprovalProposal>[0]["hooks"]> {
   return {
@@ -660,7 +660,9 @@ export function createTelegramApprovalRuntime(options: {
         message: "Telegram approval reached a terminal decision state",
         meta: { state: record.state, ...(decisionScenarioDigest ? { scenarioHandleDigest: decisionScenarioDigest } : {}) },
       })
-      return continueTerminalRecord(record, decision.acceptanceBinding)
+      const terminal = await continueTerminalRecord(record, decision.acceptanceBinding)
+      if (!decision.relay) return terminal
+      return { ...terminal, relayApplied: record.state === "denied" && record.relayDecision?.envelopeBindingId === decision.relay.envelopeBindingId }
     },
   })
 
@@ -817,8 +819,7 @@ export function createTelegramApprovalRuntime(options: {
   const relayDeny: TelegramApprovalRuntime["relayDeny"] = async (input) => {
     const result = await transport.relayDeny(input)
     let answer: TelegramRelayAnswer
-    if (result.status === "refused") answer = `refused:${result.reason}`
-    else if (result.status !== "settled") answer = result.status
+    if (result.status !== "settled") answer = result.status
     else {
       const record = store.read(result.approvalId)
       answer = record?.state === "denied" && record.relayDecision?.envelopeBindingId === input.envelopeBindingId ? "denied"
