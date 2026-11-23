@@ -553,7 +553,7 @@ export interface InboundTurnInput {
     store: FriendStore,
     friendId: string,
     usage?: UsageData,
-  ) => Promise<void>
+  ) => Promise<unknown>
   /** Optional callback invoked after pending messages are drained. Returns prefix sections to inject before pending. */
   onPendingDrained?: (drained: PendingMessage[]) => string[]
 }
