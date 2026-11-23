@@ -1,0 +1,1 @@
+- The release check that npm serves a just-published version waits up to 20 minutes for the exact version (the check on the `latest` tag keeps its 10), and on failure prints bounded npm error detail (up to 12 lines of 300 characters), the registry, whether the version list includes the version, and the dist-tags. A failing diagnostic read never hides the failure.

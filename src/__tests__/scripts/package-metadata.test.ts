@@ -66,11 +66,11 @@ describe("package metadata", () => {
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
     const start = workflow.indexOf("  verify-npm:")
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
-    expect(verifyJob).toContain('verify_tag "@ouro.bot/cli" "$LOCAL"')
-    expect(verifyJob).toContain('verify_tag "ouro.bot" "$LOCAL"')
-    expect(verifyJob).toContain('package_ref="$1@$2"')
-    expect(verifyJob).not.toContain('verify_tag "@ouro.bot/cli@${CLI_TAG}"')
-    expect(verifyJob).not.toContain('verify_tag "ouro.bot@${WRAPPER_TAG}"')
+    expect(verifyJob).toContain('scripts/npm-verify-exact-version.sh "@ouro.bot/cli" "$LOCAL"')
+    expect(verifyJob).toContain('scripts/npm-verify-exact-version.sh "ouro.bot" "$LOCAL"')
+    expect(fs.readFileSync(path.resolve(__dirname, "../../../scripts/npm-verify-exact-version.sh"), "utf8")).toContain('ref="${package}@${expected}"')
+    expect(verifyJob).not.toContain('npm-verify-exact-version.sh "@ouro.bot/cli@${CLI_TAG}"')
+    expect(verifyJob).not.toContain('npm-verify-exact-version.sh "ouro.bot@${WRAPPER_TAG}"')
   })
 
   it("refuses to publish a version at or below npm's highest before building it", () => {
@@ -85,12 +85,15 @@ describe("package metadata", () => {
     const workflow = fs.readFileSync(path.resolve(__dirname, "../../../.github/workflows/coverage.yml"), "utf8")
     const start = workflow.indexOf("  verify-npm:")
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
-    const waits = (verifyJob.match(/^          (verify_tag|if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind) /gmu) ?? []).length
-    expect(waits).toBe(4)
-    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=1200")
-    // Four 20-minute waits, the tarball wait (about 21 minutes), install and smoke.
-    expect(verifyJob).toContain("version list: includes")
-    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(4 * 20 + 21 + 5)
+    const versionWaits = (verifyJob.match(/^          scripts\/npm-verify-exact-version\.sh /gmu) ?? []).length
+    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind /gmu) ?? []).length
+    expect(versionWaits).toBe(2)
+    expect(latestWaits).toBe(2)
+    // The latest-tag waits keep their 10 minutes; only the exact-version waits are 20.
+    expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=600")
+    expect(verifyJob).toContain("VERSION_DEADLINE_SECONDS=1200")
+    // Two 20-minute version waits, two 10-minute latest waits, the tarball wait (about 21 minutes), install and smoke.
+    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(2 * 20 + 2 * 10 + 21 + 5)
   })
 
   it("gates publish on both packed artifact E2E suites", () => {
