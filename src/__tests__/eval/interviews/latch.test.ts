@@ -30,16 +30,17 @@ function session(caps = { premium: 100, credits: 100 }, perCall = 0.5): { latch:
 }
 
 describe("the interview latch", () => {
-  it("reserves a session's worst case of 44 calls before it starts, and refuses one that could pass a cap", () => {
-    expect(SESSION_CALLS).toBe(44)
+  it("reserves a session's worst case of 45 calls, the nudge included, before it starts, and refuses one that could pass a cap", () => {
+    // 3 jobs at 12, 3 debriefs at 2, the choice and the blinding check at 1, and the one nudge the choice may get
+    expect(SESSION_CALLS).toBe(3 * CALL_LIMITS.job + 3 * CALL_LIMITS.debrief + CALL_LIMITS.choose + CALL_LIMITS.identify + 1)
     expect(CALL_LIMITS).toEqual({ job: 12, debrief: 2, choose: 1, identify: 1 })
     const ledger = createBudgetLedger({ premium: 50 })
     const latch = createInterviewLatch({ ledger, pricing, perCall: () => ({ premium: 1, credits: 0 }) })
     const first = latch.reserve("X-1")
     expect("refused" in first).toBe(false)
-    expect(ledger.totals().held.premium).toBe(44)
+    expect(ledger.totals().held.premium).toBe(45)
     expect(latch.reserve("X-2")).toMatchObject({ refused: expect.stringContaining("premium") })
-    expect(latch.reserve("small", 6)).not.toHaveProperty("refused")
+    expect(latch.reserve("small", 5)).not.toHaveProperty("refused")
     expect(latch.ledger).toBe(ledger)
   })
 
