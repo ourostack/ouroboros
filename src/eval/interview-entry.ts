@@ -12,6 +12,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { messageOf } from "./interviews/guest/loop"
 import { loadCases } from "./self-test"
 import { writePrivateReport } from "./report"
 import { dockerCli, runSandboxed, type SandboxImages } from "./sandbox/docker"
@@ -62,7 +63,9 @@ function openPrivateLog(file: string): (line: string) => void {
 /** Every session ever started on this machine, one id per line, appended before the session reserves its budget. */
 const STARTED = path.join(os.homedir(), ".ouro-eval", "reports", "interview-sessions-started.txt")
 
-function startedSessions(): { has(id: string): boolean; add(id: string): void } {
+type Started = { has(id: string): boolean; add(id: string): void }
+
+function startedSessions(): Started {
   const ids = (): string[] => fs.existsSync(STARTED) ? fs.readFileSync(STARTED, "utf8").split("\n") : []
   return {
     has: (id) => ids().includes(id),
@@ -84,7 +87,12 @@ async function main(): Promise<number> {
   const tags = take(seed.rest, "--images")
   const hostLock = take(tags.rest, "--host-lock")
   if (!bundle.value) throw new Error("--bundle is required")
-  if (hostLock.value && !ssh.value) throw new Error("--host-lock needs --sandbox-ssh")
+  if (hostLock.rest.length !== tags.rest.length) {
+    if (!hostLock.value || hostLock.value.startsWith("--")) throw new Error("--host-lock needs a holder, such as eval:<your run>")
+    // The holder goes to the host through ssh's remote shell, as in `run-command`.
+    if (!/^[\w.:@+-]+$/.test(hostLock.value)) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
+    if (!ssh.value) throw new Error("--host-lock needs --sandbox-ssh")
+  }
   const [agent, household] = tags.value?.split(",") ?? []
   if (tags.value && !(agent && household)) throw new Error("--images must be <agent image>,<household image>")
   const images = agent && household ? { agent, household } : undefined
@@ -95,23 +103,50 @@ async function main(): Promise<number> {
     lock = await holdHostLock(sshNode(host, [`${root}/harness/deploy/unraid/ouro-host-lock.mjs`, "hold", "--holder", hostLock.value, "--ttl", String(HOST_LOCK_TTL_S), "--wait", String(HOST_LOCK_WAIT_S)]))
   }
   try {
-    return await interviews(args, runCaseFor(ssh.value, bundle.value, seed.value, images, lock?.token))
+    return await interviews(args, lock ? stopWhenLockLost(runCaseFor(ssh.value, bundle.value, seed.value, images, lock.token)) : { runCase: runCaseFor(ssh.value, bundle.value, seed.value, images, undefined), started: startedSessions() })
   } finally {
     await lock?.release()
   }
 }
 
-async function interviews(args: ReturnType<typeof parseInterviewArgs>, runCase: RunCase): Promise<number> {
+/**
+ * A study under a host lock stops once a job finds the lock gone (its ssh session dropped, or its 6 hours ran out):
+ * the next session is refused before it is marked started, so it can still run under a new lock. Only the session
+ * whose job found the lock gone is lost, as a crash.
+ */
+function stopWhenLockLost(runCase: RunCase): { runCase: RunCase; started: Started } {
+  let lost = false
+  const started = startedSessions()
+  return {
+    runCase: async (input) => {
+      try {
+        return await runCase(input)
+      } catch (error) {
+        if (/no host lock/.test(messageOf(error))) lost = true
+        throw error
+      }
+    },
+    started: {
+      has: (id) => started.has(id),
+      add: (id) => {
+        if (lost) throw new Error(`the host lock was lost, so session ${id} was not started; it and every later session can still run under a new lock`)
+        started.add(id)
+      },
+    },
+  }
+}
+
+async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { runCase: RunCase; started: Started }): Promise<number> {
   const { exitCode } = await runInterviews(args, {
     readText: (file) => fs.readFileSync(file, "utf8"),
     loadCases,
     resolveTarget: (spec, creds) => resolveTarget(spec, creds),
-    runCase,
+    runCase: deps.runCase,
     kits: { X: X_KIT },
     outputExists: (file) => fs.existsSync(file),
     writeReport: writePrivateReport,
     openLog: openPrivateLog,
-    started: startedSessions(),
+    started: deps.started,
     print: (text) => { process.stdout.write(`${text}\n`) },
   })
   return exitCode

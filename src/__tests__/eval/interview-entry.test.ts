@@ -80,3 +80,25 @@ it("holds no lock and sends no token without --host-lock", async () => {
   expect(lock.holdHostLock).not.toHaveBeenCalled()
   expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({ paths: expect.not.objectContaining({ hostLockToken: expect.anything() }) }))
 })
+
+it("refuses a --host-lock with no holder, or one that isn't a single safe word, before taking anything", async () => {
+  for (const flags of [[...REMOTE, "--host-lock"], [...REMOTE, "--host-lock", "--reduced"], [...REMOTE, "--host-lock", "eval; rm -rf /"]]) {
+    vi.resetModules()
+    expect((await run(flags)).stderr[0]).toMatch(/^interviews: --host-lock (needs a holder|takes one word)/)
+  }
+  expect(lock.holdHostLock).not.toHaveBeenCalled()
+  expect(runner.run).not.toHaveBeenCalled()
+})
+
+it("stops before marking another session started once a job finds the host lock gone", async () => {
+  lock.holdHostLock.mockResolvedValue({ token: "t0k", release: lock.release })
+  const lost = new Error("refusing to run the eval sandbox on this host: it runs the live Butler (ouro-butler), and no host lock that the Butler's upgrade and rollback honour is held")
+  sandbox.remoteRunCase.mockReturnValue(async () => { throw lost })
+  runner.run.mockImplementation(async (_args: unknown, deps: { runCase(input: unknown): Promise<unknown>; started: { add(id: string): void } }) => {
+    await expect(deps.runCase({})).rejects.toBe(lost)
+    deps.started.add("X-1")
+    return { exitCode: 0 }
+  })
+  expect((await run([...REMOTE, "--host-lock", "eval"])).stderr).toEqual(["interviews: the host lock was lost, so session X-1 was not started; it and every later session can still run under a new lock\n", "code: eval-error\n"])
+  expect(lock.release).toHaveBeenCalledTimes(1)
+})
