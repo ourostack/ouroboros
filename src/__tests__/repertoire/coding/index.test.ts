@@ -119,7 +119,8 @@ describe("coding manager singleton", () => {
 
     expect(manager.preferredBackend).toBe("workbench")
     expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ agentName: "test-coding-singleton" }))
-    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ onUpdate: expect.any(Function) }))
+    const { reportCodingSessionUpdate } = await import("../../../repertoire/coding/feedback")
+    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ onUpdate: reportCodingSessionUpdate }))
     expect(mockWorkbenchManager.watch).toHaveBeenCalledTimes(1)
     expect(manager.listSessions()).toEqual([])
   })
@@ -142,15 +143,5 @@ describe("coding manager singleton", () => {
     expect(createBackendManager("local", "test-coding-singleton")).toBeInstanceOf(CodingSessionManager)
     expect(createBackendManager("orca", "test-coding-singleton")).toBeInstanceOf(OrcaCodingSessionManager)
     expect(createBackendManager("workbench", "test-coding-singleton")).toBe(mockWorkbenchManager)
-  })
-
-  it("stamps each backend's updates with the backend before reporting them to the agent", async () => {
-    const feedback = await import("../../../repertoire/coding/feedback")
-    const report = vi.spyOn(feedback, "reportCodingSessionUpdate").mockResolvedValue(undefined)
-    const { reportFor } = await import("../../../repertoire/coding")
-    const session = { id: "orca-1", status: "waiting_input" } as never
-    await reportFor("orca")({ kind: "waiting_input", session })
-    expect(report).toHaveBeenCalledWith({ kind: "waiting_input", session: { id: "orca-1", status: "waiting_input", backend: "orca" } })
-    report.mockRestore()
   })
 })

@@ -335,7 +335,7 @@ export async function reportCodingSessionUpdate(update: CodingSessionUpdate, now
     status: update.kind as DelegatedWorkStatus,
     result: pickUpdateSnippet(update),
     origin: session.originSession ?? null,
-    detailHint: `Read the full output with coding_tail (sessionId ${session.id}).`,
+    detailHint: `Read the full output with coding_tail (sessionId ${session.id}).${session.orca ? ` Its Orca worktree is ${session.orca.worktreePath}.` : ""}`,
     obligationId: session.obligationId,
     transitionAt: session.endedAt ?? session.lastActivityAt,
     now,

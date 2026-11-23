@@ -5,7 +5,7 @@ import { OrcaCodingSessionManager } from "./orca-manager"
 import { WorkbenchCodingSessionManager } from "./workbench-manager"
 import { WorkbenchMcpClient } from "./workbench-client"
 import { CODING_BACKENDS, CodingSessionRouter } from "./router"
-import type { CodingBackend, CodingSessionManagerApi, CodingSessionUpdate } from "./types"
+import type { CodingBackend, CodingSessionManagerApi } from "./types"
 import { reportCodingSessionUpdate } from "./feedback"
 
 /** Ouro's current choice for where coding agents run when agent.json names none. */
@@ -26,21 +26,17 @@ export function preferredCodingBackend(): CodingBackend {
  * started it. The listener lives on the backend's manager, not on each coding_spawn call, so it also hears sessions
  * the manager restores after a restart (found dead locally, or still open in Orca or Workbench).
  */
-export function reportFor(backend: CodingBackend): (update: CodingSessionUpdate) => Promise<void> {
-  return (update) => reportCodingSessionUpdate({ ...update, session: { ...update.session, backend } })
-}
-
 export function createBackendManager(backend: CodingBackend, agentName: string): CodingSessionManagerApi {
   switch (backend) {
     case "orca":
-      return new OrcaCodingSessionManager({ agentName, onUpdate: reportFor("orca") })
+      return new OrcaCodingSessionManager({ agentName, onUpdate: reportCodingSessionUpdate })
     case "workbench": {
-      const workbench = new WorkbenchCodingSessionManager({ agentName, client: new WorkbenchMcpClient(), onUpdate: reportFor("workbench") })
+      const workbench = new WorkbenchCodingSessionManager({ agentName, client: new WorkbenchMcpClient(), onUpdate: reportCodingSessionUpdate })
       void workbench.watch()
       return workbench
     }
     case "local":
-      return new CodingSessionManager({ agentName, onUpdate: reportFor("local") })
+      return new CodingSessionManager({ agentName, onUpdate: reportCodingSessionUpdate })
   }
 }
 
