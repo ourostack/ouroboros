@@ -10,6 +10,9 @@ import path from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../heart/core"
 import { evaluate } from "../../eval/assertions"
+import { requestText } from "../../eval/interviews/latch"
+import { brandHits, debriefQuestion, labelLine } from "../../eval/interviews/protocol"
+import { canonicalX } from "../../eval/interviews/runner"
 import { buildSandboxImage, dockerCli, runSandboxed } from "../../eval/sandbox/docker"
 import { loadCases } from "../../eval/self-test"
 
@@ -129,3 +132,59 @@ describe("scripted sandbox runs of the book cases", () => {
     }
   }, 300_000)
 })
+
+describe("scripted X interview conversations in the sandbox", () => {
+  const cases = new Map(loadCases(path.join(REPO, "src/eval/cases/sanctuary-books")).map((c) => [c.id, c]))
+  const c = cases.get("remove-bad-copy")!
+  let root: string
+  let bundleDir: string
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "eval-x-e2e-"))
+    bundleDir = path.join(root, "bundle")
+    fs.cpSync(SEED, bundleDir, { recursive: true })
+    fs.mkdirSync(path.join(bundleDir, "books"))
+    fs.copyFileSync(path.join(REPO, "src/eval/fakes/books-stub/books"), path.join(bundleDir, "books/books"))
+    fs.chmodSync(path.join(bundleDir, "books/books"), 0o755)
+    await buildSandboxImage({ repoRoot: REPO, docker: dockerCli() })
+  }, 900_000)
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const scripts: Record<string, Array<{ name: string; arguments: object }>> = {
+    "ouro": [{ name: "library_find", arguments: { query: "The Harbour Almanac" } }, { name: "library_remove", arguments: { id: "187" } }],
+    "mcp-plain": [{ name: "find_in_library", arguments: { query: "The Harbour Almanac" } }, { name: "remove_from_library", arguments: { id: 187 } }],
+    "cli-shell": [{ name: "shell", arguments: { command: "books library find 'The Harbour Almanac'" } }, { name: "shell", arguments: { command: "books library remove 187" } }],
+  }
+
+  it.each(Object.keys(scripts))("%s removes the bad copy, answers the debrief and sends no brand word", async (arm) => {
+    const steps = scripts[arm]!
+    const bodies: string[] = []
+    const results: string[] = []
+    let next = 0
+    const host: ProviderRuntime = {
+      id: "minimax", model: "eval-scripted", client: {}, capabilities: new Set(),
+      resetTurnState: () => undefined, appendToolOutput: (_id, output) => { results.push(output) }, ping: async () => undefined, classifyError: () => "unknown",
+      streamTurn: async (request) => {
+        bodies.push(requestText(request))
+        next += 1
+        const step = steps[next - 1]
+        if (step) return { content: "", toolCalls: [{ id: `call-${next}`, name: step.name, arguments: JSON.stringify(step.arguments) }], outputItems: [] }
+        return { content: next === steps.length + 1 ? c.fixtures.pass.finalReply : "6\nThe tools were clear.", toolCalls: [], outputItems: [] }
+      },
+    }
+    const last = c.prefix[c.prefix.length - 1]!
+    const turn = { product: "X", arm, labelLine: labelLine("X", "K"), prefix: c.prefix.slice(0, -1), userText: last.content, followUps: [debriefQuestion("X", "K")] }
+    const obs = await runSandboxed({ case: c, bundleDir, seedBundleDir: SEED, host, budget: { take: () => true }, workRoot: root, turnTimeoutMs: 180_000, guest: { entry: "interview-guest-entry.js", turn } })
+    expect(obs.outcome).toBe("settled")
+    expect(obs.followUps).toEqual([{ finalReply: "6\nThe tools were clear.", outcome: "settled", calls: 1, toolCalls: 0 }])
+    const graded = evaluate(c, canonicalX(arm, obs))
+    expect(graded.checks.filter((check) => !check.ok)).toEqual([])
+    expect(bodies).toHaveLength(steps.length + 2)
+    expect(bodies.flatMap((body) => brandHits(body))).toEqual([])
+    expect(results.join("\n")).toContain("189")
+  }, 300_000)
+})
+
