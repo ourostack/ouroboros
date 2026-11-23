@@ -38,7 +38,7 @@ export function sanctuaryContainmentBoundariesFixture(providerCapabilities: Prov
   }
   return {
     "sanctuary-owner": boundary("sanctuary-owner", 23),
-    "sanctuary-household": boundary("sanctuary-household", 7),
+    "sanctuary-household": boundary("sanctuary-household", 8),
     "sanctuary-event": boundary("sanctuary-event", 4),
   }
 }

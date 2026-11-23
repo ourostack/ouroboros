@@ -189,6 +189,9 @@ export function selectToolsForChannel(
         ...chatToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? houseCareToolDefinitions : []),
         ...(owner ? bundleToolDefinitions.filter((definition) => SANCTUARY_OWNER_SYNC_TOOLS.has(definition.tool.function.name)) : []),
         ...(ownerLike ? mcp : []),
+        // A friend gets only the Butler's own media server, and of it only what the profile lists;
+        // mcp-write-guard keeps the family-only arguments to family.
+        ...(profileId === "sanctuary-household" ? mcp.filter((definition) => definition.mcpBinding?.server === "media" && definition.mcpBinding.source === "builtin") : []),
       ]
       : []
   } else {
