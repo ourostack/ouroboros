@@ -1,0 +1,1 @@
+- The release check that npm serves a just-published version waits up to 20 minutes (was 10), and on failure prints npm's full error, the registry, whether the version list includes the version, and the dist-tags.
