@@ -62,14 +62,15 @@ export function describeOwner(owner) {
 }
 
 // Moves the stale guard aside (only one rename can win) and removes it, unless what was moved is not the guard that
-// was judged stale (another breaker already replaced it with a live one), which is put back.
-function breakGuard(guard, ino, io) {
+// was judged stale (another breaker already replaced it with a live one). Identity is inode and mtime together: a
+// filesystem such as ext4 can give a guard made right after another was removed the same inode number.
+function breakGuard(guard, seen, io) {
   io?.beforeBreak?.()
   const aside = `${guard}.broken-${randomBytes(4).toString("hex")}`
   try { renameSync(guard, aside) } catch { return }
   let moved
-  try { moved = statSync(aside).ino } catch { return }
-  if (moved === ino) { try { rmdirSync(aside) } catch { /* left */ } return }
+  try { moved = statSync(aside) } catch { return }
+  if (moved.ino === seen.ino && moved.mtimeMs === seen.mtimeMs) { try { rmdirSync(aside) } catch { /* left */ } return }
   // That was a live guard: stand a fresh one in its place for its holder (who removes it when done), then drop the
   // moved copy. Never rename onto the guard path, which would replace a guard a third process just made.
   try { mkdirSync(guard) } catch { /* someone made one already */ }
@@ -86,7 +87,7 @@ function withGuard(dir, io, work) {
     }
     let seen
     try { seen = statSync(guard) } catch { continue }
-    if (now() - seen.mtimeMs > GUARD_STALE_MS) { breakGuard(guard, seen.ino, io); continue }
+    if (now() - seen.mtimeMs > GUARD_STALE_MS) { breakGuard(guard, seen, io); continue }
     if (Date.now() >= deadline) throw new Error(`the host lock's guard ${guard} is busy`)
     sleepSync(10)
   }
