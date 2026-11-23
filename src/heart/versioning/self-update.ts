@@ -92,6 +92,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** npm lists a version before it serves its tarball: ETARGET, or a 404 on that tarball's URL. */
+export function isTarballNotServedYet(text: string): boolean {
+  return /\bETARGET\b/.test(text) || (/\bE404\b/.test(text) && /\.tgz\b/.test(text))
+}
+
 const FAILURE_OUTCOMES: SelfUpdateOutcome[] = ["unreachable", "install-failed", "rejected", "rolled-back"]
 
 export async function runSelfUpdate(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
@@ -271,7 +276,15 @@ async function runLocked(deps: SelfUpdateDeps): Promise<SelfUpdateResult> {
   try {
     installSource = await deps.install(latest, lookup)
   } catch (error) {
-    return finish("install-failed", { summary: errorText(error), latestVersion: latest })
+    const said = errorText(error)
+    if (isTarballNotServedYet(said)) {
+      return finish("deferred", {
+        summary: `${latest} is listed but its tarball is not served yet; staying on ${currentVersion} and trying again next pass`,
+        detail: said,
+        latestVersion: latest,
+      })
+    }
+    return finish("install-failed", { summary: said, latestVersion: latest })
   }
   const validation = deps.validate(latest)
   const smoke = validation.ok ? await deps.smokeTest(latest) : { ok: false, detail: validation.message }
