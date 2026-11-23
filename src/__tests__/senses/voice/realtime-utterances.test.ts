@@ -1,12 +1,14 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import * as nerves from "../../../nerves/runtime"
 import { isAudioPart, realtimeUtteranceLedger, responseMadeAudio } from "../../../senses/voice/realtime-utterances"
 import { voiceUtterances } from "../../../senses/voice/utterances"
 
 const dirs: string[] = []
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -16,6 +18,13 @@ function ledger(engine: "openai-realtime" | "openai-sip" = "openai-realtime") {
   const calls = realtimeUtteranceLedger({ outputDir, engine, callSid: "CA/one", friendId: "ari", sessionKey: "twilio-phone-ari" })
   const journal = voiceUtterances(outputDir)
   return { calls, journal, outcome: (id: string) => journal.outcome(id), pending: (id: string) => journal.get(id) }
+}
+
+/** What each call that ended with something unanswered reported. */
+function unanswered() {
+  return vi.mocked(nerves.emitNervesEvent).mock.calls.map(([event]) => event)
+    .filter((event) => event.event === "senses.voice_realtime_utterances_unanswered")
+    .map((event) => event.meta)
 }
 
 describe("realtime utterance ledger", () => {
@@ -158,10 +167,12 @@ describe("realtime utterance ledger", () => {
 
   it("records everything still waiting as failed when the call ends, or silent when a voicemail menu answered", () => {
     const { calls, outcome } = ledger()
+    vi.spyOn(nerves, "emitNervesEvent")
     calls.heard("item-1")
     calls.replyStarted("resp-1", true)
     calls.heard("item-2")
     calls.ended()
+    expect(unanswered()).toEqual([{ engine: "openai-realtime", callSid: "CA-one", failed: 2, silent: 0 }])
     expect(outcome("realtime-CA-one-item-1")).toMatchObject({ outcome: "failed", detail: "the call ended before the reply was played" })
     expect(outcome("realtime-CA-one-item-2")).toMatchObject({ outcome: "failed", detail: "the call ended before this was answered" })
 
@@ -170,6 +181,15 @@ describe("realtime utterance ledger", () => {
     voicemail.calls.replyStarted("resp-1", true)
     voicemail.calls.heard("item-2")
     voicemail.calls.ended("a voicemail menu answered the call, so it was ended")
+    expect(unanswered().at(-1)).toEqual({ engine: "openai-sip", callSid: "CA-one", failed: 0, silent: 2 })
+    // A call that answered everything has nothing to report.
+    const answered = ledger()
+    answered.calls.heard("item-1")
+    answered.calls.replyStarted("resp-1", true)
+    answered.calls.speaking("resp-1")
+    answered.calls.played("resp-1")
+    answered.calls.ended()
+    expect(unanswered()).toHaveLength(2)
     expect(voicemail.outcome("sip-CA-one-item-1")).toMatchObject({ outcome: "silent", detail: "a voicemail menu answered the call, so it was ended" })
     expect(voicemail.outcome("sip-CA-one-item-2")).toMatchObject({ outcome: "silent" })
   })

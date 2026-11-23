@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../../nerves/runtime"
 import { turnSpoke, turnSpokeForTool } from "../turn-attempts"
 import { recordVoiceUtterance, type VoiceUtteranceTurn } from "./utterances"
 
@@ -151,11 +152,16 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
       }
     },
     ended(silent) {
+      const counts = { failed: 0, silent: 0 }
       const settle = (utterances: VoiceUtteranceTurn[], spoke: boolean, failure: string): void => {
         for (const utterance of utterances) {
-          if (silent) utterance.settle("silent", silent)
-          else if (!spoke && unansweredByChoice.has(utterance)) utterance.settle("silent", "the call was ended without a spoken reply")
-          else utterance.settle("failed", failure)
+          if (silent || (!spoke && unansweredByChoice.has(utterance))) {
+            utterance.settle("silent", silent ?? "the call was ended without a spoken reply")
+            counts.silent += 1
+          } else {
+            utterance.settle("failed", failure)
+            counts.failed += 1
+          }
         }
       }
       for (const reply of replies.values()) {
@@ -164,6 +170,14 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
       replies.clear()
       settle(waiting, false, "the call ended before this was answered")
       waiting = []
+      if (counts.failed + counts.silent === 0) return
+      emitNervesEvent({
+        level: counts.failed > 0 ? "warn" : "info",
+        component: "senses",
+        event: "senses.voice_realtime_utterances_unanswered",
+        message: "a phone call ended with things the caller said that no reply played to",
+        meta: { engine: call.engine, callSid: segment(call.callSid), ...counts },
+      })
     },
   }
 }
