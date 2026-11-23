@@ -93,6 +93,25 @@ describe("the Butler never hedges", () => {
       expect(findHedges("I do it unless told", PSYCHE_HEDGE_TERMS)).not.toEqual([])
     })
 
+    it("catches his own refusal or decline", () => {
+      for (const text of ["I refuse to grab that", "I'd have to refuse that one", "I decline to download it", "sorry, refusing this", "Sonarr is fine, but I refuse", "declined: not something I do"]) {
+        expect(findHedges(text, REPLY_HEDGE_TERMS), text).not.toEqual([])
+      }
+    })
+
+    it("lets him explain that a media app refuses or declines a release", () => {
+      // The 1416 ship's first gate run counted this explanation as a hedge.
+      for (const text of [
+        "the chef show season 1 is already on the shelf, so Sonarr would normally refuse the pack because the cutoff is met",
+        "Radarr declined the release: its title holds an ignored term",
+        "the release profile refuses anything with .exe in it",
+        "Prowlarr's indexer would still decline it",
+        "qBittorrent refused the magnet, so I sent it again",
+      ]) {
+        expect(findHedges(text, REPLY_HEDGE_TERMS), text).toEqual([])
+      }
+    })
+
     it("leaves plain warmth alone", () => {
       expect(findHedges("never in the way", REPLY_HEDGE_TERMS)).toEqual([])
       expect(findHedges("never in the way", PSYCHE_HEDGE_TERMS)).toEqual([])

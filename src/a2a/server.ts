@@ -7,6 +7,7 @@ import { getAgentRoot, loadAgentConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
 import { MAX_INBOUND_ATTEMPTS, openInboundJournal, type PendingInbound } from "../senses/inbound-journal"
+import { describeTurnSpokes, type TurnSpoke } from "../senses/turn-attempts"
 import { buildA2AAgentCard } from "./card"
 import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
 import type { A2AIdentity } from "./identity"
@@ -51,6 +52,11 @@ export interface A2ATurnRunnerInput {
   signal?: AbortSignal
   /** Call when the turn gets its place in the turn queue: its deadline starts again from there. */
   onTurnStart?: () => void
+  /**
+   * Call just before anything from this turn may reach a person (a tool that messages someone runs), so a replay
+   * after a crash does not send it again. It writes to disk before it returns, and a throw stops that tool call.
+   */
+  onOutwardSend?: (spoke: TurnSpoke) => void
 }
 
 export interface A2ATurnRunnerOutput {
@@ -241,6 +247,8 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
     // The server records the outcome of a turn it stops itself, so a stopped turn leaves the queue at once.
     ...(input.signal ? { signal: input.signal, stopQueueWaitOnAbort: true } : {}),
     onTurnStart: input.onTurnStart,
+    // A tool that messages a person is noted before it runs, so a replay never sends it twice.
+    ...(input.onOutwardSend ? { onOutwardSend: input.onOutwardSend } : {}),
     identity: {
       provider: "a2a-agent",
       externalId: input.peerAgentId,
@@ -817,6 +825,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           message: turnText,
           signal: controller.signal,
           onTurnStart,
+          onOutwardSend: (spoke) => journal.markSpoke(inboundId, spoke),
           ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
           ...(delegatedCommand ? { delegatedCommand } : {}),
         }),
@@ -829,11 +838,19 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         journal.settle(inboundId, "canceled")
         return respondWith(taskStore.get(record.taskId, tokenScope)!)
       }
-      if (stop === "shutdown" && record.origin === "relay") {
+      const spokeEntry = journal.get(inboundId)
+      const spoke = spokeEntry?.spoke === true
+      if (stop === "shutdown" && record.origin === "relay" && !spoke) {
         // Nobody waits on a relayed message's reply: it stays pending, and the next process runs it again. A clean
         // shutdown is not the turn failing, so it gives its attempt back; only crashes use attempts up.
         journal.refundAttempt(inboundId)
         return errorResponse(rpcId, -32000, AGENT_RESTARTING)
+      }
+      if (stop === "shutdown" && spoke) {
+        // Running it again would send what already went out a second time.
+        const detail = `the agent stopped before it finished answering, after ${describeTurnSpokes(spokeEntry!.spokeRecords)} went out; it is not run again`
+        recordFailure(inboundId, record, detail)
+        return failureResponse(rpcId, record, detail, accessToken)
       }
       const seconds = Math.round(turnTimeoutMs / 1000)
       const detail = stop === "shutdown"
@@ -912,6 +929,11 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     }
     if (entry.attempts >= MAX_INBOUND_ATTEMPTS) {
       recordFailure(entry.id, record, `stopped after ${entry.attempts} attempts without an answer`)
+      return
+    }
+    if (entry.spoke) {
+      // The earlier turn already messaged someone; a replay would send that again.
+      recordFailure(entry.id, record, `the turn stopped after ${describeTurnSpokes(entry.spokeRecords)} went out, so it is not run again`)
       return
     }
     if (record.verifiedChat?.onBehalfOf === "principal") {
