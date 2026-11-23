@@ -1052,8 +1052,10 @@ describe("Telegram sense", () => {
     const inbound = { updateId: 91, messageId: "92", userId: "42", chatId: "42", text: "health?" }
 
     await f.getOnMessage()(inbound)
+    // Telegram redelivering the same update: its turn already has an outcome, so it does not run again.
     await f.getOnMessage()(inbound)
 
+    expect(f.runTurn).toHaveBeenCalledTimes(1)
     expect(sent(f.api.request)).toHaveLength(1)
     const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
     const artifacts = fs.readdirSync(journalRoot).filter((name) => name.endsWith(".json"))
@@ -1063,7 +1065,7 @@ describe("Telegram sense", () => {
       idempotencyKey: expect.stringMatching(/^turn:tg_[A-Za-z0-9_-]{43}:91:delivery:0$/u),
       authorClass: "butler",
       effect: { kind: "text", text: "All systems nominal." },
-      parts: [{ state: "session_recorded", messageId: 71 }],
+      parts: [{ state: "accepted", messageId: 71 }],
     })
   })
 

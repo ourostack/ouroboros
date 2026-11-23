@@ -142,7 +142,8 @@ describe("runTelegramTurn", () => {
       providerRuntime: scriptedRuntime([{ name: "settle", arguments: { answer: "hi", intent: "complete" } }], []),
     })
     await run()
-    await expect(run()).rejects.toThrow("precommitted ingress")
+    // The sense has already recorded an outcome for this bundle's message, so it does not run it again.
+    await expect(run()).rejects.toThrow("the sense did not run the turn")
   }, 60_000)
 
 

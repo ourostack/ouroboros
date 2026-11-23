@@ -48,9 +48,11 @@ import {
   type TelegramLongPoll,
   type TelegramLongPollOptions,
   type TelegramOffsetStore,
+  telegramUpdateMessageCoordinates,
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
+import { MAX_INBOUND_ATTEMPTS, openInboundJournal, readInboundOutcome, type InboundJournal, type InboundOutcome, type PendingInbound } from "./inbound-journal"
 import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-transport"
 import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
@@ -95,6 +97,7 @@ import {
   type TelegramNewlyAdmittedOrientation,
 } from "./telegram-admission"
 import {
+  abandonTelegramEffect,
   createTelegramAuthorizedEffectExecutor,
   createTelegramApprovalEffectPort,
   FIXED_USENET_SYSTEM_FAILSAFE,
@@ -244,6 +247,32 @@ const TELEGRAM_ACCEPTANCE_AUDIT_EVENTS = new Set([
 const telegramAcceptanceAuditOwner = new AsyncLocalStorage<string>()
 const telegramAcceptanceAuditScenario = new AsyncLocalStorage<string | null>()
 const telegramAcceptanceAuditExplicitCommit = new AsyncLocalStorage<boolean>()
+
+/**
+ * Telegram's side of the shared inbound rule. Each authorized message gets a journal entry before its turn runs
+ * and leaves it only with a recorded outcome. The entry keeps nothing the person wrote: if the process dies
+ * mid-turn, Telegram redelivers the update itself, because the offset only moves once a turn has finished.
+ */
+interface TelegramInboundPayload { updateClass: "message" }
+
+/** The opaque reference a household Friend's message is known by in its session and its delivery keys. */
+function telegramHouseholdReference(identityKey: string, botId: string, userId: string, updateId: number, messageId: number | string): string {
+  return `telegram-inbound:${createHmac("sha256", identityKey).update(`${botId}\0${userId}\0${updateId}\0${messageId}`).digest("hex")}`
+}
+
+/** The message a running turn answers, and what the turn has done so far. `id` is null when its entry could not be written. */
+interface TelegramInboundTurn { id: string | null; spoke: boolean; failure: string | null }
+const telegramInboundTurn = new AsyncLocalStorage<TelegramInboundTurn>()
+
+/** Telegram keeps an update it has not been told was handled for at most a day (https://core.telegram.org/bots/api#getting-updates). */
+const TELEGRAM_REDELIVERY_WINDOW_MS = 24 * 60 * 60_000
+
+/** Why a message a stopped process left must not run again, or null when it may. */
+function telegramReplayRefusal(entry: PendingInbound<TelegramInboundPayload>): string | null {
+  if (entry.spoke) return "the turn stopped after a reply went out, so it is not run again"
+  if (entry.attempts >= MAX_INBOUND_ATTEMPTS) return `the turn did not finish in ${entry.attempts} attempts`
+  return null
+}
 type TelegramAcceptanceAuditRecord = {
   agentName: string
   identityKey: string
@@ -981,13 +1010,76 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: authorizedChatId } }
   }
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
+  let inboundJournal: InboundJournal<TelegramInboundPayload> | undefined
+  const getInboundJournal = (): InboundJournal<TelegramInboundPayload> => {
+    inboundJournal ??= openInboundJournal<TelegramInboundPayload>(agentRoot, "telegram")
+    return inboundJournal
+  }
+  const inboundJournalFailed = (error: unknown): void => {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.telegram_inbound_record_failed",
+      message: "could not use the Telegram outcome records; turns still run, but a crash during one goes unrecorded",
+      meta: { agentName: options.agentName, error: redactTelegramPrivateValues(error, transportPrivateValues) },
+    })
+  }
+  const inboundIdFor = (updateId: number | string): string => `telegram-update:${createHmac("sha256", identityKey).update(`ouroboros.telegram.inbound-journal.v1\0${subject}\0${updateId}`).digest("hex")}`
+  const settleInbound = (id: string, outcome: InboundOutcome, detail?: string): void => {
+    try {
+      getInboundJournal().settle(id, outcome, detail)
+    } catch (error) {
+      inboundJournalFailed(error)
+    }
+  }
+  const householdInboundIdFor = (reference: string): string => `telegram-household:${createHash("sha256").update(reference).digest("hex")}`
+  /**
+   * Note, inside a turn, that something is about to go out for its message, before it is sent. When the note
+   * cannot be written this throws and nothing is sent, so a replay can never repeat what the person received.
+   */
+  const noteTurnSpoke = (): void => {
+    const turn = telegramInboundTurn.getStore()
+    if (!turn) return
+    if (turn.id) getInboundJournal().markSpoke(turn.id)
+    turn.spoke = true
+  }
+  /**
+   * Note that something is about to go out for a message. Inside a turn that is the turn's message. Outside one,
+   * a delivery key names the message, which covers a reply the outbox sends after a crash.
+   */
+  const noteInboundSpoke = (idempotencyKey: string): void => {
+    if (telegramInboundTurn.getStore()) {
+      noteTurnSpoke()
+      return
+    }
+    const owner = idempotencyKey.startsWith(`turn:${subject}:`) ? idempotencyKey.slice(`turn:${subject}:`.length).split(":")[0]! : null
+    const household = /^relationship-turn:(telegram-inbound:[0-9a-f]{64}):/u.exec(idempotencyKey)?.[1]
+    if (owner === null && !household) return
+    try {
+      getInboundJournal().markSpoke(owner !== null ? inboundIdFor(owner) : householdInboundIdFor(household!))
+    } catch (error) {
+      inboundJournalFailed(error)
+    }
+  }
+  const authorizeAndNoteSpoke: typeof authorizeEffect = async (input) => {
+    const authorization = await authorizeEffect(input)
+    if (input.phase !== "send" || !authorization.allowed) return authorization
+    try {
+      noteInboundSpoke(input.idempotencyKey)
+    } catch (error) {
+      // The send does not happen, so the outbox must not send it later for a message already recorded failed.
+      abandonTelegramEffect(getEffectJournal(), input.artifact!)
+      throw error
+    }
+    return authorization
+  }
   let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string; attachmentIds?: readonly string[] }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
   const configuredOwnerTarget = (): Extract<TelegramEffectTarget, { kind: "approved_relationship" }> => ({ kind: "approved_relationship", friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
   const fallbackText = (text: string): string => `${OWNER_ROUTE_FALLBACK_PREFIX}\n\n${text}`
   const executeOnTelegram = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
     api,
-    authorize: authorizeEffect,
+    authorize: authorizeAndNoteSpoke,
     barrier: acceptanceAuditBarrier,
   })
   /**
@@ -1090,8 +1182,22 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const port = authorityTransport?.hostApproval
     if (useSanctuaryRuntime && port?.pins.expectedBotId === botId
       && port.pins.expectedOwnerUserId === authorizedUserId && port.pins.expectedOwnerChatId === authorizedChatId) {
+      // The root host sends the approval card when a proposal is registered, so that counts as a send for the message.
+      const notingPort: typeof port = {
+        pins: port.pins,
+        refresh: () => port.refresh(),
+        isHealthy: () => port.isHealthy(),
+        acceptsObservation: (metadata) => port.acceptsObservation(metadata),
+        register: async (proposal) => {
+          noteTurnSpoke()
+          return port.register(proposal)
+        },
+        status: (registration) => port.status(registration),
+        execute: (correlation) => port.execute(correlation),
+        callbackForUpdate: (update) => port.callbackForUpdate(update),
+      }
       rootHostRuntime = createRootHostApprovalRuntime({
-        agentRoot, port, effectBarrier: acceptanceAuditBarrier, approvalCoordinatorFactory,
+        agentRoot, port: notingPort, effectBarrier: acceptanceAuditBarrier, approvalCoordinatorFactory,
         resolveContext: async (binding) => {
           const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
           if (binding.agentRoot !== agentRoot || binding.friendId !== configuredOwnerFriendId
@@ -1546,7 +1652,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }): Promise<void> => {
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
     const effects: TelegramEffectArtifact[] = []
-    const chat = createTelegramChatActions(api, input.chatId, input.messageId)
+    const chat = createTelegramChatActions(api, input.chatId, input.messageId, noteTurnSpoke)
     let ordinal = 0
     const deliver = async (text: string, terminalReturn = false): Promise<void> => {
       const obligation = terminalReturn ? findPendingObligationForRequest(agentRoot, {
@@ -1661,8 +1767,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           && candidate.role === "user" && candidate.relations.references.includes(input.reference))
         if (!event || typeof event.content !== "string") throw new Error("Telegram admitted work ingress is unavailable")
         const record = admissionStore.read(input.admissionId)
-        await dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
-          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, chatId: record.chatId, orientation: input.orientation })
+        const text = event.content
+        // The newly admitted Friend's first turn answers their message, not the owner's decision that let it run.
+        await telegramInboundTurn.exit(() => dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
+          eventId: input.eventId, reference: input.reference, text, userId: record.userId, chatId: record.chatId, orientation: input.orientation }))
         inboxStore.completeAdmittedWork(input.admissionId)
         return "settled"
       } catch {
@@ -1757,8 +1865,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const bufferedGroundedDeliveries: string[] = []
     const turnEffects: TelegramEffectArtifact[] = []
     let deliveryOrdinal = 0
-    await recoverEffectOutbox()
-    await releaseHeldNoticesQuietly()
+    // What these send belongs to other turns and notices, not to this message.
+    await telegramInboundTurn.exit(async () => {
+      await recoverEffectOutbox()
+      await releaseHeldNoticesQuietly()
+    })
     let ingressRelations: NonNullable<RunSenseTurnOptions["ingressRelations"]> = { replyToEventId: null, threadRootEventId: null, references: [inboundReference] }
     if (message.replyToMessageId && /^[1-9][0-9]*$/u.test(message.replyToMessageId)) {
       const replyMessageId = Number(message.replyToMessageId)
@@ -1781,7 +1892,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           })
         : null
       const fullVisibility = createFullVisibilityProgress()
-      const chat = createTelegramChatActions(api, message.chatId, message.messageId)
+      const chat = createTelegramChatActions(api, message.chatId, message.messageId, noteTurnSpoke)
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -1879,6 +1990,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           } : { error: redactTelegramPrivateValues(error, [...transportPrivateValues, String(message.updateId), message.messageId]) }),
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
+      // Every owner message runs inside its inbound turn.
+      telegramInboundTurn.getStore()!.failure = `the turn failed (${errorCategory})`
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
       await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds })
@@ -1931,8 +2044,122 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return { ...message, interaction: named, text: renderChatInteraction(named) }
   }
 
+  /** Write a message's entry before its turn, or null when it must not run: it has an outcome, or a stopped turn left it unsafe to run again. */
+  const beginInbound = (id: string): TelegramInboundTurn | null => {
+    let entry: PendingInbound<TelegramInboundPayload> | null
+    try {
+      entry = getInboundJournal().record(id, { updateClass: "message" })
+    } catch (error) {
+      inboundJournalFailed(error)
+      return { id: null, spoke: false, failure: null }
+    }
+    if (!entry) return null
+    const refusal = telegramReplayRefusal(entry)
+    if (refusal) {
+      settleInbound(id, "failed", refusal)
+      return null
+    }
+    getInboundJournal().beginAttempt(id)
+    return { id, spoke: false, failure: null }
+  }
+
+  /** Run a message's turn and record its one outcome. A turn that throws is recorded as failed and the error goes on. */
+  const runInboundTurn = async (turn: TelegramInboundTurn, body: () => Promise<void>): Promise<void> => {
+    await telegramInboundTurn.run(turn, async () => {
+      try {
+        await body()
+      } catch (error) {
+        const stopped = `the turn stopped with an error (${error instanceof Error ? error.name : "unknown"})`
+        if (turn.id) settleInbound(turn.id, "failed", turn.spoke ? `${stopped} after a reply may have gone out` : `${stopped}, and no reply reached them`)
+        throw error
+      }
+      if (turn.id) settleInbound(turn.id, turn.failure ? "failed" : turn.spoke ? "answered" : "silent", turn.failure ?? undefined)
+    })
+  }
+
+  /** Record a message a stopped process left as failed, writing its entry first when it has none. */
+  const failInbound = (id: string, reason: string): void => {
+    try {
+      getInboundJournal().record(id, { updateClass: "message" })
+    } catch (error) {
+      inboundJournalFailed(error)
+      return
+    }
+    settleInbound(id, "failed", reason)
+  }
+
+  /**
+   * Telegram redelivered a message a stopped process left. It runs again only when nothing went out for it and it
+   * has tries left; otherwise it is recorded as failed, so no message is left pending. A household Friend's message is
+   * known by its reference. Callbacks and strangers' messages never get an entry and keep their own recovery.
+   */
+  const replayIndeterminate = async (update: TelegramUpdate, reclaim: () => boolean): Promise<boolean> => {
+    const coordinates = telegramUpdateMessageCoordinates(update)
+    if (!coordinates || coordinates.chatType !== "private") return false
+    const owner = coordinates.userId === authorizedUserId && coordinates.chatId === authorizedChatId
+    // Only a new message reaches a household Friend's turn; their edits and reactions are not run.
+    if (!owner && (!update.message || !botId || !options.admission)) return false
+    const reference = owner ? null : telegramHouseholdReference(identityKey, botId!, coordinates.userId, update.update_id, coordinates.messageId)
+    const id = reference ? householdInboundIdFor(reference) : inboundIdFor(update.update_id)
+    let entry: PendingInbound<TelegramInboundPayload> | null = null
+    try {
+      entry = getInboundJournal().get(id)
+      if (!entry && readInboundOutcome(agentRoot, "telegram", id)) return false
+      if (reference && !await options.admission!.resolveApprovedFriend({ botId: botId!, userId: coordinates.userId, chatId: coordinates.chatId })) {
+        if (entry) failInbound(id, "they are no longer a household Friend, so it is not run again")
+        return false
+      }
+      // With no entry the turn never started, or its entry could not be written; a reply it prepared shows which.
+      const preparedKeys = reference ? [`relationship-turn:${reference}:delivery:0`]
+        : [`turn:${subject}:${update.update_id}:delivery:0`, `turn:${subject}:${update.update_id}:fallback`]
+      const refusal = entry ? telegramReplayRefusal(entry)
+        : preparedKeys.some((key) => getEffectJournal().readByIdempotencyKey(key))
+          ? "a reply was prepared before it stopped, but its record could not be written, so it is not run again"
+          : null
+      if (refusal) {
+        failInbound(id, refusal)
+        return false
+      }
+      if (!reclaim()) {
+        failInbound(id, "it could not be taken back from the update inbox to run again")
+        return false
+      }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.telegram_inbound_replaying",
+        message: "running a Telegram message again: its turn stopped before anything went out",
+        meta: { agentName: options.agentName, attempts: entry?.attempts ?? 0 },
+      })
+      return true
+    } catch (error) {
+      // A message with no entry from someone who is not the owner may be a stranger's, which never gets a record.
+      if (entry || owner) failInbound(id, `deciding whether to run it again failed (${error instanceof Error ? error.name : "unknown"})`)
+      else inboundJournalFailed(error)
+      return false
+    }
+  }
+
+  /** A message whose update Telegram no longer redelivers can never be answered now, so it is recorded as failed. */
+  const failInboundsPastRedelivery = (): void => {
+    try {
+      const cutoff = Date.now() - TELEGRAM_REDELIVERY_WINDOW_MS
+      for (const entry of getInboundJournal().pending()) {
+        if (Date.parse(entry.receivedAt) < cutoff) settleInbound(entry.id, "failed", "Telegram stopped redelivering it after a day, so it was never answered")
+      }
+    } catch (error) {
+      inboundJournalFailed(error)
+    }
+  }
+
   const onMessage = (inbound: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
     const message = nameReactionTarget(inbound)
+    const turn = beginInbound(inboundIdFor(message.updateId))
+    if (!turn) return
+    await runInboundTurn(turn, () => handleAuthorizedMessage(message))
+  })
+
+  const handleAuthorizedMessage = async (message: TelegramInboundMessage): Promise<void> => {
     const ownerDecision = !message.interaction && !message.attachments?.length && !message.attachmentNotices?.length ? admissionController?.parseOwnerDecision({
       text: message.text,
       ...(message.replyToMessageId ? { replyToMessageId: Number(message.replyToMessageId) } : {}),
@@ -1952,7 +2179,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     // it degrades to silence instead of failing, and message-delivery assertions
     // stay about messages.
     await withTelegramTypingIndicator(() => sendTypingIndicator(message.chatId), () => onMessageBody(message))
-  })
+  }
 
   const onUnknownMessage = admissionController && options.admission ? async (message: Parameters<NonNullable<TelegramLongPollOptions["onUnknownMessage"]>>[0]): Promise<void> => {
     const approved = await options.admission!.resolveApprovedFriend(message)
@@ -1960,28 +2187,32 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await admissionController.handleUnknown(message)
       return
     }
-    // Existing household Friends need a root-observed communication binding after gateway migration.
-    await authorityTransport?.admitChat({
-      admissionId: createHash("sha256").update(`telegram-communication-v1\0${message.botId}\0${message.userId}\0${message.chatId}`).digest("hex").slice(0, 20),
-      updateId: message.updateId,
-      userId: message.userId,
-      chatId: message.chatId,
+    const reference = telegramHouseholdReference(identityKey, message.botId, message.userId, message.updateId, message.messageId)
+    const turn = beginInbound(householdInboundIdFor(reference))
+    if (!turn) return
+    await runInboundTurn(turn, async () => {
+      // Existing household Friends need a root-observed communication binding after gateway migration.
+      await authorityTransport?.admitChat({
+        admissionId: createHash("sha256").update(`telegram-communication-v1\0${message.botId}\0${message.userId}\0${message.chatId}`).digest("hex").slice(0, 20),
+        updateId: message.updateId,
+        userId: message.userId,
+        chatId: message.chatId,
+      })
+      const hydrated = await hydrateAuthorizedMessage({
+        updateId: message.updateId,
+        messageId: String(message.messageId),
+        userId: message.userId,
+        chatId: message.chatId,
+        text: message.text,
+        attachments: message.attachments,
+        attachmentNotices: message.attachmentNotices,
+      })
+      const sessionKey = `telegram:${message.botId}:${message.userId}`
+      const sessionPath = getSenseSessionPath(options.agentName, approved.friendId, "telegram", sessionKey, agentRoot)
+      const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: hydrated.text, reference, attachmentIds: hydrated.attachmentIds } })
+      await dispatchResolvedRelationshipTurn({ friendId: approved.friendId, sessionKey, requestId: reference, eventId: receipt.eventId,
+        reference, text: hydrated.text, attachmentIds: hydrated.attachmentIds, userId: message.userId, chatId: message.chatId, messageId: String(message.messageId) })
     })
-    const hydrated = await hydrateAuthorizedMessage({
-      updateId: message.updateId,
-      messageId: String(message.messageId),
-      userId: message.userId,
-      chatId: message.chatId,
-      text: message.text,
-      attachments: message.attachments,
-      attachmentNotices: message.attachmentNotices,
-    })
-    const sessionKey = `telegram:${message.botId}:${message.userId}`
-    const reference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.botId}\0${message.userId}\0${message.updateId}\0${message.messageId}`).digest("hex")}`
-    const sessionPath = getSenseSessionPath(options.agentName, approved.friendId, "telegram", sessionKey, agentRoot)
-    const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: hydrated.text, reference, attachmentIds: hydrated.attachmentIds } })
-    await dispatchResolvedRelationshipTurn({ friendId: approved.friendId, sessionKey, requestId: reference, eventId: receipt.eventId,
-      reference, text: hydrated.text, attachmentIds: hydrated.attachmentIds, userId: message.userId, chatId: message.chatId, messageId: String(message.messageId) })
   } : undefined
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
@@ -2019,6 +2250,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       inboxStore,
       onMessage,
       onUpdate,
+      replayIndeterminate,
       ...(authorityTransport ? {
         settleTransport: authorityTransport.settleTransport,
         transportMetadata: authorityTransport.metadataForUpdate,
@@ -2083,6 +2315,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         inboxStore.quarantineStrandedAdmittedWork?.()
         await runWithAcceptanceAuditOwner(async () => { await admissionController?.recover() })
         await runWithAcceptanceAuditOwner(recoverEffectOutbox)
+        failInboundsPastRedelivery()
         await runWithAcceptanceAuditOwner(reconcileSystemFailsafes)
         try {
           await runWithAcceptanceAuditOwner(async () => { await toolContext?.sanctuary?.recoverRoutineActions?.() })
