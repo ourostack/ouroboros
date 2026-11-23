@@ -99,7 +99,8 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
   utterance?.beginAttempt()
   try {
     const result = await runRecordedVoiceTurn(options)
-    if (result.tts.status === "delivered") utterance?.settle("answered")
+    if (result.speechSegments.length === 0 && !result.responseText.trim()) utterance?.settle("silent", "the agent had nothing to say")
+    else if (result.tts.status === "delivered") utterance?.settle("answered")
     else utterance?.settle("failed", `the reply could not be spoken: ${result.tts.error}`)
     return result
   } catch (error) {
@@ -228,7 +229,7 @@ async function runRecordedVoiceTurn(options: VoiceLoopbackTurnOptions): Promise<
   }
 
   try {
-    utterance?.noteSpoke(turnSpoke("speech:text", turn.response))
+    if (turn.response.trim()) utterance?.noteSpoke(turnSpoke("speech:text", turn.response))
     const spoken: VoiceTtsResult = await options.tts.synthesize({
       utteranceId: options.transcript.utteranceId,
       text: turn.response,

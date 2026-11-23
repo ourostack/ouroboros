@@ -509,6 +509,19 @@ describe("voice turn outcomes", () => {
     expect(empty.journal.outcome("utt_outcome_empty")).toMatchObject({ outcome: "failed", detail: "the turn failed: voice transcript text is empty" })
   })
 
+  it("records a turn with nothing to say as silent, without noting speech that never went out", async () => {
+    const { turn, journal } = utterance("utt_outcome_silent")
+    let noted: unknown
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: turn,
+      tts: { synthesize: vi.fn(async () => { noted = journal.get("utt_outcome_silent"); throw new Error("voice TTS text is empty") }) },
+      runSenseTurn: vi.fn(async () => ({ response: "  ", ponderDeferred: false })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_silent", text: "never mind", source: "loopback" }),
+    })
+    expect(noted).toMatchObject({ spoke: false })
+    expect(journal.outcome("utt_outcome_silent")).toMatchObject({ outcome: "silent", detail: "the agent had nothing to say" })
+  })
+
   it("passes no outward-send hook when the utterance has no record", async () => {
     const runSenseTurn = vi.fn(async () => ({ response: "Hi.", ponderDeferred: false }))
     await runVoiceLoopbackTurn({

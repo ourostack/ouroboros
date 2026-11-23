@@ -24,6 +24,8 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
+const asRoot = process.getuid?.() === 0
+
 const payload: VoiceUtterancePayload = { callSid: "CA1", friendId: "ari", sessionKey: "twilio-phone-ari", transport: "recording" }
 
 function emitted(name: string) {
@@ -62,7 +64,7 @@ describe("voice utterance records", () => {
     expect(emitted("senses.voice_utterance_record_failed")).toHaveLength(2)
   })
 
-  it("logs an outcome it cannot record instead of throwing into the call", () => {
+  it.skipIf(asRoot)("logs an outcome it cannot record instead of throwing into the call", () => {
     const dir = outputDir()
     const utterance = recordVoiceUtterance(dir, "twilio-CA1-RE1", payload)!
     vi.spyOn(nerves, "emitNervesEvent")
@@ -70,10 +72,42 @@ describe("voice utterance records", () => {
     try {
       expect(() => utterance.settle("answered")).not.toThrow()
     } finally { fs.chmodSync(path.join(dir, "utterances", "inbound-outcomes"), 0o700) }
-    if (process.getuid?.() !== 0) {
-      expect(emitted("senses.voice_utterance_settle_failed")).toEqual([expect.objectContaining({ level: "error" })])
-      expect(voiceUtterances(dir).get("twilio-CA1-RE1")).not.toBeNull()
-    }
+    expect(emitted("senses.voice_utterance_settle_failed")).toEqual([expect.objectContaining({ level: "error" })])
+    expect(voiceUtterances(dir).get("twilio-CA1-RE1")).not.toBeNull()
+  })
+
+  it.skipIf(asRoot)("logs a try or a send it cannot note instead of costing the caller the answer", () => {
+    const dir = outputDir()
+    const utterance = recordVoiceUtterance(dir, "twilio-CA1-RE1", payload)!
+    vi.spyOn(nerves, "emitNervesEvent")
+    fs.chmodSync(path.join(dir, "utterances", "pending-inbound"), 0o500)
+    try {
+      expect(() => utterance.beginAttempt()).not.toThrow()
+      expect(() => utterance.noteSpoke(turnSpoke("speech:text", "Hello."))).not.toThrow()
+    } finally { fs.chmodSync(path.join(dir, "utterances", "pending-inbound"), 0o700) }
+    expect(emitted("senses.voice_utterance_note_failed").map((event) => (event as { meta: { note: string } }).meta.note)).toEqual(["attempt", "speech:text"])
+  })
+
+  it.skipIf(asRoot)("leaves an utterance it cannot record as failed for the next start, and goes on with the rest", () => {
+    const dir = outputDir()
+    recordVoiceUtterance(dir, "twilio-CA1-1", payload)
+    recordVoiceUtterance(dir, "twilio-CA1-2", payload)
+    vi.spyOn(nerves, "emitNervesEvent")
+    fs.chmodSync(path.join(dir, "utterances", "inbound-outcomes"), 0o500)
+    try {
+      expect(failLeftoverVoiceUtterances(dir, "start")).toBe(0)
+    } finally { fs.chmodSync(path.join(dir, "utterances", "inbound-outcomes"), 0o700) }
+    expect(emitted("senses.voice_utterance_settle_failed")).toHaveLength(2)
+    expect(voiceUtterances(dir).pending()).toHaveLength(2)
+    expect(failLeftoverVoiceUtterances(dir, "start")).toBe(2)
+  })
+
+  it("fails nothing when the leftover records cannot be listed", () => {
+    const dir = outputDir()
+    vi.spyOn(voiceUtterances(dir), "pending").mockImplementation(() => { throw new Error("EIO") })
+    vi.spyOn(nerves, "emitNervesEvent")
+    expect(failLeftoverVoiceUtterances(dir, "start")).toBe(0)
+    expect(emitted("senses.voice_utterance_record_failed")).toEqual([expect.objectContaining({ meta: expect.objectContaining({ error: "Error: EIO" }) })])
   })
 
   it("records every utterance left from a stopped call as failed, naming what was already spoken", () => {

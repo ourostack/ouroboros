@@ -1343,8 +1343,12 @@ export class TwilioMediaStreamSession {
       return
     }
     const generation = this.startPlayback()
+    // The turn's outcome waits until the reply has gone down the call: one spoken after a hangup was never heard.
+    const spoken: { outcome?: Parameters<VoiceUtteranceTurn["settle"]> } = {}
+    const turnRecord: VoiceUtteranceTurn | null = record && { ...record, settle: (...outcome) => { spoken.outcome = outcome } }
+    // A turn that throws is recorded as failed by processUtterance.
     const turn = await runVoiceLoopbackTurn({
-      utterance: record,
+      utterance: turnRecord,
       agentName: this.options.agentName,
       friendId: this.friendId,
       sessionKey: this.sessionKey,
@@ -1359,13 +1363,21 @@ export class TwilioMediaStreamSession {
       },
     })
 
-    if (generation !== this.playbackGeneration || this.closed) return
+    const current = generation === this.playbackGeneration && !this.closed
     const deliveries = deliveredSegments(turn)
-    if ((this.playbackBytesByGeneration.get(generation) ?? 0) === 0) {
+    if (current && (this.playbackBytesByGeneration.get(generation) ?? 0) === 0) {
       for (const delivery of deliveries) {
         this.sendAudioChunk(delivery.audio, generation)
       }
     }
+    // A turn with a record always reported its outcome; with none there is nothing to record.
+    const played = (this.playbackBytesByGeneration.get(generation) ?? 0) > 0
+    if (spoken.outcome?.[0] === "answered" && !played) {
+      record?.settle("failed", this.closed ? "the call ended before the reply was played" : "the caller spoke again before the reply was played")
+    } else {
+      record?.settle(...spoken.outcome!)
+    }
+    if (!current) return
     /* v8 ignore start -- runVoiceLoopbackTurn always yields at least one delivered segment (it falls back to a whole-reply synthesis); kept as a guard @preserve */
     if (deliveries.length === 0) {
       this.playbackActive = false
@@ -5470,20 +5482,45 @@ async function handleRecording(
 
   const safeCallSid = safeSegment(recording.callSid)
   const safeRecordingSid = safeSegment(recording.recordingSid)
-  const callDir = path.join(options.outputDir, safeCallSid)
-  const inputPath = path.join(callDir, `${safeRecordingSid}.wav`)
   const utteranceId = `twilio-${safeCallSid}-${safeRecordingSid}`
-  // Twilio retries a recording callback it did not hear back from; the first one is already being answered.
-  if (seenVoiceUtterance(options.outputDir, utteranceId)) {
+  // Twilio retries a recording callback it did not hear back from. A retry while the first is still being answered
+  // waits for it and gets the same reply; one after it has an outcome is sent on to listen again.
+  const inFlightKey = `${options.outputDir}\0${utteranceId}`
+  const inFlight = recordingsInFlight.get(inFlightKey)
+  if (inFlight || seenVoiceUtterance(options.outputDir, utteranceId)) {
     emitNervesEvent({
       level: "warn",
       component: "senses",
       event: "senses.voice_twilio_recording_duplicate",
       message: "Twilio sent a recording that already has a turn; it is not run again",
-      meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid },
+      meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, inFlight: inFlight !== undefined },
     })
-    return xmlResponse(redirectTwiml(options.publicBaseUrl, basePath))
+    return inFlight ?? xmlResponse(redirectTwiml(options.publicBaseUrl, basePath))
   }
+  const answer = answerRecording(options, basePath, params, jobs, recording, utteranceId)
+  recordingsInFlight.set(inFlightKey, answer)
+  try {
+    return await answer
+  } finally {
+    recordingsInFlight.delete(inFlightKey)
+  }
+}
+
+/** Replies to recording callbacks still being answered, so a retry Twilio sends meanwhile gets the same reply. */
+const recordingsInFlight = new Map<string, Promise<TwilioPhoneBridgeResponse>>()
+
+async function answerRecording(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  params: Record<string, string>,
+  jobs: TwilioAudioStreamJobStore,
+  recording: NonNullable<ReturnType<typeof parseRecordingParams>>,
+  utteranceId: string,
+): Promise<TwilioPhoneBridgeResponse> {
+  const safeCallSid = safeSegment(recording.callSid)
+  const safeRecordingSid = safeSegment(recording.recordingSid)
+  const callDir = path.join(options.outputDir, safeCallSid)
+  const inputPath = path.join(callDir, `${safeRecordingSid}.wav`)
   const downloadRecording = options.downloadRecording ?? defaultTwilioRecordingDownloader
   // Outbound calls are placed by us (defaultFriendId stays their fallback); inbound callers are
   // identified by the signed caller ID only.
@@ -5750,8 +5787,6 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
   const activeSipSessions = new ActiveOpenAISipSessions()
   const pendingCalls = options.pendingVoiceCalls ?? new PendingVoiceCalls()
   const recentSipWebhooks = new RecentIds()
-  // Live audio is never replayed: whatever a stopped process left unanswered is recorded as failed.
-  failLeftoverVoiceUtterances(options.outputDir, "start")
 
   mediaStreams.on("connection", (ws: WebSocket) => {
     // A malformed frame makes `ws` emit `error`; with no listener that is an uncaught exception,
@@ -6052,6 +6087,9 @@ export async function startTwilioPhoneBridgeServer(
     server.once("listening", onListening)
     server.listen(port, host)
   })
+  // Live audio is never replayed: whatever a stopped process left unanswered is recorded as failed. This waits until
+  // the port is ours, so a second bridge that cannot listen never fails the running one's calls.
+  failLeftoverVoiceUtterances(options.outputDir, "start")
 
   emitNervesEvent({
     component: "senses",

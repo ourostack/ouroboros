@@ -1,6 +1,6 @@
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { openInboundJournal, type InboundJournal, type InboundOutcome } from "../inbound-journal"
+import { openInboundJournal, type InboundJournal, type InboundOutcome, type PendingInbound } from "../inbound-journal"
 import { describeTurnSpokes, type TurnSpoke } from "../turn-attempts"
 
 /**
@@ -21,9 +21,12 @@ export interface VoiceUtterancePayload {
 /** One utterance whose turn is running. */
 export interface VoiceUtteranceTurn {
   id: string
-  /** Count a turn starting for this utterance. */
+  /** Count a turn starting for this utterance. Never throws: live audio is never replayed, so the count is only a record. */
   beginAttempt(): void
-  /** Note speech or a send before it goes out. A failed write throws, which stops the delivery. */
+  /**
+   * Note speech or a send before it goes out. Never throws: live audio is never replayed, so a note that cannot be
+   * written must not cost the caller the answer. It is logged instead.
+   */
   noteSpoke(spoke: TurnSpoke): void
   /** Record the utterance's one outcome. Never throws: an outcome it cannot write is failed at the next start. */
   settle(outcome: InboundOutcome, detail?: string): void
@@ -75,44 +78,70 @@ export function recordVoiceUtterance(outputDir: string, id: string, payload: Voi
     recordFailed(outputDir, error)
     return null
   }
+  const noteFailed = (note: string, error: unknown): void => {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.voice_utterance_note_failed",
+      message: "could not note a voice utterance's progress; the call goes on",
+      meta: { id, note, error: String(error) },
+    })
+  }
   return {
     id,
-    beginAttempt: () => { journal.beginAttempt(id) },
-    noteSpoke: (spoke) => journal.markSpoke(id, spoke),
-    settle(outcome, detail) {
+    beginAttempt() {
       try {
-        journal.settle(id, outcome, detail)
+        journal.beginAttempt(id)
       } catch (error) {
-        emitNervesEvent({
-          level: "error",
-          component: "senses",
-          event: "senses.voice_utterance_settle_failed",
-          message: "could not record a voice utterance's outcome; the next start records it as failed",
-          meta: { id, outcome, error: String(error) },
-        })
+        noteFailed("attempt", error)
       }
     },
+    noteSpoke(spoke) {
+      try {
+        journal.markSpoke(id, spoke)
+      } catch (error) {
+        noteFailed(spoke.kind, error)
+      }
+    },
+    settle: (outcome, detail) => { settleQuietly(journal, id, outcome, detail) },
+  }
+}
+
+/** Record an outcome, and log one that cannot be written instead of throwing into the call. True when it landed. */
+function settleQuietly(journal: InboundJournal<VoiceUtterancePayload>, id: string, outcome: InboundOutcome, detail?: string): boolean {
+  try {
+    return journal.settle(id, outcome, detail)
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.voice_utterance_settle_failed",
+      message: "could not record a voice utterance's outcome; the next start records it as failed",
+      meta: { id, outcome, error: String(error) },
+    })
+    return false
   }
 }
 
 /**
- * Record every utterance a stopped process left as failed, and return how many there were. Runs when the sense
- * starts and when it shuts down.
+ * Record every utterance a stopped process left as failed, and return how many were recorded. Runs once the sense
+ * is listening and when it shuts down. Never throws: one it cannot record stays pending for the next run.
  */
 export function failLeftoverVoiceUtterances(outputDir: string, when: "start" | "shutdown"): number {
   let journal: InboundJournal<VoiceUtterancePayload>
+  let leftover: Array<PendingInbound<VoiceUtterancePayload>>
   try {
     journal = voiceUtterances(outputDir)
+    leftover = journal.pending()
   } catch (error) {
     recordFailed(outputDir, error)
     return 0
   }
   const stopped = when === "start" ? "the voice sense restarted" : "the voice sense shut down"
   let failed = 0
-  for (const entry of journal.pending()) {
+  for (const entry of leftover) {
     const heard = entry.spoke ? `after ${describeTurnSpokes(entry.spokeRecords)} went out` : "before this was answered"
-    journal.settle(entry.id, "failed", `${stopped} ${heard}; live audio is not replayed`)
-    failed += 1
+    if (settleQuietly(journal, entry.id, "failed", `${stopped} ${heard}; live audio is not replayed`)) failed += 1
   }
   if (failed > 0) {
     emitNervesEvent({
