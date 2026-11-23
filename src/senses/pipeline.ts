@@ -499,6 +499,13 @@ export interface InboundTurnInput {
   friendStore: FriendStore
   /** Optional abort signal forwarded to runAgent. */
   signal?: AbortSignal
+  /**
+   * Stop waiting in the process-wide turn queue when `signal` aborts, and throw
+   * its reason instead of running the turn. Only for a caller that records the
+   * outcome of a turn it cancelled itself; without it a cancelled queued turn
+   * waits its turn and then ends with turnOutcome "aborted".
+   */
+  stopQueueWaitOnAbort?: boolean
   /** Optional runAgent options (traceId, toolContext overrides, etc). */
   runAgentOptions?: RunAgentOptions
   /** Optional sense hook for post-gate, post-session, pre-run evidence/context augmentation. */
@@ -751,7 +758,10 @@ export function erroredTurnReply(errorMessage: string | undefined): string {
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
-  return withTurnExecutionLease(() => handleInboundTurnExclusive(input))
+  return withTurnExecutionLease(
+    () => handleInboundTurnExclusive(input),
+    input.stopQueueWaitOnAbort ? input.signal : undefined,
+  )
 }
 
 async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<InboundTurnResult> {
