@@ -368,6 +368,8 @@ describe("guardInvocation — structural guardrails", () => {
     "/bundle/state/outbox/claude/1760000000000-abcdef.json",
     "/bundle/state/reports/3f2b8c10-aaaa-4bbb-8ccc-1234567890ab.json",
     "state/outbox/claude/x.json",
+    "/bundle/state/senses/a2a/pending-inbound/0f1e2d.json",
+    "/bundle/state/senses/a2a/inbound-outcomes/0f1e2d.json",
   ])("blocks generic writes to steward authority path %s", async (protectedPath) => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     expect(guardInvocation("write_file", { path: protectedPath }, { readPaths: new Set() })).toMatchObject({ allowed: false })
