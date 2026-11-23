@@ -269,3 +269,10 @@ describe("edge-benchmark same-runner baseline", () => {
     }
   })
 })
+
+describe("time-to-socket resolution", () => {
+  it("looks for the socket often enough that one look is well inside the 25% ratchet on a ~150 ms start", () => {
+    const limit = bench.ratchetLimit("daemon.readyMs", { platform: "linux", arch: "arm64" })
+    expect(bench.SOCKET_POLL_MS / 150).toBeLessThan(limit / 2)
+  })
+})
