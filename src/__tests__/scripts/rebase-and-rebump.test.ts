@@ -86,4 +86,22 @@ describe("scripts/rebase-and-rebump.sh", () => {
     expect(changelog.versions[0].changes).toEqual(["mine"])
     expect(git(work, "status", "--porcelain")).toBe("")
   })
+
+  it("takes main's side of conflicted version files before node reads them", () => {
+    const { work } = makeRepos()
+    git(work, "checkout", "-q", "-b", "feature")
+    bump(work, "0.1.0-alpha.11", "mine")
+    git(work, "commit", "-q", "-am", "mine")
+    git(work, "checkout", "-q", "main")
+    bump(work, "0.1.0-alpha.12", "theirs")
+    git(work, "commit", "-q", "-am", "theirs")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "checkout", "-q", "feature")
+
+    execFileSync("bash", ["scripts/rebase-and-rebump.sh"], { cwd: work, stdio: "pipe" })
+
+    expect(JSON.parse(read(work, "package.json")).version).toBe("0.1.0-alpha.13")
+    expect(JSON.parse(read(work, "npm-shrinkwrap.json")).version).toBe("0.1.0-alpha.13")
+    expect(git(work, "status", "--porcelain")).toBe("")
+  })
 })
