@@ -1,6 +1,6 @@
 import crypto from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { APPENDIX_B_SHA256, readAllocation, reducedDesign } from "../../../eval/interviews/allocation"
+import { REGISTERED_ALLOCATIONS, readAllocation, reducedDesign, startedKey } from "../../../eval/interviews/allocation"
 import { brandHits, choiceQuestion, debriefQuestion, labelLine, ratingOf, scrubBrands } from "../../../eval/interviews/protocol"
 
 /** A pre-registration shaped like the real one: Appendix B's rows between its heading and Appendix C. */
@@ -47,22 +47,35 @@ describe("the fixed words", () => {
 })
 
 describe("the allocation", () => {
-  it("parses rows in order and refuses a changed table", () => {
-    const sessions = readAllocation(preregistration(ROWS), sha(ROWS))
+  it("parses rows in order, names the version whose table it is, and refuses a changed table", () => {
+    const { version, sessions } = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 2 })
+    expect(version).toBe(2)
     expect(sessions.map((s) => s.id)).toEqual(["X-pilot", "X-1", "X-2", "X-3", "H-1"])
     expect(sessions[2]).toMatchObject({ job: "unreadable-edition", pilot: false })
-    expect(() => readAllocation(preregistration(ROWS))).toThrow(new RegExp(`not the registered ${APPENDIX_B_SHA256}`))
+    expect(() => readAllocation(preregistration(ROWS))).toThrow(/not the table of any registered version \(version 1: ca0b4416.*version 2: 71fc28b4/)
     expect(() => readAllocation("no appendix")).toThrow(/no Appendix B/)
+  })
+
+  it("registers version 1's table and version 2's, each by the SHA-256 its Appendix A states", () => {
+    expect(REGISTERED_ALLOCATIONS).toEqual({
+      ca0b441641c6c62e70238ee2b31b2283d358103d683061a97e0174f6c29851f2: 1,
+      "71fc28b44d71b1b3d09dffebafa377059a514b42c4a1524cbd3cf7182531c379": 2,
+    })
+  })
+
+  it("keeps version 1's started ids as they are and gives later versions their own, so the same id can start once in each", () => {
+    expect(startedKey(1, "X-pilot")).toBe("X-pilot")
+    expect(startedKey(2, "X-pilot")).toBe("v2/X-pilot")
   })
 
   it("refuses a malformed row, a label or arm it does not know, and a repeated arm", () => {
     for (const row of ["| X-1 | MiniMax-M3 | remove-bad-copy |", "| X-1 | m | j | A=ouro, J=mcp-plain, K=cli-shell |", "| X-1 | m | j | F=ouro, J=codex, K=cli-shell |", "| X-1 | m | j | F=ouro, J=ouro, K=cli-shell |", "| X-1 | m | j | F=ouro, J=mcp-plain |", "| X-1 | m | j | F, J=mcp-plain, K=cli-shell |"]) {
-      expect(() => readAllocation(preregistration([row]), sha([row]))).toThrow(/X-1|malformed/)
+      expect(() => readAllocation(preregistration([row]), { [sha([row])]: 1 })).toThrow(/X-1|malformed/)
     }
   })
 
   it("keeps the pilot and the three rotations of the arm list in the reduced design", () => {
-    const sessions = readAllocation(preregistration(ROWS), sha(ROWS))
+    const { sessions } = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 1 })
     // X-1 is ouro, mcp-plain, cli-shell; X-2 is mcp-plain, cli-shell, ouro; X-3 (cli-shell, ouro, mcp-plain) is the third
     // rotation; H-1 (codex, ouro, openhands) is not a rotation of ouro, codex, openhands.
     expect(reducedDesign(sessions).map((s) => s.id)).toEqual(["X-pilot", "X-1", "X-2", "X-3"])

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Session } from "../../../eval/interviews/allocation"
-import { bars, formatGrade, gradeStudy, guessFor, isBroken, readRequestLog } from "../../../eval/interviews/grader"
+import { bars, formatGrade, gradeStudy, guessFor, isBroken, readRequestLog, sessionsOf } from "../../../eval/interviews/grader"
 import type { ArmRecord, SessionRecord } from "../../../eval/interviews/runner"
 
 const ARMS = ["ouro", "mcp-plain", "cli-shell"]
@@ -114,5 +114,14 @@ describe("the grader", () => {
   it("reads the request log strictly", () => {
     expect(readRequestLog(`${JSON.stringify({ session: "X-1", kind: "job", sent: true, body: "{}" })}\n\n`)).toHaveLength(1)
     expect(() => readRequestLog(`{"session":"X-1"}`)).toThrow("request log line 1 is not a logged request")
+  })
+
+  it("grades only the reports of the pre-registration's own version, so versions are never pooled", () => {
+    const [pilot] = design(2)
+    const one = record(pilot!, "ouro")
+    expect(sessionsOf(2, [{ preregistrationVersion: 2, sessions: [one] }])).toEqual([one])
+    // A report from before reports named their version is version 1's.
+    expect(sessionsOf(1, [{ sessions: [one] }])).toEqual([one])
+    expect(() => sessionsOf(2, [{ preregistrationVersion: 2, sessions: [] }, { sessions: [one] }])).toThrow("report 2 is from pre-registration version 1, not version 2; versions are never pooled")
   })
 })

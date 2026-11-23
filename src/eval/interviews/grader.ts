@@ -68,6 +68,18 @@ export function guessFor(guesses: Record<string, string> | null | undefined, lab
   return key === undefined ? undefined : guesses![key]
 }
 
+/**
+ * The session records of the runner's reports, refusing any report from another pre-registration version than the
+ * one being graded, since versions are never pooled. A report written before reports named their version is version 1's.
+ */
+export function sessionsOf(version: number, reports: Array<{ preregistrationVersion?: number; sessions: SessionRecord[] }>): SessionRecord[] {
+  return reports.flatMap((report, i) => {
+    const from = report.preregistrationVersion ?? 1
+    if (from !== version) throw new Error(`report ${i + 1} is from pre-registration version ${from}, not version ${version}; versions are never pooled`)
+    return report.sessions
+  })
+}
+
 /** A session's blinding is broken when Q4 names the `ouro` arm's label with a product matching /ouro/i. */
 export function isBroken(record: SessionRecord): boolean {
   const ouroLabel = Object.entries(record.labels).find(([, arm]) => arm === "ouro")?.[0]

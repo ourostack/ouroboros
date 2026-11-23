@@ -114,7 +114,7 @@ function deps(runCase: RunCase, model = target(chooseOuro), over: Partial<Interv
   const d: InterviewDeps = {
     readText: () => PREREG, loadCases: () => [...cases.values()], resolveTarget: async () => model, runCase, kits: { X: X_KIT },
     outputExists: () => false, writeReport: (_file, report) => reports.push(report), openLog: () => (line) => log.push(line),
-    print: (text) => printed.push(text), allocationSha256: SHA, started: startedSet(), ...over,
+    print: (text) => printed.push(text), allocations: { [SHA]: 1 }, started: startedSet(), ...over,
   }
   return { d, reports, log, printed, model }
 }
@@ -214,7 +214,7 @@ describe("the interview runner", () => {
 
   it("runs the reduced design's sessions, every one by default", async () => {
     const { d } = deps(sandbox(() => ({})))
-    const { records } = await runInterviews(args({ sessions: [], reduced: true, budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, readText: () => ["## Appendix B", ...ROWS.slice(0, 3), "## Appendix C"].join("\n"), allocationSha256: crypto.createHash("sha256").update(`${ROWS.slice(0, 3).join("\n")}\n`).digest("hex") })
+    const { records } = await runInterviews(args({ sessions: [], reduced: true, budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, readText: () => ["## Appendix B", ...ROWS.slice(0, 3), "## Appendix C"].join("\n"), allocations: { [crypto.createHash("sha256").update(`${ROWS.slice(0, 3).join("\n")}\n`).digest("hex")]: 1 } })
     expect(records.map((r) => r.id)).toEqual(["X-pilot", "X-1", "X-2"])
     expect(records[2]!.arms[2]).toMatchObject({ arm: "ouro" })
   })
@@ -242,6 +242,18 @@ describe("the interview runner", () => {
     const again = deps(sandbox(() => ({})), target(chooseOuro), { started })
     await expect(runInterviews(args({ output: "/r/again.json" }), again.d)).rejects.toThrow("session X-pilot has already started once")
     expect(again.model.sent).toHaveLength(0)
+  })
+
+  it("keeps each pre-registration version's sessions apart: version 2's X-pilot runs after version 1's, and says its version", async () => {
+    const started = startedSet()
+    started.add("X-pilot")
+    const v2 = deps(sandbox(() => ({})), target(chooseOuro), { started, allocations: { [SHA]: 2 } })
+    const { records } = await runInterviews(args(), v2.d)
+    expect(records[0]).toMatchObject({ id: "X-pilot", status: "complete" })
+    expect(started.has("v2/X-pilot")).toBe(true)
+    expect(v2.reports.at(-1)).toMatchObject({ preregistrationVersion: 2 })
+    const again = deps(sandbox(() => ({})), target(chooseOuro), { started, allocations: { [SHA]: 2 } })
+    await expect(runInterviews(args({ output: "/r/again.json" }), again.d)).rejects.toThrow("session X-pilot of version 2 has already started once")
   })
 
   it("records a session that throws as crashed, releases its hold and still writes the report", async () => {

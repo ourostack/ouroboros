@@ -6,7 +6,7 @@
 import fs from "node:fs"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readAllocation, reducedDesign } from "./interviews/allocation"
-import { formatGrade, gradeStudy, readRequestLog } from "./interviews/grader"
+import { formatGrade, gradeStudy, readRequestLog, sessionsOf } from "./interviews/grader"
 import type { SessionRecord } from "./interviews/runner"
 
 function main(): void {
@@ -15,8 +15,8 @@ function main(): void {
   const [preregistration] = values("--preregistration")
   if (!preregistration) throw new Error("--preregistration is required")
   const reduced = argv.includes("--reduced")
-  const all = readAllocation(fs.readFileSync(preregistration, "utf8"))
-  const records = values("--report").flatMap((file) => (JSON.parse(fs.readFileSync(file, "utf8")) as { sessions: SessionRecord[] }).sessions)
+  const { version, sessions: all } = readAllocation(fs.readFileSync(preregistration, "utf8"))
+  const records = sessionsOf(version, values("--report").map((file) => JSON.parse(fs.readFileSync(file, "utf8")) as { preregistrationVersion?: number; sessions: SessionRecord[] }))
   const requests = values("--request-log").flatMap((file) => readRequestLog(fs.readFileSync(file, "utf8")))
   const grade = gradeStudy({ design: reduced ? reducedDesign(all) : all, records, requests, reduced })
   process.stdout.write(`${formatGrade(grade, reduced)}\n`)

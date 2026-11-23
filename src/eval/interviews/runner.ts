@@ -20,7 +20,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { gradeRun } from "../report"
 import type { GuestChoice, RunCase, SandboxRun } from "../sandbox/remote"
 import type { ResolvedTarget, TargetCredentials } from "../targets"
-import { readAllocation, reducedDesign, type LabelledArm, type Session } from "./allocation"
+import { readAllocation, reducedDesign, startedKey, type LabelledArm, type Session } from "./allocation"
 import { runFinalConversation, type FinalResult } from "./final"
 import { buildArm, X_ARMS } from "./guest/arms"
 import type { BooksCore } from "./guest/books-core"
@@ -120,8 +120,8 @@ export type InterviewDeps = {
   print(text: string): void
   /** The sessions ever started, in an append-only record kept beside the reports: a session starts once, ever. */
   started: { has(id: string): boolean; add(id: string): void }
-  /** The SHA-256 Appendix B must hash to; the registered one unless a test gives its own table. */
-  allocationSha256?: string
+  /** The registered versions' Appendix B SHA-256s; the real ones unless a test gives its own table. */
+  allocations?: Readonly<Record<string, number>>
 }
 
 export type ArmRecord = {
@@ -267,15 +267,15 @@ export function summarizeSessions(records: SessionRecord[], spent: Cost, stopped
 }
 
 export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): Promise<{ exitCode: number; records: SessionRecord[] }> {
-  const all = readAllocation(deps.readText(args.preregistration), deps.allocationSha256)
+  const { version, sessions: all } = readAllocation(deps.readText(args.preregistration), deps.allocations)
   const design = args.reduced ? reducedDesign(all) : all
   const unknown = args.sessions.find((id) => !all.some((session) => session.id === id))
   if (unknown) throw new Error(`no session ${unknown} in Appendix B`)
   const outside = args.sessions.find((id) => !design.some((session) => session.id === id))
   if (outside) throw new Error(`session ${outside} is not in the reduced design`)
   const chosen = args.sessions.length > 0 ? design.filter((session) => args.sessions.includes(session.id)) : design
-  const rerun = chosen.find((session) => deps.started.has(session.id))
-  if (rerun) throw new Error(`session ${rerun.id} has already started once; a session is never rerun`)
+  const rerun = chosen.find((session) => deps.started.has(startedKey(version, session.id)))
+  if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
   if (missingKit) throw new Error(`session ${missingKit.id} is product ${missingKit.product}, which has no runner kit yet`)
   const cases = new Map(deps.loadCases(args.cases).map((c) => [c.id, c]))
@@ -304,7 +304,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   const writeReport = (): void => {
     const totals = ledger.totals()
     deps.writeReport(args.output, {
-      schemaVersion: 1, kind: "blind-interviews", target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
+      schemaVersion: 1, kind: "blind-interviews", preregistrationVersion: version, target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
       premiumMultiplier: target.unitCost, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
       fidelity: FIDELITY, pricing, sessions: records,
     })
@@ -327,7 +327,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
       records.push(notRun(latch.refused))
       continue
     }
-    deps.started.add(session.id)
+    deps.started.add(startedKey(version, session.id))
     let record: SessionRecord
     try {
       record = await runSession({ session, kit: deps.kits[session.product]!, cases, latch, target, ledger, pricing, runCase: deps.runCase, log })

@@ -96,7 +96,8 @@ it("stops before marking another session started once a job finds the host lock 
   sandbox.remoteRunCase.mockReturnValue(async () => { throw lost })
   runner.run.mockImplementation(async (_args: unknown, deps: { runCase(input: unknown): Promise<unknown>; started: { add(id: string): void } }) => {
     await expect(deps.runCase({})).rejects.toBe(lost)
-    deps.started.add("X-1")
+    // A version 2 session's started key; the message names the id --session takes.
+    deps.started.add("v2/X-1")
     return { exitCode: 0 }
   })
   expect((await run([...REMOTE, "--host-lock", "eval"])).stderr).toEqual(["interviews: the host lock was lost, so session X-1 was not started; name it and the later sessions with --session to run them under a new lock\n", "code: eval-error\n"])
