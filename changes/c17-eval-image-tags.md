@@ -1,1 +1,1 @@
-The eval command takes `--sandbox-images <agent image>,<household image>`, so a run on a shared Docker host uses its own image tags, and the books oracle runs in that household image too.
+The eval command takes `--sandbox-images <agent image>,<household image>`, so a run on a shared Docker host, local or over `--sandbox-ssh`, uses its own image tags, and the books oracle runs in that household image too. Build the images under those tags first; a remote checkout must be synced from this version.

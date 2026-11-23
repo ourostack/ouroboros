@@ -93,8 +93,8 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
     }
   }
   if (typeof out.sandboxImages === "string") {
-    const [agent, household, ...rest] = out.sandboxImages.split(",")
-    if (!agent || !household || rest.length > 0) throw new Error("--sandbox-images must be <agent image>,<household image>")
+    const [agent, household, ...rest] = out.sandboxImages.split(",").map((tag) => tag.trim())
+    if (!agent || !household || rest.length > 0 || agent === household) throw new Error("--sandbox-images must be <agent image>,<household image>")
     out.sandboxImages = { agent, household }
   }
   const missing = REQUIRED.find((flag) => !seen.has(flag))

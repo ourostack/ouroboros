@@ -102,6 +102,8 @@ describe("parseEvalArgs", () => {
       .toMatchObject({ sandboxImages: { agent: "ouro-eval-c17-sandbox:local", household: "ouro-eval-c17-household:local" } })
     expect(() => parseEvalArgs([...required, "--sandbox-images", "only-one:local"])).toThrow(/--sandbox-images must be <agent image>,<household image>/)
     expect(() => parseEvalArgs([...required, "--sandbox-images", "a:local,"])).toThrow(/--sandbox-images must be/)
+    expect(() => parseEvalArgs([...required, "--sandbox-images", "x:local, x:local"])).toThrow(/--sandbox-images must be/)
+    expect(parseEvalArgs([...required, "--sandbox-images", "a:local, h:local"])).toMatchObject({ sandboxImages: { agent: "a:local", household: "h:local" } })
   })
 })
 
