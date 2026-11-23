@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import OpenAI from "openai"
 import { App } from "@microsoft/teams.apps"
-import type { Entity } from "@microsoft/teams.api"
+import type { ChannelID, Client as TeamsApiClient, Entity, IMessageActivity } from "@microsoft/teams.api"
 import { DevtoolsPlugin } from "@microsoft/teams.dev"
 import { runAgent, ChannelCallbacks, RunAgentOptions, createSummarize, repairOrphanedToolCalls } from "../heart/core"
 import type { ToolContext } from "../repertoire/tools"
@@ -22,7 +22,10 @@ import { renderChatInteraction } from "../heart/chat-interaction"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
-import { teamsInboundText } from "./teams-attachments"
+import { teamsInboundText, type TeamsActivityAttachment } from "./teams-attachments"
+import { openTeamsInboundJournal, teamsReplayDecision, teamsTurnInbound, type TeamsInboundPayload, type TeamsTurnInbound } from "./teams-inbound"
+import type { InboundJournal } from "./inbound-journal"
+import { turnSpoke } from "./turn-attempts"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story"
 import { createToolActivityCallbacks } from "../heart/tool-activity-callbacks"
@@ -683,9 +686,28 @@ interface QueuedTeamsTurn {
 const queuedTeamsTurns = new Map<string, QueuedTeamsTurn[]>()
 const activeTeamsActors = new Map<string, string>()
 const consumingTeamsSteering = new Set<string>()
+/** The journal entries of the message turn running in each conversation, so steering it takes in shares its outcome. */
+const activeTeamsInbound = new Map<string, TeamsTurnInbound>()
+/** The journal entry of each message queued as steering. */
+const steeringInboundIds = new WeakMap<SteeringFollowUp, string>()
+
+let teamsJournal: { agentRoot: string; journal: InboundJournal<TeamsInboundPayload> } | null = null
+function teamsInboundJournal(): InboundJournal<TeamsInboundPayload> {
+  const agentRoot = getAgentRoot()
+  if (teamsJournal?.agentRoot !== agentRoot) teamsJournal = { agentRoot, journal: openTeamsInboundJournal(agentRoot) }
+  return teamsJournal.journal
+}
 
 function drainTeamsSteering(key: string): SteeringFollowUp[] {
   const followUps = _turnCoordinator.drainFollowUps(key)
+  for (const followUp of followUps) {
+    const inboundId = steeringInboundIds.get(followUp)
+    if (!inboundId) continue
+    const active = activeTeamsInbound.get(key)
+    if (active) active.absorb(inboundId)
+    // A reaction or edit turn keeps no journal entry; the message it took in is answered there, never replayed.
+    else teamsInboundJournal().settle(inboundId, "answered", "taken in by a running turn about a reaction or edit")
+  }
   const consumed = new Set(followUps)
   const queue = queuedTeamsTurns.get(key)
   if (queue) queuedTeamsTurns.set(key, queue.filter(turn => !turn.steering || !consumed.has(turn.steering)))
@@ -698,7 +720,7 @@ function drainTeamsSteering(key: string): SteeringFollowUp[] {
 async function coordinateTeamsTurn(
   conversationId: string,
   text: string,
-  identity: { aadObjectId?: string; tenantId?: string; userId?: string; replyToId?: string },
+  identity: { aadObjectId?: string; tenantId?: string; userId?: string; replyToId?: string; inboundId?: string },
   run: () => Promise<void>,
 ): Promise<void> {
   const key = teamsTurnKey(conversationId)
@@ -707,6 +729,7 @@ async function coordinateTeamsTurn(
     if (!identity.replyToId && !/\bfeedback:/i.test(text) && consumingTeamsSteering.has(key) &&
       activeTeamsActors.get(key) === actorKey && !queuedTeamsTurns.get(key)?.some(turn => !turn.steering)) {
       const steering = { conversationId, text, receivedAt: Date.now(), effect: classifySteeringFollowUpEffect(text) }
+      if (identity.inboundId) steeringInboundIds.set(steering, identity.inboundId)
       _turnCoordinator.enqueueFollowUp(key, steering)
       const queue = queuedTeamsTurns.get(key) ?? []
       queue.push({ actorKey, run, steering, resolve: () => {}, reject: () => {} })
@@ -847,6 +870,46 @@ export interface TeamsMessageContext {
   // Bot Framework API client for proactive messaging
   botApi?: ToolContext["botApi"]
   teamsSendImage?: (attachment: TeamsImageAttachment, caption: string) => Promise<string>
+  /** The journal entries this turn answers for; tools that message a person are noted there before they run. */
+  inbound?: TeamsTurnInbound
+}
+
+/** The parts of an incoming message activity a turn reads; a replay rebuilds them from the journal. */
+type TeamsInboundActivity = Partial<Pick<IMessageActivity, "id" | "text" | "replyToId" | "channelId" | "attachments">> & {
+  conversation?: Partial<IMessageActivity["conversation"]>
+  from?: Partial<IMessageActivity["from"]>
+  recipient?: Partial<IMessageActivity["recipient"]>
+}
+
+interface AdmittedTeamsTurn {
+  activity: TeamsInboundActivity
+  api: TeamsApiClient
+  signin: (options: { connectionName: string }) => Promise<string | undefined>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  send: (activity: any) => Promise<unknown>
+  text: string
+  convId: string
+  userId: string
+  channelId: ChannelID
+  sendText: (text: string) => Promise<void>
+  stream: TeamsStream
+  requestContext: Parameters<typeof reportTeamsRequest>[2]
+  inbound?: TeamsTurnInbound
+  inboundId?: string
+}
+
+/** A turn that threw has its one outcome: failed, naming what already went out when something did. */
+function settleFailedTeamsTurn(inbound: TeamsTurnInbound | undefined, error: string): void {
+  if (!inbound) return
+  try {
+    inbound.settle("failed", `the turn failed: ${error.slice(0, 200)}`)
+  } catch (settleError) {
+    emitNervesEvent({
+      level: "error", component: "senses", event: "senses.teams_inbound_settle_failed",
+      message: "could not record a failed Teams turn; the next process records it",
+      meta: { error: String(settleError) },
+    })
+  }
 }
 
 const OAUTH_SERVICE_LABELS: Record<string, string> = { graph: "Microsoft Graph", ado: "Azure DevOps", github: "GitHub" }
@@ -952,7 +1015,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   suppressEmptyStreamMessage?: boolean
 }, runtimeOverrides?: {
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
-}): Promise<void> {
+}): Promise<"busy" | undefined> {
   const turnKey = teamsTurnKey(conversationId)
   const agentName = getAgentName()
   const owner = { agentName, agentRoot: getAgentRoot(agentName) }
@@ -1001,6 +1064,16 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     close: stream.close.bind(stream),
   }
   const callbacks = createTeamsCallbacks(observedStream, controller, sendMessage, { conversationId, flushIntervalMs: channelConfig.flushIntervalMs, ...(reactionOverrides?.suppressEmptyStreamMessage ? { suppressEmptyStreamMessage: true } : {}) })
+  const inbound = teamsContext?.inbound
+  if (inbound) {
+    // A tool that messages a person is noted just before it runs; a failed note stops it.
+    const onToolStart = callbacks.onToolStart
+    callbacks.onToolStart = (name, args) => {
+      inbound.tools.started(name, args)
+      onToolStart(name, args)
+    }
+    callbacks.onToolDispatch = (name) => inbound.tools.dispatched(name)
+  }
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
   const pendingDir = getPendingDir(agentName, friendId, "teams", conversationId)
@@ -1241,7 +1314,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     if (error instanceof SessionTurnBusyError || (error instanceof Error && error.name === "SessionTurnBusyError")) {
       reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "lease_busy" })
       await stream.emit("this conversation is busy finishing another turn; please try again")
-      return
+      return "busy"
     }
     reportTeamsRequest("failed", conversationId, teamsContext, { traceId, reason: "turn_failed" })
     throw error
@@ -1345,7 +1418,7 @@ export function createTeamsSdkLogger(name = "teams-sdk"): import("@microsoft/tea
 
 // Register message, verify-state, and error handlers on an App instance.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?: any }, label: string): void {
+function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?: any }, label: string): { replayPending: () => Promise<void> } {
   const connectionNames = allOAuthConnectionNames()
 
   // Override default OAuth verify-state handler.  The SDK's built-in handler
@@ -1448,20 +1521,21 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
   })
   /* v8 ignore stop */
 
-  app.on("message", async (ctx) => {
-    const { activity, api, signin } = ctx
-    const text = activity.text || ""
-    const convId = activity.conversation?.id || "unknown"
-    const turnKey = teamsTurnKey(convId)
-    const userId = activity.from?.id || ""
-    const channelId = activity.channelId || "msteams"
-    const requestContext = {
-      inboundActivityId: activity.id, tenantId: activity.conversation?.tenantId,
-      botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
-    }
+  // Replies go out one awaited send at a time. HttpStream queues void emits and retries unknown HTTP failures
+  // internally; the SDK's single-attempt send avoids that hidden retry loop.
+  const teamsReplyTransport = (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    send: (activity: any) => Promise<unknown>,
+    inboundActivityId: string | undefined,
+    convId: string,
+    requestContext: Parameters<typeof reportTeamsRequest>[2],
+    inbound: () => TeamsTurnInbound | undefined,
+  ): { sendText: (text: string) => Promise<void>; stream: TeamsStream } => {
     const sendText = async (text: string) => {
+      // Noted before it reaches Teams, so a replay after a crash never sends it again.
+      inbound()?.noteSpoke(turnSpoke("speak", text))
       try {
-        const receipt = await ctx.send({ type: "message", text, replyToId: activity.id, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
+        const receipt = await send({ type: "message", text, replyToId: inboundActivityId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
         const messageId = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
         reportTeamsRequest(messageId ? "replied" : "reply_emitted", convId, requestContext, { delivery: messageId ? "accepted" : "unconfirmed", ...(messageId ? { outboundActivityId: messageId } : {}) })
       } catch (error) {
@@ -1475,102 +1549,29 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       emit: value => sendText(typeof value === "string" ? value : value.text),
       update: async () => {
         try {
-          await ctx.send({ type: "typing" })
+          await send({ type: "typing" })
         } catch (error) {
           emitNervesEvent({
             level: "warn", component: "channels", event: "channel.teams_typing_failed",
             message: "Teams rejected an advisory typing update; the reply is still pending",
-            meta: { conversationId: convId, inboundActivityId: activity.id,
+            meta: { conversationId: convId, inboundActivityId: inboundActivityId,
               error: error instanceof Error ? error.message : String(error) },
           })
         }
       },
       close: async () => undefined,
     }
+    return { sendText, stream }
+  }
 
-    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { stage: "received", inboundActivityId: activity.id, botId: app.id, tenantId: requestContext.tenantId, userId: userId.slice(0, 12), conversationId: convId } })
-
-    let work: Promise<void> | undefined
-    await _turnCoordinator.withTurnLock(teamsAdmissionKey(convId), async () => {
-    try {
-      if (process.env.OURO_TEAMS_DEVTOOLS !== "1" && [
-        app.id, activity.id, activity.channelId, activity.conversation?.id,
-        activity.conversation?.tenantId, activity.from?.aadObjectId || activity.from?.id,
-      ].some(value => typeof value !== "string" || !value.trim())) {
-        throw new SessionTransactionError("Teams activity identity is incomplete")
-      }
-      if (activity.id) {
-        const store = getFriendStore()
-        const identity = await new FriendResolver(store, {
-          provider: activity.from?.aadObjectId ? "aad" : "teams-conversation",
-          externalId: activity.from?.aadObjectId || convId,
-          tenantId: activity.conversation?.tenantId,
-          displayName: activity.from?.name || "Unknown",
-          channel: "teams",
-        }).resolve()
-        const admission = admitSessionActivity(sessionPath(identity.friend.id, "teams", convId), {
-          namespace: JSON.stringify(["teams.message", channelId, app.id?.toLowerCase() ?? null,
-            activity.conversation?.tenantId?.toLowerCase() ?? null,
-            activity.from?.aadObjectId?.toLowerCase() || userId, convId]),
-          activityId: activity.id,
-          payloadDigest: createHash("sha256").update(JSON.stringify([text, activity.replyToId ?? null])).digest("hex"),
-        })
-        if (admission.state === "duplicate") {
-          reportTeamsRequest("duplicate_held", convId, requestContext, { receiptId: admission.receiptId, outcome: "not_replayed" })
-          return
-        }
-      }
-      reportTeamsRequest("admitted", convId, requestContext)
-    } catch (error) {
-      reportTeamsRequest("failed", convId, requestContext, { reason: "activity_admission_failed" })
-      emitNervesEvent({
-        level: "error", component: "channels", event: "channel.activity_admission_error",
-        message: "Teams activity was not safely admitted; no new turn or steering was started",
-        meta: { conversationId: convId, inboundActivityId: activity.id, reason: "activity_admission_failed" },
-      })
-      throw error
+  // One admitted message's turn: a live activity's, or the replay of one whose process died before it finished.
+  const runAdmittedTeamsMessage = async (turn: AdmittedTeamsTurn): Promise<void> => {
+    const { activity, api, signin, text, convId, userId, channelId, sendText, stream, requestContext, inbound } = turn
+    const turnKey = teamsTurnKey(convId)
+    if (inbound) {
+      teamsInboundJournal().beginAttempt(turn.inboundId!)
+      activeTeamsInbound.set(turnKey, inbound)
     }
-
-    const commandRegistry = createTeamsCommandRegistry()
-    const parsedSlashCommand = parseSlashCommand(text)
-    if (parsedSlashCommand) {
-      const dispatchResult = commandRegistry.dispatch(parsedSlashCommand.command, { channel: "teams" })
-      if (dispatchResult.handled && dispatchResult.result) {
-        if (dispatchResult.result.action === "response") {
-          await stream.emit(dispatchResult.result.message || "")
-          return
-        }
-        if (dispatchResult.result.action === "new") {
-          const commandStore = getFriendStore()
-          const commandProvider = activity.from?.aadObjectId ? "aad" as const : "teams-conversation" as const
-          const commandExternalId = activity.from?.aadObjectId || convId
-          const commandResolver = new FriendResolver(commandStore, {
-            provider: commandProvider,
-            externalId: commandExternalId,
-            tenantId: activity.conversation?.tenantId,
-            displayName: activity.from?.name || "Unknown",
-            channel: "teams",
-          })
-          const commandContext = await commandResolver.resolve()
-          deleteSession(sessionPath(commandContext.friend.id, "teams", convId))
-          await stream.emit("session cleared")
-          if (_turnCoordinator.isTurnActive(turnKey)) {
-            _turnCoordinator.enqueueFollowUp(turnKey, {
-              conversationId: convId,
-              text,
-              receivedAt: Date.now(),
-              effect: "clear_and_supersede",
-            })
-          }
-          return
-        }
-      }
-    }
-
-    work = coordinateTeamsTurn(convId, text, {
-      aadObjectId: activity.from?.aadObjectId, userId, tenantId: activity.conversation?.tenantId,
-      replyToId: activity.replyToId,
-    }, async () => {
     try {
       // Resolve OAuth connection names for this user's tenant (supports per-tenant overrides).
       const tenantId = activity.conversation?.tenantId
@@ -1632,7 +1633,8 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         githubConnectionName: tenantOAuth.githubConnectionName,
         /* v8 ignore next -- bot API availability branch; requires live SDK context @preserve */
         botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
-        teamsSendImage: createTeamsImageSender((message) => ctx.send(message), activity.id, aiLabelEntities() as Entity[]),
+        ...(inbound ? { inbound } : {}),
+        teamsSendImage: createTeamsImageSender((message) => turn.send(message), activity.id, aiLabelEntities() as Entity[]),
       }
 
       const agentName = getAgentName()
@@ -1643,13 +1645,135 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         /* v8 ignore next -- live SDK token manager; ingestTeamsAttachments tests cover the token use @preserve */
         getBotToken: async () => (await app.tokenManager.getBotToken())?.toString(),
       })
-      await handleTeamsMessage(inboundText, stream, convId, teamsContext, sendText)
+      const status = await handleTeamsMessage(inboundText, stream, convId, teamsContext, sendText)
+      // Teams is a closed sense, so the gate never drops a message, and a turn with nothing to say still sends a
+      // fallback reply: a turn that returns has answered.
+      if (status === "busy") inbound?.settle("failed", "the conversation was busy finishing another turn")
+      else inbound?.settle("answered")
     } catch (err: unknown) {
-      reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       const msg = err instanceof Error ? err.message : String(err)
+      // Recorded first: reporting the failure can itself fail.
+      settleFailedTeamsTurn(inbound, msg)
+      reportTeamsRequest("failed", convId, requestContext, { reason: "handler_failed" })
       emitNervesEvent({ level: "error", event: "channel.handler_error", component: "channels", message: msg.slice(0, 200), meta: { conversationId: convId, inboundActivityId: activity.id, botId: app.id } })
+    } finally {
+      if (inbound) activeTeamsInbound.delete(turnKey)
     }
-    })
+  }
+
+  app.on("message", async (ctx) => {
+    const { activity, api, signin } = ctx
+    const text = activity.text || ""
+    const convId = activity.conversation?.id || "unknown"
+    const turnKey = teamsTurnKey(convId)
+    const userId = activity.from?.id || ""
+    const channelId = activity.channelId || "msteams"
+    const requestContext = {
+      inboundActivityId: activity.id, tenantId: activity.conversation?.tenantId,
+      botApi: app.id && api ? { id: app.id, conversations: api.conversations } : undefined,
+    }
+    let turnInbound: TeamsTurnInbound | undefined
+    let inboundId: string | undefined
+    const { sendText, stream } = teamsReplyTransport(value => ctx.send(value), activity.id, convId, requestContext, () => turnInbound)
+
+    emitNervesEvent({ level: "info", event: "channel.message_received", component: "channels", message: `[${label}] incoming teams message`, meta: { stage: "received", inboundActivityId: activity.id, botId: app.id, tenantId: requestContext.tenantId, userId: userId.slice(0, 12), conversationId: convId } })
+
+    let work: Promise<void> | undefined
+    await _turnCoordinator.withTurnLock(teamsAdmissionKey(convId), async () => {
+    try {
+      if (process.env.OURO_TEAMS_DEVTOOLS !== "1" && [
+        app.id, activity.id, activity.channelId, activity.conversation?.id,
+        activity.conversation?.tenantId, activity.from?.aadObjectId || activity.from?.id,
+      ].some(value => typeof value !== "string" || !value.trim())) {
+        throw new SessionTransactionError("Teams activity identity is incomplete")
+      }
+      if (activity.id) {
+        const store = getFriendStore()
+        const identity = await new FriendResolver(store, {
+          provider: activity.from?.aadObjectId ? "aad" : "teams-conversation",
+          externalId: activity.from?.aadObjectId || convId,
+          tenantId: activity.conversation?.tenantId,
+          displayName: activity.from?.name || "Unknown",
+          channel: "teams",
+        }).resolve()
+        const admission = admitSessionActivity(sessionPath(identity.friend.id, "teams", convId), {
+          namespace: JSON.stringify(["teams.message", channelId, app.id?.toLowerCase() ?? null,
+            activity.conversation?.tenantId?.toLowerCase() ?? null,
+            activity.from?.aadObjectId?.toLowerCase() || userId, convId]),
+          activityId: activity.id,
+          payloadDigest: createHash("sha256").update(JSON.stringify([text, activity.replyToId ?? null])).digest("hex"),
+        })
+        if (admission.state === "duplicate") {
+          reportTeamsRequest("duplicate_held", convId, requestContext, { receiptId: admission.receiptId, outcome: "not_replayed" })
+          return
+        }
+        // Written before the turn, so a process that dies mid-turn leaves it for the next one to answer or fail.
+        const journal = teamsInboundJournal()
+        journal.record(admission.receiptId, {
+          label, activityId: activity.id, conversationId: convId, conversationType: activity.conversation?.conversationType as string | undefined,
+          text, replyToId: activity.replyToId, userId, aadObjectId: activity.from?.aadObjectId,
+          tenantId: activity.conversation?.tenantId, displayName: activity.from?.name, channelId: String(channelId),
+          attachments: activity.attachments as TeamsActivityAttachment[] | undefined,
+        })
+        inboundId = admission.receiptId
+        turnInbound = teamsTurnInbound(journal, inboundId)
+      }
+      reportTeamsRequest("admitted", convId, requestContext)
+    } catch (error) {
+      reportTeamsRequest("failed", convId, requestContext, { reason: "activity_admission_failed" })
+      emitNervesEvent({
+        level: "error", component: "channels", event: "channel.activity_admission_error",
+        message: "Teams activity was not safely admitted; no new turn or steering was started",
+        meta: { conversationId: convId, inboundActivityId: activity.id, reason: "activity_admission_failed" },
+      })
+      throw error
+    }
+
+    const commandRegistry = createTeamsCommandRegistry()
+    const parsedSlashCommand = parseSlashCommand(text)
+    if (parsedSlashCommand) {
+      const dispatchResult = commandRegistry.dispatch(parsedSlashCommand.command, { channel: "teams" })
+      if (dispatchResult.handled && dispatchResult.result) {
+        if (dispatchResult.result.action === "response") {
+          await stream.emit(dispatchResult.result.message || "")
+          turnInbound?.settle("answered")
+          return
+        }
+        if (dispatchResult.result.action === "new") {
+          const commandStore = getFriendStore()
+          const commandProvider = activity.from?.aadObjectId ? "aad" as const : "teams-conversation" as const
+          const commandExternalId = activity.from?.aadObjectId || convId
+          const commandResolver = new FriendResolver(commandStore, {
+            provider: commandProvider,
+            externalId: commandExternalId,
+            tenantId: activity.conversation?.tenantId,
+            displayName: activity.from?.name || "Unknown",
+            channel: "teams",
+          })
+          const commandContext = await commandResolver.resolve()
+          deleteSession(sessionPath(commandContext.friend.id, "teams", convId))
+          await stream.emit("session cleared")
+          turnInbound?.settle("answered")
+          if (_turnCoordinator.isTurnActive(turnKey)) {
+            _turnCoordinator.enqueueFollowUp(turnKey, {
+              conversationId: convId,
+              text,
+              receivedAt: Date.now(),
+              effect: "clear_and_supersede",
+            })
+          }
+          return
+        }
+      }
+    }
+
+    work = coordinateTeamsTurn(convId, text, {
+      aadObjectId: activity.from?.aadObjectId, userId, tenantId: activity.conversation?.tenantId,
+      replyToId: activity.replyToId, inboundId,
+    }, () => runAdmittedTeamsMessage({
+      activity, api, signin, send: value => ctx.send(value), text, convId, userId, channelId, sendText, stream,
+      requestContext, inbound: turnInbound, inboundId,
+    }))
     })
     await work
   })
@@ -1658,6 +1782,57 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     const msg = error instanceof Error ? error.message : String(error)
     emitNervesEvent({ level: "error", event: "channel.app_error", component: "channels", message: `[${label}] ${msg}`, meta: { botId: app.id, label } })
   })
+
+  // Messages a dead process admitted but never answered: each is answered with a proactive send into its own
+  // conversation, or, when part of a reply already went out or its tries are used up, recorded as failed.
+  const replayPending = async (): Promise<void> => {
+    try {
+      const journal = teamsInboundJournal()
+      for (const entry of journal.pending()) {
+        if (entry.payload.label !== label) continue
+        const decision = teamsReplayDecision(entry)
+        if (decision.action === "fail") {
+          journal.settle(entry.id, "failed", decision.detail)
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.teams_inbound_not_replayed",
+            message: "recorded a Teams message whose turn never finished as failed instead of running it again",
+            meta: { inboundActivityId: entry.payload.activityId, conversationId: entry.payload.conversationId, attempts: entry.attempts, detail: decision.detail } })
+          continue
+        }
+        const payload = entry.payload
+        const convId = payload.conversationId
+        const activity: TeamsInboundActivity = {
+          id: payload.activityId, text: payload.text, replyToId: payload.replyToId, channelId: payload.channelId as ChannelID,
+          attachments: payload.attachments as IMessageActivity["attachments"],
+          conversation: { id: convId, tenantId: payload.tenantId, conversationType: payload.conversationType as IMessageActivity["conversation"]["conversationType"] },
+          from: { id: payload.userId, aadObjectId: payload.aadObjectId, name: payload.displayName },
+          recipient: { id: app.id },
+        }
+        const requestContext = {
+          inboundActivityId: payload.activityId, tenantId: payload.tenantId,
+          // A replay sends with app.send, which already needs the app's id.
+          botApi: { id: app.id!, conversations: app.api.conversations },
+        }
+        const inbound = teamsTurnInbound(journal, entry.id)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const send = (value: any) => app.send(convId, value)
+        const { sendText, stream } = teamsReplyTransport(send, payload.activityId, convId, requestContext, () => inbound)
+        emitNervesEvent({ component: "senses", event: "senses.teams_inbound_replayed",
+          message: "answering a Teams message whose turn a dead process never finished",
+          meta: { inboundActivityId: payload.activityId, conversationId: convId, attempts: entry.attempts } })
+        await coordinateTeamsTurn(convId, payload.text, {
+          aadObjectId: payload.aadObjectId, userId: payload.userId, tenantId: payload.tenantId, replyToId: payload.replyToId, inboundId: entry.id,
+        }, () => runAdmittedTeamsMessage({
+          activity, api: app.api, signin: async () => undefined, send, text: payload.text, convId, userId: payload.userId,
+          channelId: payload.channelId as ChannelID, sendText, stream, requestContext, inbound, inboundId: entry.id,
+        }))
+      }
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "senses", event: "senses.teams_inbound_replay_failed",
+        message: "could not finish answering Teams messages a dead process left; the next start tries again",
+        meta: { label, error: String(error) } })
+    }
+  }
+  return { replayPending }
 }
 
 export interface TeamsDrainAndSendResult {
@@ -2029,7 +2204,7 @@ export async function drainAndSendPendingTeams(
 export function startTeamsApp(): void {
   const teamsConfig = getTeamsConfig()
   const { app, mode } = createBotApp(teamsConfig)
-  registerBotHandlers(app, "primary")
+  const primary = registerBotHandlers(app, "primary")
 
   // Prevent SDK internal stream errors (e.g. "Content stream is not allowed
   // on a already completed streamed message") from crashing the process.
@@ -2051,6 +2226,7 @@ export function startTeamsApp(): void {
   const startupTools = getToolsForChannel(getChannelCapabilities("teams"))
   const toolNames = startupTools.map((t) => t.function.name)
   emitNervesEvent({ level: "info", event: "channel.app_started", component: "channels", message: `Teams bot started on port ${port} with ${mode} (chunked streaming)`, meta: { port, mode, toolCount: toolNames.length, hasProactive: toolNames.includes("teams_send_message") } })
+  void primary.replayPending()
 
   // --- Secondary bot (dual-bot support) ---
   // If teamsSecondary has a clientId, start a second App on an internal port
@@ -2059,8 +2235,9 @@ export function startTeamsApp(): void {
   const secondaryConfig = getTeamsSecondaryConfig()
   if (secondaryConfig.clientId) {
     const { app: secondaryApp, mode: secondaryMode } = createBotApp(secondaryConfig)
-    registerBotHandlers(secondaryApp, "secondary")
+    const secondary = registerBotHandlers(secondaryApp, "secondary")
     secondaryApp.start(SECONDARY_INTERNAL_PORT)
+    void secondary.replayPending()
     emitNervesEvent({ level: "info", event: "channel.app_started", component: "channels", message: `Secondary bot started on internal port ${SECONDARY_INTERNAL_PORT} with ${secondaryMode}`, meta: { port: SECONDARY_INTERNAL_PORT, mode: secondaryMode } })
 
     // Proxy: forward /api/messages-secondary on the primary app's Express
