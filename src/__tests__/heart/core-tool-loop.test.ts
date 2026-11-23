@@ -2361,14 +2361,62 @@ describe("runAgent tool loop guard", () => {
 
     it("still stops a turn whose last several steps made no progress", async () => {
       const { MAX_PROVIDER_ITERATIONS, STEP_BUDGET_EXTENSION } = await import("../../heart/core")
+      // Progress last at step MAX - EXT - 1, just outside the window; every later call is new but fails.
       const fresh = MAX_PROVIDER_ITERATIONS - STEP_BUDGET_EXTENSION - 1
-      for (let i = 1; i <= fresh; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
-      for (let i = fresh + 1; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, "v1"))
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, i <= fresh ? `ok${i}` : `fail${i}`))
       mockCreate.mockReturnValueOnce(settleCall("report"))
-      const result = await run(vi.fn().mockResolvedValue("ok"))
+      const result = await run(vi.fn(async (_name: string, args: any) => { if (String(args.value).startsWith("fail")) throw new Error("exit 1"); return "ok" }))
       expect(result.outcome).toBe("settled")
       expect(mockCreate).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS + 1)
       expect(JSON.stringify(mockCreate.mock.calls.at(-1)![0].messages)).toContain("step budget for this turn is used up")
+    })
+
+    it("extends when the only recent progress is at the far edge of the window", async () => {
+      const { MAX_PROVIDER_ITERATIONS, STEP_BUDGET_EXTENSION } = await import("../../heart/core")
+      const edge = MAX_PROVIDER_ITERATIONS - STEP_BUDGET_EXTENSION
+      for (let i = 1; i <= MAX_PROVIDER_ITERATIONS; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, i <= edge ? `ok${i}` : `fail${i}`))
+      mockCreate.mockReturnValueOnce(settleCall("done"))
+      const execTool = vi.fn(async (_name: string, args: any) => { if (String(args.value).startsWith("fail")) throw new Error("exit 1"); return "ok" })
+      const result = await run(execTool)
+      expect(result.outcome).toBe("settled")
+      expect(execTool).toHaveBeenCalledTimes(MAX_PROVIDER_ITERATIONS)
+      expect(JSON.stringify(mockCreate.mock.calls.at(-1)![0].messages)).not.toContain("step budget for this turn is used up")
+    })
+
+    it("puts the note on a lone speak and on a batch rejected before it ran", async () => {
+      const { MAX_PROVIDER_ITERATIONS } = await import("../../heart/core")
+      const speakCall = (id: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "speak", arguments: JSON.stringify({ message: "still checking" }) } }])])
+      const badCall = (id: string) => makeStream([makeChunk(undefined, [{ index: 0, id, function: { name: "probe", arguments: JSON.stringify({}) } }])])
+      mockCreate.mockReturnValueOnce(probeCall("call_1", "v1"))
+      for (let i = 2; i < MAX_PROVIDER_ITERATIONS - 2; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `fail${i}`))
+      mockCreate.mockReturnValueOnce(badCall(`call_${MAX_PROVIDER_ITERATIONS - 2}`))
+      mockCreate.mockReturnValueOnce(speakCall(`call_${MAX_PROVIDER_ITERATIONS - 1}`))
+      mockCreate.mockReturnValueOnce(settleCall("report"))
+      await run(vi.fn(async (_name: string, args: any) => { if (String(args.value).startsWith("fail")) throw new Error("exit 1"); return "ok" }))
+      const requests = mockCreate.mock.calls.map((call: any) => call[0])
+      expect(toolResults(requests[MAX_PROVIDER_ITERATIONS - 2]).at(-1)).toMatch(/invalid tool arguments[\s\S]*\[step budget\] at most 1 more step/)
+      expect(toolResults(requests[MAX_PROVIDER_ITERATIONS - 1]).at(-1)).toMatch(/^\(spoken\)\n\n\[step budget\] that was the last step/)
+    })
+
+    it("words the note for rest on a private turn, and gives none when the turn has no wrap-up tool", async () => {
+      const { runAgent, MAX_PROVIDER_ITERATIONS_CEILING } = await import("../../heart/core")
+      let response = 0
+      mockCreate.mockImplementation(() => response < MAX_PROVIDER_ITERATIONS_CEILING ? probeCall(`call_${++response}`, `v${response}`) : restCall("probed them all"))
+      const execTool = vi.fn().mockResolvedValue("ok")
+      await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "inner", undefined, {
+        tools: [probeTool] as any, execTool, toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+        pendingMessages: [{ from: "friend", content: "new" }],
+      } as any)
+      const noted = mockCreate.mock.calls.map((call: any) => toolResults(call[0]).at(-1) ?? "").filter((content: string) => content.includes("[step budget]"))
+      expect(noted.at(-1)).toContain("call rest now")
+      mockCreate.mockReset()
+      response = 0
+      mockCreate.mockImplementation(() => probeCall(`call_${++response}`, `v${response}`))
+      await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "inner", undefined, {
+        tools: [probeTool] as any, execTool, hardDisableTools: true,
+        toolContext: { signin: async () => undefined, delegatedOrigins: [{ id: "held" }] },
+      } as any)
+      expect(mockCreate.mock.calls.some((call: any) => JSON.stringify(call[0].messages).includes("[step budget]"))).toBe(false)
     })
 
     it("tells the model how many steps can still run tools once few are left, and to settle after the last", async () => {
@@ -2382,15 +2430,15 @@ describe("runAgent tool loop guard", () => {
       // After step k, MAX - 1 - k later steps run tools; notes start once that is STEP_BUDGET_NOTICE_AT.
       const firstNoted = MAX_PROVIDER_ITERATIONS - 1 - STEP_BUDGET_NOTICE_AT
       expect(lastResult(firstNoted - 1)).not.toContain("[step budget]")
-      expect(lastResult(firstNoted)).toContain(`[step budget] ${STEP_BUDGET_NOTICE_AT} more steps in this turn can run tools; more come only while new calls keep succeeding`)
-      expect(lastResult(firstNoted + 1)).toContain("[step budget] 1 more step in this turn can run tools")
+      expect(lastResult(firstNoted)).toContain(`[step budget] at most ${STEP_BUDGET_NOTICE_AT} more step${STEP_BUDGET_NOTICE_AT === 1 ? "" : "s"} in this turn can run tools; more come only while new calls keep succeeding`)
+      expect(lastResult(firstNoted + 1)).toContain("[step budget] at most 1 more step in this turn can run tools")
       expect(lastResult(MAX_PROVIDER_ITERATIONS - 1)).toContain("[step budget] that was the last step in this turn that can run tools. call settle now")
       expect(toolResults(requests[firstNoted]).filter((content) => content.includes("[step budget]"))).toHaveLength(1)
     })
 
     it("says when the steps left are the turn's hard limit, and words it for rest on a private turn", async () => {
       const { stepBudgetNotice } = await import("../../heart/core")
-      expect(stepBudgetNotice(2, 2, "settle")).toContain("2 more steps in this turn can run tools, and that is this turn's limit")
+      expect(stepBudgetNotice(2, 2, "settle")).toContain("at most 2 more steps in this turn can run tools, and that is this turn's limit")
       expect(stepBudgetNotice(0, 0, "rest")).toContain("call rest now")
       const { MAX_PROVIDER_ITERATIONS_CEILING } = await import("../../heart/core")
       for (let i = 1; i <= MAX_PROVIDER_ITERATIONS_CEILING; i++) mockCreate.mockReturnValueOnce(probeCall(`call_${i}`, `v${i}`))
