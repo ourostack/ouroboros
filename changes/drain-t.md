@@ -1,1 +1,1 @@
-- When `npm publish` exits 0, the publish step's logged npm output now keeps the first 5 and last 15 lines of each stream. The first 20 lines of a large package's output are all file listing, which cut off npm's closing lines about the registry. Evidence only; not a fix for any cause.
+- The release check that npm serves a just-published version waits up to 20 minutes (was 10), and on failure prints npm's full error, the registry, whether the version list includes the version, and the dist-tags.
