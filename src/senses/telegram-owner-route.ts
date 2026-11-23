@@ -24,7 +24,16 @@ export interface OwnerRouteItem {
 }
 
 export type OwnerRouteOutcome = { status: "delivered" } | { status: "unreachable"; detail: string }
-export type OwnerRoute = (item: OwnerRouteItem) => Promise<OwnerRouteOutcome>
+export type OwnerRoute = ((item: OwnerRouteItem) => Promise<OwnerRouteOutcome>) & {
+  /** Checks that the peer answers as itself, sending nothing. */
+  probe?: () => Promise<OwnerRouteOutcome>
+}
+
+/** How often the Butler checks the peer, and how many failed checks in a row (15 minutes) count as down. */
+export const OWNER_ROUTE_WATCH_INTERVAL_MS = 5 * 60_000
+export const OWNER_ROUTE_WATCH_FAILURES = 3
+export const OWNER_ROUTE_DOWN_TEXT = "Slugger (your phone bot) has been unreachable for 15 min; agents can't reach you through him."
+export const OWNER_ROUTE_BACK_TEXT = "Slugger is reachable again, so agents reach you through him as before."
 
 export const OWNER_ROUTE_FALLBACK_PREFIX = "Slugger can't be reached, so this comes to you directly."
 
@@ -84,14 +93,25 @@ export function createA2AOwnerRoute(options: {
 }): OwnerRoute {
   const fetchCard = options.fetchCard ?? fetchA2AAgentCard
   const send = options.send ?? sendSealedA2AChat
-  return async (item) => {
+  /** null when the card at the address serves the pinned DID; otherwise why not. */
+  const pinned = async (): Promise<string | null> => {
+    const served = cardDid(await fetchCard(options.cardUrl))
+    if (served === options.did) return null
+    emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_owner_route_pin_mismatch", message: "the owner route's peer card serves another DID", meta: { cardUrl: options.cardUrl, served: served ?? null, pinned: options.did } })
+    return `the card at ${options.cardUrl} serves ${served}, not the pinned ${options.did}`
+  }
+  const probe = async (): Promise<OwnerRouteOutcome> => {
     try {
-      const served = cardDid(await fetchCard(options.cardUrl))
-      if (served !== options.did) {
-        const detail = `the card at ${options.cardUrl} serves ${served}, not the pinned ${options.did}`
-        emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_owner_route_pin_mismatch", message: "the owner route's peer card serves another DID", meta: { cardUrl: options.cardUrl, served: served ?? null, pinned: options.did } })
-        return { status: "unreachable", detail }
-      }
+      const detail = await pinned()
+      return detail ? { status: "unreachable", detail } : { status: "delivered" }
+    } catch (error) {
+      return { status: "unreachable", detail: reason(error) }
+    }
+  }
+  const route = async (item: OwnerRouteItem): Promise<OwnerRouteOutcome> => {
+    try {
+      const detail = await pinned()
+      if (detail) return { status: "unreachable", detail }
       await send({ cardUrl: options.cardUrl, text: formatOwnerRouteMessage(item), identity: await options.loadIdentity() })
       emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_delivered", message: "sent a self-started Butler message to the owner's primary agent", meta: { urgency: item.urgency, dedupeKey: item.dedupeKey } })
       return { status: "delivered" }
@@ -100,6 +120,7 @@ export function createA2AOwnerRoute(options: {
       return { status: "unreachable", detail: reason(error) }
     }
   }
+  return Object.assign(route, { probe })
 }
 
 /** The owner route `agent.json` names (`senses.telegram.ownerNoticesTo`), signing as this agent's A2A identity; none when unset. */
