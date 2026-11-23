@@ -2904,6 +2904,10 @@ export class OuroDaemon {
             )
             const binding = matches.length === 1 ? matches[0].mcpBinding : undefined
             if (!binding) return { ok: false, error: "MCP tool is unavailable or ambiguous" }
+            // A tool that asks the person first can't run from here: nothing on this path can ask them (ourostack/ouroboros#1694).
+            if (matches[0].approvalPolicy?.(parsedArgs).kind === "required") {
+              return { ok: false, error: `${binding.server}/${binding.rawName} is declared consequential, so it runs only once the person approves it in a conversation; ouro mcp call can't ask them, so nothing ran.` }
+            }
             const result = await mcpCallManager.manager.callTool(binding, parsedArgs, owner)
             return { ok: true, data: result }
           } catch (error) {
