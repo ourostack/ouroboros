@@ -313,7 +313,7 @@ describe("ponder packets in runAgent", () => {
     })))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
 
-    const callbacks = makeCallbacks()
+    const callbacks = makeCallbacks({ onToolDispatch: vi.fn() })
     const result = await runAgent(
       [{ role: "user", content: "hi" }],
       callbacks,
@@ -327,6 +327,8 @@ describe("ponder packets in runAgent", () => {
     )
 
     expect(result.outcome).toBe("settled")
+    expect(callbacks.onToolDispatch).toHaveBeenCalledOnce()
+    expect(callbacks.onToolDispatch).toHaveBeenCalledWith("ponder")
     expect(mockCreate).toHaveBeenCalledTimes(2)
     expect(mockCreatePonderPacket).toHaveBeenCalledWith(
       "/mock/repo/testagent",

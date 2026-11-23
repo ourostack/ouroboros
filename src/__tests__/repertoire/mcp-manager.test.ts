@@ -236,12 +236,16 @@ describe("McpManager", () => {
         mail: { command: "mail-server" },
       })
 
-      const result = await manager.callTool(fixtureBinding(view, "mail", "send_mail"), { to: "test@test.com" }, OWNER)
+      const beforeCall = vi.fn()
+      const result = await manager.callTool(fixtureBinding(view, "mail", "send_mail"), { to: "test@test.com" }, OWNER, beforeCall)
 
       expect(result).toEqual({
         content: [{ type: "text", text: "mail result" }],
       })
       expect(clientInstances[1].callTool).toHaveBeenCalledWith("send_mail", { to: "test@test.com" })
+      // Told once the call is going out, just before the server is asked.
+      expect(beforeCall).toHaveBeenCalledOnce()
+      expect(beforeCall.mock.invocationCallOrder[0]).toBeLessThan(clientInstances[1].callTool.mock.invocationCallOrder[0])
     })
 
     it("returns error for unknown server", async () => {
@@ -251,10 +255,12 @@ describe("McpManager", () => {
         ado: { command: "ado-server" },
       })
 
+      const beforeCall = vi.fn()
       await expect(manager.callTool({
         ...fixtureBinding(view, "ado", "get_items"), server: "unknown",
-      }, {}, OWNER)).rejects.toThrow(/stale|unavailable/i)
+      }, {}, OWNER, beforeCall)).rejects.toThrow(/stale|unavailable/i)
       expect(clientInstances[0].callTool).not.toHaveBeenCalled()
+      expect(beforeCall).not.toHaveBeenCalled()
     })
 
     it("returns error for disconnected server", async () => {
@@ -271,7 +277,10 @@ describe("McpManager", () => {
         ado: { command: "ado-server" },
       })
 
-      await expect(manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER)).rejects.toThrow(/disconnected/i)
+      const beforeCall = vi.fn()
+      await expect(manager.callTool(fixtureBinding(view, "ado", "get_items"), {}, OWNER, beforeCall)).rejects.toThrow(/disconnected/i)
+      // Refused before it went out: nothing was done.
+      expect(beforeCall).not.toHaveBeenCalled()
     })
 
     it("reconnects a stale disconnected transport before calling a tool", async () => {
