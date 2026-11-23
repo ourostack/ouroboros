@@ -31,7 +31,7 @@ function emptyObservation(): Observation {
   return { timeline: [], finalReply: "", library: [], mail: [], created: [], outcome: "settled", steps: 0, oracle: {} }
 }
 
-/** What the guest's grader reports (deploy/eval/u/tools/grade.mjs). */
+/** What the guest's grader reports (deploy/eval/u/tools/grade.mjs): every section, always, or `{ error }`. */
 export type UGrade = {
   typecheck: { ok: boolean; output: string }
   axe: { ok: boolean; violations: number; output: string }
@@ -45,8 +45,9 @@ export function readGrade(value: unknown): UGrade | { error: string } {
   if (!isRecord(value)) return { error: "the guest reported no grade" }
   if (typeof value.error === "string") return { error: value.error }
   const { typecheck, axe, hidden } = value
-  if (!isRecord(typecheck) || typeof typecheck.ok !== "boolean" || !isRecord(axe) || typeof axe.ok !== "boolean" || typeof axe.violations !== "number"
-    || !isRecord(hidden) || typeof hidden.firstPressHeld !== "boolean" || typeof hidden.confirmedOnce187 !== "boolean" || typeof hidden.statusSaysDone !== "boolean") {
+  if (!isRecord(typecheck) || typeof typecheck.ok !== "boolean" || typeof typecheck.output !== "string"
+    || !isRecord(axe) || typeof axe.ok !== "boolean" || typeof axe.violations !== "number" || typeof axe.output !== "string"
+    || !isRecord(hidden) || typeof hidden.firstPressHeld !== "boolean" || typeof hidden.confirmedOnce187 !== "boolean" || typeof hidden.statusSaysDone !== "boolean" || typeof hidden.detail !== "string") {
     return { error: "the guest's grade is malformed" }
   }
   return value as UGrade
@@ -71,9 +72,10 @@ export function gradeU(run: SandboxRun): Verdict {
 /** What is recorded about each U arm before any session (section 3): where it differs from the kit it stands for. */
 export const U_FIDELITY: Readonly<Record<string, string[]>> = {
   "U:all": [
-    "every arm is the same project template with the kit installed under @kit/ui, and the same five tools; a tool's path is relative to the project, reads may follow node_modules into the kit's packages, and writes never reach node_modules",
+    "every arm is the same project template with the kit installed under @kit/ui, and the same five tools; a tool's path is relative to the project, reads may follow node_modules into the kit's packages, and writes never reach node_modules; read_file gives at most 60,000 characters a call, with an offset to read on",
     "the type-check and the axe scan use the checking tools' own compiler settings and rules, not files the model can change; axe runs the WCAG 2.x A and AA rules on the first render in jsdom, where no kit's stylesheet is loaded",
-    "the job and its debrief run in one conversation with the arm's tools; finish ends a turn with its summary as the reply; the run is graded once the conversation has ended, in the container, and the host reads the grade back as the guest reported it",
+    "the job and its debrief run in one conversation with the arm's tools; finish ends a turn with its summary as the reply; the run is graded once the conversation has ended, so a debrief call can still change the project, as X scores its household after the debrief",
+    "the grade is taken in the container and the host reads it back as the guest reported it; the model's component runs only in a page realm with no Node access, so it can't read the hidden test or write the grade",
     "the system prompt is the Butler's persona and the label line, as in every U and X arm",
   ],
 }

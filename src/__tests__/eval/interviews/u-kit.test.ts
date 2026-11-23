@@ -52,7 +52,8 @@ describe("product U's kit", () => {
     expect(gradeU(run({ error: "the grader gave no result (exit 137): Killed" })).reason).toBe("grade: the grader gave no result (exit 137): Killed")
     expect(readGrade([])).toEqual({ error: "the guest reported no grade" })
     for (const bad of [{ ...passing, typecheck: null }, { ...passing, typecheck: { ok: "yes" } }, { ...passing, axe: { ok: true } }, { ...passing, axe: "x" }, { ...passing, axe: { violations: 0 } },
-      { ...passing, hidden: null }, { ...passing, hidden: { ...passing.hidden, firstPressHeld: 1 } }, { ...passing, hidden: { ...passing.hidden, confirmedOnce187: undefined } }, { ...passing, hidden: { ...passing.hidden, statusSaysDone: "done" } }]) {
+      { ...passing, hidden: null }, { ...passing, hidden: { ...passing.hidden, firstPressHeld: 1 } }, { ...passing, hidden: { ...passing.hidden, confirmedOnce187: undefined } }, { ...passing, hidden: { ...passing.hidden, statusSaysDone: "done" } },
+      { ...passing, typecheck: { ok: true } }, { ...passing, axe: { ok: true, violations: 0, output: 3 } }, { ...passing, hidden: { ...passing.hidden, detail: null } }, { typecheck: passing.typecheck }]) {
       expect(readGrade(bad)).toEqual({ error: "the guest's grade is malformed" })
     }
   })
