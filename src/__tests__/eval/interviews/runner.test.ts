@@ -252,6 +252,21 @@ describe("the interview runner", () => {
     expect((reports[0] as { sessions: unknown[] }).sessions).toHaveLength(1)
   })
 
+  // The command's lock guard (interview-entry.ts) relies on this: a refusal from started.add stops the study, outside
+  // any one session's crash handling, so no later session is marked started or recorded.
+  it("stops the whole study when marking a session started throws, recording and starting nothing more", async () => {
+    const ids = new Set<string>()
+    const started: InterviewDeps["started"] = {
+      has: (id) => ids.has(id),
+      add: (id) => { if (ids.size > 0) throw new Error(`refused to start ${id}`); ids.add(id) },
+    }
+    const { d, reports, model } = deps(sandbox(() => ({})), target(chooseOuro), { started })
+    await expect(runInterviews(args({ sessions: ["X-pilot", "X-1"] }), d)).rejects.toThrow("refused to start X-1")
+    expect([...ids]).toEqual(["X-pilot"])
+    expect((reports[0] as { sessions: Array<{ id: string }> }).sessions.map((x) => x.id)).toEqual(["X-pilot"])
+    expect(model.sent.length).toBeGreaterThan(0)
+  })
+
   it("writes the report even when the run itself fails partway", async () => {
     const quotaFails = target(chooseOuro)
     let reads = 0
