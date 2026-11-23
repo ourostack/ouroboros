@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as nerves from "../../../nerves/runtime"
 import { turnSpoke } from "../../../senses/turn-attempts"
@@ -8,6 +9,8 @@ import {
   failLeftoverVoiceUtterances,
   recordVoiceUtterance,
   seenVoiceUtterance,
+  closeVoiceUtteranceBridge,
+  openVoiceUtteranceBridge,
   voiceUtterances,
   type VoiceUtterancePayload,
 } from "../../../senses/voice/utterances"
@@ -137,5 +140,54 @@ describe("voice utterance records", () => {
     vi.spyOn(nerves, "emitNervesEvent")
     expect(failLeftoverVoiceUtterances("/dev/null/not-a-dir", "start")).toBe(0)
     expect(emitted("senses.voice_utterance_record_failed")).toEqual([expect.objectContaining({ level: "error" })])
+  })
+})
+
+describe("whose leftover utterances a sweep records as failed", () => {
+  const leftover = (dir: string, id: string, owner?: VoiceUtterancePayload["owner"]) => {
+    voiceUtterances(dir).record(id, { ...payload, ...(owner ? { owner } : {}) })
+  }
+
+  it("stamps each record with the process and the bridge that made it", () => {
+    const dir = outputDir()
+    const bridge = openVoiceUtteranceBridge()
+    recordVoiceUtterance(dir, "twilio-CA1-mine", payload, bridge)
+    recordVoiceUtterance(dir, "twilio-CA1-loose", payload)
+    expect(voiceUtterances(dir).get("twilio-CA1-mine")?.payload.owner).toEqual({ pid: process.pid, bridge })
+    expect(voiceUtterances(dir).get("twilio-CA1-loose")?.payload.owner).toEqual({ pid: process.pid })
+    closeVoiceUtteranceBridge(bridge)
+  })
+
+  it("leaves another open bridge's utterances alone, and fails its own and those of a bridge that closed", () => {
+    const dir = outputDir()
+    const first = openVoiceUtteranceBridge()
+    const second = openVoiceUtteranceBridge()
+    recordVoiceUtterance(dir, "twilio-CA1-first", payload, first)
+    recordVoiceUtterance(dir, "twilio-CA2-second", payload, second)
+    recordVoiceUtterance(dir, "twilio-CA3-nobridge", payload)
+    expect(failLeftoverVoiceUtterances(dir, "shutdown", second)).toBe(2)
+    expect(voiceUtterances(dir).outcome("twilio-CA2-second")).toMatchObject({ outcome: "failed" })
+    expect(voiceUtterances(dir).outcome("twilio-CA3-nobridge")).toMatchObject({ outcome: "failed" })
+    expect(voiceUtterances(dir).get("twilio-CA1-first")).not.toBeNull()
+    closeVoiceUtteranceBridge(second)
+    expect(failLeftoverVoiceUtterances(dir, "start")).toBe(0)
+    closeVoiceUtteranceBridge(first)
+    expect(failLeftoverVoiceUtterances(dir, "start")).toBe(1)
+    expect(voiceUtterances(dir).outcome("twilio-CA1-first")).toMatchObject({ outcome: "failed" })
+  })
+
+  it("leaves a live process's utterances alone, and fails those of a stopped process or an older build", () => {
+    const dir = outputDir()
+    const stopped = spawnSync(process.execPath, ["-e", ""]).pid!
+    leftover(dir, "twilio-CA1-live", { pid: process.ppid, bridge: "theirs" })
+    // A process this user may not signal, such as launchd or init, is still running.
+    leftover(dir, "twilio-CA2-unsignalable", { pid: 1, bridge: "theirs" })
+    leftover(dir, "twilio-CA3-stopped", { pid: stopped, bridge: "theirs" })
+    leftover(dir, "twilio-CA4-older", undefined)
+    expect(failLeftoverVoiceUtterances(dir, "start")).toBe(asRoot ? 3 : 2)
+    expect(voiceUtterances(dir).outcome("twilio-CA3-stopped")).toMatchObject({ outcome: "failed" })
+    expect(voiceUtterances(dir).outcome("twilio-CA4-older")).toMatchObject({ outcome: "failed" })
+    expect(voiceUtterances(dir).get("twilio-CA1-live")).not.toBeNull()
+    if (!asRoot) expect(voiceUtterances(dir).get("twilio-CA2-unsignalable")).not.toBeNull()
   })
 })
