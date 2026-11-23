@@ -1,0 +1,1 @@
+The Butler's household profile (version 8) gets the media tools: a friend can find media and make it available. Applying a quality or release profile, removing blocklist entries, owner-worded stalled cleanups and retrying blocklisted releases stay family-only. Of MCP, a friend gets only the Butler's own media server.

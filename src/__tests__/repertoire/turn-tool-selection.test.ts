@@ -241,7 +241,8 @@ describe("turn-local canonical tool selection", () => {
       const context = relationshipContext(profileId, [...OWNER_ADDITIONS, "shared_status"])
       const names = schemas(context, view, new Set(["reasoning-effort"])).map((tool) => tool.function.name)
 
-      expect(names.toSorted()).toEqual(registry.profiles[profileId].toolNames.toSorted())
+      // With no media server attached, the household's media tools are absent.
+      expect(names.toSorted()).toEqual(withoutMediaMcp(registry.profiles[profileId].toolNames).toSorted())
       for (const name of [...OWNER_ADDITIONS, "shared_status"]) expect(names).not.toContain(name)
       expect(view.manager.callTool).not.toHaveBeenCalled()
     },
