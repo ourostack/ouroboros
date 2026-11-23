@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildVoiceTranscript, closeTwilioPhoneBridgeServer } from "../../../senses/voice"
 import * as mcp from "../../../repertoire/mcp-manager"
 import * as tools from "../../../repertoire/tools"
+import * as audio from "../../../senses/voice/audio-playback"
 import { PendingVoiceCalls } from "../../../senses/voice/call-auth"
 import type { VoiceCallIdentity } from "../../../senses/voice/call-auth"
 import {
@@ -106,13 +107,13 @@ function twilioSocket() {
 }
 
 /** A Realtime phone call over a Media Stream, past its greeting. */
-async function realtimeCall() {
+async function realtimeCall(call: { initialAudio?: string } = {}) {
   const openai = await fakeOpenAI()
   const { outputDir, agentRoot } = await outputFolder()
   vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
   const options = { ...baseOptions(outputDir, agentRoot, openai.url), conversationEngine: "openai-realtime" } as TwilioPhoneBridgeOptions
   const twilio = twilioSocket()
-  const identity: VoiceCallIdentity = { callSid: "CAone", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "openai-realtime" }
+  const identity: VoiceCallIdentity = { callSid: "CAone", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "openai-realtime", ...(call.initialAudio ? { initialAudio: call.initialAudio } : {}) }
   const session = new TwilioOpenAIRealtimeMediaStreamSession(twilio.socket, identity, options)
   session.attach()
   cleanups.push(() => session.end())
@@ -226,12 +227,34 @@ describe("OpenAI Realtime utterance outcomes", () => {
     }))
   })
 
+  it("keeps a playing reply's marks when the call's opening audio goes after it, so the reply still counts once played", async () => {
+    // Opening audio from a link takes a while to fetch; the caller speaks and a reply starts playing meanwhile.
+    const fetched = Promise.withResolvers<void>()
+    const prepare = audio.prepareVoiceCallAudio
+    vi.spyOn(audio, "prepareVoiceCallAudio").mockImplementation(async (request, options) => {
+      await fetched.promise
+      return prepare({ source: "tone", label: "chime", toneHz: 440, durationMs: 40 }, options)
+    })
+    const call = await realtimeCall({ initialAudio: JSON.stringify({ source: "url", url: "https://audio.example.com/hello.mp3", label: "hello" }) })
+    await call.callerSays("item-1")
+    const mark = await call.replies("resp-1")
+    fetched.resolve()
+    await vi.waitFor(() => expect(call.twilio.marks().some((name) => name.startsWith("tool-audio-"))).toBe(true))
+    // It goes after what is playing rather than in its place.
+    expect(call.twilio.sent.some((event) => event.event === "clear")).toBe(false)
+    call.session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: mark } }))
+    expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({ outcome: "answered" })
+  })
+
   it("hands a reply that only called a tool on to the follow-up, noting a send before the tool runs", async () => {
     const call = await realtimeCall()
     const id = "realtime-CAone-item-1"
     const spokeWhenRun: string[][] = []
     vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
-    vi.spyOn(tools, "execTool").mockImplementation(async () => {
+    vi.spyOn(tools, "execTool").mockImplementation(async (_name, _args, ctx) => {
+      // Nothing is noted until the tool's own checks pass and it says it is about to run.
+      spokeWhenRun.push((call.journal.get(id)?.spokeRecords ?? []).map((spoke) => spoke.kind))
+      ctx?.beforeHandler?.()
       spokeWhenRun.push((call.journal.get(id)?.spokeRecords ?? []).map((spoke) => spoke.kind))
       return "sent"
     })
@@ -243,7 +266,7 @@ describe("OpenAI Realtime utterance outcomes", () => {
     })
     call.openai.send({ type: "response.done", response: { id: "resp-tool" } })
     await vi.waitFor(() => expect(call.openai.creates()).toHaveLength(3))
-    expect(spokeWhenRun).toEqual([["tool:send_message"]])
+    expect(spokeWhenRun).toEqual([[], ["tool:send_message"]])
 
     const mark = await call.replies("resp-follow-up")
     call.session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: mark } }))
@@ -259,6 +282,46 @@ describe("OpenAI Realtime utterance outcomes", () => {
     call.session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: call.twilio.marks()[1] } }))
     call.session.handleRawMessage(JSON.stringify({ event: "stop" }))
     expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({ outcome: "failed", detail: "the call ended before this was answered" })
+  })
+
+  it("does not note a send the tool's own checks refused before it ran", async () => {
+    const call = await realtimeCall()
+    vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
+    // The tool's preflight refuses it, so its handler never runs and beforeHandler is never called.
+    vi.spyOn(tools, "execTool").mockResolvedValue("rejected: relationship authorization required")
+    await call.callerSays("item-1")
+    call.openai.send({ type: "response.created", response: { id: "resp-tool" } })
+    call.openai.send({
+      type: "response.function_call_arguments.done", response_id: "resp-tool", call_id: "call-send", name: "send_message",
+      arguments: JSON.stringify({ friendId: "ari", channel: "bluebubbles", content: "on my way" }),
+    })
+    await vi.waitFor(() => expect(call.openai.received.some((event) => event.type === "conversation.item.create"
+      && (event.item as { output?: string }).output === "rejected: relationship authorization required")).toBe(true))
+    expect(call.journal.get("realtime-CAone-item-1")).toMatchObject({ spoke: false })
+  })
+
+  it("records what the caller said as silent when the call hung up by choice without a spoken reply", async () => {
+    const call = await realtimeCall()
+    vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
+    vi.spyOn(tools, "execTool").mockImplementation(async (_name, _args, ctx) => {
+      ctx?.voiceCall?.requestEnd()
+      return "ending the call"
+    })
+    await call.callerSays("item-1")
+    call.openai.send({ type: "response.created", response: { id: "resp-bye" } })
+    call.openai.send({ type: "response.function_call_arguments.done", response_id: "resp-bye", call_id: "call-end", name: "voice_end_call", arguments: "{}" })
+    await vi.waitFor(() => expect(tools.execTool).toHaveBeenCalled())
+    call.session.handleRawMessage(JSON.stringify({ event: "stop" }))
+    expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({ outcome: "silent", detail: "the call was ended without a spoken reply" })
+  })
+
+  it("records what the caller said as silent when a machine answered the call", async () => {
+    const call = await realtimeCall()
+    await call.callerSays("item-1")
+    call.session.end("a voicemail or fax machine answered the call, so it was ended")
+    expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({
+      outcome: "silent", detail: "a voicemail or fax machine answered the call, so it was ended",
+    })
   })
 
   it("does not note a tool the call refused to run", async () => {
@@ -328,7 +391,7 @@ describe("OpenAI SIP utterance outcomes", () => {
     const call = await sipCall()
     const id = "sip-call_one-item-1"
     await call.callerSays("item-1")
-    expect(call.journal.get(id)).toMatchObject({ attempts: 1, spoke: false, payload: { callSid: "call_one", friendId: "ari", transport: "openai-sip" } })
+    expect(call.journal.get(id)).toMatchObject({ attempts: 1, spoke: false, payload: { callSid: "call_one", friendId: "ari", transport: "openai-sip", owner: { pid: process.pid, bridge: expect.any(String) } } })
     call.openai.send({ type: "response.created", response: { id: "resp-1" } })
     call.openai.send({ type: "response.content_part.added", response_id: "resp-1", part: { type: "output_text" } })
     call.openai.send({ type: "response.content_part.added", response_id: "resp-1", part: { type: "output_audio" } })
@@ -352,6 +415,59 @@ describe("OpenAI SIP utterance outcomes", () => {
     call.openai.send({ type: "response.output_audio.delta", response_id: "resp-2", delta: AUDIO })
     await vi.waitFor(() => expect(call.journal.outcome(id)).toMatchObject({ outcome: "answered" }))
     expect(call.journal.outcome("sip-call_one-item-2")).toMatchObject({ outcome: "answered" })
+  })
+
+  it("notes a send only once the tool's own checks passed and it is about to run", async () => {
+    const call = await sipCall()
+    const id = "sip-call_one-item-1"
+    const spokeWhenRun: string[][] = []
+    vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
+    vi.spyOn(tools, "execTool").mockImplementation(async (_name, _args, ctx) => {
+      spokeWhenRun.push((call.journal.get(id)?.spokeRecords ?? []).map((spoke) => spoke.kind))
+      ctx?.beforeHandler?.()
+      spokeWhenRun.push((call.journal.get(id)?.spokeRecords ?? []).map((spoke) => spoke.kind))
+      return "sent"
+    })
+    await call.callerSays("item-1")
+    call.openai.send({ type: "response.created", response: { id: "resp-tool" } })
+    call.openai.send({
+      type: "response.function_call_arguments.done", response_id: "resp-tool", call_id: "call-send", name: "send_message",
+      arguments: JSON.stringify({ friendId: "ari", channel: "bluebubbles", content: "on my way" }),
+    })
+    await vi.waitFor(() => expect(spokeWhenRun).toEqual([[], ["tool:send_message"]]))
+  })
+
+  it("does not note a send the tool's own checks refused before it ran", async () => {
+    const call = await sipCall()
+    vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
+    // The tool's preflight refuses it, so its handler never runs and beforeHandler is never called.
+    vi.spyOn(tools, "execTool").mockResolvedValue("rejected: relationship authorization required")
+    await call.callerSays("item-1")
+    call.openai.send({ type: "response.created", response: { id: "resp-tool" } })
+    call.openai.send({
+      type: "response.function_call_arguments.done", response_id: "resp-tool", call_id: "call-send", name: "send_message",
+      arguments: JSON.stringify({ friendId: "ari", channel: "bluebubbles", content: "on my way" }),
+    })
+    await vi.waitFor(() => expect(call.openai.received.some((event) => event.type === "conversation.item.create"
+      && (event.item as { output?: string }).output === "rejected: relationship authorization required")).toBe(true))
+    expect(call.journal.get("sip-call_one-item-1")).toMatchObject({ spoke: false })
+  })
+
+  it("records what the caller said as silent when the call hung up by choice without a spoken reply", async () => {
+    const call = await sipCall()
+    vi.spyOn(tools, "rejectionWithoutApprover").mockResolvedValue(null)
+    vi.spyOn(tools, "execTool").mockImplementation(async (_name, _args, ctx) => {
+      ctx?.voiceCall?.requestEnd()
+      return "ending the call"
+    })
+    await call.callerSays("item-1")
+    call.openai.send({ type: "response.created", response: { id: "resp-bye" } })
+    call.openai.send({ type: "response.function_call_arguments.done", response_id: "resp-bye", call_id: "call-end", name: "voice_end_call", arguments: "{}" })
+    await vi.waitFor(() => expect(tools.execTool).toHaveBeenCalled())
+    call.openai.sockets[0]!.close()
+    await vi.waitFor(() => expect(call.journal.outcome("sip-call_one-item-1")).toMatchObject({
+      outcome: "silent", detail: "the call was ended without a spoken reply",
+    }))
   })
 
   it("cannot tie a reply OpenAI did not name to what the caller said, so it ends failed with the call", async () => {

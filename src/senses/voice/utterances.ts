@@ -1,4 +1,4 @@
-import * as fs from "node:fs"
+import * as crypto from "node:crypto"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { openInboundJournal, type InboundJournal, type InboundOutcome, type PendingInbound } from "../inbound-journal"
@@ -20,6 +20,50 @@ export interface VoiceUtterancePayload {
    * turn the OpenAI Realtime or SIP engine heard.
    */
   transport: "media-stream" | "recording" | "openai-realtime" | "openai-sip"
+  /** Who made the record. Records an older build wrote have none. */
+  owner?: VoiceUtteranceOwner
+}
+
+/** The process, and the bridge in it, whose call an utterance belongs to. */
+export interface VoiceUtteranceOwner {
+  pid: number
+  /** Absent for a record made outside a bridge. */
+  bridge?: string
+}
+
+/** The bridges open in this process. Their calls may still be running, so their utterances are left to them. */
+const openBridges = new Set<string>()
+
+/** Open a bridge's claim on the utterances its calls record, and return the id they carry. */
+export function openVoiceUtteranceBridge(): string {
+  const bridge = crypto.randomUUID()
+  openBridges.add(bridge)
+  return bridge
+}
+
+/** The bridge closed: what its calls left is anyone's to record as failed. */
+export function closeVoiceUtteranceBridge(bridge: string): void {
+  openBridges.delete(bridge)
+}
+
+function processRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // A process this user may not signal is still running.
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+/**
+ * Whether the call that recorded an utterance can no longer answer it, so a sweep may record it as failed: its bridge
+ * is the one sweeping, or closed, or its process stopped, or an older build wrote it without an owner.
+ */
+function ownerStopped(owner: VoiceUtteranceOwner | undefined, sweeper: string | undefined): boolean {
+  if (!owner) return true
+  if (owner.pid !== process.pid) return !processRunning(owner.pid)
+  return owner.bridge === undefined || owner.bridge === sweeper || !openBridges.has(owner.bridge)
 }
 
 /** One utterance whose turn is running. */
@@ -70,14 +114,19 @@ export function seenVoiceUtterance(outputDir: string, id: string): boolean {
 }
 
 /**
- * Record an utterance before its turn runs. Null when it already has an outcome, or when its folder cannot be
- * written, in which case the turn still runs and only a crash during it goes unrecorded.
+ * Record an utterance before its turn runs, as this process's and `bridge`'s. Null when it already has an outcome, or
+ * when its folder cannot be written, in which case the turn still runs and only a crash during it goes unrecorded.
  */
-export function recordVoiceUtterance(outputDir: string, id: string, payload: VoiceUtterancePayload): VoiceUtteranceTurn | null {
+export function recordVoiceUtterance(
+  outputDir: string,
+  id: string,
+  payload: Omit<VoiceUtterancePayload, "owner">,
+  bridge?: string,
+): VoiceUtteranceTurn | null {
   let journal: InboundJournal<VoiceUtterancePayload>
   try {
     journal = voiceUtterances(outputDir)
-    if (!journal.record(id, payload)) return null
+    if (!journal.record(id, { ...payload, owner: { pid: process.pid, ...(bridge ? { bridge } : {}) } })) return null
   } catch (error) {
     recordFailed(outputDir, error)
     return null
@@ -128,10 +177,12 @@ function settleQuietly(journal: InboundJournal<VoiceUtterancePayload>, id: strin
 }
 
 /**
- * Record every utterance a stopped process left as failed, and return how many were recorded. Runs once the sense
- * is listening and when it shuts down. Never throws: one it cannot record stays pending for the next run.
+ * Record every utterance a stopped call left as failed, and return how many were recorded. Runs once a bridge is
+ * listening and when it shuts down, as `bridge`: it records its own and those whose bridge closed or whose process
+ * stopped, and leaves those of a bridge still open, here or in another live process, to the next sweep. Never throws:
+ * one it cannot record stays pending for the next sweep.
  */
-export function failLeftoverVoiceUtterances(outputDir: string, when: "start" | "shutdown"): number {
+export function failLeftoverVoiceUtterances(outputDir: string, when: "start" | "shutdown", bridge?: string): number {
   let journal: InboundJournal<VoiceUtterancePayload>
   let leftover: Array<PendingInbound<VoiceUtterancePayload>>
   try {
@@ -144,6 +195,7 @@ export function failLeftoverVoiceUtterances(outputDir: string, when: "start" | "
   const stopped = when === "start" ? "the voice sense restarted" : "the voice sense shut down"
   let failed = 0
   for (const entry of leftover) {
+    if (!ownerStopped(entry.payload.owner, bridge)) continue
     const heard = entry.spoke ? `after ${describeTurnSpokes(entry.spokeRecords)} went out` : "before this was answered"
     if (settleQuietly(journal, entry.id, "failed", `${stopped} ${heard}; live audio is not replayed`)) failed += 1
   }
@@ -157,75 +209,4 @@ export function failLeftoverVoiceUtterances(outputDir: string, when: "start" | "
     })
   }
   return failed
-}
-
-/** Lets one voice bridge at a time own an output folder's leftover utterances. */
-export interface VoiceOutputDirLock {
-  /**
-   * Take the folder for this bridge, and true when it is this bridge's. False when another bridge, in this process or
-   * a live other one, holds it: that bridge's calls may still be running, so their utterances are left to it.
-   */
-  claim(): boolean
-  /** Let the folder go, if this bridge holds it. */
-  release(): void
-}
-
-/** Which bridge in this process holds each output folder. */
-const heldOutputDirs = new Map<string, symbol>()
-
-function processRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // A process this user may not signal is still running.
-    return (error as NodeJS.ErrnoException).code === "EPERM"
-  }
-}
-
-function lockPid(file: string): number | null {
-  try {
-    const pid = (JSON.parse(fs.readFileSync(file, "utf8")) as { pid?: unknown }).pid
-    return typeof pid === "number" ? pid : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * The lock on one voice output folder, kept as `utterances/bridge.lock` with the holder's process id. A bridge
- * records leftovers as failed only while it holds the folder, so a second bridge started on another port with the
- * same folder never fails a running one's calls. A lock a stopped process left is taken over.
- */
-export function voiceOutputDirLock(outputDir: string): VoiceOutputDirLock {
-  const key = path.resolve(outputDir)
-  const file = path.join(key, "utterances", "bridge.lock")
-  const token = Symbol(key)
-  return {
-    claim() {
-      const holder = heldOutputDirs.get(key)
-      if (holder) return holder === token
-      const pid = lockPid(file)
-      if (pid !== null && pid !== process.pid && processRunning(pid)) return false
-      heldOutputDirs.set(key, token)
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.writeFileSync(file, JSON.stringify({ pid: process.pid, claimedAt: new Date().toISOString() }))
-      } catch (error) {
-        emitNervesEvent({
-          level: "warn",
-          component: "senses",
-          event: "senses.voice_output_lock_failed",
-          message: "could not write the voice output folder's lock; only this process knows this bridge holds it",
-          meta: { outputDir, error: String(error) },
-        })
-      }
-      return true
-    },
-    release() {
-      if (heldOutputDirs.get(key) !== token) return
-      heldOutputDirs.delete(key)
-      if (lockPid(file) === process.pid) fs.rmSync(file, { force: true })
-    },
-  }
 }

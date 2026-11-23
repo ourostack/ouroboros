@@ -7,7 +7,7 @@ import { recordVoiceUtterance, type VoiceUtteranceTurn } from "./utterances"
  * caller is recorded before a reply is asked for. The next reply the caller asked for answers everything they said
  * since the last one, once some of its audio played. A reply that made no audio, such as one that only called a tool,
  * hands its utterances on to the next reply. Live audio is never replayed, so whatever is still waiting when the call
- * ends is recorded as failed.
+ * ends is recorded as failed, or as silent when the call chose to end without answering it.
  */
 export interface RealtimeUtteranceLedger {
   /** The caller finished saying something. Recorded before a reply is asked for. */
@@ -34,14 +34,21 @@ export interface RealtimeUtteranceLedger {
    */
   cutOff(reason: string): void
   /**
+   * The call asked to hang up. What the caller said so far that no reply has spoken to gets no answer by choice, so
+   * it is recorded as silent when the call ends; what they say after this is not.
+   */
+  hangingUp(): void
+  /**
    * The call ended. What is still waiting is recorded as failed, or as silent with `silent` as the reason when the
-   * call ended because nobody was there to answer, such as a voicemail menu.
+   * call ended because nobody was there to answer, such as a voicemail or fax machine.
    */
   ended(silent?: string): void
 }
 
 export interface RealtimeUtteranceCall {
   outputDir: string
+  /** The bridge whose call this is, which its records carry. */
+  bridge?: string
   engine: "openai-realtime" | "openai-sip"
   callSid: string
   friendId: string
@@ -74,6 +81,8 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
   let heardCount = 0
   let waiting: VoiceUtteranceTurn[] = []
   const replies = new Map<string, Reply>()
+  /** What the caller said before the call asked to hang up and no reply spoke to. */
+  const unansweredByChoice = new Set<VoiceUtteranceTurn>()
   const settleAll = (utterances: VoiceUtteranceTurn[], ...outcome: Parameters<VoiceUtteranceTurn["settle"]>): void => {
     for (const utterance of utterances) utterance.settle(...outcome)
   }
@@ -84,7 +93,7 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
       const id = `${prefix}-${segment(call.callSid)}-${segment(itemId) || `caller-${heardCount}`}`
       const record = recordVoiceUtterance(call.outputDir, id, {
         callSid: call.callSid, friendId: call.friendId, sessionKey: call.sessionKey, transport: call.engine,
-      })
+      }, call.bridge)
       if (!record) return
       record.beginAttempt()
       waiting.push(record)
@@ -127,6 +136,10 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
       for (const reply of replies.values()) for (const utterance of reply.utterances) utterance.noteSpoke(spoke)
       for (const utterance of waiting) utterance.noteSpoke(spoke)
     },
+    hangingUp() {
+      for (const reply of replies.values()) if (!reply.spoke) for (const utterance of reply.utterances) unansweredByChoice.add(utterance)
+      for (const utterance of waiting) unansweredByChoice.add(utterance)
+    },
     cutOff(reason) {
       for (const [responseId, reply] of replies) {
         if (!reply.unheard) continue
@@ -138,12 +151,18 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
       }
     },
     ended(silent) {
+      const settle = (utterances: VoiceUtteranceTurn[], spoke: boolean, failure: string): void => {
+        for (const utterance of utterances) {
+          if (silent) utterance.settle("silent", silent)
+          else if (!spoke && unansweredByChoice.has(utterance)) utterance.settle("silent", "the call was ended without a spoken reply")
+          else utterance.settle("failed", failure)
+        }
+      }
       for (const reply of replies.values()) {
-        const failure = reply.cut && !reply.unheard ? reply.cut : "the call ended before the reply was played"
-        settleAll(reply.utterances, silent ? "silent" : "failed", silent ?? failure)
+        settle(reply.utterances, reply.spoke, reply.cut && !reply.unheard ? reply.cut : "the call ended before the reply was played")
       }
       replies.clear()
-      settleAll(waiting, silent ? "silent" : "failed", silent ?? "the call ended before this was answered")
+      settle(waiting, false, "the call ended before this was answered")
       waiting = []
     },
   }

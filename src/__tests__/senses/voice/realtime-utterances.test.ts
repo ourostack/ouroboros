@@ -174,6 +174,26 @@ describe("realtime utterance ledger", () => {
     expect(voicemail.outcome("sip-CA-one-item-2")).toMatchObject({ outcome: "silent" })
   })
 
+  it("records what the call chose to end without speaking to as silent, and anything it spoke to or heard later as failed", () => {
+    const { calls, outcome } = ledger()
+    calls.heard("item-1")
+    calls.replyStarted("resp-1", true)
+    calls.replyDone("resp-1")
+    calls.heard("item-2")
+    calls.replyStarted("resp-2", true)
+    calls.heard("item-3")
+    calls.replyStarted("resp-3", true)
+    calls.speaking("resp-3")
+    calls.hangingUp()
+    calls.heard("item-4")
+    calls.ended()
+    const ended = { outcome: "silent", detail: "the call was ended without a spoken reply" }
+    expect(outcome("realtime-CA-one-item-1")).toMatchObject(ended)
+    expect(outcome("realtime-CA-one-item-2")).toMatchObject(ended)
+    expect(outcome("realtime-CA-one-item-3")).toMatchObject({ outcome: "failed", detail: "the call ended before the reply was played" })
+    expect(outcome("realtime-CA-one-item-4")).toMatchObject({ outcome: "failed", detail: "the call ended before this was answered" })
+  })
+
   it("skips an utterance that already has an outcome", () => {
     const { calls, outcome } = ledger()
     calls.heard("item-1")

@@ -21,7 +21,7 @@ import { createRealtimeToolAdvertiser, type RealtimeFunctionTool, type RealtimeT
 import { writeVoicePlaybackArtifact } from "./playback"
 import { buildVoiceTranscript } from "./transcript"
 import { runVoiceLoopbackTurn, type VoiceLoopbackTurnResult, type VoiceRunSenseTurn } from "./turn"
-import { failLeftoverVoiceUtterances, recordVoiceUtterance, seenVoiceUtterance, voiceOutputDirLock, type VoiceOutputDirLock, type VoiceUtteranceTurn } from "./utterances"
+import { closeVoiceUtteranceBridge, failLeftoverVoiceUtterances, openVoiceUtteranceBridge, recordVoiceUtterance, seenVoiceUtterance, type VoiceUtteranceTurn } from "./utterances"
 import { isAudioPart, realtimeUtteranceLedger, responseMadeAudio, type RealtimeUtteranceLedger } from "./realtime-utterances"
 import type { VoiceTranscript, VoiceTranscriber, VoiceTtsService } from "./types"
 import { normalizeTwilioE164PhoneNumber } from "./phone"
@@ -952,8 +952,12 @@ interface TwilioMediaStreamUtterance {
 
 interface TwilioMediaStreamLifecycleSession {
   attach(): void
-  end(): void
+  /** End the call. `silent`, when given, says why nobody needed an answer, such as a machine answering. */
+  end(silent?: string): void
 }
+
+/** Why an outbound call a voicemail or fax machine answered was ended, as its utterances record it. */
+const MACHINE_ANSWERED = "a voicemail or fax machine answered the call, so it was ended"
 
 export class TwilioMediaStreamSession {
   private streamSid = ""
@@ -995,6 +999,8 @@ export class TwilioMediaStreamSession {
     private readonly lifecycle?: {
       onIdentityChange?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
+      /** The bridge whose call this is, which its utterance records carry. */
+      utteranceBridge?: string
     },
   ) {
     this.speechRmsThreshold = options.mediaSpeechRmsThreshold ?? DEFAULT_TWILIO_MEDIA_SPEECH_RMS_THRESHOLD
@@ -1279,7 +1285,7 @@ export class TwilioMediaStreamSession {
     // Recorded before anything can fail, so what the caller said ends in an outcome even if this process stops.
     const record = recordVoiceUtterance(this.options.outputDir, utterance.utteranceId, {
       callSid: this.callSid, friendId: this.friendId, sessionKey: this.sessionKey, transport: "media-stream",
-    })
+    }, this.lifecycle?.utteranceBridge)
     try {
       await this.answerUtterance(utterance, record)
     } catch (error) {
@@ -1656,6 +1662,8 @@ interface OpenAISipCallMetadata {
 }
 
 interface OpenAISipPhoneSessionRegistry {
+  /** The bridge whose calls these are, which their utterance records carry. */
+  readonly utteranceBridge?: string
   register(session: OpenAISipPhoneSession): void
   unregister(session: OpenAISipPhoneSession): void
   getByOutboundId(outboundId: string): OpenAISipPhoneSession | undefined
@@ -2180,6 +2188,8 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     private readonly lifecycle?: {
       onIdentityChange?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose?: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
+      /** The bridge whose call this is, which its utterance records carry. */
+      utteranceBridge?: string
       /** Local audio only: the disclosure notice was spoken and played out. */
       onDisclosureSpoken?: (atMs: number) => void
       /** Local audio only: the disclosure notice could not be spoken before its deadline. */
@@ -2201,9 +2211,9 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     })
   }
 
-  end(): void {
+  end(silent?: string): void {
     this.socket.close()
-    this.close()
+    this.close(silent)
   }
 
   /** Feed a raw Twilio message that arrived before this session attached (the bridge holds the first `start`). */
@@ -2277,6 +2287,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
       if (!local) {
         this.utterances = realtimeUtteranceLedger({
           outputDir: this.options.outputDir,
+          bridge: this.lifecycle?.utteranceBridge,
           engine: "openai-realtime",
           callSid: this.callSid,
           friendId: this.friendId,
@@ -2540,6 +2551,7 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     if (!this.hangupRequested) {
       this.floor.apply({ type: "hangup.requested", atMs: Date.now(), reason: "voice_end_call" })
     }
+    this.utterances?.hangingUp()
     this.hangupRequested = true
     setTimeout(() => this.completeHangupIfReady("tool_fallback"), 7_500).unref?.()
   }
@@ -2973,12 +2985,14 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     }
   }
 
-  /** A call has no one to approve a protected tool, so it never runs here. A send it makes is noted before it runs. */
+  /**
+   * A call has no one to approve a protected tool, so it never runs here. A send it makes is noted once the tool's own
+   * checks passed, just before it runs: one they refuse sent nothing.
+   */
   private async execRealtimeTool(name: string, args: JsonObject): Promise<string> {
     const refused = await rejectionWithoutApprover(name, args, this.toolContext)
     if (refused !== null) return refused
-    this.utterances?.toolSending(name, args)
-    return execTool(name, args, this.toolContext)
+    return execTool(name, args, { ...this.toolContext, beforeHandler: () => this.utterances?.toolSending(name, args) })
   }
 
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
@@ -3181,9 +3195,10 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     const prepared = await prepareVoiceCallAudio(request, {
       agentRoot: resolveTwilioPhoneAgentRoot(this.options),
     })
-    this.playbackMarks.clear()
-    this.playbackState = undefined
+    // Audio that goes after what is playing, like the call's opening audio, leaves its marks to count as it plays.
     if (playbackOptions.clearFirst ?? true) {
+      this.playbackMarks.clear()
+      this.playbackState = undefined
       this.utterances?.cutOff("audio a tool played took its place before the reply was played")
       this.sendTwilioClear()
     }
@@ -3269,10 +3284,10 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
     this.end()
   }
 
-  private close(): void {
+  private close(silent?: string): void {
     if (this.closed) return
     this.closed = true
-    this.utterances?.ended()
+    this.utterances?.ended(silent)
     this.disclosure?.stop()
     if (this.openaiWs && (this.openaiWs.readyState === WebSocket.OPEN || this.openaiWs.readyState === WebSocket.CONNECTING)) {
       this.openaiWs.close()
@@ -3380,6 +3395,7 @@ class OpenAISipPhoneSession {
       })
       this.utterances = realtimeUtteranceLedger({
         outputDir: this.options.outputDir,
+        bridge: this.registry?.utteranceBridge,
         engine: "openai-sip",
         callSid: this.metadata.callId,
         friendId: this.friendId,
@@ -4131,12 +4147,14 @@ class OpenAISipPhoneSession {
     }
   }
 
-  /** A call has no one to approve a protected tool, so it never runs here. A send it makes is noted before it runs. */
+  /**
+   * A call has no one to approve a protected tool, so it never runs here. A send it makes is noted once the tool's own
+   * checks passed, just before it runs: one they refuse sent nothing.
+   */
   private async execRealtimeTool(name: string, args: JsonObject): Promise<string> {
     const refused = await rejectionWithoutApprover(name, args, this.toolContext)
     if (refused !== null) return refused
-    this.utterances?.toolSending(name, args)
-    return execTool(name, args, this.toolContext)
+    return execTool(name, args, { ...this.toolContext, beforeHandler: () => this.utterances?.toolSending(name, args) })
   }
 
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
@@ -4301,6 +4319,7 @@ class OpenAISipPhoneSession {
 
   private requestHangupFromTool(): void {
     if (this.closed) return
+    this.utterances?.hangingUp()
     this.hangupRequested = true
     setTimeout(() => this.completeHangupIfReady("tool_fallback"), 7_500).unref?.()
   }
@@ -4374,7 +4393,7 @@ class OpenAISipPhoneSession {
   private close(trigger: string): void {
     if (this.closed) return
     this.closed = true
-    this.utterances?.ended(trigger === "amd_nonhuman" ? "a voicemail menu answered the call, so it was ended" : undefined)
+    this.utterances?.ended(trigger === "amd_nonhuman" ? MACHINE_ANSWERED : undefined)
     this.clearOutboundAmdGreetingTimeout()
     this.registry?.unregister(this)
     if (this.openaiWs && (this.openaiWs.readyState === WebSocket.OPEN || this.openaiWs.readyState === WebSocket.CONNECTING)) {
@@ -4403,6 +4422,8 @@ class OpenAISipPhoneSession {
 
 /* v8 ignore start -- active SIP registry map edge permutations belong with the post-D-012 transport split; SIP call lifecycle is covered through bridge tests @preserve */
 class ActiveOpenAISipSessions implements OpenAISipPhoneSessionRegistry {
+  constructor(readonly utteranceBridge?: string) {}
+
   private readonly byCallId = new Map<string, OpenAISipPhoneSession>()
   private readonly byOutboundId = new Map<string, OpenAISipPhoneSession>()
 
@@ -5503,7 +5524,7 @@ async function handleOutgoingAmdStatus(
   if (nonHumanStatus) {
     const session = activeMediaStreams.byOutboundId.get(job.outboundId)
       ?? (callSid ? activeMediaStreams.byCallSid.get(callSid) : undefined)
-    session?.end()
+    session?.end(MACHINE_ANSWERED)
     activeSipSessions.getByOutboundId(job.outboundId)?.handleAsyncAmd(answeredBy, nonHumanStatus)
     emitNervesEvent({
       component: "senses",
@@ -5551,6 +5572,7 @@ async function handleRecording(
   basePath: string,
   params: Record<string, string>,
   jobs: TwilioAudioStreamJobStore,
+  utteranceBridge: string,
 ): Promise<TwilioPhoneBridgeResponse> {
   const recording = parseRecordingParams(params)
   if (!recording) {
@@ -5586,7 +5608,7 @@ async function handleRecording(
       ? streamedReplyTwiml(options, basePath, safeCallSid, jobId)
       : redirectTwiml(options.publicBaseUrl, basePath))
   }
-  const answer = answerRecording(options, basePath, params, jobs, recording, utteranceId)
+  const answer = answerRecording(options, basePath, params, jobs, recording, utteranceId, utteranceBridge)
   recordingsInFlight.set(inFlightKey, answer)
   try {
     return await answer
@@ -5622,6 +5644,7 @@ async function answerRecording(
   jobs: TwilioAudioStreamJobStore,
   recording: NonNullable<ReturnType<typeof parseRecordingParams>>,
   utteranceId: string,
+  utteranceBridge: string,
 ): Promise<TwilioPhoneBridgeResponse> {
   const safeCallSid = safeSegment(recording.callSid)
   const safeRecordingSid = safeSegment(recording.recordingSid)
@@ -5649,7 +5672,7 @@ async function answerRecording(
   })
   const record = recordVoiceUtterance(options.outputDir, utteranceId, {
     callSid: safeCallSid, friendId, sessionKey, transport: "recording",
-  })
+  }, utteranceBridge)
   const failRecord = (error: unknown): void => record?.settle("failed", `the turn failed: ${errorMessage(error)}`)
 
   try {
@@ -5884,10 +5907,13 @@ function admitMediaStreamStart(
 }
 
 /** Each bridge's lock on its output folder, so the server that listens for it can take the folder. */
-const bridgeOutputLocks = new WeakMap<TwilioPhoneBridge, VoiceOutputDirLock>()
+/** The id each bridge's utterance records carry. */
+const bridgeUtteranceIds = new WeakMap<TwilioPhoneBridge, string>()
 
 export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): TwilioPhoneBridge {
   new URL(options.publicBaseUrl)
+  // The id this bridge's calls' utterance records carry, so another bridge's sweep leaves them alone while it is open.
+  const utteranceBridge = openVoiceUtteranceBridge()
   const basePath = normalizeTwilioPhoneBasePath(options.basePath)
   const sipWebhookPath = normalizeTwilioPhoneBasePath(options.openaiSip?.webhookPath ?? openAISipWebhookPath(options.agentName))
   const jobs = new TwilioAudioStreamJobStore()
@@ -5897,7 +5923,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
     byOutboundId: new Map(),
     reserved: new Set(),
   }
-  const activeSipSessions = new ActiveOpenAISipSessions()
+  const activeSipSessions = new ActiveOpenAISipSessions(utteranceBridge)
   const pendingCalls = options.pendingVoiceCalls ?? new PendingVoiceCalls()
   const recentSipWebhooks = new RecentIds()
 
@@ -5917,7 +5943,9 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
     const lifecycle: {
       onIdentityChange: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
+      utteranceBridge: string
     } = {
+      utteranceBridge,
       onIdentityChange: (activeSession, identity) => {
         activeMediaStreams.byCallSid.set(identity.callSid, activeSession)
         if (identity.outboundId) activeMediaStreams.byOutboundId.set(identity.outboundId, activeSession)
@@ -5969,7 +5997,6 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
     ws.on("message", gate)
   })
 
-  const outputLock = voiceOutputDirLock(options.outputDir)
   const bridge: TwilioPhoneBridge = {
     async handle(request): Promise<TwilioPhoneBridgeResponse> {
       const method = request.method.toUpperCase()
@@ -6030,7 +6057,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         if (suffix === undefined) return handleOutgoing(options, basePath, outboundId, params, jobs, pendingCalls)
       }
       if (routePath === `${basePath}/listen`) return handleListen(options, basePath)
-      if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params, jobs)
+      if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params, jobs, utteranceBridge)
       return textResponse(404, "not found")
     },
     handleUpgrade(request, socket, head): boolean {
@@ -6055,15 +6082,15 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       return true
     },
     close(): Promise<void> {
-      // Only the bridge that holds the folder fails what is left: another one's calls may still be running.
-      if (outputLock.claim()) failLeftoverVoiceUtterances(options.outputDir, "shutdown")
-      outputLock.release()
+      // This bridge's calls stop here, so what they left unanswered is failed; another open bridge's is left to it.
+      failLeftoverVoiceUtterances(options.outputDir, "shutdown", utteranceBridge)
+      closeVoiceUtteranceBridge(utteranceBridge)
       return new Promise((resolve, reject) => {
         mediaStreams.close((error?: Error) => error ? reject(error) : resolve())
       })
     },
   }
-  bridgeOutputLocks.set(bridge, outputLock)
+  bridgeUtteranceIds.set(bridge, utteranceBridge)
   return bridge
 }
 /* v8 ignore start -- HTTP server adapter behavior is covered through startTwilioPhoneBridgeServer smoke tests; low-level stream disconnect branches are platform-dependent @preserve */
@@ -6205,20 +6232,9 @@ export async function startTwilioPhoneBridgeServer(
     server.once("listening", onListening)
     server.listen(port, host)
   })
-  // Live audio is never replayed: whatever a stopped process left unanswered is recorded as failed. This waits until
-  // the port is ours, so a second bridge that cannot listen never fails the running one's calls, and until this bridge
-  // holds the output folder, so one listening on another port with the same folder never does either.
-  if (bridgeOutputLocks.get(bridge)!.claim()) {
-    failLeftoverVoiceUtterances(options.outputDir, "start")
-  } else {
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.voice_output_folder_held",
-      message: "another voice bridge holds this output folder, so its unanswered utterances are left to it",
-      meta: { agentName: options.agentName, outputDir: options.outputDir },
-    })
-  }
+  // Live audio is never replayed: whatever a stopped call left unanswered is recorded as failed. This waits until the
+  // port is ours, and leaves the calls of any bridge still open, in this process or another live one.
+  failLeftoverVoiceUtterances(options.outputDir, "start", bridgeUtteranceIds.get(bridge))
 
   emitNervesEvent({
     component: "senses",

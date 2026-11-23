@@ -31,6 +31,7 @@ import {
   outboundCallAnsweredPrompt,
   readRecentTwilioOutboundCallJobs,
   resolveTwilioPhoneAgentRoot,
+  TwilioMediaStreamSession,
   twilioOutboundCallAmdCallbackUrl,
   twilioOutboundCallJobPath,
   twilioOutboundCallStatusCallbackUrl,
@@ -1900,7 +1901,7 @@ describe("Twilio phone voice bridge", () => {
       expect(saved.answeredBy).toBe("machine_start")
       expect(saved.transportCallSid).toBe("CATWILIOMACHINE")
       await vi.waitFor(() => expect(voiceUtterances(outputDir).outcome("sip-call_machine-item-menu")).toMatchObject({
-        outcome: "silent", detail: "a voicemail menu answered the call, so it was ended",
+        outcome: "silent", detail: "a voicemail or fax machine answered the call, so it was ended",
       }))
     } finally {
       await openai.close()
@@ -3266,6 +3267,7 @@ describe("Twilio phone voice bridge", () => {
         }))
       await vi.waitFor(() => expect(options.runSenseTurn).toHaveBeenCalledTimes(1))
       vi.mocked(options.runSenseTurn).mockClear()
+      const end = vi.spyOn(TwilioMediaStreamSession.prototype, "end")
 
       const response = await server.bridge.handle({
         method: "POST",
@@ -3276,6 +3278,8 @@ describe("Twilio phone voice bridge", () => {
 
       expect(response.statusCode).toBe(200)
       await waitForSocketClose(socket)
+      // The call ends saying why, so what the caller said is recorded as silent rather than failed.
+      expect(end).toHaveBeenCalledWith("a voicemail or fax machine answered the call, so it was ended")
       expect(options.runSenseTurn).not.toHaveBeenCalled()
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-async-machine"), "utf8")) as { status?: string; answeredBy?: string; transportCallSid?: string; events?: Array<{ status: string; answeredBy?: string }> }
       expect(saved.status).toBe("voicemail")
