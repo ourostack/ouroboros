@@ -41,7 +41,10 @@ describe("an arm's replacement list", () => {
     // What the harness keeps for itself is the same object, unrewritten.
     expect(out.callbacks).toBe(callbacks)
     expect(out.signal).toBe(signal)
-    expect(out.traceId).toBe("acme-trace")
+    // A trace id is sent as metadata by some providers, so a brand word in it is rewritten too.
+    expect(out.traceId).toBe("agent-trace")
+    expect(rewriteRequest(request({ traceId: "Acme-turn-1" }), LIST).request.traceId).toBe("agent-turn-1")
+    expect(rewriteRequest(request({}), LIST).request).not.toHaveProperty("traceId")
   })
 
   it("rewrites deferred tools too, and leaves the original request as it was", () => {

@@ -183,5 +183,8 @@ describe("the guarded runtime", () => {
     const text = requestText({ ...request("m"), systemPrompt: "s", activeTools: [{ type: "function", function: { name: "t", parameters: {} } }], deferredTools: [] } as unknown as ProviderTurnRequest)
     expect(JSON.parse(text)).toEqual({ systemPrompt: "s", tools: [{ type: "function", function: { name: "t", parameters: {} } }], deferred: [], messages: [{ role: "user", content: "m" }] })
     expect(JSON.parse(requestText(request("m")))).toMatchObject({ systemPrompt: null, deferred: [] })
+    expect(JSON.parse(requestText(request("m")))).not.toHaveProperty("traceId")
+    // A provider may send the trace id as metadata, so it is scanned too.
+    expect(JSON.parse(requestText({ ...request("m"), traceId: "ouro-turn-1" }))).toMatchObject({ traceId: "ouro-turn-1" })
   })
 })

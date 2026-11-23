@@ -6,7 +6,10 @@
  * words. The host's scan still runs on the rewritten request and voids anything the list missed.
  *
  * Only what the model is sent is rewritten. The harness keeps its own request, so a tool the list renames is still
- * called by its own name: `toolName` maps the model's name back.
+ * called by its own name: `toolName` maps the model's name back. A call's arguments are not mapped back: the model
+ * writes them from the rewritten text, so a path the list rewrites must also exist under its rewritten name in the
+ * arm's sandbox (its image links the neutral paths to the real ones). The trace id is rewritten too, as the provider
+ * may send it as metadata.
  */
 import type { ProviderTurnRequest } from "../../heart/core"
 
@@ -31,7 +34,7 @@ function deep<T>(value: T, list: readonly Replacement[]): T {
 
 /**
  * The request as the model is sent it, and the harness's own name for each tool the model may call by its rewritten
- * name. The harness's fields (callbacks, signal, trace id) are passed through untouched.
+ * name. The harness's own fields (callbacks, signal) are passed through untouched.
  */
 export function rewriteRequest(request: ProviderTurnRequest, list: readonly Replacement[]): { request: ProviderTurnRequest; toolName(name: string): string } {
   const rewritten: ProviderTurnRequest = {
@@ -40,6 +43,7 @@ export function rewriteRequest(request: ProviderTurnRequest, list: readonly Repl
     activeTools: deep(request.activeTools, list),
     ...(request.deferredTools ? { deferredTools: deep(request.deferredTools, list) } : {}),
     ...(request.systemPrompt ? { systemPrompt: deep(request.systemPrompt, list) } : {}),
+    ...(request.traceId !== undefined ? { traceId: replace(request.traceId, list) } : {}),
   }
   const back = new Map<string, string>()
   for (const tool of [...request.activeTools, ...request.deferredTools ?? []]) {

@@ -103,9 +103,15 @@ export class RefusedCall extends Error {
   }
 }
 
-/** The text of everything a request sends: system prompt, tools, messages and tool results. */
+/**
+ * The text of everything a request sends: system prompt, tools, messages and tool results, and the trace id, which
+ * some providers send as metadata. The rest (reasoning effort, tool choice) are the provider's own fixed words.
+ */
 export function requestText(request: ProviderTurnRequest): string {
-  return JSON.stringify({ systemPrompt: request.systemPrompt ?? null, tools: request.activeTools, deferred: request.deferredTools ?? [], messages: request.messages })
+  return JSON.stringify({
+    systemPrompt: request.systemPrompt ?? null, tools: request.activeTools, deferred: request.deferredTools ?? [], messages: request.messages,
+    ...(request.traceId !== undefined ? { traceId: request.traceId } : {}),
+  })
 }
 
 /**
