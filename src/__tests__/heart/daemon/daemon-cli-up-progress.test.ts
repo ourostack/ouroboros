@@ -208,6 +208,22 @@ describe("ouro up: UpProgress integration", () => {
     )
   })
 
+  it.each([
+    ["npm error code E404\nnpm error 404 GET https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.90.tgz", "skipped; could not install 0.1.0-alpha.90: npm lists it but is not serving it yet, so the next run tries again"],
+    ["disk full", "skipped; could not install 0.1.0-alpha.90: disk full"],
+  ])("names the install failure in the update check line (%#)", async (said, line) => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: true, latestVersion: "0.1.0-alpha.90" })),
+      installCliVersion: vi.fn(async () => { throw new Error(said) }),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("update check", line)
+  })
+
   it("calls completePhase with version when update is installed", async () => {
     mocks.upProgressCompletePhase.mockClear()
     const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never
