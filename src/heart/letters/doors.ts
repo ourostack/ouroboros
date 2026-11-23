@@ -1,7 +1,9 @@
 // The Mailbox's doors, dispatched from what ouro-actions generated from actions/mailbox.actions.mts: the CLI's commands
 // (actions/generated/mailbox/commands.json), the MCP tools (mcp.json) and the in-turn tools
 // (actions/generated/mailbox-tools/tools.json). Each surface reads its descriptions, schemas and Ouro AX cards from
-// those files, so a door is declared once and never copied by hand. Only the handlers live here.
+// those files, so a door is declared once and never copied by hand. Only the handlers live here; the in-turn tools'
+// definitions are in doors-tools.ts, because the CLI loads this module on every start and must not load the MCP tool
+// code they need (the edge benchmark counts the modules `ouro --version` loads).
 import { createRequire } from "module"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -9,10 +11,7 @@ import type { CliCommandDeclaration, CliDoorCard } from "../daemon/cli-manifest"
 import type { CommandHelp } from "../daemon/cli-help"
 import { needsSubcommand, unknownFlag } from "../daemon/cli-commands/cards"
 import type { McpToolSchema } from "../mcp/mcp-server"
-import type { ToolDefinition } from "../../repertoire/tools-base"
-import { declaredRiskProfile, parseDeclaredTools, type DeclaredTool } from "../../repertoire/mcp-declared-tools"
-import { mcpToolSchema } from "../../repertoire/mcp-tools"
-import type { JsonObject } from "../approval-store"
+import { parseDeclaredTools, type DeclaredTool } from "../../repertoire/mcp-declared-tools"
 
 /** One command as ouro-actions' commands.json lists it. */
 export interface GeneratedCommand {
@@ -72,17 +71,18 @@ export function resetMailboxDoorsForTest(): void {
 }
 
 /**
- * Node's module loader reads the JSON, not `fs`: the CLI's declarations are read when cli-manifest loads, and the
- * many tests that mock `fs` must still see the real generated files. The package ships them (package.json `files`).
+ * Node's own `fs`, through Node's loader rather than an import: the CLI's declarations are read when cli-manifest
+ * loads, and the many tests that mock `fs` must still see the real generated files. The files are read, not
+ * required, so `ouro --version` loads no extra modules for them (the edge benchmark counts its modules).
  */
-const load = createRequire(__filename)
+const realFs = createRequire(__filename)("fs") as typeof import("fs")
 
 function readGenerated(root: string, file: string): Record<string, unknown> {
   const full = path.join(root, "actions", "generated", file)
   const where = `actions/generated/${file}`
   let json: unknown
   try {
-    json = load(full)
+    json = JSON.parse(realFs.readFileSync(full, "utf8"))
   } catch (error) {
     throw new Error(`${where} can't be read: ${(error as Error).message}. Fix: run ouro-actions generate for actions/mailbox.actions.mts.`)
   }
@@ -90,12 +90,23 @@ function readGenerated(root: string, file: string): Record<string, unknown> {
 }
 
 /**
- * The package root, from this module's own place (src/heart/letters or dist/heart/letters), not identity's
- * getRepoRoot: many tests point that at a fake root, and the CLI's declarations are read when cli-manifest loads.
+ * Where the generated doors are, from this module's own folder, not identity's getRepoRoot (many tests point that at
+ * a fake root). In a checkout it is the package root, where ouro-actions writes them, so a dev build made with `tsc`
+ * alone never reads a stale or missing copy. An installed package or an image has no actions/ folder there; it reads
+ * the copies the build put in dist/ (scripts/copy-action-doors.cjs), because every runtime ships dist/.
  */
-const PACKAGE_ROOT = path.resolve(__dirname, "../../..")
+export function doorsRoot(moduleDir: string, exists: (file: string) => boolean = (file) => realFs.existsSync(file)): string {
+  const top = path.resolve(moduleDir, "../..")
+  const packageRoot = path.dirname(top)
+  return exists(path.join(packageRoot, "actions", "generated", "mailbox", "commands.json")) ? packageRoot : top
+}
 
-/** Reads the generated doors once. A missing or malformed file fails loudly: a door with no declaration never runs. */
+const PACKAGE_ROOT = doorsRoot(__dirname)
+
+/**
+ * Reads the generated doors once; later calls return the first read, whatever root they pass (tests read fake doors
+ * this way, then reset). A missing or malformed file fails loudly: a door with no declaration never runs.
+ */
 export function readMailboxDoors(root: string = PACKAGE_ROOT): MailboxDoors {
   if (loaded) return loaded
   const commands = readGenerated(root, "mailbox/commands.json")
@@ -107,14 +118,15 @@ export function readMailboxDoors(root: string = PACKAGE_ROOT): MailboxDoors {
   if (problems.length > 0) throw new Error(`actions/generated/mailbox-tools/tools.json: ${problems.join("; ")}. Fix: run ouro-actions-tools generate.`)
   const actions = readGenerated(root, "mailbox/actions.json")
   if (!Array.isArray(actions.actions)) throw new Error("actions/generated/mailbox/actions.json has no actions list. Fix: run ouro-actions generate.")
-  loaded = { actions: actions.actions as GeneratedAction[], commands: commands.commands as GeneratedCommand[], mcpTools: mcp.tools as GeneratedMcpTool[], tools }
+  const doors: MailboxDoors = { actions: actions.actions as GeneratedAction[], commands: commands.commands as GeneratedCommand[], mcpTools: mcp.tools as GeneratedMcpTool[], tools }
+  loaded = doors
   emitNervesEvent({
     component: "daemon",
     event: "mailbox.doors_loaded",
     message: "mailbox doors read from the generated files",
-    meta: { commands: loaded.commands.length, mcp: loaded.mcpTools.length, tools: loaded.tools.size },
+    meta: { commands: doors.commands.length, mcp: doors.mcpTools.length, tools: doors.tools.size },
   })
-  return loaded
+  return doors
 }
 
 function listMailbox(): MailboxListResult {
@@ -204,27 +216,6 @@ export function mailboxMcpSchema(name: string): McpToolSchema {
   const schema = mailboxMcpSchemas().find((s) => s.name === name)
   if (!schema) throw new Error(`actions/generated/mailbox/mcp.json has no tool ${name}. Fix: declare it in actions/mailbox.actions.mts and run ouro-actions generate.`)
   return schema
-}
-
-/** The server name the census's declared-tools source gives these tools (ax/census.config.json). */
-const MAILBOX_SERVER = "mailbox"
-
-/**
- * A declared tool's schema, built the way the harness builds a bundle's declared MCP tools (mcp-tools.ts's
- * mcpToolSchema, a census passthrough) from only what tools.json declares. The census counts it from tools.json.
- */
-export function declaredToolSchema(server: string, name: string, declared: { description: string; parameters: JsonObject }) {
-  return mcpToolSchema({ server }, { name, description: declared.description, inputSchema: declared.parameters })
-}
-
-/** The in-turn registry's definitions: the declared tools, each running its action and answering its result as JSON. */
-export function mailboxToolDefinitions(): ToolDefinition[] {
-  return [...readMailboxDoors().tools].map(([name, declared]) => ({
-    tool: declaredToolSchema(MAILBOX_SERVER, name, { description: declared.description, parameters: declared.parameters as JsonObject }),
-    ax: declared.ax,
-    riskProfile: declaredRiskProfile(declared.ax.effect),
-    handler: (args: Record<string, string>) => JSON.stringify(runMailboxAction(name, args)),
-  }))
 }
 
 /**

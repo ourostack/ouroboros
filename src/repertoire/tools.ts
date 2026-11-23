@@ -27,7 +27,7 @@ import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import { houseCareToolDefinitions } from "./tools-house-care";
 import { shepherdToolDefinitions, shepherdToolsEnabled } from "./tools-shepherd";
 import { mailToolDefinitions, mailToolsEnabled } from "./tools-mail";
-import { mailboxToolDefinitions } from "../heart/letters/doors";
+import { mailboxToolDefinitions } from "../heart/letters/doors-tools";
 import { appSessionsToolDefinitions, appSessionsToolsEnabled } from "./tools-app-sessions";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";

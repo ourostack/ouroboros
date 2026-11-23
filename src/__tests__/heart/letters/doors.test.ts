@@ -11,17 +11,16 @@ vi.mock("../../../nerves/runtime", () => ({
 import { MAILBOX_CLI_WORDS } from "../../../heart/daemon/cli-parse"
 import {
   MailboxDoorError,
-  declaredToolSchema,
   getToolSchemas,
   listTools,
   mailboxCliDeclarations,
   mailboxMcpSchema,
   mailboxMcpSchemas,
-  mailboxToolDefinitions,
   readMailboxDoors,
   resetMailboxDoorsForTest,
   runMailboxAction,
 } from "../../../heart/letters/doors"
+import { declaredToolSchema, mailboxToolDefinitions } from "../../../heart/letters/doors-tools"
 
 const root = path.resolve(__dirname, "../../../..")
 const generated = (file: string) => JSON.parse(fs.readFileSync(path.join(root, "actions/generated", file), "utf8"))
@@ -164,6 +163,7 @@ describe("each door's projection", () => {
     expect(definition!.ax).toEqual({ ...declared.ax, id: "tool:mailbox_list" })
     expect(definition!.riskProfile).toEqual(expect.objectContaining({ mutates: "none" }))
     expect(JSON.parse(await definition!.handler({}))).toEqual({ outcome: "done", count: 0, listing: "" })
+    expect(nervesEvents).toContainEqual(expect.objectContaining({ event: "mailbox.tools_registered", meta: { tools: 1 } }))
   })
 
   it("serves the declared tools for the census as the generated MCP tools list them", () => {

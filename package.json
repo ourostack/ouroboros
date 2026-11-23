@@ -22,11 +22,7 @@
     "desk.lock.json",
     "deploy/unraid/",
     "npm-shrinkwrap.json",
-    "changelog.json",
-    "actions/generated/mailbox/actions.json",
-    "actions/generated/mailbox/commands.json",
-    "actions/generated/mailbox/mcp.json",
-    "actions/generated/mailbox-tools/tools.json"
+    "changelog.json"
   ],
   "exports": {
     ".": "./dist/heart/daemon/daemon-cli.js",
