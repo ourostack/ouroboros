@@ -69,6 +69,7 @@ describe("loadAgentConfig structural contract", () => {
     expect(config.senses).toEqual(FULL_AGENT_JSON.senses)
     expect(config.mcpServers).toEqual(FULL_AGENT_JSON.mcpServers)
     expect(config.shell).toEqual(FULL_AGENT_JSON.shell)
+    expect(config.coding).toEqual(FULL_AGENT_JSON.coding)
     expect(config.phrases).toEqual(FULL_AGENT_JSON.phrases)
     expect(config.vault).toEqual(FULL_AGENT_JSON.vault)
     expect(config.sync).toEqual(FULL_AGENT_JSON.sync)

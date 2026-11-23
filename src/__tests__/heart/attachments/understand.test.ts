@@ -170,10 +170,10 @@ describe("attachmentWords", () => {
   it("describes images, transcribes voice notes and leaves other files to the tools", async () => {
     withKey()
     mocks.minimaxVlmDescribe.mockResolvedValue("a cat on a mat")
-    mocks.voiceNoteLine.mockResolvedValueOnce({ line: "voice note transcript: hi" }).mockResolvedValueOnce({ notice: "silent.ogg: empty audio transcript" })
+    mocks.voiceNoteLine.mockResolvedValueOnce({ line: "voice note (machine transcript; may mishear words): hi" }).mockResolvedValueOnce({ notice: "silent.ogg: empty audio transcript" })
     const words = await attachmentWords([record("image", "pic.png"), record("audio", "hi.ogg"), record("audio", "silent.ogg"), record("document", "a.pdf")], context())
     expect(words).toEqual({
-      lines: ["[image description: a cat on a mat]", "voice note transcript: hi"],
+      lines: ["[image description: a cat on a mat]", "voice note (machine transcript; may mishear words): hi"],
       notices: ["silent.ogg: empty audio transcript"],
     })
     expect(mocks.materializeAttachment).toHaveBeenCalledWith("butler", "attachment:telegram:pic.png", { agentRoot: dir, variant: "vision_safe" })
@@ -197,9 +197,9 @@ describe("attachmentWords", () => {
 describe("attachmentTurnLines", () => {
   it("lists the attachments, then their words; nothing for no attachments", async () => {
     await expect(attachmentTurnLines([], context())).resolves.toEqual([])
-    mocks.voiceNoteLine.mockResolvedValue({ line: "voice note transcript: hi" })
+    mocks.voiceNoteLine.mockResolvedValue({ line: "voice note (machine transcript; may mishear words): hi" })
     const lines = await attachmentTurnLines([record("audio", "hi.ogg")], context())
     expect(lines[0]).toMatch(/^\[attachments\]\n- attachment:telegram:hi\.ogg \| audio \| hi\.ogg/u)
-    expect(lines.slice(1)).toEqual(["voice note transcript: hi"])
+    expect(lines.slice(1)).toEqual(["voice note (machine transcript; may mishear words): hi"])
   })
 })

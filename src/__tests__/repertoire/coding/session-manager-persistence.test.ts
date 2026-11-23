@@ -307,6 +307,56 @@ describe("coding session manager persistence", () => {
     expect(restored?.failure?.stderrTail).toContain("process not running")
   })
 
+  it("tells the manager-level listener about sessions found dead on restore, once, and records the deaths", async () => {
+    const session = (id: string, pid: number) => ({
+      id, runner: "codex", workdir: "/tmp/repo", taskRef: "task", status: "running", pid,
+      startedAt: "2026-03-07T00:00:00.000Z", lastActivityAt: "2026-03-07T00:00:00.000Z", endedAt: null,
+      restartCount: 0, lastExitCode: null, lastSignal: null, failure: null,
+    })
+    let stored = JSON.stringify({
+      sequence: 3,
+      records: [
+        { request: { runner: "codex", workdir: "/tmp/repo", prompt: "p" }, session: session("coding-002", 9999) },
+        { request: { runner: "codex", workdir: "/tmp/repo", prompt: "p" }, session: session("coding-003", 4242) },
+      ],
+    })
+    const onUpdate = vi.fn()
+    const options = {
+      nowIso: () => "2026-03-07T00:10:00.000Z",
+      stateFilePath: "/tmp/coding-dead-restore.json",
+      existsSync: () => true,
+      readFileSync: () => stored,
+      writeFileSync: vi.fn((target: string, text: string) => { if (target.endsWith(".json")) stored = text }),
+      mkdirSync: vi.fn(),
+      pidAlive: (pid: number) => pid === 4242,
+      onUpdate,
+    }
+    new CodingSessionManager(options)
+    await Promise.resolve()
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ kind: "failed", session: expect.objectContaining({ id: "coding-002", status: "failed" }) }))
+    expect(JSON.parse(stored).records[0].session.status).toBe("failed")
+
+    new CodingSessionManager(options)
+    await Promise.resolve()
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it("restores without writing or notifying when no session died", () => {
+    const writeFileSync = vi.fn()
+    const onUpdate = vi.fn()
+    new CodingSessionManager({
+      stateFilePath: "/tmp/coding-live-restore.json",
+      existsSync: () => true,
+      readFileSync: () => JSON.stringify({ sequence: 0, records: [] }),
+      writeFileSync,
+      mkdirSync: vi.fn(),
+      onUpdate,
+    })
+    expect(writeFileSync).not.toHaveBeenCalled()
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
   it("ignores malformed persisted JSON", () => {
     const manager = new CodingSessionManager({
       spawnProcess: vi.fn(() => new FakeProcess(1)),

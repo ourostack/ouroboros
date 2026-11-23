@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { createLogger, type LogEvent } from "../../../nerves"
+import { setRuntimeLogger } from "../../../nerves/runtime"
+
 import { WorkbenchCodingSessionManager } from "../../../repertoire/coding/workbench-manager"
 import type {
   WorkbenchActionAck,
@@ -463,5 +466,129 @@ describe("Workbench coding session manager", () => {
     const [session] = await manager.refreshSessions()
     expect(Date.parse(session.startedAt)).not.toBeNaN()
     expect(Date.parse(session.lastActivityAt)).not.toBeNaN()
+  })
+})
+
+describe("Workbench coding sessions report status changes without anyone asking", () => {
+  function manualScheduler() {
+    const tasks: Array<{ fn: () => void; ms: number; cancelled: boolean }> = []
+    return {
+      tasks,
+      schedule: vi.fn((fn: () => void, ms: number) => {
+        const task = { fn, ms, cancelled: false }
+        tasks.push(task)
+        return () => { task.cancelled = true }
+      }),
+      live: () => tasks.filter((task) => !task.cancelled),
+      fire: async () => {
+        for (const task of tasks.filter((entry) => !entry.cancelled)) {
+          task.cancelled = true
+          task.fn()
+        }
+        for (let index = 0; index < 5; index += 1) await Promise.resolve()
+      },
+    }
+  }
+
+  it("polls while a session is active, notifies each status change, and stops once nothing is active", async () => {
+    const client = fakeClient()
+    const scheduler = manualScheduler()
+    const onUpdate = vi.fn()
+    const listener = vi.fn()
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-1", status: "running" })])
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+      onUpdate,
+      pollMs: 1_000,
+      schedule: scheduler.schedule,
+    })
+
+    await manager.watch()
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(scheduler.live()).toHaveLength(1)
+    expect(scheduler.live()[0]!.ms).toBe(1_000)
+    manager.subscribe("wb-1", listener)
+
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-1", status: "waitingForInput", attentionPrompt: "Which branch?" })])
+    await scheduler.fire()
+    expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "waiting_input", session: expect.objectContaining({ checkpoint: "Which branch?" }) }))
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-1", status: "running" })])
+    await scheduler.fire()
+    expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "progress" }))
+
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-1", status: "running" })])
+    await scheduler.fire()
+    expect(onUpdate).toHaveBeenCalledTimes(2)
+
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-1", status: "exited", exitCode: 0 })])
+    await scheduler.fire()
+    expect(onUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "completed" }))
+    expect(onUpdate).toHaveBeenCalledTimes(3)
+    expect(scheduler.live()).toHaveLength(0)
+  })
+
+  it("starts polling when it spawns a session, and shutdown stops it", async () => {
+    const client = fakeClient()
+    const scheduler = manualScheduler()
+    client.createCodingSession.mockResolvedValue({
+      session: fakeWorkbenchSession(),
+      createAck: { queued: true, requestId: "create-1" },
+      promptAck: { ok: true, requestId: "prompt-1" },
+      promptResult: { requestId: "prompt-1", state: "applied", succeeded: true },
+    } satisfies WorkbenchCreateCodingSessionResult)
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+      schedule: scheduler.schedule,
+    })
+    await manager.spawnSession({ runner: "codex", workdir: "/repo", prompt: "go", taskRef: "t" })
+    await manager.spawnSession({ runner: "codex", workdir: "/repo", prompt: "go", taskRef: "t" })
+    expect(scheduler.schedule).toHaveBeenCalledTimes(1)
+    expect(scheduler.live()[0]!.ms).toBe(30_000)
+    manager.shutdown()
+    expect(scheduler.live()).toHaveLength(0)
+    manager.shutdown()
+  })
+
+  it("keeps polling after Workbench can't be read, and logs a listener that fails", async () => {
+    const client = fakeClient()
+    const scheduler = manualScheduler()
+    const events: LogEvent[] = []
+    setRuntimeLogger(createLogger({ level: "debug", sinks: [(entry) => events.push(entry)] }))
+    const onUpdate = vi.fn().mockRejectedValueOnce(new Error("queue full")).mockRejectedValueOnce("plain")
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-2", status: "running" })])
+    const manager = new WorkbenchCodingSessionManager({
+      agentName: "slugger",
+      client: client as unknown as WorkbenchMcpClient,
+      onUpdate,
+      schedule: scheduler.schedule,
+    })
+    await manager.watch()
+
+    client.listSessions.mockRejectedValueOnce(new Error("workbench down"))
+    await scheduler.fire()
+    client.listSessions.mockRejectedValueOnce("offline")
+    await scheduler.fire()
+    expect(events.filter((event) => event.event === "repertoire.workbench_coding_poll_error").map((event) => event.meta?.reason)).toEqual(["workbench down", "offline"])
+    expect(scheduler.live()).toHaveLength(1)
+
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-2", status: "needsRecovery" })])
+    await scheduler.fire()
+    client.listSessions.mockResolvedValueOnce([fakeWorkbenchSession({ id: "wb-2", status: "exited", exitCode: 1 })])
+    await scheduler.fire()
+    expect(events.filter((event) => event.event === "repertoire.workbench_coding_listener_error").map((event) => event.meta?.reason)).toEqual(["queue full", "plain"])
+    setRuntimeLogger(null)
+  })
+
+  it("does not poll after a failed first read when nothing is known to be active", async () => {
+    const client = fakeClient()
+    const scheduler = manualScheduler()
+    client.listSessions.mockRejectedValueOnce(new Error("workbench down"))
+    const manager = new WorkbenchCodingSessionManager({ agentName: "slugger", client: client as unknown as WorkbenchMcpClient, schedule: scheduler.schedule })
+    await manager.watch()
+    expect(scheduler.schedule).not.toHaveBeenCalled()
   })
 })
