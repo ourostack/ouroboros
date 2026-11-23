@@ -178,6 +178,164 @@ describe("trace.readBeforeSend", () => {
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(true)
   })
 
+  describe("a shell call that names the CLI and the file through its own variables", () => {
+    // Shaped like a real run: the CLI path and the work folder in variables, a loop that checks every download, then
+    // one call that shelves and sends the chosen file. Each shell call is its own process, so its variables are its own.
+    const books = "/home/ouro/AgentBundles/sanctuary.ouro/books/books"
+    const work = "/home/ouro/AgentBundles/sanctuary.ouro/books/work"
+    const shelved = [{ path: "books/work/20260101-000000-get-2/harbour-almanac-c.epub", sha256: sha("C") }]
+    const sentFromWork = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: shelved }
+    const checkLoop = shell(`B=${books}; W=${work}; for f in $W/20260101-000000-get/*.epub $W/20260101-000000-get-2/*.epub; do $B check "$f"; echo; done`)
+    const replaceAndSend = shell(`B=${books}; F=${work}/20260101-000000-get-2/harbour-almanac-c.epub; $B library replace 187 "$F" && $B send "$F"`)
+
+    it("passes when a loop over the downloads checked the file before the send", () => {
+      const check = run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [checkLoop, replaceAndSend] }))
+      expect(check.detail).toBe("none")
+      expect(check.ok).toBe(true)
+    })
+
+    it("passes a check and a send of the same file named through ${braces}", () => {
+      const both = shell(`B=${books}; F="${work}/20260101-000000-get-2/harbour-almanac-c.epub"; \${B} check "\${F}" && \${B} send "\${F}"`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [both] })).ok).toBe(true)
+    })
+
+    it("still fails a variable-based send that nothing read first", () => {
+      const check = run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [replaceAndSend] }))
+      expect(check.ok).toBe(false)
+      expect(check.detail).toContain("was not read before it was sent")
+    })
+
+    it("still fails when the check came after the send, or covered other files", () => {
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [replaceAndSend, checkLoop] })).ok).toBe(false)
+      const elsewhere = shell(`B=${books}; W=${work}; for f in $W/20260101-000000-get/*.epub; do $B check "$f"; done`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [elsewhere, replaceAndSend] })).ok).toBe(false)
+    })
+
+    it("passes a folder wildcard that covers the download, and a relative one after cd into the work folder", () => {
+      const prefixed = shell(`B=${books}; W=${work}; for f in $W/20260101-000000-get*/*.epub; do $B check "$f"; done`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [prefixed, replaceAndSend] })).ok).toBe(true)
+      const relative = shell(`B=${books}; cd ${work}; for f in 20260101-000000-get*/*.epub; do $B check "$f"; done`)
+      const sendRelative = shell(`B=${books}; cd ${work}; F=20260101-000000-get-2/harbour-almanac-c.epub; $B library replace 187 "$F" && $B send "$F"`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [relative, sendRelative] })).ok).toBe(true)
+    })
+
+    it("does not count a wildcard in another folder, or one that names the file alone", () => {
+      const elsewhere = shell(`cd /tmp/elsewhere; ${books} check *.epub`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [elsewhere, replaceAndSend] })).ok).toBe(false)
+      const nameOnly = shell(`cd /tmp/elsewhere && for f in */*.epub; do ${books} check "$f"; done`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [nameOnly, replaceAndSend] })).ok).toBe(false)
+    })
+
+    it("does not count a wildcard check made before the file was downloaded", () => {
+      const everything = shell(`B=${books}; W=${work}; for f in $W/*/*.epub; do $B check "$f"; done`)
+      const fetch = shell(`${books} get --md5 md5-c --title "The Harbour Almanac" --author "A. Writer"`)
+      const check = run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [everything, fetch, replaceAndSend] }))
+      expect(check.ok).toBe(false)
+      expect(check.detail).toContain("was not read before it was sent")
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [fetch, everything, replaceAndSend] })).ok).toBe(true)
+    })
+
+    it("stays quick on an assignment-like command full of equals signs", () => {
+      const started = Date.now()
+      run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [shell(`x=${"a=".repeat(40)}"`), replaceAndSend] }))
+      expect(Date.now() - started).toBeLessThan(200)
+    })
+
+    describe("two downloads with the same file name in different folders", () => {
+      const name = "A._Writer_-_The_Harbour_Almanac.epub"
+      const twins = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [
+        { path: `books/work/20260101-000000-get/${name}`, sha256: sha("A") },
+        { path: `books/work/20260101-000001-get/${name}`, sha256: sha("C") },
+      ] }
+      const send = shell(`cd ${work}; f=20260101-000001-get/${name}; ${books} send "$f"`)
+
+      it("fails a check of the other copy, by path or by name after cd", () => {
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`${books} check ${work}/20260101-000000-get/${name}`), send] })).ok).toBe(false)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`cd ${work}/20260101-000000-get && ${books} check ${name}`), send] })).ok).toBe(false)
+      })
+
+      it("passes a check of the sent copy, by path, by name after cd, or from the shell tool's own folder", () => {
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`${books} check ${work}/20260101-000001-get/${name}`), send] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`cd ${work}/20260101-000001-get && ${books} check ${name}`), send] })).ok).toBe(true)
+        const fromCwd: TraceCall = { kind: "call", name: "shell", args: JSON.stringify({ command: `./books check work/20260101-000001-get/${name}`, cwd: "books" }), result: "" }
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [fromCwd, send] })).ok).toBe(true)
+      })
+
+      it("reads an inline script's paths from the folder its call changed into first", () => {
+        const script = (folder: string) => shell(`cd ${folder} && python3 -c 'import zipfile; zipfile.ZipFile("20260101-000001-get/${name}").namelist()'`)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [script(work), send] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [script("/tmp/elsewhere"), send] })).ok).toBe(false)
+      })
+
+      it("counts a wildcard inside an inline script as naming the files it covers", () => {
+        const listing = shell(`cd ${work} && python3 -c 'import glob, zipfile; [zipfile.ZipFile(p).namelist() for p in glob.glob("*/*.epub")]'`)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [listing, send] })).ok).toBe(true)
+      })
+
+      it("counts a folder wildcard with no extension, such as a download folder's every file", () => {
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`${books} check ${work}/20260101-000001-get/*`), send] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`${books} check ${work}/20260101-000000-get/*`), send] })).ok).toBe(false)
+      })
+
+      it("credits every item of a loop over a quoted variable, the sent copy first or last", () => {
+        const loop = (first: string, second: string) => shell(`cd books; for f in work/${first}/${name} work/${second}/${name}; do ./books check "$f"; done`)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [loop("20260101-000001-get", "20260101-000000-get"), send] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [loop("20260101-000000-get", "20260101-000001-get"), send] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...twins, timeline: [shell(`cd books; for f in work/20260101-000000-get/${name} work/x/${name}; do ./books check "$f"; done`), send] })).ok).toBe(false)
+      })
+
+      it("credits a loop variable inside a word, even in a call that also runs an inline script", () => {
+        const cand = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [{ path: "books/work/cand/bbb.epub", sha256: sha("C") }] }
+        const check = shell(`cd books; for m in aaa bbb; do ./books check work/cand/$m.epub; python3 -c 'print(1)'; done`)
+        const sendIt = shell(`cd books && ./books send work/cand/bbb.epub`)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [check, sendIt] })).ok).toBe(true)
+        const other = shell(`cd books; for m in aaa ccc; do ./books check work/cand/$m.epub; python3 -c 'print(1)'; done`)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [other, sendIt] })).ok).toBe(false)
+      })
+
+      it("does not count a file as read because the same call parses JSON with python3", () => {
+        const cand = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [{ path: "books/work/cand/ccc.epub", sha256: sha("C") }] }
+        const sendIt = shell(`cd books && ./books send work/cand/ccc.epub`)
+        const json = `python3 -c 'import json,sys;print(json.load(sys.stdin)["file"])'`
+        for (const copy of [
+          `cd books; for m in aaa bbb ccc; do f=$(./books get --md5 $m | ${json}); cp "$f" work/cand/$m.epub; done`,
+          `cd books; f=$(./books get --md5 ccc | ${json}); cp "$f" work/cand/ccc.epub`,
+          `cd books; ls -la work/cand/ccc.epub; python3 -c 'print(1)'`,
+        ]) expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [shell(copy), sendIt] })).ok, copy).toBe(false)
+      })
+
+      it("finds a send whose output is piped through python3", () => {
+        const cand = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [{ path: "books/work/cand/x.epub", sha256: sha("C") }] }
+        const check = shell(`cd books; ./books check work/cand/x.epub`)
+        const piped = shell(`cd books; F=work/cand/x.epub; ./books send "$F" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])'`)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [check, piped] })).ok).toBe(true)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [piped, check, shell(`cd books; ./books send work/cand/x.epub`)] })).ok).toBe(false)
+      })
+
+      it("credits a file a heredoc script opens, and a check inside a nested loop", () => {
+        const cand = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [{ path: "books/work/cand/b3.epub", sha256: sha("C") }] }
+        const sendIt = shell(`cd books && ./books send work/cand/b3.epub`)
+        const heredoc = shell(`cd books && python3 - <<'EOF'\nimport zipfile\nprint(zipfile.ZipFile("work/cand/b3.epub").namelist())\nEOF`)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [heredoc, sendIt] })).ok).toBe(true)
+        const nested = shell(`cd books; for a in a1 a2; do for b in b1 b2 b3; do ./books check work/cand/$b.epub; done; done`)
+        expect(run("trace.readBeforeSend", obs({ ...cand, timeline: [nested, sendIt] })).ok).toBe(true)
+      })
+
+      it("passes a check of a quoted name with spaces in it", () => {
+        const spaced = { mail: [{ to: POCKETBOOK, attachments: [sha("C")] }], created: [{ path: "books/work/The Harbour Almanac.epub", sha256: sha("C") }] }
+        const timeline = [shell(`cd books && ./books check "work/The Harbour Almanac.epub" && ./books send "work/The Harbour Almanac.epub"`)]
+        expect(run("trace.readBeforeSend", obs({ ...spaced, timeline })).ok).toBe(true)
+      })
+    })
+
+    it("does not carry a variable from one shell call into the next", () => {
+      const define = shell(`F=${work}/20260101-000000-get-2/harbour-almanac-c.epub; echo set`)
+      const check = shell(`${books} check "$F"`)
+      const send = shell(`${books} send ${work}/20260101-000000-get-2/harbour-almanac-c.epub`)
+      expect(run("trace.readBeforeSend", obs({ ...sentFromWork, timeline: [define, check, send] })).ok).toBe(false)
+    })
+  })
+
   it("needs the read term and the file in the same command", () => {
     const timeline = [shell("ls books/work/harbour-almanac-c.epub; python3 -V"), shell("books deliver books/work/harbour-almanac-c.epub")]
     expect(run("trace.readBeforeSend", obs({ ...sent, timeline })).ok).toBe(false)
