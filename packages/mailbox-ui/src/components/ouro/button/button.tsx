@@ -236,6 +236,9 @@ export type ButtonProps = ButtonLinkProps | ButtonButtonProps;
 const base =
   "press relative box-border inline-flex shrink-0 items-center justify-center align-middle " +
   "rounded-ouro-control border border-solid font-medium whitespace-nowrap " +
+  // A plain button stays borderless at rest in forced colours too, matching a ghost action
+  // elsewhere; its focus-visible outline below still marks it.
+  "forced-colors:data-[variant=plain]:border-0 " +
   "no-underline select-none touch-manipulation [-webkit-tap-highlight-color:transparent] " +
   "outline-ring outline-offset-2 focus-visible:outline-2 focus-visible:outline-solid " +
   // A state layer in the text color: a light wash on hover, a deeper one while pressed.
