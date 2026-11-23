@@ -25,7 +25,7 @@ export interface OrdinaryOwnerDecisionDeps {
   agentName: string
   agentRoot: string
   listFriends: () => Promise<FriendRecord[]>
-  route: (friendId: string, content: string) => Promise<{ status: "delivered" | "queued" | "deferred" | "failed"; detail?: string }>
+  route: (friendId: string, content: string) => Promise<{ status: "delivered" | "queued" | "deferred" | "failed" | "not_sent"; detail?: string }>
   ownerUsername?: string | null
 }
 
@@ -78,7 +78,7 @@ export async function deliverOrdinaryOwnerDecision(deps: OrdinaryOwnerDecisionDe
   if (!owner) throw new Error("this agent has no single owner to tell: no active family friend is this machine's user, and it has more or fewer than one family friend")
   const effectKey = `ordinary-owner:${crypto.createHash("sha256").update(eventKey(input)).digest("hex").slice(0, 32)}`
   const routed = await deps.route(owner.id, input.text)
-  if (routed.status === "failed") throw new Error(`the owner message could not be delivered${routed.detail ? `: ${routed.detail}` : ""}`)
+  if (routed.status === "failed" || routed.status === "not_sent") throw new Error(`the owner message could not be delivered${routed.detail ? `: ${routed.detail}` : ""}`)
 
   ledger[eventKey(input)] = { effectKey, role: "sent" }
   for (const related of input.relatedEvents) ledger[eventKey(related)] ??= { effectKey, role: "covered" }

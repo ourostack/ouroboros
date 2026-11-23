@@ -734,6 +734,19 @@ function stripThinkBlocksForViolationCheck(input: string): string {
   return out.trim()
 }
 
+/**
+ * This turn's newest surface result when it came back not sent (it ends with the surface-not-sent code), unless the
+ * turn reached for another way to tell someone after it. Rest uses it to say once that the person was not told.
+ */
+export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index]!
+    if (record.name === "surface") return /\(code: surface-not-sent\)$/u.test(record.result) ? record.result : null
+    if (record.name === "send_message" || record.name === "a2a_send_message" || record.name === "mail_send") return null
+  }
+  return null
+}
+
 function hasFreshPendingWork(options?: RunAgentOptions): boolean {
   const pendingMessages = options?.pendingMessages
   if (!Array.isArray(pendingMessages)) return false
@@ -1718,6 +1731,9 @@ export async function runAgent(
   // which doesn't update mid-turn. The agent only needs to be told once;
   // after that, repeated rest attempts mean they've acknowledged.
   let freshWorkGateFired = false;
+  // Once-per-turn flag for the unsent-surface rest gate: the agent is told once
+  // that a person it meant to tell was not reached; a second rest is its answer.
+  let surfaceNotSentGateFired = false;
   // Counter for no-tool-call violations. MiniMax reasoning models occasionally
   // emit only a <think>...</think> block and stop, without any tool call — even
   // when tool_choice is set to "required". Private-return requests also need
@@ -2813,6 +2829,21 @@ export async function runAgent(
               event: "engine.fresh_work_gate_fired",
               message: "rest deferred once because pending work arrived this turn; agent has been notified",
               meta: { pendingCount: options!.pendingMessages!.length },
+            });
+            continue;
+          }
+
+          const unsentSurface = !wrappingUp && !surfaceNotSentGateFired ? unsentSurfaceResult(turnToolRecords) : null;
+          if (unsentSurface) {
+            surfaceNotSentGateFired = true;
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
+            rejectToolBatch(msg, [FLOW_TOOL_REFUSALS.restSurfaceNotSent(unsentSurface)]);
+            emitNervesEvent({
+              level: "info",
+              component: "engine",
+              event: "engine.surface_not_sent_gate_fired",
+              message: "rest deferred once because a surface this turn was not sent; agent has been notified",
+              meta: {},
             });
             continue;
           }

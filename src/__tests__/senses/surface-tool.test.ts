@@ -124,6 +124,28 @@ describe("surface tool", () => {
       expect(result).toContain("specify who this thought is for")
     })
 
+    it("reports a not-sent route plainly, with its code, and keeps the held thought and its obligation open", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
+      ]
+      const advanceObligation = vi.fn()
+      const fulfillHeartObligation = vi.fn()
+
+      const result = await handleSurface({
+        content: "here's the answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "not_sent", detail: "nothing reaches Ari now" }),
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      expect(result).toBe("not sent — nothing reaches Ari now (code: surface-not-sent)")
+      expect(advanceObligation).not.toHaveBeenCalled()
+      expect(fulfillHeartObligation).not.toHaveBeenCalled()
+      expect(queue).toHaveLength(1)
+    })
+
     it("dequeues by delegationId after successful routing", async () => {
       const queue: AttentionItem[] = [
         { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000 },
@@ -1078,7 +1100,7 @@ describe("surface tool", () => {
       )
     })
 
-    it("surfaceToolDefinition queues freshest BlueBubbles DM returns without live-sending iMessage", async () => {
+    it("surfaceToolDefinition does not queue spontaneous outreach into a freshest BlueBubbles DM; it says nothing was sent and names send_message", async () => {
       const fs = await import("fs")
       vi.mocked(fs.existsSync).mockImplementation((filePath) =>
         String(filePath).endsWith("/state/sessions/friend-1"),
@@ -1086,6 +1108,7 @@ describe("surface tool", () => {
       mockListSessionActivity.mockReturnValue([
         {
           friendId: "friend-1",
+          friendName: "Ari",
           channel: "bluebubbles",
           key: "chat:any;-;owner@example.test",
           sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;owner@example.test.json",
@@ -1094,20 +1117,125 @@ describe("surface tool", () => {
 
       const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
       const result = await surfaceToolDefinition.handler({
-        content: "freshest bluebubbles return should wait",
+        content: "freshest bluebubbles outreach",
         friendId: "friend-1",
       }, { delegatedOrigins: [] } as any)
 
-      expect(result).toContain("queued")
-      expect(result).toContain("for next interaction via bluebubbles")
-      // The agent must not read "queued" as "sent": say it waits, and how to text them now.
-      expect(result).toContain("it waits for their next iMessage")
-      expect(result).toContain('use send_message with channel="bluebubbles"')
-      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;owner@example.test\/\d+-[a-z0-9]+\.json$/),
-        expect.stringContaining("freshest bluebubbles return should wait"),
+      expect(result).toBe(
+        'not sent — surface sends now only on Telegram or Teams, and Ari has no session there (theirs: bluebubbles). '
+        + 'To tell Ari now: send_message friendId="friend-1" channel="bluebubbles" (texts them by iMessage). (code: surface-not-sent)',
       )
+      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
+    it("surfaceToolDefinition skips a fresher MCP session and sends spontaneous outreach on the friend's Telegram now", async () => {
+      const fs = await import("fs")
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "friend-1", friendName: "Ari", channel: "mcp", key: "mcp-session-1", sessionPath: "/x/mcp.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "telegram", key: "telegram_777_42", sessionPath: "/x/telegram.json" },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "the build is out", friendId: "friend-1" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("delivered — sent to Telegram now")
+      expect(mockSendTelegramAwaitFollowUp).toHaveBeenCalledWith("test", expect.objectContaining({ friendId: "friend-1", key: "telegram:777:42" }))
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
+    it("surfaceToolDefinition skips a fresher MCP session and sends spontaneous outreach on the friend's Teams chat now", async () => {
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: true })
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "friend-1", friendName: "Ari", channel: "mcp", key: "mcp-session-1", sessionPath: "/x/mcp.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "teams", key: "a:chat-1", sessionPath: "/x/teams.json" },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "the build is out", friendId: "friend-1" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("delivered — sent to Teams now")
+      expect(mockSendTeamsOffTurn).toHaveBeenCalledWith(expect.objectContaining({ friendId: "friend-1", key: "a:chat-1" }), expect.anything())
+    })
+
+    it("surfaceToolDefinition does not queue spontaneous outreach into a fresher CLI session, and names every route that reaches the friend now", async () => {
+      const fs = await import("fs")
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "friend-1", friendName: "Ari", channel: "cli", key: "session", sessionPath: "/x/cli.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "a2a", key: "peer", sessionPath: "/x/a2a.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "voice", key: "call-1", sessionPath: "/x/voice.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "mail", key: "thread-1", sessionPath: "/x/mail.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "bluebubbles", key: "chat:any;-;owner@example.test", sessionPath: "/x/bb.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "bluebubbles", key: "chat:any;-;other@example.test", sessionPath: "/x/bb2.json" },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "heads up", friendId: "friend-1" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe(
+        "not sent — surface sends now only on Telegram or Teams, and Ari has no session there (theirs: cli, a2a, voice, mail, bluebubbles). "
+        + 'To tell Ari now: a2a_send_message friend_id="friend-1" (messages that agent), or surface friendId="friend-1" channel="voice" (a live phone call), '
+        + "or mail_compose then mail_send to their address, "
+        + 'or send_message friendId="friend-1" channel="bluebubbles" (texts them by iMessage). (code: surface-not-sent)',
+      )
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
+    it("surfaceToolDefinition saves spontaneous outreach as a deferred return, never into MCP, when nothing reaches the friend now", async () => {
+      const fs = await import("fs")
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "friend-1", friendName: "Ari", channel: "mcp", key: "mcp-session-1", sessionPath: "/x/mcp.json" },
+        { friendId: "friend-1", friendName: "Ari", channel: "cli", key: "session", sessionPath: "/x/cli.json" },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "when you are back", friendId: "friend-1" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe(
+        "deferred — not sent now: nothing reaches Ari now (theirs: mcp, cli; mcp is read only by agents). "
+        + "Saved for when they next message you on a chat sense.",
+      )
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending-returns\/friend-1\/\d+-[a-z0-9]+\.json$/u),
+        expect.stringContaining("when you are back"),
+      )
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(expect.stringMatching(/\/state\/pending\/friend-1\//u), expect.anything())
+    })
+
+    it("surfaceToolDefinition says plainly that a friend with no session yet gets a deferred return", async () => {
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({ content: "hello there", friendId: "friend-new" }, { delegatedOrigins: [] } as any)
+
+      expect(result).toBe("deferred — not sent now: friend-new has no chat session with you yet. Saved for when they next message you on a chat sense.")
+    })
+
+    it("chooseSpontaneousOutreach names every agent-read channel, by the friend id when no session names them", async () => {
+      const { chooseSpontaneousOutreach } = await import("../../repertoire/tools-surface")
+      expect(chooseSpontaneousOutreach("friend-1", [
+        { friendId: "friend-1", channel: "mcp", key: "m" },
+        { friendId: "friend-1", channel: "inner", key: "dialog" },
+      ])).toEqual({
+        kind: "deferred",
+        detail: "not sent now: nothing reaches friend-1 now (theirs: mcp, inner; mcp and inner are read only by agents). Saved for when they next message you on a chat sense.",
+      })
+    })
+
+    it("surfaceToolDefinition records a not-sent surface as an unavailable habit attempt", async () => {
+      const recordSurfaceAttempt = vi.fn()
+      mockListSessionActivity.mockReturnValue([
+        { friendId: "friend-1", friendName: "Ari", channel: "bluebubbles", key: "chat:any;-;owner@example.test", sessionPath: "/x/bb.json" },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      await surfaceToolDefinition.handler({ content: "habit result", friendId: "friend-1" }, { delegatedOrigins: [], habitSession: { recordSurfaceAttempt } } as any)
+
+      expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+        recipient: "friend-1",
+        reason: "blocked",
+        result: "unavailable",
+        rawStatus: "not_sent",
+        error: expect.stringContaining('send_message friendId="friend-1" channel="bluebubbles"'),
+      }))
     })
 
     it("surfaceToolDefinition delivers freshest Telegram returns immediately through the Telegram effect journal", async () => {

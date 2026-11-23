@@ -77,6 +77,8 @@ describe("deliverOrdinaryOwnerDecision", () => {
     await expect(deliverOrdinaryOwnerDecision(deps(root, { listFriends: async () => [] }), input)).rejects.toThrow("this agent has no single owner to tell")
     await expect(deliverOrdinaryOwnerDecision(deps(root, { route: async () => ({ status: "failed" }) }), input)).rejects.toThrow(/^the owner message could not be delivered$/u)
     await expect(deliverOrdinaryOwnerDecision(deps(root, { route: async () => ({ status: "failed", detail: "Teams is down" }) }), input)).rejects.toThrow("the owner message could not be delivered: Teams is down")
+    // A not-sent route means nothing reached the owner, so the ledger must not call it sent.
+    await expect(deliverOrdinaryOwnerDecision(deps(root, { route: async () => ({ status: "not_sent", detail: 'To tell Ari now: send_message channel="bluebubbles"' }) }), input)).rejects.toThrow('the owner message could not be delivered: To tell Ari now: send_message channel="bluebubbles"')
     expect(fs.existsSync(path.join(root, "state", "external-events", "ordinary-owner-messages.json"))).toBe(false)
   })
 

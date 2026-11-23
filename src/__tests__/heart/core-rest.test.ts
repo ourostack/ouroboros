@@ -459,6 +459,85 @@ describe("rest tool in runAgent", () => {
     expect(gateEvents).toHaveLength(1)
   })
 
+  // ── Unsent surface gate ──────────────────────────────────
+
+  const surfaceTestTool = {
+    type: "function" as const,
+    function: {
+      name: "surface",
+      description: "tell a friend",
+      parameters: { type: "object", properties: { content: { type: "string" }, friendId: { type: "string" } }, required: ["content"] },
+    },
+  }
+  // Inner turns advertise a caller's send_message only when the channel selects it, so the
+  // other route here is a2a_send_message, which the gate treats the same way.
+  const otherRouteTestTool = {
+    type: "function" as const,
+    function: {
+      name: "a2a_send_message",
+      description: "message an agent peer",
+      parameters: { type: "object", properties: { friend_id: { type: "string" }, message: { type: "string" } }, required: ["friend_id", "message"] },
+    },
+  }
+  const toolCallChunks = (id: string, name: string, args: Record<string, unknown>) => [
+    makeChunk(undefined, [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }]),
+  ]
+  const notSent = 'not sent — surface sends now only on Telegram or Teams, and Ari has no session there (theirs: mcp, bluebubbles; mcp is read only by agents). To tell Ari now: send_message friendId="ari" channel="bluebubbles" (texts them by iMessage). (code: surface-not-sent)'
+
+  it("rest is refused once while this turn's surface to a person came back not sent, then accepted", async () => {
+    // Regression for 2026-11-23: Slugger's inner turn surfaced news for Ari, got a
+    // result that did not reach him, and rested in the same turn.
+    mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_surface", "surface", { content: "Your sign-in is done.", friendId: "ari" })))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // refused: the surface was not sent
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // accepted: told once
+    const execTool = vi.fn(async () => notSent)
+
+    const callbacks = makeCallbacks()
+    await runAgent([{ role: "user", content: "an agent says Ari's sign-in is done" }], callbacks, "inner", undefined, {
+      tools: [surfaceTestTool],
+      execTool,
+      toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" }, delegatedOrigins: [] },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    const restEnds = (callbacks.onToolEnd as any).mock.calls.filter((c: any[]) => c[0] === "rest")
+    expect(restEnds.map((c: any[]) => c[2])).toEqual([false, true])
+    const refusal = (mockCreate.mock.calls[2]?.[0]?.messages as any[]).find((m) => m.role === "tool" && m.tool_call_id === "call_rest")
+    expect(refusal?.content).toContain("did not reach them")
+    expect(refusal?.content).toContain('send_message friendId="ari" channel="bluebubbles"')
+    expect(refusal?.content).toMatch(/\(code: surface-not-sent\)$/u)
+    const gateEvents = vi.mocked(emitNervesEvent).mock.calls.filter(([e]) => (e as any).event === "engine.surface_not_sent_gate_fired")
+    expect(gateEvents).toHaveLength(1)
+  })
+
+  it("finds this turn's unsent surface only while it is the newest attempt to tell someone", async () => {
+    const { unsentSurfaceResult } = await import("../../heart/core")
+    const surface = (result: string) => ({ name: "surface", args: {}, result })
+    expect(unsentSurfaceResult([])).toBeNull()
+    expect(unsentSurfaceResult([surface(notSent), { name: "read_file", args: {}, result: "x" }])).toBe(notSent)
+    expect(unsentSurfaceResult([surface(notSent), surface("delivered — sent to Telegram now")])).toBeNull()
+    expect(unsentSurfaceResult([surface(notSent), { name: "send_message", args: {}, result: "sent" }])).toBeNull()
+    expect(unsentSurfaceResult([surface(notSent), { name: "mail_send", args: {}, result: "sent" }])).toBeNull()
+  })
+
+  it("rest is not held once the turn tried another route after an unsent surface", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_surface", "surface", { content: "Your sign-in is done.", friendId: "ari" })))
+    mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_send", "a2a_send_message", { friend_id: "ari", message: "Your sign-in is done." })))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    const execTool = vi.fn(async (name: string) => name === "surface" ? notSent : "sent")
+
+    const callbacks = makeCallbacks()
+    await runAgent([{ role: "user", content: "an agent says Ari's sign-in is done" }], callbacks, "inner", undefined, {
+      tools: [surfaceTestTool, otherRouteTestTool],
+      execTool,
+      toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" }, delegatedOrigins: [] },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    const restEnds = (callbacks.onToolEnd as any).mock.calls.filter((c: any[]) => c[0] === "rest")
+    expect(restEnds.map((c: any[]) => c[2])).toEqual([true])
+  })
+
   // ── Sole-call rejection ──────────────────────────────────
 
   it("rest is rejected in mixed call with other tools", async () => {
