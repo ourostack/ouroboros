@@ -7,7 +7,7 @@ import {
   SHEPHERD_OBSERVATION_FILE,
   SHEPHERD_OBSERVATION_MAX_BYTES,
   type ShepherdSupervisionView,
-} from "../shepherd/supervision"
+} from "./supervision"
 
 function owned(metadata: fs.Stats): void {
   if (!process.getuid || metadata.uid !== process.getuid()) throw new Error("Observation requires current-user ownership")
@@ -46,7 +46,7 @@ function unavailable(agentName: string, nowMs: number, code: string): ShepherdSu
 }
 
 /** A bounded read-only replica, never an authority file or a live terminal access path. */
-export function readMailboxSupervision(agentName: string, options: { agentRoot: string; nowMs?: number }): ShepherdSupervisionView {
+export function readShepherdSupervision(agentName: string, options: { agentRoot: string; nowMs?: number }): ShepherdSupervisionView {
   const nowMs = options.nowMs ?? Date.now()
   try {
     let current = path.resolve(options.agentRoot)
@@ -83,7 +83,7 @@ export function readMailboxSupervision(agentName: string, options: { agentRoot: 
     if (!isShepherdSupervisionSnapshot(snapshot) || snapshot.agentName !== agentName) throw new Error("Invalid observation identity or schema")
     return buildShepherdSupervisionView(snapshot, nowMs)
   } catch {
-    // Do not echo untrusted file contents, paths or operating-system errors into the browser.
+    // Do not echo untrusted file contents, paths or operating-system errors into a status reply.
     return unavailable(agentName, nowMs, "observation_invalid")
   }
 }

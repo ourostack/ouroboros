@@ -6,7 +6,7 @@ import {
   buildShepherdSupervisionView,
   type ShepherdSupervisionSnapshot,
 } from "../../../heart/shepherd/supervision"
-import { readMailboxSupervision } from "../../../heart/mailbox/mailbox-supervision"
+import { readShepherdSupervision } from "../../../heart/shepherd/supervision-read"
 import { registerGlobalLogSink, type LogEvent } from "../../../nerves"
 
 vi.mock("node:fs", async importOriginal => {
@@ -51,7 +51,7 @@ function snapshot(): ShepherdSupervisionSnapshot {
 }
 
 function fixture(value: unknown = snapshot()): { root: string; file: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-supervision-"))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "shepherd-supervision-read-"))
   roots.push(root)
   const dir = path.join(root, "state", "senses", "shepherd")
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -71,7 +71,7 @@ describe("Shepherd supervision projection", () => {
     const events: LogEvent[] = []
     const unregister = registerGlobalLogSink(event => events.push(event))
     try {
-      expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).freshness.status).toBe("unknown")
+      expect(readShepherdSupervision("slugger", { agentRoot: root, nowMs: now }).freshness.status).toBe("unknown")
       expect(events).toContainEqual(expect.objectContaining({
         event: "heart.shepherd_observation_unavailable", meta: { code: "observation_invalid" },
       }))
@@ -135,16 +135,16 @@ describe("Shepherd supervision projection", () => {
 describe("Mailbox supervision replica reader", () => {
   it("keeps a missing bundle or ancestor unavailable without creating it", () => {
     const { root } = fixture()
-    expect(readMailboxSupervision("slugger", { agentRoot: path.join(root, "absent") }).freshness.status).toBe("unknown")
+    expect(readShepherdSupervision("slugger", { agentRoot: path.join(root, "absent") }).freshness.status).toBe("unknown")
     fs.renameSync(path.join(root, "state"), path.join(root, "saved-state"))
-    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_missing")
+    expect(readShepherdSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_missing")
     expect(fs.readdirSync(root)).toEqual(["saved-state"])
   })
 
   it("rejects a replica not owned by the current user", () => {
     const { root } = fixture()
     vi.spyOn(process, "getuid").mockReturnValue(fs.statSync(root).uid + 1)
-    expect(readMailboxSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_invalid")
+    expect(readShepherdSupervision("slugger", { agentRoot: root, nowMs: now }).sourceErrors[0].code).toBe("observation_invalid")
   })
 
   it.each(["identity", "growth", "mutation"] as const)("rejects %s during a bounded read", async fault => {
@@ -159,7 +159,7 @@ describe("Mailbox supervision replica reader", () => {
       else if (calls === 2) metadata.mtimeMs++
       return metadata
     })
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.counts).toBeNull()
     expect(view.sourceErrors[0].code).toBe("observation_invalid")
   })
@@ -167,7 +167,7 @@ describe("Mailbox supervision replica reader", () => {
   it("reads a valid private snapshot without changing its timestamp or bytes", () => {
     const { root, file } = fixture()
     const before = fs.readFileSync(file)
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now + 50 })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now + 50 })
     expect(view.freshness.ageMs).toBe(50)
     expect(view.agentName).toBe("slugger")
     expect(fs.readFileSync(file)).toEqual(before)
@@ -177,7 +177,7 @@ describe("Mailbox supervision replica reader", () => {
     const { root, file } = fixture()
     fs.unlinkSync(file)
     const before = fs.readdirSync(path.dirname(file))
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.counts).toBeNull()
     expect(view.health).toBe("degraded")
     expect(view.sourceErrors).toContainEqual(expect.objectContaining({ code: "observation_missing" }))
@@ -201,7 +201,7 @@ describe("Mailbox supervision replica reader", () => {
     const input = snapshot()
     mutate(input)
     const { root } = fixture(input)
-    const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+    const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
     expect(view.counts).toBeNull()
     expect(view.sourceErrors).toContainEqual(expect.objectContaining({ code: "observation_invalid" }))
   })
@@ -220,7 +220,7 @@ describe("Mailbox supervision replica reader", () => {
         fs.renameSync(path.dirname(file), `${path.dirname(file)}-target`)
         fs.symlinkSync(`${path.dirname(file)}-target`, path.dirname(file))
       }
-      const view = readMailboxSupervision("slugger", { agentRoot: root, nowMs: now })
+      const view = readShepherdSupervision("slugger", { agentRoot: root, nowMs: now })
       expect(view.counts).toBeNull()
       expect(view.sourceErrors).toContainEqual(expect.objectContaining({ code: "observation_invalid" }))
     },

@@ -384,7 +384,7 @@
  "src/__tests__/heart/mailbox/mailbox-read-composition.test.ts": 0.7,
  "src/__tests__/heart/mailbox/mailbox-read.test.ts": 1.3,
  "src/__tests__/heart/mailbox/mailbox-readers-continuity-catches.test.ts": 0.4,
- "src/__tests__/heart/mailbox/mailbox-supervision.test.ts": 0.3,
+ "src/__tests__/heart/shepherd/supervision-read.test.ts": 0.3,
  "src/__tests__/heart/mailbox/mailbox-types.test.ts": 0.2,
  "src/__tests__/heart/mailbox/mailbox-view.test.ts": 0.2,
  "src/__tests__/heart/mailbox/readers/runtime-readers-rollup-vocabulary.test.ts": 0.3,
