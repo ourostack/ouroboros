@@ -1,0 +1,1 @@
+The edge benchmark now compares a pull request with the base it merges into, built alongside it and measured on the same runner in the same job, taking turns between the two. It no longer fails a pull request because main's last run happened to land on a runner twice as fast. It still fails one that really makes the harness slower or heavier.

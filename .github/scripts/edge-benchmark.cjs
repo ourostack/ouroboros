@@ -10,10 +10,13 @@
 //   turn        one operator message through that stack: time to the first
 //               model request, time until the stack goes quiet, peak memory
 // Every number is "lower is better". The report compares a run with a
-// baseline run (main's latest) and says which numbers moved.
+// baseline run and says which numbers moved. Given a baseline build too, `run`
+// measures both in the same process on the same machine, alternating between
+// them, so how fast the machine happens to be cancels out of the comparison.
 //
 //   node .github/scripts/edge-benchmark.cjs run --tarball <tgz> --out result.json
 //   node .github/scripts/edge-benchmark.cjs run --root <built checkout> --out result.json
+//   node .github/scripts/edge-benchmark.cjs run --tarball <head.tgz> --out head.json --baseline-tarball <base.tgz> --baseline-out base.json
 //   node .github/scripts/edge-benchmark.cjs report --current result.json [--baseline base.json] [--summary file]
 const fs = require("fs")
 const http = require("http")
@@ -45,6 +48,26 @@ function parseArgs(argv) {
     index += 1
   }
   return options
+}
+
+/**
+ * The order the sides take turns in, for one round: forward on even rounds, backward on odd ones (ABBA), so neither
+ * side always goes first while the machine warms up or a neighbour gets busy.
+ */
+function interleaveOrder(round, count) {
+  const order = Array.from({ length: count }, (_, index) => index)
+  return round % 2 ? order.reverse() : order
+}
+
+/** What `run` measures: the change, and the baseline build beside it when one is given (baseline first). */
+function runSides(options) {
+  if (!options.out) throw new Error("--out is required")
+  if (!options.tarball === !options.root) throw new Error("give exactly one of --tarball or --root")
+  const current = { name: "current", tarball: options.tarball, root: options.root, out: options.out }
+  if (!options.baselineTarball && !options.baselineRoot && !options.baselineOut) return [current]
+  if (!options.baselineTarball === !options.baselineRoot) throw new Error("give exactly one of --baseline-tarball or --baseline-root")
+  if (!options.baselineOut) throw new Error("--baseline-out is required")
+  return [{ name: "baseline", tarball: options.baselineTarball, root: options.baselineRoot, out: options.baselineOut }, current]
 }
 
 function median(values) {
@@ -375,31 +398,39 @@ function install(tarball, workDir) {
   return { root, install: { ms: Date.now() - started, tarballBytes: fs.statSync(tarball).size, omit: EDGE_INSTALL_OMIT.join(" "), ...dirStats(prefix) } }
 }
 
-async function measureCli(root, workDir, runs) {
+function cliOnce(root, workDir, run) {
   const home = path.join(workDir, "cli-home")
   fs.mkdirSync(home, { recursive: true })
-  const wall = []
-  let snapshot = null
+  const out = path.join(workDir, `cli-${run}.jsonl`)
+  const started = process.hrtime.bigint()
+  const result = spawnSync(process.execPath, [path.join(root, "dist", "heart", "daemon", "ouro-entry.js"), "--version"], {
+    cwd: home,
+    env: benchEnv({ HOME: home, EDGE_BENCH_OUT: out }),
+    encoding: "utf8",
+  })
+  const elapsed = Number(process.hrtime.bigint() - started) / 1e6
+  if (result.status !== 0) throw new Error(`ouro --version exited ${result.status}: ${result.stderr}`)
+  return { ms: Math.round(elapsed), snapshot: latestSnapshots(fs.readFileSync(out, "utf8").split("\n"), "exit")[0] || null }
+}
+
+/** `ouro --version` `runs` times for each package root, taking turns between them; one result per root. */
+async function measureCli(roots, workDirs, runs) {
+  const wall = roots.map(() => [])
+  const snapshots = roots.map(() => null)
   for (let run = 0; run < runs; run += 1) {
-    const out = path.join(workDir, `cli-${run}.jsonl`)
-    const started = process.hrtime.bigint()
-    const result = spawnSync(process.execPath, [path.join(root, "dist", "heart", "daemon", "ouro-entry.js"), "--version"], {
-      cwd: home,
-      env: benchEnv({ HOME: home, EDGE_BENCH_OUT: out }),
-      encoding: "utf8",
-    })
-    const elapsed = Number(process.hrtime.bigint() - started) / 1e6
-    if (result.status !== 0) throw new Error(`ouro --version exited ${result.status}: ${result.stderr}`)
-    wall.push(Math.round(elapsed))
-    snapshot = latestSnapshots(fs.readFileSync(out, "utf8").split("\n"), "exit")[0] || snapshot
+    for (const side of interleaveOrder(run, roots.length)) {
+      const { ms, snapshot } = cliOnce(roots[side], workDirs[side], run)
+      wall[side].push(ms)
+      snapshots[side] = snapshot || snapshots[side]
+    }
   }
-  return {
-    wallMs: median(wall),
-    wallMsRuns: wall,
-    maxRssKb: snapshot?.maxRssKb ?? null,
-    modules: snapshot?.modules ?? null,
-    topPackages: topPackages(snapshot?.byPackage),
-  }
+  return roots.map((_, side) => ({
+    wallMs: median(wall[side]),
+    wallMsRuns: wall[side],
+    maxRssKb: snapshots[side]?.maxRssKb ?? null,
+    modules: snapshots[side]?.modules ?? null,
+    topPackages: topPackages(snapshots[side]?.byPackage),
+  }))
 }
 
 async function stopTree(pid, timeoutMs = 10_000) {
@@ -429,7 +460,7 @@ async function takeTimeToSocket(root, workDir, index) {
   }
 }
 
-async function measureDaemon(root, workDir, idleSeconds) {
+async function measureIdleDaemon(root, workDir, idleSeconds) {
   const home = path.join(workDir, "daemon-home")
   fs.mkdirSync(home, { recursive: true })
   const socket = path.join(workDir, "daemon.sock")
@@ -451,19 +482,28 @@ async function measureDaemon(root, workDir, idleSeconds) {
   } finally {
     await stopTree(child.pid)
   }
-  // The extra takes start only after the first daemon is gone, so they never compete with it.
-  const takes = [first.firstMs]
-  for (let i = 1; i <= EXTRA_SOCKET_TAKES; i += 1) takes.push(await takeTimeToSocket(root, workDir, i))
-  return {
-    readyMs: median(takes),
-    takes,
+  return first
+}
+
+/** An agentless daemon per package root: idle memory once each, time to socket in takes that alternate between the roots. */
+async function measureDaemon(roots, workDirs, idleSeconds) {
+  const firsts = []
+  for (const side of interleaveOrder(0, roots.length)) firsts[side] = await measureIdleDaemon(roots[side], workDirs[side], idleSeconds)
+  // The extra takes start only after every idle daemon is gone, so they never compete with one.
+  const takes = firsts.map((first) => [first.firstMs])
+  for (let i = 1; i <= EXTRA_SOCKET_TAKES; i += 1) {
+    for (const side of interleaveOrder(i, roots.length)) takes[side].push(await takeTimeToSocket(roots[side], workDirs[side], i))
+  }
+  return firsts.map((first, side) => ({
+    readyMs: median(takes[side]),
+    takes: takes[side],
     processes: first.memory.processes,
     idleRssKb: first.memory.rssKb,
     idlePssKb: first.memory.pssKb,
     idleAnonKb: first.memory.anonKb,
     modules: first.snapshot?.modules ?? null,
     topPackages: topPackages(first.snapshot?.byPackage),
-  }
+  }))
 }
 
 function writeExecutable(file, body) {
@@ -762,36 +802,48 @@ async function measureStack(root, workDir, options) {
 }
 
 async function run(options) {
-  if (!options.out) throw new Error("--out is required")
-  if (!options.tarball === !options.root) throw new Error("give exactly one of --tarball or --root")
-  const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ouro-edge-"))
-  const result = { schemaVersion: 1, at: new Date().toISOString(), host: hostInfo(options), errors: [] }
-  let root = options.root ? path.resolve(options.root) : null
-  if (options.tarball) {
-    const installed = install(options.tarball, workDir)
-    root = installed.root
-    result.install = installed.install
-  }
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
-  result.package = { version: pkg.version, source: options.tarball ? "packed" : "checkout" }
+  const sides = runSides(options).map((side) => {
+    const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), `ouro-edge-${side.name}-`))
+    const result = { schemaVersion: 1, at: new Date().toISOString(), host: hostInfo(options), errors: [] }
+    let root = side.root ? path.resolve(side.root) : null
+    if (side.tarball) {
+      const installed = install(side.tarball, workDir)
+      root = installed.root
+      result.install = installed.install
+    }
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
+    result.package = { version: pkg.version, source: side.tarball ? "packed" : "checkout" }
+    return { ...side, workDir, root, result }
+  })
+  const roots = sides.map((side) => side.root)
+  const workDirs = sides.map((side) => side.workDir)
 
+  // A scenario returns one result part per side. If it fails, every side records it: a comparison needs both.
   const scenario = async (name, fn) => {
     const started = Date.now()
     try {
-      Object.assign(result, await fn())
+      const parts = await fn()
+      sides.forEach((side, index) => Object.assign(side.result, parts[index]))
       process.stderr.write(`edge-benchmark: ${name} done in ${((Date.now() - started) / 1000).toFixed(1)}s\n`)
     } catch (error) {
-      result.errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`)
+      for (const side of sides) side.result.errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`)
       process.stderr.write(`edge-benchmark: ${name} FAILED: ${error instanceof Error ? error.stack : error}\n`)
     }
   }
-  await scenario("cli", async () => ({ cli: await measureCli(root, workDir, options.runs) }))
-  await scenario("daemon", async () => ({ daemon: await measureDaemon(root, workDir, options.idleSeconds) }))
-  await scenario("stack", async () => measureStack(root, workDir, options))
+  await scenario("cli", async () => (await measureCli(roots, workDirs, options.runs)).map((cli) => ({ cli })))
+  await scenario("daemon", async () => (await measureDaemon(roots, workDirs, options.idleSeconds)).map((daemon) => ({ daemon })))
+  // The stack holds a daemon and an agent for its idle wait, so the sides take it one after the other.
+  await scenario("stack", async () => {
+    const parts = []
+    for (const side of sides) parts.push(await measureStack(side.root, side.workDir, options))
+    return parts
+  })
 
-  fs.writeFileSync(options.out, `${JSON.stringify(result, null, 2)}\n`)
-  process.stderr.write(`edge-benchmark: wrote ${options.out} (work dir ${workDir})\n`)
-  return result
+  for (const side of sides) {
+    fs.writeFileSync(side.out, `${JSON.stringify(side.result, null, 2)}\n`)
+    process.stderr.write(`edge-benchmark: wrote ${side.out} (work dir ${side.workDir})\n`)
+  }
+  return sides.at(-1).result
 }
 
 function report(options) {
@@ -821,4 +873,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { parseArgs, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
+module.exports = { parseArgs, interleaveOrder, runSides, measureCli, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
