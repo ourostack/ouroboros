@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import { getAgentRoot } from "../../../heart/identity"
-import { runGuest } from "../../../eval/sandbox/guest"
+import { mountedAgentRoot, runGuest } from "../../../eval/sandbox/guest"
 import { createStreamChannel, serveProxyRuntime, type ProxyMessage } from "../../../eval/transport/provider-proxy"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
@@ -38,6 +38,28 @@ describe("runGuest", () => {
     serveProxyRuntime(host, hostRuntime(), { take: () => true })
     return { stdin: hostToGuest, stdout: guestToHost, received }
   }
+
+  it("finds the one bundle mounted in the agent container", () => {
+    const bundles = fs.mkdtempSync(path.join(os.tmpdir(), "eval-bundles-"))
+    fs.mkdirSync(path.join(bundles, "slugger.ouro"))
+    fs.writeFileSync(path.join(bundles, "notes.txt"), "")
+    expect(mountedAgentRoot(bundles)).toBe(path.join(bundles, "slugger.ouro"))
+    expect(() => mountedAgentRoot(bundles, () => [])).toThrow(/found 0/)
+    expect(() => mountedAgentRoot(bundles, () => ["a.ouro", "b.ouro"])).toThrow(/found 2/)
+    fs.rmSync(bundles, { recursive: true, force: true })
+  })
+
+  it("runs the turn on the bundle of the agent it is given", async () => {
+    fs.writeFileSync(turnFile, JSON.stringify({ prefix: [], userText: "now" }))
+    const { stdin, stdout } = wire()
+    const roots: string[] = []
+    const runTurn: typeof runTelegramTurn = async (turn) => {
+      roots.push(turn.agentRoot)
+      return { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
+    }
+    expect((await runGuest({ stdin, stdout, turnFile, runTurn, agentRoot: "/home/ouro/AgentBundles/slugger.ouro" })).ok).toBe(true)
+    expect(roots).toEqual(["/home/ouro/AgentBundles/slugger.ouro"])
+  })
 
   it("runs the turn from the turn file with the host's provider, on the sanctuary bundle, and ends with its result", async () => {
     fs.writeFileSync(turnFile, JSON.stringify({ prefix: [{ role: "user", content: "earlier" }], userText: "now" }))

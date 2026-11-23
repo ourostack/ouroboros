@@ -15,6 +15,7 @@ import type { UsageData } from "../../heart/streaming"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing } from "../budget"
 import { brandHits } from "./protocol"
+import { rewriteRequest, type Replacement } from "./rewrite"
 
 /**
  * A session's most calls: three jobs at 12, three debriefs at 2, the choice and the blinding check at 1, and the one
@@ -105,9 +106,15 @@ export class RefusedCall extends Error {
   }
 }
 
-/** The text of everything a request sends: system prompt, tools, messages and tool results. */
+/**
+ * The text of everything a request sends: system prompt, tools, messages and tool results, and the trace id, which
+ * some providers send as metadata. The rest (reasoning effort, tool choice) are the provider's own fixed words.
+ */
 export function requestText(request: ProviderTurnRequest): string {
-  return JSON.stringify({ systemPrompt: request.systemPrompt ?? null, tools: request.activeTools, deferred: request.deferredTools ?? [], messages: request.messages })
+  return JSON.stringify({
+    systemPrompt: request.systemPrompt ?? null, tools: request.activeTools, deferred: request.deferredTools ?? [], messages: request.messages,
+    ...(request.traceId !== undefined ? { traceId: request.traceId } : {}),
+  })
 }
 
 /**
@@ -122,12 +129,16 @@ export function guardedRuntime(input: {
   pricing: Pricing
   gateFor(request: ProviderTurnRequest): Gate
   log(entry: { kind: ConversationKind; sent: boolean; body: string }): void
+  /** The arm's replacement list, applied before the scan; the model is sent only the rewritten request. */
+  replacements?: readonly Replacement[]
 }): ProviderRuntime {
   const latch = input.latch as SessionLatch & { _void(hits: string[]): void; _record(entry: CallRecord): void }
   const metered = meteredRuntime(input.inner, latch.hold, input.ledger)
-  const streamTurn: ProviderRuntime["streamTurn"] = async (request) => {
+  const streamTurn: ProviderRuntime["streamTurn"] = async (own) => {
+    const gate = input.gateFor(own)
+    const rewritten = input.replacements ? rewriteRequest(own, input.replacements) : undefined
+    const request = rewritten?.request ?? own
     const body = requestText(request)
-    const gate = input.gateFor(request)
     const hits = brandHits(body)
     if (hits.length > 0) {
       latch._void(hits)
@@ -147,7 +158,7 @@ export function guardedRuntime(input: {
     try {
       const result = await metered.streamTurn(request)
       latch._record({ kind: gate.kind, usage: result.usage ?? null, credits: result.usage ? creditsOf(result.usage, input.pricing) : 0, sent: true })
-      return result
+      return rewritten ? { ...result, toolCalls: result.toolCalls.map((call) => ({ ...call, name: rewritten.toolName(call.name) })) } : result
     } catch (error) {
       latch._record({ kind: gate.kind, usage: null, credits: 0, sent: true })
       throw error
