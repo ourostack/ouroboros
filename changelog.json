@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1394",
+      "changes": [
+        "Groundwork for relaying Ari's approval answers: the relay token, the trust-folder switch and a store method for a relayed deny. Nothing uses them yet."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1393",
       "changes": [
         "Use friends 0.1.0-alpha.30, which can carry a signed answer to an approval prompt."
