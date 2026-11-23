@@ -7,7 +7,7 @@ import { emitNervesEvent } from "../nerves/runtime"
  * Lets status see a turn that has stopped moving, on the senses whose turns run through the shared pipeline and have
  * a status row of their own. Each running turn leaves a record under `state/senses/<sense>/turns-in-flight/`; the
  * daemon reads them and shows the sense as an error once a turn has gone quiet for too long. iMessage keeps its own
- * tracker (`bluebubbles/active-turns.ts`). Mail is not here: its messages are answered by inner turns.
+ * tracker (`bluebubbles/active-turns.ts`). Mail is not here: its messages are answered by private-runtime turns.
  */
 
 /** A turn with no model output or tool activity for this long counts as stalled. */
@@ -59,7 +59,7 @@ export interface TurnInFlight extends TurnProgress {
   finish(): void
 }
 
-/** Whether turns on this channel are watched here. iMessage has its own tracker; the CLI and inner turns have no row. */
+/** Whether turns on this channel are watched here. iMessage has its own tracker; the CLI and private-runtime turns have no row. */
 export function isWatchedSense(channel: string): boolean {
   return WATCHED_SENSES.has(channel)
 }
