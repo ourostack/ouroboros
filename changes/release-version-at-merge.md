@@ -6,4 +6,4 @@ Releases publish to npm one at a time, in the order they landed, and a release t
 
 The Unraid template's TemplateURL now points at the newest GitHub release's copy of the template, which carries the newest image's version.
 
-A manual run of the container workflow now rebuilds only main's head, and only when npm published main's version from that commit. `npm run butler:ship` finds a release's commit from npm, then from its release tag, since no commit subject names the version any more.
+Each release counts from npm's last release, and stops with an error rather than reuse or go back on a version number. A manual run of the container workflow now rebuilds only main's head, only when npm published main's version from that commit, and with the changelog npm published. `npm run butler:ship` finds a release's commit from npm, then from its release tag, since no commit subject names the version any more.
