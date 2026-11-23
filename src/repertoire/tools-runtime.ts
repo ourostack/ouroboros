@@ -212,7 +212,7 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
       return restartRuntime({ reason: args.reason }, agentName, ctx)
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts the hosting runtime" },
-    ax: { id: "tool:restart_runtime", group: "turn-runtime", when: "Pick this only when the daemon itself is wedged for every chat, such as a jammed recovery queue; never for one failing tool.", effect: "write", errors: [
+    ax: { id: "tool:restart_runtime", group: "turn-runtime", when: "Pick this only when the daemon itself is wedged for every chat, such as a jammed recovery queue. It restarts every sense, so one failing tool is that tool's error to fix.", effect: "write", errors: [
       MISSING_REASON_ERROR,
       { code: "autonomous-restart-refused", means: "This is an autonomous turn, such as a habit, and a restart would kill every agent's in-flight work.", fix: "Don't restart; note the problem and surface it to the owner, who can restart from a conversation." },
       { code: "restart-cooldown", means: "A restart was already requested in the last 6 hours; retryAfterMs says how long is left.", fix: "Don't restart again; note what is still wrong and report it to the owner instead." },

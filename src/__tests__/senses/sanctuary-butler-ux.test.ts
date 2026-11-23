@@ -629,7 +629,7 @@ describe("Ouro Butler household UX", () => {
     const definition = telegramTools.includes("save_friend_note")
       ? getToolsForChannel(getChannelCapabilities("telegram"), undefined, undefined, undefined, undefined, undefined, owner.context).find((tool) => tool.function.name === "save_friend_note")
       : undefined
-    expect(definition?.function.description).toContain("never grant authority")
+    expect(definition?.function.description).toContain("A note grants no authority")
   })
 
   it("stores typed preference provenance while limiting household writes to their own communication and timing", async () => {

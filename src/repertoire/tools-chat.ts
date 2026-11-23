@@ -131,7 +131,7 @@ export const chatToolDefinitions: ToolDefinition[] = [
       return ended("set_reply_target", true, actions.setReplyTarget(request))
     },
     ax: { id: "tool:set_reply_target", group: "turn-chat", when: "Pick this before you settle, to thread the reply under one message, post it top-level, or go back to this chat's usual lane.", effect: "write", idempotent: true, errors: [
-      { code: "no-reply-choice", means: "This chat app gives me no choice of where a reply lands.", fix: "Just send the reply; it lands where this chat always puts it." },
+      { code: "no-reply-choice", means: "This chat app gives me no choice of where a reply lands.", fix: "Just send the reply; it lands where this chat puts every reply." },
       { code: "invalid-target", means: "target wasn't current_lane, top_level or thread.", fix: "Call again with target set to current_lane, top_level or thread." },
       { code: "no-message", means: "No message_id was given and this turn has no starting message to reply to.", fix: "Call again with message_id set to one of the ids shown in this chat's context." },
       { code: "off-turn", means: "This turn may not send (an autonomous, habit or no-send turn), so nothing happened in the chat.", fix: "Leave the chat alone this turn; act in it on a turn that someone in that chat started." },
