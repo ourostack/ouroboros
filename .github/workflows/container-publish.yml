@@ -36,15 +36,21 @@ jobs:
           fetch-depth: 0
 
       # A push publishes when any commit it brought releases something (a rebase merge's last commit may not), under
-      # the version npm's publish job works out from the same push. A manual run rebuilds a commit that released a
-      # version, and stops on one that did not, which would put the wrong code under an earlier version's tag.
+      # the version npm's publish job works out from the same push. A manual run rebuilds main's head only when npm
+      # published main's version from that very commit, so an image never carries code npm did not ship under its tag.
       - name: Decide whether this push releases a version
         id: plan
         env:
           BEFORE: ${{ github.event.before }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            PLAN=$(node scripts/release-version.cjs dispatch)
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::A manual run rebuilds main's image only; run it on main, not $GITHUB_REF."
+              exit 1
+            fi
+            VERSION=$(node scripts/release-version.cjs version)
+            PUBLISHED=$(npm view "@ouro.bot/cli@$VERSION" gitHead 2>/dev/null || true)
+            PLAN=$(node scripts/release-version.cjs dispatch "$PUBLISHED")
           else
             PLAN=$(node scripts/release-version.cjs push "$BEFORE")
           fi

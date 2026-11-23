@@ -28,6 +28,15 @@ describe("Ouro Butler Community Apps release", () => {
     expect(workflow).toContain("queue: max")
   })
 
+  it("rebuilds an image by hand only on main, from the commit npm published its version from", () => {
+    const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
+    const dispatch = workflow.slice(workflow.indexOf('if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then'), workflow.indexOf("          else\n"))
+    expect(dispatch).toContain('if [ "$GITHUB_REF" != refs/heads/main ]; then')
+    expect(dispatch).toContain('VERSION=$(node scripts/release-version.cjs version)')
+    expect(dispatch).toContain('PUBLISHED=$(npm view "@ouro.bot/cli@$VERSION" gitHead 2>/dev/null || true)')
+    expect(dispatch).toContain('PLAN=$(node scripts/release-version.cjs dispatch "$PUBLISHED")')
+  })
+
   it("publishes the required repository profile from canonical project metadata", () => {
     const profile = fs.readFileSync("ca_profile.xml", "utf8")
     const profileBody = profile.match(/<Profile>([\s\S]*?)<\/Profile>/u)?.[1].trim()

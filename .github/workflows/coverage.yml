@@ -738,8 +738,9 @@ jobs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the dist-tag wait (10 min) plus the tarball wait (about 21 min).
-    timeout-minutes: 45
+    # Room for the two version waits and the two latest-tag waits (10 min each at most), the tarball wait (about
+    # 21 min), the install and the smoke.
+    timeout-minutes: 70
     steps:
       - name: Checkout
         uses: actions/checkout@v6
