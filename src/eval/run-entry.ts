@@ -27,14 +27,16 @@ function runCaseFor(args: EvalArgs): RunCase {
       paths: {
         bundleDir: args.bundle, seedBundleDir: args.seedBundle ?? `${root}/harness/deploy/unraid/sanctuary.ouro`, workRoot: `${root}/work`,
         ...(args.oracleBooks ? { oracleBooks: args.oracleBooks } : {}),
+        ...(args.sandboxImages ? { images: args.sandboxImages } : {}),
       },
     })
   }
   const docker = dockerCli()
-  const oracle = args.oracleBooks ? dockerOracle({ docker, image: HOUSEHOLD_IMAGE, booksLib: args.oracleBooks }) : undefined
+  const oracle = args.oracleBooks ? dockerOracle({ docker, image: args.sandboxImages?.household ?? HOUSEHOLD_IMAGE, booksLib: args.oracleBooks }) : undefined
   return ({ case: c, host, budget }) => runSandboxed({
     case: c, bundleDir: args.bundle, seedBundleDir: args.seedBundle ?? path.join(REPO, "deploy/unraid/sanctuary.ouro"), host, budget, docker,
     ...(oracle ? { oracle } : {}),
+    ...(args.sandboxImages ? { images: args.sandboxImages } : {}),
   })
 }
 

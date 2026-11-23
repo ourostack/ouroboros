@@ -18,6 +18,7 @@ import { evaluate } from "./assertions"
 import { createBudgetLedger, meteredRuntime, type Cost, type Pricing } from "./budget"
 import type { Case } from "./domain/case"
 import { buildCells, gradeRun, summarize, withoutBooksRemove, type RunRecord, type RunResult } from "./report"
+import type { SandboxImages } from "./sandbox/docker"
 import type { RunCase, SandboxRun } from "./sandbox/remote"
 import { loadCases, selfTest } from "./self-test"
 import type { ResolvedTarget, TargetCredentials } from "./targets"
@@ -46,6 +47,8 @@ export type EvalArgs = {
   oracleBooks?: string
   /** `<host>:<folder>`: run the sandbox on that Docker host over ssh, with the harness synced to `<folder>/harness`. */
   sandboxSsh?: string
+  /** `<agent image>,<household image>`: the sandbox's own image tags, so a run on a shared Docker host uses its own names. */
+  sandboxImages?: SandboxImages
 }
 
 export type EvalDeps = {
@@ -60,7 +63,7 @@ export type EvalDeps = {
 const STRING_FLAGS = {
   "--cases": "cases", "--bundle": "bundle", "--bundle-ref": "bundleRef", "--target": "target", "--credentials-agent": "credentialsAgent",
   "--copilot-account": "copilotAccount", "--output": "output", "--harness-ref": "harnessRef", "--seed-bundle": "seedBundle",
-  "--oracle-books": "oracleBooks", "--sandbox-ssh": "sandboxSsh",
+  "--oracle-books": "oracleBooks", "--sandbox-ssh": "sandboxSsh", "--sandbox-images": "sandboxImages",
 } as const
 const NUMBER_FLAGS = {
   "--runs": "runs", "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut",
@@ -88,6 +91,11 @@ export function parseEvalArgs(argv: string[]): EvalArgs {
       }
       out[NUMBER_FLAGS[flag as keyof typeof NUMBER_FLAGS]] = number
     }
+  }
+  if (typeof out.sandboxImages === "string") {
+    const [agent, household, ...rest] = out.sandboxImages.split(",")
+    if (!agent || !household || rest.length > 0) throw new Error("--sandbox-images must be <agent image>,<household image>")
+    out.sandboxImages = { agent, household }
   }
   const missing = REQUIRED.find((flag) => !seen.has(flag))
   if (missing) throw new Error(`${missing} is required`)
