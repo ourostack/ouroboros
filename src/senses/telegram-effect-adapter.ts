@@ -626,6 +626,21 @@ export async function sweepTelegramSystemFailsafes(input: {
   return { inspected: records.length, sent }
 }
 
+/** How many sends the outbox makes of one part before it stops trying. */
+const TELEGRAM_EFFECT_RECOVERY_ATTEMPTS = 3
+
+/** Make sure the outbox never sends what is left of an effect that was stopped before it went out. */
+export function abandonTelegramEffect(store: FileTelegramEffectJournal, artifact: TelegramEffectArtifact): void {
+  const now = new Date().toISOString()
+  for (const part of artifact.parts) {
+    if (part.state !== "prepared") continue
+    part.attempts = Math.max(part.attempts ?? 0, TELEGRAM_EFFECT_RECOVERY_ATTEMPTS)
+    part.updatedAt = now
+  }
+  artifact.updatedAt = now
+  store.write(artifact)
+}
+
 export async function recoverTelegramEffectOutbox(input: {
   store: FileTelegramEffectJournal
   execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
@@ -636,7 +651,7 @@ export async function recoverTelegramEffectOutbox(input: {
   const candidates = input.store.listRecoverable()
     .filter((artifact) => (!input.matches || input.matches(artifact))
       && !artifact.parts.some((part) => part.state === "attempting" || part.state === "indeterminate")
-      && artifact.parts.some((part) => part.state === "prepared" && (part.attempts ?? 0) < 3))
+      && artifact.parts.some((part) => part.state === "prepared" && (part.attempts ?? 0) < TELEGRAM_EFFECT_RECOVERY_ATTEMPTS))
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
     .slice(0, limit)
   let accepted = 0

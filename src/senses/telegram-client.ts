@@ -722,10 +722,11 @@ export interface TelegramLongPollOptions {
   onDispatchSettled?: () => void
   settleTransport?: (update: TelegramUpdate, outcome: "completed" | "indeterminate") => Promise<void>
   /**
-   * Telegram redelivered an update whose dispatch a stopped process left unfinished. True runs it again; the
-   * sense says true only when nothing went out for it and it has tries left, and records a failure otherwise.
+   * Telegram redelivered an update whose dispatch a stopped process left unfinished. The sense decides whether it
+   * runs again: only when nothing went out for it and it has tries left. To run it, the sense calls `reclaim` to take
+   * the update back from the inbox and returns true; it records a failure for any update it does not run.
    */
-  replayIndeterminate?: (update: TelegramUpdate) => boolean
+  replayIndeterminate?: (update: TelegramUpdate, reclaim: () => boolean) => boolean | Promise<boolean>
 }
 
 // A poll failure is retryable when it is a transient transport condition: a
@@ -897,12 +898,28 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     })
   }
 
+  const canReplay = Boolean(options.replayIndeterminate && options.inboxStore?.reclaimIndeterminate)
   // Only an update already in the inbox reaches here, so the inbox exists.
-  const replayable = (update: TelegramUpdate): boolean => {
+  const replayable = async (update: TelegramUpdate): Promise<boolean> => {
     const inbox = options.inboxStore!
-    if (!options.replayIndeterminate || !inbox.reclaimIndeterminate) return false
-    if (!inbox.loadIndeterminate().some((receipt) => sameReceipt(receipt, updateReceipt(update)))) return false
-    return options.replayIndeterminate(update) && inbox.reclaimIndeterminate(update)
+    if (!canReplay || !inbox.loadIndeterminate().some((receipt) => sameReceipt(receipt, updateReceipt(update)))) return false
+    let reclaimed = false
+    const decided = await options.replayIndeterminate!(update, () => {
+      reclaimed = inbox.reclaimIndeterminate!(update)
+      return reclaimed
+    })
+    return decided && reclaimed
+  }
+  const warnIndeterminate = (receipt: TelegramUpdateReceipt): void => {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "telegram.update_dropped",
+      message: "Telegram update dispatch outcome is indeterminate after restart",
+      meta: { updateClass: receipt.updateClass, reason: "dispatch_indeterminate", ...options.acceptanceEventMeta?.() },
+    })
+    options.onDispatchSettled?.()
+    options.inboxStore?.acknowledgeIndeterminateWarning(receipt)
   }
 
   const pollOnce = async (signal?: AbortSignal): Promise<number> => {
@@ -910,16 +927,11 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
     options.onBeforeDispatch?.()
     const stranded = options.inboxStore?.quarantineStranded?.() ?? options.inboxStore?.loadIndeterminate() ?? []
+    // A stranded message may be about to run again: Telegram redelivers it in this batch, because the offset
+    // never moved past it. Its warning waits for that, so a message that runs again is not reported as dropped.
+    const awaitingRedelivery = stranded.filter((receipt) => canReplay && receipt.updateClass === "message")
     for (const indeterminate of stranded) {
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "telegram.update_dropped",
-        message: "Telegram update dispatch outcome is indeterminate after restart",
-        meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate", ...options.acceptanceEventMeta?.() },
-      })
-      options.onDispatchSettled?.()
-      options.inboxStore?.acknowledgeIndeterminateWarning(indeterminate)
+      if (!awaitingRedelivery.includes(indeterminate)) warnIndeterminate(indeterminate)
     }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
       offset: nextUpdateId,
@@ -934,7 +946,13 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       const next = isTelegramTestId(update.update_id) ? nextUpdateId : Math.max(nextUpdateId, update.update_id + 1)
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
-      const replay = !newlyCaptured && replayable(update)
+      const replay = !newlyCaptured && await replayable(update)
+      const awaited = awaitingRedelivery.findIndex((receipt) => sameReceipt(receipt, updateReceipt(update)))
+      if (awaited >= 0) {
+        // A message that runs again left the quarantine, so it has no warning to give unless it is stranded again.
+        const [receipt] = awaitingRedelivery.splice(awaited, 1)
+        if (!replay) warnIndeterminate(receipt!)
+      }
       if (newlyCaptured || replay) {
         if (newlyCaptured && requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
           options.onDispatchSettled?.()
@@ -982,6 +1000,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       nextUpdateId = next
       if (requiresDurableDispatch) options.inboxStore?.commit?.(update)
     }
+    for (const receipt of awaitingRedelivery) warnIndeterminate(receipt)
     return nextUpdateId
   }
 

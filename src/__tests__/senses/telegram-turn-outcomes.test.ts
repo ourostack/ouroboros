@@ -1,12 +1,13 @@
+import { createHash, createHmac } from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as nerves from "../../nerves/runtime"
-import { openInboundJournal, type InboundOutcomeRecord, type PendingInbound } from "../../senses/inbound-journal"
+import { openInboundJournal, readInboundOutcome, type InboundOutcomeRecord, type PendingInbound } from "../../senses/inbound-journal"
 import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
-import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll, TelegramUpdate } from "../../senses/telegram-client"
-import { FileTelegramEffectJournal, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
+import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll, TelegramLongPollOptions, TelegramUpdate } from "../../senses/telegram-client"
+import { FileTelegramEffectJournal, abandonTelegramEffect, prepareTelegramEffect, recoverTelegramEffectOutbox } from "../../senses/telegram-effect-adapter"
 
 const roots: string[] = []
 afterEach(() => {
@@ -51,7 +52,7 @@ function butler(agentRoot: string, runTurn: RunTurn, api?: TelegramBotApi) {
     api: telegram,
     runTurn: turn,
     onMessage: (message: TelegramInboundMessage): Promise<void> => pollOptions.onMessage(message),
-    replay: (update: TelegramUpdate): boolean => pollOptions.replayIndeterminate(update),
+    replay: async (update: TelegramUpdate, reclaim: () => boolean = () => true): Promise<boolean> => pollOptions.replayIndeterminate(update, reclaim),
   }
 }
 
@@ -126,12 +127,12 @@ describe("Telegram turn outcomes", () => {
 
     vi.spyOn(nerves, "emitNervesEvent")
     const restarted = butler(root, reply("Back, and all good."))
-    expect(restarted.replay(redelivered(11))).toBe(true)
-    expect(emitted("senses.telegram_inbound_replayed")).toHaveLength(1)
+    expect(await restarted.replay(redelivered(11))).toBe(true)
+    expect(emitted("senses.telegram_inbound_replaying")).toHaveLength(1)
     await restarted.onMessage(message(11))
     expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "answered", attempts: 2 })])
 
-    expect(restarted.replay(redelivered(11))).toBe(false)
+    expect(await restarted.replay(redelivered(11))).toBe(false)
     await restarted.onMessage(message(11))
     expect(restarted.runTurn).toHaveBeenCalledTimes(1)
   })
@@ -147,7 +148,7 @@ describe("Telegram turn outcomes", () => {
     expect(pending(root)).toEqual([expect.objectContaining({ spoke: true })])
 
     const restarted = butler(root, reply("Again"))
-    expect(restarted.replay(redelivered(12))).toBe(false)
+    expect(await restarted.replay(redelivered(12))).toBe(false)
     expect(outcomes(root)).toEqual([expect.objectContaining({
       outcome: "failed", detail: "the turn stopped after a reply went out, so it is not run again",
     })])
@@ -158,12 +159,12 @@ describe("Telegram turn outcomes", () => {
     const root = newRoot()
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const crashed = butler(root, never)
-      if (attempt > 0) expect(crashed.replay(redelivered(13))).toBe(true)
+      if (attempt > 0) expect(await crashed.replay(redelivered(13))).toBe(true)
       void crashed.onMessage(message(13))
       await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
     }
     const restarted = butler(root, reply("Again"))
-    expect(restarted.replay(redelivered(13))).toBe(false)
+    expect(await restarted.replay(redelivered(13))).toBe(false)
     expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed", detail: "the turn did not finish in 3 attempts", attempts: 3 })])
   })
 
@@ -201,7 +202,7 @@ describe("Telegram turn outcomes", () => {
     const restarted = butler(root, reply("Again"))
     await restarted.app.run()
     expect(sends(restarted.api)).toHaveLength(1)
-    expect(restarted.replay(redelivered(15))).toBe(false)
+    expect(await restarted.replay(redelivered(15))).toBe(false)
     expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed" })])
   })
 
@@ -251,9 +252,25 @@ describe("Telegram turn outcomes", () => {
     await b.onMessage(message(16))
     expect(sends(b.api)).toHaveLength(1)
     expect(emitted("senses.telegram_inbound_record_failed")).toEqual([expect.objectContaining({ level: "error" })])
-    expect(b.replay(redelivered(16))).toBe(false)
+    expect(await b.replay(redelivered(16))).toBe(false)
     await b.app.run()
     expect(emitted("senses.telegram_inbound_record_failed")).toHaveLength(3)
+  })
+
+  it("still raises a turn's error when its outcome records cannot be written", async () => {
+    const root = newRoot()
+    fs.mkdirSync(path.join(root, "state", "senses", "telegram"), { recursive: true })
+    fs.writeFileSync(path.join(root, "state", "senses", "telegram", "pending-inbound"), "not a folder")
+    const api: TelegramBotApi = {
+      request: vi.fn(async (method: string) => {
+        if (method === "sendMessage") throw new RangeError("telegram down")
+        return true
+      }) as TelegramBotApi["request"],
+      stop: vi.fn(),
+    }
+    const b = butler(root, async () => { throw new TypeError("provider exploded") }, api)
+    await expect(b.onMessage(message(32))).rejects.toThrow()
+    expect(outcomes(root)).toEqual([])
   })
 
   it("logs a reply the outbox sends after a crash when its note cannot be written, and still sends it", async () => {
@@ -293,5 +310,247 @@ describe("Telegram turn outcomes", () => {
     expect(sends(b.api)).toHaveLength(1)
     expect(emitted("senses.telegram_inbound_record_failed")).toEqual([expect.objectContaining({ level: "error" })])
     expect(pending(root)).toEqual([expect.objectContaining({ spoke: true })])
+  })
+
+  it("counts a reaction or a file the turn sends as a reply, noting each before it goes out", async () => {
+    const root = newRoot()
+    const file = path.join(root, "menu.pdf")
+    fs.writeFileSync(file, "%PDF-1.4 menu")
+    const notedBeforeSend: Array<[string, boolean]> = []
+    const api: TelegramBotApi = {
+      request: vi.fn(async (method: string) => {
+        if (method === "setMessageReaction" || method === "sendDocument") notedBeforeSend.push([method, pending(root)[0]!.spoke])
+        return true
+      }) as TelegramBotApi["request"],
+      stop: vi.fn(),
+    }
+    const b = butler(root, async (options) => {
+      await options.toolContext.chatActions.react("👍")
+      return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+    }, api)
+    await b.onMessage(message(21))
+    expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "answered" })])
+
+    const files = butler(root, async (options) => {
+      await options.toolContext.chatActions.sendFile(file, "")
+      return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+    }, api)
+    await files.onMessage(message(22))
+    expect(notedBeforeSend).toEqual([["setMessageReaction", true], ["sendDocument", true]])
+    expect(outcomes(root).map((outcome) => outcome.outcome)).toEqual(["answered", "answered"])
+  })
+
+  it.skipIf(process.getuid?.() === 0)("sends nothing when a turn cannot note a send, and the outbox never sends it later", async () => {
+    const root = newRoot()
+    const pendingDir = path.join(root, "state", "senses", "telegram", "pending-inbound")
+    const b = butler(root, async (options) => {
+      fs.chmodSync(pendingDir, 0o500)
+      return reply("This must not go out late.")(options)
+    })
+    try {
+      await expect(b.onMessage(message(23))).rejects.toThrow()
+    } finally {
+      fs.chmodSync(pendingDir, 0o700)
+    }
+    expect(sends(b.api)).toEqual([])
+    expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed" })])
+
+    const restarted = butler(root, reply("Fine."))
+    await restarted.app.run()
+    await restarted.onMessage(message(24))
+    expect(sends(restarted.api).map(([, body]) => (body as { text: string }).text)).toEqual(["Fine."])
+  })
+
+  it("runs a redelivered message that has no entry, because its turn never started", async () => {
+    const root = newRoot()
+    vi.spyOn(nerves, "emitNervesEvent")
+    const b = butler(root, reply("Here now."))
+    expect(await b.replay(redelivered(25))).toBe(true)
+    expect(emitted("senses.telegram_inbound_replaying")).toEqual([expect.objectContaining({ meta: expect.objectContaining({ attempts: 0 }) })])
+    await b.onMessage(message(25))
+    expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "answered", attempts: 1 })])
+  })
+
+  it("records a redelivered message with no entry but a prepared reply as failed instead of running it", async () => {
+    const root = newRoot()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const effects = new FileTelegramEffectJournal(path.join(root, "state", "telegram", "effects"))
+    prepareTelegramEffect(effects, {
+      idempotencyKey: `turn:${subject}:26:fallback`,
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` },
+      authorClass: "butler",
+      effect: { kind: "text", text: "Prepared while the record could not be written" },
+      authorization: { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "42" } },
+    })
+    effects.close()
+    const b = butler(root, reply("Again"))
+    expect(await b.replay(redelivered(26))).toBe(false)
+    expect(outcomes(root)).toEqual([expect.objectContaining({
+      outcome: "failed", detail: "a reply was prepared before it stopped, but its record could not be written, so it is not run again",
+    })])
+  })
+
+  it("records a message the inbox could not take back as failed, without saying it runs again", async () => {
+    const root = newRoot()
+    const crashed = butler(root, never)
+    void crashed.onMessage(message(27))
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    vi.spyOn(nerves, "emitNervesEvent")
+    const restarted = butler(root, reply("Again"))
+    expect(await restarted.replay(redelivered(27), () => false)).toBe(false)
+    expect(emitted("senses.telegram_inbound_replaying")).toEqual([])
+    expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed", detail: "it could not be taken back from the update inbox to run again" })])
+  })
+
+  it.skipIf(process.getuid?.() === 0)("logs a failure it cannot record for a redelivered message", async () => {
+    const root = newRoot()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const effects = new FileTelegramEffectJournal(path.join(root, "state", "telegram", "effects"))
+    prepareTelegramEffect(effects, {
+      idempotencyKey: `turn:${subject}:31:delivery:0`,
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` },
+      authorClass: "butler",
+      effect: { kind: "text", text: "Prepared while the record could not be written" },
+      authorization: { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "42" } },
+    })
+    effects.close()
+    const pendingDir = path.join(root, "state", "senses", "telegram", "pending-inbound")
+    openInboundJournal(root, "telegram")
+    vi.spyOn(nerves, "emitNervesEvent")
+    const b = butler(root, reply("Again"))
+    fs.chmodSync(pendingDir, 0o500)
+    try {
+      expect(await b.replay(redelivered(31))).toBe(false)
+    } finally {
+      fs.chmodSync(pendingDir, 0o700)
+    }
+    expect(emitted("senses.telegram_inbound_record_failed")).toHaveLength(1)
+    expect(outcomes(root)).toEqual([])
+  })
+
+  it("abandons only the parts of an effect that had not gone out", () => {
+    const root = newRoot()
+    const effects = new FileTelegramEffectJournal(path.join(root, "effects"))
+    const artifact = prepareTelegramEffect(effects, {
+      idempotencyKey: "turn:abandon:delivery:0",
+      target: { kind: "approved_relationship", friendId: "friend", sessionKey: "telegram:friend" },
+      authorClass: "butler",
+      effect: { kind: "text", text: `${"a".repeat(4_000)}\n\n${"b".repeat(4_000)}` },
+      authorization: { allowed: true, receiptId: "receipt", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "42" } },
+    })
+    expect(artifact.parts).toHaveLength(2)
+    artifact.parts[0]!.state = "accepted"
+    artifact.parts[0]!.messageId = 5
+    artifact.parts[1]!.attempts = 1
+    abandonTelegramEffect(effects, artifact)
+    const stored = effects.read(artifact.id)
+    expect(stored.parts.map((part) => [part.state, part.attempts])).toEqual([["accepted", undefined], ["prepared", 3]])
+    return recoverTelegramEffectOutbox({ store: effects, execute: vi.fn() }).then((result) => expect(result.attempted).toBe(0))
+  })
+
+  it("leaves callbacks, and messages from people it does not know, to their own recovery", async () => {
+    const root = newRoot()
+    const b = butler(root, reply("hi"))
+    expect(await b.replay({ update_id: 28, callback_query: { id: "cb", from: { id: 42 }, data: "x" } } as TelegramUpdate)).toBe(false)
+    expect(await b.replay({ update_id: 29, message: { message_id: 1, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "hi" } })).toBe(false)
+    expect(await b.replay({ update_id: 30, message: { message_id: 1, from: { id: 42 }, chat: { id: 7, type: "group" }, text: "hi" } } as TelegramUpdate)).toBe(false)
+    expect(outcomes(root)).toEqual([])
+  })
+})
+
+describe("Telegram household Friend outcomes", () => {
+  const identityKey = "k".repeat(43)
+  const householdMessage = (updateId: number) => ({ updateId, messageId: updateId + 100, botId: "777", userId: "888", chatId: "888", text: "is it ready?", displayLabel: "Household", hasAttachments: false })
+  const householdUpdate = (updateId: number): TelegramUpdate => ({ update_id: updateId, message: { message_id: updateId + 100, from: { id: 888 }, chat: { id: 888, type: "private" }, text: "is it ready?" } })
+  const reference = (updateId: number) => `telegram-inbound:${createHmac("sha256", identityKey).update(["777", "888", updateId, updateId + 100].join("\0")).digest("hex")}`
+  const householdId = (updateId: number) => `telegram-household:${createHash("sha256").update(reference(updateId)).digest("hex")}`
+
+  function household(agentRoot: string, runTurn: RunTurn, approved: (userId: string) => boolean = (userId) => userId === "888") {
+    let pollOptions!: TelegramLongPollOptions
+    const api: TelegramBotApi = { request: vi.fn(async (method: string) => method === "sendMessage" ? { message_id: 100 } : true) as TelegramBotApi["request"], stop: vi.fn() }
+    const turn = vi.fn(runTurn)
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey,
+      _agentRoot: agentRoot,
+      api,
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => { pollOptions = options; return { pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() } },
+      runTurn: turn,
+      migrateIdentity: async () => undefined,
+      admission: {
+        ownerFriendId: "ari",
+        resolveOwner: vi.fn(async () => ({ friendId: "ari" })),
+        resolveApprovedFriend: vi.fn(async ({ userId }: { userId: string }) => approved(userId) ? { friendId: "household" } : null),
+        claimFriend: vi.fn(),
+        revokeFriend: vi.fn(),
+      },
+      authorizeRelationshipEffect: vi.fn(async () => ({ allowed: true, receiptId: "household", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "888" } })),
+      resolveRelationshipAuthorization: vi.fn(async () => ({
+        subject: { friendId: "household", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const },
+        authorizedContextScopes: [], advertisedToolNames: [], authorizeContext: vi.fn(), authorizeTool: vi.fn(), authorizeEffect: vi.fn(),
+      })),
+    } as any)
+    return {
+      app, api, runTurn: turn,
+      onUnknownMessage: (updateId: number) => pollOptions.onUnknownMessage!(householdMessage(updateId) as any),
+      replay: async (update: TelegramUpdate) => pollOptions.replayIndeterminate!(update, () => true),
+    }
+  }
+
+  it("records a household Friend's message and its outcome like the owner's", async () => {
+    const root = newRoot()
+    const b = household(root, reply("It is ready."))
+    await b.onUnknownMessage(40)
+    expect(readInboundOutcome(root, "telegram", householdId(40))).toMatchObject({ outcome: "answered", attempts: 1 })
+    expect(pending(root)).toEqual([])
+    await b.onUnknownMessage(40)
+    expect(b.runTurn).toHaveBeenCalledTimes(1)
+    await b.app.stop()
+  })
+
+  it("runs a household Friend's message again after a crash before anything went out", async () => {
+    const root = newRoot()
+    const crashed = household(root, never)
+    void crashed.onUnknownMessage(41)
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    const restarted = household(root, reply("It is ready."))
+    expect(await restarted.replay(householdUpdate(41))).toBe(true)
+    await restarted.onUnknownMessage(41)
+    expect(readInboundOutcome(root, "telegram", householdId(41))).toMatchObject({ outcome: "answered", attempts: 2 })
+    await crashed.app.stop()
+    await restarted.app.stop()
+  })
+
+  it("does not run a household Friend's message again once the outbox sent its reply", async () => {
+    const root = newRoot()
+    const crashed = household(root, never)
+    void crashed.onUnknownMessage(42)
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    const effects = new FileTelegramEffectJournal(path.join(root, "state", "telegram", "effects"))
+    prepareTelegramEffect(effects, {
+      idempotencyKey: `relationship-turn:${reference(42)}:delivery:0`,
+      target: { kind: "approved_relationship", friendId: "household", sessionKey: "telegram:777:888", requestId: reference(42) },
+      authorClass: "butler",
+      effect: { kind: "text", text: "Prepared before the crash" },
+      authorization: { allowed: true, receiptId: "household", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "888" } },
+    })
+    effects.close()
+    const restarted = household(root, reply("Again"))
+    await restarted.app.run()
+    expect(sends(restarted.api)).toHaveLength(1)
+    expect(await restarted.replay(householdUpdate(42))).toBe(false)
+    expect(readInboundOutcome(root, "telegram", householdId(42))).toMatchObject({ outcome: "failed" })
+    await crashed.app.stop()
+    await restarted.app.stop()
+  })
+
+  it("leaves a message from someone who is not a household Friend to the admission gate", async () => {
+    const root = newRoot()
+    const b = household(root, reply("hi"), () => false)
+    expect(await b.replay(householdUpdate(43))).toBe(false)
+    expect(outcomes(root)).toEqual([])
+    await b.app.stop()
   })
 })
