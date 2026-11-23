@@ -32,6 +32,27 @@ export interface WorkbenchCodingSessionManagerOptions {
   existsSync?: (target: string) => boolean
   readFileSync?: ReadText
   source?: string
+  /** Hears every session's updates, including status changes a refresh finds. */
+  onUpdate?: (update: CodingSessionUpdate) => void | Promise<void>
+  /** How often to re-read Workbench while any session is still active. */
+  pollMs?: number
+  schedule?: (fn: () => void, ms: number) => () => void
+}
+
+export const WORKBENCH_POLL_MS = 30_000
+
+function realSchedule(fn: () => void, ms: number): () => void {
+  const timer = setTimeout(fn, ms)
+  timer.unref()
+  return () => clearTimeout(timer)
+}
+
+function isActiveStatus(status: CodingSession["status"]): boolean {
+  return status === "spawning" || status === "running" || status === "waiting_input" || status === "stalled"
+}
+
+function updateKindFor(status: CodingSession["status"]): CodingSessionUpdate["kind"] {
+  return status === "spawning" || status === "running" ? "progress" : status
 }
 
 interface WorkbenchCodingSessionRecord {
@@ -157,8 +178,15 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   private readonly existsSync: (target: string) => boolean
   private readonly readFileSync: ReadText
   private readonly source: string
+  private readonly onUpdate?: (update: CodingSessionUpdate) => void | Promise<void>
+  private readonly pollMs: number
+  private readonly schedule: (fn: () => void, ms: number) => () => void
+  private cancelPoll: (() => void) | null = null
 
   constructor(options: WorkbenchCodingSessionManagerOptions) {
+    this.onUpdate = options.onUpdate
+    this.pollMs = options.pollMs ?? WORKBENCH_POLL_MS
+    this.schedule = options.schedule ?? realSchedule
     this.client = options.client
     this.agentName = options.agentName
     this.nowIso = options.nowIso ?? (() => new Date().toISOString())
@@ -205,7 +233,32 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
     })
 
     this.notifyListeners(session.id, { kind: "spawned", session: cloneSession(session) })
+    this.ensurePolling()
     return cloneSession(session)
+  }
+
+  /** Read Workbench once now, and keep reading while any session is active, so a finish is heard without anyone asking. */
+  async watch(): Promise<void> {
+    try {
+      await this.refreshSessions()
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "repertoire.workbench_coding_poll_error",
+        message: "could not read Workbench coding sessions; trying again later",
+        meta: { reason: error instanceof Error ? error.message : String(error) },
+      })
+      this.ensurePolling()
+    }
+  }
+
+  private ensurePolling(): void {
+    if (this.cancelPoll || ![...this.records.values()].some((record) => isActiveStatus(record.session.status))) return
+    this.cancelPoll = this.schedule(() => {
+      this.cancelPoll = null
+      void this.watch()
+    }, this.pollMs)
   }
 
   async refreshSessions(): Promise<CodingSession[]> {
@@ -216,7 +269,11 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
       const fallbackRequest = existing?.request ?? this.fallbackRequest(workbenchSession)
       const session = this.toCodingSession(workbenchSession, fallbackRequest, existing?.session)
       this.records.set(session.id, { request: fallbackRequest, session })
+      if (existing && existing.session.status !== session.status) {
+        this.notifyListeners(session.id, { kind: updateKindFor(session.status), session: cloneSession(session) })
+      }
     }
+    this.ensurePolling()
     return this.listSessions()
   }
 
@@ -277,6 +334,8 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   }
 
   shutdown(): void {
+    this.cancelPoll?.()
+    this.cancelPoll = null
     this.listeners.clear()
   }
 
@@ -365,10 +424,19 @@ export class WorkbenchCodingSessionManager implements CodingSessionManagerApi, R
   }
 
   private notifyListeners(sessionId: string, update: CodingSessionUpdate): void {
-    const listeners = this.listeners.get(sessionId)
-    if (!listeners || listeners.size === 0) return
+    const listeners = [...(this.listeners.get(sessionId) ?? []), ...(this.onUpdate ? [this.onUpdate] : [])]
     for (const listener of listeners) {
-      void Promise.resolve(listener(update))
+      void Promise.resolve()
+        .then(() => listener(update))
+        .catch((error) => {
+          emitNervesEvent({
+            level: "warn",
+            component: "repertoire",
+            event: "repertoire.workbench_coding_listener_error",
+            message: "a Workbench coding session listener failed",
+            meta: { sessionId, kind: update.kind, reason: error instanceof Error ? error.message : String(error) },
+          })
+        })
     }
   }
 }

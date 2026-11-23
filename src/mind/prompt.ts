@@ -1397,6 +1397,9 @@ function relationshipFriendContextSection(context?: ResolvedContext): string {
   return lines.join("\n")
 }
 
+/** One rule for every sense that turns speech into text: voice notes from any chat sense and live voice calls. */
+export const SPEECH_TRANSCRIPT_GUIDANCE = "## speech transcripts\nvoice notes and live calls reach me as speech-to-text, which can mishear words. i read a transcript for what the person most likely meant; when a misreading would change what i do, i check briefly instead of acting on the literal words."
+
 export function metacognitiveFramingSection(channel: Channel): string {
   if (channel !== "inner") return ""
   return `this is my private-runtime turn. there is no one else here.
@@ -1560,6 +1563,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
         authorizedPsyche ? houseSection() : "",
         relationshipFriendContextSection(context),
         trustContextSection(context),
+        SPEECH_TRANSCRIPT_GUIDANCE,
         productSection(),
         "# my tools",
         toolsSection(options),
@@ -1601,6 +1605,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 4: how i work
     "# how i work",
     "## evidence and freshness\nnames come from explicit introductions, corrections and relationship notes. handles, branch prefixes and filenames are not preferred names; given-name order comes from the confirmed full name, not from them. i use the confirmed full name or preserve uncertainty when identity is unresolved.\noutside work changes while i am not looking. messages, notes and handoffs describe observations at a time, not current status. i re-read the authoritative source before reporting current progress or promising an update. a renamed session, a missing observation or incomplete history invalidates my old attribution; i say what is unverified instead of filling the gap.",
+    SPEECH_TRANSCRIPT_GUIDANCE,
     workspaceDisciplineSection(),
     speakSopsSection(channel),
     toolRestrictionSection(context),

@@ -235,10 +235,26 @@ function defaultProblemOf(command: string, word: string, optional: boolean, prop
   return null;
 }
 
+/** The word a usage form names, bracketed or not, so a pair of forms can be compared for what one leaves out that the other keeps. */
+function wordsIn(form: string): Set<string> {
+  return new Set([...form.matchAll(/<([^<>]+?)>/g)].map((m) => m[1]!.replace(/\.\.\.$/, "")));
+}
+
+/**
+ * The forms a command's usage offers: its usage lines, split on `|` into their alternatives, such as `--clear` beside
+ * `<place> <message>`. A word bare in one form is fine when another form leaves the word out entirely, since that form
+ * is how the command is given without it.
+ */
+function usageForms(cmd: Pick<CliCommand, "usage">): string[] {
+  return cmd.usage.flatMap((u) => u.split("|").map((f) => f.trim()));
+}
+
 /**
  * Returns the problems with a command's words, as lines with their fixes, and the count of words in its busiest usage
  * line. Words come in the order the command reads them: an optional word, bracketed in usage, comes after the required
  * ones. A schema default is a string of the word's values, not on a required word, and usage shows it as `[<name>=<value>]`.
+ * An optional word may stay bare where another usage form, or a `| --flag` alternative in the same line, leaves it out,
+ * or its schema declares the flag that replaces it ("Not needed with"); a word lacking an exempting form still needs brackets.
  */
 function wordProblems(cmd: CliCommand): { words: number; problems: string[] } {
   const schema: Record<string, unknown> = isRecord(cmd.inputSchema) ? cmd.inputSchema : {};
@@ -246,6 +262,8 @@ function wordProblems(cmd: CliCommand): { words: number; problems: string[] } {
   const required = Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
   const problems = new Set<string>();
   let words = 0;
+  const forms = usageForms(cmd);
+  const omittedElsewhere = (name: string) => forms.some((f) => !wordsIn(f).has(name));
   for (const u of cmd.usage) {
     // A default's value is no word: it leaves the line first, and the words end at the first flag.
     const bare = u.replace(/=(?:"[^"]*"|'[^']*'|[^\]\s]*)/g, "");
@@ -259,7 +277,9 @@ function wordProblems(cmd: CliCommand): { words: number; problems: string[] } {
       const raw = props[w.name];
       const prop = Object.hasOwn(props, w.name) && isRecord(raw) ? raw : null;
       if (prop && required.includes(w.name) && w.optional) problems.add(`${cmd.name}: <${w.name}> is required, but its usage brackets it. Fix: write <${w.name}> without brackets.`);
-      if (prop && !required.includes(w.name) && !w.optional) problems.add(`${cmd.name}: <${w.name}> is optional, but its usage shows it bare. Fix: write [<${w.name}>].`);
+      const replaced = prop !== null && typeof prop["description"] === "string" && /\bNot needed with\b/.test(prop["description"]);
+      if (prop && !required.includes(w.name) && !w.optional && !replaced && !omittedElsewhere(w.name))
+        problems.add(`${cmd.name}: <${w.name}> is optional, but its usage shows it bare. Fix: write [<${w.name}>].`);
       const value = prop?.["default"];
       const hasDefault = prop !== null && value !== undefined;
       const usageDefault = new RegExp(`\\[<${escapeRe(w.name)}(?:\\.\\.\\.)?>=`);

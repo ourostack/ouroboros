@@ -7111,6 +7111,20 @@ describe("Teams adapter - feedback handler (message.submit.feedback)", () => {
     expect(teams.buildReactionSyntheticText([], [])).toBeNull()
   })
 
+  it("resolveTeamsReactionText names the agent's reacted-to message from what it noted when sending", async () => {
+    const teams = await import("../../senses/teams")
+    teams.noteTeamsSentMessage("conv-r", { id: "act-1" }, "Your plan is ready: ship it Tuesday")
+    teams.noteTeamsSentMessage("conv-r", undefined, "no receipt, nothing noted")
+    teams.noteTeamsSentMessage("conv-r", { id: 7 }, "a receipt without a string id")
+    expect(await teams.resolveTeamsReactionText({ reactionsAdded: [{ type: "like" }], replyToId: "act-1", conversation: { id: "conv-r" } }))
+      .toBe('[reacted with 👍 to your message: "Your plan is ready: ship it Tuesday"]')
+    expect(await teams.resolveTeamsReactionText({ reactionsAdded: [{ type: "like" }], replyToId: "act-unknown", conversation: { id: "conv-r" } }))
+      .toBe("[reacted with 👍 to one of your messages (its text was not included)]")
+    expect(await teams.resolveTeamsReactionText({ reactionsRemoved: [{ type: "heart" }] }))
+      .toBe("[removed their ❤️ reaction from one of your messages (its text was not included)]")
+    expect(await teams.resolveTeamsReactionText({ replyToId: "act-1", conversation: { id: "conv-r" } })).toBeNull()
+  })
+
   it("buildEditSyntheticText shows the edited words", async () => {
     const teams = await import("../../senses/teams")
     expect(teams.buildEditSyntheticText("meet at 3 instead")).toBe('[edited their message to: "meet at 3 instead"]')

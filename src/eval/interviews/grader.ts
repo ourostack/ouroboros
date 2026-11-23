@@ -68,6 +68,18 @@ export function guessFor(guesses: Record<string, string> | null | undefined, lab
   return key === undefined ? undefined : guesses![key]
 }
 
+/**
+ * The session records of the runner's reports, refusing any report from another pre-registration version than the
+ * one being graded, since versions are never pooled. A report written before reports named their version is version 1's.
+ */
+export function sessionsOf(version: number, reports: Array<{ preregistrationVersion?: number; sessions: SessionRecord[] }>): SessionRecord[] {
+  return reports.flatMap((report, i) => {
+    const from = report.preregistrationVersion ?? 1
+    if (from !== version) throw new Error(`report ${i + 1} is from pre-registration version ${from}, not version ${version}; versions are never pooled`)
+    return report.sessions
+  })
+}
+
 /** A session's blinding is broken when Q4 names the `ouro` arm's label with a product matching /ouro/i. */
 export function isBroken(record: SessionRecord): boolean {
   const ouroLabel = Object.entries(record.labels).find(([, arm]) => arm === "ouro")?.[0]
@@ -192,10 +204,13 @@ export function formatGrade(grade: StudyGrade, reduced: boolean): string {
 }
 
 /** The request log's lines, refusing a line that is not one logged request. */
-export function readRequestLog(text: string): LoggedRequest[] {
+export function readRequestLog(text: string, version = 1): LoggedRequest[] {
   return text.split("\n").filter((line) => line.trim()).map((line, i) => {
-    const value = JSON.parse(line) as Partial<LoggedRequest>
+    const value = JSON.parse(line) as Partial<LoggedRequest> & { preregistrationVersion?: number }
     if (typeof value.session !== "string" || typeof value.kind !== "string" || typeof value.sent !== "boolean" || typeof value.body !== "string") throw new Error(`request log line ${i + 1} is not a logged request`)
+    // A line written before lines named their version is version 1's.
+    const from = value.preregistrationVersion ?? 1
+    if (from !== version) throw new Error(`request log line ${i + 1} is from pre-registration version ${from}, not version ${version}; versions are never pooled`)
     return value as LoggedRequest
   })
 }
