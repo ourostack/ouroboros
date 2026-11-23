@@ -4,6 +4,8 @@ import type { ChannelCallbacks } from "./core";
 
 export interface UsageData {
   input_tokens: number;
+  /** The part of input_tokens the provider served from its prompt cache, when it reports one (priced lower). */
+  cached_input_tokens?: number;
   output_tokens: number;
   reasoning_tokens: number;
   total_tokens: number;
@@ -32,6 +34,7 @@ interface ResponseStreamEvent {
 // Azure Responses API usage shape
 interface ResponseUsage {
   input_tokens: number;
+  input_tokens_details?: { cached_tokens?: number };
   output_tokens: number;
   output_tokens_details?: { reasoning_tokens?: number };
   total_tokens: number;
@@ -766,8 +769,11 @@ export async function streamChatCompletion(
     // Capture usage from final chunk (sent when stream_options.include_usage is true)
     if (chunk.usage) {
       const u = chunk.usage;
+      const cached = u.prompt_tokens_details?.cached_tokens;
       usage = {
         input_tokens: u.prompt_tokens,
+        // Some OpenAI-compatible gateways send null; only a number is a reported count.
+        ...(typeof cached === "number" ? { cached_input_tokens: cached } : {}),
         output_tokens: u.completion_tokens,
         reasoning_tokens: u.completion_tokens_details?.reasoning_tokens ?? 0,
         total_tokens: u.total_tokens,
@@ -978,8 +984,10 @@ export async function streamResponsesApi(
         if (event.type === "response.incomplete" || event.response?.status === "incomplete") incomplete = true;
         const u = event.response?.usage as ResponseUsage | undefined;
         if (u) {
+          const cached = u.input_tokens_details?.cached_tokens;
           usage = {
             input_tokens: u.input_tokens,
+            ...(typeof cached === "number" ? { cached_input_tokens: cached } : {}),
             output_tokens: u.output_tokens,
             reasoning_tokens: u.output_tokens_details?.reasoning_tokens ?? 0,
             total_tokens: u.total_tokens,
