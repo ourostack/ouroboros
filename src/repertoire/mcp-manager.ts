@@ -7,6 +7,7 @@ import { getCredentialStore } from "./credential-access"
 import { listPluginMcpServers, pluginMcpServerToConfig } from "./plugin-mcp"
 import { digestJson, freezeToolValue } from "./tool-arguments"
 import { McpCallRejectedError, mcpToolSchema } from "./mcp-tools"
+import { loadDeclaredTools, type DeclaredTools } from "./mcp-declared-tools"
 
 export type McpOwner = Readonly<{ agentName: string; agentRoot: string }>
 export type RuntimeMcpServers = Record<string, McpServerConfig>
@@ -37,6 +38,8 @@ export interface McpServerView {
   readonly configDigest: string
   readonly generation: number
   readonly tools: readonly McpToolInfo[]
+  /** The bundle's declaration of these tools (agent.json `mcpServers.<name>.tools`), for its own servers only. */
+  readonly declared?: DeclaredTools
 }
 
 export interface McpTurnView {
@@ -286,11 +289,17 @@ export class McpManager {
   }
 
   private freezeView(owner: McpOwner): McpTurnView {
-    const entries = this.ownedEntries(owner).filter((entry) => this.isCurrentEntry(entry)).map((entry) => Object.freeze({
-      server: entry.name, source: entry.source, pluginId: entry.pluginId,
-      configDigest: entry.configDigest, generation: entry.generation,
-      tools: freezeToolValue(structuredClone(entry.cachedTools)),
-    }))
+    const entries = this.ownedEntries(owner).filter((entry) => this.isCurrentEntry(entry)).map((entry) => {
+      const declared = entry.source === "builtin" && typeof entry.config.tools === "string"
+        ? loadDeclaredTools(owner.agentRoot, entry.config.tools, entry.name)
+        : null
+      return Object.freeze({
+        server: entry.name, source: entry.source, pluginId: entry.pluginId,
+        configDigest: entry.configDigest, generation: entry.generation,
+        tools: freezeToolValue(structuredClone(entry.cachedTools)),
+        ...(declared ? { declared } : {}),
+      })
+    })
     return Object.freeze({ manager: this, owner, entries: Object.freeze(entries) })
   }
 
