@@ -2,9 +2,6 @@
   "census": "census/1",
   "gaps": [
     "cli:desk invite",
-    "cli:git",
-    "cli:git install",
-    "cli:git status",
     "cli:habit probe",
     "cli:node dist/senses/shepherd/judge-evaluation-entry.js",
     "cli:shepherd resume",

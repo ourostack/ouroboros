@@ -467,6 +467,16 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 }
 
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "git status": {
+    description: "Show which git sync and clone use, and where it was found",
+    usage: "ouro git status",
+    example: "ouro git status",
+  },
+  "git install": {
+    description: "Install a portable git on Linux; --force replaces it",
+    usage: "ouro git install [--force]",
+    example: "ouro git install",
+  },
   "habit probe": {
     description: "Probe one habit through its real dispatch path with an irrevocable no-send boundary; it cannot send and reports zero transport invocations",
     usage: "ouro habit probe --agent <name> --habit <name> --no-send [--json]",
@@ -814,7 +824,7 @@ export function getCommandHelp(name: string): string | null {
   if (!entry) return null
 
   const lines: string[] = [
-    `${name} - ${entry.description}`,
+    `ouro ${name} - ${entry.description}`,
     "",
     `Usage: ${entry.usage}`,
   ]
