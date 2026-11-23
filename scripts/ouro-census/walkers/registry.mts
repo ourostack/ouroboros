@@ -2,6 +2,7 @@
 // for these only; a product's own walkers (the config's `walkers`) are listed in the report with their own hashes.
 import type { Walker } from "../types.mts";
 import { walkArgvEntries } from "./argv-entries.mts";
+import { walkDeclaredTools } from "./declared-tools.mts";
 import { walkMcpSchemas } from "./mcp-schemas.mts";
 import { walkToolSchemas } from "./tool-schemas.mts";
 import { walkTsParser } from "./ts-parser.mts";
@@ -11,4 +12,5 @@ export const WALKERS: Readonly<Record<string, { kinds: readonly string[]; walk: 
   "ts-parser": { kinds: ["cli"], walk: walkTsParser },
   "argv-entries": { kinds: ["cli"], walk: walkArgvEntries },
   "tool-schemas": { kinds: ["tool", "approval"], walk: walkToolSchemas },
+  "declared-tools": { kinds: ["tool"], walk: walkDeclaredTools },
 };
