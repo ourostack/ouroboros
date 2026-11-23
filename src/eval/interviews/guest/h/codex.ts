@@ -34,7 +34,10 @@ import type { HArmRunner } from "./run"
 import { createWire, serveWire } from "./wire"
 
 /** Runs codex with these arguments and waits for it to end. */
-export type CodexRun = (args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<{ code: number; stdout: string; stderr: string }>
+export type CodexRun = (args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number }) => Promise<{ code: number; stdout: string; stderr: string }>
+
+/** The whole conversation's time, inside the host's 600-second guest deadline, so a stuck codex is this arm's failure. */
+const CONVERSATION_MS = 540_000
 
 /**
  * Codex's home: a path with no brand word, on the agent container's writable `/tmp` (the container is read-only
@@ -129,8 +132,7 @@ const spawnCodex: CodexRun = (args, options) => new Promise((resolve) => {
   let stderr = ""
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8") })
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8") })
-  // Inside the host's 600-second guest deadline, so a stuck codex ends as this arm's failure, not the guest's.
-  const timer = setTimeout(() => child.kill("SIGKILL"), 540_000)
+  const timer = setTimeout(() => child.kill("SIGKILL"), Math.max(options.timeoutMs, 0))
   child.on("error", (error) => { clearTimeout(timer); resolve({ code: 127, stdout, stderr: `${stderr}${error.message}\n` }) })
   child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 137, stdout, stderr }) })
 })
@@ -143,17 +145,20 @@ export function codexArm(options: { run?: CodexRun; home?: string; workdir?: str
   const home = options.home ?? CODEX_HOME_DIR
   const workdir = options.workdir ?? path.join(home, "AgentBundles", "sanctuary.agent")
   return async ({ turn, bundle, providerRuntime }) => {
+    const deadline = Date.now() + CONVERSATION_MS
     fs.mkdirSync(path.dirname(workdir), { recursive: true })
     if (!fs.existsSync(workdir)) fs.symlinkSync(bundle, workdir)
     installSkills(bundle, home)
     const wire = createWire({ runtime: providerRuntime, prefix: turn.prefix })
     const served = await serveWire(wire)
     try {
-      const codexHome = path.join(home, ".codex")
+      // Codex's state folder, with a neutral name: the model can see it in the shell's environment.
+      const codexHome = path.join(home, ".state")
       fs.mkdirSync(codexHome, { recursive: true })
       fs.writeFileSync(path.join(codexHome, "config.toml"), codexConfig({ baseUrl: served.url, developerInstructions: `${personaPrompt(bundle)}\n\n${turn.labelLine}` }))
       const env: NodeJS.ProcessEnv = { HOME: home, CODEX_HOME: codexHome, PATH: process.env.PATH }
-      // `-C` keeps the neutral path as codex's cwd; without it codex resolves the link to the bundle's real path.
+      // `-C` keeps the neutral path as codex's cwd; without it codex resolves the link to the bundle's real path. The
+      // flags are `exec`'s, so they go before `resume`, which doesn't take `-C`.
       const flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL, "-C", workdir]
       const turns: TelegramTurns = []
       let thread: string | null = null
@@ -166,7 +171,7 @@ export function codexArm(options: { run?: CodexRun; home?: string; workdir?: str
         }
         emitNervesEvent({ component: "eval", event: "eval.h_codex_turn_start", message: "codex is taking a turn", meta: { index } })
         const callsBefore = wire.calls()
-        const ran = await run(index === 0 ? ["exec", ...flags, "--", text] : ["exec", "resume", ...flags, thread!, "--", text], { cwd: workdir, env })
+        const ran = await run(index === 0 ? ["exec", ...flags, "--", text] : ["exec", ...flags, "resume", thread!, "--", text], { cwd: workdir, env, timeoutMs: deadline - Date.now() })
         if (index === 0) thread = threadIdOf(ran.stdout)
         record.calls = wire.calls() - callsBefore
         const reply = wire.timeline().slice(record.start).filter((entry): entry is TraceReply => entry.kind === "reply").at(-1)

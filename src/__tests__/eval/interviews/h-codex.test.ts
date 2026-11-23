@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
 import { codexArm, codexConfig, installSkills, threadIdOf, type CodexRun } from "../../../eval/interviews/guest/h/codex"
+import { H_CODEX_FIDELITY } from "../../../eval/interviews/guest/h/fidelity"
 import type { HTurnFile } from "../../../eval/interviews/guest/h/run"
 
 function runtime(answers: TurnResult[], seen: ProviderTurnRequest[]): ProviderRuntime {
@@ -55,6 +56,19 @@ describe("the codex arm's setup", () => {
     // TOML forbids a raw DEL and a lone surrogate's escape, both of which JSON allows.
     expect(codexConfig({ baseUrl: "u", developerInstructions: "a\u007fb\uD800c\uDC00d😀" })).toContain("developer_instructions = \"a\\u007Fb�c�d😀\"")
     expect(toml).toContain("web_search = \"disabled\"")
+    // Every setting the config turns off is a fidelity note, named by its key or its section.
+    let section = ""
+    const off: string[] = []
+    for (const line of toml.split("\n")) {
+      const header = /^\[(.+)\]$/.exec(line)
+      if (header) section = header[1]!
+      const setting = /^(\w+) = (false|0|"disabled"|"none")$/.exec(line)
+      if (setting) off.push(setting[1]!)
+      if (setting && !H_CODEX_FIDELITY.some((note) => note.includes(setting[1]!) || (section !== "" && note.includes(section)))) {
+        throw new Error(`no fidelity note names ${section ? `[${section}] ` : ""}${setting[1]}`)
+      }
+    }
+    expect(off.length).toBeGreaterThan(10)
     expect(toml).toContain("[skills.bundled]\nenabled = false")
     expect(toml).toContain("[analytics]\nenabled = false")
     expect(toml).toContain("[otel]\nexporter = \"none\"\ntrace_exporter = \"none\"\nmetrics_exporter = \"none\"")
@@ -91,11 +105,11 @@ describe("the codex arm", () => {
       { content: "<think>hm</think>Removed it.", toolCalls: [], outputItems: [] },
       { content: "6", toolCalls: [], outputItems: [] },
     ], seen)
-    const runs: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv; config: string }> = []
+    const runs: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv; config: string; timeoutMs: number }> = []
     // A stand-in codex: each run posts what the real one would to the wire it was configured with.
     const run: CodexRun = async (args, options) => {
       const config = fs.readFileSync(path.join(options.env.CODEX_HOME!, "config.toml"), "utf8")
-      runs.push({ args, cwd: options.cwd, env: options.env, config })
+      runs.push({ args, cwd: options.cwd, env: options.env, config, timeoutMs: options.timeoutMs })
       const url = /base_url = "([^"]+)"/.exec(config)![1]!
       const post = async (input: unknown[]): Promise<void> => {
         const response = await fetch(`${url}/responses`, { method: "POST", body: JSON.stringify({ input, tools: [{ type: "function", name: "exec_command" }] }) })
@@ -126,11 +140,17 @@ describe("the codex arm", () => {
     })
     expect(runs.map((entry) => entry.args)).toEqual([
       ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "-C", workdir, "--", "Remove the bad copy."],
-      ["exec", "resume", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "-C", workdir, "t-1", "--", "How did it go? Rate it 1 to 7."],
+      // `-C` isn't an argument of `resume` at the pinned commit, so the flags go before it.
+      ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "-C", workdir, "resume", "t-1", "--", "How did it go? Rate it 1 to 7."],
     ])
+    // One deadline for the whole conversation, inside the host's 600 seconds: each run gets what's left of it.
+    expect(runs[0]!.timeoutMs).toBeLessThanOrEqual(540_000)
+    expect(runs[0]!.timeoutMs).toBeGreaterThan(530_000)
+    expect(runs[1]!.timeoutMs).toBeLessThanOrEqual(runs[0]!.timeoutMs)
     expect(runs[0]!.cwd).toBe(workdir)
     expect(fs.realpathSync(workdir)).toBe(fs.realpathSync(bundle))
-    expect(runs[0]!.env).toEqual({ HOME: home, CODEX_HOME: path.join(home, ".codex"), PATH: process.env.PATH })
+    // Codex's state folder has a neutral name too.
+    expect(runs[0]!.env).toEqual({ HOME: home, CODEX_HOME: path.join(home, ".state"), PATH: process.env.PATH })
     // The persona and the label line are codex's developer instructions; the case's conversation is before the job.
     expect(runs[0]!.config).toContain("developer_instructions = \"I am the Butler.\\n\\nI keep the library.\\n\\nYou are working in environment T.\"")
     expect(seen[0]!.messages).toEqual([...TURN.prefix, { role: "user", content: "Remove the bad copy." }])
