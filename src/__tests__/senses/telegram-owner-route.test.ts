@@ -53,6 +53,11 @@ describe("what Slugger is told", () => {
     expect(ownerRouteDedupeKey("proactive:4f1d", "Disk is full")).toBe(ownerRouteDedupeKey("proactive:9a9a", "Disk is full"))
     expect(ownerRouteDedupeKey("proactive:4f1d", "Disk is full")).toMatch(/^butler-proactive-[0-9a-f]{12}$/u)
     expect(ownerRouteDedupeKey("external-event:not json", "x")).toBe("butler-external-event-not-json")
+    // An approval or admission id never reaches the peer (security review H2), and the same id keeps its key.
+    expect(ownerRouteDedupeKey("approval:restart-1:prompt", "x")).toBe("butler-approval-c4d7bee81059802e-prompt")
+    expect(ownerRouteDedupeKey("approval:restart-1:prompt", "y")).toBe(ownerRouteDedupeKey("approval:restart-1:prompt", "x"))
+    expect(ownerRouteDedupeKey("owner-card:adm-9", "x")).toBe("butler-owner-card-e2811ba6f5f75a27")
+    expect(ownerRouteDedupeKey("owner-card:adm-9", "x")).not.toContain("adm-9")
     expect(ownerRouteDedupeKey("held-batch:x".repeat(40), "x").length).toBeLessThanOrEqual(120)
   })
 

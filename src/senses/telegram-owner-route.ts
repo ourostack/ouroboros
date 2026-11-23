@@ -68,6 +68,11 @@ export function ownerRouteDedupeKey(key: string, text: string): string {
   } else if (kind === "proactive") {
     // A proactive key is a fresh UUID each time, so the same words name the same condition.
     condition = `proactive-${createHash("sha256").update(text).digest("hex").slice(0, 12)}`
+  } else if (kind === "approval" || kind === "owner-card") {
+    // The peer must never learn an approval or admission id (security review H2), so the id is hashed. The same id
+    // still gives the same key, so a re-fire updates the peer's item.
+    const [id = "", ...phase] = tail.split(":")
+    condition = [kind, createHash("sha256").update(id).digest("hex").slice(0, 16), ...phase].join("-")
   } else {
     condition = kind === "owner-notice" ? tail : key
   }

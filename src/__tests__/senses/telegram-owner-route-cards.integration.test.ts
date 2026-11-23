@@ -88,7 +88,8 @@ describe("approval cards go to the primary agent over A2A first", () => {
     expect(slugger.heard).toHaveLength(1)
     expect(slugger.heard[0]).toContain("urgency: now")
     expect(slugger.heard[0]).toContain("Restart calibre-web?\n\nOptions: Approve, Deny. The buttons are on the card in the Butler's Telegram chat.")
-    expect(slugger.heard[0]).toMatch(/dedupe key: butler-approval-restart-1-prompt$/u)
+    expect(slugger.heard[0]).toMatch(/dedupe key: butler-approval-c4d7bee81059802e-prompt$/u)
+    expect(slugger.heard[0]).not.toContain("restart-1")
     expect(telegram.cards()).toEqual([expect.objectContaining({ chat_id: "42", text: "Restart calibre-web?", disable_notification: true })])
 
     await slugger.stop()
