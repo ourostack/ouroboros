@@ -167,6 +167,26 @@ describe("runSelfUpdate", () => {
     expect(m.state).toMatchObject({ failedVersions: [], detail: "could not install 0.1.0-alpha.896 from any source" })
   })
 
+  it.each([
+    "npm error code ETARGET",
+    "npm error code E404\nnpm error 404 GET https://registry.npmjs.org/@ouro.bot/cli/-/cli-0.1.0-alpha.896.tgz",
+  ])("defers, without a failure count or a bad-release mark, when npm lists the version but does not serve its tarball (%#)", async (said) => {
+    const m = machine()
+    vi.mocked(m.deps.install).mockRejectedValueOnce(new Error(said))
+
+    const result = await runSelfUpdate(m.deps)
+
+    expect(result.outcome).toBe("deferred")
+    expect(result.summary).toContain("tarball is not served yet")
+    expect(m.state).toMatchObject({ failedVersions: [], consecutiveFailures: 0, detail: said })
+  })
+
+  it("still fails an install on a 404 that is not a tarball, or on another error", async () => {
+    const m = machine()
+    vi.mocked(m.deps.install).mockRejectedValueOnce(new Error("npm error code E404\nnpm error 404 not found: @ouro.bot/other"))
+    expect((await runSelfUpdate(m.deps)).outcome).toBe("install-failed")
+  })
+
   it("stops before installing when the disk is too full for another version, without marking the release bad", async () => {
     const m = machine()
     m.deps.diskSpace = () => ({ freeBytes: 150 * 1024 * 1024, neededBytes: 287 * 1024 * 1024 })

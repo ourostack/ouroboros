@@ -114,7 +114,18 @@ export type SandboxInput = {
   readyTimeoutMs?: number
   /** How long to wait for a removed container's `docker run` to end before going on without it; 30 s by default. */
   exitGraceMs?: number
+  /**
+   * Another guest than the real Telegram turn: the blind interviews' neutral loop, with the turn file it reads. Its
+   * answer may have several user turns; the first is the job, scored as any run, and the rest come back as `followUps`.
+   */
+  guest?: { entry: InterviewGuestEntry; turn: unknown }
 }
+
+/** The guest entries the agent image keeps besides the Telegram turn's. */
+export type InterviewGuestEntry = "interview-guest-entry.js"
+
+/** A later user turn in the same conversation (the interviews' debrief): its answer and how it ended. */
+export type FollowUp = { finalReply: string; outcome: string; calls: number; toolCalls?: number }
 
 /** Synthetic settings for the books CLI, pointing at the fake household and nothing else. */
 function booksSettings(): object {
@@ -188,16 +199,34 @@ const settle = (exited: Promise<number>, graceMs: number): Promise<boolean> => n
   void exited.then(() => { clearTimeout(timer); resolve(true) })
 })
 
-function guestTurn(outcome: GuestOutcome): GuestTurn {
+type GuestTurns = Array<{ start: number } & FollowUp>
+
+const isTurns = (value: unknown): value is GuestTurns => Array.isArray(value) && value.every((turn: Record<string, unknown> | null) => typeof turn === "object" && turn !== null
+  && Number.isInteger(turn.start) && typeof turn.finalReply === "string" && typeof turn.outcome === "string" && Number.isInteger(turn.calls))
+
+function guestTurn(outcome: GuestOutcome): GuestTurn & { turns?: GuestTurns } {
   if (!outcome.ok) return { timeline: [], finalReply: "", outcome: `sandbox-error: ${outcome.error}` }
-  const result = outcome.result as Partial<GuestTurn> | null
-  if (!result || !Array.isArray(result.timeline) || typeof result.finalReply !== "string" || typeof result.outcome !== "string") {
+  const result = outcome.result as Partial<GuestTurn> & { turns?: unknown } | null
+  if (!result || !Array.isArray(result.timeline) || typeof result.finalReply !== "string" || typeof result.outcome !== "string" || (result.turns !== undefined && !isTurns(result.turns))) {
     return { timeline: [], finalReply: "", outcome: "sandbox-error: the guest's result is malformed" }
   }
-  return { timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome }
+  return { timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome, ...(result.turns ? { turns: result.turns } : {}) }
 }
 
-export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[] }> {
+/** The job's part of a merged timeline and the later turns, by where the guest said each turn starts. */
+export function splitTurns(observation: Observation, turns: GuestTurns | undefined): { observation: Observation; followUps: FollowUp[] } {
+  // After a trace mismatch the timeline is the host's calls, not the guest's, so the guest's turn starts don't index it.
+  if (!turns || turns.length < 2 || observation.outcome === "trace-mismatch") return { observation, followUps: [] }
+  const end = turns[1]!.start
+  return {
+    observation: { ...observation, timeline: observation.timeline.slice(0, end) },
+    followUps: turns.slice(1).map(({ start, finalReply, outcome, calls }, i) => ({
+      finalReply, outcome, calls, toolCalls: observation.timeline.slice(start, turns[i + 2]?.start).filter((entry) => entry.kind === "call").length,
+    })),
+  }
+}
+
+export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[] }> {
   const docker = input.docker ?? dockerCli()
   const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   const runId = `ouro-eval-${crypto.randomBytes(4).toString("hex")}`
@@ -246,7 +275,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     const seedFile = path.join(work, "seed.json")
     fs.writeFileSync(seedFile, JSON.stringify({ ...input.case.seed, calibreWeb: { username: "butler", password: "eval-password" }, smtp: { user: "eval", password: "eval-password" } }))
     const turnFile = path.join(work, "turn.json")
-    fs.writeFileSync(turnFile, JSON.stringify({ prefix: input.case.prefix.slice(0, -1), userText: last.content }))
+    fs.writeFileSync(turnFile, JSON.stringify(input.guest ? input.guest.turn : { prefix: input.case.prefix.slice(0, -1), userText: last.content }))
     fs.chmodSync(household, 0o777)
     for (const entry of WRITABLE) openUp(path.join(bundle, entry))
 
@@ -272,7 +301,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      images.agent, "node", "/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary",
+      images.agent, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)
@@ -305,12 +334,13 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       for (const file of created) bytes.set(file.sha256, path.join(bundle, file.path))
       for (const book of state.library) bytes.set(book.sha256, path.join(household, "library", `${book.id}.epub`))
     }
-    const observation = await assembleObservation({
+    const assembled = await assembleObservation({
       seed: input.case.seed, turn, hostCalls, steps: recorded.steps(), household: state, created, bytes,
       ...(input.oracle ? { oracle: input.oracle } : {}),
     })
+    const { observation, followUps } = splitTurns(assembled, turn.turns)
     emitNervesEvent({ component: "eval", event: "eval.sandbox_run_end", message: "finished a sandboxed eval run", meta: { caseId: input.case.id, runId, outcome: observation.outcome } })
-    return { ...observation, gaps: [...gaps, ...DECLARED_GAPS] }
+    return { ...observation, gaps: [...gaps, ...(input.guest ? [] : DECLARED_GAPS)], ...(input.guest ? { followUps } : {}) }
   } catch (error) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.sandbox_run_error", message: "a sandboxed eval run failed", meta: { caseId: input.case.id, runId, error: (error as Error).message } })
     throw error
