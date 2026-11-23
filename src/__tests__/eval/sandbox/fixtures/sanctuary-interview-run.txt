@@ -1,0 +1,33 @@
+["ps","--all","--filter","name=^/?ouro-butler(-staging|-rollback)?$","--format","{{.Names}}"]
+["run","--rm","--label","ouro.eval=1","--label","ouro.eval.run=<run>","--network","none","--user","<self>","--log-driver","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","512","--memory","2g","--memory-swap","2g","--cpus","2","--ulimit","fsize=268435456","-v","<work>/fixtures:/out","ouro-eval-household:local","python3","/opt/eval/fakes/fixtures.py","build","/out"]
+["run","--rm","--label","ouro.eval=1","--label","ouro.eval.run=<run>","--network","none","--user","<self>","--log-driver","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","512","--memory","2g","--memory-swap","2g","--cpus","2","--ulimit","fsize=268435456","-v","<work>/tls:/out","ouro-eval-household:local","sh","-c","set -eu\ncd /out\nopenssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=ouro-eval test authority' -keyout ca.key -out ca.pem 2>/dev/null\nopenssl req -newkey rsa:2048 -nodes -subj '/CN=ouro-eval household' -keyout server.key -out server.csr 2>/dev/null\nprintf 'subjectAltName=DNS:calibre-web,DNS:smtp,DNS:libgen.li,DNS:libgen.bz,DNS:libgen.gl,DNS:libgen.la,DNS:libgen.vg\\nbasicConstraints=critical,CA:FALSE\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=serverAuth\\n' > server.ext\nopenssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile server.ext -out server.pem 2>/dev/null\nrm -f ca.key ca.srl server.csr server.ext"]
+["network","create","--internal","--label","ouro.eval=1","--label","ouro.eval.run=<run>","<run>"]
+["run","--rm","--name","<run>-household","--label","ouro.eval=1","--label","ouro.eval.run=<run>","--network","<run>","--network-alias","calibre-web","--network-alias","smtp","--network-alias","libgen.li","--network-alias","libgen.bz","--network-alias","libgen.gl","--network-alias","libgen.la","--network-alias","libgen.vg","--user","10002:10002","--log-driver","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","512","--memory","2g","--memory-swap","2g","--cpus","2","--ulimit","fsize=268435456","--tmpfs","/tmp:rw,size=64m","-v","<work>/fixtures:/eval/fixtures:ro","-v","<work>/seed.json:/eval/seed.json:ro","-v","<work>/tls/server.pem:/eval/tls/server.pem:ro","-v","<work>/tls/server.key:/eval/tls/server.key:ro","-v","<work>/household:/eval/state","ouro-eval-household:local","python3","/opt/eval/fakes/household.py","--seed","/eval/seed.json","--fixtures","/eval/fixtures","--state","/eval/state","--tls-cert","/eval/tls/server.pem","--tls-key","/eval/tls/server.key"]
+["run","-i","--rm","--name","<run>-agent","--label","ouro.eval=1","--label","ouro.eval.run=<run>","--network","<run>","--user","10001:10001","--log-driver","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","512","--memory","2g","--memory-swap","2g","--cpus","2","--ulimit","fsize=268435456","--tmpfs","/tmp:rw,mode=1777,size=256m","--tmpfs","/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m","--env","HOME=/home/ouro","-v","<work>/bundle:/home/ouro/AgentBundles/sanctuary.ouro:ro","-v","<work>/bundle/books/work:/home/ouro/AgentBundles/sanctuary.ouro/books/work","-v","<work>/bundle/books/removed:/home/ouro/AgentBundles/sanctuary.ouro/books/removed","-v","<work>/bundle/books/ledger.ndjson:/home/ouro/AgentBundles/sanctuary.ouro/books/ledger.ndjson","-v","<work>/bundle/state:/home/ouro/AgentBundles/sanctuary.ouro/state","-v","<work>/bundle/friends:/home/ouro/AgentBundles/sanctuary.ouro/friends","-v","<work>/bundle/arc:/home/ouro/AgentBundles/sanctuary.ouro/arc","-v","<work>/bundle/desk/_record:/home/ouro/AgentBundles/sanctuary.ouro/desk/_record","-v","<work>/tls/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro","-v","<work>/turn.json:/eval/turn.json:ro","ouro-eval-sandbox:local","node","/opt/ouro/dist/eval/interview-guest-entry.js"]
+["rm","--force","<run>-agent"]
+["rm","--force","<run>-household"]
+["run","--rm","--label","ouro.eval=1","--label","ouro.eval.run=<run>","--network","none","--log-driver","none","--cap-drop","ALL","--cap-add","CHOWN","--cap-add","FOWNER","--cap-add","DAC_OVERRIDE","--user","0:0","-v","<work>:/work","ouro-eval-household:local","sh","-c","chown -R <self> /work && chmod -R u+rwX /work"]
+["rm","--force","<run>-agent"]
+["rm","--force","<run>-household"]
+["network","rm","<run>"]
+/etc/ssl/certs/ca-certificates.crt -- 8e0ee9925a742ac3784475af7970cbe19c87c12eb4997482b9c7ce9ed162b068
+/eval/turn.json -- ff7529f64a944309f468470fba073aa8912e553463766ca3101f474ab565745f
+/home/ouro/AgentBundles/sanctuary.ouro/ -x folder
+/home/ouro/AgentBundles/sanctuary.ouro/agent.json -- c1b064e0c342c1b29a7e505382470d007dc2446d9a5bbac831ad3b255ce8407d
+/home/ouro/AgentBundles/sanctuary.ouro/arc/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/books/ -x folder
+/home/ouro/AgentBundles/sanctuary.ouro/books/books -x a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf
+/home/ouro/AgentBundles/sanctuary.ouro/books/credentials.json -- 5e3ea023401a969a114b1a424340e28305ebe36ad07b57618bbcc5e899a2e744
+/home/ouro/AgentBundles/sanctuary.ouro/books/ledger.ndjson w- e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+/home/ouro/AgentBundles/sanctuary.ouro/books/removed/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/books/work/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/desk/ -x folder
+/home/ouro/AgentBundles/sanctuary.ouro/desk/_record/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/desk/_record/diary/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/desk/_record/diary/daily/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/desk/_record/notes/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/friends/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/psyche/ -x folder
+/home/ouro/AgentBundles/sanctuary.ouro/psyche/TACIT.md -- efa1f375d76194fa51a3556a97e641e61685f914d446979da50a551a4333ffd7
+/home/ouro/AgentBundles/sanctuary.ouro/state/ wx folder
+/home/ouro/AgentBundles/sanctuary.ouro/tool-profiles.json -- 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a

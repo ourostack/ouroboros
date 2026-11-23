@@ -315,6 +315,7 @@ describe("package asset validation", () => {
       "RepairGuide.ouro/",
       "SerpentGuide.ouro/",
       "skills/",
+      "vendor/desk/",
     ])
     expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
       "actions/generated/mailbox-tools/tools.json",
@@ -322,6 +323,7 @@ describe("package asset validation", () => {
       "actions/generated/mailbox/commands.json",
       "actions/generated/mailbox/mcp.json",
       "changelog.json",
+      "desk.lock.json",
       "npm-shrinkwrap.json",
       "package.json",
     ])

@@ -85,7 +85,7 @@ describe("package metadata", () => {
     const start = workflow.indexOf("  verify-npm:")
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
     const versionWaits = (verifyJob.match(/^          scripts\/npm-verify-exact-version\.sh /gmu) ?? []).length
-    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind /gmu) ?? []).length
+    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then scripts\/npm-verify-latest-tag\.sh /gmu) ?? []).length
     expect(versionWaits).toBe(2)
     expect(latestWaits).toBe(2)
     // The latest-tag waits keep their 10 minutes; only the exact-version waits are 20.

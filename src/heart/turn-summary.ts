@@ -6,7 +6,8 @@
  * name the turn itself offered (an MCP tool is named only by its server, `mcp:<server>`). A name the model made up is
  * counted as `unknown`, never repeated, because a made-up name can carry the conversation's words.
  *
- * Building and emitting the summary must never break a turn, so `emitTurnSummary` swallows every error.
+ * Building and emitting the summary must never break a turn, so `emitTurnSummary` swallows every error. The event is
+ * written at every log level (`alwaysLog`), because the iMessage, mail and voice senses log only warnings and errors.
  *
  * Scope of the counts: `steps` and the token totals cover the main loop's provider calls that returned (on any
  * provider the turn fell back to), not side calls such as the kept-notes judge or attempts that failed and were
@@ -15,6 +16,8 @@
  * find_tools loaded left out); `deferredDoors` is the tools held back behind find_tools. Both are the largest seen.
  */
 import type { Channel } from "@ouro.bot/friends"
+import fs from "node:fs"
+import path from "node:path"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { UsageData } from "./streaming"
@@ -48,6 +51,7 @@ export interface TurnSummaryMeta {
   errorClass: TurnSummaryErrorClass
   provider: string
   model: string
+  runtimeVersion: string
   providerSwitches: number
   steps: number
   stepBudgetExhausted: number
@@ -176,6 +180,7 @@ export class TurnTally {
       errorClass,
       provider: safeLabel(this.provider),
       model: safeLabel(this.model),
+      runtimeVersion: runtimeVersion(),
       providerSwitches: this.switches,
       steps: this.steps,
       stepBudgetExhausted: this.budgetStops,
@@ -218,6 +223,22 @@ export function tallyToolEnds<T extends { onToolEnd(name: string, summary: strin
   })
 }
 
+/** The harness's version from its package.json, `unknown` if it can't be read. */
+export function readRuntimeVersion(read: () => string = () => fs.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")): string {
+  try {
+    const version = (JSON.parse(read()) as { version?: unknown }).version
+    return typeof version === "string" ? safeLabel(version) : "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+let cachedRuntimeVersion: string | undefined
+function runtimeVersion(): string {
+  cachedRuntimeVersion ??= readRuntimeVersion()
+  return cachedRuntimeVersion
+}
+
 /** Provider and model ids come from configuration; anything that doesn't look like an id is replaced. */
 function safeLabel(value: string): string {
   return /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/.test(value) ? value : "other"
@@ -235,6 +256,7 @@ export function emitTurnSummary(
       trace_id: input.traceId,
       component: "engine",
       message: "turn summary (counts only)",
+      alwaysLog: true,
       meta: tally.summarize(input) as unknown as Record<string, unknown>,
     })
   } catch {

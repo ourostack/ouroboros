@@ -25,8 +25,10 @@ import { runFinalConversation, type FinalResult } from "./final"
 import { buildArm, X_ARMS } from "./guest/arms"
 import type { BooksCore } from "./guest/books-core"
 import { messageOf } from "./guest/loop"
+import { U_ARMS } from "./guest/u/arms"
 import { argvOf, commandLine } from "./guest/operations"
 import { createInterviewLatch, guardedRuntime, SESSION_CALLS, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
+import type { Replacement } from "./rewrite"
 import { debriefQuestion, IDENTIFY_QUESTION, labelLine, ratingOf, type Note, type Product } from "./protocol"
 
 /** What is recorded about each arm before any session: where it differs from the product it stands for. */
@@ -53,11 +55,28 @@ export const FIDELITY: Readonly<Record<string, string[]>> = {
   ],
 }
 
+export type Verdict = { passed: boolean; reason: string | null; checks: Array<{ name: string; ok: boolean; detail: string }> }
+
 export type ProductKit = {
   /** The guest the sandbox runs for one arm's job and debrief. */
   guest(input: { session: Session; arm: LabelledArm; case: Case; debrief: string }): GuestChoice
   /** The observation as the case's assertions read it. */
   canonical(arm: string, obs: Observation): Observation
+  /** The product's own job by its Appendix B name, when it is not a case in `--cases`; the cases folder otherwise. */
+  job?(id: string): Case | undefined
+  /**
+   * The product's own verdict on a run, in place of the case's assertions, from what the guest reported (a grade the
+   * guest made in the container, `run.grade`, which the host does not check again). A refused call, or a conversation
+   * that did not settle, still fails the job; a verdict that throws fails it too.
+   */
+  grade?(run: SandboxRun, c: Case): Verdict
+  /** The product's fidelity notes, per `<product>:<arm>` key, added to the report's `fidelity`. */
+  fidelity?: Readonly<Record<string, string[]>>
+  /**
+   * The arm's committed replacement list (section 3), applied to every request of its job and debrief before the host's
+   * brand scan. The final conversation is the runner's own text and is not rewritten.
+   */
+  replacements?(arm: string): readonly Replacement[] | undefined
 }
 
 /** What a call the interface refused, before any books operation ran, is written as for scoring, in every arm. */
@@ -171,11 +190,14 @@ const named = (hits: string[]): string => [...new Set(hits.map((hit) => hit.toLo
 const providerFailure = (outcome: string): boolean => /^(provider-error|sandbox-error|trace-mismatch)/.test(outcome)
 
 function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: ProductKit; job: Gate; debrief: Gate }): ArmRecord {
-  const { gaps: _gaps, followUps, ...raw } = input.obs
+  const { gaps: _gaps, followUps, grade: _grade, ...raw } = input.obs
   const observation = input.kit.canonical(input.arm.arm, raw)
-  const graded = evaluate(input.c, observation)
+  const own = input.kit.grade ? ownGrade(input.kit.grade, input.obs, input.c) : undefined
+  const graded = own ?? evaluate(input.c, observation)
   const refused = input.job.refused()
-  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : gradeRun(observation, graded)
+  // A kit's verdict decides only a job whose conversation settled, as gradeRun does for a case.
+  const verdict = refused ? { passed: false, reason: `refused: ${refused}` } : !own ? gradeRun(observation, graded)
+    : observation.outcome !== "settled" ? { passed: false, reason: `outcome ${observation.outcome}` } : { passed: own.passed, reason: own.reason }
   const debrief = followUps?.[0]
   const note = debrief && debrief.outcome === "settled" ? debrief.finalReply : ""
   return {
@@ -183,6 +205,32 @@ function armRecord(input: { arm: LabelledArm; c: Case; obs: SandboxRun; kit: Pro
     debriefOutcome: debrief?.outcome ?? null, debriefToolCalls: debrief?.toolCalls ?? 0,
     jobCalls: input.job.calls(), debriefCalls: input.debrief.calls(), observation,
   }
+}
+
+/** A kit's verdict, or a failed one when it throws: the guest's grade is untrusted input. */
+function ownGrade(grade: NonNullable<ProductKit["grade"]>, run: SandboxRun, c: Case): Verdict {
+  try {
+    return grade(run, c)
+  } catch (error) {
+    return { passed: false, reason: `grade: ${messageOf(error)}`, checks: [] }
+  }
+}
+
+/** The report's fidelity notes: X's, and those of each product kit with a session in this run. A kit may not restate one. */
+export function fidelityOf(kits: Partial<Record<Product, ProductKit>>, sessions: Session[]): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...FIDELITY }
+  for (const product of new Set(sessions.map((session) => session.product))) {
+    for (const [key, notes] of Object.entries(kits[product]?.fidelity ?? {})) {
+      if (Object.hasOwn(out, key)) throw new Error(`product ${product}'s kit restates the fidelity notes for ${key}`)
+      out[key] = notes
+    }
+  }
+  return out
+}
+
+/** A session's job: the product's own, or the case of that name in `--cases`. */
+function caseOf(kit: ProductKit, cases: Map<string, Case>, session: Session): Case | undefined {
+  return kit.job?.(session.job) ?? cases.get(session.job)
 }
 
 /** Runs one session. Returns its record; `stop` when the study must stop (402, 429 or a cap). */
@@ -204,9 +252,9 @@ async function runSession(input: {
     labels: Object.fromEntries(session.arms.map((arm) => [arm.label, arm.arm])), status: "complete", ended: null, arms: [], final: null,
     ouroFirst: false, voidedBy: null, calls: [], spent: ZERO,
   }
-  const c = input.cases.get(session.job)!
-  const guard = (gateFor: (request: ProviderTurnRequest) => Gate): ProviderRuntime => guardedRuntime({
-    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor,
+  const c = caseOf(input.kit, input.cases, session)!
+  const guard = (gateFor: (request: ProviderTurnRequest) => Gate, replacements?: readonly Replacement[]): ProviderRuntime => guardedRuntime({
+    inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor, ...(replacements ? { replacements } : {}),
     log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
   })
   const end = (status: SessionStatus, why: string): void => {
@@ -217,7 +265,8 @@ async function runSession(input: {
     const debrief = debriefQuestion(session.product, arm.label)
     const job = latch.gate("job")
     const debriefGate = latch.gate("debrief")
-    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job)
+    // The gate reads the runner's own request, so the debrief is told apart before the arm's list rewrites it.
+    const host = guard((request) => request.messages.some((m) => m.role === "user" && m.content === debrief) ? debriefGate : job, input.kit.replacements?.(arm.arm))
     let obs: SandboxRun
     try {
       obs = await input.runCase({ case: c, host, budget: { take: () => true }, guest: input.kit.guest({ session, arm, case: c, debrief }) })
@@ -293,8 +342,9 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
   if (missingKit) throw new Error(`session ${missingKit.id} is product ${missingKit.product}, which has no runner kit yet`)
+  const fidelity = fidelityOf(deps.kits, chosen)
   const cases = new Map(deps.loadCases(args.cases).map((c) => [c.id, c]))
-  const missingCase = chosen.find((session) => !cases.has(session.job))
+  const missingCase = chosen.find((session) => !caseOf(deps.kits[session.product]!, cases, session))
   if (missingCase) throw new Error(`session ${missingCase.id} needs case ${missingCase.job}, which is not in ${args.cases}`)
   for (const file of [args.output, args.requestLog]) if (deps.outputExists(file)) throw new Error(`${file} already exists; name a new file`)
   if (args.budgetCredits !== undefined && (args.priceIn === undefined || args.priceOut === undefined || args.reserveCreditsPerCall === undefined)) {
@@ -325,7 +375,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     deps.writeReport(args.output, {
       schemaVersion: 1, kind: "blind-interviews", preregistrationVersion: version, target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
       premiumMultiplier: target.unitCost, multiplierSource: target.multiplierSource, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
-      fidelity: FIDELITY, pricing, sessions: records,
+      fidelity, pricing, sessions: records,
     })
   }
   let after: Awaited<ReturnType<ResolvedTarget["quota"]>> | null = null
@@ -367,8 +417,8 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   return { exitCode: stopped ? 2 : 0, records }
 }
 
-/** Every X arm, for the parser's check. */
-export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: [], X: X_ARMS }
+/** Every X and U arm, for the parser's check. */
+export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: U_ARMS, X: X_ARMS }
 
 const STRING_FLAGS = { "--preregistration": "preregistration", "--cases": "cases", "--target": "target", "--credentials-agent": "credentialsAgent", "--output": "output", "--request-log": "requestLog", "--harness-ref": "harnessRef", "--copilot-account": "copilotAccount" } as const
 const NUMBER_FLAGS = { "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut", "--reserve-credits-per-call": "reserveCreditsPerCall", "--premium-multiplier": "premiumMultiplier" } as const

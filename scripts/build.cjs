@@ -4,6 +4,11 @@ const path = require("path")
 function buildSteps(repoRoot, deps = defaultDeps()) {
   return [
     {
+      label: "vendor the pinned Desk release",
+      command: deps.execPath,
+      args: [deps.join(repoRoot, "scripts", "desk-vendor.cjs")],
+    },
+    {
       label: "clean dist",
       command: deps.execPath,
       args: [deps.join(repoRoot, "scripts", "clean-dist.cjs")],

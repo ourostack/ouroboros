@@ -4,10 +4,12 @@ import * as os from "os"
 import * as path from "path"
 import { randomUUID } from "node:crypto"
 import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, setAgentName } from "../identity"
+import { runAgentStateRetention } from "./state-retention"
 import {
   listAllBundleAgents,
   listBundleSyncRows,
   listEnabledBundleAgents,
+  listHomeBundleAgents,
   type BundleAgentRow,
   type BundleSyncRow,
 } from "./agent-discovery"
@@ -593,6 +595,8 @@ export interface OuroDaemonOptions {
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
+  /** Retention over every agent's `state/`; runs 10 minutes after start, then daily. */
+  stateRetention?: () => Promise<unknown>
   /** Whether another daemon already answers on the socket. Defaults to a real status probe. */
   socketAnswering?: (socketPath: string) => Promise<boolean>
   /** Source-specific credential readiness checked before external-event ownership mutation. */
@@ -872,6 +876,9 @@ function defaultSelfUpdateLauncher(): (() => Promise<string>) | null {
 }
 /* v8 ignore stop */
 
+const STATE_RETENTION_FIRST_DELAY_MS = 10 * 60_000
+const STATE_RETENTION_INTERVAL_MS = 24 * 60 * 60_000
+
 export class OuroDaemon {
   private readonly socketPath: string
   private readonly processManager: DaemonProcessManagerLike
@@ -886,6 +893,8 @@ export class OuroDaemon {
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
+  private stateRetentionTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly stateRetention: () => Promise<unknown>
   private externalEventReconcileRunning = false
   private readonly constructedAtMs = Date.now()
   private readonly frontendSocketPath: string
@@ -942,6 +951,11 @@ export class OuroDaemon {
     this.schedulerFireVerifier = options.schedulerFireVerifier
     this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
+    this.stateRetention = options.stateRetention ?? (() => runAgentStateRetention({
+      bundlesRoot: this.bundlesRoot,
+      // Only agents homed here: another machine's daemon looks after its own agents' state.
+      agents: listHomeBundleAgents({ bundlesRoot: this.bundlesRoot }),
+    }))
     this.socketAnswering = options.socketAnswering ?? checkDaemonSocketAlive
     this.selfUpdateLauncher = options.selfUpdateLauncher !== undefined ? options.selfUpdateLauncher : defaultSelfUpdateLauncher()
     this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
@@ -1117,6 +1131,7 @@ export class OuroDaemon {
       void this.reconcileExternalEvents()
     }, 1_000)
     this.externalEventReconcileTimer.unref?.()
+    this.scheduleStateRetention(STATE_RETENTION_FIRST_DELAY_MS)
 
     // Write all managed PIDs to disk so the next daemon can clean up
     /* v8 ignore start -- pidfile write: collects PIDs from process managers @preserve */
@@ -1143,6 +1158,16 @@ export class OuroDaemon {
         meta: { socketPath: this.frontendSocketPath },
       })
     }
+  }
+
+  // Waits after start so a restart isn't slowed by it; a failed pass is logged by retention and tried again tomorrow.
+  private scheduleStateRetention(delayMs: number): void {
+    this.stateRetentionTimer = setTimeout(() => {
+      void this.stateRetention().catch(() => undefined).finally(() => {
+        if (this.stateRetentionTimer) this.scheduleStateRetention(STATE_RETENTION_INTERVAL_MS)
+      })
+    }, delayMs)
+    this.stateRetentionTimer.unref?.()
   }
 
   private triggerAutoStartAgents(): void {
@@ -1447,6 +1472,10 @@ export class OuroDaemon {
     if (this.externalEventReconcileTimer) {
       clearInterval(this.externalEventReconcileTimer)
       this.externalEventReconcileTimer = null
+    }
+    if (this.stateRetentionTimer) {
+      clearTimeout(this.stateRetentionTimer)
+      this.stateRetentionTimer = null
     }
     const workerStopTasks = [
       Promise.resolve().then(() => this.processManager.stopAll()),
