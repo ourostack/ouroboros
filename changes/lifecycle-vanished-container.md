@@ -1,0 +1,2 @@
+- A Butler upgrade or rollback no longer fails when a container on the host stops while the upgrade is checking for other programs reading the Butler's bundle. A container that has stopped can't be one of them, so it is skipped. One that is still running but can't be read still stops the upgrade.
+- `npm run butler:ship` refuses to start the gate or the upgrade while eval containers (`ouro-eval-*`) are running on the host, and says which ones. Nothing on the host has changed when it refuses.
