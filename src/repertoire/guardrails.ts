@@ -182,6 +182,90 @@ export function psycheWriteAllowed(fileClass: "tacit" | "identity", _filePath: s
     && (context.channel !== "teams" || context.isGroupChat === false)
 }
 
+// The shell reaches the psyche too. Since #1257 the shell works in the agent's home without path checks, so the rule on who may
+// change who it is held only for the file tools; on 0.1.0-alpha.1435 an A2A peer's ask ended in a shell edit of SOUL.md. A turn
+// that may not write a psyche file may still read it from the shell: a command that names the psyche runs only when every part
+// of it is a plain read. Commands that never name the psyche are untouched.
+const PSYCHE_SHELL_FILE = /^(?:SOUL|IDENTITY|LORE|ASPIRATIONS|TACIT)\.md$/i
+const PSYCHE_SHELL_PATHLIKE = /[\w.~/-]*(?:\/psyche(?:\/[\w.*-]*)?|psyche\/[\w.*-]*)/g
+const PSYCHE_SHELL_READERS = new Set(["cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "ls", "stat", "file", "diff", "cmp", "sha256sum", "shasum", "md5sum", "cd", "pwd", "echo", "printf", "true"])
+const PSYCHE_SHELL_GIT_READS = new Set(["log", "show", "diff", "status", "blame"])
+const PSYCHE_SHELL_SEPARATORS = /\s*(?:&&|\|\||[;&|\n])\s*/
+
+/** The command's words, split on unquoted whitespace and shell operators, with their quotes removed. */
+function shellWordsLoosely(command: string): string[] {
+  const words: string[] = []
+  let word = ""
+  let quote: string | null = null
+  for (const char of command) {
+    if (quote) {
+      if (char === quote) quote = null
+      else word += char
+    } else if (char === "'" || char === "\"") {
+      quote = char
+    } else if (/[\s;&|<>()]/.test(char)) {
+      if (word) words.push(word)
+      word = ""
+    } else {
+      word += char
+    }
+  }
+  if (word) words.push(word)
+  return words
+}
+
+/** Which psyche files the command names: null for none, else whether any of them is an identity file. */
+function shellPsycheTarget(command: string, agentRoot: string): "tacit" | "identity" | null {
+  let target: "tacit" | "identity" | null = null
+  const note = (fileClass: "tacit" | "identity") => { if (target !== "identity") target = fileClass }
+  for (const word of shellWordsLoosely(command)) {
+    if (PSYCHE_SHELL_FILE.test(word)) note(/^TACIT\.md$/i.test(word) ? "tacit" : "identity")
+    const candidates = new Set<string>(word === "psyche" || word === "./psyche" ? [word] : [])
+    for (const match of word.matchAll(PSYCHE_SHELL_PATHLIKE)) candidates.add(match[0])
+    for (const candidate of candidates) {
+      try {
+        const fileClass = psycheFileClass(candidate, agentRoot)
+        if (fileClass) note(fileClass)
+      } catch {
+        // A path whose landing place can't be read is counted as an identity file, as the file tools refuse it.
+        note("identity")
+      }
+    }
+  }
+  return target
+}
+
+/** Whether one simple command (no chaining) only reads. */
+function shellSegmentOnlyReads(segment: string): boolean {
+  const words = segment.trim().split(/\s+/).filter(Boolean)
+  // Leading assignments (FOO=1 cat ...) set the environment of the program that follows.
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!)) words.shift()
+  const program = words[0]?.split("/").pop() ?? ""
+  if (PSYCHE_SHELL_READERS.has(program)) return true
+  if (program === "sed") return !words.some((word) => /^-[a-zA-Z]*i/.test(word) || word.startsWith("--in-place"))
+  if (program === "git") {
+    // The subcommand is the first word that is neither an option nor the value of -C or -c.
+    const subcommand = words.find((word, index) => index > 0 && !word.startsWith("-") && words[index - 1] !== "-C" && words[index - 1] !== "-c")
+    return PSYCHE_SHELL_GIT_READS.has(subcommand ?? "")
+  }
+  return false
+}
+
+/** The refusal for a shell command that could write a psyche file this turn may not write, or null. */
+function shellPsycheRefusal(command: string, context: GuardContext): string | null {
+  const agentRoot = context.agentRoot
+  if (!agentRoot || !fs.existsSync(path.join(agentRoot, "psyche"))) return null
+  const fileClass = shellPsycheTarget(command, agentRoot)
+  if (!fileClass || psycheWriteAllowed(fileClass, "", context)) return null
+  // Output into a file (a numbered stream into /dev/null or another stream aside), a substitution or a tee can write.
+  const streams = command.replace(/\d>(?:&\d|\s*\/dev\/null)/g, "")
+  const writesOut = /(?:^|[^0-9&>])>|&>|>>|\btee\b/.test(streams)
+  const onlyReads = !writesOut && !SUBSHELL_PATTERN.test(command) && streams.split(PSYCHE_SHELL_SEPARATORS).filter(Boolean).every(shellSegmentOnlyReads)
+  if (onlyReads) return null
+  emitNervesEvent({ component: "repertoire", event: "repertoire.psyche_shell_refused", message: "refused a shell command that could write a psyche file this turn may not write", meta: { fileClass, channel: context.channel ?? null } })
+  return fileClass === "tacit" && isFriendTurn(context) ? TACIT_REFUSAL : PSYCHE_REFUSAL
+}
+
 /** A turn that carries a person who is not family: TACIT is read-only to it. */
 function isFriendTurn(context: GuardContext): boolean {
   return context.friendId !== undefined && context.trustLevel !== "family"
@@ -250,6 +334,8 @@ function checkProtectedPaths(toolName: string, args: Record<string, string>, con
     const command = args.command || ""
     if (syncSecretShellRefused(command)) return deny(REASONS.unreadablePath)
     if (shellWritesToProtectedPath(command)) return deny(REASONS.protectedPath)
+    const psycheRefusal = shellPsycheRefusal(command, context)
+    if (psycheRefusal) return deny(psycheRefusal)
   }
 
   return allow
