@@ -156,11 +156,9 @@ export function chatRequest(body: unknown, prefix: Message[]): WireRequest {
     }
   }
   const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
-  const activeTools = tools.map((tool): Tool => {
-    if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
-    const { name, description, parameters } = (tool as { function: { name: string; description?: string; parameters?: Record<string, unknown> } }).function
-    return { type: "function", function: { name, ...(description !== undefined ? { description } : {}), ...(parameters !== undefined ? { parameters } : {}) } }
-  })
+  for (const tool of tools) if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
+  // A chat tool nests the same fields under `function`; they pass through as the Responses shape's do.
+  const activeTools = (tools as Array<{ function: ArmTool }>).map((tool) => wireTool(tool.function))
   return { messages, activeTools }
 }
 

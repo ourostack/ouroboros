@@ -28,3 +28,15 @@ export const H_CODEX_FIDELITY: readonly string[] = [
   "the whole conversation is killed at 540 seconds, inside the host's 600-second guest deadline",
   "built from source at the pinned commit for x86_64 gnu, not codex's released musl build, without the release's version stamp",
 ]
+
+export const H_OPENHANDS_FIDELITY: readonly string[] = [
+  "num_retries = 0: LiteLLM's retries are off, since a retry would be a second metered call",
+  "the tools are the terminal and the file editor, as pre-registration v2 names; the SDK's default preset also gives the task tracker and the browser, and the browser couldn't reach anything in the sandbox",
+  "no condenser: the default preset summarises a long history with extra model calls; these conversations are short",
+  "load_public_skills = False: public skills are fetched from the internet, which the sandbox can't reach",
+  "the model is called through chat completions without streaming (api_mode chat, stream False), since the H wire answers chat only whole",
+  "the SDK doesn't know the model's name (openai/model), so it uses its defaults for an unknown model",
+  "the Butler's persona and the label line are the system message's suffix, after the SDK's own system prompt",
+  "runs from a neutral home under /tmp (the agent container is read-only elsewhere), with the bundle linked at /tmp/agent/AgentBundles/sanctuary.agent",
+  "the supervisor process, and with it the whole conversation, is killed at 540 seconds, inside the host's 600-second guest deadline",
+]

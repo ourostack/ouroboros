@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime, ProviderTurnRequest } from "../../../heart/core"
 import type { TurnResult } from "../../../heart/streaming"
 import { openhandsArm, type Supervisor } from "../../../eval/interviews/guest/h/openhands"
+import { H_OPENHANDS_FIDELITY } from "../../../eval/interviews/guest/h/fidelity"
 import type { HTurnFile } from "../../../eval/interviews/guest/h/run"
 
 function runtime(answers: TurnResult[], seen: ProviderTurnRequest[] = []): ProviderRuntime {
@@ -128,5 +129,14 @@ describe("the openhands arm", () => {
     // A finish call whose arguments aren't JSON still ends the turn with its text as the reply.
     const odd = await openhandsArm({ start: one(go, { status: "finished" }), home, workdir: at("w6") })({ turn: TURN, bundle, providerRuntime: runtime([{ content: "", toolCalls: [{ id: "f", name: "finish", arguments: "done" }], outputItems: [] }]) })
     expect(odd).toMatchObject({ outcome: "settled", finalReply: "done", timeline: [{ kind: "reply", text: "done" }] })
+  })
+
+  it("has a fidelity note for every setting the supervisor changes from the SDK's defaults", () => {
+    const supervisor = fs.readFileSync(path.join(__dirname, "../../../../deploy/eval/openhands/supervise.py"), "utf8")
+    const settings = [...supervisor.matchAll(/\b(\w+)=(False|0|"chat")[,)]/g)].map((match) => match[1]!)
+    expect(settings).toEqual(["api_mode", "num_retries", "stream", "load_public_skills"])
+    for (const setting of settings) {
+      if (!H_OPENHANDS_FIDELITY.some((note) => note.includes(setting))) throw new Error(`no fidelity note names ${setting}`)
+    }
   })
 })
