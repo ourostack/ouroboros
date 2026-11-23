@@ -772,7 +772,8 @@ export async function streamChatCompletion(
       const cached = u.prompt_tokens_details?.cached_tokens;
       usage = {
         input_tokens: u.prompt_tokens,
-        ...(cached !== undefined ? { cached_input_tokens: cached } : {}),
+        // Some OpenAI-compatible gateways send null; only a number is a reported count.
+        ...(typeof cached === "number" ? { cached_input_tokens: cached } : {}),
         output_tokens: u.completion_tokens,
         reasoning_tokens: u.completion_tokens_details?.reasoning_tokens ?? 0,
         total_tokens: u.total_tokens,
@@ -986,7 +987,7 @@ export async function streamResponsesApi(
           const cached = u.input_tokens_details?.cached_tokens;
           usage = {
             input_tokens: u.input_tokens,
-            ...(cached !== undefined ? { cached_input_tokens: cached } : {}),
+            ...(typeof cached === "number" ? { cached_input_tokens: cached } : {}),
             output_tokens: u.output_tokens,
             reasoning_tokens: u.output_tokens_details?.reasoning_tokens ?? 0,
             total_tokens: u.total_tokens,

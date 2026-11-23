@@ -836,6 +836,15 @@ describe("streamChatCompletion", () => {
       { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: {}, completion_tokens: 20, total_tokens: 520 } },
     ])) } } }
     expect((await streamChatCompletion(plain, { messages: [], stream: true }, makeCallbacks())).usage).not.toHaveProperty("cached_input_tokens")
+    // A reported 0 is a count and is kept; a gateway's null is not a count and is left out.
+    const zero = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: 0 }, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    expect((await streamChatCompletion(zero, { messages: [], stream: true }, makeCallbacks())).usage!.cached_input_tokens).toBe(0)
+    const nulled = { chat: { completions: { create: vi.fn().mockReturnValue(makeStream([
+      { choices: [{ delta: {} }], usage: { prompt_tokens: 500, prompt_tokens_details: { cached_tokens: null }, completion_tokens: 20, total_tokens: 520 } },
+    ])) } } }
+    expect((await streamChatCompletion(nulled, { messages: [], stream: true }, makeCallbacks())).usage).not.toHaveProperty("cached_input_tokens")
   })
 
   it("defaults reasoning_tokens to 0 when completion_tokens_details is missing", async () => {
