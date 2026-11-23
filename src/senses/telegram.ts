@@ -64,7 +64,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
-import { OWNER_ROUTE_FALLBACK_PREFIX, ownerRouteForAgent, ownerRouteItem, type OwnerRoute } from "./telegram-owner-route"
+import { OWNER_ROUTE_BACK_TEXT, OWNER_ROUTE_DOWN_TEXT, OWNER_ROUTE_FALLBACK_PREFIX, OWNER_ROUTE_WATCH_FAILURES, OWNER_ROUTE_WATCH_INTERVAL_MS, ownerRouteForAgent, ownerRouteItem, type OwnerRoute } from "./telegram-owner-route"
 import { foldHeldNotices, isCriticalNoticeKey, ownerChatHandedOff, proactiveHoldReason, readHeldNotices, readReleasedHeldKeys, recordProactiveSend, recordReleasedHeldKeys, writeHeldNotices, type ProactivePacing } from "./telegram-handoff"
 import type { ToolContext } from "../repertoire/tools-base"
 import { ExternalEventScanCache, getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
@@ -199,6 +199,11 @@ export interface TelegramSenseApp {
   sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
   /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
   sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
+  /**
+   * One check of the owner's primary agent (run every five minutes while the sense runs). After three failed checks in a row it
+   * tells the owner once on Telegram, the one Telegram path for while that agent is down, and once, silently, when it is back.
+   */
+  checkOwnerRoute(): Promise<void>
   stop(): Promise<void>
 }
 
@@ -1240,6 +1245,42 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     emitNervesEvent({ component: "senses", event: "senses.telegram_notice_held_for_owner_route", message: "held a house notice until the owner's primary agent can be reached", meta: { agentName: options.agentName, dedupeKey: item.dedupeKey } })
     return null
   }
+  const ownerRouteWatchPath = path.join(agentRoot, "state", "telegram", "owner-route-watch.json")
+  const readOwnerRouteWatch = (): { failures: number; alertedAt: string | null } => {
+    try {
+      const parsed = JSON.parse(readFileSync(ownerRouteWatchPath, "utf8")) as { failures?: unknown; alertedAt?: unknown }
+      return { failures: Number.isSafeInteger(parsed.failures) ? parsed.failures as number : 0, alertedAt: typeof parsed.alertedAt === "string" ? parsed.alertedAt : null }
+    } catch {
+      return { failures: 0, alertedAt: null }
+    }
+  }
+  const writeOwnerRouteWatch = (state: { failures: number; alertedAt: string | null }): void => {
+    mkdirSync(path.dirname(ownerRouteWatchPath), { recursive: true })
+    writeFileAtomicSync(ownerRouteWatchPath, JSON.stringify(state))
+  }
+  const checkOwnerRoute = async (): Promise<void> => {
+    const probe = options.ownerRoute?.probe
+    if (!probe) return
+    const outcome = await probe()
+    const state = readOwnerRouteWatch()
+    if (outcome.status === "delivered") {
+      if (state.alertedAt) {
+        await executeAuthorizedEffect({ idempotencyKey: `owner-route-watch:back:${state.alertedAt}`, target: configuredOwnerTarget(), authorClass: "butler", effect: { kind: "text", text: OWNER_ROUTE_BACK_TEXT, silent: true } })
+        emitNervesEvent({ component: "senses", event: "senses.telegram_owner_route_back", message: "told the owner, silently, that the primary agent is reachable again", meta: { agentName: options.agentName, downSince: state.alertedAt } })
+      }
+      if (state.failures || state.alertedAt) writeOwnerRouteWatch({ failures: 0, alertedAt: null })
+      return
+    }
+    const failures = state.failures + 1
+    if (failures < OWNER_ROUTE_WATCH_FAILURES || state.alertedAt) {
+      writeOwnerRouteWatch({ failures, alertedAt: state.alertedAt })
+      return
+    }
+    const alertedAt = new Date().toISOString()
+    await executeAuthorizedEffect({ idempotencyKey: `owner-route-watch:down:${alertedAt}`, target: configuredOwnerTarget(), authorClass: "butler", effect: { kind: "text", text: OWNER_ROUTE_DOWN_TEXT } })
+    writeOwnerRouteWatch({ failures, alertedAt })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_owner_route_down", message: "told the owner on Telegram that the primary agent has been unreachable for 15 minutes", meta: { agentName: options.agentName, detail: outcome.detail } })
+  }
   /** With an owner route, held notices go to the peer one by one; a critical one it can't take goes to Telegram as a fallback. */
   const releaseHeldNoticesToRoute = async (route: OwnerRoute, signal?: AbortSignal): Promise<void> => {
     const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
@@ -1989,6 +2030,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   ])
 
   return {
+    checkOwnerRoute,
     run(signal) {
       if (runPromise) return runPromise
       runPromise = (async () => {
@@ -2026,9 +2068,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         approvalReconciliationActive = true
         nextApprovalReconcileDeadline = undefined
         scheduleApprovalReconcile()
+        const ownerRouteWatch = options.ownerRoute?.probe
+          ? setInterval(() => {
+            void checkOwnerRoute().catch((error) => emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_owner_route_watch_error", message: "the check of the owner's primary agent failed", meta: { agentName: options.agentName, error: transportError(error) } }))
+          }, OWNER_ROUTE_WATCH_INTERVAL_MS)
+          : undefined
         try {
           await poll.run(signal)
         } finally {
+          clearInterval(ownerRouteWatch)
           approvalReconciliationActive = false
           nextApprovalReconcileDeadline = undefined
           clearApprovalReconcileTimer()

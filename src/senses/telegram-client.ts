@@ -1924,6 +1924,8 @@ export interface TelegramTextSendOptions {
   split?: (text: string) => string[]
   /** Send the first chunk as a reply to this message. If Telegram refuses it, the chunk goes out without the reply. */
   replyToMessageId?: number
+  /** Send without a notification: the message arrives, but the phone shows no banner. */
+  silent?: boolean
 }
 
 export { escapeTelegramHtml, splitTelegramText, type TelegramChunkOptions }
@@ -1945,7 +1947,10 @@ export async function sendTelegramText(
     options.onMessageDelivered?.(messageId as number, chunk)
   }
   for (const [index, chunk] of (options.split ?? splitTelegramText)(text).entries()) {
-    const replyTo = index === 0 && options.replyToMessageId ? { reply_parameters: { message_id: options.replyToMessageId } } : {}
+    const replyTo = {
+      ...(index === 0 && options.replyToMessageId ? { reply_parameters: { message_id: options.replyToMessageId } } : {}),
+      ...(options.silent ? { disable_notification: true } : {}),
+    }
     try {
       recordMessageId(await api.request("sendMessage", {
         chat_id: chatId,
@@ -1964,7 +1969,7 @@ export async function sendTelegramText(
           if (!(retry instanceof TelegramApiError) || retry.status !== 400) throw retry
         }
       }
-      recordMessageId(await api.request("sendMessage", { chat_id: chatId, text: chunk }, options.signal), chunk)
+      recordMessageId(await api.request("sendMessage", { chat_id: chatId, text: chunk, ...(options.silent ? { disable_notification: true } : {}) }, options.signal), chunk)
     }
   }
   return results
