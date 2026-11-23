@@ -55,7 +55,41 @@ describe("BlueBubbles runtime state", () => {
       ),
     )
     expect(getBlueBubblesRuntimeStatePath("slugger")).toBe(filePath)
-    expect(readBlueBubblesRuntimeState("slugger")).toEqual(state)
+    expect(readBlueBubblesRuntimeState("slugger")).toEqual({ ...state, lastHeartbeatAt: expect.any(String) })
+  })
+
+  it("replaces the file whole and stamps a heartbeat on every write", async () => {
+    const { getBlueBubblesRuntimeStatePath, readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    const before = Date.now()
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", lastCheckedAt: "2026-03-11T18:14:00.000Z", pendingRecoveryCount: 0 })
+    const heartbeat = Date.parse(readBlueBubblesRuntimeState("slugger").lastHeartbeatAt!)
+    expect(heartbeat).toBeGreaterThanOrEqual(before)
+    expect(heartbeat).toBeLessThanOrEqual(Date.now())
+    // Written to a private temporary file and renamed into place, so a reader never sees half of it.
+    expect(fs.readdirSync(path.dirname(getBlueBubblesRuntimeStatePath("slugger")))).toEqual(["runtime.json"])
+    expect(fs.statSync(getBlueBubblesRuntimeStatePath("slugger")).mode & 0o777).toBe(0o600)
+  })
+
+  it("keeps the catch-up cursor through writes that do not move it", async () => {
+    const { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", lastCheckedAt: "2026-03-11T18:14:00.000Z", catchUpThrough: "2026-03-11T18:14:00.000Z", pendingRecoveryCount: 0 })
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "recovery pass running", lastCheckedAt: "2026-03-11T18:14:30.000Z", pendingRecoveryCount: 0 })
+    expect(readBlueBubblesRuntimeState("slugger")).toEqual(expect.objectContaining({ lastCheckedAt: "2026-03-11T18:14:30.000Z", catchUpThrough: "2026-03-11T18:14:00.000Z" }))
+    writeBlueBubblesRuntimeState("slugger", { upstreamStatus: "ok", detail: "upstream reachable", lastCheckedAt: "2026-03-11T18:15:00.000Z", catchUpThrough: "2026-03-11T18:15:00.000Z", pendingRecoveryCount: 0 })
+    expect(readBlueBubblesRuntimeState("slugger").catchUpThrough).toBe("2026-03-11T18:15:00.000Z")
+  })
+
+  it("refreshes the heartbeat of the state on disk, and writes nothing when there is none", async () => {
+    const { getBlueBubblesRuntimeStatePath, readBlueBubblesRuntimeState, touchBlueBubblesRuntimeHeartbeat, writeBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+    touchBlueBubblesRuntimeHeartbeat("slugger")
+    expect(fs.existsSync(getBlueBubblesRuntimeStatePath("slugger"))).toBe(false)
+
+    const state = { upstreamStatus: "ok" as const, detail: "upstream reachable; recovery pass running", lastCheckedAt: "2026-03-11T18:14:00.000Z", catchUpThrough: "2026-03-11T18:13:30.000Z", pendingRecoveryCount: 2 }
+    writeBlueBubblesRuntimeState("slugger", state)
+    const firstHeartbeat = readBlueBubblesRuntimeState("slugger").lastHeartbeatAt!
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(firstHeartbeat) + 30_000)
+    touchBlueBubblesRuntimeHeartbeat("slugger")
+    expect(readBlueBubblesRuntimeState("slugger")).toEqual(expect.objectContaining({ ...state, lastHeartbeatAt: new Date(Date.parse(firstHeartbeat) + 30_000).toISOString() }))
   })
 
   it("normalizes malformed state values and falls back to defaults when the file is missing", async () => {
@@ -79,6 +113,8 @@ describe("BlueBubbles runtime state", () => {
         upstreamStatus: "maybe",
         detail: "   ",
         lastCheckedAt: 42,
+        lastHeartbeatAt: 43,
+        catchUpThrough: 44,
         proofMethod: 99,
         pendingRecoveryCount: Number.NaN,
         oldestPendingRecoveryAt: 44,
@@ -97,6 +133,8 @@ describe("BlueBubbles runtime state", () => {
       upstreamStatus: "unknown",
       detail: "startup health probe pending",
       lastCheckedAt: undefined,
+      lastHeartbeatAt: undefined,
+      catchUpThrough: undefined,
       proofMethod: undefined,
       pendingRecoveryCount: 0,
       oldestPendingRecoveryAt: undefined,

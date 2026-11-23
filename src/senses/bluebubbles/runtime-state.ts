@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { writeJsonAtomicSync } from "../../heart/atomic-file"
 import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -7,6 +8,10 @@ export interface BlueBubblesRuntimeState {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  /** Stamped on every write, and on sync ticks a running pass skips: the listener's sync loop is alive. */
+  lastHeartbeatAt?: string
+  /** The start of the last sync whose catch-up finished; the next catch-up starts from here. Kept by writes that omit it. */
+  catchUpThrough?: string
   proofMethod?: string
   pendingRecoveryCount: number
   failedRecoveryCount?: number
@@ -52,6 +57,8 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
         ? parsed.detail
         : DEFAULT_RUNTIME_STATE.detail,
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      lastHeartbeatAt: typeof parsed.lastHeartbeatAt === "string" ? parsed.lastHeartbeatAt : undefined,
+      catchUpThrough: typeof parsed.catchUpThrough === "string" ? parsed.catchUpThrough : undefined,
       proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
         ? parsed.proofMethod
         : undefined,
@@ -90,8 +97,13 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
 export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubblesRuntimeState, agentRoot?: string): string {
   const filePath = getBlueBubblesRuntimeStatePath(agentName, agentRoot)
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + "\n", "utf-8")
+    const catchUpThrough = state.catchUpThrough ?? readBlueBubblesRuntimeState(agentName, agentRoot).catchUpThrough
+    // Replaced whole, so the daemon reading it mid-write never sees half a file.
+    writeJsonAtomicSync(filePath, {
+      ...state,
+      ...(catchUpThrough === undefined ? {} : { catchUpThrough }),
+      lastHeartbeatAt: new Date(Date.now()).toISOString(),
+    })
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -123,4 +135,10 @@ export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubbl
   })
 
   return filePath
+}
+
+/** Refresh the heartbeat of the state on disk, while a sync that has not written yet is still running. */
+export function touchBlueBubblesRuntimeHeartbeat(agentName: string, agentRoot?: string): void {
+  if (!fs.existsSync(getBlueBubblesRuntimeStatePath(agentName, agentRoot))) return
+  writeBlueBubblesRuntimeState(agentName, readBlueBubblesRuntimeState(agentName, agentRoot), agentRoot)
 }
