@@ -144,7 +144,7 @@ export interface MaterializedApprovalTerminal {
 }
 
 const APPROVAL_TERMINAL_TEXT: Partial<Record<ApprovalRecord["state"], string>> = {
-  denied: "approval denied by requester; the protected action was not executed",
+  denied: "approval-denied: approval denied by requester; the protected action was not executed",
   expired: "approval expired before execution; the protected action was not executed",
   drifted: "approval became invalid before execution; the protected action was not executed",
   abandoned_before_attempt: "approval was abandoned before execution; the protected action was not executed; request a fresh approval",
@@ -199,7 +199,9 @@ export function materializeApprovalTerminal(input: {
     : APPROVAL_TERMINAL_TEXT[input.record.state]
   if (!content) throw new Error(`approval state ${input.record.state} cannot be materialized`)
   const resumeProvider = input.record.state === "succeeded" || input.record.state === "failed" || input.record.state === "denied"
+  // A denial materialized before the stable code was added still counts as materialized.
   const exactPair = hasExactMaterializedApprovalPair(messages, input.checkpoint, input.record.toolCallId, content)
+    || (input.record.state === "denied" && hasExactMaterializedApprovalPair(messages, input.checkpoint, input.record.toolCallId, content.replace(/^approval-denied: /, "")))
   if (exactPair) {
     return {
       messages,

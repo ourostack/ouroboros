@@ -338,7 +338,7 @@ describe("approval decision and crash-safe execution", () => {
         currentSessionRevision: SUSPENDED_REVISION,
       })
       expect(terminal.messages.at(-1)).toEqual({
-        role: "tool", tool_call_id: draft.toolCallId, content: "approval denied by requester; the protected action was not executed",
+        role: "tool", tool_call_id: draft.toolCallId, content: "approval-denied: approval denied by requester; the protected action was not executed",
       })
     }
     fixture.approvalStore.close()
