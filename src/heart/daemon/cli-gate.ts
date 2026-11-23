@@ -14,9 +14,9 @@ const GLOBAL_VALUE_FLAGS = ["--why", "--why-file", "--agent"];
 // the CLI reads.
 export const PARSER_FLAGS: readonly string[] = [
   "--account", "--action", "--admission", "--agent", "--alert-file", "--allow-send", "--answers", "--api-key",
-  "--api-key-file", "--apply", "--args", "--await", "--backup", "--base-url", "--binding", "--cadence", "--card-url",
-  "--category", "--channel", "--clone", "--clone-path", "--component", "--context", "--cooldown-minutes",
-  "--credential-item", "--delegated", "--deployment", "--did", "--discover", "--dry-run", "--email", "--endpoint",
+  "--api-key-file", "--apply", "--args", "--await", "--backup", "--base-url", "--binding", "--cadence", "--cancelled", "--card-url",
+  "--category", "--channel", "--clone", "--clone-path", "--commit", "--component", "--context", "--cooldown-minutes",
+  "--credential-item", "--delegated", "--deployment", "--desk", "--did", "--discover", "--dry-run", "--email", "--endpoint",
   "--event", "--event-type", "--evidence", "--exit-code", "--expires", "--external-id", "--facing", "--file",
   "--fixture", "--follow", "--force", "--foreground", "--format", "--friend", "--friend-id", "--from", "--full",
   "--gateway", "--generate-unlock-secret", "--github-token", "--habit", "--help", "--home", "--host",
@@ -27,12 +27,12 @@ export const PARSER_FLAGS: readonly string[] = [
   "--native", "--no-chat", "--no-delegated-source", "--no-repair", "--no-send", "--no-wake", "--note",
   "--notify-session", "--oauth-token", "--observe-only", "--occasion", "--oom-score-adj", "--operation-id", "--out",
   "--output", "--output-file", "--owner-alone", "--owner-email", "--owner-name", "--participants", "--path",
-  "--payload", "--persist", "--port", "--prefix", "--print", "--priority", "--process", "--profile", "--provider",
+  "--payload", "--persist", "--port", "--pr", "--prefix", "--print", "--priority", "--process", "--profile", "--provider",
   "--public-field", "--public-url", "--question", "--reason", "--replay-output", "--repo-path", "--report",
   "--report-title", "--request-id", "--require-sense", "--reserve-mb", "--role", "--root", "--rotate-missing-mail-keys",
   "--run-id", "--scope", "--secret-field", "--secret-file", "--server", "--session", "--setup-token",
   "--silent-consent", "--since", "--socket", "--source", "--state", "--status", "--store", "--strict", "--summary",
-  "--surface", "--switch", "--task", "--template", "--text", "--title", "--to", "--tool", "--track", "--trigger",
+  "--surface", "--switch", "--task", "--template", "--text", "--title", "--to", "--tool", "--topic", "--track", "--trigger",
   "--trust", "--trust-gateway", "--ttl-minutes", "--type", "--uid", "--unattended", "--upstream", "--username",
   "--value", "--value-file", "--verify", "--version", "--web", "--which", "--workbench-mcp", "--yes"
 ];

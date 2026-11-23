@@ -157,7 +157,7 @@ export type OuroCliCommand =
   | { kind: "habit.probe"; agent: string; habitName: string; noSend: true; json: boolean }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
-  | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
+  | { kind: "desk"; agent?: string; desk?: string; tool: string; toolArgs: Record<string, unknown> }
   | { kind: "desk.admin"; action: "invite"; displayName?: string; accountId?: string; out?: string; gateway?: string; trustGateway?: true }
   | { kind: "desk.admin"; action: "access"; accountId: string; on: boolean; gateway?: string; trustGateway?: true }
   | { kind: "desk.admin"; action: "delete-account"; accountId: string; gateway?: string; trustGateway?: true }
