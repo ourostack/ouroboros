@@ -25,7 +25,7 @@ import {
   type SeenLedgerLike,
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
-import { MAX_MESSAGE_TEXT_CHARS, prepareMessage, type FriendStore, type MissionStore } from "@ouro.bot/friends"
+import { MAX_MESSAGE_TEXT_CHARS, prepareMessage, type ApprovalAnswer, type FriendStore, type MissionStore } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { A2AMessage, A2AMessagePart } from "./types"
 
@@ -105,11 +105,11 @@ function unreachableStore<T extends object>(name: string): T {
   return new Proxy({}, { get() { throw new Error(`sealed chat must not touch the ${name}`) } }) as T
 }
 
-/** Open a sealed chat message from an expected sender through `receiveShare`. */
-export async function openChatMessage(input: OpenChatMessageInput): Promise<OpenChatMessageResult> {
+/** Unseal and verify through `receiveShare`, pinned to the expected sender. Both openers below share this one path. */
+async function receiveSealedMessage(input: OpenChatMessageInput): ReturnType<typeof receiveShare> {
   const pinStore = new MemoryPinStore()
   pinOnFirstContact({ pinStore, fromAgentId: input.senderDid, did: input.senderDid, ed25519Pub: input.senderEd25519Pub })
-  const result = await receiveShare({
+  return receiveShare({
     sodium: input.sodium,
     store: unreachableStore<FriendStore>("friend store"),
     missionStore: unreachableStore<MissionStore>("mission store"),
@@ -129,6 +129,11 @@ export async function openChatMessage(input: OpenChatMessageInput): Promise<Open
     trustOfSource: "family",
     options: { rejectUnboundEnvelopes: true, ...(input.now !== undefined ? { now: input.now } : {}) },
   })
+}
+
+/** Open a sealed chat message from an expected sender through `receiveShare`. */
+export async function openChatMessage(input: OpenChatMessageInput): Promise<OpenChatMessageResult> {
+  const result = await receiveSealedMessage(input)
   if (result.state === "rejected") {
     emitNervesEvent({
       level: "warn",
@@ -153,4 +158,28 @@ export async function openChatMessage(input: OpenChatMessageInput): Promise<Open
     ...(result.message.conversationId !== undefined ? { conversationId: result.message.conversationId } : {}),
     issuedAt: result.message.issuedAt,
   }
+}
+
+export type OpenApprovalAnswerResult =
+  | { ok: true; approvalAnswer: ApprovalAnswer; envelopeBindingId: string; issuedAt: string }
+  | { ok: false; reason: string }
+
+/**
+ * Open a sealed approval answer from the expected sender. friends checks the signed field (deny only, a well-formed
+ * relay token, never with `onBehalfOf`, bound and at most 10 minutes old) and refuses it from a sender it can't
+ * verify. A sealed message without the field is refused here: only the field answers, never the text.
+ */
+export async function openApprovalAnswer(input: OpenChatMessageInput): Promise<OpenApprovalAnswerResult> {
+  const result = await receiveSealedMessage(input)
+  const refuse = (reason: string): OpenApprovalAnswerResult => {
+    emitNervesEvent({ level: "warn", component: "channels", event: "channel.a2a_approval_answer_refused", message: "refused a sealed approval answer", meta: { senderDid: input.senderDid, reason } })
+    return { ok: false, reason }
+  }
+  if (result.state === "rejected") return refuse(result.reason)
+  const answer = result.friendsKind === "message" ? result.message?.approvalAnswer : undefined
+  if (!answer) return refuse("not_an_approval_answer")
+  /* v8 ignore next -- rejectUnboundEnvelopes is forced on, so a completed receipt always has its binding id @preserve */
+  if (!result.bindingId) return refuse("unbound_approval_answer")
+  emitNervesEvent({ component: "channels", event: "channel.a2a_approval_answer_opened", message: "opened a verified approval answer", meta: { senderDid: input.senderDid } })
+  return { ok: true, approvalAnswer: { ...answer }, envelopeBindingId: result.bindingId, issuedAt: result.message!.issuedAt }
 }
