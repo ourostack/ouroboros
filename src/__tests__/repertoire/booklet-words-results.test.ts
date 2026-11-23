@@ -4,13 +4,14 @@ import ts from "typescript"
 import { describe, expect, it } from "vitest"
 import { bookletWordsIn } from "../../../scripts/ouro-census/cards.mts"
 
-// Spec R11.6: what a tool hands back (its results, rejections and the descriptions it serves) says what happened or what
-// the tool is for, not a rule for the agent reading it. The census reads cards; this reads the strings the census can't:
+// Spec R11.6: what a tool hands back (its results, rejections and the descriptions it serves), and the system prompt,
+// say what happened or how things are, not a rule for the agent reading it. The census reads cards; this reads the strings the census can't:
 // every string literal in these files, with the census's own booklet-word matcher.
 const ROOT = path.resolve(__dirname, "../../..")
 const FILES = [
   "deploy/unraid/sanctuary.ouro/mcp/media-mcp.mjs",
   "src/repertoire/mcp-write-guard.ts",
+  "src/mind/prompt.ts",
 ]
 
 /** Reviewed exceptions, each a file, a piece of the string and the word it may say. It only shrinks. */
