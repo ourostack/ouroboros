@@ -153,6 +153,24 @@ describe("the interview runner", () => {
     expect(records[1]).toMatchObject({ id: "X-2", status: "complete" })
   })
 
+  it("rewrites an arm's job and debrief with the kit's list for that arm, before the scan, and no other arm's or the final conversation", async () => {
+    const runCase = sandbox((arm) => ({ brand: arm === "ouro" }))
+    const asked: string[] = []
+    const kit = { ...X_KIT, replacements: (arm: string) => { asked.push(arm); return arm === "ouro" ? [{ pattern: /ouro/gi, with: "agent" }] : undefined } }
+    const { d, model, log } = deps(runCase, target(chooseOuro), { kits: { X: kit } })
+    const { records } = await runInterviews(args(), d)
+    const [record] = records as [SessionRecord]
+    expect(record).toMatchObject({ status: "complete", voidedBy: null })
+    expect(asked).toEqual(["ouro", "cli-shell", "mcp-plain"])
+    const sent = model.sent.map((request) => JSON.stringify(request.messages))
+    // The ouro arm's two job calls asked for "the ouro job"; the model was sent them rewritten.
+    expect(sent.filter((text) => text.includes("the agent job"))).toHaveLength(2)
+    expect(sent.some((text) => /ouro/i.test(text))).toBe(false)
+    // The debrief is still told from the job by the runner's own text, and counted as one.
+    expect(record.arms[0]).toMatchObject({ label: "T", arm: "ouro", jobCalls: 2, debriefCalls: 1 })
+    expect(log.map((line) => (JSON.parse(line) as { kind: string }).kind).slice(0, 3)).toEqual(["job", "job", "debrief"])
+  })
+
   it("ends a job conversation at its 13th call: the job does not pass, its note is empty, and the session goes on", async () => {
     const runCase = sandbox((arm) => (arm === "cli-shell" ? { jobCalls: 13 } : { debriefCalls: arm === "ouro" ? 3 : 1 }))
     const { d } = deps(runCase)
