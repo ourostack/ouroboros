@@ -149,7 +149,8 @@ export interface ApprovalStore {
   /**
    * Ari's answer relayed by his primary agent, checked by the caller (signature, sender, switch). Deny only: a relayed
    * approve is refused here whatever the caller passes. It needs the approval's own decision token, like a tap, but not
-   * the tap's Telegram binding, and records the relay as its own actor.
+   * the tap's Telegram binding, and records the relay as its own actor. The time is always the store's own clock, never
+   * the caller's or the envelope's, so a late answer can't be dated back inside the approval's window.
    */
   decideRelayed(input: {
     approvalId: string
@@ -157,7 +158,6 @@ export interface ApprovalStore {
     decision: "deny"
     senderDid: string
     envelopeBindingId: string
-    decisionAt?: number
   }): ApprovalRecord
   expire(input: { approvalId: string }): ApprovalRecord
   markAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord
@@ -861,8 +861,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         if ((input as { decision: unknown }).decision !== "deny") fail("relay_decision_not_allowed")
         if (!isNonEmpty(input.senderDid) || !isNonEmpty(input.envelopeBindingId)) fail("invalid_relay_decision")
         const previous = requireRecord(input.approvalId)
-        const decisionAt = input.decisionAt ?? now().getTime()
-        if (!Number.isSafeInteger(decisionAt)) fail("invalid_decision_time")
+        const decisionAt = now().getTime()
         if (!tokenMatches(input.decisionToken, previous.decisionTokenDigest)) fail("decision_binding_mismatch")
         if (previous.state === "denied" && previous.relayDecision?.envelopeBindingId === input.envelopeBindingId
           && previous.relayDecision.senderDid === input.senderDid) return previous

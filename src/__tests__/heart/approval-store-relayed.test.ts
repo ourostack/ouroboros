@@ -19,15 +19,19 @@ function open(now = NOW): ApprovalStore {
   return openApprovalStore({ databasePath: path.join(root, "approvals.sqlite"), now: () => new Date(now), randomUUID: () => UUID, randomBytes: (size) => Buffer.alloc(size, 0xab) })
 }
 
-function proposed(store: ApprovalStore) {
-  const prepared = store.prepare({
+function proposalInput() {
+  return {
     toolCallId: "call_restart_1", toolName: "shell", arguments: { command: "docker restart calibre-web" },
     schemaDigest: "a".repeat(64), toolDigest: "b".repeat(64), policyDigest: "c".repeat(64), policyId: "shell.docker-lifecycle.v1",
     sessionKey: "telegram:chat-7", sessionPath: "/tmp/disposable-agent/session.json", baseSessionRevision: "d".repeat(64),
     checkpointDigest: "e".repeat(64), requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7",
     expiresAt: EXPIRES,
-    frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ id: "call_restart_1", type: "function", function: { name: "shell", arguments: "{}" } }] },
-  })
+    frozenAssistantMessage: { role: "assistant" as const, content: null, tool_calls: [{ id: "call_restart_1", type: "function" as const, function: { name: "shell", arguments: "{}" } }] },
+  }
+}
+
+function proposed(store: ApprovalStore) {
+  const prepared = store.prepare(proposalInput())
   store.activate({ approvalId: UUID, checkpointDigest: prepared.record.checkpointDigest, suspendedSessionRevision: "f".repeat(64) })
   store.bindPrompt({ approvalId: UUID, transport: "telegram", transportChatId: "7", transportMessageId: "99" })
   return prepared.decisionToken
@@ -86,19 +90,34 @@ describe("decideRelayed", () => {
     expect(code(() => store.decideRelayed(relayed(token, overrides) as never))).toBe("invalid_relay_decision")
   })
 
-  it("expires an approval whose time is up instead of denying it", () => {
-    const store = open()
+  it("expires an approval whose time is up instead of denying it, by the store's own clock", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-approval-relayed-"))
+    roots.push(root)
+    let clock = Date.parse(NOW)
+    const store = openApprovalStore({ databasePath: path.join(root, "approvals.sqlite"), now: () => new Date(clock), randomUUID: () => UUID, randomBytes: (size) => Buffer.alloc(size, 0xab) })
     const token = proposed(store)
-    const record = store.decideRelayed(relayed(token, { decisionAt: Date.parse(EXPIRES) }))
+    clock = Date.parse(EXPIRES) + 60_000
+    // A caller can't date a late answer back inside the window: decideRelayed takes no time at all.
+    const record = store.decideRelayed({ ...relayed(token), decisionAt: Date.parse(NOW) } as never)
     expect(record.state).toBe("expired")
     expect(record.relayDecision).toBeUndefined()
     expect(code(() => store.decideRelayed(relayed(token)))).toBe("decision_not_eligible")
   })
 
-  it("refuses a bad decision time on a proposed approval", () => {
-    const store = open()
-    const token = proposed(store)
-    expect(code(() => store.decideRelayed(relayed(token, { decisionAt: 1.5 })))).toBe("invalid_decision_time")
+  it("won't decide one approval with another's decision token", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-approval-relayed-"))
+    roots.push(root)
+    const ids = [UUID, "22222222-2222-4222-8222-222222222222"]
+    let next = 0
+    let byte = 0
+    const store = openApprovalStore({ databasePath: path.join(root, "approvals.sqlite"), now: () => new Date(NOW), randomUUID: () => ids[next++]!, randomBytes: (size) => Buffer.alloc(size, ++byte) })
+    const tokenA = proposed(store)
+    const prepared = store.prepare({ ...proposalInput(), toolCallId: "call_restart_2" })
+    store.activate({ approvalId: ids[1]!, checkpointDigest: prepared.record.checkpointDigest, suspendedSessionRevision: "f".repeat(64) })
+    store.bindPrompt({ approvalId: ids[1]!, transport: "telegram", transportChatId: "7", transportMessageId: "100" })
+    expect(prepared.decisionToken).not.toBe(tokenA)
+    expect(code(() => store.decideRelayed(relayed(prepared.decisionToken)))).toBe("decision_binding_mismatch")
+    expect(store.read(UUID)?.state).toBe("proposed")
   })
 
   it("refuses an approval a tap already decided", () => {
@@ -110,6 +129,15 @@ describe("decideRelayed", () => {
     const approvedToken = proposed(approved)
     approved.decide({ approvalId: UUID, decisionToken: approvedToken, decision: "approve", requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7", transportMessageId: "99", sessionKey: "telegram:chat-7", ownerId: "worker-a" })
     expect(code(() => approved.decideRelayed(relayed(approvedToken)))).toBe("decision_not_eligible")
+  })
+
+  it("leaves a later tap nothing to change: approve is refused and deny returns the relayed record", () => {
+    const store = open()
+    const token = proposed(store)
+    const record = store.decideRelayed(relayed(token))
+    const tap = (decision: "approve" | "deny") => ({ approvalId: UUID, decisionToken: token, decision, requesterId: "friend-ari", transport: "telegram", transportUserId: "42", transportChatId: "7", transportMessageId: "99", sessionKey: "telegram:chat-7", ownerId: "worker-a" })
+    expect(code(() => store.decide(tap("approve")))).toBe("decision_not_eligible")
+    expect(store.decide(tap("deny"))).toEqual(record)
   })
 
   it("refuses an unknown approval", () => {
