@@ -34,7 +34,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
-import type { ProviderRuntime, RunAgentOptions } from "../../heart/core"
+import type { ProviderRuntime, ProviderTurnRequest, RunAgentOptions } from "../../heart/core"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
 import { saveSession } from "../../mind/context"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -123,14 +123,19 @@ export function recordModelTraffic(inner: ProviderRuntime, timeline: TelegramTur
  */
 export function withSystemLine(inner: ProviderRuntime, line: string): ProviderRuntime {
   const add = (text: string): string => text ? `${text}\n\n${line}` : line
+  const withLine = (messages: ProviderTurnRequest["messages"]): ProviderTurnRequest["messages"] =>
+    messages.map((message, index) => index === 0 && message.role === "system" && typeof message.content === "string" ? { ...message, content: add(message.content) } : message)
   const streamTurn: ProviderRuntime["streamTurn"] = (request) => inner.streamTurn({
     ...request,
-    messages: request.messages.map((message, index) => index === 0 && message.role === "system" && typeof message.content === "string" ? { ...message, content: add(message.content) } : message),
+    messages: withLine(request.messages),
     ...(request.systemPrompt ? { systemPrompt: { ...request.systemPrompt, volatile: add(request.systemPrompt.volatile) } } : {}),
   })
+  // A Responses-API runtime builds its instructions from the messages it was reset with, so those carry the line too.
+  const resetTurnState: ProviderRuntime["resetTurnState"] = (messages) => inner.resetTurnState(withLine(messages))
   return new Proxy(inner, {
     get(target, property) {
       if (property === "streamTurn") return streamTurn
+      if (property === "resetTurnState") return resetTurnState
       const value: unknown = Reflect.get(target, property)
       return typeof value === "function" ? value.bind(target) : value
     },

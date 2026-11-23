@@ -230,6 +230,18 @@ describe("runTelegramTurn", () => {
 })
 
 describe("withSystemLine", () => {
+  it("adds the line to the messages a Responses-style runtime rebuilds its instructions from at reset, once", async () => {
+    // Such a runtime builds its body from the messages it was last reset with, not from the request (core resets
+    // it with its own messages at the start of every user turn).
+    let resetWith: unknown[] = []
+    const inner = { ...scriptedRuntime([], []), resetTurnState: (messages: unknown[]) => { resetWith = messages } }
+    const wrapped = withSystemLine(inner, "L")
+    wrapped.resetTurnState([{ role: "system", content: "base" }, { role: "user", content: "u" }])
+    expect(resetWith).toEqual([{ role: "system", content: "base\n\nL" }, { role: "user", content: "u" }])
+    wrapped.resetTurnState([{ role: "user", content: "no system" }])
+    expect(resetWith).toEqual([{ role: "user", content: "no system" }])
+  })
+
   it("adds the line to an empty prompt as the whole prompt, leaves a first message that is not the system text alone, and keeps the runtime's own fields", async () => {
     const seen: ProviderTurnRequest[] = []
     const inner = scriptedRuntime([{ name: "settle", arguments: {} }, { name: "settle", arguments: {} }], seen)
