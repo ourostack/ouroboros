@@ -12,6 +12,8 @@ export interface ProcessTreeTargets {
   groups: number[]
   /** Processes of the tree that sit in a group led from outside it (the worker itself, in the daemon's group). */
   pids: number[]
+  /** Every process of the tree and its group when the table was read, to tell later whether a pid is still ours. */
+  members: ProcessRow[]
 }
 
 /** The process table, from `ps`. Empty when it cannot be read. */
@@ -39,7 +41,7 @@ export function sendSignal(pid: number, signal: NodeJS.Signals): void {
  * never named: as a group, -1 means every process and 0 the caller's own group.
  */
 export function processTreeTargets(rootPid: number, rows: ProcessRow[]): ProcessTreeTargets {
-  if (rootPid <= 1) return { groups: [], pids: [] }
+  if (rootPid <= 1) return { groups: [], pids: [], members: [] }
   const tree = new Set<number>([rootPid])
   let grew = true
   while (grew) {
@@ -60,7 +62,28 @@ export function processTreeTargets(rootPid: number, rows: ProcessRow[]): Process
     if (pgid > 1 && tree.has(pgid)) groups.add(pgid)
     else pids.push(pid)
   }
-  return { groups: [...groups].sort((a, b) => a - b), pids: pids.sort((a, b) => a - b) }
+  return {
+    groups: [...groups].sort((a, b) => a - b),
+    pids: pids.sort((a, b) => a - b),
+    members: rows.filter((row) => tree.has(row.pid)),
+  }
+}
+
+/**
+ * The targets that are still what they were, from a fresh read of the table, so a later pass never signals a pid or
+ * group the system has since handed to something else. A group counts while it holds a member's child (git forks ssh
+ * after the first read), or a member that launchd took over when its parent died. A process counts while it keeps its
+ * group and its parent is a member or launchd. A pid reused within the grace by a child of launchd would still pass;
+ * macOS hands out pids in order, so that needs the whole pid range to wrap in about a second.
+ */
+export function targetsStillInTree(targets: ProcessTreeTargets, rows: ProcessRow[]): ProcessTreeTargets {
+  const memberPids = new Set(targets.members.map((member) => member.pid))
+  const groupOf = new Map(targets.members.map((member) => [member.pid, member.pgid]))
+  const stillOurs = (row: ProcessRow): boolean => memberPids.has(row.ppid) || (row.ppid === 1 && memberPids.has(row.pid))
+  const groups = targets.groups.filter((group) => rows.some((row) => row.pgid === group && stillOurs(row)))
+  const pids = targets.pids.filter((pid) =>
+    rows.some((row) => row.pid === pid && row.pgid === groupOf.get(pid) && (row.ppid === 1 || memberPids.has(row.ppid))))
+  return { groups, pids, members: targets.members }
 }
 
 /**

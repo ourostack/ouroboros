@@ -1515,17 +1515,53 @@ describe("daemon process manager", () => {
     await Promise.resolve()
     expect(listProcesses).not.toHaveBeenCalled()
     timers[0]?.cb()
-    await stop
+    let stopped = false
+    void stop.then(() => { stopped = true })
+    await new Promise((resolve) => setImmediate(resolve))
 
     // SIGTERM first, so a child that relays signals (sudo, to the ssh it runs) can pass it on; SIGKILL after a grace.
     expect(hung.kill).toHaveBeenLastCalledWith("SIGKILL")
     expect(killProcess.mock.calls).toEqual([[-200, "SIGTERM"], [300, "SIGTERM"]])
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "daemon.agent_stop_reaped_children", meta: expect.objectContaining({ pid: 111, groups: 1, processes: 1 }) }))
+    // The stop is not over until the SIGKILL pass has run, so a daemon exiting or a replacement starting can't race it.
+    expect(stopped).toBe(false)
     const grace = timers.find((timer) => timer.delay === 1_000)
     expect(grace).toBeDefined()
     grace!.cb()
+    await stop
     expect(killProcess.mock.calls.slice(2)).toEqual([[-200, "SIGKILL"], [300, "SIGKILL"]])
+    // The table is read again before SIGKILL, so only what is still the worker's is signalled.
+    expect(listProcesses).toHaveBeenCalledTimes(2)
     events.mockRestore()
+  })
+
+  it("sends the grace SIGKILL only to what is still the worker's when the table is read again", async () => {
+    const hung = new MockChild()
+    hung.pid = 111
+    hung.kill.mockImplementation((signal?: string) => {
+      if (signal === "SIGKILL") hung.emit("exit", null, "SIGKILL")
+      return true
+    })
+    spawn.mockReturnValue(hung)
+    now.mockReturnValue(1_000)
+    const before = [
+      { pid: 111, ppid: 100, pgid: 100 },
+      { pid: 200, ppid: 111, pgid: 200 },
+      { pid: 300, ppid: 111, pgid: 100 },
+    ]
+    // After SIGTERM both exited, and the system handed 300 to an unrelated process.
+    const after = [{ pid: 300, ppid: 1, pgid: 300 }]
+    const listProcesses = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce(after)
+    const killProcess = vi.fn()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, stopTimeoutMs: 25, listProcesses, killProcess })
+    await manager.startAgent("slugger")
+    const stop = manager.stopAgent("slugger")
+    await Promise.resolve()
+    timers[0]?.cb()
+    timers.find((timer) => timer.delay === 1_000)!.cb()
+    await stop
+
+    expect(killProcess.mock.calls).toEqual([[-200, "SIGTERM"], [300, "SIGTERM"]])
   })
 
   it("does not signal real processes for workers a test spawned, unless told to", async () => {
@@ -1543,8 +1579,8 @@ describe("daemon process manager", () => {
     const stop = manager.stopAgent("slugger")
     await Promise.resolve()
     timers[0]?.cb()
-    await stop
     timers.find((timer) => timer.delay === 50)!.cb()
+    await stop
     expect(realKill).not.toHaveBeenCalled()
     realKill.mockRestore()
   })

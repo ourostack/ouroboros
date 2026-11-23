@@ -3,7 +3,7 @@ import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { killProcessTree, listProcesses, processTreeTargets, sendSignal, type ProcessRow } from "./process-tree"
+import { killProcessTree, listProcesses, processTreeTargets, sendSignal, targetsStillInTree, type ProcessRow } from "./process-tree"
 import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig, RuntimeCredentialItemKind } from "../runtime-credentials"
 import type { ProviderCredentialRecord } from "../provider-credentials"
 
@@ -610,7 +610,25 @@ export class DaemonProcessManager {
     const child = state.process
     const childPid = child.pid ?? null
     const childPidLabel = childPid === null ? "unknown" : String(childPid)
-    await new Promise<void>((resolve, reject) => {
+    // Set when what the worker started is being reaped: the stop is not over until its SIGKILL pass has run, so a
+    // daemon that exits right after stopping, or a replacement starting at once, never races what is left.
+    let reaping: Promise<void> | null = null
+    try {
+      await this.signalWorkerToStop(agent, state, child, childPid, childPidLabel, (pass) => { reaping = pass })
+    } finally {
+      if (reaping) await reaping
+    }
+  }
+
+  private signalWorkerToStop(
+    agent: string,
+    state: AgentRuntimeState,
+    child: ChildProcess,
+    childPid: number | null,
+    childPidLabel: string,
+    onReaping: (pass: Promise<void>) => void,
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
       let settled = false
       let timeout: unknown | null = null
       const finish = (error?: Error): void => {
@@ -702,7 +720,13 @@ export class DaemonProcessManager {
               message: "sent SIGTERM to what the stuck worker started, and SIGKILL after a grace, so none of it outlives the worker",
               meta: { agent, pid: childPid, groups: reaped.groups, processes: reaped.processes, graceMs: this.reapGraceMs },
             })
-            this.setTimeoutFn(() => { killProcessTree(tree, childPid!, this.killProcessFn, "SIGKILL") }, this.reapGraceMs)
+            onReaping(new Promise<void>((done) => {
+              this.setTimeoutFn(() => {
+                // Only what is still the worker's: a pid or group freed since the first read may belong to anyone.
+                killProcessTree(targetsStillInTree(tree, this.listProcessesFn()), childPid!, this.killProcessFn, "SIGKILL")
+                done()
+              }, this.reapGraceMs)
+            }))
           }
         }
         emitNervesEvent({

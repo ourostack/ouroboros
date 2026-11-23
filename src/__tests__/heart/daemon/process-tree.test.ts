@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { describe, expect, it, vi } from "vitest"
-import { killProcessTree, listProcesses, processTreeTargets, sendSignal, type ProcessRow } from "../../../heart/daemon/process-tree"
+import { killProcessTree, listProcesses, processTreeTargets, sendSignal, targetsStillInTree, type ProcessRow } from "../../../heart/daemon/process-tree"
 
 // The daemon (100) runs a worker (111) in its own group. The worker started sync's git detached (200), which ran
 // ssh (201) in git's group, and a helper (300) in the daemon's group. 400 is unrelated.
@@ -15,23 +15,56 @@ const table: ProcessRow[] = [
 
 describe("processTreeTargets", () => {
   it("kills the groups the worker's tree leads whole, and the rest of the tree one by one, never the daemon's group", () => {
-    expect(processTreeTargets(111, table)).toEqual({ groups: [200], pids: [111, 300] })
+    expect(processTreeTargets(111, table)).toMatchObject({ groups: [200], pids: [111, 300] })
   })
 
   it("still names the worker when the process table could not be read", () => {
-    expect(processTreeTargets(111, [])).toEqual({ groups: [], pids: [111] })
+    expect(processTreeTargets(111, [])).toMatchObject({ groups: [], pids: [111] })
   })
 
   it("lists several groups and processes in pid order", () => {
     const wider = [...table, { pid: 150, ppid: 111, pgid: 150 }, { pid: 120, ppid: 111, pgid: 100 }]
-    expect(processTreeTargets(111, wider)).toEqual({ groups: [150, 200], pids: [111, 120, 300] })
+    expect(processTreeTargets(111, wider)).toMatchObject({ groups: [150, 200], pids: [111, 120, 300] })
   })
 
   it("never names init, every process (-1) or the caller's group (0)", () => {
-    expect(processTreeTargets(1, table)).toEqual({ groups: [], pids: [] })
-    expect(processTreeTargets(0, table)).toEqual({ groups: [], pids: [] })
+    expect(processTreeTargets(1, table)).toEqual({ groups: [], pids: [], members: [] })
+    expect(processTreeTargets(0, table)).toEqual({ groups: [], pids: [], members: [] })
     // A table that claims a tree member leads group 1 or 0 still never yields a group kill of it.
-    expect(processTreeTargets(111, [{ pid: 111, ppid: 100, pgid: 100 }, { pid: 1, ppid: 111, pgid: 1 }, { pid: 0, ppid: 111, pgid: 0 }])).toEqual({ groups: [], pids: [111] })
+    expect(processTreeTargets(111, [{ pid: 111, ppid: 100, pgid: 100 }, { pid: 1, ppid: 111, pgid: 1 }, { pid: 0, ppid: 111, pgid: 0 }])).toMatchObject({ groups: [], pids: [111] })
+  })
+})
+
+describe("targetsStillInTree", () => {
+  const targets = processTreeTargets(111, table)
+
+  it("records the tree's members with their groups", () => {
+    expect(targets.members.map((row) => row.pid).sort((a, b) => a - b)).toEqual([111, 200, 201, 300])
+  })
+
+  it("keeps what is still the worker's: a group with a member or a member's child in it, a process with its group whose parent is a member or launchd", () => {
+    const now: ProcessRow[] = [
+      { pid: 202, ppid: 201, pgid: 200 },
+      { pid: 300, ppid: 1, pgid: 100 },
+    ]
+    expect(targetsStillInTree(targets, now)).toMatchObject({ groups: [200], pids: [300] })
+    // The group's leader itself, taken over by launchd once the worker died.
+    expect(targetsStillInTree(targets, [{ pid: 200, ppid: 1, pgid: 200 }])).toMatchObject({ groups: [200] })
+  })
+
+  it("drops a pid or group the system has since handed to something else", () => {
+    const now: ProcessRow[] = [
+      { pid: 200, ppid: 50, pgid: 200 },
+      { pid: 300, ppid: 1, pgid: 300 },
+      { pid: 111, ppid: 50, pgid: 100 },
+    ]
+    // 200 leads a group of that number again, but as a new process started by something outside the tree; 300 is in
+    // another group now.
+    expect(targetsStillInTree(targets, now)).toMatchObject({ groups: [], pids: [] })
+  })
+
+  it("keeps nothing when the table could not be read again", () => {
+    expect(targetsStillInTree(targets, [])).toMatchObject({ groups: [], pids: [] })
   })
 })
 
@@ -40,7 +73,7 @@ describe("killProcessTree", () => {
     const kill = vi.fn((pid: number) => {
       if (pid === 300) throw Object.assign(new Error("no such process"), { code: "ESRCH" })
     })
-    expect(killProcessTree({ groups: [200, 500], pids: [111, 300] }, 111, kill, "SIGKILL")).toEqual({ groups: 2, processes: 0 })
+    expect(killProcessTree({ groups: [200, 500], pids: [111, 300], members: [] }, 111, kill, "SIGKILL")).toEqual({ groups: 2, processes: 0 })
     expect(kill.mock.calls).toEqual([[-200, "SIGKILL"], [-500, "SIGKILL"], [300, "SIGKILL"]])
   })
 
@@ -48,7 +81,7 @@ describe("killProcessTree", () => {
     const kill = vi.fn((pid: number) => {
       if (pid === -500) throw Object.assign(new Error("no such process"), { code: "ESRCH" })
     })
-    expect(killProcessTree({ groups: [200, 500], pids: [111, 300] }, 111, kill, "SIGTERM")).toEqual({ groups: 1, processes: 1 })
+    expect(killProcessTree({ groups: [200, 500], pids: [111, 300], members: [] }, 111, kill, "SIGTERM")).toEqual({ groups: 1, processes: 1 })
     expect(kill.mock.calls).toEqual([[-200, "SIGTERM"], [-500, "SIGTERM"], [300, "SIGTERM"]])
   })
 })
