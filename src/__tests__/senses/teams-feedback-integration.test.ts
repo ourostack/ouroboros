@@ -12,6 +12,9 @@ import { appendReturn, type ReturnRecord } from "../../senses/shepherd/returns"
 import { EventEmitter } from "node:events"
 import { createHash } from "node:crypto"
 import { checkErrorContext, type PerTestEvent } from "../../nerves/coverage/audit-rules"
+import { readInboundOutcome, type InboundJournal } from "../../senses/inbound-journal"
+import { openTeamsInboundJournal, type TeamsInboundPayload } from "../../senses/teams-inbound"
+import { turnSpoke } from "../../senses/turn-attempts"
 
 const state = vi.hoisted(() => ({
   root: "", handlers: new Map<string, (ctx: any) => Promise<void>>(), run: vi.fn(), handlerLogFailures: 0,
@@ -20,6 +23,8 @@ const state = vi.hoisted(() => ({
   processActivity: undefined as ((body: unknown) => Promise<unknown>) | undefined,
   sdkAcceptances: [] as Array<{ activityId: string; conversationId: string; outgoingId: string }>,
   sdkLostAck: false,
+  /** How long a fixture SDK send takes, so sends nothing waits on are still in flight when the turn returns. */
+  sdkSendDelayMs: 0,
   sdkRealTransport: false,
   sdkTransportLostAckOnce: false,
   sdkTypingRejectAt: 0,
@@ -62,6 +67,7 @@ vi.mock("@microsoft/teams.apps", async original => {
         }),
         send: async (value: unknown, ref: { activityId: string; conversation: { id: string } }) => {
           if ((value as { type?: string }).type === "typing") return { id: "fixture-typing" }
+          if (state.sdkSendDelayMs) await new Promise(resolve => setTimeout(resolve, state.sdkSendDelayMs))
           const outgoingId = `sdk-accepted-${state.sdkAcceptances.length + 1}`
           state.sdkAcceptances.push({ activityId: ref.activityId, conversationId: ref.conversation.id, outgoingId })
           if (state.sdkLostAck) throw new Error("fixture lost acknowledgement after acceptance")
@@ -183,6 +189,7 @@ beforeEach(async () => {
   state.requestEvents = []
   state.sdkAcceptances = []
   state.sdkLostAck = false
+  state.sdkSendDelayMs = 0
   state.sdkRealTransport = false
   state.sdkTransportLostAckOnce = false
   state.sdkTypingRejectAt = 0
@@ -452,7 +459,9 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(state.sdkAcceptances).toHaveLength(2)
   })
 
-  it("holds an admission left before execution without claiming that it answered", async () => {
+  // A message admitted before Teams kept a journal has no record of what went out, so it is held, never guessed at.
+  // One admitted since is answered or recorded as failed by the next start (see "Teams messages whose turn never finished").
+  it("holds an admission with no journal entry without claiming that it answered", async () => {
     const body = sdkActivity("The previous process stopped before executing this.")
     const { admitSessionActivity } = await import("../../mind/session-transaction")
     admitSessionActivity(path.join(state.root, "sessions", "owner", "private-chat.json"), {
@@ -469,6 +478,7 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
     expect(state.requestEvents.some(event => event.meta?.stage === "replied")).toBe(false)
     expect(fs.existsSync(path.join(state.root, "sessions", "owner", "private-chat.json"))).toBe(false)
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
   })
 
   it.each([undefined, "sent-b"])("holds duplicate SDK activity before busy steering or quoted queue (%s)", async quote => {
@@ -505,6 +515,11 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     const body = sdkActivity("Do this once even if the acknowledgement is lost.")
     await state.processActivity!(structuredClone(body))
     expect(state.sdkAcceptances).toHaveLength(1)
+    // The send was noted before it went out, so the message is recorded as failed rather than left to replay.
+    const [outcome] = fs.readdirSync(path.join(state.root, "state", "senses", "teams", "inbound-outcomes"))
+      .map(file => JSON.parse(fs.readFileSync(path.join(state.root, "state", "senses", "teams", "inbound-outcomes", file), "utf8")))
+    expect(outcome).toMatchObject({ outcome: "failed", detail: expect.stringContaining("fixture lost acknowledgement after acceptance") })
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
     vi.resetModules()
     const { startTeamsApp } = await import("../../senses/teams")
     startTeamsApp()
@@ -867,5 +882,362 @@ describe("actual Teams feedback adapter and leased pipeline", () => {
     expect(state.run).toHaveBeenCalledTimes(4)
     expect(state.run.mock.calls[3][4].toolContext.currentShepherdSurface?.id).toBe(sourceA)
     expect(JSON.stringify(later.send.mock.calls)).toContain("Clarification recorded.")
+  })
+})
+
+// A message a dead process admitted but never answered is answered by the next process, or recorded as failed when
+// part of its reply already went out or its tries are used up. A reply that went out is never sent again.
+describe("Teams messages whose turn never finished", () => {
+  const sessionFile = () => path.join(state.root, "sessions", "owner", "private-chat.json")
+
+  /** The state a process leaves when it dies mid-turn: the admission, and a journal entry with one attempt counted. */
+  async function leaveUnfinishedTurn(
+    body: ReturnType<typeof sdkActivity>,
+    options: { label?: string; after?: (journal: InboundJournal<TeamsInboundPayload>, id: string) => void } = {},
+  ): Promise<string> {
+    const { admitSessionActivity } = await import("../../mind/session-transaction")
+    const { receiptId } = admitSessionActivity(sessionFile(), {
+      namespace: JSON.stringify(["teams.message", "msteams", "fake-app", "tenant", "aad-owner", "private-chat"]),
+      activityId: body.id,
+      payloadDigest: createHash("sha256").update(JSON.stringify([body.text, null])).digest("hex"),
+    })
+    const journal = openTeamsInboundJournal(state.root)
+    journal.record(receiptId, {
+      label: options.label ?? "primary", activityId: body.id, conversationId: "private-chat", text: body.text,
+      userId: "aad-owner", aadObjectId: "aad-owner", tenantId: "tenant", displayName: "aad-owner", channelId: "msteams",
+    })
+    journal.beginAttempt(receiptId)
+    options.after?.(journal, receiptId)
+    return receiptId
+  }
+
+  async function restart(): Promise<void> {
+    vi.resetModules()
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+  }
+
+  const outcomeFiles = () => fs.readdirSync(path.join(state.root, "state", "senses", "teams", "inbound-outcomes"))
+    .map(file => JSON.parse(fs.readFileSync(path.join(state.root, "state", "senses", "teams", "inbound-outcomes", file), "utf8")))
+
+  it("writes an admitted message to the journal, with its attempt counted, before its turn runs", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      entered.resolve()
+      await release.promise
+      messages.push({ role: "assistant", content: "Done." })
+      callbacks.onTextChunk("Done.")
+      return { outcome: "settled" }
+    })
+    const body = sdkActivity("Remember this if you crash.")
+    const running = state.processActivity!(structuredClone(body))
+    await entered.promise
+    const [pending] = openTeamsInboundJournal(state.root).pending()
+    expect(pending).toMatchObject({ attempts: 1, spoke: false, payload: {
+      label: "primary", activityId: body.id, conversationId: "private-chat", text: body.text,
+      userId: "aad-owner", aadObjectId: "aad-owner", tenantId: "tenant", channelId: "msteams",
+    } })
+    release.resolve()
+    await running
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+    expect(readInboundOutcome(state.root, "teams", pending!.id)).toMatchObject({ outcome: "answered", attempts: 1 })
+  })
+
+  it("answers a message a dead process admitted but never answered, once, with a proactive send", async () => {
+    const body = sdkActivity("The previous process stopped before answering this.")
+    const id = await leaveUnfinishedTurn(body)
+    // The person is not there to sign in, so a replayed turn that needs a sign-in sends no card for it.
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: "AUTH_REQUIRED:graph" })
+      callbacks.onTextChunk("Clarification recorded.")
+      return { outcome: "settled" }
+    })
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({ outcome: "answered", attempts: 2 }))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.run.mock.calls[0][4].toolContext.currentUserMessage).toBe(body.text)
+    expect(state.sdkAcceptances).toEqual([expect.objectContaining({ conversationId: "private-chat" })])
+    // Teams' own redelivery of it is held, not run a second time.
+    await expect(state.processActivity!(structuredClone(body))).resolves.toMatchObject({ status: 200 })
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ meta: expect.objectContaining({ stage: "duplicate_held", outcome: "not_replayed" }) }))
+  })
+
+  it("records a message whose turn died after part of its reply went out as failed, and never runs it again", async () => {
+    const body = sdkActivity("Part of this answer already reached me.")
+    const id = await leaveUnfinishedTurn(body, { after: (journal, inbound) => {
+      journal.markSpoke(inbound, turnSpoke("speak", "Working on it.", null, Date.parse("2026-11-22T10:00:00.000Z")))
+    } })
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({
+      outcome: "failed", detail: "the turn stopped after 1 send (speak at 2026-11-22T10:00:00.000Z) went out, so it is not run again",
+    }))
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ event: "senses.teams_inbound_not_replayed" }))
+  })
+
+  it("records a message whose turns keep dying as failed once its tries are used up, and leaves the other bot's messages to it", async () => {
+    const secondary = sdkActivity("The secondary bot received this one.")
+    const secondaryId = await leaveUnfinishedTurn(secondary, { label: "secondary" })
+    const body = sdkActivity("Every turn for this one died.")
+    const id = await leaveUnfinishedTurn(body, { after: (journal, inbound) => {
+      journal.beginAttempt(inbound)
+      journal.beginAttempt(inbound)
+    } })
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({
+      outcome: "failed", attempts: 3, detail: "the turn did not finish in 3 attempts",
+    }))
+    expect(state.run).not.toHaveBeenCalled()
+    expect(openTeamsInboundJournal(state.root).get(secondaryId)).toMatchObject({ attempts: 1 })
+  })
+
+  const asRoot = process.getuid?.() === 0
+
+  it.skipIf(asRoot)("keeps the message for the next start when its failure cannot be recorded", async () => {
+    const body = sdkActivity("Recording this outcome will fail.")
+    const id = await leaveUnfinishedTurn(body, { after: (journal, inbound) => journal.markSpoke(inbound, turnSpoke("speak", "Partial.")) })
+    const outcomes = path.join(state.root, "state", "senses", "teams", "inbound-outcomes")
+    fs.chmodSync(outcomes, 0o500)
+    try {
+      await restart()
+      await vi.waitFor(() => expect(state.requestEvents).toContainEqual(expect.objectContaining({
+        level: "error", event: "senses.teams_inbound_replay_failed", meta: expect.objectContaining({ label: "primary" }),
+      })))
+    } finally { fs.chmodSync(outcomes, 0o700) }
+    expect(openTeamsInboundJournal(state.root).get(id)).toMatchObject({ spoke: true })
+    expect(state.run).not.toHaveBeenCalled()
+  })
+
+  it("records a turn that threw as failed, and one with nothing to say as answered by Teams' fallback reply", async () => {
+    state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
+    state.run.mockRejectedValueOnce(new Error("fixture provider failure"))
+    await state.processActivity!(sdkActivity("Say nothing."))
+    // The fallback reply reached Teams.
+    expect(state.sdkAcceptances).toHaveLength(1)
+    await state.processActivity!(sdkActivity("This turn throws."))
+    expect(outcomeFiles().map(({ outcome, detail }) => ({ outcome, detail })).sort((a, b) => a.outcome.localeCompare(b.outcome))).toEqual([
+      { outcome: "answered", detail: undefined },
+      { outcome: "failed", detail: "the turn failed: fixture provider failure" },
+    ])
+  })
+
+  it.skipIf(asRoot)("keeps a thrown turn for the next start when its failure cannot be recorded", async () => {
+    const outcomes = path.join(state.root, "state", "senses", "teams", "inbound-outcomes")
+    state.run.mockImplementationOnce(async () => {
+      fs.chmodSync(outcomes, 0o500)
+      throw new Error("fixture provider failure")
+    })
+    try {
+      await state.processActivity!(sdkActivity("Nothing records this."))
+    } finally { fs.chmodSync(outcomes, 0o700) }
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ level: "error", event: "senses.teams_inbound_settle_failed" }))
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([expect.objectContaining({ attempts: 1, spoke: false })])
+  })
+
+  it("records a message the busy conversation could not take as failed", async () => {
+    const { acquireSessionTurnLease } = await import("../../mind/session-transaction")
+    const held = await acquireSessionTurnLease(sessionFile())
+    try {
+      await state.processActivity!(sdkActivity("The conversation is busy."))
+    } finally { await held.release() }
+    expect(state.run).not.toHaveBeenCalled()
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: "the conversation was busy finishing another turn" })])
+  }, 20_000)
+
+  it("notes a tool that messages a person before it runs, so a crash after it is never replayed", async () => {
+    let during: unknown
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      callbacks.onToolStart("send_message", { friendId: "owner", channel: "teams", content: "the build is out" })
+      callbacks.onToolDispatch?.("send_message")
+      during = openTeamsInboundJournal(state.root).pending()
+      messages.push({ role: "assistant", content: "Sent." })
+      callbacks.onTextChunk("Sent.")
+      return { outcome: "settled" }
+    })
+    await state.processActivity!(sdkActivity("Tell them the build is out."))
+    expect(during).toEqual([expect.objectContaining({ spoke: true, spokeRecords: [expect.objectContaining({ kind: "tool:send_message" })] })])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" })])
+  })
+
+  it("records a slash command's reply as its answer", async () => {
+    await state.processActivity!(sdkActivity("/commands"))
+    expect(state.run).not.toHaveBeenCalled()
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" })])
+  })
+
+  it("settles a message the running turn took in as steering with that turn", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let drained: unknown[] = []
+    state.run.mockImplementationOnce(async (_messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      drained = options.drainSteeringFollowUps!()
+      callbacks.onTextChunk("One answer for both.")
+      return { outcome: "settled" }
+    })
+    const running = state.handlers.get("message")!(activity("hello"))
+    await entered.promise
+    await state.handlers.get("message")!(activity("one more thing"))
+    release.resolve()
+    await running
+    expect(drained).toEqual([{ text: "one more thing", effect: "none" }])
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" }), expect.objectContaining({ outcome: "answered" })])
+  })
+
+  it("settles a message a reaction turn took in as steering, so it is never replayed", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (_messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      options.drainSteeringFollowUps!()
+      callbacks.onTextChunk("Noted.")
+      return { outcome: "settled" }
+    })
+    const reaction = activity("")
+    const running = state.handlers.get("messageReaction")!({ ...reaction, activity: { ...reaction.activity, reactionsAdded: [{ type: "like" }] } })
+    await entered.promise
+    await state.handlers.get("message")!(activity("and another thing"))
+    release.resolve()
+    await running
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered", attempts: 1 })])
+  })
+
+  it("records a message a reaction turn took in and answered with nothing as silent", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (_messages, _callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      options.drainSteeringFollowUps!()
+      return { outcome: "settled" }
+    })
+    const reaction = activity("")
+    const running = state.handlers.get("messageReaction")!({ ...reaction, activity: { ...reaction.activity, reactionsAdded: [{ type: "like" }] } })
+    await entered.promise
+    await state.handlers.get("message")!(activity("never mind"))
+    release.resolve()
+    await running
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "silent" })])
+  })
+
+  it("waits for a reply still in flight before recording the outcome", async () => {
+    state.sdkSendDelayMs = 50
+    state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
+    await state.processActivity!(sdkActivity("Say nothing; the fallback reply is slow."))
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered" })])
+  })
+
+  it("answers a replayed message that only starts with a slash, or names a command Teams does not handle", async () => {
+    const path = await leaveUnfinishedTurn(sdkActivity("/Users/ari/report.pdf what is in this?"))
+    const cliOnly = await leaveUnfinishedTurn(sdkActivity("/help me with the report"))
+    state.run.mockImplementation(async (messages, callbacks: ChannelCallbacks) => {
+      messages.push({ role: "assistant", content: "A report." })
+      callbacks.onTextChunk("A report.")
+      return { outcome: "settled" }
+    })
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", cliOnly)).toMatchObject({ outcome: "answered" }))
+    expect(readInboundOutcome(state.root, "teams", path)).toMatchObject({ outcome: "answered" })
+    expect(state.run).toHaveBeenCalledTimes(2)
+  })
+
+  it("records a turn whose only reply Teams never confirmed as failed", async () => {
+    state.sdkLostAck = true
+    state.sdkSendDelayMs = 50
+    state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
+    await state.processActivity!(sdkActivity("Say nothing, and the fallback send fails."))
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: "Teams confirmed no reply; failed sends: 1" })])
+  })
+
+  it("records a /new that fails while a turn holds the session as failed, and never replays it", async () => {
+    const { acquireSessionTurnLease } = await import("../../mind/session-transaction")
+    const held = await acquireSessionTurnLease(sessionFile())
+    try {
+      await expect(state.processActivity!(sdkActivity("/new"))).resolves.toBeDefined()
+    } finally { await held.release() }
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: expect.stringMatching(/^the turn failed: /) })])
+  })
+
+  it("records a command a dead process left as failed instead of running it as an ordinary turn", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("/new"))
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({
+      outcome: "failed", detail: "a command is not run again after a restart",
+    }))
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+  })
+
+  it.skipIf(asRoot)("still answers an admitted message whose journal entry cannot be written", async () => {
+    const pendingDir = path.join(state.root, "state", "senses", "teams", "pending-inbound")
+    fs.mkdirSync(pendingDir, { recursive: true })
+    fs.chmodSync(pendingDir, 0o500)
+    try {
+      await state.processActivity!(sdkActivity("The disk is full."))
+    } finally { fs.chmodSync(pendingDir, 0o700) }
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ level: "error", event: "senses.teams_inbound_record_failed" }))
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+  })
+
+  it("does not run a replayed message again once another turn recorded its outcome", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("Replay me only once."))
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      entered.resolve()
+      await release.promise
+      messages.push({ role: "assistant", content: "Done." })
+      callbacks.onTextChunk("Done.")
+      return { outcome: "settled" }
+    })
+    // A live turn in the same conversation runs first, so the replay waits behind it.
+    const running = state.handlers.get("message")!(activity("a live message first"))
+    await entered.promise
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    // Another process records the replayed message's outcome while the replay waits.
+    openTeamsInboundJournal(state.root).settle(id, "answered", "answered elsewhere")
+    release.resolve()
+    await running
+    await vi.waitFor(() => expect(outcomeFiles()).toHaveLength(2))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({ outcome: "answered", detail: "answered elsewhere" })
+  })
+
+  it("leaves a replayed message for a later start when another process is running a turn in its conversation", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("Another process is busy here."))
+    const { acquireSessionTurnLease } = await import("../../mind/session-transaction")
+    const held = await acquireSessionTurnLease(sessionFile())
+    try {
+      await restart()
+      await vi.waitFor(() => expect(state.requestEvents).toContainEqual(expect.objectContaining({ event: "senses.teams_inbound_replay_deferred" })), { timeout: 15_000 })
+    } finally { await held.release() }
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    expect(openTeamsInboundJournal(state.root).get(id)).toMatchObject({ attempts: 1, spoke: false })
+  }, 20_000)
+
+  it("notes a sign-in before it can send the person a card", async () => {
+    let during: unknown
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      await options.toolContext!.signin!("graph")
+      during = openTeamsInboundJournal(state.root).pending()
+      messages.push({ role: "assistant", content: "Signed in." })
+      callbacks.onTextChunk("Signed in.")
+      return { outcome: "settled" }
+    })
+    await state.processActivity!(sdkActivity("Check my calendar."))
+    expect(during).toEqual([expect.objectContaining({ spoke: true, spokeRecords: [expect.objectContaining({ kind: "signin", textHash: null })] })])
   })
 })

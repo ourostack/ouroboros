@@ -1,0 +1,2 @@
+- iMessage and A2A keep each message's turn attempts and what already went out on disk, so a crash or restart no longer resets the try limit or replays a turn into sending something a second time. A message whose earlier turn already sent part of its reply, or ran a tool that messages someone, gets a recorded outcome instead of a replay. A message whose turn keeps dying or failing gets a recorded outcome after three attempts; a clean shutdown or a budget deferral does not use one up.
+- Each mid-turn iMessage now has its own outbound record (`bbout_*`), like the final reply.
