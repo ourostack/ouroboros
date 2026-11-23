@@ -3,6 +3,7 @@ import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { killProcessTree, listProcesses, processTreeTargets, sendSignal, targetsStillInTree, type ProcessRow } from "./process-tree"
 import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig, RuntimeCredentialItemKind } from "../runtime-credentials"
 import type { ProviderCredentialRecord } from "../provider-credentials"
 
@@ -74,6 +75,14 @@ export interface DaemonProcessManagerOptions {
    *  failed. */
   killTimeoutMs?: number
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
+  /** The process table, read before a worker is sent SIGKILL to find what it started. Defaults to `ps`; when `spawn`
+   *  is injected the workers are not real processes, so it defaults to an empty table. */
+  listProcesses?: () => ProcessRow[]
+  /** Sends a signal to a process, or to a process group when the pid is negative. Defaults to `process.kill`; when
+   *  `spawn` is injected it defaults to doing nothing, so fake worker pids can never reach real processes. */
+  killProcess?: (pid: number, signal: NodeJS.Signals) => void
+  /** How long what a SIGKILLed worker started gets between SIGTERM and SIGKILL. Default 1s. */
+  reapGraceMs?: number
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
@@ -162,6 +171,9 @@ export class DaemonProcessManager {
   private readonly initialBackoffMs: number
   private readonly maxBackoffMs: number
   private readonly spawnFn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
+  private readonly listProcessesFn: () => ProcessRow[]
+  private readonly killProcessFn: (pid: number, signal: NodeJS.Signals) => void
+  private readonly reapGraceMs: number
   private readonly now: () => number
   private readonly setTimeoutFn: (cb: () => void, delay: number) => unknown
   private readonly clearTimeoutFn: (timer: unknown) => void
@@ -258,6 +270,9 @@ export class DaemonProcessManager {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 4_000
     this.killTimeoutMs = options.killTimeoutMs ?? 2_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
+    this.listProcessesFn = options.listProcesses ?? (options.spawn ? () => [] : listProcesses)
+    this.killProcessFn = options.killProcess ?? (options.spawn ? () => {} : sendSignal)
+    this.reapGraceMs = options.reapGraceMs ?? 1_000
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
@@ -595,7 +610,25 @@ export class DaemonProcessManager {
     const child = state.process
     const childPid = child.pid ?? null
     const childPidLabel = childPid === null ? "unknown" : String(childPid)
-    await new Promise<void>((resolve, reject) => {
+    // Set when what the worker started is being reaped: the stop is not over until its SIGKILL pass has run, so a
+    // daemon that exits right after stopping, or a replacement starting at once, never races what is left.
+    let reaping: Promise<void> | null = null
+    try {
+      await this.signalWorkerToStop(agent, state, child, childPid, childPidLabel, (pass) => { reaping = pass })
+    } finally {
+      if (reaping) await reaping
+    }
+  }
+
+  private signalWorkerToStop(
+    agent: string,
+    state: AgentRuntimeState,
+    child: ChildProcess,
+    childPid: number | null,
+    childPidLabel: string,
+    onReaping: (pass: Promise<void>) => void,
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
       let settled = false
       let timeout: unknown | null = null
       const finish = (error?: Error): void => {
@@ -666,11 +699,35 @@ export class DaemonProcessManager {
         if (settled) return
         // A worker stuck past its own shutdown grace (a turn that never ends, a blocked event loop) would otherwise
         // stay alive with no replacement. SIGKILL ends it; the replacement replays whatever it left pending.
+        // Read what the worker started before it dies: once it is gone its children belong to launchd, and sync's
+        // detached git groups (with their ssh) would outlive it.
+        const tree = childPid === null ? null : processTreeTargets(childPid, this.listProcessesFn())
         let killAccepted = false
         try {
           killAccepted = child.kill("SIGKILL")
         } catch {
           killAccepted = false
+        }
+        if (killAccepted && tree) {
+          // SIGTERM first: a child that relays signals (sudo, to the ssh it runs) can only pass that one on. Whatever
+          // is still there after the grace gets SIGKILL.
+          const reaped = killProcessTree(tree, childPid!, this.killProcessFn, "SIGTERM")
+          if (reaped.groups + reaped.processes > 0) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.agent_stop_reaped_children",
+              message: "sent SIGTERM to what the stuck worker started, and SIGKILL after a grace, so none of it outlives the worker",
+              meta: { agent, pid: childPid, groups: reaped.groups, processes: reaped.processes, graceMs: this.reapGraceMs },
+            })
+            onReaping(new Promise<void>((done) => {
+              this.setTimeoutFn(() => {
+                // Only what is still the worker's: a pid or group freed since the first read may belong to anyone.
+                killProcessTree(targetsStillInTree(tree, this.listProcessesFn()), childPid!, this.killProcessFn, "SIGKILL")
+                done()
+              }, this.reapGraceMs)
+            }))
+          }
         }
         emitNervesEvent({
           level: "warn",

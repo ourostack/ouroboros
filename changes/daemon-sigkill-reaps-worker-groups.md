@@ -1,0 +1,1 @@
+- When the daemon has to SIGKILL a stuck worker, what that worker started goes too: sync's detached git commands and their ssh get SIGTERM, then SIGKILL after a second, so none of it runs on beside the replacement.

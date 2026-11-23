@@ -142,6 +142,8 @@ export interface WalkerOptions {
   handlers?: string[];
   /** argv-entries: entry modules another walker covers, each with the parser source it must import. */
   claims?: { entry: string; parser: string }[];
+  /** declared-tools: the server's name under agent.json's `mcpServers`, which prefixes the tool names an agent sees. */
+  server?: string;
   /** tool-schemas: functions that build tools from a connected server's list, as `<file>#<function>`. */
   passthrough?: string[];
   /** tool-schemas: functions that decide approval apart from a tool's policy, as `<file>#<function>`. */
