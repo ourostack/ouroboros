@@ -13,7 +13,11 @@ import { loadOrMintA2AIdentityFile, type A2AIdentity } from "../../a2a/identity"
 import { createTelegramSenseApp } from "../../senses/telegram"
 import { createA2AOwnerRoute, OWNER_ROUTE_FALLBACK_PREFIX } from "../../senses/telegram-owner-route"
 import { FileTelegramUpdateInboxStore, type TelegramLongPollOptions } from "../../senses/telegram-client"
+import { APPROVAL_RELAY_FILE } from "../../a2a/approval-relay"
+import { operatorTrustDir } from "../../a2a/operator-trust"
+import type { OwnerRouteItem } from "../../senses/telegram-owner-route"
 
+const CARD_URL_FOR_RELAY = "https://slugger.example/.well-known/agent-card.json"
 const PROFILES = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
 
 let sodium: Sodium
@@ -121,5 +125,51 @@ describe("approval cards go to the primary agent over A2A first", () => {
     const [card] = telegram.cards().filter((body) => body.chat_id === "42")
     expect(card).toMatchObject({ disable_notification: true })
     expect(String(card!.text).startsWith(OWNER_ROUTE_FALLBACK_PREFIX)).toBe(false)
+  })
+
+  it("hands the route a relay request for a tool approval while the relay switch names the route's peer, and none once it's off", async () => {
+    const bundle = createTmpBundle({ agentName: `relay-${Math.random().toString(36).slice(2, 8)}` })
+    cleanups.push(() => bundle.cleanup())
+    const peerDid = "did:key:z6MkSyntheticSluggerRoute"
+    const config = JSON.parse(fs.readFileSync(bundle.agentConfigPath, "utf8"))
+    // A Sanctuary agent.json must set its habit budget, as the deployed one does.
+    config.habitPaidTurnsPerDay = 24
+    config.senses = { ...config.senses, telegram: { ...config.senses?.telegram, enabled: true, ownerNoticesTo: { cardUrl: CARD_URL_FOR_RELAY, did: peerDid } } }
+    fs.writeFileSync(bundle.agentConfigPath, JSON.stringify(config))
+    const trust = operatorTrustDir(bundle.agentRoot)
+    fs.mkdirSync(trust, { recursive: true, mode: 0o755 })
+    const switchFile = path.join(trust, APPROVAL_RELAY_FILE)
+    fs.writeFileSync(switchFile, JSON.stringify({ schemaVersion: 1, did: peerDid, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), approveTools: [], source: "synthetic test switch" }), { mode: 0o644 })
+    cleanups.push(() => fs.rmSync(trust, { recursive: true, force: true }))
+
+    const routed: OwnerRouteItem[] = []
+    const relayToken = "r".repeat(43)
+    const approvalRelayRequest = vi.fn(() => ({ relayToken, prompt: "Restart calibre-web?", expiresAt: Date.now() + 300_000 }))
+    let effects!: { sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number> }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary", credentials: { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43), _agentRoot: bundle.agentRoot, _toolContext: {} as never,
+      migrateIdentity: async () => undefined, api: fakeTelegram().api, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
+      ownerRoute: async (item) => { routed.push(item); return { status: "delivered" } },
+      _createApprovalRuntime: ((input: { effects: typeof effects }) => {
+        effects = input.effects
+        return {
+          transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []), approvalRelayRequest },
+          coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+        }
+      }) as never,
+    })
+    cleanups.push(() => app.stop())
+    const buttons = [[{ text: "Approve", callbackData: "a:1" }, { text: "Deny", callbackData: "d:1" }]]
+
+    await effects.sendCard({ idempotencyKey: "approval:restart-1:prompt", chatId: "42", text: "Restart calibre-web?", buttons })
+    expect(approvalRelayRequest).toHaveBeenCalledWith({ approvalId: "restart-1", routeDid: peerDid })
+    expect(routed[0]!.approvalRequest).toEqual({ relayToken, code: expect.stringMatching(/^[A-HJ-NP-Z2-9]{4}$/u), actionLine: "Restart calibre-web?", decisions: ["deny"], expiresAt: expect.any(String) })
+
+    fs.rmSync(switchFile)
+    await effects.sendCard({ idempotencyKey: "approval:restart-2:prompt", chatId: "42", text: "Restart sonarr?", buttons })
+    expect(routed[1]).not.toHaveProperty("approvalRequest")
+    expect(approvalRelayRequest).toHaveBeenCalledTimes(1)
   })
 })

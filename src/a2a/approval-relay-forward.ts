@@ -19,8 +19,10 @@ export function approvalRelaySocketPath(agentRoot: string): string {
 export const RELAY_REPLY = /^(denied|already_decided|expired|not_pending|refused:[a-z0-9_]{1,64})$/
 export const RELAY_UNAVAILABLE = "refused:relay_unavailable"
 /**
- * The Telegram process took the answer but didn't reply in time, usually because a tap holds the approval's lock. The
- * deny may still land, so this is not a refusal: the sender should tell Ari to check the card.
+ * The answer reached the Telegram process, which didn't reply: it took too long (usually a tap holds the approval's lock)
+ * or closed without a word (say the card edit failed after the deny was written). The deny may have landed or may still
+ * land, so this is not a refusal: the sender should tell Ari to check the card. A door at its connection limit also
+ * closes without a word; "check the card" is still true then.
  */
 export const RELAY_TIMED_OUT = "timed_out"
 /** The one reply for a sender that isn't the owner route's peer, so nobody else learns how the relay is set up. */
@@ -58,8 +60,10 @@ export async function forwardApprovalAnswer(input: { socketPath: string; message
       try { parsed = (JSON.parse(data.slice(0, newline)) as { reply?: unknown }).reply } catch { parsed = undefined }
       finish(typeof parsed === "string" && RELAY_REPLY.test(parsed) ? parsed : RELAY_UNAVAILABLE)
     })
-    socket.on("close", () => finish(RELAY_UNAVAILABLE))
-    socket.on("error", () => finish(RELAY_UNAVAILABLE))
+    // Once the answer is sent, a connection that ends without a reply leaves its outcome unknown, not refused.
+    const ended = (): void => finish(sent ? RELAY_TIMED_OUT : RELAY_UNAVAILABLE)
+    socket.on("close", ended)
+    socket.on("error", ended)
   })
   emitNervesEvent({
     ...(reply === RELAY_UNAVAILABLE || reply === RELAY_TIMED_OUT ? { level: "warn" as const } : {}),

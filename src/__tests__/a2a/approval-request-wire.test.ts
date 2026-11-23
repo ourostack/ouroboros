@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 import { didKeyIdentityFromEd25519, parseDidKey, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 
 import {
@@ -205,6 +205,19 @@ describe("sendSealedApprovalRequest", () => {
     await sendSealedApprovalRequest({ cardUrl, peerDid: slugger.did, payload: payload(), identity: butler, sodium, fetchImpl: fake.fetchImpl })
     opened = await openApprovalRequest({ sodium, self: slugger, message: fake.received[0]!, senderDid: butler.did, senderEd25519Pub: pub(butler) })
     expect(opened).toMatchObject({ ok: true, payload: payload() })
+  })
+
+  it("uses the global fetch and loads sodium itself when the caller passes neither", async () => {
+    const butler = mint()
+    const slugger = mint()
+    const fake = peer(slugger, butler, () => fake.sealedReply(APPROVAL_REQUEST_ACCEPTED))
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(fake.fetchImpl)
+    try {
+      await sendSealedApprovalRequest({ cardUrl, peerDid: slugger.did, payload: payload(), identity: butler })
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 
   it("refuses a card that serves another DID, sending nothing", async () => {
