@@ -16,6 +16,12 @@ concurrency:
   # Every merge keeps its own run, so a busy hour never drops a version's image.
   queue: max
 
+# bash -eo pipefail, so a step that pipes a command into tee or grep fails when the command does (GitHub's default
+# shell has no pipefail: a failing release preflight piped into tee passed).
+defaults:
+  run:
+    shell: bash
+
 env:
   IMAGE: ghcr.io/ourostack/ouroboros-butler
 
