@@ -87,6 +87,27 @@ describe("the neutral loop", () => {
     expect((await runConversation({ runtime: raw, product: "X", system: "s", prefix: [], userTexts: ["job"], arm })).turns[0]!.outcome).toBe("provider-error: plain")
   })
 
+  it("ends a user turn at a call whose answer ends it, after running every call in that answer, and sends the next turn", async () => {
+    const finishing: Arm = {
+      ...arm,
+      call: async (name, args) => name === "finish"
+        ? (args === "bad" ? { text: "summary is required", isError: true, ends: true } : { text: `Finished: ${args} with ouro`, isError: false, ends: true })
+        : { text: `${name} ran`, isError: false },
+    }
+    const model = scripted([
+      { calls: [{ name: "finish", arguments: "bad" }] },
+      { calls: [{ name: "finish", arguments: "built" }, { name: "look", arguments: "{}" }] },
+      { content: "6\nGood." },
+    ])
+    const conversation = await runConversation({ runtime: model, product: "U", system: "s", prefix: [], userTexts: ["job", "debrief"], arm: finishing })
+    expect(conversation.turns).toEqual([{ start: 0, finalReply: "Finished: built with kit", outcome: "settled", calls: 2 }, { start: 3, finalReply: "6\nGood.", outcome: "settled", calls: 1 }])
+    expect(conversation.timeline.map((entry) => entry.kind === "call" ? entry.result : entry.text)).toEqual(["Error: summary is required", "Finished: built with kit", "look ran", "6\nGood."])
+    expect(model.requests).toHaveLength(3)
+    // The debrief follows a complete exchange: every call of the ending answer has its result.
+    expect(model.requests[2]!.messages.slice(-4).map((m) => m.role)).toEqual(["assistant", "tool", "tool", "user"])
+    expect(model.outputs).toHaveLength(3)
+  })
+
   it("streams nothing", () => {
     for (const callback of Object.values(NO_CALLBACKS)) expect((callback as (...args: unknown[]) => unknown)()).toBeUndefined()
   })
@@ -131,6 +152,47 @@ describe("the interview guest", () => {
     expect(model.requests[0]!.messages[0]).toEqual({ role: "system", content: "Soul of Butler.\n\nYour tools for this job are tool interface J." })
     await new Promise((resolve) => setImmediate(resolve))
     expect(received.at(-1)).toMatchObject({ type: "done", outcome: { ok: true } })
+  })
+
+  it("builds the arm from the product's builder and answers with the arm's own grade once the conversation has ended", async () => {
+    const turnFile = path.join(root, "turn.json")
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "U", arm: "a", labelLine: "The component kit for this job is component kit Q.", prefix: [], userText: "job", followUps: ["debrief"] }))
+    const order: string[] = []
+    const built: Arm = {
+      key: "u", tools: [], operationOf: () => null,
+      call: async () => ({ text: "x", isError: false }),
+      grade: async () => { order.push("grade"); return { typecheck: true } },
+    }
+    const model = scripted([{ content: "done" }, { content: "5\nfine" }])
+    const original = model.streamTurn
+    model.streamTurn = async (request) => { order.push("call"); return original(request) }
+    const { stdin, stdout } = wire(model)
+    const outcome = await runInterviewGuest({ stdin, stdout, turnFile, bundle: root, builders: { U: (arm, context) => { expect([arm, context.bundle]).toEqual(["a", root]); return built } } })
+    expect(outcome).toMatchObject({ ok: true, result: { finalReply: "done", grade: { typecheck: true } } })
+    expect(order).toEqual(["call", "call", "grade"])
+  })
+
+  it("answers a grader's failure as the grade, keeping the conversation", async () => {
+    const turnFile = path.join(root, "turn.json")
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "U", arm: "a", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const built: Arm = { key: "u", tools: [], operationOf: () => null, call: async () => ({ text: "x", isError: false }), grade: async () => { throw new Error("the checker crashed") } }
+    const { stdin, stdout } = wire(scripted([{ content: "done" }]))
+    expect(await runInterviewGuest({ stdin, stdout, turnFile, bundle: root, builders: { U: () => built } })).toMatchObject({ ok: true, result: { finalReply: "done", grade: { error: "the checker crashed" } } })
+  })
+
+  it("answers with no grade from an arm that has none, and refuses a product with no arms in the guest", async () => {
+    const turnFile = path.join(root, "turn.json")
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "X", arm: "mcp-plain", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const core = async () => ({ code: 0, json: { ok: true }, output: "" })
+    const plain = wire(scripted([{ content: "done" }]))
+    const outcome = await runInterviewGuest({ stdin: plain.stdin, stdout: plain.stdout, turnFile, bundle: root, core })
+    expect(outcome.ok && Object.keys(outcome.result as object)).toEqual(["timeline", "finalReply", "outcome", "turns"])
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "H", arm: "codex", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const none = wire(scripted([]))
+    expect(await runInterviewGuest({ stdin: none.stdin, stdout: none.stdout, turnFile, bundle: root })).toEqual({ ok: false, error: "no arms for product H in the guest" })
+    fs.writeFileSync(turnFile, JSON.stringify({ product: "toString", arm: "a", labelLine: "l", prefix: [], userText: "job", followUps: [] }))
+    const inherited = wire(scripted([]))
+    expect(await runInterviewGuest({ stdin: inherited.stdin, stdout: inherited.stdout, turnFile, bundle: root })).toEqual({ ok: false, error: "no arms for product toString in the guest" })
   })
 
   it.each([

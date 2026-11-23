@@ -21,13 +21,22 @@ import { OPERATIONS, argvOf, type Operation, type OperationInput, type Param } f
 
 export type JsonSchema = Record<string, unknown>
 export type ArmTool = { name: string; description: string; parameters: JsonSchema }
-export type ToolAnswer = { text: string; isError: boolean }
+/**
+ * A tool's answer. `ends` marks a call that ends the user turn (a product's `finish` tool): the loop sends the
+ * answer back as the call's result and makes no further model call in that turn, whose final reply is `text`.
+ */
+export type ToolAnswer = { text: string; isError: boolean; ends?: true }
 export type Arm = {
   key: string
   tools: ArmTool[]
   call(name: string, args: string): Promise<ToolAnswer>
   /** The operation a call ran and its input, so the host can write it as the books command line; null when it ran none. */
   operationOf(name: string, args: string): { op: Operation; input: OperationInput } | null
+  /**
+   * A product's own grading in the guest, once the conversation has ended (a product scored on what was built in the
+   * container, not on the household); its answer goes back to the host as the guest result's `grade`.
+   */
+  grade?(): Promise<unknown>
 }
 
 export const X_ARMS = ["ouro", "mcp-plain", "cli-shell"] as const

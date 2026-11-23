@@ -3,7 +3,8 @@
  * turn, so the harness favours no arm. It sends the system prompt, the conversation and the arm's tools; runs every
  * tool call the model makes, in order, and sends the results back; and ends a user turn when the model answers with
  * no tool call. One conversation can have several user turns (the job, then its debrief), each starting after the
- * last ended. A provider error, including a call the host refused, ends the whole conversation: no later turn is sent.
+ * last ended. A tool answer marked `ends` (a product's `finish` tool) also ends the user turn, with the answer as its
+ * final reply. A provider error, including a call the host refused, ends the whole conversation: no later turn is sent.
  *
  * A failed tool call's result starts `Error: ` in every arm. Every text the arm puts in front of the model (tool names,
  * descriptions, schemas and results) and the system prompt are brand-scrubbed here; the host scans every request again before it is sent. Reasoning the model returns inline (`<think>`) is not
@@ -90,18 +91,26 @@ export async function runConversation(input: {
         timeline.push({ kind: "reply", text: content })
         break
       }
+      let ended: string | null = null
       for (const call of result.toolCalls) {
         let answer: string
         try {
           const reply = await input.arm.call(call.name, call.arguments)
           // A failed call is marked the same way in every arm, as an MCP client shows `isError`.
           answer = scrub(reply.isError ? `Error: ${reply.text}` : reply.text)
+          if (reply.ends && !reply.isError && ended === null) ended = answer
         } catch (error) {
           answer = scrub(`error: ${messageOf(error)}`)
         }
         timeline.push({ kind: "call", name: call.name, args: call.arguments, result: answer })
         messages.push({ role: "tool", tool_call_id: call.id, content: answer })
         input.runtime.appendToolOutput(call.id, answer)
+      }
+      // A call that ends the turn (a `finish` tool) ends it here, with no further model call; every call in the same
+      // answer has run and has its result, so a later turn follows a complete exchange.
+      if (ended !== null) {
+        turn.finalReply = ended
+        break
       }
     }
   }
