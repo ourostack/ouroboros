@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { describe, expect, it, vi } from "vitest"
+import * as nerves from "../../../nerves/runtime"
 import { killProcessTree, listProcesses, processTreeTargets, sendSignal, targetsStillInTree, type ProcessRow } from "../../../heart/daemon/process-tree"
 
 // The daemon (100) runs a worker (111) in its own group. The worker started sync's git detached (200), which ran
@@ -102,12 +103,20 @@ describe("listProcesses", () => {
     expect(rows).toContainEqual({ pid: process.pid, ppid: process.ppid, pgid: expect.any(Number) })
   })
 
-  it("reads nothing when ps cannot run", () => {
+  it("reads nothing when ps cannot run, and says so", () => {
     const path = process.env.PATH
+    const emit = vi.spyOn(nerves, "emitNervesEvent")
     process.env.PATH = ""
     try {
       expect(listProcesses()).toEqual([])
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.process_table_unreadable",
+        meta: expect.objectContaining({ error: expect.any(String) }),
+      }))
     } finally {
+      emit.mockRestore()
       if (path === undefined) delete process.env.PATH
       else process.env.PATH = path
     }

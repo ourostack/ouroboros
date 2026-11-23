@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface ProcessRow {
   pid: number
@@ -21,7 +22,14 @@ export function listProcesses(): ProcessRow[] {
   let output: string
   try {
     output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], { encoding: "utf-8", timeout: 2_000, killSignal: "SIGKILL" })
-  } catch {
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.process_table_unreadable",
+      message: "could not read the process table, so what a stopped worker started is not reaped",
+      meta: { error: String(error) },
+    })
     return []
   }
   return output.split("\n").flatMap((line) => {
