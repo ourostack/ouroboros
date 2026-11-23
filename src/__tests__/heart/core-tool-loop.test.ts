@@ -2389,7 +2389,7 @@ describe("runAgent tool loop guard", () => {
         expect(view.manager.callTool).not.toHaveBeenCalled()
         expect(propose).toHaveBeenCalledOnce()
         expect(propose).toHaveBeenCalledWith(expect.objectContaining({
-          policyId: "mcp.declared-consequential.v1", actionClass: "mcp.declared_consequential", arguments: { item: "milk" },
+          policyId: "mcp.declared.consequential.v1", actionClass: "mcp.shop.share_list", arguments: { item: "milk" },
         }))
       })
 

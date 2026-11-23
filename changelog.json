@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1387",
       "changes": [
-        "A bundle's MCP tool declared consequential in its tools.json now asks the person before it runs, through the same approval the harness's own consequential tools use; declined, it answers that nothing ran, and where no one can be asked it doesn't run."
+        "Declared consequential MCP tools now wait for the person's approval before they run (#1694)."
       ]
     },
     {

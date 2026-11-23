@@ -9,7 +9,7 @@ import type { ToolDefinition, ToolDoorCard, ToolResultImage } from "./tools-base
 import { emitNervesEvent } from "../nerves/runtime"
 import { digestJson } from "./tool-arguments"
 import { guardMcpArgs } from "./mcp-write-guard"
-import { DECLARED_CONSEQUENTIAL_APPROVAL, declaredRiskProfile, type DeclaredTool } from "./mcp-declared-tools"
+import { declaredRiskProfile, type DeclaredTool } from "./mcp-declared-tools"
 
 export class McpCallRejectedError extends Error {
   constructor(message: string) {
@@ -119,8 +119,10 @@ export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
             risk: "high" as const,
             reason: "MCP tools may mutate external systems",
           },
-        // A declared consequential tool asks the person first, as the harness's own consequential tools do.
-        ...(declared?.ax.effect === "consequential" ? { approvalPolicy: () => DECLARED_CONSEQUENTIAL_APPROVAL } : {}),
+        // A declared consequential tool waits for the person's approval, like the harness's own consequential tools.
+        ...(declared?.ax.effect === "consequential"
+          ? { approvalPolicy: () => ({ kind: "required" as const, policyId: "mcp.declared.consequential.v1", actionClass: `mcp.${entry.server}.${tool.name}`, requiresSoleCall: true as const }) }
+          : {}),
         handler: async (args, ctx): Promise<string> => {
           if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
             emitNervesEvent({
