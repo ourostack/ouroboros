@@ -451,6 +451,13 @@ describe("butler-ship orchestrator", () => {
     expect(h.calls.some((c) => c.includes(" upgrade ") || c.includes(" run >"))).toBe(false)
   })
 
+  it("finds eval containers by their ouro.eval label as well as by the old ouro-eval- names", async () => {
+    const { EVAL_CONTAINERS_PROBE } = await lib()
+    expect(EVAL_CONTAINERS_PROBE).toBe("docker ps --filter label=ouro.eval=1 --format '{{.Names}}' && docker ps --filter name=^ouro-eval- --format '{{.Names}}'")
+    const h = await harness({ ssh: (cmd) => (cmd.includes("label=ouro.eval=1") ? ok("eval-sandbox-0a1b2c3d-agent\n") : (undefined as unknown as Res)) })
+    await expect(h.run()).rejects.toThrow(/eval containers are running on sanctuary before the gate \(eval-sandbox-0a1b2c3d-agent\)/)
+  })
+
   it("checks again right before the upgrade, because an eval can start during the gate", async () => {
     let probes = 0
     const h = await harness({ ssh: (cmd) => (cmd.includes("name=^ouro-eval-") ? (probes++ === 0 ? ok() : ok("ouro-eval-1daaed8f-household\n")) : (undefined as unknown as Res)) })
