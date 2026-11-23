@@ -6,13 +6,12 @@
 //     nerves capture on. DIR gets blob/blob-i-N.json, files.json (the split)
 //     and capture/*.ndjson.
 //   static
-//     Lint, the changelog gate, and the mailbox-ui typecheck and tests. CI runs
-//     it beside the shards, so none of it sits on the pull request's critical
-//     path after they finish.
+//     Lint and the changelog gate. CI runs it beside the shards, so none of it
+//     sits on the pull request's critical path after they finish.
 //   merge --shards DIR --count N [--static-checked]
 //     The rest of the gate, in the same order and with the same summary file:
-//     lint, changelog gate, mailbox-ui typecheck and tests (unless
-//     --static-checked says the `static` command already passed them), then
+//     lint and changelog gate (unless --static-checked says the `static`
+//     command already passed them), then
 //     `vitest --merge-reports` with the real coverage thresholds, the nerves
 //     capture check and the nerves audit over every shard's capture.
 //
@@ -123,36 +122,9 @@ function staticChecks(summaryPath) {
       required_actions: [{ type: "changelog", target: "changelog.json", reason: "changelog gate failed -- add entry for current version" }],
     })
   }
-
-  runNpm(["install", "--prefix", "packages/mailbox-ui"])
-  if (runNpm(["run", "typecheck:mailbox-ui"]) !== 0) {
-    fail(summaryPath, {
-      overall_status: "fail",
-      lint: { status: "pass" },
-      changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "fail" },
-      mailbox_ui_tests: { status: "skip" },
-      code_coverage: { status: "skip" },
-      nerves_coverage: { status: "skip" },
-      required_actions: [{ type: "ui-typecheck", target: "packages/mailbox-ui", reason: "npm run typecheck:mailbox-ui failed" }],
-    })
-  }
-
-  if (runNpm(["run", "test:mailbox-ui"]) !== 0) {
-    fail(summaryPath, {
-      overall_status: "fail",
-      lint: { status: "pass" },
-      changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "fail" },
-      code_coverage: { status: "skip" },
-      nerves_coverage: { status: "skip" },
-      required_actions: [{ type: "ui-tests", target: "packages/mailbox-ui", reason: "npm run test:mailbox-ui failed" }],
-    })
-  }
 }
 
-// Lint, the changelog gate and the mailbox-ui checks, with the same failure summaries the merge step wrote when it ran them itself.
+// Lint and the changelog gate, with the same failure summaries the merge step wrote when it ran them itself.
 function staticCommand() {
   mkdirSync(ROOT, { recursive: true })
   const { runDir } = startRun()
@@ -171,8 +143,6 @@ function merge(argv) {
   const nervesCoveragePath = path.join(runDir, "nerves-coverage.json")
 
   if (!argv.includes("--static-checked")) staticChecks(summaryPath)
-  // The nerves audit builds the mailbox UI without installing it, so this job needs the packages whichever job ran the checks.
-  else runNpm(["install", "--prefix", "packages/mailbox-ui"])
 
   // Every test file must have run on exactly one shard, or the merged coverage
   // is not the suite's coverage.
@@ -184,8 +154,6 @@ function merge(argv) {
       overall_status: "fail",
       lint: { status: "pass" },
       changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "pass" },
       code_coverage: { status: "fail", shards: problems },
       nerves_coverage: { status: "skip" },
       required_actions: [{ type: "coverage", target: "coverage-shards", reason: `coverage shards did not cover the suite exactly once: ${problems.slice(0, 5).join("; ")}` }],
@@ -206,8 +174,6 @@ function merge(argv) {
       overall_status: "fail",
       lint: { status: "pass" },
       changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "pass" },
       code_coverage: { status: "fail", shards: missingBlobs },
       nerves_coverage: { status: "skip" },
       required_actions: [{ type: "coverage", target: "coverage-shards", reason: missingBlobs.join("; ") }],
@@ -230,8 +196,6 @@ function merge(argv) {
       overall_status: "fail",
       lint: { status: "pass" },
       changelog: { status: "pass" },
-      mailbox_ui_typecheck: { status: "pass" },
-      mailbox_ui_tests: { status: "pass" },
       code_coverage: { status: "pass" },
       nerves_coverage: {
         status: "fail",
@@ -268,8 +232,6 @@ function merge(argv) {
   writeJson(summaryPath, {
     overall_status: overallStatus,
     lint: { status: "pass" },
-    mailbox_ui_typecheck: { status: "pass" },
-    mailbox_ui_tests: { status: "pass" },
     code_coverage: { status: codeCoverageStatus },
     nerves_coverage: nervesReport?.nerves_coverage ?? { status: nervesStatus },
     required_actions: requiredActions,

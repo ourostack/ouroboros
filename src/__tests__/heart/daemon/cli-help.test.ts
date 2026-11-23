@@ -35,7 +35,7 @@ describe("COMMAND_REGISTRY", () => {
     // layer — no business logic in the harness).
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
-      "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
+      "doctor", "whoami", "config", "changelog", "chat", "msg",
       "habit", "poke", "friend", "link", "auth", "thoughts", "private", "inner",
       "attention", "session", "mcp", "mcp-serve", "acp-serve", "setup", "hook", "connect", "bluebubbles",
       // desk umbrella CLI + task alias
@@ -120,15 +120,13 @@ describe("getGroupedHelp()", () => {
     // connect should appear in the Auth section
     expect(result).toContain("connect")
     expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
-    expect(result).toContain("mailbox")
+    expect(result).not.toContain("mailbox")
     expect(result).not.toContain("outlook")
   })
 
   it("keeps deprecated aliases out of grouped help", () => {
     const result = getGroupedHelp()
-    expect(COMMAND_REGISTRY["outlook"].hidden).toBe(true)
     expect(COMMAND_REGISTRY["inner"].hidden).toBe(true)
-    expect(result).not.toContain("outlook")
     expect(result).not.toContain("inner")
   })
 
@@ -173,10 +171,9 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
-  it("returns help for the deprecated outlook alias when asked directly", () => {
-    const result = getCommandHelp("outlook")
-    expect(result).toContain("Deprecated alias")
-    expect(result).toContain("ouro outlook [--json]")
+  it("has no help for the removed mailbox command or its outlook alias", () => {
+    expect(getCommandHelp("mailbox")).toBeNull()
+    expect(getCommandHelp("outlook")).toBeNull()
   })
 
   it("includes Sentinel read and refresh help under work commands", () => {
@@ -525,9 +522,7 @@ describe("runOuroCli help execution", () => {
       entryPoints: unknown[]
       errors: Array<{ code: string }>
     }
-    const mailbox = help.commands.find((command) => command.name === "mailbox")!
-    expect(mailbox).toMatchObject({ readOnly: true, group: "mail", consent: "read", aliases: ["outlook"] })
-    expect((mailbox.errors as Array<{ code: string }>).map((error) => error.code)).toEqual(["unknown-flag", "daemon-down"])
+    expect(help.commands.find((command) => command.name === "mailbox")).toBeUndefined()
     expect(help.commands.find((command) => command.name === "check")).toMatchObject({ example: "ouro check --lane inner" })
     expect(help.entryPoints).toHaveLength(CLI_ENTRY_POINTS.length)
     expect(help.errors.map((error) => error.code)).toEqual(["unknown-door"])

@@ -103,10 +103,6 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/attachments/originals",
   "heart/attachments/sources/index",
   "heart/attachments/sources/cli-local-file",
-  // Browser-safe Mailbox contract helpers: shared types/formatting helpers
-  // consumed by server readers and the UI. Mailbox read/render modules own
-  // the observability for these projections.
-  "heart/mailbox/mailbox-types",
   // Argv runner: no events of its own; the digest's sources report a run that failed, with its reason.
   "senses/app-sessions/run-command",
   // Waiting-prompt status reader: pure line rendering for `ouro status`. The notifier
@@ -127,13 +123,6 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // hashing. The caller (trips/store.ts) owns observability via
   // trips.ledger_created and trips.evidence_attached.
   "trips/core",
-  // Mailbox HTTP helper modules: route/static/transport/hook seams are
-  // dispatched by mailbox-http.ts, whose server lifecycle owns observability.
-  "heart/mailbox/mailbox-http-transport",
-  "heart/mailbox/mailbox-http-static",
-  "heart/mailbox/mailbox-http-hooks",
-  "heart/mailbox/mailbox-http-routes",
-  "heart/mailbox/mailbox-http-response",
   // Session playback: read-only debugging CLI for sanitize-pipeline replay.
   // No side effects on the runtime; output is human-readable diagnostics only.
   "heart/session-playback-cli-main",

@@ -3,7 +3,7 @@ import * as path from "node:path"
 import type { ShepherdOperation } from "../../heart/shepherd/operations"
 import type { ShepherdRetirementProof, ShepherdSenseStoppedProof } from "../../heart/shepherd/custody-types"
 import { readShepherdMandates, updateShepherdMandate } from "../../heart/shepherd/mandates"
-import { readMailboxSupervision } from "../../heart/mailbox/mailbox-supervision"
+import { readShepherdSupervision } from "../../heart/shepherd/supervision-read"
 import { SHEPHERD_ALPHA_AUTOMATION_WARNING } from "../../heart/shepherd/supervision"
 import { readGuidance, setShepherdSessionPause } from "./guidance"
 import { checkInStorePath } from "./checkin-store"
@@ -31,7 +31,7 @@ export async function runShepherdOperation(command: ShepherdOperation, deps: She
     if (command.kind === "shepherd.status") return {
       boundary: "same_uid_local_owner_administration_not_human_presence",
       automation: { mode: "legacy_unqualified", mandatesEnforcedForAllTriggers: false, unattendedKeysPossible: false, warning: SHEPHERD_ALPHA_AUTOMATION_WARNING },
-      supervision: readMailboxSupervision(command.agent, { agentRoot: root }),
+      supervision: readShepherdSupervision(command.agent, { agentRoot: root }),
       guidance: readGuidance(root), mandates: readShepherdMandates(root),
       custody: readCheckInSnapshot(file, { limit: 50 }),
     }

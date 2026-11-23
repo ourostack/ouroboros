@@ -33,10 +33,6 @@ import { getAlwaysOnSenseNames } from "@ouro.bot/friends"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
 import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
 import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
-import { startMailboxHttpServer, type MailboxHttpServerHandle } from "../mailbox/mailbox-http"
-import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
-import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
-import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
 import { resolveEffectiveProviderBinding } from "../provider-binding-resolver"
 import {
@@ -572,14 +568,6 @@ export interface OuroDaemonOptions {
   senseManager?: DaemonSenseManagerLike
   bundlesRoot?: string
   mode?: "dev" | "production"
-  /**
-   * Factory for the Mailbox HTTP server. Tests inject a stub so they can
-   * exercise the full start/stop lifecycle without binding to port 6876
-   * (which is held by a running production daemon on dev machines and
-   * causes EADDRINUSE flakes). Defaults to the real `startMailboxHttpServer`
-   * wired with the daemon's bundlesRoot and view builders.
-   */
-  mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
   frontendSocketPath?: string
   frontendSessionService?: FrontendSessionService
   frontendSocketServerFactory?: typeof startFrontendSocketServer
@@ -635,8 +623,6 @@ interface DaemonStatusOverview {
   daemon: "running" | "stopped"
   health: "ok" | "warn"
   socketPath: string
-  mailboxUrl: string
-  outlookUrl: string
   version: string
   lastUpdated: string
   repoRoot: string
@@ -896,14 +882,12 @@ export class OuroDaemon {
   private readonly bundlesRoot: string
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
-  private mailboxServer: MailboxHttpServerHandle | null = null
   private frontendSocketServer: FrontendSocketServer | null = null
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
   private externalEventReconcileRunning = false
   private readonly constructedAtMs = Date.now()
-  private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly frontendSocketPath: string
   private readonly frontendSessionService: FrontendSessionService
   private readonly frontendSocketServerFactory: typeof startFrontendSocketServer
@@ -934,7 +918,6 @@ export class OuroDaemon {
     this.senseManager = options.senseManager ?? null
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
-    this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
     this.frontendSocketPath = options.frontendSocketPath ?? frontendSocketPathForDaemon(this.socketPath)
     /* v8 ignore next -- path-only default adapter; frontend service tests inject and verify the same root contract @preserve */
     const frontendAgentRoot = (agent: string) => path.join(this.bundlesRoot, `${agent}.ouro`)
@@ -967,41 +950,6 @@ export class OuroDaemon {
     })
   }
 
-  /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
-  private createDefaultMailboxServer(): Promise<MailboxHttpServerHandle> {
-    return startMailboxHttpServer({
-      host: "127.0.0.1",
-      port: MAILBOX_DEFAULT_PORT,
-      bundlesRoot: this.bundlesRoot,
-      readMachineState: () => readMailboxMachineState({ bundlesRoot: this.bundlesRoot }),
-      readMachineView: ({ machine }) => {
-        const overview = this.buildStatusPayload().overview
-        return buildMailboxMachineView({
-          machine,
-          daemon: {
-            status: overview.daemon,
-            health: overview.health,
-            mode: overview.mode,
-            socketPath: overview.socketPath,
-            mailboxUrl: overview.mailboxUrl,
-            entryPath: overview.entryPath,
-            workerCount: overview.workerCount,
-            senseCount: overview.senseCount,
-          },
-        })
-      },
-      readAgentState: (agentName) => readMailboxAgentState(agentName, { bundlesRoot: this.bundlesRoot }),
-      readAgentView: (agentName) => {
-        const agent = readMailboxAgentState(agentName, { bundlesRoot: this.bundlesRoot })
-        return buildMailboxAgentView({
-          agent,
-          viewer: { kind: "human" },
-        })
-      },
-    })
-  }
-  /* v8 ignore stop */
-
   private buildStatusPayload(): DaemonStatusPayload {
     const snapshots = this.processManager.listAgentSnapshots()
     const workers = buildWorkerRows(snapshots)
@@ -1019,14 +967,11 @@ export class OuroDaemon {
     )
     const externalEvents = listExternalEventStatus(this.externalEventRoot ?? getExternalEventRoot())
 
-    const mailboxUrl = this.mailboxServer?.origin ?? "http://127.0.0.1:0"
     return {
       overview: {
         daemon: "running",
         health: overviewHealth(workers, senses, healthChecks),
         socketPath: this.socketPath,
-        mailboxUrl,
-        outlookUrl: mailboxUrl,
         ...getRuntimeMetadata(),
         workerCount: workers.length,
         senseCount: senses.length,
@@ -1184,20 +1129,6 @@ export class OuroDaemon {
     await this.scheduler.reconcile?.()
     await this.drainPendingBundleMessages()
     await this.drainPendingSenseMessages()
-    // startInner is only reachable when this.server is null (guarded in
-    // start()), and stop() nulls out this.mailboxServer alongside this.server,
-    // so mailboxServer is guaranteed unset here — no need for a guard.
-    try {
-      this.mailboxServer = await this.mailboxServerFactory()
-    } catch (error) {
-      emitNervesEvent({
-        level: "warn",
-        component: "daemon",
-        event: "daemon.mailbox_start_failed",
-        message: `Mailbox server failed to start: ${String(error)}`,
-        meta: { port: MAILBOX_DEFAULT_PORT },
-      })
-    }
     try {
       this.frontendSocketServer = await this.frontendSocketServerFactory({
         socketPath: this.frontendSocketPath,
@@ -1562,11 +1493,6 @@ export class OuroDaemon {
       this.server.close()
       this.server = null
     }
-    if (this.mailboxServer) {
-      await this.mailboxServer.stop()
-      this.mailboxServer = null
-    }
-
     const socketPathExists = fs.existsSync(this.socketPath)
     const currentSocketIdentity = socketPathExists ? readSocketIdentity(this.socketPath) : null
     if (sameSocketIdentity(this.socketIdentity, currentSocketIdentity)) {

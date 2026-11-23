@@ -1199,7 +1199,6 @@ describe("habit probe no-send CLI contract", () => {
       },
       router: { send: vi.fn(), pollInbox: vi.fn(() => []) },
       senseManager: { startAutoStartSenses: vi.fn(), stopAll: vi.fn(), listSenseRows: vi.fn(() => []) },
-      mailboxServerFactory: vi.fn(),
     } as any)
     const sendCommand: OuroCliDeps["sendCommand"] = vi.fn((_socketPath, command) => daemon.handleCommand(command))
     const deps = createMockDeps({ sendCommand })
@@ -1353,7 +1352,6 @@ describe("habit probe no-send CLI contract", () => {
       },
       router: { send: vi.fn(), pollInbox: vi.fn(() => []) },
       senseManager: { startAutoStartSenses: vi.fn(), stopAll: vi.fn(), listSenseRows: vi.fn(() => []) },
-      mailboxServerFactory: vi.fn(),
       rsvpHabitRunner: runner,
     } as any)
     const deps = createMockDeps({
