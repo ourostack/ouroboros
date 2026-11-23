@@ -3,8 +3,8 @@ name: publish-container
 # Builds each architecture on its own native runner once npm has published a version from this push's commit, then
 # joins the two images under that version and the commit tag. Emulating arm64 took 20 to 30 minutes; a native runner
 # takes a few. The image takes the version npm published from this very commit, so the package and the image never
-# carry different numbers, and writes the release files and changelog from main's history the same way the npm
-# publish job in coverage.yml does (scripts/release-version.cjs).
+# carry different numbers, and writes the release files under that version with the changelog npm published for it
+# (scripts/release-version.cjs).
 on:
   push:
     branches:
@@ -156,15 +156,13 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
       # The image carries package.json, changelog.json and the Sanctuary deploy files, so they are written into this
-      # checkout before the build, under the version npm published from this commit and with the changelog rebuilt
-      # from main's history as the npm job rebuilds it. A manual run has no push, so it plans from HEAD itself.
+      # checkout before the build, under the version npm published from this commit and with the changelog.json that
+      # npm published for it, so the package, the image and the GitHub release all carry the same changelog.
       - name: Build release assets
         if: steps.release-gate.outputs.publish == 'true'
-        env:
-          BEFORE: ${{ github.event.before || github.sha }}
         run: |
           npm ci
-          test "$(node scripts/release-version.cjs apply "$BEFORE" --version "$PACKAGE_VERSION")" = "$PACKAGE_VERSION"
+          test "$(node scripts/release-version.cjs apply --version "$PACKAGE_VERSION" --npm-changelog)" = "$PACKAGE_VERSION"
           node scripts/changelog-gate.cjs
           npm run build
 

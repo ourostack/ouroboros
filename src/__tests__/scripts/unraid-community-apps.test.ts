@@ -45,9 +45,8 @@ describe("Ouro Butler Community Apps release", () => {
     const dispatch = workflow.slice(workflow.indexOf('if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then'), workflow.indexOf("          else\n"))
     expect(dispatch).toContain('if [ "$GITHUB_REF" != refs/heads/main ]; then')
     expect(dispatch).toContain("PLAN=$(node scripts/release-version.cjs dispatch)")
-    // The build plans a manual run from HEAD itself, so it writes the changelog npm published for HEAD's version.
-    const build = workflow.slice(workflow.indexOf("release-version.cjs apply") - 400, workflow.indexOf("release-version.cjs apply"))
-    expect(build).toContain("BEFORE: ${{ github.event.before || github.sha }}")
+    // A manual run, like a push, writes the changelog npm published for the version, so it plans nothing itself.
+    expect(workflowJob(workflow, "build")).not.toContain("BEFORE:")
   })
 
   it("builds and tags the image under the version npm published from this commit, once it has", () => {
@@ -64,7 +63,9 @@ describe("Ouro Butler Community Apps release", () => {
     const build = workflowJob(workflow, "build")
     expect(build).toMatch(/needs:\n {6}- plan\n {6}- npm-release\n/)
     expect(build).toContain('PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"')
-    expect(build).toContain('apply "$BEFORE" --version "$PACKAGE_VERSION"')
+    // The image carries the changelog npm published for that version, so the package, the image and the GitHub
+    // release never differ.
+    expect(build).toContain('release-version.cjs apply --version "$PACKAGE_VERSION" --npm-changelog')
     expect(build).not.toContain("needs.plan.outputs.version")
     const publish = workflowJob(workflow, "publish")
     expect(publish).toContain("- npm-release")
