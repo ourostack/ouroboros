@@ -13,17 +13,19 @@ set -eu
 WORK="${1:?usage: build-openhands.sh <work> <sdk>}"
 SDK="${2:?usage: build-openhands.sh <work> <sdk>}"
 COMMIT=ecea9a91d8d0fbc05273246df0ac56d8b27156b3
-UV_VERSION=0.9.5
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends ca-certificates curl git >/dev/null
 
 mkdir -p "$WORK/bin"
+# The SDK's own CI uses uv's latest release, and its lock file needs a recent one; `--frozen` installs exactly the
+# locked versions whichever uv runs it, and the version used is printed for the build's record.
 if [ ! -x "$WORK/bin/uv" ]; then
-  curl -fsSL "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$(uname -m)-unknown-linux-gnu.tar.gz" -o "$WORK/uv.tar.gz"
+  curl -fsSL "https://github.com/astral-sh/uv/releases/latest/download/uv-$(uname -m)-unknown-linux-gnu.tar.gz" -o "$WORK/uv.tar.gz"
   tar -xzf "$WORK/uv.tar.gz" -C "$WORK/bin" --strip-components 1
 fi
+"$WORK/bin/uv" --version
 
 if [ ! -d "$WORK/sdk-src/.git" ]; then
   git init -q "$WORK/sdk-src"
