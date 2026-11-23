@@ -4234,7 +4234,10 @@ describe("a BlueBubbles listener whose proof stops updating", () => {
     vi.resetModules()
   })
 
-  async function staleProofManager(options: { proofAgeMs?: number; status?: string; runningForMs?: number | null } = {}) {
+  const MINUTE = 60_000
+
+  // The probe times a proof on the daemon's own clock, the one Node's timers run on, so `clock` stands for it here.
+  async function proofWatch(options: { status?: string } = {}) {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-stale-proof-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -4247,36 +4250,43 @@ describe("a BlueBubbles listener whose proof stops updating", () => {
       bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
       bluebubblesChannel: { port: 18888, webhookPath: "/hooks/bb" },
     })
-    if (options.proofAgeMs !== undefined) {
-      const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    const runtimePath = path.join(runtimeDir, "runtime.json")
+    const writeProof = (fields: { checkedAgoMs?: number; heartbeatAgoMs?: number } | string): void => {
       fs.mkdirSync(runtimeDir, { recursive: true })
-      fs.writeFileSync(path.join(runtimeDir, "runtime.json"), JSON.stringify({
+      fs.writeFileSync(runtimePath, typeof fields === "string" ? fields : JSON.stringify({
         upstreamStatus: "ok",
         detail: "upstream reachable",
-        lastCheckedAt: new Date(Date.now() - options.proofAgeMs).toISOString(),
+        ...(fields.checkedAgoMs === undefined ? {} : { lastCheckedAt: new Date(Date.now() - fields.checkedAgoMs).toISOString() }),
+        ...(fields.heartbeatAgoMs === undefined ? {} : { lastHeartbeatAt: new Date(Date.now() - fields.heartbeatAgoMs).toISOString() }),
         proofMethod: "bluebubbles.checkHealth",
         pendingRecoveryCount: 0,
       }))
     }
+    const listener = { status: options.status ?? "running", pid: 4242, startedAt: new Date(Date.now() - 60 * MINUTE).toISOString() as string | null }
+    const clock = { now: 1_000_000 }
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
-    return new DaemonSenseManager({
+    const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
+      monotonicNow: () => clock.now,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
-        listAgentSnapshots: () => [{
-          name: "slugger:bluebubbles",
-          status: options.status ?? "running",
-          pid: 4242,
-          startedAt: options.runningForMs === null ? null : new Date(Date.now() - (options.runningForMs ?? 60 * 60_000)).toISOString(),
-        }],
+        listAgentSnapshots: () => [{ name: "slugger:bluebubbles", ...listener }],
       },
     })
+    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")!
+    const checkAt = async (minutes: number) => {
+      clock.now = 1_000_000 + minutes * MINUTE
+      return probe.check()
+    }
+    return { manager, probe, writeProof, listener, checkAt, runtimePath }
   }
 
   it("reports a running listener with a stale proof as an error, with the proof's age", async () => {
-    const manager = await staleProofManager({ proofAgeMs: 20 * 60_000 })
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 20 * MINUTE })
     const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
     expect(row).toEqual(expect.objectContaining({
       status: "error",
@@ -4286,45 +4296,106 @@ describe("a BlueBubbles listener whose proof stops updating", () => {
       lastProofAt: expect.any(String),
       proofAgeMs: expect.any(Number),
     }))
-    expect(row!.proofAgeMs!).toBeGreaterThanOrEqual(20 * 60_000)
+    expect(row!.proofAgeMs!).toBeGreaterThanOrEqual(20 * MINUTE)
   })
 
-  it("restarts a listener whose proof has been stale for ten minutes, and says why", async () => {
+  it("names the health check as the proof while it is fresh, though every write stamps a later heartbeat", async () => {
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 20_000, heartbeatAgoMs: 1_000 })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({ status: "running", proofMethod: "bluebubbles.checkHealth" }))
+    expect(row!.proofAgeMs!).toBeLessThan(20_000)
+  })
+
+  it("reports a listener as running while a slow sync keeps its heartbeat fresh", async () => {
+    const { manager, writeProof } = await proofWatch()
+    writeProof({ checkedAgoMs: 4 * MINUTE, heartbeatAgoMs: 10_000 })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({ status: "running", proofMethod: "bluebubbles.syncHeartbeat" }))
+    expect(row!.proofAgeMs!).toBeLessThan(90_000)
+  })
+
+  it("restarts a listener once this daemon has watched its proof stay unchanged for ten minutes, and says why", async () => {
     const emitted = vi.fn()
     vi.resetModules()
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: emitted }))
-    const manager = await staleProofManager({ proofAgeMs: 11 * 60_000 })
-    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
-    expect(probe?.managedName).toBe("slugger:bluebubbles")
-    const outcome = await probe!.check()
+    const { probe, writeProof, checkAt } = await proofWatch()
+    expect(probe.managedName).toBe("slugger:bluebubbles")
+    writeProof({ checkedAgoMs: 30_000 })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(9)).toEqual({ ok: true })
+    const outcome = await checkAt(10)
     expect(outcome.ok).toBe(false)
-    expect(outcome.detail).toMatch(/BlueBubbles proof is 11m old/)
+    expect(outcome.detail).toBe("BlueBubbles proof has not changed in 10m; restarting the listener")
     expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       event: "daemon.bluebubbles_stale_proof_restart",
-      meta: expect.objectContaining({ agent: "slugger", proofAgeMs: expect.any(Number), lastProofAt: expect.any(String) }),
+      meta: expect.objectContaining({ agent: "slugger", stalledMs: 10 * MINUTE, lastProofAt: expect.any(String), restarts: 1, nextRestartAfterMs: 20 * MINUTE }),
     }))
     vi.doUnmock("../../../nerves/runtime")
     vi.resetModules()
   })
 
-  it.each([
-    ["the proof is fresh", { proofAgeMs: 30_000 }],
-    ["the proof is stale but younger than ten minutes", { proofAgeMs: 9 * 60_000 }],
-    ["the listener started less than ten minutes ago", { proofAgeMs: 60 * 60_000, runningForMs: 2 * 60_000 }],
-    ["the listener is not running, which the process manager handles", { proofAgeMs: 60 * 60_000, status: "crashed" }],
-    ["the listener's start time is unknown", { proofAgeMs: 60 * 60_000, runningForMs: null }],
-  ])("leaves the listener alone when %s", async (_case, options) => {
-    const manager = await staleProofManager(options)
-    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
-    expect(await probe!.check()).toEqual({ ok: true })
+  it("leaves a listener alone after the Mac wakes, however old its proof reads by the wall clock", async () => {
+    const { writeProof, checkAt } = await proofWatch()
+    // Timers stop while the Mac sleeps, so the listener has not had its turn to write since waking.
+    writeProof({ checkedAgoMs: 5 * 60 * MINUTE })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(1)).toEqual({ ok: true })
   })
 
-  it("restarts a listener that has run ten minutes without ever writing a proof", async () => {
-    const manager = await staleProofManager({ runningForMs: 11 * 60_000 })
-    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
-    const outcome = await probe!.check()
+  it("waits twice as long after each restart that brings no fresh proof, and starts over once one comes", async () => {
+    const { writeProof, checkAt, listener } = await proofWatch()
+    writeProof({ checkedAgoMs: 30_000 })
+    await checkAt(0)
+    expect((await checkAt(10)).ok).toBe(false)
+    // The restarted listener cannot write its proof either (a full disk, say).
+    listener.pid = 4343
+    listener.startedAt = new Date().toISOString()
+    expect(await checkAt(11)).toEqual({ ok: true })
+    expect(await checkAt(30)).toEqual({ ok: true })
+    expect(await checkAt(31)).toEqual(expect.objectContaining({ ok: false }))
+    // A restart that is refused leaves the same process; the probe still waits out the longer threshold.
+    expect(await checkAt(70)).toEqual({ ok: true })
+    expect(await checkAt(71)).toEqual(expect.objectContaining({ ok: false }))
+    writeProof({ checkedAgoMs: 0 })
+    expect(await checkAt(72)).toEqual({ ok: true })
+    expect(await checkAt(81)).toEqual({ ok: true })
+    expect(await checkAt(82)).toEqual(expect.objectContaining({ ok: false }))
+  })
+
+  it("does not count a runtime.json it cannot parse, which may be mid-write, as a missing proof", async () => {
+    const { writeProof, checkAt, runtimePath } = await proofWatch()
+    writeProof({ checkedAgoMs: 30_000 })
+    const whole = fs.readFileSync(runtimePath, "utf-8")
+    expect(await checkAt(0)).toEqual({ ok: true })
+    writeProof(whole.slice(0, 40))
+    expect(await checkAt(10)).toEqual({ ok: true })
+    // Reading it whole again, the proof is the one watched since minute 0.
+    writeProof(whole)
+    expect((await checkAt(10.5)).ok).toBe(false)
+  })
+
+  it("restarts a listener that writes no proof at all for ten minutes", async () => {
+    const { checkAt } = await proofWatch()
+    expect(await checkAt(0)).toEqual({ ok: true })
+    const outcome = await checkAt(10)
     expect(outcome.ok).toBe(false)
-    expect(outcome.detail).toMatch(/has written no BlueBubbles proof/)
+    expect(outcome.detail).toBe("the BlueBubbles listener has written no BlueBubbles proof in 10m; restarting it")
+  })
+
+  it("watches a listener whose pid and start time are unknown", async () => {
+    const { checkAt, listener, writeProof } = await proofWatch()
+    ;(listener as { pid: number | null }).pid = null
+    listener.startedAt = null
+    writeProof({ checkedAgoMs: 30_000 })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect((await checkAt(10)).ok).toBe(false)
+  })
+
+  it("leaves a listener that is not running to the process manager", async () => {
+    const { checkAt } = await proofWatch({ status: "crashed" })
+    expect(await checkAt(0)).toEqual({ ok: true })
+    expect(await checkAt(60)).toEqual({ ok: true })
   })
 })

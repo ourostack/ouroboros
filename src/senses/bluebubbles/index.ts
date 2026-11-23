@@ -78,7 +78,7 @@ import {
   type BlueBubblesSemanticCaptureWriteResult,
   type BlueBubblesSemanticHandledOutcome,
 } from "./semantic-receipts"
-import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
+import { readBlueBubblesRuntimeState, touchBlueBubblesRuntimeHeartbeat, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import {
   awaitDeliveryAdmission,
@@ -3670,7 +3670,8 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
     return nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
   }
 
-  const lastCheckedAt = parseTimestampMs(previousState.lastCheckedAt)
+  // A sync abandoned partway through catch-up has moved lastCheckedAt but not the cursor.
+  const lastCheckedAt = parseTimestampMs(previousState.catchUpThrough ?? previousState.lastCheckedAt)
   if (lastCheckedAt !== null) {
     return Math.max(0, lastCheckedAt - BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS)
   }
@@ -3732,21 +3733,22 @@ async function syncBlueBubblesRuntime(
   options.lifecycleSignal?.throwIfAborted()
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
-  // Allocate before the first health-probe await. Any live webhook accepted
-  // while that probe is pending must remain causally newer than this pass.
-  const catchUpObservationBatch = options.catchUpObservationBatch ?? beginObservationBatch(
-    BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
-  )
-  pruneBlueBubblesSemanticObservationGenerations(
-    Date.now(),
-    new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
-  )
-  const client = resolvedDeps.createClient()
   const checkedAt = new Date().toISOString()
   const previousState = readBlueBubblesRuntimeState(agentName)
   let probePassed = false
 
   try {
+    // Setup failures land in the catch below too, so they write an error proof like any failed sync.
+    // Allocate before the first health-probe await. Any live webhook accepted
+    // while that probe is pending must remain causally newer than this pass.
+    const catchUpObservationBatch = options.catchUpObservationBatch ?? beginObservationBatch(
+      BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
+    )
+    pruneBlueBubblesSemanticObservationGenerations(
+      Date.now(),
+      new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
+    )
+    const client = resolvedDeps.createClient()
     await client.checkHealth()
     options.lifecycleSignal?.throwIfAborted()
     probePassed = true
@@ -3790,6 +3792,7 @@ async function syncBlueBubblesRuntime(
       upstreamStatus: "ok",
       detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
+      catchUpThrough: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
       ...activeAfterCatchup,
@@ -3802,13 +3805,16 @@ async function syncBlueBubblesRuntime(
   } catch (error) {
     if (options.lifecycleSignal?.aborted) return "aborted"
     const detail = error instanceof Error ? error.message : String(error)
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.bluebubbles_runtime_sync_failed",
-      message: "bluebubbles runtime sync failed; recorded upstream error",
-      meta: { reason: detail, probePassed },
-    })
+    // A failed probe logs itself, so a streak of them adds only the line that starts it.
+    if (probePassed || previousState.upstreamStatus !== "error") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_runtime_sync_failed",
+        message: "bluebubbles runtime sync failed; recorded upstream error",
+        meta: { reason: detail, probePassed },
+      })
+    }
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "error",
       detail,
@@ -5067,7 +5073,11 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     if (closed) return
     if (runtimeSync) {
       const runningMs = Date.now() - runtimeSync.startedAt
-      if (runningMs < BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS) return
+      if (runningMs < BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS) {
+        // A slow pass is still a live loop; say so, so the daemon does not take it for a stopped one.
+        touchBlueBubblesRuntimeHeartbeat(resolvedDeps.getAgentName())
+        return
+      }
       // A sync that never finishes must not stop every later one, which would leave the proof to go stale.
       emitNervesEvent({
         level: "warn",
@@ -5096,8 +5106,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
         else runtimeSyncFailures = 0
         scheduleRecoveryPass()
       })
+      /* v8 ignore start -- defensive: every failure of the sync itself is caught inside it and written as an error proof @preserve */
       .catch((error) => {
-        /* v8 ignore next -- defensive: a late rejection from an abandoned sync must not clear the newer sync's slot @preserve */
         if (runtimeSync === sync) runtimeSync = null
         if (closed) return
         emitNervesEvent({
@@ -5109,6 +5119,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
         })
         scheduleRuntimeSyncRetry()
       })
+      /* v8 ignore stop */
   }
 
   const runtimeTimer = setInterval(() => {
