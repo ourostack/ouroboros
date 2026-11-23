@@ -13,6 +13,7 @@ import {
   finish,
   isCurrent,
   isDeliveryAdmittedNow,
+  listPendingObservationsForAudit,
   mergeObservationReservations,
   observationSchedulingKeys,
   promote,
@@ -340,6 +341,51 @@ describe("BlueBubbles latest-turn registry", () => {
 
     clearPending(unresolved)
     await expect(admission).resolves.toBe(true)
+  })
+
+  it("rejects a wait for send permission when the turn's signal aborts behind a fence nobody settles", async () => {
+    const activeReservation = reserveObservation({ chatGuid: "chat-a" })
+    const active = promote(activeReservation, { chatGuid: "chat-a" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+    // A newer observation in the same chat that is never promoted or cleared.
+    reserveObservation({ chatGuid: "chat-a" })
+
+    const turn = new AbortController()
+    const admission = awaitDeliveryAdmission(active.capability, turn.signal)
+    let settled = false
+    void admission.then(() => { settled = true }, () => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    turn.abort(new Error("turn_deadline"))
+    await expect(admission).rejects.toThrow("turn_deadline")
+  })
+
+  it("rejects at once when the turn's signal is already aborted", async () => {
+    const reservation = reserveObservation({ chatGuid: "chat-a" })
+    const active = promote(reservation, { chatGuid: "chat-a" })
+    if (active.status !== "promoted") throw new Error("expected active promotion")
+    await expect(awaitDeliveryAdmission(active.capability, AbortSignal.abort(new Error("shutdown"))))
+      .rejects.toThrow("shutdown")
+  })
+
+  it("stops waiting for send permission when a newer turn supersedes or cancels the capability", async () => {
+    const olderReservation = reserveObservation({ chatGuid: "chat-a" })
+    const older = promote(olderReservation, { chatGuid: "chat-a" })
+    if (older.status !== "promoted") throw new Error("expected promotion")
+    reserveObservation({ chatGuid: "chat-a" })
+
+    const admission = awaitDeliveryAdmission(older.capability)
+    cancel(older.capability, "turn_timeout")
+    await expect(admission).resolves.toBe(false)
+  })
+
+  it("lists pending observations for the ownership audit", () => {
+    const first = reserveObservation({ chatGuid: "chat-a" })
+    const second = reserveObservation({ chatIdentifier: "ari@example.com" })
+    expect(listPendingObservationsForAudit()).toEqual([first, second])
+    clearPending(first)
+    expect(listPendingObservationsForAudit()).toEqual([second])
   })
 
   it("retries the same observation generation only after its failed lane is released", () => {

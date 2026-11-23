@@ -49,7 +49,9 @@ async function main() {
   const { buildSystem } = require(path.join(distRoot, "mind", "prompt.js"))
   const { getToolsForChannel } = require(path.join(distRoot, "repertoire", "tools.js"))
   const { getChannelCapabilities } = require("@ouro.bot/friends")
-  const { partitionTools } = require(path.join(distRoot, "repertoire", "deferred-tools.js"))
+  const { buildToolCatalog, partitionCatalog } = require(path.join(distRoot, "repertoire", "tool-catalog.js"))
+  const { baseToolDefinitions } = require(path.join(distRoot, "repertoire", "tools-base.js"))
+  const cards = new Map(baseToolDefinitions.map((definition) => [definition.tool.function.name, definition.ax]))
   const channels = ["cli", "teams", "bluebubbles", "inner", "mcp"]
   const args = process.argv.slice(2)
   const report = {}
@@ -64,7 +66,7 @@ async function main() {
       console.log()
     }
     const all = getToolsForChannel(getChannelCapabilities(channel))
-    const deferredActive = partitionTools(all).active
+    const deferredActive = partitionCatalog(all, buildToolCatalog(all.map((tool) => ({ tool, ax: cards.get(tool.function.name) }))), [], new Set()).active
     const bytes = JSON.stringify(all).length
     const deferredBytes = JSON.stringify(deferredActive).length
     const deferredToolSchemas = tokens(JSON.stringify(deferredActive))

@@ -3,7 +3,6 @@ import type OpenAI from "openai"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { buildToolCatalog, searchCatalog, type CatalogSource } from "../../repertoire/tool-catalog"
-import { searchDeferredTools } from "../../repertoire/deferred-tools"
 import { baseToolDefinitions, type ToolDefinition } from "../../repertoire/tools-base"
 import { chatToolDefinitions } from "../../repertoire/tools-chat"
 import { unraidToolDefinitions } from "../../repertoire/tools-unraid"
@@ -24,8 +23,8 @@ import { TOOLS as MEDIA_TOOLS } from "../../../deploy/unraid/sanctuary.ouro/mcp/
 /**
  * Proof that agents still find deferred doors: tasks phrased the way a model writes a `find_tools` query (what it
  * needs to do, in its own words, not the door's name), and the door that must come back in the first five `find_tools` results. The pool is every native door plus the Butler's media MCP
- * tools, a superset of any one agent's menu, so it is harder than a real turn. The old trial search runs on the same
- * table, so "no worse" is measured.
+ * tools, a superset of any one agent's menu, so it is harder than a real turn. The trial search this replaced found 19 of
+ * these 25 (measured in #1626), so the catalog's 25 is the bar to keep.
  */
 const TABLE: ReadonlyArray<readonly [query: string, door: string]> = [
   ["restart the sonarr container", "unraid_restart_container"],
@@ -80,13 +79,5 @@ describe("finding deferred doors", () => {
 
   it.each(TABLE)("%s → %s", (query, door) => {
     expect(searchCatalog(catalog, candidates, query).slice(0, 5)).toContain(door)
-  })
-
-  it("finds at least as many doors as the old trial search", () => {
-    const hits = (search: (query: string) => string[]) => TABLE.filter(([query, door]) => search(query).slice(0, 5).includes(door)).length
-    const catalogHits = hits((query) => searchCatalog(catalog, candidates, query))
-    const trialHits = hits((query) => searchDeferredTools(candidates, query).map((tool) => tool.function.name))
-    expect(catalogHits).toBe(TABLE.length)
-    expect(catalogHits).toBeGreaterThanOrEqual(trialHits)
   })
 })

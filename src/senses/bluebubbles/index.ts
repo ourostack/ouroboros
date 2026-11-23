@@ -87,6 +87,7 @@ import {
   clearPending,
   finish as finishLatestTurn,
   isDeliveryAdmittedNow,
+  listPendingObservationsForAudit,
   isCurrent as isLatestTurnCurrent,
   mergeObservationReservations,
   observationSchedulingKeys,
@@ -99,8 +100,10 @@ import {
   type BlueBubblesObservationReservation,
 } from "./latest-turn"
 import {
+  BLUEBUBBLES_DELIVERY_ADMISSION_STALLED_MS,
   beginBlueBubblesActiveTurn,
   finishBlueBubblesActiveTurn,
+  noteBlueBubblesActiveTurnAdmissionWait,
   noteBlueBubblesActiveTurnVisibleActivity,
   snapshotBlueBubblesActiveTurns,
 } from "./active-turns"
@@ -125,6 +128,20 @@ import {
 } from "./outbound-state"
 
 const bbFailoverStates = new Map<string, FailoverState>()
+const inFlightBlueBubblesWork = new Set<Promise<unknown>>()
+
+function trackBlueBubblesTurn(work: Promise<unknown>): void {
+  inFlightBlueBubblesWork.add(work)
+  const forget = (): void => { inFlightBlueBubblesWork.delete(work) }
+  void work.then(forget, forget)
+}
+
+/** Resolves once every queued webhook turn and recovery pass this process started has ended. */
+export async function drainBlueBubblesTurns(): Promise<number> {
+  const work = [...inFlightBlueBubblesWork]
+  await Promise.allSettled(work)
+  return work.length
+}
 
 interface BlueBubblesSemanticHandlingSlot {
   generation: BlueBubblesSemanticObservationGeneration
@@ -148,6 +165,9 @@ type BlueBubblesSemanticHandlingAcquisition =
   | { status: "handled_by_owner" }
 
 const activeSemanticHandlingSlots = new Map<string, BlueBubblesSemanticHandlingSlot>()
+// Turns that timed out without a reply, per capture, in this process. Each one
+// stays pending for replay until it reaches the delivery attempt cap.
+const unfinishedTurnAttempts = new Map<string, number>()
 const semanticObservationGenerations = new Map<string, BlueBubblesSemanticObservationGeneration>()
 const BLUEBUBBLES_VISIBLE_OUTBOUND_STATUSES = new Set<BlueBubblesOutboundRecord["status"]>([
   "accepted",
@@ -162,18 +182,96 @@ const BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS = 3
 const BLUEBUBBLES_REPLY_RETRY_DELAY_MS = 10 * 60_000
 export const BLUEBUBBLES_SEMANTIC_GENERATION_RETENTION_MS = 15 * 60_000
 
-export function pruneBlueBubblesSemanticObservationGenerations(nowMs = Date.now()): number {
+/**
+ * A retained generation fences older replies in its chat only while its capture
+ * still waits for recovery. Once the capture has an outcome (or after the
+ * retention window), nothing owns the fence, so release it.
+ */
+export function pruneBlueBubblesSemanticObservationGenerations(
+  nowMs = Date.now(),
+  pendingKeyHashes?: ReadonlySet<string>,
+): number {
   let pruned = 0
   for (const [keyHash, generation] of semanticObservationGenerations) {
-    if (
-      generation.retainedAtMs === null
-      || nowMs - generation.retainedAtMs < BLUEBUBBLES_SEMANTIC_GENERATION_RETENTION_MS
-    ) continue
+    if (generation.retainedAtMs === null) continue
+    const expired = nowMs - generation.retainedAtMs >= BLUEBUBBLES_SEMANTIC_GENERATION_RETENTION_MS
+    const resolved = pendingKeyHashes !== undefined && !pendingKeyHashes.has(keyHash)
+    if (!expired && !resolved) continue
     clearPending(generation.reservation)
     semanticObservationGenerations.delete(keyHash)
     pruned += 1
   }
   return pruned
+}
+
+/**
+ * Owns the observation reservations one call makes. Every reservation is
+ * settled when the scope closes unless a live semantic generation has taken it
+ * over, so no code path can leave a fence behind by returning or throwing early.
+ */
+class BlueBubblesObservationScope {
+  private readonly owned: BlueBubblesObservationReservation[] = []
+
+  constructor() {
+    openObservationScopes.add(this)
+  }
+
+  own(reservation: BlueBubblesObservationReservation): BlueBubblesObservationReservation {
+    this.owned.push(reservation)
+    return reservation
+  }
+
+  owns(reservation: BlueBubblesObservationReservation): boolean {
+    return this.owned.includes(reservation)
+  }
+
+  close(): void {
+    openObservationScopes.delete(this)
+    for (const reservation of this.owned.splice(0)) {
+      if (!isGenerationReservation(reservation)) clearPending(reservation)
+    }
+  }
+}
+
+const openObservationScopes = new Set<BlueBubblesObservationScope>()
+
+/**
+ * Runs `work` with a scope that settles its reservations once `work` ends.
+ * Returns `work`'s own promise so callers see no extra await.
+ */
+function withObservationScope<T>(work: (scope: BlueBubblesObservationScope) => Promise<T>): Promise<T> {
+  const scope = new BlueBubblesObservationScope()
+  const running = work(scope)
+  const close = (): void => scope.close()
+  void running.then(close, close)
+  return running
+}
+
+function isGenerationReservation(reservation: BlueBubblesObservationReservation): boolean {
+  for (const generation of semanticObservationGenerations.values()) {
+    if (generation.reservation === reservation) return true
+  }
+  return false
+}
+
+/**
+ * Test and diagnostics audit: pending observations that nothing owns. A
+ * reservation is owned while its scope is open, or while it is the reservation
+ * of a generation that is in flight or whose capture still waits for recovery.
+ */
+export function auditBlueBubblesObservationOwnership(
+  pendingKeyHashes: ReadonlySet<string>,
+): BlueBubblesObservationReservation[] {
+  const owners = new Map<BlueBubblesObservationReservation, string>()
+  for (const [keyHash, generation] of semanticObservationGenerations) {
+    owners.set(generation.reservation, keyHash)
+  }
+  return listPendingObservationsForAudit().filter((reservation) => {
+    if ([...openObservationScopes].some((scope) => scope.owns(reservation))) return false
+    const keyHash = owners.get(reservation)
+    if (keyHash === undefined) return true
+    return !activeSemanticHandlingSlots.has(keyHash) && !pendingKeyHashes.has(keyHash)
+  })
 }
 
 function adoptBlueBubblesSemanticObservation(
@@ -223,6 +321,7 @@ function completeBlueBubblesSemanticObservation(
 ): void {
   clearPending(generation.reservation)
   semanticObservationGenerations.delete(keyHash)
+  unfinishedTurnAttempts.delete(keyHash)
 }
 
 async function acquireBlueBubblesSemanticHandlingSlot(
@@ -347,7 +446,9 @@ export interface BlueBubblesHandleResult {
   /** Legacy field name: true only when this inbound reached an accepted terminal transport. */
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
-  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_failed" | "no_visible_reply"
+  reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored" | "autonomy_budget_blocked" | "semantic_claim_timeout" | "superseded" | "turn_timeout" | "delivery_admission_timeout" | "delivery_failed" | "no_visible_reply" | "shutdown"
+  /** True when the friend saw part of this turn before it ended, so a replay could repeat it. */
+  spokeBeforeEnd?: boolean
 }
 
 function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
@@ -517,6 +618,12 @@ interface CapturedBlueBubblesHandleOptions extends BlueBubblesHandleOptions {
   orientationConversationKind: OrientationConversationKind
   latestTurnCapability: BlueBubblesLatestTurnCapability
   publishAcceptedReceipt: () => void
+  /**
+   * Record that a turn the friend already heard from ended without its final
+   * reply. Called as soon as the deadline or shutdown ends it, before the
+   * turn's cleanup, so a process that exits during cleanup does not replay it.
+   */
+  publishSpokenTurnEnded: (reason: "turn_timeout" | "shutdown") => void
   /** The turn answers a reaction, so the agent may choose to stay silent. */
   isReactionSignal?: boolean
 }
@@ -1346,12 +1453,15 @@ export function createBlueBubblesCallbacks(
         return
       }
       if (!await canRunOutbound()) return
+      // Count the message as seen once it is handed to the transport: a send
+      // still in flight, or one that timed out, may reach the friend anyway, and
+      // a turn that ends now must not be replayed into repeating it.
+      recordVisibleActivity()
       await client.sendText({
         chat,
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
-      recordVisibleActivity()
       // Note: do NOT call client.setTyping(chat, false) here — the agent is
       // still mid-turn, so the typing indicator stays ACTIVE.
       emitNervesEvent({
@@ -1855,6 +1965,63 @@ function hasObservedBlueBubblesDirection(
   return typeof event.fromMe === "boolean"
 }
 
+/**
+ * Waits for permission to send. After a minute it marks the live turn as
+ * stalled, so `ouro status` reports it, and clears the mark once it resumes.
+ */
+async function awaitBlueBubblesDeliveryAdmission(
+  agentName: string,
+  turnId: string,
+  event: CanonicalBlueBubblesDirectionObservedMessage,
+  capability: BlueBubblesLatestTurnCapability,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const waitingSince = Date.now()
+  let stalled = false
+  const stalledTimer = setTimeout(() => {
+    stalled = true
+    noteBlueBubblesActiveTurnAdmissionWait(agentName, turnId, new Date(waitingSince).toISOString())
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_delivery_admission_stalled",
+      message: "bluebubbles reply has waited over a minute for permission to send",
+      meta: {
+        messageGuid: event.messageGuid,
+        sessionKey: event.chat.sessionKey,
+        waitedMs: Date.now() - waitingSince,
+      },
+    })
+  }, BLUEBUBBLES_DELIVERY_ADMISSION_STALLED_MS)
+  /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+  if (typeof (stalledTimer as { unref?: () => void }).unref === "function") {
+    (stalledTimer as { unref: () => void }).unref()
+  }
+  try {
+    return await awaitDeliveryAdmission(capability, signal)
+  } finally {
+    clearTimeout(stalledTimer)
+    if (stalled) noteBlueBubblesActiveTurnAdmissionWait(agentName, turnId, null)
+  }
+}
+
+function emitBlueBubblesDeliveryAdmissionTimeout(
+  event: CanonicalBlueBubblesDirectionObservedMessage,
+  source: BlueBubblesInboundSource,
+): void {
+  emitNervesEvent({
+    level: "error",
+    component: "senses",
+    event: "senses.bluebubbles_delivery_admission_timeout",
+    message: "bluebubbles turn gave up waiting for permission to send; the message stays pending for recovery",
+    meta: {
+      messageGuid: event.messageGuid,
+      sessionKey: event.chat.sessionKey,
+      source,
+    },
+  })
+}
+
 async function handleBlueBubblesNormalizedEvent(
   event: CanonicalBlueBubblesDirectionObservedMessage,
   resolvedDeps: RuntimeDeps,
@@ -1981,17 +2148,37 @@ async function handleBlueBubblesNormalizedEvent(
         existing?.lastUsage,
         existing?.state,
       )
-      if (
-        !await awaitDeliveryAdmission(options.latestTurnCapability)
-        || !isLatestTurnCurrent(options.latestTurnCapability)
-      ) {
+      const liveTurnId = beginBlueBubblesActiveTurn(agentName, event)
+      activeTurnId = liveTurnId
+      // Waiting for permission to send is bounded by the turn deadline and shutdown.
+      const admissionDeadline = new AbortController()
+      const admissionDeadlineTimer = setTimeout(() => {
+        admissionDeadline.abort(new Error("delivery_admission_timeout"))
+      }, options.timeoutMs ?? BLUEBUBBLES_TURN_TIMEOUT_MS)
+      let admitted: boolean
+      try {
+        admitted = await awaitBlueBubblesDeliveryAdmission(
+          agentName,
+          liveTurnId,
+          event,
+          options.latestTurnCapability,
+          options.lifecycleSignal
+            ? AbortSignal.any([options.lifecycleSignal, admissionDeadline.signal])
+            : admissionDeadline.signal,
+        )
+      } catch (error) {
+        if (options.lifecycleSignal?.aborted) throw error
+        emitBlueBubblesDeliveryAdmissionTimeout(event, source)
+        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "delivery_admission_timeout" }
+      } finally {
+        clearTimeout(admissionDeadlineTimer)
+      }
+      if (!admitted || !isLatestTurnCurrent(options.latestTurnCapability)) {
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "superseded" }
       }
       options.lifecycleSignal?.throwIfAborted()
 
       const mcpOwner = { agentName, agentRoot: getAgentRoot(agentName) }
-      const liveTurnId = beginBlueBubblesActiveTurn(agentName, event)
-      activeTurnId = liveTurnId
       const mcpManager = await getSharedMcpManager(mcpOwner) ?? undefined
 
       if (event.chat.isGroup) {
@@ -2052,6 +2239,8 @@ async function handleBlueBubblesNormalizedEvent(
     let finalTransportAccepted = false
     let spokeBeforeFinalTransport = false
     const outboundRuntimeConfig = getBlueBubblesConfig()
+    // Aborted on the turn deadline, supersession and shutdown before the final send.
+    const controller = new AbortController()
     const callbacks = createBlueBubblesCallbacks(
       client,
       event.chat,
@@ -2064,7 +2253,13 @@ async function handleBlueBubblesNormalizedEvent(
       {
         admitOutbound: async () => (
           !options.lifecycleSignal?.aborted
-          && await awaitDeliveryAdmission(options.latestTurnCapability)
+          && await awaitBlueBubblesDeliveryAdmission(
+            agentName,
+            liveTurnId,
+            event,
+            options.latestTurnCapability,
+            controller.signal,
+          )
           && !options.lifecycleSignal?.aborted
         ),
         isOutboundCurrent: () => (
@@ -2093,7 +2288,6 @@ async function handleBlueBubblesNormalizedEvent(
         },
       },
     )
-    const controller = new AbortController()
     const lifecycleSignal = options.lifecycleSignal
     let rejectLifecycle!: (reason: unknown) => void
     const lifecyclePromise = new Promise<never>((_resolve, reject) => {
@@ -2121,7 +2315,14 @@ async function handleBlueBubblesNormalizedEvent(
       if (!finalTransportInvoked) {
         const reason = lifecycleSignal!.reason
         controller.abort(reason)
-        rejectLifecycle(reason)
+        // A turn the friend already heard from must not replay in the next
+        // process; end it with a result so it is recorded instead.
+        if (spokeBeforeFinalTransport && resolveTimeout) {
+          options.publishSpokenTurnEnded("shutdown")
+          resolveTimeout({ handled: true, notifiedAgent: false, kind: event.kind, reason: "shutdown", spokeBeforeEnd: true })
+        } else {
+          rejectLifecycle(reason)
+        }
       }
     }
     lifecycleSignal?.addEventListener("abort", cancelForShutdown, { once: true })
@@ -2189,11 +2390,13 @@ async function handleBlueBubblesNormalizedEvent(
         const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
         recoveryTimedOut = true
         if (!finalTransportInvoked) {
+          if (spokeBeforeFinalTransport) options.publishSpokenTurnEnded("turn_timeout")
           resolveTimeout?.({
             handled: true,
             notifiedAgent: false,
             kind: event.kind,
             reason: "turn_timeout",
+            spokeBeforeEnd: spokeBeforeFinalTransport,
           })
         }
         callbacks.cancelOutbound("turn_timeout")
@@ -2343,6 +2546,9 @@ async function handleBlueBubblesNormalizedEvent(
           }
         },
         signal: controller.signal,
+        // The deadline, supersession and shutdown handlers record this
+        // turn's outcome, so a turn they cancel need not wait its turn.
+        stopQueueWaitOnAbort: true,
         runAgentOptions: {
           mcpManager,
           orientationFrame,
@@ -2424,6 +2630,9 @@ async function handleBlueBubblesNormalizedEvent(
         try {
           delivery = await callbacks.flush({ signal: controller.signal })
         } catch (error) {
+          // Aborted before the transport ran: the deadline, supersession or
+          // shutdown handler already decided this turn's result.
+          if (controller.signal.aborted && !finalTransportInvoked) throw error
           emitNervesEvent({
             level: "warn",
             component: "senses",
@@ -3080,6 +3289,19 @@ async function handleCapturedBlueBubblesSemanticEvent(
     publishTerminalReceipt("message_completed")
     acceptedReceiptPublished = true
   }
+  let spokenTurnEndPublished = false
+  const publishSpokenTurnEnded = (reason: string): void => {
+    if (spokenTurnEndPublished) return
+    spokenTurnEndPublished = true
+    semanticHandlingCompleted = true
+    try {
+      publishTerminalReceipt("message_observed", `${reason}_after_visible_speech`)
+    /* v8 ignore start -- a failed write already kept the claim live and was logged, which also stops a replay @preserve */
+    } catch {
+      // Nothing more to do here.
+    }
+    /* v8 ignore stop */
+  }
   try {
     options.lifecycleSignal?.throwIfAborted()
     if (captured.capture.event.fromMe) {
@@ -3254,6 +3476,7 @@ async function handleCapturedBlueBubblesSemanticEvent(
         orientationEvidence: captured.capture.event,
         orientationConversationKind: canonicalEvent.chat.isGroup ? "group" : "one_to_one",
         publishAcceptedReceipt,
+        publishSpokenTurnEnded,
         ...(interaction?.mutationType === "reaction" ? { isReactionSignal: true } : {}),
       }
       let failedReplyVisible = false
@@ -3280,6 +3503,33 @@ async function handleCapturedBlueBubblesSemanticEvent(
       // A budget or storm-breaker block defers the message; it was never seen.
       // Leave it pending so a later recovery pass retries it once the block lifts.
       if (result.reason === "autonomy_budget_blocked") return result
+      if (result.reason === "turn_timeout" || result.reason === "delivery_admission_timeout" || result.reason === "shutdown") {
+        // The turn ended without a reply or a chosen silence. Leave it pending so
+        // recovery replays it, unless the friend already saw part of it or it
+        // keeps failing; then record a visible failure instead.
+        const attempts = (unfinishedTurnAttempts.get(identity.keyHash) ?? 0) + 1
+        unfinishedTurnAttempts.set(identity.keyHash, attempts)
+        if (!result.spokeBeforeEnd && attempts < BLUEBUBBLES_REPLY_DELIVERY_MAX_ATTEMPTS) return result
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_turn_abandoned",
+          message: "gave up replaying a bluebubbles turn that kept ending without a reply",
+          meta: {
+            messageGuid: captured.normalized.messageGuid,
+            reason: result.reason,
+            attempts,
+            spokeBeforeEnd: result.spokeBeforeEnd === true,
+          },
+        })
+        if (result.spokeBeforeEnd) {
+          publishSpokenTurnEnded(result.reason)
+        } else {
+          publishTerminalReceipt("message_observed", `${result.reason}_retries_exhausted`)
+          semanticHandlingCompleted = true
+        }
+        return result
+      }
       if (result.reason === "delivery_failed") {
         // The reply never reached the chat. Leave the message pending so a later
         // recovery pass sends it, until the per-message attempt cap is reached.
@@ -3366,26 +3616,24 @@ export async function handleBlueBubblesEvent(
     throw error
   }
 
-  const observationReservation = reserveBlueBubblesObservation(normalized)
-  let captured: BlueBubblesSemanticCaptureResult
+  const scope = new BlueBubblesObservationScope()
   try {
-    captured = await captureBlueBubblesSemanticEvent(
+    const observationReservation = scope.own(reserveBlueBubblesObservation(normalized))
+    const captured = await captureBlueBubblesSemanticEvent(
       normalized,
       resolvedDeps,
       "webhook",
       observationReservation,
     )
-  } catch (error) {
-    clearPending(observationReservation)
-    throw error
+    if (captured.status === "audit_only") {
+      return { handled: true, notifiedAgent: false, kind: normalized.kind, reason: "ignored" }
+    }
+    return await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
+      observationReservation,
+    })
+  } finally {
+    scope.close()
   }
-  if (captured.status === "audit_only") {
-    clearPending(observationReservation)
-    return { handled: true, notifiedAgent: false, kind: normalized.kind, reason: "ignored" }
-  }
-  return handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
-    observationReservation,
-  })
 }
 
 export interface BlueBubblesRecoveryResult {
@@ -3424,15 +3672,22 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
 }
 
 function formatBlueBubblesRuntimeDetail(
-  queued: number,
+  pending: ReturnType<typeof blueBubblesPendingRecoverySnapshot>,
   failed: number,
   active: ReturnType<typeof snapshotBlueBubblesActiveTurns>,
 ): string {
+  const queued = pending.pendingRecoveryCount
+  if (active.admissionStalledTurnCount > 0) {
+    return `iMessage reply stalled; ${active.admissionStalledTurnCount} turn(s) waiting for permission to send for ${Math.round(active.oldestAdmissionWaitAgeMs! / 1000)}s`
+  }
   if (active.stalledTurnCount > 0) {
     return `iMessage live turn appears stalled; ${active.stalledTurnCount} active turn(s) older than ${BLUEBUBBLES_LIVE_TURN_STALLED_MS}ms`
   }
   if (active.activeTurnCount > 0) return `upstream reachable; ${active.activeTurnCount} live turn(s) active`
-  if (queued > 0) return `upstream reachable but iMessage is not caught up; ${queued} recovery item(s) queued`
+  if (queued > 0) {
+    /* v8 ignore next -- every capture this sense writes carries a parseable capturedAt @preserve */
+    return `upstream reachable but iMessage is not caught up; ${queued} message(s) without a reply or recorded outcome, oldest ${Math.round((pending.oldestPendingRecoveryAgeMs ?? 0) / 1000)}s`
+  }
   if (failed > 0) return `${failed} message(s) unrecoverable this cycle; upstream ok`
   return "upstream reachable"
 }
@@ -3472,7 +3727,10 @@ async function syncBlueBubblesRuntime(
   const catchUpObservationBatch = options.catchUpObservationBatch ?? beginObservationBatch(
     BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
   )
-  pruneBlueBubblesSemanticObservationGenerations()
+  pruneBlueBubblesSemanticObservationGenerations(
+    Date.now(),
+    new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
+  )
   const client = resolvedDeps.createClient()
   const checkedAt = new Date().toISOString()
   const previousState = readBlueBubblesRuntimeState(agentName)
@@ -3508,7 +3766,7 @@ async function syncBlueBubblesRuntime(
     // while this field stays scoped to upstream transport reachability.
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: formatBlueBubblesRuntimeDetail(queued, failed, activeAfterCatchup),
+      detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
@@ -3584,7 +3842,7 @@ export async function recoverQueuedBlueBubblesMessages(
     const activeSnapshot = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed, activeSnapshot),
+      detail: formatBlueBubblesRuntimeDetail(pendingSnapshot, failed, activeSnapshot),
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingSnapshot,
@@ -3611,14 +3869,25 @@ export async function recoverQueuedBlueBubblesMessages(
   return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
-export async function catchUpMissedBlueBubblesMessages(
+interface BlueBubblesCatchUpOptions {
+  processTurns?: boolean
+  observationBatch?: BlueBubblesObservationBatch
+  lifecycleSignal?: AbortSignal
+}
+
+export function catchUpMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
   previousState?: BlueBubblesRuntimeState,
-  options: {
-    processTurns?: boolean
-    observationBatch?: BlueBubblesObservationBatch
-    lifecycleSignal?: AbortSignal
-  } = {},
+  options: BlueBubblesCatchUpOptions = {},
+): Promise<BlueBubblesCatchUpResult> {
+  return withObservationScope((scope) => catchUpMissedBlueBubblesMessagesInScope(scope, deps, previousState, options))
+}
+
+async function catchUpMissedBlueBubblesMessagesInScope(
+  scope: BlueBubblesObservationScope,
+  deps: Partial<RuntimeDeps>,
+  previousState: BlueBubblesRuntimeState | undefined,
+  options: BlueBubblesCatchUpOptions,
 ): Promise<BlueBubblesCatchUpResult> {
   options.lifecycleSignal?.throwIfAborted()
   const resolvedDeps = { ...defaultDeps, ...deps }
@@ -3710,14 +3979,14 @@ export async function catchUpMissedBlueBubblesMessages(
       preparedCandidates.push({
         status: "ready",
         event,
-        observationReservation: reserveObservationFromBatch(
+        observationReservation: scope.own(reserveObservationFromBatch(
           observationBatch,
           page * BLUEBUBBLES_CATCHUP_PAGE_SIZE + pageIndex,
           {
             chatGuid: event.chat.chatGuid,
             chatIdentifier: event.chat.chatIdentifier,
           },
-        ),
+        )),
       })
     }
     if (pageEvents.length < BLUEBUBBLES_CATCHUP_PAGE_SIZE) break
@@ -3756,7 +4025,6 @@ export async function catchUpMissedBlueBubblesMessages(
   await Promise.all(groupBlueBubblesObservationsByLane(readyCandidates).map(async (lane) => {
     for (const prepared of lane) {
       const { event, observationReservation } = prepared
-      let semanticGenerationOwned = false
 
       try {
         options.lifecycleSignal?.throwIfAborted()
@@ -3767,7 +4035,6 @@ export async function catchUpMissedBlueBubblesMessages(
           observationReservation,
         )
         if (captured.status === "audit_only") {
-          clearPending(observationReservation)
           result.skipped++
           continue
         }
@@ -3780,7 +4047,6 @@ export async function catchUpMissedBlueBubblesMessages(
           ) {
             // Already has an outcome. Fencing it again would hold every older
             // reply in this chat behind a message nobody will process.
-            clearPending(observationReservation)
             result.skipped++
             continue
           }
@@ -3789,7 +4055,6 @@ export async function catchUpMissedBlueBubblesMessages(
             observationReservation,
             false,
           )
-          semanticGenerationOwned = true
           if (captured.writeResult === "semantic_capture_duplicate") {
             if (!activeSemanticHandlingSlots.has(captured.capture.keyHash)) {
               suspendBlueBubblesSemanticObservation(generation)
@@ -3810,7 +4075,6 @@ export async function catchUpMissedBlueBubblesMessages(
           continue
         }
 
-        semanticGenerationOwned = true
         const handled = await handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "upstream-catchup", {
           timeoutMs: BLUEBUBBLES_TURN_TIMEOUT_MS,
           autonomyBudgetTrigger: "recovery",
@@ -3830,7 +4094,6 @@ export async function catchUpMissedBlueBubblesMessages(
           }
         }
       } catch (error) {
-        if (!semanticGenerationOwned) clearPending(observationReservation)
         if (options.lifecycleSignal?.aborted) throw options.lifecycleSignal.reason
         recordBlueBubblesRecoveryFailureForBudget(agentName, event, "upstream-catchup")
         result.failed++
@@ -3866,9 +4129,17 @@ export interface BlueBubblesCapturedRecoveryResult {
   failed: number
 }
 
-export async function recoverCapturedBlueBubblesInboundMessages(
+export function recoverCapturedBlueBubblesInboundMessages(
   deps: Partial<RuntimeDeps> = {},
   options: { lifecycleSignal?: AbortSignal } = {},
+): Promise<BlueBubblesCapturedRecoveryResult> {
+  return withObservationScope((scope) => recoverCapturedBlueBubblesInboundMessagesInScope(scope, deps, options))
+}
+
+async function recoverCapturedBlueBubblesInboundMessagesInScope(
+  scope: BlueBubblesObservationScope,
+  deps: Partial<RuntimeDeps>,
+  options: { lifecycleSignal?: AbortSignal },
 ): Promise<BlueBubblesCapturedRecoveryResult> {
   options.lifecycleSignal?.throwIfAborted()
   const resolvedDeps = { ...defaultDeps, ...deps }
@@ -3911,7 +4182,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       status: "ready",
       capture,
       normalized,
-      observationReservation: seededObservationReservation(capture.keyHash, reserveBlueBubblesObservation(normalized)),
+      observationReservation: seededObservationReservation(capture.keyHash, scope.own(reserveBlueBubblesObservation(normalized))),
     })
   }
 
@@ -4127,7 +4398,9 @@ export function createBlueBubblesWebhookHandler(
     }
 
     const resolvedDeps = { ...defaultDeps, ...deps }
-    const observationReservation = reserveBlueBubblesObservation(normalized)
+    // The scope outlives this request: it closes when the queued turn ends.
+    const scope = new BlueBubblesObservationScope()
+    const observationReservation = scope.own(reserveBlueBubblesObservation(normalized))
     let captured: BlueBubblesSemanticCaptureResult
     try {
       captured = await captureBlueBubblesSemanticEvent(
@@ -4137,7 +4410,7 @@ export function createBlueBubblesWebhookHandler(
         observationReservation,
       )
     } catch (error) {
-      clearPending(observationReservation)
+      scope.close()
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -4153,7 +4426,7 @@ export function createBlueBubblesWebhookHandler(
     }
 
     if (captured.status === "audit_only") {
-      clearPending(observationReservation)
+      scope.close()
       writeJson(res, 200, {
         handled: true,
         notifiedAgent: false,
@@ -4174,10 +4447,10 @@ export function createBlueBubblesWebhookHandler(
 
     setTimeout(() => {
       if (options.lifecycleSignal?.aborted) {
-        clearPending(observationReservation)
+        scope.close()
         return
       }
-      void handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
+      trackBlueBubblesTurn(handleCapturedBlueBubblesSemanticEvent(captured, resolvedDeps, "webhook", {
         observationReservation,
         lifecycleSignal: options.lifecycleSignal,
       }).catch((error) => {
@@ -4191,7 +4464,7 @@ export function createBlueBubblesWebhookHandler(
             reason: error instanceof Error ? error.message : String(error),
           },
         })
-      })
+      }).finally(() => scope.close()))
     }, 0)
   }
 }
@@ -4673,6 +4946,20 @@ export async function drainAndSendPendingBlueBubbles(
   return result
 }
 
+const runningBlueBubblesApps = new WeakMap<http.Server, () => void>()
+
+/**
+ * Stop the sense now. Aborting first ends every in-flight turn (each leaves its
+ * inbound pending for the next process to replay) instead of letting
+ * server.close() wait on them. Resolves with how many turns were still running.
+ */
+export async function stopBlueBubblesApp(server: http.Server): Promise<number> {
+  runningBlueBubblesApps.get(server)?.()
+  server.close()
+  server.closeAllConnections()
+  return drainBlueBubblesTurns()
+}
+
 export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Server {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const lifecycleController = new AbortController()
@@ -4698,7 +4985,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     /* v8 ignore next -- re-entrant timer guard; difficult to force deterministically without timing the turn lock @preserve */
     if (recoveryPassRunning) return
     recoveryPassRunning = true
-    void recoverQueuedBlueBubblesMessages(resolvedDeps, {
+    trackBlueBubblesTurn(recoverQueuedBlueBubblesMessages(resolvedDeps, {
       lifecycleSignal: lifecycleController.signal,
     })
       /* v8 ignore start -- defensive wrapper; expected per-message failures are handled inside recovery helpers @preserve */
@@ -4715,7 +5002,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       /* v8 ignore stop */
       .finally(() => {
         recoveryPassRunning = false
-      })
+      }))
   }
 
   function scheduleRecoveryPass(): void {
@@ -4759,7 +5046,8 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     triggerRuntimeSync()
   }, BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS)
   const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
-  server.on?.("close", () => {
+  function shutdown(): void {
+    if (closed) return
     closed = true
     webhookReconciler?.close()
     webhookReconciler = null
@@ -4770,7 +5058,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       clearTimeout(recoveryDelayTimer)
       recoveryDelayTimer = null
     }
-  })
+  }
+  server.on?.("close", shutdown)
+  runningBlueBubblesApps.set(server, shutdown)
   server.listen(channelConfig.port, () => {
     const blueBubblesConfig = getBlueBubblesConfig()
     webhookReconciler = createBlueBubblesWebhookReconciler({

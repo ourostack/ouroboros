@@ -20,7 +20,8 @@
 #        c. Updating changelog.json: take both sides of the conflict, keep the
 #           main side's existing-version entries, and renumber the local side's
 #           added entry to match the new version
-#        d. npm install to regenerate the lockfile
+#        d. scripts/release-bump.cjs to write it into the lockfiles, the Unraid
+#           template and the bundle metadata as well
 #   4. git add the resolved files (only the ones we touched)
 #   5. git commit with a descriptive merge message
 #
@@ -75,6 +76,9 @@ EXPECTED_FILES=(
   "packages/ouro.bot/package.json"
   "changelog.json"
   "package-lock.json"
+  "npm-shrinkwrap.json"
+  "deploy/unraid/sanctuary.xml"
+  "deploy/unraid/sanctuary.ouro/bundle-meta.json"
 )
 
 # If anything outside the expected set conflicted, bail and let the human fix it.
@@ -117,6 +121,14 @@ NEXT_VERSION="$(node -e "
   }
 " "$THEIRS_VERSION")"
 echo "[rebase-and-rebump] next version: $NEXT_VERSION"
+
+# The other release files are rewritten by release-bump.cjs below; take main's side of any
+# that conflicted so it reads valid JSON/XML.
+for f in package-lock.json npm-shrinkwrap.json deploy/unraid/sanctuary.xml deploy/unraid/sanctuary.ouro/bundle-meta.json; do
+  if echo "$CONFLICTS" | grep -qx "$f"; then
+    git checkout --theirs "$f"
+  fi
+done
 
 # Resolve package.json: if conflicted, take theirs and bump. If clean, just bump.
 if echo "$CONFLICTS" | grep -q '^package.json$'; then
@@ -197,10 +209,16 @@ else
   git add changelog.json
 fi
 
-# Regenerate the lockfile.
-echo "[rebase-and-rebump] regenerating package-lock.json"
-npm install --silent
-git add package-lock.json
+# Write the new version into every file a version bump touches (both lockfiles, the Unraid
+# template and bundle metadata, not only the package files). The changelog entry is already
+# in place, so its own lines are passed back and add nothing.
+echo "[rebase-and-rebump] writing $NEXT_VERSION into the release files"
+BUMP_ARGS=()
+while IFS= read -r line; do
+  BUMP_ARGS+=(--change "$line")
+done < <(node -p "JSON.parse(require('fs').readFileSync('changelog.json', 'utf-8')).versions[0].changes.join('\n')")
+node "$REPO_ROOT/scripts/release-bump.cjs" --version "$NEXT_VERSION" "${BUMP_ARGS[@]}"
+git add package-lock.json npm-shrinkwrap.json deploy/unraid/sanctuary.xml deploy/unraid/sanctuary.ouro/bundle-meta.json changelog.json
 
 # Verify all expected files are now resolved.
 REMAINING="$(git diff --name-only --diff-filter=U)"
