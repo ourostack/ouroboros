@@ -97,6 +97,15 @@ if [[ -n "$UNEXPECTED" ]]; then
   exit 1
 fi
 
+# Take main's side of every conflicted version file before any node process starts: node reads the
+# nearest package.json on startup, and one holding conflict markers crashes it (ERR_INVALID_PACKAGE_CONFIG).
+# The files are rewritten by the bumps below.
+for f in package.json packages/ouro.bot/package.json package-lock.json npm-shrinkwrap.json deploy/unraid/sanctuary.xml deploy/unraid/sanctuary.ouro/bundle-meta.json; do
+  if echo "$CONFLICTS" | grep -qx "$f"; then
+    git checkout --theirs "$f"
+  fi
+done
+
 # Compute the next version. Read main's version from the merged (or
 # auto-merged) package.json. If package.json conflicted, stage :3 is main's
 # side. If it merged cleanly, just read the on-disk file.
@@ -122,18 +131,6 @@ NEXT_VERSION="$(node -e "
 " "$THEIRS_VERSION")"
 echo "[rebase-and-rebump] next version: $NEXT_VERSION"
 
-# The other release files are rewritten by release-bump.cjs below; take main's side of any
-# that conflicted so it reads valid JSON/XML.
-for f in package-lock.json npm-shrinkwrap.json deploy/unraid/sanctuary.xml deploy/unraid/sanctuary.ouro/bundle-meta.json; do
-  if echo "$CONFLICTS" | grep -qx "$f"; then
-    git checkout --theirs "$f"
-  fi
-done
-
-# Resolve package.json: if conflicted, take theirs and bump. If clean, just bump.
-if echo "$CONFLICTS" | grep -q '^package.json$'; then
-  git checkout --theirs package.json
-fi
 node -e "
   const fs = require('fs')
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'))
@@ -143,9 +140,6 @@ node -e "
 git add package.json
 
 # Same for packages/ouro.bot/package.json.
-if echo "$CONFLICTS" | grep -q '^packages/ouro.bot/package.json$'; then
-  git checkout --theirs packages/ouro.bot/package.json
-fi
 node -e "
   const fs = require('fs')
   const pkg = JSON.parse(fs.readFileSync('packages/ouro.bot/package.json', 'utf-8'))
