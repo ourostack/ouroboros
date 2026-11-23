@@ -212,6 +212,45 @@ describe("npm publish idempotency", () => {
         .toThrow("published or staged by another publish but still unreadable after 3 polls")
     })
 
+    it("waits for the tarball when the version is readable but npm pack still answers ETARGET", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", SAME_FILES), local)
+      let downloads = 0
+      const npm = (args: string[]): NpmResult =>
+        args[0] === "pack" && !args.includes("--ignore-scripts") && ++downloads <= 2
+          ? fail("npm error code ETARGET\nnpm error notarget No matching version found")
+          : fake.npm(args)
+      expect(publishPackageIdempotently({ cwd: work, tag: "latest" }, npm, noSleep))
+        .toEqual({ outcome: "already-published", spec: SPEC })
+      expect(downloads).toBe(3)
+    })
+
+    it("still fails on different bytes after the tarball appears", () => {
+      const local = tarball("local", SAME_FILES)
+      const fake = stagedFake(tarball("landed", CHANGED_FILES), local)
+      let downloads = 0
+      const npm = (args: string[]): NpmResult =>
+        args[0] === "pack" && !args.includes("--ignore-scripts") && ++downloads <= 1 ? fail("npm error code ETARGET") : fake.npm(args)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, npm, noSleep))
+        .toThrow("content differs: dist/cli.js")
+    })
+
+    it("fails explicitly when the tarball never becomes available, and on any other download error at once", () => {
+      const local = tarball("local", SAME_FILES)
+      const never = stagedFake(tarball("landed", SAME_FILES), local)
+      const neverNpm = (args: string[]): NpmResult =>
+        args[0] === "pack" && !args.includes("--ignore-scripts") ? fail("npm error code ETARGET") : never.npm(args)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, neverNpm, noSleep))
+        .toThrow(`could not download ${SPEC} from npm: npm error code ETARGET (after 3 attempts)`)
+      const other = stagedFake(tarball("landed2", SAME_FILES), local)
+      let tries = 0
+      const otherNpm = (args: string[]): NpmResult =>
+        args[0] === "pack" && !args.includes("--ignore-scripts") && ++tries ? fail("npm error code ETIMEDOUT") : other.npm(args)
+      expect(() => publishPackageIdempotently({ cwd: work, tag: "latest" }, otherNpm, noSleep))
+        .toThrow("(after 1 attempt)")
+      expect(tries).toBe(1)
+    })
+
     it("surfaces a registry read error during the wait", () => {
       const local = tarball("local", SAME_FILES)
       let views = 0
