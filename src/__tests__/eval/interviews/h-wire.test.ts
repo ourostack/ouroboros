@@ -51,14 +51,19 @@ describe("the H wire's Responses translation", () => {
         { role: "tool", tool_call_id: "c2", content: "/home" },
         { role: "system", content: "A later note." },
       ],
-      activeTools: [{ type: "function", function: { name: "exec_command", description: "Run a command.", parameters: { type: "object", properties: { cmd: { type: "string" } } } } }],
+      activeTools: [{ type: "function", function: { name: "exec_command", description: "Run a command.", strict: false, parameters: { type: "object", properties: { cmd: { type: "string" } } } } }],
     })
-    // The case's conversation goes in once, before the first user message only. A tool with no description or schema
-    // gets what a connected MCP server's would, since it goes through the same passthrough.
-    expect(responsesRequest({ input: [{ type: "message", role: "user", content: "job" }, { type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "debrief" }], tools: [{ type: "function", name: "t" }] }, PREFIX)).toEqual({
+    // The case's conversation goes in once, before the first user message only. A tool reaches the model exactly as
+    // the arm sent it: nothing added where it sent no description or schema (or an empty one), and `strict` kept.
+    expect(responsesRequest({ input: [{ type: "message", role: "user", content: "job" }, { type: "message", role: "system", content: "s" }, { type: "message", role: "user", content: "debrief" }], tools: [{ type: "function", name: "t" }, { type: "function", name: "u", description: "", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } }] }, PREFIX)).toEqual({
       messages: [...PREFIX, { role: "user", content: "job" }, { role: "system", content: "s" }, { role: "user", content: "debrief" }],
-      activeTools: [{ type: "function", function: { name: "t", description: "MCP tool: t (server: t)", parameters: { type: "object", properties: {} } } }],
+      activeTools: [
+        { type: "function", function: { name: "t" } },
+        { type: "function", function: { name: "u", description: "", strict: true, parameters: { type: "object", properties: {}, additionalProperties: false } } },
+      ],
     })
+    // A tool field the wire doesn't know would be dropped, so it is refused by name instead.
+    expect(() => responsesRequest({ input: [], tools: [{ type: "function", name: "t", defer_loading: true }] }, [])).toThrow("the H wire can't carry a tool's defer_loading")
     // A call with no assistant text before it starts its own assistant message; no instructions and no tools are fine.
     expect(responsesRequest({ input: [{ type: "message", role: "user", content: "hi" }, { type: "function_call", call_id: "c", name: "t", arguments: "{}" }] }, [])).toEqual({
       messages: [{ role: "user", content: "hi" }, { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "t", arguments: "{}" } }] }],

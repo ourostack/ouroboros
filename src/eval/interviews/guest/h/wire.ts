@@ -42,17 +42,34 @@ function textOf(content: unknown): string {
 }
 
 /** A function tool the arm declares, as its request carries it. */
-type ArmTool = { name: string; description?: string; parameters?: JsonObject }
+type ArmTool = { name: string; description?: string; parameters?: JsonObject; strict?: boolean }
+
+/** The fields of an arm's function tool the wire carries; any other is refused, never dropped. */
+const TOOL_FIELDS = new Set(["type", "name", "description", "parameters", "strict"])
+
+/** Refuses a tool with a field the wire would otherwise drop. */
+export function checkToolFields(tool: Record<string, unknown>): void {
+  for (const key of Object.keys(tool)) if (!TOOL_FIELDS.has(key)) throw new Error(`the H wire can't carry a tool's ${key}`)
+}
 
 /**
  * The arm's own tools, passed to the host's runtime as a connected MCP server's tools are: through `mcpToolSchema`,
  * the census's passthrough (ax/census.config.json). They are the arm's doors, not the harness's: the arm runs each
- * call to one, and nothing in the harness does. A tool named as its own server keeps its name; one with no
- * description or schema gets the passthrough's (a fidelity note), and the arms' tools have both.
+ * call to one, and nothing in the harness does. Each reaches the model exactly as the arm sent it. Named as its own
+ * server, a tool keeps its name, and its description and schema are the arm's objects. Where the arm sent no
+ * description or schema, the passthrough's fill-in is taken out again, and `strict` is carried as sent.
  */
 function wireTools(tools: ArmTool[]): Tool[] {
-  const infos: McpToolInfo[] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", inputSchema: tool.parameters ?? { type: "object", properties: {} } }))
-  return infos.map((tool) => mcpToolSchema({ server: tool.name }, tool))
+  const infos: McpToolInfo[] = tools.map((tool) => ({ name: tool.name, description: tool.description ?? "", inputSchema: tool.parameters ?? {} }))
+  return infos.map((info, index) => {
+    const schema: Tool = mcpToolSchema({ server: info.name }, info)
+    const sent = tools[index]!
+    if (sent.description === undefined) delete schema.function.description
+    else schema.function.description = sent.description
+    if (sent.parameters === undefined) delete schema.function.parameters
+    if (sent.strict !== undefined) schema.function.strict = sent.strict
+    return schema
+  })
 }
 
 /**
@@ -99,7 +116,10 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
     }
   }
   const tools = Array.isArray(body.tools) ? body.tools as unknown[] : []
-  for (const tool of tools) if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
+  for (const tool of tools) {
+    if (typeOf(tool) !== "function") throw new Error(`the H wire can't carry a tool of type ${typeOf(tool)}`)
+    checkToolFields(tool as Record<string, unknown>)
+  }
   const activeTools = wireTools(tools as ArmTool[])
   return { messages: [...(leading.length > 0 ? [{ role: "system" as const, content: leading.join("\n\n") }] : []), ...rest], activeTools }
 }
