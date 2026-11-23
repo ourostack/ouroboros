@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1377",
+      "version": "0.1.0-alpha.1378",
       "changes": [
         "An `ouro up` that an agent's shell runs inside the daemon's own launchd job now hands the daemon replacement to the detached helper instead of stranding the daemon. Apple's sh, bash and zsh set XPC_SERVICE_NAME=0 for every child they fork, so the label check alone missed it; the check now also looks for the daemon job's pid among the command's ancestors, treats a launchctl or ps failure as inside the job, and logs which check decided (daemon.runtime_replacement_job_check)."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1377",
+      "changes": [
+        "The Butler checks Slugger's card every 5 minutes. After 3 failed checks it tells the owner once on Telegram that Slugger is unreachable, and silently when he is back."
       ]
     },
     {
