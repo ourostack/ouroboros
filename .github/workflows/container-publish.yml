@@ -318,12 +318,7 @@ jobs:
         if: steps.release-gate.outputs.publish == 'true'
         id: exact-references
         run: |
-          # The registry can answer a read just after our own push as not found; the same strict gate is repeated, bounded.
-          for attempt in 1 2 3 4 5 6; do
-            if GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE"); then break; fi
-            test "$attempt" -lt 6
-            sleep 10
-          done
+          GATE_OUTPUT=$(scripts/container-post-push-verify.sh "$VERSION_IMAGE" "$SHA_IMAGE" 6 10)
           printf '%s\n' "$GATE_OUTPUT"
           test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
           DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
