@@ -88,8 +88,10 @@ describe("package metadata", () => {
     const waits = (verifyJob.match(/^          (verify_tag|if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind) /gmu) ?? []).length
     expect(waits).toBe(4)
     expect(verifyJob).toContain("PROPAGATION_DEADLINE_SECONDS=600")
-    // Four 10-minute waits, the tarball wait (about 21 minutes), install and smoke.
-    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(4 * 10 + 21 + 5)
+    expect(verifyJob).toContain("LATEST_DEADLINE_SECONDS=1800")
+    expect(verifyJob).toContain("deadline=$((started + LATEST_DEADLINE_SECONDS))")
+    // Two 10-minute version waits, two 30-minute latest-tag waits, the tarball wait (about 21 minutes), install and smoke.
+    expect(Number(/timeout-minutes: (\d+)/u.exec(verifyJob)?.[1])).toBeGreaterThanOrEqual(2 * 10 + 2 * 30 + 21 + 5)
   })
 
   it("gates publish on both packed artifact E2E suites", () => {

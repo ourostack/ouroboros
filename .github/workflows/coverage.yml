@@ -745,9 +745,9 @@ jobs:
       - publish
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.outputs.release == 'true'
     runs-on: ubuntu-latest
-    # Room for the two version waits and the two latest-tag waits (10 min each at most), the tarball wait (about
-    # 21 min), the install and the smoke.
-    timeout-minutes: 70
+    # Room for the two version waits (10 min each at most), the two latest-tag waits (30 min each at most), the
+    # tarball wait (about 21 min), the install and the smoke.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -775,6 +775,11 @@ jobs:
           # fails a release that actually succeeded, and a false failure here also
           # fails the GitHub release that follows.
           PROPAGATION_DEADLINE_SECONDS=600
+
+          # The latest tag moves later than the version is readable: alpha.1414 was published at 07:20Z and
+          # latest still read alpha.1413 after ten minutes of retries (run 45129146440), reaching alpha.1417
+          # by 07:40Z. Only a latest that never catches up is a failure.
+          LATEST_DEADLINE_SECONDS=1800
 
           # Checks the exact version this run published, never the moving dist-tag:
           # the tag can lag the version by minutes (alpha.1161 was up while latest
@@ -816,7 +821,7 @@ jobs:
           # never an older one. It can lag the version, so this waits out the same window.
           verify_latest_not_behind() {
             started=$(date +%s)
-            deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
+            deadline=$((started + LATEST_DEADLINE_SECONDS))
             until result=$(node scripts/npm-dist-tag-policy.cjs latest-check "$1" "$LOCAL" 2>&1); do
               if [ "$(date +%s)" -ge "$deadline" ]; then
                 echo "::error::${result}"
