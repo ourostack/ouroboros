@@ -578,8 +578,10 @@ describe("handleInboundTurn", () => {
     function claimOf(messages: PendingMessage[] = [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }]) {
       return { messages, settle: vi.fn(), release: vi.fn() }
     }
-    const startsATool = (outcome: Promise<unknown>) => vi.fn(async (_messages: unknown, callbacks: { onToolStart(name: string, args: Record<string, string>): void }) => {
+    type DispatchingCallbacks = { onToolStart(name: string, args: Record<string, string>): void; onToolDispatch?(name: string): void }
+    const startsATool = (outcome: Promise<unknown>) => vi.fn(async (_messages: unknown, callbacks: DispatchingCallbacks) => {
       callbacks.onToolStart("send_mail", { to: "ana" })
+      callbacks.onToolDispatch?.("send_mail")
       return outcome
     })
 
@@ -631,25 +633,45 @@ describe("handleInboundTurn", () => {
     it.each([
       ["errors", () => startsATool(Promise.resolve({ usage: usageData, outcome: "errored" }))],
       ["throws", () => startsATool(Promise.reject(new Error("provider down")))],
-    ])("never reads claimed pending messages again once the turn started a tool, even when it then %s", async (_how, runAgent) => {
+    ])("never reads claimed pending messages again once a tool reached its handler, even when the turn then %s", async (_how, runAgent) => {
       const claim = claimOf()
-      const callbacks = makeCallbacks()
+      const callbacks = { ...makeCallbacks(), onToolDispatch: vi.fn() }
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent() as InboundTurnInput["runAgent"], callbacks })
 
       await handleInboundTurn(input).catch(() => undefined)
 
       expect(callbacks.onToolStart).toHaveBeenCalledWith("send_mail", { to: "ana" })
-      // Settled before the tool runs, so a crash or shutdown during the tool cannot hand the messages to a retry.
+      expect(callbacks.onToolDispatch).toHaveBeenCalledWith("send_mail")
+      // Settled before the handler runs, so a crash or shutdown during the tool cannot hand the messages to a retry.
       expect(claim.settle).toHaveBeenCalledWith()
-      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolStart.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
     })
 
-    it("settles claimed pending messages once, at the first tool start", async () => {
+    it("puts claimed pending messages back when the turn's tool calls were all refused before a handler ran", async () => {
       const claim = claimOf()
-      const callbacks = makeCallbacks()
-      const runAgent = vi.fn(async (_messages: unknown, turnCallbacks: { onToolStart(name: string, args: Record<string, string>): void }) => {
-        turnCallbacks.onToolStart("read_mail", {})
+      // A refused call (bad arguments, a loop guard, no approval path) or a find_tools lookup is shown as started
+      // but never runs, so the turn has not acted on the messages.
+      const runAgent = vi.fn(async (_messages: unknown, turnCallbacks: DispatchingCallbacks) => {
         turnCallbacks.onToolStart("send_mail", { to: "ana" })
+        turnCallbacks.onToolStart("find_tools", { query: "mail" })
+        return { usage: usageData, outcome: "errored", errorClassification: "network-error" }
+      })
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent as unknown as InboundTurnInput["runAgent"] })
+
+      await handleInboundTurn(input)
+
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed: false })
+    })
+
+    it("settles claimed pending messages once, at the first handler dispatch, and still tells the sense", async () => {
+      const claim = claimOf()
+      const callbacks = { ...makeCallbacks(), onToolDispatch: vi.fn() }
+      const runAgent = vi.fn(async (_messages: unknown, turnCallbacks: DispatchingCallbacks) => {
+        turnCallbacks.onToolStart("read_mail", {})
+        turnCallbacks.onToolDispatch?.("read_mail")
+        turnCallbacks.onToolStart("send_mail", { to: "ana" })
+        turnCallbacks.onToolDispatch?.("send_mail")
         return { usage: usageData, outcome: "completed" }
       })
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent as unknown as InboundTurnInput["runAgent"], callbacks })
@@ -657,9 +679,11 @@ describe("handleInboundTurn", () => {
       await handleInboundTurn(input)
 
       expect(callbacks.onToolStart).toHaveBeenCalledTimes(2)
-      // Once at the tool start, then the no-op settle after persisting.
-      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolStart.mock.invocationCallOrder[0]!)
-      expect(claim.settle.mock.invocationCallOrder[1]).toBeGreaterThan(callbacks.onToolStart.mock.invocationCallOrder[1]!)
+      expect(callbacks.onToolDispatch).toHaveBeenCalledTimes(2)
+      // Once at the first dispatch, then the no-op settle after persisting.
+      expect(claim.settle).toHaveBeenCalledTimes(2)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolDispatch.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[1]).toBeGreaterThan(callbacks.onToolDispatch.mock.invocationCallOrder[1]!)
     })
 
     it("hands the turn every callback the sense gave it, as its own properties", async () => {

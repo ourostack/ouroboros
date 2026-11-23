@@ -1148,17 +1148,18 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   // Expired messages were archived just now; reading them again next turn would archive them again.
   const expiredPending = sessionPending.filter((message) => !pending.includes(message))
   if (expiredPending.length > 0) pendingClaim?.settle(expiredPending)
-  // A turn that reaches a tool call may act on its pending messages, so they are settled at once: a retry in this
-  // process or after a crash or shutdown must not read them again and repeat what the tool did.
+  // A turn whose tool call reaches its handler may act on its pending messages, so they are settled just before it
+  // runs: a retry in this process or after a crash or shutdown must not read them again and repeat what the tool
+  // did. A call refused before its handler, or a find_tools lookup, has done nothing, so it settles nothing.
   const turnCallbacks: ChannelCallbacks = pendingClaim
     ? {
       ...input.callbacks,
-      onToolStart(name: string, args: Record<string, string>) {
+      onToolDispatch(name: string) {
         if (!turnActed) {
           turnActed = true
           pendingClaim?.settle()
         }
-        input.callbacks.onToolStart(name, args)
+        input.callbacks.onToolDispatch?.(name)
       },
     }
     : input.callbacks

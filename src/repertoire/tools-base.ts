@@ -128,6 +128,8 @@ export interface ToolResultImage {
 export interface ToolContext {
   /** Set by the engine for one tool call: hands images from the result to the model. */
   attachToolImages?: (images: ToolResultImage[]) => void;
+  /** Set by the engine for one tool call: called once every guard has passed, just before the handler runs. */
+  beforeHandler?: () => void;
   /** A validated immutable terminal locator, not relationship authority. */
   readonly currentShepherdSurface?: import("../senses/shepherd/surface").ShepherdSession;
   /** Trusted turn-local subtraction from the normal engine menu; never grants a tool. */

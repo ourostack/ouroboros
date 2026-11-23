@@ -109,6 +109,22 @@ describe("turn-local canonical tool selection", () => {
     expect(handler).toHaveBeenCalledOnce()
   })
 
+  it("tells the context just before the handler runs, and never for a call rejected before it", async () => {
+    const { definition, handler } = addProbe()
+    const beforeHandler = vi.fn()
+    const context: ToolContext = { ...MCP_CONTEXT, toolSelection: { ordinary: [definition], engine: [restTool] }, beforeHandler }
+    handler.mockImplementationOnce(async () => {
+      expect(beforeHandler).toHaveBeenCalledOnce()
+      return "handler ran"
+    })
+
+    expect(await executeTool(definition.tool.function.name, { value: "safe" }, context)).toEqual({ kind: "handler_succeeded", text: "handler ran" })
+    expect(await executeTool("rest", { note: "complete" }, context)).toMatchObject({ kind: "rejected_before_handler" })
+    expect(await executeTool(definition.tool.function.name, {}, context)).toMatchObject({ kind: "rejected_before_handler" })
+
+    expect(beforeHandler).toHaveBeenCalledOnce()
+  })
+
   it.each(["profile", "advertisement"])("A001a coverage rejects allowed decisions with changed %s before execution", async (change) => {
     const { definition, handler } = addProbe()
     const context: ToolContext = {

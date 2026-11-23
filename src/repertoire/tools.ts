@@ -593,6 +593,7 @@ export async function executeTool(
     } as ToolContext
     : authorizedContext
 
+  toolContext?.beforeHandler?.()
   try {
     const result = await (executor ? executor(name, args, toolContext) : def.handler(args, toolContext));
     emitNervesEvent({
