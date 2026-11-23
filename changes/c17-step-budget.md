@@ -1,0 +1,5 @@
+A turn close to its step budget is now warned, and one step without progress no longer ends a working turn early.
+
+- When two or fewer later steps can still run tools, the last result of each step ends with a `[step budget]` note. This covers a tool's result, a lone `speak` or `find_tools`, and a batch rejected before it ran. The note says how many steps are left at most, and whether more can still be earned. It also says to finish what was asked first, such as a change or a send already prepared, before extra checks. After the last such step, it says to settle (or rest) now.
+- The budget still starts at 8 and grows by 4, up to 24 (or `context.maxStepsPerTurn`). It now grows when any of the last 4 steps made progress, not only the step just before the boundary. So a `speak`, a check that exits 1 or a rejected call on that step no longer stops the turn. A turn with no progress in its last 4 steps still stops.
+- Why: in the step 6 MiniMax replay, 4 of the 5 failed unreadable-edition runs stopped below 24. In 4 of the 5, the step the limit rejected held a `books library replace` that was ready to run.
