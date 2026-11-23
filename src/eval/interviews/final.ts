@@ -21,7 +21,8 @@ export type FinalResult = {
   replies: string[]
 }
 
-/** The code of a choose or identify call that recorded nothing (its answer is "Not recorded."). */
+/** The code of a choose or identify call that recorded nothing. The model's answer is "Not recorded." only, as the
+ * pre-registration's closing step has it; the code goes to the nerves event. */
 const NOT_RECORDED = "not-recorded"
 
 /** The two closing tools' Ouro AX cards, for the census: they are offered only to the study's model. */
@@ -29,12 +30,12 @@ export const toolCards: ToolDoorCard[] = [
   {
     id: "tool:choose", group: "eval-interview", effect: "write",
     when: "Record which of the three tool interfaces you would pick first and second for the household's book jobs, with the reason.",
-    errors: [{ code: NOT_RECORDED, means: "The call named a label that isn't one of the three, or a choice was already recorded.", fix: "Call choose once, with first and second each one of the three labels." }],
+    errors: [{ code: NOT_RECORDED, means: "Nothing was recorded: the arguments weren't JSON, first isn't one of the three labels, or the choice step had ended.", fix: "Call choose once during the choice step, with first set to one of the three labels." }],
   },
   {
     id: "tool:identify", group: "eval-interview", effect: "write",
     when: "Record your guess of which product each tool interface label was, or no idea.",
-    errors: [{ code: NOT_RECORDED, means: "The call had no guesses object, or guesses were already recorded.", fix: "Call identify once, with guesses keyed by label." }],
+    errors: [{ code: NOT_RECORDED, means: "Nothing was recorded: the call came before the product question, or had no guesses object.", fix: "Call identify once after the product question, with guesses keyed by label." }],
   },
 ]
 
