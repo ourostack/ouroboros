@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { buildFindToolsSchema, findToolsDefinition, formatFindToolsResult } from "../../repertoire/deferred-tools"
+import { FIND_TOOLS_NAME, findToolsDefinition, formatLoadedDoors } from "../../repertoire/tool-catalog"
 import { getSpecialistTools, specialistToolDefinitions } from "../../heart/hatch/specialist-tools"
 import { createVoiceLocalAudioToolDefinition, voiceLocalAudioToolDefinition } from "../../repertoire/tools-voice-local"
 
@@ -8,13 +8,13 @@ const codeOf = (text: string): string | undefined => /\(code: ([a-z-]+)\)$/.exec
 
 describe("find_tools card", () => {
   it("declares find_tools as a read that changes nothing outside the turn", () => {
-    expect(findToolsDefinition.tool.function.name).toBe(buildFindToolsSchema([]).function.name)
+    expect(findToolsDefinition.tool.function.name).toBe(FIND_TOOLS_NAME)
     expect(findToolsDefinition.ax).toMatchObject({ id: "tool:find_tools", group: "turn-skills", effect: "read" })
     expect(findToolsDefinition.riskProfile).toEqual({ mutates: "none", risk: "low" })
   })
 
   it("ends a search with no match with the code its card names", () => {
-    const code = codeOf(formatFindToolsResult([]))
+    const code = codeOf(formatLoadedDoors([]))
     expect(findToolsDefinition.ax.errors.map((error) => error.code)).toContain(code)
   })
 })
