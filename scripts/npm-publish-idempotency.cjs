@@ -114,9 +114,12 @@ function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
   return lookupPublishedVersion(spec, npm) !== null;
 }
 
+// Keeps the start and the end: npm prints its closing lines (tag, provenance, "being processed") last.
 function boundedStream(text) {
-  const lines = String(text ?? "").split("\n").filter((line) => line.trim().length > 0).slice(0, 20).map((line) => line.slice(0, 300));
-  return lines.length > 0 ? lines.join("\n") : "(no output)";
+  const lines = String(text ?? "").split("\n").filter((line) => line.trim().length > 0).map((line) => line.slice(0, 300));
+  if (lines.length === 0) return "(no output)";
+  if (lines.length <= 20) return lines.join("\n");
+  return [...lines.slice(0, 5), `... ${lines.length - 20} lines omitted ...`, ...lines.slice(-15)].join("\n");
 }
 
 function boundedOutput(result) {
@@ -134,7 +137,7 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
       const published = npm(["publish", "--access", "public", "--tag", tag], cwd);
       if (published.status === 0) {
         // npm's own words, bounded, so a version that never becomes readable can be compared with what npm said it did.
-        console.error(`npm publish ${spec} exited 0; its output (each stream: first 20 lines, 300 characters each):\n${boundedOutput(published)}`);
+        console.error(`npm publish ${spec} exited 0; its output (each stream: first 5 and last 15 lines, 300 characters each):\n${boundedOutput(published)}`);
         return { outcome: "published", spec };
       }
       if (lookupPublishedVersion(spec, npm) === null) {
