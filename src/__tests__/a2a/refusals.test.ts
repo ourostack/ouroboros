@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest"
 import { receiveRefusal, receiveRefusalError, type RefusalReason } from "../../a2a/refusals"
 import { commandIdFor } from "../../a2a/server"
 
-/** Every rejection reason friends 0.1.0-alpha.17 `receiveShare` and `checkEnvelopeBinding` can return. The table in
+/** Every rejection reason friends 0.1.0-alpha.30 `receiveShare` and `checkEnvelopeBinding` can return. The table in
  * refusals.ts is checked against the friends types at compile time; this list checks the wording at run time. */
 const FRIENDS_REASONS: RefusalReason[] = [
   "malformed_message", "malformed_plaintext", "unseal_failed", "recipient_mismatch", "signed_recipient_mismatch",
   "signed_kind_mismatch", "sender_binding_mismatch", "malformed_binding", "unbound_envelope", "unbound_delegation",
-  "stale_envelope", "stale_delegation", "replayed", "in_flight", "resolve_failed", "retired_pin", "bad_signature",
+  "stale_envelope", "stale_delegation", "unbound_approval_answer", "stale_approval_answer", "replayed", "in_flight", "resolve_failed", "retired_pin", "bad_signature",
   "untrusted_source", "import_failed",
   // The harness mission-result wire.
   "no_mission", "no_delegation", "assignee_mismatch",

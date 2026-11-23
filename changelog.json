@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1393",
+      "changes": [
+        "Use friends 0.1.0-alpha.30, which can carry a signed answer to an approval prompt."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1392",
       "changes": [
         "A2A records every inbound before its turn, ends it in one recorded outcome, and lets cancel and shutdown stop the turn."
