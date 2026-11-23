@@ -130,19 +130,6 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro help [<command>] [--json]",
     example: "ouro help --json",
   },
-  mailbox: {
-    category: "Agents",
-    description: "Show the agent's current mailbox overview",
-    usage: "ouro mailbox [--json]",
-    example: "ouro mailbox --json",
-  },
-  outlook: {
-    category: "Agents",
-    description: "Deprecated alias for `ouro mailbox`",
-    usage: "ouro outlook [--json]",
-    example: "ouro outlook --json",
-    hidden: true,
-  },
   move: {
     category: "Agents",
     description: "Make this machine the agent's home, the one machine that runs it. The move is recorded in the agent's synced bundle, and the old home stops running it.",
@@ -243,10 +230,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   desk: {
     category: "Tasks",
-    description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, and recall (routes through the desk MCP server). Ouro admins also invite people to Hosted Desk and manage their access.",
-    usage: "ouro desk <task|track|friction|lesson|search|recall|reindex|thread|invite|access|delete-account> ...",
+    description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, recall and Desk's health (through the agent's built-in Desk MCP server; --desk <name> picks another desk). Ouro admins also invite people to Hosted Desk and manage their access.",
+    usage: "ouro desk <task|track|friction|lesson|search|recall|status|doctor|reindex|invite|access|delete-account> ...",
     example: "ouro desk invite --name \"Sam\"",
-    subcommands: ["task", "track", "friction", "lesson", "search", "recall", "reindex", "thread", "invite", "access", "delete-account"],
+    subcommands: ["task", "track", "friction", "lesson", "search", "recall", "status", "doctor", "reindex", "invite", "access", "delete-account"],
   },
   task: {
     category: "Tasks",

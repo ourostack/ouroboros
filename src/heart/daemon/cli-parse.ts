@@ -303,7 +303,6 @@ export function usage(): string {
     "  ouro repair [--agent <name>]",
     "  ouro provider refresh [--agent <name>]",
     "  ouro provider check [--agent <name>] --lane outward|inner",
-    "  ouro mailbox [--json]",
     "  ouro help [<command>] [--json]",
     "  ouro changelog [--from <version>]",
     "  ouro -v|--version",
@@ -3114,7 +3113,6 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "mail") return parseMailCommand(args.slice(1))
   if (head === "dns") return parseDnsCommand(args.slice(1))
   if (head === "logs") return parseLogsCommand(args.slice(1))
-  if (head === "mailbox" || head === "outlook") return { kind: "mailbox", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
   if (head === "account") return parseAccountCommand(args.slice(1))

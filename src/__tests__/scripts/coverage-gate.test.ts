@@ -117,22 +117,17 @@ describe("coverage gate helpers", () => {
     expect(config.test.coverage.exclude).not.toContain("src/heart/session-stats.ts")
   })
 
-  it.each([
-    { argv: [], skip: false },
-    { argv: ["--skip-mailbox-ui-install"], skip: true },
-    { argv: ["--skip-mailbox-ui-install-extra"], skip: false },
-  ])("wires the exact install option through the real CLI without changing gates: $argv", ({ argv, skip }) => {
-    const result = runCoverageCli(argv)
+  it("runs every gate through the real CLI, in order, with no package install", () => {
+    const result = runCoverageCli([])
     expect(result.exitCode).toBe(0)
     expect(result.summary.overall_status).toBe("pass")
     expect(result.calls.map((args) => args[0]!.endsWith("changelog-gate.cjs") ? "changelog" : args[0] === "install" ? "install" : args[1])).toEqual([
-      "lint", "changelog", ...(skip ? [] : ["install"]), "typecheck:mailbox-ui", "test:mailbox-ui", "test:coverage:vitest", "audit:nerves",
+      "lint", "changelog", "test:coverage:vitest", "audit:nerves",
     ])
-    expect(result.calls.filter((args) => args[0] === "install")).toEqual(skip ? [] : [["install", "--prefix", "packages/mailbox-ui"]])
   })
 
-  it.each(["lint", "changelog", "typecheck:mailbox-ui", "test:mailbox-ui", "test:coverage:vitest", "captures", "audit:nerves", "report"])("keeps %s failures fatal when dependency preparation is skipped", (failure) => {
-    const result = runCoverageCli(["--skip-mailbox-ui-install"], failure)
+  it.each(["lint", "changelog", "test:coverage:vitest", "captures", "audit:nerves", "report"])("keeps %s failures fatal", (failure) => {
+    const result = runCoverageCli([], failure)
     expect(result.exitCode).toBe(1)
     expect(result.summary.overall_status).toBe("fail")
     if (failure !== "audit:nerves") expect(result.summary.required_actions.length).toBeGreaterThan(0)

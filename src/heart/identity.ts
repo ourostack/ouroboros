@@ -167,6 +167,12 @@ export interface AgentConfig {
    */
   plugins?: PluginConfig[]
   /**
+   * Other desks this agent looks after, by name, with each one's folder on this machine (`~` allowed), for example
+   * `{ "ari": "~/desk" }`. The agent's own desk is always `<bundle>/desk`. Each listed desk gets its own Desk server,
+   * so the agent changes it only through Desk's tools (`mcp__desk-<name>__*`), the way a Claude Code session there would.
+   */
+  desks?: Record<string, string>
+  /**
    * Bill model calls across a discovered pool of Copilot accounts (github-copilot only). `ouro auth`
    * discovers the accounts; the runtime moves between them by quota tranche and on a 402 or 429.
    */
@@ -676,6 +682,30 @@ function validateFacingConfig(
   return { provider: facing.provider, model: facing.model }
 }
 
+/** A desk name becomes part of an MCP server name (`desk-<name>`), so it is short lowercase kebab-case. */
+export const DESK_NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
+
+function validateDesks(raw: unknown, configFile: string): Record<string, string> {
+  const fail = (what: string): never => {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: "agent config has invalid desks",
+      meta: { path: configFile, problem: what },
+    })
+    throw new Error(`agent.json at ${configFile}: ${what}`)
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return fail('desks must be an object of desk name to folder, like { "ari": "~/desk" }.')
+  const desks: Record<string, string> = {}
+  for (const [name, folder] of Object.entries(raw)) {
+    if (!DESK_NAME.test(name)) fail(`desks.${name}: a desk name is 1-32 lowercase letters, digits and dashes.`)
+    if (typeof folder !== "string" || folder.trim() === "") fail(`desks.${name} must be the desk's folder on this machine.`)
+    desks[name] = folder
+  }
+  return desks
+}
+
 function validateProviderFallback(raw: unknown, configFile: string): AgentFacingConfig[] {
   const entries = Array.isArray(raw) ? raw : null
   const valid = entries?.every((entry) => entry && typeof entry === "object" && !Array.isArray(entry)
@@ -817,6 +847,7 @@ export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot:
     humanFacing,
     agentFacing,
     ...(parsed.providerFallback !== undefined ? { providerFallback: validateProviderFallback(parsed.providerFallback, configFile) } : {}),
+    ...(parsed.desks !== undefined ? { desks: validateDesks(parsed.desks, configFile) } : {}),
     habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(owner === undefined ? getAgentName() : owner.agentName, parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],

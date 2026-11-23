@@ -49,7 +49,6 @@ export type OuroCliCommand =
   | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune"; agent?: string }
-  | { kind: "mailbox"; json?: boolean }
   | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
   | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
   | { kind: "provider.status"; agent?: string }
@@ -158,7 +157,7 @@ export type OuroCliCommand =
   | { kind: "habit.probe"; agent: string; habitName: string; noSend: true; json: boolean }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger: HabitRunTrigger }
   | { kind: "await.poke"; agent: string; awaitName: string }
-  | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
+  | { kind: "desk"; agent?: string; desk?: string; tool: string; toolArgs: Record<string, unknown> }
   | { kind: "desk.admin"; action: "invite"; displayName?: string; accountId?: string; out?: string; gateway?: string; trustGateway?: true }
   | { kind: "desk.admin"; action: "access"; accountId: string; on: boolean; gateway?: string; trustGateway?: true }
   | { kind: "desk.admin"; action: "delete-account"; accountId: string; gateway?: string; trustGateway?: true }

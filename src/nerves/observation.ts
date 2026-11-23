@@ -2,10 +2,8 @@
  * Nerves observation layer — shared typed readers for runtime state.
  *
  * This module re-exports domain types that multiple consumers need
- * (Mailbox, CLI, agent tools) so they don't maintain parallel type universes.
- *
- * The Mailbox UI consumes these through the HTTP API, but the same
- * observation functions back CLI commands and future native clients.
+ * (CLI, agent tools, native clients) so they don't maintain parallel type
+ * universes.
  */
 
 // Domain types re-exported for shared observation

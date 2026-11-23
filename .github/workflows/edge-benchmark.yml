@@ -3,11 +3,13 @@ name: edge-benchmark
 # How lean the harness is on each host: install size, startup time, idle and
 # peak memory, modules loaded and turn latency (.github/scripts/edge-benchmark.cjs).
 # Linux runs under a 1 GiB memory cap, the size of the smallest machine we run
-# on. Each pull request compares itself with main's latest run in the job
-# summary, and the ratchet fails the job when a metric gets worse than main by
-# more than its noise allowance (ratchetLimit in the script). To land an
-# intentional regression, label the PR edge-benchmark-regression-accepted and
-# say why in its description.
+# on. A pull request packs both its own build and the base it merges into, and
+# each host measures the two in the same job, taking turns between them, so
+# how fast that runner happens to be cancels out: hosted runners of one label
+# differ by up to 2x (#1786). The ratchet fails the job when a metric gets
+# worse than the base by more than its noise allowance (ratchetLimit in the
+# script). To land an intentional regression, label the PR
+# edge-benchmark-regression-accepted and say why in its description.
 
 on:
   pull_request:
@@ -23,11 +25,56 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
+  pack:
+    # The packed package is plain JavaScript, so one Linux job packs it for every host. On a pull request, the
+    # checkout is the test merge of the change into its base, and its first parent is that base.
+    name: pack (${{ matrix.side }})
+    strategy:
+      fail-fast: false
+      matrix:
+        side: ${{ fromJSON(github.event_name == 'pull_request' && '["change", "base"]' || '["change"]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Check out the base
+        if: matrix.side == 'base'
+        run: git checkout --detach HEAD^1
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Pack
+        # prepack builds, so this is one build. The side's folder is inside the artifact, so the bench job finds
+        # pack/change and pack/base however many artifacts it downloads (download-artifact names a folder per
+        # artifact only when it downloads more than one).
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack/${{ matrix.side }}"
+          npm pack --pack-destination "$RUNNER_TEMP/pack/${{ matrix.side }}"
+          git rev-parse --short HEAD > "$RUNNER_TEMP/pack/${{ matrix.side }}/commit"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: edge-benchmark-pack-${{ matrix.side }}
+          path: ${{ runner.temp }}/pack
+          retention-days: 1
+
   bench:
     name: bench (${{ matrix.host }})
+    needs: pack
     strategy:
       fail-fast: false
       matrix:
@@ -48,38 +95,28 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
 
-      - name: Install Dependencies
-        run: npm ci
-
-      - name: Build and pack
-        run: |
-          npm run build
-          mkdir -p "$RUNNER_TEMP/pack"
-          npm pack --pack-destination "$RUNNER_TEMP/pack"
+      - name: Download packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: edge-benchmark-pack-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/pack
 
       - name: Measure
         run: |
-          tarball=$(ls "$RUNNER_TEMP"/pack/*.tgz)
-          bench=(node .github/scripts/edge-benchmark.cjs run --tarball "$tarball" --out "$RUNNER_TEMP/edge-benchmark.json")
+          pack="$RUNNER_TEMP/pack"
+          bench=(node .github/scripts/edge-benchmark.cjs run --tarball "$(ls "$pack"/change/*.tgz)" --out "$RUNNER_TEMP/edge-benchmark.json")
+          if [ -d "$pack/base" ]; then
+            bench+=(--baseline-tarball "$(ls "$pack"/base/*.tgz)" --baseline-out "$RUNNER_TEMP/baseline/edge-benchmark.json")
+            mkdir -p "$RUNNER_TEMP/baseline"
+            echo "BASELINE_LABEL=the base, $(cat "$pack/base/commit"), measured alongside on this runner" >> "$GITHUB_ENV"
+          fi
           if [ "$RUNNER_OS" = Linux ]; then
             sudo systemd-run --scope --quiet -p MemoryMax=1G -p MemorySwapMax=0 \
               sudo -E -u "$(id -un)" env "PATH=$PATH" "HOME=$HOME" "${bench[@]}" --memory-cap-mib 1024
           else
             "${bench[@]}"
-          fi
-
-      - name: Fetch main's latest result
-        if: github.event_name != 'push'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow edge-benchmark.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')
-          if [ -n "$run_id" ]; then
-            gh run download "$run_id" -R "$GITHUB_REPOSITORY" --name "edge-benchmark-${{ matrix.host }}" --dir "$RUNNER_TEMP/baseline"
-            echo "BASELINE_LABEL=main (run $run_id)" >> "$GITHUB_ENV"
           fi
 
       - name: Report
@@ -92,7 +129,7 @@ jobs:
           node .github/scripts/edge-benchmark.cjs report \
             --current "$RUNNER_TEMP/edge-benchmark.json" \
             --baseline "$RUNNER_TEMP/baseline/edge-benchmark.json" \
-            --baseline-label "${BASELINE_LABEL:-main}" \
+            --baseline-label "${BASELINE_LABEL:-the base}" \
             --summary "$GITHUB_STEP_SUMMARY" \
             --gate "$GATE" "${accepted[@]}"
 

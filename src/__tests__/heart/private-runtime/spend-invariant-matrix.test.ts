@@ -203,10 +203,6 @@ function makeHarness(policyResult: "allow" | "deny") {
     router,
     bundlesRoot,
     privateRuntimePolicyDeps,
-    mailboxServerFactory: vi.fn(async () => ({
-      url: "http://127.0.0.1:6876",
-      stop: async () => undefined,
-    })),
   } as any)
 
   return {

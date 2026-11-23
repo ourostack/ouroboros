@@ -4,7 +4,6 @@ import * as path from "path"
 
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
 const wrapperPackageJson = require(path.resolve(__dirname, "../../../packages/ouro.bot/package.json"))
-const mailboxPackageJson = require(path.resolve(__dirname, "../../../packages/mailbox-ui/package.json"))
 const {
   PACKAGE_PAYLOAD_PATH_PREFIXES,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
@@ -46,6 +45,7 @@ describe("package metadata", () => {
     expect([...packageJson.files].sort()).toEqual([
       ...PACKAGE_PAYLOAD_PATH_PREFIXES,
       "changelog.json",
+      "desk.lock.json",
       "npm-shrinkwrap.json",
     ].sort())
   })
@@ -86,7 +86,7 @@ describe("package metadata", () => {
     const start = workflow.indexOf("  verify-npm:")
     const verifyJob = workflow.slice(start, workflow.indexOf("  github-release:", start))
     const versionWaits = (verifyJob.match(/^          scripts\/npm-verify-exact-version\.sh /gmu) ?? []).length
-    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then verify_latest_not_behind /gmu) ?? []).length
+    const latestWaits = (verifyJob.match(/^          if \[ "\$(CLI|WRAPPER)_TAG" = latest \]; then scripts\/npm-verify-latest-tag\.sh /gmu) ?? []).length
     expect(versionWaits).toBe(2)
     expect(latestWaits).toBe(2)
     // The latest-tag waits keep their 10 minutes; only the exact-version waits are 20.
@@ -137,9 +137,5 @@ describe("package metadata", () => {
     // Optional so a small host can leave it out; ordinary installs still get it.
     expect(packageJson.optionalDependencies.mailparser).toBe("^3.9.15")
     expect(packageJson.overrides["deepmerge-ts"]).toBe("^8.0.1")
-  })
-
-  it("keeps the mailbox build tool above the patched Vite floor", () => {
-    expect(mailboxPackageJson.devDependencies.vite).toBe("^6.4.3")
   })
 })

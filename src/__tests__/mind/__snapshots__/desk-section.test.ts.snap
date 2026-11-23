@@ -3,11 +3,13 @@
 exports[`deskSection > golden snapshot of an assembled body for a small representative fixture desk 1`] = `
 "## my desk
 
-i have a desk at \`desk/\`: durable work that persists across sessions. tracks group related work; each task is a folder with a \`task.md\` of plain Markdown, in my bundle's Git repository, so i commit what i change. friction notes and lessons live there too, and finished tasks stay browsable. i read and edit the files directly and search them with \`grep\`.
+i have a desk at \`desk/\`: durable work that persists across sessions. it is a Desk, the same kind my operator's coding agents (Claude Code, Codex, Copilot) work on, and Desk is built into me. tracks group related work; each task is a folder with a \`task.md\` card; friction notes and lessons live there too, and finished tasks stay browsable.
+
+**i change a desk only through Desk's tools**, \`mcp__desk__*\` for my own: \`task_create\`, \`task_update\` (progress, status, next step, log), \`task_archive\`, \`track_create\`, \`friction_add\`, \`lesson_add\`, \`note\`, and \`desk_save\` for any other file. \`desk_search\` and \`desk_recall\` find things, \`desk_status\` and \`desk_doctor\` say how the desk is and what to fix, and \`desk_skill\` reads Desk's own how-to skills. the tools commit and push each change themselves, so i never hand-edit desk files or commit them with git: a hand edit skips Desk's checks, and a shared desk refuses commits Desk didn't make. reading the files directly is fine. \`desk/_record/\` is my diary and notes, which my diary and note tools keep; it is not part of Desk.
 
 **the reflex.** when something spans more than this turn, i'd forget it by tomorrow, or the operator will ask about it later, i put it on the desk before i start: a project, a recurring task (\`cadence\`), a one-time reminder (\`scheduledAt\`), a multi-step investigation, a friction note, a lesson.
 
-**what doesn't belong:** a single-turn answer, debugging that resolves in the same exchange, scratch thinking, live continuity, claims and obligations (those are Arc), habit definitions (those stay in habits/), or a separate scratch workspace (the maintained record belongs under desk/_record).
+**what doesn't belong:** a single-turn answer, debugging that resolves in the same exchange, scratch thinking, live continuity, claims and obligations (those are Arc), habit definitions (those stay in habits/), or a separate scratch workspace.
 
 **states.** \`drafting\` → \`processing\` → \`validating\` → \`done\`; \`collaborating\` when i'm waiting on a human or peer agent, \`paused\` when the operator set it down, \`blocked\` when something outside is in the way, \`cancelled\` when we stopped wanting it. external trackers (ADO work items, GitHub issues) are linked from a task, not replaced by one.
 

@@ -648,6 +648,37 @@ describe("loadAgentConfig", () => {
     }
   })
 
+  it("loads the other desks an agent looks after and rejects malformed ones", async () => {
+    const base = {
+      version: 2,
+      humanFacing: { provider: "anthropic", model: "claude-opus-5-5" },
+      agentFacing: { provider: "anthropic", model: "claude-sonnet-5-5" },
+      phrases: { thinking: ["thinking"], tool: ["tool"], followup: ["followup"] },
+    }
+    const { loadAgentConfig, resetIdentity } = await import("../../heart/identity")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...base, desks: { ari: "~/desk", "team-2": "/srv/desk" } }))
+    resetIdentity()
+    expect(loadAgentConfig().desks).toEqual({ ari: "~/desk", "team-2": "/srv/desk" })
+
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(base))
+    resetIdentity()
+    expect(loadAgentConfig().desks).toBeUndefined()
+
+    const cases: Array<[unknown, string]> = [
+      [["~/desk"], "desks must be an object of desk name to folder"],
+      [null, "desks must be an object of desk name to folder"],
+      [{ Ari: "~/desk" }, "desks.Ari: a desk name is 1-32 lowercase letters, digits and dashes."],
+      [{ "-ari": "~/desk" }, "desks.-ari: a desk name"],
+      [{ ari: " " }, "desks.ari must be the desk's folder on this machine."],
+      [{ ari: 7 }, "desks.ari must be the desk's folder on this machine."],
+    ]
+    for (const [bad, message] of cases) {
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ ...base, desks: bad }))
+      resetIdentity()
+      expect(() => loadAgentConfig()).toThrow(message)
+    }
+  })
+
   it("fills phrases when missing", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({

@@ -31,11 +31,6 @@ function daemonDeps() {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     },
-    mailboxServerFactory: vi.fn(async () => ({
-      origin: "http://127.0.0.1:0",
-      broadcast: vi.fn(),
-      stop: vi.fn(async () => undefined),
-    })),
   }
 }
 

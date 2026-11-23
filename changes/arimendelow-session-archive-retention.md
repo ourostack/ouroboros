@@ -1,0 +1,1 @@
+- The daemon now gzips session archives (`*.archive.ndjson`) that nothing has written for a week, 10 minutes after it starts and then once a day. Nothing has read these files since May 2026. Each gzip is checked to give back the same bytes before the original is removed, and the daemon logs counts only (`daemon.state_retention_session_archives`).
