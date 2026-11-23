@@ -258,11 +258,8 @@ export async function ship(opts, deps, timing = {}) {
   const unfinished = [...cutover.stdout.matchAll(/^@@CUTOVER-UNFINISHED:(.+)$/gm)].map((m) => m[1])
   if (unfinished.length > 0) throw new ShipError(`${unfinished.join(" and ")} exists on the host, so a bundle sync cutover is still applying or its rollback did not finish. Let it finish (or run sanctuary-sync-cutover.sh --rollback again) until that file is gone, then ship ${version}.`)
   if (cutoverState[1] === "1") {
-    const body = must(await deps.gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${REPO}/contents/package.json?ref=${sha}`]), `reading package.json at ${sha}`)
-    let releaseVersion
-    try { releaseVersion = JSON.parse(body).version } catch { releaseVersion = undefined }
-    if (typeof releaseVersion !== "string" || !semver.valid(releaseVersion)) throw new ShipError(`could not read a version from package.json at ${sha}, so cannot tell whether ${version} carries bundle sync`)
-    if (!semver.gte(releaseVersion, BUNDLE_SYNC_FIRST_RELEASE)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
+    // The version being shipped, not package.json: on main that keeps the last version set by hand.
+    if (!semver.gte(version, BUNDLE_SYNC_FIRST_RELEASE)) throw new ShipError(`${version} has no git in its image, and this host's bundle has already moved to bundle sync (${CUTOVER_MARKER}). First run sanctuary-sync-cutover.sh --rollback on the host, then ship ${version}.`)
     deps.log(`  ok   ${version} carries bundle sync, which this host's bundle uses`)
   }
 
