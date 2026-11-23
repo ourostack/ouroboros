@@ -15731,6 +15731,54 @@ describe("BlueBubbles failed reply retry", () => {
     }))
   })
 
+  it("closes a timed-out reply as soon as it shows up in the chat, without waiting for the retry delay", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    expect(handledFor(capture)).toBeUndefined()
+    mocks.listRecentMessages.mockResolvedValue([
+      {
+        kind: "message",
+        messageGuid: "late-reply-guid",
+        fromMe: true,
+        timestamp: Date.now() + 30_000,
+        text: "got it",
+        chat: { chatGuid: "any;-;owner@example.test" },
+      },
+    ])
+
+    // The next recovery pass, a minute later, finds the reply that arrived.
+    vi.setSystemTime(Date.now() + 60_000)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toEqual(expect.objectContaining({
+      outcome: "message_completed",
+      detailCode: "reply_visible_after_failed_send",
+    }))
+  })
+
+  it("keeps waiting on a timed-out reply when the chat cannot be read before the retry delay", async () => {
+    const payload = dmPayload(retriedGuid)
+    const capture = await makeStoredSemanticCapture(payload)
+    mocks.sendText.mockImplementationOnce(sendTimeout)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(payload)
+    mocks.listRecentMessages.mockRejectedValue(new TypeError("fetch failed"))
+
+    vi.setSystemTime(Date.now() + 60_000)
+    await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(handledFor(capture)).toBeUndefined()
+  })
+
   it("still retries when the only later agent message answered something else", async () => {
     const payload = dmPayload(retriedGuid)
     const capture = await makeStoredSemanticCapture(payload)
