@@ -408,7 +408,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "save_friend_note",
         description:
-          "save something i learned about my friend: type name (display name), tool_preference, or note. Sanctuary relationship preferences take source stated (they said it), observed (my revisable inference) or default, and only keys communication or timing. Any friend may save key reachChannel (with source): bluebubbles or teams, the channel to reach them on outside a conversation. Notes never grant authority; that belongs in steward policy. override=true replaces an existing value.",
+          "save something i learned about my friend: type name (display name), tool_preference, or note. Sanctuary relationship preferences take source stated (they said it), observed (my revisable inference) or default, and only keys communication or timing. Any friend may save key reachChannel (with source): bluebubbles or teams, the channel to reach them on outside a conversation. A note grants no authority; authority lives in steward policy. override=true replaces an existing value.",
         parameters: {
           type: "object",
           properties: {

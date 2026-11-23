@@ -91,7 +91,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "house_digest_send",
-      description: "Send the owner ONE short house-care digest, only when the latest house_sweep left findings that need their choice. Give finding_ids from that sweep (never a finding the owner was already told about unchanged). The digest body is always the findings' own summaries; you cannot change them. lead_in is an optional single line of at most 140 characters placed above them. It is refused when no valid finding id is given, when a finding was already told unchanged within 7 days, and when a digest already went out today. Delivery goes through the owner-notice path; for a replay request it goes to the replay sink, never to the owner.",
+      description: "Send the owner ONE short house-care digest, only when the latest house_sweep left findings that need their choice. Give finding_ids from that sweep. The digest body is the findings' own summaries, word for word. lead_in is an optional single line of at most 140 characters placed above them. It is refused when no valid finding id is given, when a finding was already told unchanged within 7 days, and when a digest already went out today. Delivery goes through the owner-notice path; for a replay request it goes to the replay sink, not to the owner.",
       parameters: {
         type: "object",
         properties: {
@@ -174,7 +174,7 @@ export const houseDigestToolDefinition: ToolDefinition = {
   },
   ax: {
     id: "tool:house_digest_send", group: "turn-sanctuary", effect: "write",
-    when: "Pick this after house_sweep for the fresh findings no tool could settle, so the owner hears each once; never for old news.",
+    when: "Pick this after house_sweep for the fresh findings no tool could settle, so the owner hears each one once; a finding the owner heard about unchanged in the last 7 days is refused.",
     errors: [
       { code: "no-sweep-yet", means: "No house_sweep has run in this process, so there are no findings to send.", fix: "Call house_sweep, then send its fresh finding ids." },
       { code: "unknown-finding", means: "A finding id isn't in the latest sweep.", fix: "Copy the ids exactly from the latest house_sweep result." },

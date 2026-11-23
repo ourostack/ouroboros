@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 export const telegramContactToolDefinition: ToolDefinition = {
   tool: { type: "function", function: {
     name: "telegram_contact_manage",
-    description: "List household Telegram contacts, revoke one exact approved contact, or release one exact blocked contact request. Owner only; quarantined message text is never returned.",
+    description: "List household Telegram contacts, revoke one exact approved contact, or release one exact blocked contact request. Owner only; the result leaves out quarantined message text.",
     parameters: { type: "object", properties: {
       action: { type: "string", enum: ["list", "revoke", "unblock"] },
       friendId: { type: "string", description: "Exact Friend ID from list; required for revoke." },
