@@ -72,6 +72,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/github-client",
   // The suffix that ends a tool's coded error; each tool module that uses it owns its own observability.
   "repertoire/tool-error-code",
+  "repertoire/tool-candidates",
   "mind/embedding-provider",
   // Commerce utility module: error classes and pure helpers (no independent side effects).
   "repertoire/commerce-errors",
