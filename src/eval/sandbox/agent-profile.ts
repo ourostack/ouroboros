@@ -12,7 +12,6 @@
  * `sanctuaryProfile` is the Butler's, and what every run used before profiles existed; it is still the default, so
  * the replay eval and the interviews run exactly as they did.
  */
-import fs from "node:fs"
 import path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { projectBundle } from "./projection"
@@ -76,16 +75,4 @@ export function bundleMounts(profile: Pick<AgentProfile, "agent" | "writable">, 
   checkProfile(profile)
   const target = containerBundle(profile)
   return ["-v", `${hostBundle}:${target}:ro`, ...profile.writable.flatMap((entry) => ["-v", `${path.join(hostBundle, entry)}:${target}/${entry}`])]
-}
-
-/**
- * Inside the agent container: the one bundle the sandbox mounted in the bundles folder (`$HOME/AgentBundles`, as
- * `getAgentBundlesRoot()` gives it), so a guest needs no agent name of its own and its command line stays the same
- * for every agent. Every guest entry other than the Telegram one, which takes `--agent`, finds its bundle this way.
- * Throws if there is none, or more than one.
- */
-export function mountedAgentRoot(bundlesRoot: string, list: (dir: string) => string[] = (dir) => fs.readdirSync(dir)): string {
-  const bundles = list(bundlesRoot).filter((name) => name.endsWith(".ouro")).sort()
-  if (bundles.length !== 1) throw new Error(`expected one agent bundle in ${bundlesRoot}, found ${bundles.length}`)
-  return path.join(bundlesRoot, bundles[0]!)
 }

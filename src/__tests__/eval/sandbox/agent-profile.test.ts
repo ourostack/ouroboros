@@ -6,7 +6,6 @@ import {
   bundleMounts,
   checkProfile,
   containerBundle,
-  mountedAgentRoot,
   SANCTUARY_WRITABLE,
   sanctuaryProfile,
 } from "../../../eval/sandbox/agent-profile"
@@ -70,13 +69,5 @@ describe("agent profiles for the eval sandbox", () => {
   ])("refuses a profile with %s", (_name, profile, message) => {
     expect(() => checkProfile(profile)).toThrow(message)
     expect(() => bundleMounts(profile, "/run/bundle")).toThrow(message)
-  })
-
-  it("finds the one bundle mounted in the agent container", () => {
-    fs.mkdirSync(path.join(root, "slugger.ouro"), { recursive: true })
-    fs.writeFileSync(path.join(root, "notes.txt"), "")
-    expect(mountedAgentRoot(root)).toBe(path.join(root, "slugger.ouro"))
-    expect(() => mountedAgentRoot(root, () => [])).toThrow(/found 0/)
-    expect(() => mountedAgentRoot(root, () => ["a.ouro", "b.ouro"])).toThrow(/found 2/)
   })
 })

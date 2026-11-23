@@ -7,7 +7,7 @@
 import { getAgentBundlesRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runInterviewGuest } from "./interviews/guest/run"
-import { mountedAgentRoot } from "./sandbox/agent-profile"
+import { mountedAgentRoot } from "./sandbox/guest"
 
 // The bundle is whichever one the sandbox mounted, so this command is the same for every agent.
 void Promise.resolve().then(() => runInterviewGuest({ stdin: process.stdin, stdout: process.stdout, turnFile: "/eval/turn.json", bundle: mountedAgentRoot(getAgentBundlesRoot()) })).then((outcome) => {
