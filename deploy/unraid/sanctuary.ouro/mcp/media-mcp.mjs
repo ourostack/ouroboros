@@ -757,7 +757,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
                percent_complete: result.download.percent_complete,
                detail: items,
                ...(neverStarted.length ? { never_started: { likely_fix: "blocklist_and_research", items: neverStarted } } : {}),
-               summary: `${facts.join(". ")}. Ask the owner whether to keep waiting, find another release, or give up; do not remove it on your own, because removing a partial download loses its progress.${neverStarted.length ? ` Separately, ${neverStarted.length} download(s) never started (${neverStarted.map((i) => i.title ?? "a release").join("; ")}); those can be blocklisted and searched again (blocklist_and_research) without asking.` : ""} media_fill_missing can look for a seeded alternative without deleting the partial first; it removes the partial only after a seeded replacement is grabbed.` }
+               summary: `${facts.join(". ")}. Whether to keep waiting, find another release, or give up is the owner's choice: removing a partial download loses its progress, so this leaves it in place.${neverStarted.length ? ` Separately, ${neverStarted.length} download(s) didn't start (${neverStarted.map((i) => i.title ?? "a release").join("; ")}); those can be blocklisted and searched again (blocklist_and_research) without asking.` : ""} media_fill_missing can look for a seeded alternative without deleting the partial first; it removes the partial only after a seeded replacement is grabbed.` }
     }
     const oldest = Math.max(...items.map((i) => i.age_hours))
     return { stuck_stage: "download", stuck_reason: "stalled_no_progress",
@@ -779,7 +779,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
     return { stuck_stage: null, stuck_reason: null, likely_fix: null, human_action_required: false,
              percent_complete: pct,
              ...(suspected.length ? { stall_suspected: true, detail: suspected } : {}),
-             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.${slow.length ? ` Slow but still moving: ${slow.map((i) => `${i.title ?? "a release"} is ${i.percent_complete}% done after ${i.age_hours} hours with an ETA of ${i.timeleft}`).join("; ")}.` : ""}${suspected.length ? ` It reports no ETA after ${Math.max(...suspected.map((i) => i.age_hours))} hours, so it may be stalled; the next check 30 minutes or more later confirms it. Do not promise an ETA.` : ""}` }
+             summary: `Downloading now — ${what}${pct === null ? "" : `, ${pct}% done`}, about ${gb} GB to go.${slow.length ? ` Slow but still moving: ${slow.map((i) => `${i.title ?? "a release"} is ${i.percent_complete}% done after ${i.age_hours} hours with an ETA of ${i.timeleft}`).join("; ")}.` : ""}${suspected.length ? ` It reports no ETA after ${Math.max(...suspected.map((i) => i.age_hours))} hours, so it may be stalled; the next check 30 minutes or more later confirms it. There is no ETA to give yet.` : ""}` }
   }
   if (result.download.errors.length) {
     return { stuck_stage: "download", stuck_reason: "download_client_error", likely_fix: "retry_or_replace_release",
@@ -808,7 +808,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
   }
   return { stuck_stage: "import", stuck_reason: "grabbed_but_not_imported", likely_fix: "force_import_scan",
            human_action_required: false,
-           summary: `It was grabbed (${result.search.last_grab_title ?? "unknown release"}) but never landed on the shelf.` }
+           summary: `It was grabbed (${result.search.last_grab_title ?? "unknown release"}) but didn't land on the shelf.` }
 }
 
 // -------------------------------------------------- tool: diagnose_and_fix
@@ -816,7 +816,7 @@ export function diagnose({ shelf, result, chain, entity, kind }) {
 async function mediaDiagnoseAndFix(a) {
   const before = await mediaRequestStatus({ request_id: a.request_id, tmdb_id: a.tmdb_id, title: a.title })
   if (!before.found) return { result: "no_such_request", before, after: null, human_action_required: true,
-                              human_action_reason: "Nothing to fix — it was never requested." }
+                              human_action_reason: "Nothing to fix — nobody requested it." }
   const action = a.action ?? (before.diagnosis?.likely_fix ?? "rescan")
 
   if (before.diagnosis?.stuck_reason === "acquisition_chain_down" && action !== "report_only") {
@@ -1092,7 +1092,7 @@ export async function mediaQueue(a) {
     ...(fakes.failed.length ? { fakes_not_cleared: fakes.failed } : {}),
     summary: !total ? "Nothing for this is in the Sonarr/Radarr queue."
       : `${total} queue row${total === 1 ? "" : "s"}${total > shown.length ? ` (showing ${shown.length})` : ""}; ${shown.filter((r) => r.stalled).length} stalled${shown.some((r) => r.stall?.state === "suspected") ? `, ${shown.filter((r) => r.stall?.state === "suspected").length} suspected (no ETA, to be confirmed by a check 30 minutes later)` : ""}.`,
-    note: "Sonarr/Radarr do not report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
+    note: "Sonarr/Radarr don't report seeders or peers. A row stuck at the same percent with no timeleft is the stall signal; for a release's seeder count use media_indexer_search.",
   }
 }
 
@@ -1991,7 +1991,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
   const summary = [
     `${have.length} of ${base.on_shelf.of} aired episodes are on the shelf; ${wanted.length} monitored ${wanted.length === 1 ? "episode is" : "episodes are"} missing.`,
     grabs ? `Grabbed ${grabs} release${grabs === 1 ? "" : "s"} now.` : "",
-    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has no seeders: it waits" : "have no seeders: they wait"} for peers and may never finish.` : "",
+    unseeded.length ? `${unseeded.map((x) => x.title).join("; ")} ${unseeded.length === 1 ? "has no seeders: it waits" : "have no seeders: they wait"} for peers and may not finish.` : "",
     moving ? `${moving} download(s) in progress.` : "",
     stuck.length ? `${stuck.length} download(s) stalled with no peers and no other usable release (${stuck.map((s) => `${s.title} at ${s.percent}%`).join("; ")}).` : "",
     notFound.length ? `No usable release found for ${notFound.map((e) => e.code).join(", ")}.` : "",
@@ -2006,7 +2006,7 @@ async function fillPass(a, seriesId, seriesTitle, { nowMs = Date.now(), deadline
     : stuck.length || notFound.length
       ? "Everything findable is requested; what is still missing is listed with why. Calling media_fill_missing later retries those."
       : unseeded.length
-        ? "Everything findable is requested; the unseeded grab waits for peers and may never finish. An await_condition watch can bring this back to media_fill_missing later."
+        ? "Everything findable is requested; the unseeded grab waits for peers and may not finish. An await_condition watch can bring this back to media_fill_missing later."
         : "Work is in progress: everything findable is requested and downloading. Calling media_fill_missing later imports and confirms it."
   const blockedHint = !blockedReport.length ? ""
     : ownerRetry ? " The owner's retry could not take the blocklisted release back (see errors and blocklisted_matches)."
@@ -2061,7 +2061,7 @@ const OWNER_WORDS_NOTE_AUDIT = "claimed by the caller; not verified"
 const OWNER_WORDS_REQUIRED = { result: "owner_words_required", message: "Pass owner_words with the owner's own words asking for this change (a verbatim quote), or leave dry_run true. Nothing was changed." }
 
 const itemView = (item) => ({ service_id: item.id, title: item.title ?? null, quality_profile_id: item.qualityProfileId ?? null })
-const UPGRADE_NEXT_STEP = "The profile now allows the upgrade. Call media_search_now (or media_release_search) for the item so Radarr/Sonarr looks for a better release; do not ask the owner to open a settings page."
+const UPGRADE_NEXT_STEP = "The profile now allows the upgrade. Call media_search_now (or media_release_search) for the item so Radarr/Sonarr looks for a better release; there is no settings page left for the owner to open."
 
 // Release profiles are the apps' own rules for which releases to take: a release whose title holds an ignored term is never
 // grabbed, and one missing a required term is skipped. Writes follow media_quality_profile: dry run first, owner_words to apply.
@@ -2195,21 +2195,21 @@ const TOOL_LIST = [
   {
     name: "media_search",
     annotations: { readOnlyHint: true },
-    description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Whether a title is on the shelf, or does not exist, comes only from a lookup made this turn, never from memory or an earlier reply; never say a title does not exist without reading both. Use `genres`/`keywords`/`year_range` to browse by mood (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
+    description: "Search or browse the household media catalogue. Use `query` for a title lookup: partial and misspelled titles are matched against the library first (Sonarr, Radarr, Jellyfin) and returned as `library_matches` with their kind and service id, and when nothing in the library matches, `lookup_candidates` (TVDB/TMDB) cover titles not in the library. Whether a title is on the shelf, or exists at all, comes from a lookup made this turn, not from memory or an earlier reply; a title is missing only when both library_matches and lookup_candidates are empty. Use `genres`/`keywords`/`year_range` to browse by mood (e.g. keywords ['autumn','thanksgiving'] for cozy fall films). `on_shelf: true` restricts to what is already downloaded, `false` to what is not, omit for both. Every item says whether it is on the shelf and carries its tmdb_id so a follow-up media_request needs no second lookup.",
     inputSchema: { type: "object", properties: {
       query: { type: "string", description: "Title or free text. Omit to browse by filters." },
       kind: { type: "string", enum: ["movie", "series", "any"], description: "Default any." },
       year_range: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[minYear, maxYear]" },
       genres: { type: "array", items: { type: "string" }, description: "TMDB genre names, e.g. ['Romance','Drama']." },
       keywords: { type: "array", items: { type: "string" }, description: "TMDB keywords, e.g. ['autumn','small town']. Best lever for mood/vibe requests." },
-      on_shelf: { type: "boolean", description: "true = only what we already have; false = only what we do not; omit = both." },
+      on_shelf: { type: "boolean", description: "true = only what we already have; false = only what we don't; omit = both." },
       limit: { type: "number", description: "1-20, default 12." },
       sort: { type: "string", enum: ["relevance", "release_year"] },
     } },
   },
   {
     name: "media_request",
-    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of, never a duplicate. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution. Someone asking is the request: call this and say what happened. Never send anyone to Jellyseerr or another screen to ask for it themselves.",
+    description: "Request a film or series so it gets downloaded. Give tmdb_id when known (from media_search), otherwise title plus optional year. Idempotent: if it was already requested you get approval_state 'already_requested' and duplicate_of instead of a second request. Returns the downstream sonarr_id/radarr_id so media_request_status needs no re-resolution. Someone asking is the request: this call makes it, and the reply says what happened, so nobody needs Jellyseerr or another screen to ask for it themselves.",
     inputSchema: { type: "object", properties: {
       tmdb_id: { type: "number" },
       title: { type: "string" },
@@ -2221,7 +2221,7 @@ const TOOL_LIST = [
   {
     name: "media_request_status",
     annotations: { readOnlyHint: true },
-    description: "One call, every stage: request, indexer search, download, file on disk, plus acquisition-chain health and a deterministic `diagnosis` block naming what is stuck, why, and the fix. Use this for any 'is it here yet?' or 'why hasn't X downloaded?' question. A queue row is not proof of progress: a release sitting at zero bytes comes back as stalled, not as downloading. Never infer the cause yourself — read diagnosis.summary.",
+    description: "One call, every stage: request, indexer search, download, file on disk, plus acquisition-chain health and a deterministic `diagnosis` block naming what is stuck, why, and the fix. Use this for any 'is it here yet?' or 'why hasn't X downloaded?' question. A queue row is not proof of progress: a release sitting at zero bytes comes back as stalled, not as downloading. diagnosis.summary names the cause from what each stage reports.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string", description: "e.g. jellyseerr:42" },
       tmdb_id: { type: "number" },
@@ -2285,7 +2285,7 @@ const TOOL_LIST = [
   {
     name: "media_fill_missing",
     _meta: { [TIMEOUT_META_KEY]: 240_000 },
-    description: "Gets a series' missing episodes in one call: it re-reads Sonarr, searches the indexers, grabs the best seeded release for each monitored aired episode (matched by episode title and air year as well as Sonarr's numbering), imports finished downloads, and replaces a stalled download it keeps by itself once a seeded alternative exists, over up to 3 passes in 3 minutes. It never grabs what is already in flight. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step; goal_met is true when nothing is left to get, and blocklisted_matches lists episodes whose only release is blocklisted.",
+    description: "Gets a series' missing episodes in one call: it re-reads Sonarr, searches the indexers, grabs the best seeded release for each monitored aired episode (matched by episode title and air year as well as Sonarr's numbering), imports finished downloads, and replaces a stalled download it keeps by itself once a seeded alternative exists, over up to 3 passes in 3 minutes. It leaves what is already in flight alone. Returns on_shelf, in_flight, not_found, actions, indexer_evidence, summary and next_step; goal_met is true when nothing is left to get, and blocklisted_matches lists episodes whose only release is blocklisted.",
     inputSchema: { type: "object", properties: {
       series: { type: "string", description: "Series title as the owner said it." },
       service_id: { type: "number", description: "Sonarr series id, when known." },
@@ -2373,7 +2373,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_quality_profile",
-    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). This is a normal API, never a settings screen the owner has to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. When the owner's words ask for the change, apply it, then report the before and after in one line. Applying takes owner_words, the owner's words asking for the change. After an applied change, call media_search_now so the upgrade is searched for.",
+    description: "Read and change the Radarr/Sonarr quality profiles that decide whether a better release may replace a file ('Quality Profile does not allow upgrades'). It works through the apps' API, with no settings screen for the owner to click through. action read (default) lists the profiles for the kind with their cutoff, upgrade flag and ordered qualities, or one profile with profile_id; add service_id to also see which profile a movie or series is on. action set_upgrade changes upgrade_allowed and/or the cutoff (a quality id from the profile, or cutoff_name) of profile_id. action assign puts the movie or series service_id on profile_id. Both writes are a dry run that shows before and after and changes nothing until dry_run is false; a change to a shared profile affects every title on it, so prefer assign to move one title when the owner asked about one title. When the owner's words ask for the change, apply it, then report the before and after in one line. Applying takes owner_words, the owner's words asking for the change. After an applied change, call media_search_now so the upgrade is searched for.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
       action: { type: "string", enum: ["read", "set_upgrade", "assign"], description: "Default read." },
@@ -2389,7 +2389,7 @@ const TOOL_LIST = [
   },
   {
     name: "media_release_profile",
-    description: "Read and set the Radarr/Sonarr release profiles: the apps' own standing rules for which releases to take. A release whose title holds an ignored term is never grabbed; one missing a required term is skipped. Use it for household rules such as never taking fake releases that are programs (ignored: a regex like /\\.(exe|scr|bat|msi)$/i, end-anchored so titles like Scream or Batman stay fine). action read (default) lists them. action set creates or changes the profile called name; ignored and required replace that list when given. A set is a dry run showing before and after until dry_run is false; applying takes owner_words, the owner's words asking for it. The fake-release rule in media_queue runs regardless; this keeps such releases from being grabbed at all.",
+    description: "Read and set the Radarr/Sonarr release profiles: the apps' own standing rules for which releases to take. A release whose title holds an ignored term isn't grabbed; one missing a required term is skipped. Use it for household rules such as turning down fake releases that are programs (ignored: a regex like /\\.(exe|scr|bat|msi)$/i, end-anchored so titles like Scream or Batman stay fine). action read (default) lists them. action set creates or changes the profile called name; ignored and required replace that list when given. A set is a dry run showing before and after until dry_run is false; applying takes owner_words, the owner's words asking for it. The fake-release rule in media_queue runs regardless; this keeps such releases from being grabbed at all.",
     inputSchema: { type: "object", properties: {
       kind: { type: "string", enum: ["movie", "series"], description: "movie = Radarr, series = Sonarr." },
       action: { type: "string", enum: ["read", "set"], description: "Default read." },
