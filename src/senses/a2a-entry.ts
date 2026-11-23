@@ -86,14 +86,14 @@ Promise.all([
       agentName,
       identity,
       // The Butler accepts delegated commands from explicitly granted peers; each
-      // one is announced in the owner's Telegram chat before it runs.
+      // one is announced in the owner's own Telegram chat before it runs (never through the owner route, never held).
       ...(agentName === "sanctuary" ? {
         delegation: {
           principalProfileId: A2A_PRINCIPAL_PROFILE_ID,
           agentRoot: getAgentRoot(agentName),
           notifyPrincipal: async (notice: { noticeId: string; text: string }) => {
-            const { sendTelegramOwnerNotice } = await import("./telegram")
-            await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
+            const { sendTelegramDelegatedAuditNotice } = await import("./telegram")
+            await sendTelegramDelegatedAuditNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
           },
         },
       } : {}),

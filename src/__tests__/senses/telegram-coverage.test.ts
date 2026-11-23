@@ -58,6 +58,7 @@ import {
   sendTelegramAwaitFollowUp,
   sendTelegramExternalEventDecision,
   sendTelegramOwnerNotice,
+  sendTelegramDelegatedAuditNotice,
   telegramAcceptanceAuditOwnerDigest,
 } from "../../senses/telegram"
 import { FileFriendStore } from "@ouro.bot/friends"
@@ -1383,6 +1384,7 @@ describe("Telegram sense coverage contracts", () => {
 
     await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
     await sendTelegramOwnerNotice("butler", { noticeId: "delegated:t1", text: "Delegated command from you." })
+    await sendTelegramDelegatedAuditNotice("butler", { noticeId: "delegated:t2", text: "Another delegated command from you." })
     await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
 
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", {
@@ -1391,6 +1393,9 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Delegated command from you.", {
       ...MARKDOWN_SEND,
     })
-    expect(f.api.stop).toHaveBeenCalledTimes(3)
+    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Another delegated command from you.", {
+      ...MARKDOWN_SEND,
+    })
+    expect(f.api.stop).toHaveBeenCalledTimes(4)
   })
 })
