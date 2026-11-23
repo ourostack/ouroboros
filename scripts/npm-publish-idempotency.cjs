@@ -114,10 +114,13 @@ function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
   return lookupPublishedVersion(spec, npm) !== null;
 }
 
-function boundedOutput(result) {
-  const text = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const lines = text.split("\n").filter((line) => line.trim().length > 0).slice(0, 20).map((line) => line.slice(0, 300));
+function boundedStream(text) {
+  const lines = String(text ?? "").split("\n").filter((line) => line.trim().length > 0).slice(0, 20).map((line) => line.slice(0, 300));
   return lines.length > 0 ? lines.join("\n") : "(no output)";
+}
+
+function boundedOutput(result) {
+  return `stdout:\n${boundedStream(result.stdout)}\nstderr:\n${boundedStream(result.stderr)}`;
 }
 
 function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
@@ -131,7 +134,7 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
       const published = npm(["publish", "--access", "public", "--tag", tag], cwd);
       if (published.status === 0) {
         // npm's own words, bounded, so a version that never becomes readable can be compared with what npm said it did.
-        console.error(`npm publish ${spec} exited 0; its output (first 20 lines, 300 characters each):\n${boundedOutput(published)}`);
+        console.error(`npm publish ${spec} exited 0; its output (each stream: first 20 lines, 300 characters each):\n${boundedOutput(published)}`);
         return { outcome: "published", spec };
       }
       if (lookupPublishedVersion(spec, npm) === null) {

@@ -100,7 +100,7 @@ describe("npm publish idempotency", () => {
     const local = tarball("local", SAME_FILES)
     const fake = fakeNpm({ local, remote: null, publish: () => {
       fake.state.remote = local
-      return ok(`+ ${SPEC}\n${"x".repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")}`)
+      return { status: 0, stdout: `+ ${SPEC}`, stderr: `warn first\n${"x".repeat(400)}\n${Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")}` }
     } })
     const log = vi.spyOn(console, "error").mockImplementation(() => {})
     try {
@@ -108,8 +108,9 @@ describe("npm publish idempotency", () => {
       const message = String(log.mock.calls.at(-1)?.[0])
       expect(message).toContain(`npm publish ${SPEC} exited 0`)
       expect(message).toContain(`+ ${SPEC}`)
+      expect(message).toContain(`stdout:\n+ ${SPEC}\nstderr:\nwarn first`)
       expect(message).not.toContain("x".repeat(301))
-      expect(message.split("\n").length).toBeLessThanOrEqual(21)
+      expect(message).not.toContain("line 29")
     } finally {
       log.mockRestore()
     }
@@ -124,7 +125,7 @@ describe("npm publish idempotency", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {})
     try {
       publishPackageIdempotently({ cwd: work, tag: "latest" }, fake.npm)
-      expect(String(log.mock.calls.at(-1)?.[0])).toContain("(no output)")
+      expect(String(log.mock.calls.at(-1)?.[0])).toContain("stdout:\n(no output)\nstderr:\n(no output)")
     } finally {
       log.mockRestore()
     }
