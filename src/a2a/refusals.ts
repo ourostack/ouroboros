@@ -37,6 +37,8 @@ const REFUSALS = {
   unbound_delegation: { message: "the delegated command has no signed binding (the sender runs an older harness)", next: UPGRADE, retry: false },
   stale_envelope: { message: "the envelope is more than 7 days old or dated in the future", next: `Check the sender's clock. ${RESEND}`, retry: false },
   stale_delegation: { message: "the delegated command is more than 10 minutes old", next: `Check the sender's clock. ${RESEND}`, retry: false },
+  unbound_approval_answer: { message: "the approval answer has no signed binding (the sender runs an older harness)", next: UPGRADE, retry: false },
+  stale_approval_answer: { message: "the approval answer is more than 10 minutes old or dated in the future", next: "Check the sender's clock. Answer again from the approval prompt if it is still open.", retry: false },
   replayed: { message: "this message was already received", next: `Nothing to do if it was delivered; otherwise ${RESEND.toLowerCase()}`, retry: false },
   in_flight: { message: "the same message is being handled right now", next: "Retry in a moment.", retry: true },
   resolve_failed: { message: "the sender's DID could not be resolved or pinned (it is not a did:key, its pinned key differs, or a key rotation was refused)", next: "Send from the identity this agent knows you by, or ask the operator to re-link you.", retry: false },
