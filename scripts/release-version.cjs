@@ -3,18 +3,20 @@
 // The release job's version and changelog, worked out when a change lands on main so no pull request has to carry them.
 //
 // Counting starts at npm's last release: the newest published version whose commit (npm's gitHead, or its v<version>
-// tag) is in this push's history before the push. Every later first-parent commit that releases something (see
-// isReleasableCommit) takes the next number, in order. Numbers already on npm never depend on today's rules. A commit
-// that changes package.json's version starts a new line from that version. It must go above npm's last release and
-// any version an earlier commit set, or the release stops rather than reuse a number; it may land on a number counted
-// since npm's release, since npm never had that one. With nothing on npm, counting starts at the last commit that
-// changed the version (the anchor).
+// tag) is on this history's first-parent line before the push. Every later first-parent commit that releases
+// something (see isReleasableCommit) takes the next number, in order, so numbers already on npm never depend on
+// today's rules. Only a commit that moves package.json's version to a new, higher release line (0.2.0-alpha.0 after
+// 0.1.0-alpha.N, or 1.0.0) starts counting again from that version; any other version change, such as an old-style
+// bump or a bump and its drop-bump landing together in a rebase merge, is an ordinary commit. With nothing on npm,
+// counting starts at the newest version change that went above every earlier one (the anchor).
 //
-// A push publishes once: the version of the newest releasable commit it brought. npm never had the numbers counted
-// between its last release and this push, so that version's changelog entry holds the change notes of every numbered
-// commit since npm's last release, as the push's last numbered commit left them (a commit with no notes gives its
-// subject). Below it come main's changelog.json, then the older entries npm's last release carried, main's copy
-// winning where both have a version.
+// A push publishes once: the version of the newest releasable commit it brought. Every entry since the switch to this
+// scheme is rebuilt from main's history on every release, and nothing is read from npm's tarballs: a version npm has
+// gets the change notes added by the commits since the release before it, as the commit npm published it from left
+// them, and this push's version gets those since npm's last release (a group with no notes gives its commits'
+// subjects). So the notes of a number npm never had (a failed publish, a rebase merge's skipped numbers) go into the
+// next version npm has, and no entry names a version npm never had. A release that starts a new line puts its own
+// changelog.json entry first. Entries from before the switch come from main's changelog.json as committed.
 //
 //   node scripts/release-version.cjs version              prints HEAD's version
 //   node scripts/release-version.cjs push <before>        for the push before..HEAD, prints version=<v> and
@@ -22,21 +24,17 @@
 //   node scripts/release-version.cjs dispatch             the same for a manual run on HEAD; fails unless npm
 //                                                          published HEAD's version from HEAD, so an image never
 //                                                          carries code npm did not ship
-//   node scripts/release-version.cjs apply [<before>] [--changelog <file>]
+//   node scripts/release-version.cjs apply [<before>] [--version <v>]
 //                                                          writes the version and changelog into the release files,
-//                                                          prints the version; with --changelog, the file's versions
-//                                                          are the changelog, as written
+//                                                          prints the version; --version writes <v> (the version npm
+//                                                          published from this commit) in place of the planned one
 //   node scripts/release-version.cjs assert-new <version> fails unless <version> is above npm's highest, or HEAD
 //                                                          already published it (a re-run)
-//   node scripts/release-version.cjs published-changelog <version> <out>
-//                                                          waits (RELEASE_WAIT_SECONDS, default 5400) for npm to
-//                                                          publish <version> from HEAD, then writes the changelog
-//                                                          its tarball carries to <out>
+//   node scripts/release-version.cjs wait-published       waits (RELEASE_WAIT_SECONDS, default 5400) until npm has a
+//                                                          version published from HEAD, then prints version=<v>
 //
-// Planning reads npm's version list and every version's gitHead (two npm view calls). Only `apply` and
-// `published-changelog` download a tarball (npm pack), waiting out ETARGET while npm cannot serve a new version yet;
-// `apply` falls back to an older release's changelog if it still cannot. `apply` also loads release-bump.cjs (and
-// semver).
+// Planning reads npm's version list and every version's gitHead (two npm view calls). `apply` also loads
+// release-bump.cjs (and semver).
 
 const { execFileSync } = require("child_process")
 const fs = require("fs")
