@@ -20,13 +20,20 @@ function tempDir(prefix: string): string {
   return dir
 }
 
-function modelPath(): string {
-  return path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin")
+function modelPath(name = "ggml-large-v3-turbo-q5_0.bin"): string {
+  return path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", name)
 }
 
-function installModel(): void {
-  fs.mkdirSync(path.dirname(modelPath()), { recursive: true })
-  fs.writeFileSync(modelPath(), "model")
+const earlierModelPath = () => modelPath("ggml-base.en.bin")
+
+function installModel(target = modelPath()): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, "model")
+}
+
+function whisperArgs(execFile: ReturnType<typeof vi.fn>): string[] {
+  const call = execFile.mock.calls.find(([command]) => String(command).endsWith("whisper-cli"))
+  return call![1] as string[]
 }
 
 // whisper-cli writes <-of>.json; everything else succeeds unless the handler says otherwise.
@@ -78,6 +85,71 @@ describe("transcribeAudioFile", () => {
     expect(execFile).not.toHaveBeenCalledWith("brew", expect.anything(), expect.anything(), expect.anything())
   })
 
+  it("decodes with beam search, detects the language and passes no prompt unless given one", async () => {
+    installModel()
+    const { transcribeAudioFile, execFile } = await loadWith(onPath)
+    await transcribeAudioFile("/in/a.ogg", { timeoutMs: 1000 })
+    expect(whisperArgs(execFile)).toEqual(expect.arrayContaining(["-bs", "5", "-bo", "5", "-l", "auto"]))
+    expect(whisperArgs(execFile)).not.toContain("--prompt")
+
+    execFile.mockClear()
+    await transcribeAudioFile("/in/a.ogg", { timeoutMs: 1000, prompt: "  Slugger, Ouro  " })
+    expect(whisperArgs(execFile)).toEqual(expect.arrayContaining(["--prompt", "Slugger, Ouro"]))
+
+    execFile.mockClear()
+    await transcribeAudioFile("/in/a.ogg", { timeoutMs: 1000, prompt: "   " })
+    expect(whisperArgs(execFile)).not.toContain("--prompt")
+  })
+
+  it("keeps using the earlier English model while the stronger one downloads in the background", async () => {
+    installModel(earlierModelPath())
+    const { transcribeAudioFile, execFile } = await loadWith(onPath)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const fetchImpl = vi.fn(async () => {
+      await gate
+      return new Response("turbo-bytes", { status: 200 })
+    }) as unknown as typeof fetch
+
+    await expect(transcribeAudioFile("/in/a.ogg", { timeoutMs: 1000, fetchImpl })).resolves.toBe("hello there")
+    expect(whisperArgs(execFile)).toEqual(expect.arrayContaining(["-m", earlierModelPath(), "-l", "en"]))
+    // A second voice note while the download runs does not start another one.
+    await transcribeAudioFile("/in/b.ogg", { timeoutMs: 1000, fetchImpl })
+    expect(fetchImpl).toHaveBeenCalledOnce()
+
+    release()
+    await vi.waitFor(() => expect(fs.existsSync(modelPath())).toBe(true))
+    expect(fs.readFileSync(modelPath(), "utf8")).toBe("turbo-bytes")
+    expect(fs.existsSync(`${modelPath()}.partial`)).toBe(false)
+
+    execFile.mockClear()
+    await transcribeAudioFile("/in/c.ogg", { timeoutMs: 1000, fetchImpl })
+    expect(whisperArgs(execFile)).toEqual(expect.arrayContaining(["-m", modelPath(), "-l", "auto"]))
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it("reports a failed background download, keeps the earlier model and tries again on the next voice note", async () => {
+    installModel(earlierModelPath())
+    const { transcribeAudioFile } = await loadWith(onPath)
+    const fetchImpl = vi.fn().mockRejectedValueOnce("offline").mockResolvedValueOnce(new Response("", { status: 404 })) as unknown as typeof fetch
+
+    await expect(transcribeAudioFile("/in/a.ogg", { timeoutMs: 1000, fetchImpl })).resolves.toBe("hello there")
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await expect(transcribeAudioFile("/in/b.ogg", { timeoutMs: 1000, fetchImpl })).resolves.toBe("hello there")
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(fs.existsSync(modelPath())).toBe(false)
+    expect(fs.existsSync(`${modelPath()}.partial`)).toBe(false)
+  })
+
+  it("fails clearly when the model download has no body", async () => {
+    const { transcribeAudioFile } = await loadWith(onPath)
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch
+    await expect(transcribeAudioFile("/in/a.m4a", { timeoutMs: 1000, fetchImpl })).rejects.toThrow("failed to download whisper.cpp model: the response had no body")
+    expect(fs.existsSync(modelPath())).toBe(false)
+  })
+
   it("downloads the model once when it is missing", async () => {
     const { transcribeAudioFile } = await loadWith(onPath)
     const fetchImpl = vi.fn().mockResolvedValue(new Response("model-bytes", { status: 200 })) as unknown as typeof fetch
@@ -116,6 +188,18 @@ describe("transcribeAudioFile", () => {
     try {
       const { transcribeAudioFile } = await loadWith(onPath)
       await expect(transcribeAudioFile("/in/a.wav", { timeoutMs: 1000 })).resolves.toBe("hello there")
+    } finally {
+      vi.doUnmock("node:fs/promises")
+    }
+  })
+
+  it("names the download failure even when the cut-off download cannot be removed", async () => {
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    vi.doMock("node:fs/promises", () => ({ ...actual, rm: vi.fn().mockRejectedValue(new Error("busy")) }))
+    try {
+      const { transcribeAudioFile } = await loadWith(onPath)
+      const fetchImpl = vi.fn().mockResolvedValue(new Response("", { status: 503 })) as unknown as typeof fetch
+      await expect(transcribeAudioFile("/in/a.wav", { timeoutMs: 1000, fetchImpl })).rejects.toThrow("failed to download whisper.cpp model: HTTP 503")
     } finally {
       vi.doUnmock("node:fs/promises")
     }
@@ -197,11 +281,19 @@ describe("transcribeAudioFile", () => {
   })
 })
 
+describe("voiceNoteWords", () => {
+  it("labels the transcript as a machine transcript, or gives a notice when nothing was said", async () => {
+    const { voiceNoteWords } = await import("../../../heart/attachments/transcribe-audio")
+    expect(voiceNoteWords("note.ogg", "  our voicenote's working ")).toEqual({ line: "voice note (machine transcript; may mishear words): our voicenote's working" })
+    expect(voiceNoteWords("note.ogg", " ")).toEqual({ notice: "attachment hydration failed for note.ogg: empty audio transcript" })
+  })
+})
+
 describe("voiceNoteLine", () => {
   it("gives the transcript line, or a notice when nothing was said", async () => {
     installModel()
     const spoken = await loadWith(onPath)
-    await expect(spoken.voiceNoteLine("note.ogg", "/in/note.ogg", { timeoutMs: 1000 })).resolves.toEqual({ line: "voice note transcript: hello there" })
+    await expect(spoken.voiceNoteLine("note.ogg", "/in/note.ogg", { timeoutMs: 1000 })).resolves.toEqual({ line: "voice note (machine transcript; may mishear words): hello there" })
     vi.resetModules()
     const silent = await loadWith(onPath, { text: "   " })
     await expect(silent.voiceNoteLine("note.ogg", "/in/note.ogg", { timeoutMs: 1000 })).resolves.toEqual({

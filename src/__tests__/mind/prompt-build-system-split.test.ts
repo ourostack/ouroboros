@@ -288,6 +288,24 @@ describe("buildSystem marks delegated turns (review of #1064, round 2, finding 8
     expect(scopedPlain.volatile).not.toContain("verified delegated command")
   })
 
+  it("tells the agent once, in every prompt shape, that voice notes and calls are speech-to-text that can mishear", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache, SPEECH_TRANSCRIPT_GUIDANCE } = await import("../../mind/prompt")
+    resetPsycheCache()
+    expect(SPEECH_TRANSCRIPT_GUIDANCE).toContain("voice notes and live calls")
+    expect(SPEECH_TRANSCRIPT_GUIDANCE).toContain("i check briefly instead of acting on the literal words")
+    for (const prompt of [
+      await buildSystem("voice", {}, undefined),
+      await buildSystem("bluebubbles", {}, undefined),
+      await buildSystem("cli", { relationshipContextScopes: ["own_requests"] }, undefined),
+    ]) {
+      expect(prompt.stable.split(SPEECH_TRANSCRIPT_GUIDANCE)).toHaveLength(2)
+    }
+  })
+
   it("renders names as one short plain line so a name cannot forge a section", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
