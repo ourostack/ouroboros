@@ -12,6 +12,7 @@
  * may send it as metadata.
  */
 import type { ProviderTurnRequest } from "../../heart/core"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 /** One replacement; the pattern must be global, so every match is replaced, not only the first. */
 export type Replacement = { pattern: RegExp; with: string }
@@ -50,7 +51,10 @@ export function rewriteRequest(request: ProviderTurnRequest, list: readonly Repl
     const own = tool.function.name
     const sent = replace(own, list)
     const earlier = back.get(sent)
-    if (earlier !== undefined && earlier !== own) throw new Error(`tools ${earlier} and ${own} would both be called ${sent}`)
+    if (earlier !== undefined && earlier !== own) {
+      emitNervesEvent({ component: "eval", level: "error", event: "eval.interview_rewrite_clash", message: "an arm's replacement list gives two tools the same name", meta: { name: sent } })
+      throw new Error(`tools ${earlier} and ${own} would both be called ${sent}`)
+    }
     back.set(sent, own)
   }
   return { request: rewritten, toolName: (name) => back.get(name) ?? name }
