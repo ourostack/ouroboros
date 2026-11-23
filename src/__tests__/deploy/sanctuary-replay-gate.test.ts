@@ -726,6 +726,86 @@ describe("runSuite orchestration", () => {
     } finally { learns.readback = original }
   })
 
+  /** tacitHost plus live identity files: a send may rewrite SOUL.md, and the identity methods act on that state. */
+  function identityHost(opts: { rewrite?: string | null; snapshotFails?: boolean; restoreFails?: boolean; keepFails?: boolean; restoreIgnored?: boolean } = {}) {
+    const run = tacitHost(snapshot)
+    const soul = { text: "I am a butler, and I love the work.\n", mode: 0o644 }
+    const identity: Record<string, { text: string | null; mode: number | null }> = { "ASPIRATIONS.md": { text: "a\n", mode: 0o644 }, "IDENTITY.md": { text: "i\n", mode: 0o644 }, "LORE.md": { text: "l\n", mode: 0o644 }, "SOUL.md": { ...soul } }
+    let reads = 0
+    const send = run.host.send
+    run.host.send = async (req: any) => { if (opts.rewrite !== undefined) identity["SOUL.md"] = { text: opts.rewrite, mode: opts.rewrite === null ? null : 0o644 }; return send(req) }
+    Object.assign(run.host, {
+      readIdentityPsyche: () => { reads += 1; if (opts.snapshotFails && reads === 1) throw new Error("SOUL.md is a symlink"); return structuredClone(identity) },
+      restoreIdentityPsyche: (name: string, before: { text: string | null; mode: number | null }) => {
+        if (opts.restoreFails) throw new Error("psyche disk full")
+        run.log.push(`restore-identity:${name}`)
+        if (!opts.restoreIgnored) identity[name] = { ...before }
+      },
+      keepPsycheCopy: (name: string, text: string) => { if (opts.keepFails) throw new Error("client folder gone"); run.log.push(`keep-identity:${name}:${JSON.stringify(text)}`); return `/client/${name}-before-restore.md` },
+    })
+    return { ...run, identity, soul }
+  }
+  const flat = "I am formal and flat.\n"
+
+  it("puts back an identity file a case changed before sync resumes, keeps what it said, and fails a never-excused result (0.1.0-alpha.1435)", async () => {
+    const run = identityHost({ rewrite: flat })
+    const suite = await gate.runSuite(run.host, { cases: ["psyche-change-request"], log: run.say })
+    expect(run.identity["SOUL.md"]).toEqual(run.soul)
+    expect(run.log).toContain(`keep-identity:SOUL.md:${JSON.stringify(flat)}`)
+    expect(run.log).toContain("restore-identity:SOUL.md")
+    expect(run.lines).toContain("the run changed psyche/SOUL.md; put back before sync resumed")
+    expect(suite.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [
+      { name: "the run changed no identity psyche file", ok: false, detail: "SOUL.md changed during the run" },
+      { name: "each changed identity file was put back before sync resumed", ok: true, detail: "SOUL.md before the restore is kept at /client/SOUL.md-before-restore.md" },
+    ] })
+    expect(suite.summary.failed).toContain("psyche-identity-untouched")
+    expect(gate.NEVER_EXCUSED).toContain("psyche-identity-untouched")
+  })
+
+  it("adds no result when no identity file changed", async () => {
+    const run = identityHost()
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+    expect(suite.results.some((r: { id: string }) => r.id === "psyche-identity-untouched")).toBe(false)
+    expect(run.log.some((line) => line.startsWith("restore-identity:"))).toBe(false)
+  })
+
+  it("puts back a deleted identity file without keeping a copy, and still restores when keeping a copy fails", async () => {
+    const gone = identityHost({ rewrite: null })
+    await gate.runSuite(gone.host, { cases: ["handoff-greeting"], log: gone.say })
+    expect(gone.log.some((line) => line.startsWith("keep-identity:"))).toBe(false)
+    expect(gone.identity["SOUL.md"]).toEqual(gone.soul)
+    const noKeep = identityHost({ rewrite: flat, keepFails: true })
+    const suite = await gate.runSuite(noKeep.host, { cases: ["handoff-greeting"], log: noKeep.say })
+    expect(noKeep.lines).toContain("could not keep psyche/SOUL.md before the restore: client folder gone")
+    expect(noKeep.identity["SOUL.md"]).toEqual(noKeep.soul)
+    expect(suite.results.at(-1).checks[1]).toEqual({ name: "each changed identity file was put back before sync resumed", ok: true })
+  })
+
+  it("fails when the identity files can't be read before the run, can't be put back, or still differ", async () => {
+    const unread = identityHost({ snapshotFails: true })
+    const first = await gate.runSuite(unread.host, { cases: ["handoff-greeting"], log: unread.say })
+    expect(first.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [{ name: "the identity psyche files were read before the run", ok: false, detail: "they could not be read before the run, so a change could not be undone: SOUL.md is a symlink" }] })
+    const stuck = identityHost({ rewrite: flat, restoreFails: true })
+    const second = await gate.runSuite(stuck.host, { cases: ["handoff-greeting"], log: stuck.say })
+    expect(second.results.at(-1)).toEqual({ id: "psyche-identity-untouched", status: "fail", checks: [{ name: "each changed identity file was put back before sync resumed", ok: false, detail: "the restore failed: psyche disk full" }] })
+    expect(stuck.lines).toContain("could not check or restore the identity psyche files after the run: psyche disk full")
+    const ignored = identityHost({ rewrite: flat, restoreIgnored: true })
+    const third = await gate.runSuite(ignored.host, { cases: ["handoff-greeting"], log: ignored.say })
+    expect(third.results.at(-1).checks[1]).toEqual({ name: "each changed identity file was put back before sync resumed", ok: false, detail: "SOUL.md still differ after the restore" })
+    expect(ignored.lines).toContain("the run changed psyche/SOUL.md; SOUL.md still differ")
+  })
+
+  it("reports the identity result after a run the window aborted", async () => {
+    const run = identityHost({ rewrite: flat })
+    ;(run.host as Record<string, unknown>).windowTrusted = async () => ({ ok: false, detail: "distrusted" })
+    const suite = await gate.runSuite(run.host, { cases: ["handoff-greeting"], log: run.say })
+    expect(suite.results.map((r: { id: string }) => r.id)).toEqual(["window-trusted", "tacit-restored", "replay-friend-restored"])
+    const changedEarly = identityHost()
+    ;(changedEarly.host as Record<string, unknown>).windowTrusted = async () => { changedEarly.identity["LORE.md"] = { text: "changed\n", mode: 0o644 }; return { ok: false, detail: "distrusted" } }
+    const aborted = await gate.runSuite(changedEarly.host, { cases: ["handoff-greeting"], log: changedEarly.say })
+    expect(aborted.results.map((r: { id: string }) => r.id)).toEqual(["window-trusted", "tacit-restored", "replay-friend-restored", "psyche-identity-untouched"])
+  })
+
   it("keeps no copy when TACIT is unchanged or gone at restore time, and still restores it", async () => {
     for (const learn of [undefined, null]) {
       const run = tacitHost(snapshot, { learn })
@@ -1787,6 +1867,36 @@ describe("provision and the real host", () => {
       expect(() => host.readPsycheFile("TACIT.md")).toThrow(/symlink/)
     })
 
+    it("reads the identity files through no link, puts one back as the Butler's user, removes one that was absent, and refuses TACIT", () => {
+      const host = provisioned()
+      expect(() => host.restoreIdentityPsyche("SOUL.md", { text: "x", mode: 0o644 })).toThrow(/does not exist/)
+      writePsyche("SOUL.md", "I am a butler.\n", 0o644)
+      const before = host.readIdentityPsyche()
+      expect(Object.keys(before)).toEqual(gate.IDENTITY_PSYCHE_FILES)
+      expect(before["SOUL.md"]).toEqual({ text: "I am a butler.\n", mode: 0o644 })
+      expect(before["LORE.md"]).toEqual({ text: null, mode: null })
+      writePsyche("SOUL.md", "formal and flat\n", 0o600)
+      writePsyche("LORE.md", "new lore\n", 0o644)
+      host.restoreIdentityPsyche("SOUL.md", before["SOUL.md"])
+      host.restoreIdentityPsyche("LORE.md", before["LORE.md"])
+      expect(host.readIdentityPsyche()).toEqual(before)
+      expect(chowns.at(-1)).toEqual([10001, 10001])
+      expect(fs.existsSync(path.join(psyche(), "LORE.md"))).toBe(false)
+      expect(() => host.restoreIdentityPsyche("TACIT.md", { text: "x", mode: 0o644 })).toThrow(/not an identity file/)
+      fs.rmSync(path.join(psyche(), "SOUL.md"))
+      fs.symlinkSync(path.join(bundle, "nowhere"), path.join(psyche(), "SOUL.md"))
+      expect(() => host.readIdentityPsyche()).toThrow(/symlink/)
+    })
+
+    it("keeps an identity file's pre-restore text in a root-owned 0600 file in the replay-client folder", () => {
+      const host = provisioned()
+      const kept = host.keepPsycheCopy("SOUL.md", "formal and flat\n")
+      expect(path.dirname(kept)).toBe(clientOf(bundle))
+      expect(path.basename(kept)).toMatch(/^soul-before-restore-\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.md$/)
+      expect(fs.readFileSync(kept, "utf8")).toBe("formal and flat\n")
+      expect(fs.statSync(kept).mode & 0o7777).toBe(0o600)
+    })
+
     describe("the temp file is checked right after it is created, before any data or chown", () => {
       let restoreCreate: unknown
       beforeEach(() => { restoreCreate = gate.overrideCreatePsycheTempForTests(undefined) })
@@ -2543,7 +2653,7 @@ describe("bundle sync around the run (M1c)", () => {
   const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_OPTIONAL_LOCKS=0", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro", "ls-remote", "origin", "refs/heads/main"]
 
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
-  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number | null] | [number, number | null][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
+  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; ownerFile?: string; latency?: [number, number | null] | [number, number | null][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
     const clock = { t: Date.now() }
     const tacitFile = path.join(repo.bundle, "psyche", "TACIT.md")
     const wroteTacit = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "edit_file", arguments: JSON.stringify({ path: "psyche/TACIT.md", old_string: "a", new_string: "b" }) } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
@@ -2578,7 +2688,7 @@ describe("bundle sync around the run (M1c)", () => {
         repo.put("friends/household.json", "{\"notes\":{\"tea\":\"green\"}}\n")
         // Every turn moves the replay principal's token count; the restore puts back only what a case can teach.
         repo.put("friends/p-0a4c19.json", `{"totalTokens":${seenDuringRun.length * 1000}}\n`)
-        ownerPush(repo.remote, repo.root, "psyche/SOUL.md", `# SOUL\nthe owner's edit ${Math.random().toString(36).slice(2)}\n`)
+        ownerPush(repo.remote, repo.root, opts.ownerFile ?? "psyche/SOUL.md", `# SOUL\nthe owner's edit ${Math.random().toString(36).slice(2)}\n`)
         return { text: "noted: english subtitles for anything not in english" }
       },
       restorePsycheFile: (_name: string, text: string) => { if (opts.restoreTacit !== false) fs.writeFileSync(tacitFile, text) },
@@ -2594,6 +2704,71 @@ describe("bundle sync around the run (M1c)", () => {
     expect(gate.NEVER_TRACKED).toEqual([...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", "psyche/.release-marker"])
     expect(gate.PSYCHE_FILES.map((name: string) => `psyche/${name}`)).toEqual([...SANCTUARY_STARTER_PSYCHE_FILES])
     expect(gate.NEVER_EXCUSED).toEqual(expect.arrayContaining(["no-sync-residue", "psyche-git-tracked"]))
+  })
+
+  /**
+   * bracketHost whose case turn edits SOUL.md in the bundle, as 0.1.0-alpha.1435's candidate did, and whose timing turn runs sync
+   * first, as its pre-turn pull did (9f20ff5, "sync: pre-turn update"). The identity methods act on the real bundle.
+   */
+  function soulEditHost(repo: ReturnType<typeof syncRepo>, opts: { putBack?: boolean; ownerFile?: string } = {}) {
+    const latencySyncs: string[] = []
+    const run = bracketHost(repo, { ownerFile: opts.ownerFile, latencyWrites: () => { simulatedSync(repo.bundle); latencySyncs.push("synced") } })
+    const soul = path.join(repo.bundle, "psyche", "SOUL.md")
+    const send = run.host.send
+    run.host.send = async (req: { text: string; context: string }) => {
+      const reply = await send(req)
+      if (req.text !== gate.LATENCY_WORDS) fs.writeFileSync(soul, "# SOUL\nformal and flat\n")
+      return reply
+    }
+    const read = (name: string) => { const file = path.join(repo.bundle, "psyche", name); return fs.existsSync(file) ? { text: fs.readFileSync(file, "utf8"), mode: 0o644 } : { text: null, mode: null } }
+    Object.assign(run.host, {
+      readIdentityPsyche: () => Object.fromEntries(gate.IDENTITY_PSYCHE_FILES.map((name: string) => [name, read(name)])),
+      restoreIdentityPsyche: (name: string, before: { text: string }) => { if (opts.putBack !== false) fs.writeFileSync(path.join(repo.bundle, "psyche", name), before.text) },
+      keepPsycheCopy: (name: string) => `/client/${name}-before-restore.md`,
+    })
+    return { ...run, latencySyncs }
+  }
+  const remoteSawEdit = (repo: ReturnType<typeof syncRepo>) => g(repo.remote, ["log", "-p", "--all", "--", "psyche/SOUL.md"]).includes("formal and flat")
+
+  it("a candidate's SOUL.md edit never reaches the remote: it is put back before sync resumes, and no synced turn follows (0.1.0-alpha.1435)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = soulEditHost(repo)
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(remoteSawEdit(repo)).toBe(false)
+    expect(fs.readFileSync(path.join(repo.bundle, "psyche", "SOUL.md"), "utf8")).not.toContain("formal and flat")
+    expect(run.latencySyncs).toEqual([])
+    expect(byResult(suite, "sync-latency")).toEqual({ id: "sync-latency", status: "skipped", reason: "the run changed an identity psyche file, so no synced turn follows", checks: [] })
+    expect(byResult(suite, "psyche-identity-untouched")?.status).toBe("fail")
+    expect(byResult(suite, "no-sync-residue")?.status).toBe("pass")
+    // The owner's own SOUL.md edits, pushed from another machine during the run, still land.
+    expect(g(repo.remote, ["show", "main:psyche/SOUL.md"])).toContain("the owner's edit")
+  })
+
+  it("keeps sync paused, runs no sync and no synced turn when a changed identity file can't be put back", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const lines: string[] = []
+    const run = soulEditHost(repo, { putBack: false })
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: (line: string) => { lines.push(line) } })
+    expect(remoteSawEdit(repo)).toBe(false)
+    expect(fs.existsSync(repo.marker)).toBe(true)
+    expect(run.latencySyncs).toEqual([])
+    expect(run.execCalls).toEqual([])
+    expect(byResult(suite, "no-sync-residue")).toEqual({ id: "no-sync-residue", status: "fail", checks: [{ name: "sync resumed after the run", ok: false, detail: "sync stays paused until the marker expires: an identity psyche file could not be put back or checked" }] })
+    expect(byResult(suite, "sync-latency")).toEqual({ id: "sync-latency", status: "skipped", reason: "sync stayed paused", checks: [] })
+    expect(lines).toContain("sync stays paused: an identity psyche file could not be put back or checked, so nothing syncs until someone looks")
+    expect(suite.summary.failed).toEqual(expect.arrayContaining(["psyche-identity-untouched", "no-sync-residue"]))
+  })
+
+  it("without the identity restore, the timing turn's sync would carry the edit to the remote (the 0.1.0-alpha.1435 path)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = soulEditHost(repo, { ownerFile: "friends/p.json" })
+    for (const name of ["readIdentityPsyche", "restoreIdentityPsyche", "keepPsycheCopy"]) delete (run.host as Record<string, unknown>)[name]
+    await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(run.latencySyncs).toEqual(["synced"])
+    expect(remoteSawEdit(repo)).toBe(true)
   })
 
   it("remote gains no gate residue during a gate run, even with a friend update mid-run", async () => {
