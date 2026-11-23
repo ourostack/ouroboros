@@ -18,6 +18,8 @@ void serveRemoteJob({
     return runSandboxed({
       case: validateCase(job.case), bundleDir: job.bundleDir, seedBundleDir: job.seedBundleDir, host, budget: { take: () => true }, docker,
       ...(job.workRoot ? { workRoot: job.workRoot } : {}),
+      ...(job.guest ? { guest: job.guest } : {}),
+      ...(job.images ? { images: job.images } : {}),
       ...(job.oracleBooks ? { oracle: dockerOracle({ docker, image: HOUSEHOLD_IMAGE, booksLib: job.oracleBooks }) } : {}),
     })
   },

@@ -177,6 +177,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // The CLI's entry point only picks a module: the per-tool hook (which emits daemon.hook_post_tool_use) or the CLI
   // (ouro-cli-main.ts, which emits the entry's start events). It stays this small so the hook loads nothing else.
   "heart/daemon/ouro-entry.ts",
+  // Ouro AX v1.3.445's ax files, vendored unchanged for the blind interviews' `ouro` X arm; the arm that loads them
+  // (eval/interviews/guest/arms.ts) emits its own events.
+  "eval/interviews/guest/ax/",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
