@@ -991,7 +991,9 @@ describe("Teams messages whose turn never finished", () => {
     expect(openTeamsInboundJournal(state.root).get(secondaryId)).toMatchObject({ attempts: 1 })
   })
 
-  it("keeps the message for the next start when its failure cannot be recorded", async () => {
+  const asRoot = process.getuid?.() === 0
+
+  it.skipIf(asRoot)("keeps the message for the next start when its failure cannot be recorded", async () => {
     const body = sdkActivity("Recording this outcome will fail.")
     const id = await leaveUnfinishedTurn(body, { after: (journal, inbound) => journal.markSpoke(inbound, turnSpoke("speak", "Partial.")) })
     const outcomes = path.join(state.root, "state", "senses", "teams", "inbound-outcomes")
@@ -1010,6 +1012,8 @@ describe("Teams messages whose turn never finished", () => {
     state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
     state.run.mockRejectedValueOnce(new Error("fixture provider failure"))
     await state.processActivity!(sdkActivity("Say nothing."))
+    // The fallback reply reached Teams.
+    expect(state.sdkAcceptances).toHaveLength(1)
     await state.processActivity!(sdkActivity("This turn throws."))
     expect(outcomeFiles().map(({ outcome, detail }) => ({ outcome, detail })).sort((a, b) => a.outcome.localeCompare(b.outcome))).toEqual([
       { outcome: "answered", detail: undefined },
@@ -1017,7 +1021,7 @@ describe("Teams messages whose turn never finished", () => {
     ])
   })
 
-  it("keeps a thrown turn for the next start when its failure cannot be recorded", async () => {
+  it.skipIf(asRoot)("keeps a thrown turn for the next start when its failure cannot be recorded", async () => {
     const outcomes = path.join(state.root, "state", "senses", "teams", "inbound-outcomes")
     state.run.mockImplementationOnce(async () => {
       fs.chmodSync(outcomes, 0o500)
@@ -1099,6 +1103,115 @@ describe("Teams messages whose turn never finished", () => {
     release.resolve()
     await running
     expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
-    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered", detail: "taken in by a running turn about a reaction or edit" })])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "answered", attempts: 1 })])
+  })
+
+  it("records a message a reaction turn took in and answered with nothing as silent", async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (_messages, _callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      entered.resolve()
+      await release.promise
+      options.drainSteeringFollowUps!()
+      return { outcome: "settled" }
+    })
+    const reaction = activity("")
+    const running = state.handlers.get("messageReaction")!({ ...reaction, activity: { ...reaction.activity, reactionsAdded: [{ type: "like" }] } })
+    await entered.promise
+    await state.handlers.get("message")!(activity("never mind"))
+    release.resolve()
+    await running
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "silent" })])
+  })
+
+  it("records a turn whose only reply Teams never confirmed as failed", async () => {
+    state.sdkLostAck = true
+    state.run.mockImplementationOnce(async () => ({ outcome: "settled" }))
+    await state.processActivity!(sdkActivity("Say nothing, and the fallback send fails."))
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: "Teams confirmed no reply; failed sends: 1" })])
+  })
+
+  it("records a /new that fails while a turn holds the session as failed, and never replays it", async () => {
+    const { acquireSessionTurnLease } = await import("../../mind/session-transaction")
+    const held = await acquireSessionTurnLease(sessionFile())
+    try {
+      await expect(state.processActivity!(sdkActivity("/new"))).resolves.toBeDefined()
+    } finally { await held.release() }
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+    expect(outcomeFiles()).toEqual([expect.objectContaining({ outcome: "failed", detail: expect.stringMatching(/^the turn failed: /) })])
+  })
+
+  it("records a command a dead process left as failed instead of running it as an ordinary turn", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("/new"))
+    await restart()
+    await vi.waitFor(() => expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({
+      outcome: "failed", detail: "a command is not run again after a restart",
+    }))
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+  })
+
+  it.skipIf(asRoot)("still answers an admitted message whose journal entry cannot be written", async () => {
+    const pendingDir = path.join(state.root, "state", "senses", "teams", "pending-inbound")
+    fs.mkdirSync(pendingDir, { recursive: true })
+    fs.chmodSync(pendingDir, 0o500)
+    try {
+      await state.processActivity!(sdkActivity("The disk is full."))
+    } finally { fs.chmodSync(pendingDir, 0o700) }
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.sdkAcceptances).toHaveLength(1)
+    expect(state.requestEvents).toContainEqual(expect.objectContaining({ level: "error", event: "senses.teams_inbound_record_failed" }))
+    expect(openTeamsInboundJournal(state.root).pending()).toEqual([])
+  })
+
+  it("does not run a replayed message again once another turn recorded its outcome", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("Replay me only once."))
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks) => {
+      entered.resolve()
+      await release.promise
+      messages.push({ role: "assistant", content: "Done." })
+      callbacks.onTextChunk("Done.")
+      return { outcome: "settled" }
+    })
+    // A live turn in the same conversation runs first, so the replay waits behind it.
+    const running = state.handlers.get("message")!(activity("a live message first"))
+    await entered.promise
+    const { startTeamsApp } = await import("../../senses/teams")
+    startTeamsApp()
+    // Another process records the replayed message's outcome while the replay waits.
+    openTeamsInboundJournal(state.root).settle(id, "answered", "answered elsewhere")
+    release.resolve()
+    await running
+    await vi.waitFor(() => expect(outcomeFiles()).toHaveLength(2))
+    expect(state.run).toHaveBeenCalledTimes(1)
+    expect(readInboundOutcome(state.root, "teams", id)).toMatchObject({ outcome: "answered", detail: "answered elsewhere" })
+  })
+
+  it("leaves a replayed message for a later start when another process is running a turn in its conversation", async () => {
+    const id = await leaveUnfinishedTurn(sdkActivity("Another process is busy here."))
+    const { acquireSessionTurnLease } = await import("../../mind/session-transaction")
+    const held = await acquireSessionTurnLease(sessionFile())
+    try {
+      await restart()
+      await vi.waitFor(() => expect(state.requestEvents).toContainEqual(expect.objectContaining({ event: "senses.teams_inbound_replay_deferred" })), { timeout: 15_000 })
+    } finally { await held.release() }
+    expect(state.run).not.toHaveBeenCalled()
+    expect(state.sdkAcceptances).toEqual([])
+    expect(openTeamsInboundJournal(state.root).get(id)).toMatchObject({ attempts: 1, spoke: false })
+  }, 20_000)
+
+  it("notes a sign-in before it can send the person a card", async () => {
+    let during: unknown
+    state.run.mockImplementationOnce(async (messages, callbacks: ChannelCallbacks, _channel, _signal, options: RunAgentOptions) => {
+      await options.toolContext!.signin!("graph")
+      during = openTeamsInboundJournal(state.root).pending()
+      messages.push({ role: "assistant", content: "Signed in." })
+      callbacks.onTextChunk("Signed in.")
+      return { outcome: "settled" }
+    })
+    await state.processActivity!(sdkActivity("Check my calendar."))
+    expect(during).toEqual([expect.objectContaining({ spoke: true, spokeRecords: [expect.objectContaining({ kind: "signin", textHash: null })] })])
   })
 })
