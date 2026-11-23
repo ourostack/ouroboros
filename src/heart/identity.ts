@@ -98,6 +98,12 @@ export interface McpServerConfig {
   args?: string[]
   env?: Record<string, string>
   cwd?: string
+  /**
+   * This server's declared tools: a tools.json inside the agent bundle (relative to it), written by Ouro UI core's
+   * ouro-actions-tools projection. Its tools reach the model with the declared description, parameters and Ouro AX
+   * card. Read only for the bundle's own servers (agent.json `mcpServers`).
+   */
+  tools?: string
 }
 
 export interface AgentFacingConfig {

@@ -1,0 +1,224 @@
+{
+  "generator": "ouro-actions-tools 1.11.0",
+  "set": "shopping",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_shopping_list",
+        "description": "Read the person's shopping list: each item's id, name, quantity, unit and whether it is checked.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "show": {
+              "type": "string",
+              "description": "Which items to list; all of them when left out.",
+              "enum": [
+                "all",
+                "unchecked"
+              ]
+            },
+            "sort": {
+              "type": "string",
+              "description": "How to order the items.",
+              "enum": [
+                "added",
+                "name"
+              ],
+              "default": "added"
+            },
+            "store": {
+              "type": "string",
+              "description": "Only the items for this store, by its name; every store when left out."
+            },
+            "limit": {
+              "type": "number",
+              "description": "The most items to list.",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "ax": {
+        "id": "tool:get_shopping_list",
+        "group": "turn-shopping",
+        "when": "Pick this to see what is on the person's list, and to find an item's id before you remove it.",
+        "effect": "read",
+        "errors": [
+          {
+            "code": "no-list",
+            "means": "The person has no shopping list yet.",
+            "fix": "Add an item with add_shopping_list_item, which starts the list."
+          }
+        ],
+        "idempotent": true
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "add_shopping_list_item",
+        "description": "Add one item to the person's shopping list. Give the name as the person said it; leave quantity and unit out when they gave none.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "What to buy, as the person said it, such as \"oat milk\"."
+            },
+            "quantity": {
+              "type": "number",
+              "description": "How many or how much.",
+              "minimum": 0
+            },
+            "unit": {
+              "type": "string",
+              "description": "The unit of the quantity, such as g, cups or cans."
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "description": "Send the same key again when retrying this exact call, and the item is added once."
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ax": {
+        "id": "tool:add_shopping_list_item",
+        "group": "turn-shopping",
+        "when": "Pick this to put one new thing the person asked for on their list; to take one off, use remove_shopping_list_item.",
+        "effect": "write",
+        "errors": [
+          {
+            "code": "name-too-long",
+            "means": "The item's name is over 200 characters.",
+            "fix": "Send the item's name alone, and put any detail in quantity and unit."
+          }
+        ]
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "remove_shopping_list_item",
+        "description": "Remove one item from the person's shopping list by its id. Removing an item that is already gone changes nothing.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The item's id, from get_shopping_list."
+            },
+            "alsoIds": {
+              "type": "array",
+              "description": "More item ids to remove in the same call.",
+              "items": {
+                "type": "string",
+                "description": "An item's id."
+              }
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ax": {
+        "id": "tool:remove_shopping_list_item",
+        "group": "turn-shopping",
+        "when": "Pick this to take an item off the list once get_shopping_list has given you its id.",
+        "effect": "write",
+        "errors": [],
+        "destructive": true,
+        "idempotent": true
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "share_shopping_list",
+        "description": "Share the person's shopping list with another person, who can then see and change it.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "with": {
+              "type": "string",
+              "description": "The email address of the person to share with."
+            },
+            "canEdit": {
+              "type": "boolean",
+              "description": "Whether they may change the list, not only see it."
+            },
+            "message": {
+              "type": "string",
+              "description": "A note to send with the invitation. It may run over several lines."
+            }
+          },
+          "required": [
+            "with"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ax": {
+        "id": "tool:share_shopping_list",
+        "group": "turn-shopping",
+        "when": "Pick this only when the person asked to share their list with someone by email.",
+        "effect": "consequential",
+        "errors": [
+          {
+            "code": "not-in-household",
+            "means": "No one in the person's household has that email address.",
+            "fix": "Ask the person for the email address of someone in their household."
+          }
+        ],
+        "destructive": true,
+        "confirm": "Share your list with this person? They will be able to see it and change it."
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": "person-only",
+      "means": "Only the person can do this, so no agent may call it; the refusal says why and where the person does it.",
+      "fix": "Tell the person what the refusal says, and leave the step to them."
+    }
+  ],
+  "refusals": {
+    "place_grocery_order": {
+      "ax": "outcome/1",
+      "action": "list order",
+      "effect": "private",
+      "audience": {
+        "only": true,
+        "who": "only you"
+      },
+      "target": null,
+      "state": "refused",
+      "summary": "Place order: You can't place an order or pay for the person; only they can. Ask the person, who does it with Place order on the shopping list.",
+      "postcondition": {
+        "checked": false,
+        "holds": null,
+        "how": "not checked"
+      },
+      "receipt": null,
+      "next": [],
+      "error": {
+        "code": "person-only",
+        "exit": 2,
+        "thing": "list order",
+        "problem": "You can't place an order or pay for the person; only they can. Ask the person, who does it with Place order on the shopping list",
+        "fix": null,
+        "message": "Place order: You can't place an order or pay for the person; only they can. Ask the person, who does it with Place order on the shopping list."
+      }
+    }
+  }
+}

@@ -2,9 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1383",
+      "version": "0.1.0-alpha.1384",
       "changes": [
         "A delegated command's audit notice is sent to the owner's own Telegram chat at once, or the command is refused: it no longer waits on the owner route, quiet hours, the daily cap or a handoff."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1383",
+      "changes": [
+        "A bundle can declare its own MCP server's tools in a tools.json from Ouro UI core's ouro-actions-tools (agent.json mcpServers.<name>.tools); the harness then gives those tools the declared description, parameters and Ouro AX card, with risk from the card's effect.",
+        "Update the Ouro UI files to Ouro UI v1.3.458."
       ]
     },
     {
