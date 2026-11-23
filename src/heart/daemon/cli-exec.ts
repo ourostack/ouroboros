@@ -256,6 +256,13 @@ const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 60_000
 const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
+/**
+ * Missed socket probes in a row, after the daemon first answered, before
+ * startup calls it gone. One probe can time out (800 ms) while a new daemon
+ * is busy starting its senses (2026-11-23 00:42:05Z: a healthy daemon was
+ * reported as disappeared after a single slow probe).
+ */
+const DAEMON_STARTUP_DISAPPEARED_MISSES = 3
 
 function setupReloadNotice(tool: "claude-code" | "codex"): string {
   const host = tool === "codex" ? "Codex" : "Claude Code"
@@ -1820,6 +1827,7 @@ async function waitForDaemonStartup(
   const useHealthMonitor = hasStartupHealthMonitor(deps)
   let stableSinceMs: number | null = null
   let sawSocket = false
+  let missesInARow = 0
 
   if (!useHealthMonitor) {
     while (now() < deadline) {
@@ -1849,7 +1857,9 @@ async function waitForDaemonStartup(
     if (startupFailure) return { reason: startupFailure, retryable: false, includeRecentLogs: false }
     const aliveNow = await deps.checkSocketAlive(deps.socketPath)
     if (!aliveNow) {
-      if (options.pid !== null && deps.isProcessAlive && !deps.isProcessAlive(options.pid)) {
+      // null when there is no pid or no way to check it.
+      const processAlive = options.pid !== null && deps.isProcessAlive ? deps.isProcessAlive(options.pid) : null
+      if (processAlive === false) {
         return {
           reason: `${options.serviceLabel} exited before answering`,
           retryable: false,
@@ -1857,9 +1867,14 @@ async function waitForDaemonStartup(
         }
       }
       if (sawSocket) {
-        return {
-          reason: `${options.serviceLabel} answered once and then disappeared during startup`,
-          retryable: true,
+        // The answer has to hold steady for the whole window again.
+        stableSinceMs = null
+        missesInARow += 1
+        if (processAlive === null && missesInARow >= DAEMON_STARTUP_DISAPPEARED_MISSES) {
+          return {
+            reason: `${options.serviceLabel} answered once and then disappeared during startup`,
+            retryable: true,
+          }
         }
       }
       const latestEvent = options.readLatestDaemonEvent?.() ?? null
@@ -1867,9 +1882,10 @@ async function waitForDaemonStartup(
       continue
     }
 
+    missesInARow = 0
+    if (stableSinceMs === null) stableSinceMs = now()
     if (!sawSocket) {
       sawSocket = true
-      stableSinceMs = now()
       const latestEvent = options.readLatestDaemonEvent?.() ?? null
       deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "answering", latestEvent))
     }
