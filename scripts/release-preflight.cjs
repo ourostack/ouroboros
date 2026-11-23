@@ -235,6 +235,21 @@ function assessChangeNote(input) {
   }
 
   const needsNote = input.changedFiles.filter(pathRequiresChangelogFreshness)
+  // The commit that starts a release line releases its own version, from the entry the branch wrote, and no note.
+  if (input.newLineVersion) {
+    if (notes.length > 0) {
+      return {
+        ok: false,
+        message:
+          `${formatPathList(notes.map((note) => note.file))} would never reach a changelog: this branch starts the release ` +
+          `line ${input.newLineVersion}, which releases from changelog.json's entry for ${input.newLineVersion}. Move its ` +
+          "lines into that entry and drop the note.",
+      }
+    }
+    if (!addedVersions.includes(input.newLineVersion)) {
+      return { ok: false, message: `this branch starts the release line ${input.newLineVersion}; add changelog.json's entry for ${input.newLineVersion}, saying what the line brings` }
+    }
+  }
   if (notes.length > 0) {
     return { ok: true, message: `change note: ${notes.map((note) => note.file).join(", ")}` }
   }

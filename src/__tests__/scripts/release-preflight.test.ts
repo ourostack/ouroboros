@@ -678,6 +678,27 @@ describe("release-preflight", () => {
     expect(result.message).toContain("changelog.json gains an entry for 0.1.0-alpha.408")
   })
 
+  it("fails a new release line that carries a change note, whose lines belong in the line's own entry", () => {
+    const line = {
+      existingNotes: new Set<string>(),
+      tipNotes: new Set<string>(),
+      baseChangelogVersions: ["0.1.0-alpha.407"],
+      newLineVersion: "0.2.0-alpha.0",
+      readNote: () => "Fix.\n",
+    }
+    const withNote = assessChangeNote({
+      ...line,
+      changedFiles: ["changelog.json", "package.json", "src/heart/x.ts", "changes/new-line.md"],
+      changelog: { versions: [{ version: "0.2.0-alpha.0", changes: ["x"] }] },
+    })
+    expect(withNote.ok).toBe(false)
+    expect(withNote.message).toContain("changes/new-line.md")
+    expect(withNote.message).toContain("changelog.json's entry for 0.2.0-alpha.0")
+    const withoutEntry = assessChangeNote({ ...line, changedFiles: ["package.json", "src/heart/x.ts"], changelog: { versions: [] } })
+    expect(withoutEntry.ok).toBe(false)
+    expect(withoutEntry.message).toContain("add changelog.json's entry for 0.2.0-alpha.0")
+  })
+
   it("fails a note whose name another change already took on main", () => {
     const result = preflight(
       { changedFiles: ["src/mailroom/core.ts", "changes/mailroom.md"], tipNotes: ["changes/mailroom.md"] },
