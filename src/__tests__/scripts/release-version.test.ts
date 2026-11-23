@@ -749,6 +749,12 @@ describe("npmRegistry", { timeout: 30_000 }, () => {
     const slept404: number[] = []
     expect(npmRegistry(lagged404, { sleep: (ms: number) => slept404.push(ms) }).changelog("0.1.0-alpha.12")).toEqual([])
     expect(slept404).toEqual([30_000])
+    const packs404: string[] = []
+    const never404 = (command: string) => { if (command === "npm") { packs404.push("pack"); throw failure(tarball404("0.1.0-alpha.12")) } return "" }
+    const slept404b: number[] = []
+    expect(() => npmRegistry(never404, { sleep: (ms: number) => slept404b.push(ms), attempts: 3 }).changelog("0.1.0-alpha.12")).toThrow("after 3 attempts")
+    expect(packs404).toHaveLength(3)
+    expect(slept404b).toEqual([30_000, 30_000])
     const otherTarball = () => { throw failure(tarball404("0.1.0-alpha.99")) }
     expect(() => npmRegistry(otherTarball, { sleep: () => { throw new Error("must not wait") } }).changelog("0.1.0-alpha.12")).toThrow("after 1 attempt")
     const gone = () => { throw failure("npm error code E404") }

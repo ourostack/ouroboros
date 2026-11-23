@@ -298,8 +298,8 @@ function npmRegistry(execFileSyncImpl = execFileSync, options = {}) {
             break
           } catch (failure) {
             const said = [failure.stderr, failure.stdout, failure.message].filter(Boolean).join("\n")
-            // npm lists a version before it serves its tarball: ETARGET, or a 404 on that exact tarball's URL
-            // (the same two answers release-smoke waits out). Any other failure is not lag.
+            // Retried: ETARGET, and a 404 whose text names this exact version's tarball URL (seen on alpha.1417
+            // right after npm-release's metadata check passed; the cause is not established). Nothing else is retried.
             const tarball = `/${PACKAGE}/-/${PACKAGE.split("/").pop()}-${version}.tgz`
             const lagging = /\bETARGET\b/.test(said) || (/\bE404\b/.test(said) && said.includes(tarball))
             if (!lagging || attempt >= attempts) {
