@@ -46,9 +46,10 @@ describe("coverage workflow contract", () => {
     expect(workflow).not.toContain("uses: actions/upload-artifact@v4")
   })
 
-  it("requires version bumps for releasable src changes, not src test-only churn", () => {
+  // The release paths moved to scripts/release-paths.cjs, shared by the preflight and the release job on main.
+  it("releases for releasable src changes, not src test-only churn", () => {
     const script = readFileSync(
-      join(process.cwd(), "scripts", "release-preflight.cjs"),
+      join(process.cwd(), "scripts", "release-paths.cjs"),
       "utf8",
     )
 
@@ -71,14 +72,18 @@ describe("coverage workflow contract", () => {
     expect(packageJson).toContain('"release:preflight": "node scripts/release-preflight.cjs"')
   })
 
-  it("requires version bumps for packaged skill changes", () => {
-    const script = readFileSync(
+  it("releases for packaged skill changes, and says when a change publishes nothing", () => {
+    const paths = readFileSync(
+      join(process.cwd(), "scripts", "release-paths.cjs"),
+      "utf8",
+    )
+    const preflight = readFileSync(
       join(process.cwd(), "scripts", "release-preflight.cjs"),
       "utf8",
     )
 
-    expect(script).toContain('file.startsWith("skills/")')
-    expect(script).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
+    expect(paths).toContain('file.startsWith("skills/")')
+    expect(preflight).toContain("no releasable changes: landing this publishes no new version")
   })
 
   it("publishes with the registry-safe npm channel selected before publish", () => {
