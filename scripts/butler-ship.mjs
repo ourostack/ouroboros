@@ -19,6 +19,7 @@ export function realDeps() {
   const dir = mkdtempSync(join(tmpdir(), "butler-ship-"))
   return {
     gh: (args) => run("gh", args),
+    npm: (args) => run("npm", args),
     ssh: (host, cmd) => run("ssh", [...SSH_OPTS, host, cmd]),
     scp: (local, host, remote) => run("scp", [...SSH_OPTS, local, `${host}:${remote}`]),
     writeTemp: (name, content) => { const p = join(dir, name); writeFileSync(p, content); return p },

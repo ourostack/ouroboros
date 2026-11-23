@@ -111,7 +111,7 @@ describe("butler-ship pure logic", () => {
 const V = "0.1.0-alpha.870"
 const SHA = "abc123"
 
-type Script = { gh?: (a: string[]) => Res; ssh?: (cmd: string, n: number) => Res }
+type Script = { gh?: (a: string[]) => Res; ssh?: (cmd: string, n: number) => Res; npm?: (a: string[]) => Res }
 
 async function harness(script: Script = {}, opts: Record<string, unknown> = {}, timing: Record<string, number> = { poll: 1 }) {
   const { ship } = await lib()
@@ -127,6 +127,7 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
       calls.push(`gh ${a.join(" ")}`)
       if (script.gh) { const r = script.gh(a); if (r) return r }
       if (a[0] === "api" && a[1].includes("commits?")) return ok(commits)
+      if (a[0] === "api" && a[1].includes("/git/")) return nok("Not Found")
       if (a[0] === "run") return ok(JSON.stringify([{ status: "completed", conclusion: "success" }]))
       return ok("FILE BODY")
     },
@@ -141,6 +142,11 @@ async function harness(script: Script = {}, opts: Record<string, unknown> = {}, 
       if (cmd.includes("cat /var/log")) return ok(`${fixture("butler-upgrade-870-gate-pass.log")}\n@@RUNNING:0\n`)
       if (cmd.endsWith(" verify")) return ok(fixture("butler-verify-868.log"))
       return ok("started")
+    },
+    npm: async (a: string[]) => {
+      calls.push(`npm ${a.join(" ")}`)
+      if (script.npm) { const r = script.npm(a); if (r) return r }
+      return nok("npm error code E404")
     },
     scp: async (l: string, h: string, r: string) => { scp.push(`${path.basename(l)}->${h}:${r}`); return ok() },
     writeTemp: (name: string, content: string) => `/tmp/${name}:${content}`.split(":")[0],
@@ -298,6 +304,73 @@ describe("butler-ship orchestrator", () => {
     expect(h.out.some((l) => l.includes(`${V} is ${SHA}`))).toBe(true)
     expect(h.out.some((l) => l.includes("WARN package.json could not be read at older") && l.includes(`chose ${SHA}`))).toBe(true)
     expect(h.calls.some((c) => c.includes("contents/package.json?ref=newer"))).toBe(true)
+  })
+
+  describe("a release published with its version set at merge", () => {
+    const HEAD = "1".repeat(40)
+    const plain = JSON.stringify([{ sha: "f".repeat(40), commit: { message: "Something (#9)", committer: { date: "2026-10-08T12:00:00Z" } } }])
+    const commitAt = (sha: string) => ok(JSON.stringify({ sha, commit: { committer: { date: "2026-10-08T12:00:00Z" } } }))
+    const listsPlain = (a: string[]) => (a[0] === "api" && a[1].includes("commits?") ? ok(plain) : undefined)
+
+    it("resolves the commit from npm's gitHead before reading any subject or package.json", async () => {
+      const h = await harness({
+        npm: (a) => (a.join(" ") === `view @ouro.bot/cli@${V} gitHead` ? ok(`${HEAD}\n`) : undefined),
+        gh: (a) => listsPlain(a) ?? (a[1] === `repos/ourostack/ouroboros/commits/${HEAD}` ? commitAt(HEAD) : (undefined as unknown as Res)),
+      })
+      const r = await h.run()
+      expect(r.exitCode).toBe(0)
+      expect(h.out.some((l) => l.includes(`${V} is ${HEAD} (npm's gitHead)`))).toBe(true)
+      expect(h.calls.some((c) => c.includes("contents/package.json?ref=f"))).toBe(false)
+      expect(h.calls.some((c) => c.includes(`--commit ${HEAD}`))).toBe(true)
+    })
+
+    it("uses the merge time of a commit outside the listed 100 for the coverage-gate grace", async () => {
+      const h = await harness({
+        npm: (a) => (a.includes("gitHead") ? ok(`${HEAD}\n`) : undefined),
+        gh: (a) => listsPlain(a) ?? (a[1] === `repos/ourostack/ouroboros/commits/${HEAD}` ? commitAt(HEAD) : a[0] === "run" ? ok("[]") : (undefined as unknown as Res)),
+      })
+      h.tick(20 * 60_000)
+      await expect(h.run()).rejects.toThrow(/no push-triggered coverage-gate run exists for 1{40}/)
+    })
+
+    it("falls back to the v<version> tag, following an annotated tag to its commit", async () => {
+      const TAG = "2".repeat(40)
+      const h = await harness({
+        gh: (a) => listsPlain(a)
+          ?? (a[1] === `repos/ourostack/ouroboros/git/ref/tags/v${V}` ? ok(JSON.stringify({ object: { type: "tag", sha: TAG } }))
+            : a[1] === `repos/ourostack/ouroboros/git/tags/${TAG}` ? ok(JSON.stringify({ object: { type: "commit", sha: HEAD } }))
+              : a[1] === `repos/ourostack/ouroboros/commits/${HEAD}` ? commitAt(HEAD) : (undefined as unknown as Res)),
+      })
+      await h.run()
+      expect(h.out.some((l) => l.includes(`${V} is ${HEAD} (tag v${V})`))).toBe(true)
+    })
+
+    it("takes a lightweight tag's commit directly", async () => {
+      const h = await harness({
+        gh: (a) => listsPlain(a)
+          ?? (a[1] === `repos/ourostack/ouroboros/git/ref/tags/v${V}` ? ok(JSON.stringify({ object: { type: "commit", sha: HEAD } }))
+            : a[1] === `repos/ourostack/ouroboros/commits/${HEAD}` ? commitAt(HEAD) : (undefined as unknown as Res)),
+      })
+      await h.run()
+      expect(h.out.some((l) => l.includes(`${V} is ${HEAD} (tag v${V})`))).toBe(true)
+    })
+
+    it("ignores a gitHead or tag that is not a commit and goes back to the subject", async () => {
+      const h = await harness({
+        npm: (a) => (a.includes("gitHead") ? ok("undefined\n") : undefined),
+        gh: (a) => (a[1]?.includes("git/ref/tags") ? ok("not json") : (undefined as unknown as Res)),
+      })
+      await h.run()
+      expect(h.out.some((l) => l.includes(`${V} is ${SHA}`))).toBe(true)
+    })
+
+    it("ignores an annotated tag it cannot follow", async () => {
+      const h = await harness({
+        gh: (a) => (a[1]?.includes("git/ref/tags") ? ok(JSON.stringify({ object: { type: "tag", sha: "3".repeat(40) } })) : (undefined as unknown as Res)),
+      })
+      await h.run()
+      expect(h.out.some((l) => l.includes(`${V} is ${SHA}`))).toBe(true)
+    })
   })
 
   it("warns about unreadable commits even when the fallback finds nothing", async () => {
@@ -541,6 +614,8 @@ describe("butler-ship CLI", () => {
     await d.sleep(1)
     const g = d.gh(["--version"])
     expect(typeof g.code).toBe("number")
+    const n = d.npm(["--version"])
+    expect(typeof n.code).toBe("number")
   }, 30_000)
 })
 
