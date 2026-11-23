@@ -1,1 +1,1 @@
-- The pull-request benchmark compares against the median of main's last five runs, so one unusually fast main run can no longer fail every pull request on linux-arm64.
+- Test-only: the Twilio phone SIP test now waits for the end-call tool output, instead of reading it the instant the hangup request is seen; the output and the hangup are sent by separate asynchronous steps, so the instant read could miss it.

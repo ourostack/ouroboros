@@ -1647,11 +1647,11 @@ describe("Twilio phone voice bridge", () => {
       }))
       openaiSockets[0]?.send(JSON.stringify({ type: "response.done", response: { id: "resp-end" } }))
       await vi.waitFor(() => expect(openaiRequests.some((request) => request.input.endsWith("/realtime/calls/call_123/hangup"))).toBe(true), { timeout: 10_000 })
-      expect(openaiMessages.some((event) => {
+      await vi.waitFor(() => expect(openaiMessages.some((event) => {
         if (event.type !== "conversation.item.create") return false
         const item = event.item as { type?: string; call_id?: string; output?: string } | undefined
         return item?.type === "function_call_output" && item.call_id === "tool-end" && item.output?.includes("voice call ending")
-      })).toBe(true)
+      })).toBe(true), { timeout: 10_000 })
       expect(mcpAcquire).toHaveBeenCalledWith({ agentName: "slugger", agentRoot })
     } finally {
       for (const openaiSocket of openaiSockets) {
