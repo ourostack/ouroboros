@@ -2,6 +2,8 @@
  * Which images a sandboxed run uses: the agent's and the household's, and any other agent images by name, for a
  * guest that needs its own (an interview arm built on another harness). The household always runs from `household`.
  */
+import { emitNervesEvent } from "../../nerves/runtime"
+
 export type SandboxImages = { agent: string; household: string; named?: Readonly<Record<string, string>> }
 
 /** `--images <agent>,<household>[,<name>=<agent image>...]`: the run's own image tags, so it never uses another checkout's. */
@@ -27,5 +29,6 @@ export function agentImageOf(images: SandboxImages, name: string | undefined): s
   if (name === undefined) return images.agent
   const tag = images.named && Object.hasOwn(images.named, name) ? images.named[name] : undefined
   if (!tag) throw new Error(`no agent image named ${name}: the run's images name ${Object.keys(images.named ?? {}).join(", ") || "none"}`)
+  emitNervesEvent({ component: "eval", event: "eval.sandbox_named_image", message: "the guest runs in its own agent image", meta: { name, image: tag } })
   return tag
 }
