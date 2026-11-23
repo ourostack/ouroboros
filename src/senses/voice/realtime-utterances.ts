@@ -28,7 +28,10 @@ export interface RealtimeUtteranceLedger {
   replyDone(responseId: string, madeAudio?: boolean): void
   /** A tool is about to run. One that may message a person is noted on every utterance still waiting. */
   toolSending(name: string, args: Record<string, unknown>): void
-  /** Audio sent for a reply was cleared before any of it played; `reason` says what took its place. */
+  /**
+   * Audio sent for a reply was cleared before it played; `reason` says what took its place. The reply may still
+   * stream more audio afterwards, which can play, so it fails only once it finished with nothing left to play.
+   */
   cutOff(reason: string): void
   /**
    * The call ended. What is still waiting is recorded as failed, or as silent with `silent` as the reason when the
@@ -47,7 +50,14 @@ export interface RealtimeUtteranceCall {
 
 interface Reply {
   utterances: VoiceUtteranceTurn[]
+  /** Its speech was noted on what it answers. */
   spoke: boolean
+  /** Some of its audio was sent and has neither played nor been cleared. */
+  unheard: boolean
+  /** OpenAI finished it. */
+  done: boolean
+  /** What cleared its audio before any played, until more of its audio is sent. */
+  cut: string | null
 }
 
 function segment(input: string): string {
@@ -81,12 +91,14 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
     },
     replyStarted(responseId, answers) {
       if (!answers || !responseId || waiting.length === 0) return
-      replies.set(responseId, { utterances: waiting, spoke: false })
+      replies.set(responseId, { utterances: waiting, spoke: false, unheard: false, done: false, cut: null })
       waiting = []
     },
     speaking(responseId) {
       const reply = replies.get(responseId)
-      if (!reply || reply.spoke) return
+      if (!reply) return
+      reply.unheard = true
+      if (reply.spoke) return
       reply.spoke = true
       const spoke = turnSpoke("speech:audio", null)
       for (const utterance of reply.utterances) utterance.noteSpoke(spoke)
@@ -99,9 +111,15 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
     },
     replyDone(responseId, madeAudio = false) {
       const reply = replies.get(responseId)
-      if (!reply || reply.spoke || madeAudio) return
+      if (!reply) return
+      // Audio still on its way to the caller may yet play.
+      if (reply.unheard || (madeAudio && !reply.cut)) {
+        reply.done = true
+        return
+      }
       replies.delete(responseId)
-      waiting = [...reply.utterances, ...waiting]
+      if (reply.cut) settleAll(reply.utterances, "failed", reply.cut)
+      else waiting = [...reply.utterances, ...waiting]
     },
     toolSending(name, args) {
       const spoke = turnSpokeForTool(name, textArgs(args))
@@ -111,14 +129,18 @@ export function realtimeUtteranceLedger(call: RealtimeUtteranceCall): RealtimeUt
     },
     cutOff(reason) {
       for (const [responseId, reply] of replies) {
-        if (!reply.spoke) continue
+        if (!reply.unheard) continue
+        reply.unheard = false
+        reply.cut = reason
+        if (!reply.done) continue
         replies.delete(responseId)
         settleAll(reply.utterances, "failed", reason)
       }
     },
     ended(silent) {
       for (const reply of replies.values()) {
-        settleAll(reply.utterances, silent ? "silent" : "failed", silent ?? "the call ended before the reply was played")
+        const failure = reply.cut && !reply.unheard ? reply.cut : "the call ended before the reply was played"
+        settleAll(reply.utterances, silent ? "silent" : "failed", silent ?? failure)
       }
       replies.clear()
       settleAll(waiting, silent ? "silent" : "failed", silent ?? "the call ended before this was answered")

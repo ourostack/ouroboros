@@ -181,6 +181,8 @@ describe("OpenAI Realtime utterance outcomes", () => {
     await call.replies("resp-1")
     for (let i = 0; i < 14; i += 1) call.session.handleRawMessage(loud)
     call.openai.send({ type: "input_audio_buffer.speech_started" })
+    await vi.waitFor(() => expect(call.twilio.sent.some((event) => event.event === "clear")).toBe(true))
+    call.openai.send({ type: "response.done", response: { id: "resp-1" } })
     await vi.waitFor(() => expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({
       outcome: "failed", detail: "the caller spoke again before the reply was played",
     }))
@@ -194,6 +196,22 @@ describe("OpenAI Realtime utterance outcomes", () => {
     expect(call.journal.outcome("realtime-CAone-item-2")).toMatchObject({ outcome: "answered" })
   })
 
+  it("answers a reply whose later audio played after the caller talked over its start", async () => {
+    const call = await realtimeCall()
+    await call.callerSays("item-1")
+    await call.replies("resp-1")
+    for (let i = 0; i < 14; i += 1) call.session.handleRawMessage(loud)
+    call.openai.send({ type: "input_audio_buffer.speech_started" })
+    await vi.waitFor(() => expect(call.twilio.sent.some((event) => event.event === "clear")).toBe(true))
+    const marks = call.twilio.marks().length
+    call.openai.send({ type: "response.output_audio.delta", response_id: "resp-1", item_id: "item-resp-1", content_index: 0, delta: AUDIO })
+    call.openai.send({ type: "response.done", response: { id: "resp-1" } })
+    await vi.waitFor(() => expect(call.twilio.marks()).toHaveLength(marks + 1))
+    expect(call.journal.outcome("realtime-CAone-item-1")).toBeNull()
+    call.session.handleRawMessage(JSON.stringify({ event: "mark", mark: { name: call.twilio.marks().at(-1) } }))
+    expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({ outcome: "answered" })
+  })
+
   it("records a reply that audio a tool played took the place of as failed", async () => {
     const call = await realtimeCall()
     await call.callerSays("item-1")
@@ -202,6 +220,7 @@ describe("OpenAI Realtime utterance outcomes", () => {
       type: "response.function_call_arguments.done", response_id: "resp-1", call_id: "call-tone", name: "voice_play_audio",
       arguments: JSON.stringify({ source: "tone", durationMs: 80, label: "beep" }),
     })
+    call.openai.send({ type: "response.done", response: { id: "resp-1" } })
     await vi.waitFor(() => expect(call.journal.outcome("realtime-CAone-item-1")).toMatchObject({
       outcome: "failed", detail: "audio a tool played took its place before the reply was played",
     }))
