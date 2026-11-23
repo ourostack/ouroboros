@@ -113,8 +113,8 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain("lookupPublishedVersion(`ouro.bot@${localVersion}`)")
     expect(workflow).not.toContain("--provenance")
     expect(workflow).not.toContain("npm dist-tag add")
-    expect(workflow).toContain('verify_tag "@ouro.bot/cli" "$LOCAL"')
-    expect(workflow).toContain('verify_tag "ouro.bot" "$LOCAL"')
+    expect(workflow).toContain('scripts/npm-verify-exact-version.sh "@ouro.bot/cli" "$LOCAL"')
+    expect(workflow).toContain('scripts/npm-verify-exact-version.sh "ouro.bot" "$LOCAL"')
   })
 
   it("keeps npm trusted-publishing package repository metadata exact", () => {
