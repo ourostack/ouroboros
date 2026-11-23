@@ -72,7 +72,7 @@ export const observeTool: OpenAI.ChatCompletionFunctionTool = {
 };
 
 /** What settle does. A turn's progress goes through speak; settle is the turn's end. */
-const SETTLE_DESCRIPTION = "delivers answer to the person and ends the turn, handing control back to them. it is the move for finished work, a real block, a question from them that needs an answer now, or a confirmation, stop or pause point. feedback that arrives during active work is input to the loop, and progress while i keep working goes through speak. an answer like 'I'll look into that' means a tool call is the next step. when the block is a missing tool (not a missing answer from them), report_failure tells the engineers about the gap, and settle with intent blocked ends the turn."
+export const SETTLE_DESCRIPTION = "delivers answer to the person and ends the turn, handing control back to them. it is the move for finished work, a real block, a question from them that needs an answer now, or a confirmation, stop or pause point. feedback that arrives during active work is input to the loop, and progress while i keep working goes through speak. an answer like 'I'll look into that' means a tool call is the next step. when the block is a missing tool (not a missing answer from them), report_failure tells the engineers about the gap, and settle with intent blocked ends the turn." as const
 
 export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
@@ -91,24 +91,7 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
 };
 
 /** How often a check-back filed by settle is looked at again after its time, until it is resolved or canceled. */
-export const SETTLE_CHECK_BACK_CADENCE = "1d"
-
-/**
- * settle for a turn that may also file await_condition: two more arguments leave a watch behind, filed exactly as
- * await_condition would file it. Offered only where await_condition is, so elsewhere the arguments don't exist.
- */
-export const settleCheckBackTool: OpenAI.ChatCompletionFunctionTool = withCheckBack(settleTool)
-
-/** The same settle door, with the two check-back arguments; built from settleTool so the door is defined once. */
-function withCheckBack(tool: OpenAI.ChatCompletionFunctionTool): OpenAI.ChatCompletionFunctionTool {
-  const variant = structuredClone(tool)
-  variant.function.description = `${SETTLE_DESCRIPTION} with check_back_at and condition, it also files an await that wakes at that time, so the follow-up happens without anyone asking again.`
-  Object.assign(variant.function.parameters!.properties as Record<string, unknown>, {
-    check_back_at: { type: "string", description: "optional: when to look at this again, an ISO time with a zone such as 2026-11-23T15:00:00Z. give condition with it." },
-    condition: { type: "string", description: "optional, with check_back_at: one sentence of what to check then." },
-  })
-  return variant
-}
+export const SETTLE_CHECK_BACK_CADENCE = "1d" as const
 
 export const speakTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
