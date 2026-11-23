@@ -86,5 +86,6 @@
     {"id": "turn-flow", "when": "Pace a turn: tell the person something midway, give the final answer, stay quiet, close a private turn, or save a question for later."},
     {"id": "hatch", "when": "Hatch a new agent in ouro hatch: look around the temp bundle, write its files, then finish the adoption."},
     {"id": "turn-escalation", "when": "Hand a failure you can't get around to the engineers: a local failure report, or a GitHub issue."}
-  ]
+  ],
+  "bookletWords": { "allow": [] }
 }

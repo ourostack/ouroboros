@@ -1,7 +1,7 @@
 name: ax-xray
 
 # The Ouro AX X-ray checks the ouro CLI the way an agent calls it, against a loopback mock with made-up data, and the
-# action claims check the declarations in actions/, and the census (.github/scripts/ax-census) counts the agent doors
+# action claims check the declarations in actions/, and the census (scripts/ouro-census, vendored from ouro-ui) counts the agent doors
 # the code has, declared or not. They write reports to artifacts named `xray`, `xray-mcp`, `actions-xray` and
 # `ax-census`.
 # The X-ray gates with --conformance: the job fails unless the CLI conforms.
@@ -38,16 +38,25 @@ jobs:
       - name: Build the CLI
         run: npm run build
 
-      # The census's own tests run after the build, so the test over the real mcp-serve server isn't skipped.
-      - name: Ouro AX census tests
+      # scripts/ouro-census is ouro-ui's census, copied from a release; its tests run in ouro-ui. This step fails when a
+      # vendored file no longer matches the hash dist-manifest.json pins, or when the checker hash those files make isn't
+      # the release's (OURO_CENSUS_CHECKER), so neither a local edit nor a rewritten manifest can weaken the checker.
+      # Vendoring a new release updates the files, the manifest and this hash together.
+      - name: Ouro AX census matches its release
+        env:
+          OURO_CENSUS_CHECKER: 7e7b32a663a58af2a4a0f64d42ebe9c6e82c00e7dce69431d43a2cf44c9caa3b # ouro-ui v1.3.448
         run: |
-          npx tsc -p .github/scripts/ax-census
-          node --test --experimental-test-coverage \
-            --test-coverage-include='.github/scripts/ax-census/**/*.m[tj]s' \
-            --test-coverage-exclude='.github/scripts/ax-census/**/*.node-test.mts' \
-            --test-coverage-exclude='.github/scripts/ax-census/**/fixtures/**' \
-            --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=90 \
-            '.github/scripts/ax-census/**/*.node-test.mts'
+          node -e '
+            const fs = require("fs"), crypto = require("crypto"), dir = "scripts/ouro-census/"
+            const sha = (data) => crypto.createHash("sha256").update(data).digest("hex")
+            const manifest = JSON.parse(fs.readFileSync(dir + "dist-manifest.json", "utf8"))
+            const changed = Object.entries(manifest.files).filter(([file, hash]) => !fs.existsSync(dir + file) || sha(fs.readFileSync(dir + file)) !== hash)
+            if (changed.length) { console.error("changed from the release: " + changed.map(([file]) => file).join(", ")); process.exit(1) }
+            const checker = sha(Object.keys(manifest.files).map((file) => `${file}\n${manifest.files[file]}\n`).join(""))
+            if (checker !== manifest.checker || checker !== process.env.OURO_CENSUS_CHECKER) {
+              console.error(`checker ${checker}, manifest says ${manifest.checker}, release is ${process.env.OURO_CENSUS_CHECKER}`); process.exit(1)
+            }
+            console.log("scripts/ouro-census matches ouro-ui v1.3.448, checker " + checker)'
 
       # The census counts every agent door it walks and fails when one without a valid card isn't on
       # ax/census.baseline.json, when this pull request adds to the baseline, or when it drops a walker source. It
@@ -61,12 +70,12 @@ jobs:
           mkdir -p ax-census
           base_baseline=none; base_config=absent
           if [ -n "$BASE_REF" ]; then
-            base_sha=$(node .github/scripts/ax-census/base.mts)
+            base_sha=$(node scripts/ouro-census/base.mts)
             git fetch --depth=1 origin "$base_sha"
             if git show FETCH_HEAD:ax/census.config.json > "$RUNNER_TEMP/base-config.json" 2>/dev/null; then base_config="$RUNNER_TEMP/base-config.json"; fi
             if git show FETCH_HEAD:ax/census.baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then base_baseline="$RUNNER_TEMP/base-baseline.json"; fi
           fi
-          node .github/scripts/ax-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
+          node scripts/ouro-census/census.mts --config ax/census.config.json --baseline ax/census.baseline.json \
             --base-baseline "$base_baseline" --base-config "$base_config" \
             --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --repo "$GITHUB_REPOSITORY" --out ax-census/census.json \
             --inventory ax-census/inventory.json 2>&1 | tee ax-census/census.txt

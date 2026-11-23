@@ -20,7 +20,7 @@ import { ENTRY_POINT_COMMANDS } from "./cli-commands/entry-points"
 // Each command says who sees its effect: only the person ("private") or other people ("others"). A command moves onto
 // the Ouro AX kit's definitions one at a time; until then it is declared in cli-commands/ and dispatched by cli-exec.
 //
-// A declaration's `ax` is its Ouro AX door card, the one the census (.github/scripts/ax-census) checks: when an agent
+// A declaration's `ax` is its Ouro AX door card, the one the census (scripts/ouro-census) checks: when an agent
 // should pick the command over its neighbours, its consent class, and what can go wrong as the agent reads it, each
 // error code raised in the parser, the gate or the dispatcher. `help --json` serves the card, and the shell tool
 // treats a command whose card says `effect: "read"` as safe to run (READ_ONLY_OURO_SHELL_COMMANDS in tools.ts).
