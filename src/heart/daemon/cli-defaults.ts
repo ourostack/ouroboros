@@ -40,7 +40,7 @@ import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTail
 import { unsupportedHomeFilesystem } from "./home-filesystem"
 import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { readLocalPresenceSettings } from "./presence"
-import { handOffDaemonRuntimeReplacement, runtimeReplacementMarkerPath, type RuntimeReplacementHandoff } from "./runtime-replacement-handoff"
+import { handOffDaemonRuntimeReplacement, parseLaunchctlJobPid, parseProcessParents, runtimeReplacementMarkerPath, type RuntimeReplacementHandoff } from "./runtime-replacement-handoff"
 import { generateSysvInitScript, generateSystemdUnit, installLinuxService, startLinuxService, uninstallLinuxService, defaultServicePath, type LinuxServiceDeps, type ServiceSupervision } from "./linux-service"
 import { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS, DEFAULT_DAEMON_SOCKET_PATH, DEFAULT_DAEMON_STATUS_TIMEOUT_MS, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -516,10 +516,30 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
   execSync("/bin/sleep 1", { stdio: "ignore" })
 }
 
+/** launchctl exits 113 when the label isn't loaded; anything else it can't answer throws. */
+const LAUNCHCTL_NO_SUCH_SERVICE = 113
+const JOB_CHECK_TIMEOUT_MS = 5_000
+
+/** The running pid of the daemon's launchd job, or null when the job isn't loaded or has no process. */
+export function readDaemonJobPidFailSafe(run: (file: string, args: string[]) => string = (file, args) =>
+  execFileSync(file, args, { encoding: "utf-8", timeout: JOB_CHECK_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] })): number | null {
+  try {
+    return parseLaunchctlJobPid(run("launchctl", ["print", `${launchAgentDomain()}/${DAEMON_PLIST_LABEL}`]))
+  } catch (error) {
+    if ((error as { status?: unknown }).status === LAUNCHCTL_NO_SUCH_SERVICE) return null
+    throw error
+  }
+}
+
 function defaultHandOffDaemonRuntimeReplacement(): RuntimeReplacementHandoff | null {
   return handOffDaemonRuntimeReplacement({
     platform: process.platform,
     env: process.env,
+    pid: process.pid,
+    readDaemonJobPid: () => readDaemonJobPidFailSafe(),
+    /* v8 ignore next 2 -- host default: reads this machine's process table @preserve */
+    readProcessParents: () =>
+      parseProcessParents(execFileSync("ps", ["-axo", "pid=,ppid="], { encoding: "utf-8", timeout: JOB_CHECK_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] })),
     execPath: process.execPath,
     entryPath: process.argv[1],
     logPath: path.join(getOuroCliHome(), "daemon", "logs", "runtime-replacement-helper.log"),
