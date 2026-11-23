@@ -34,6 +34,8 @@ def main(spec_file: str) -> int:
         llm=llm,
         tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
         agent_context=AgentContext(system_message_suffix=spec["systemSuffix"], load_user_skills=True),
+        # The default preset's prompt wording; without it the SDK uses its command-line wording for security risk.
+        system_prompt_kwargs={"cli_mode": False},
     )
     conversation = Conversation(agent=agent, workspace=spec["workdir"], visualizer=None)
     try:

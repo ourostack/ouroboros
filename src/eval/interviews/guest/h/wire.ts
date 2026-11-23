@@ -129,9 +129,14 @@ export function responsesRequest(body: unknown, prefix: Message[]): WireRequest 
  * developer message as a system message, and the case's conversation before the first user message. Streaming is
  * refused: the clients the wire serves this way (openhands) ask for one whole answer.
  */
+const CHAT_FIELDS = new Set(["model", "messages", "tools", "stream", "max_completion_tokens", "prompt_cache_key"])
+
 export function chatRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.messages)) throw new Error("a chat body needs a messages list")
   if (body.stream === true) throw new Error("the H wire answers chat completions only without streaming")
+  // The request settings the arm may send, which the host's runtime sets instead (a fidelity note); any other field
+  // is refused by name, never dropped unseen.
+  for (const key of Object.keys(body)) if (!CHAT_FIELDS.has(key)) throw new Error(`the H wire can't carry a chat request's ${key}`)
   const messages: Message[] = []
   let prefixed = false
   for (const item of body.messages as unknown[]) {

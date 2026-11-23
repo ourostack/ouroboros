@@ -98,8 +98,8 @@ describe("the openhands arm", () => {
     expect(started).toHaveLength(1)
     expect(started[0]!.cwd).toBe(workdir)
     expect(started[0]!.spec).toEqual({ baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), workdir, systemSuffix: "I am the Butler.\n\nYou are working in environment Z." })
-    // PWD keeps the neutral path in the terminal: without it, the shell resolves the link to the bundle's real path.
-    expect(started[0]!.env).toEqual({ HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" })
+    // PWD keeps the neutral path if the SDK falls back to a plain shell; AI_AGENT keeps the SDK's brand out of the shell.
+    expect(started[0]!.env).toStrictEqual({ HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" })
     expect(fs.realpathSync(workdir)).toBe(fs.realpathSync(bundle))
     expect(fs.existsSync(path.join(home, ".agents", "skills", "books", "SKILL.md"))).toBe(true)
     expect(seen[0]!.messages).toEqual([...TURN.prefix, { role: "user", content: "Remove the bad copy." }])
@@ -135,15 +135,21 @@ describe("the openhands arm", () => {
   it("has a fidelity note for every setting the supervisor changes from the SDK's defaults", () => {
     const supervisor = fs.readFileSync(path.join(__dirname, "../../../../deploy/eval/openhands/supervise.py"), "utf8")
     // The settings are the keyword arguments of the SDK's constructors, from the LLM to the conversation.
+    // Every keyword argument, whatever its value, so a new one fails here until it is placed below.
     const setup = supervisor.slice(supervisor.indexOf("LLM("), supervisor.indexOf("for line in sys.stdin"))
-    const settings = [...setup.matchAll(/\b(\w+)=(True|False|None|\d+|"[^"]*")[,)]/g)].map((match) => match[1]!)
-    expect(settings).toEqual(["usage_id", "model", "api_mode", "num_retries", "stream", "load_user_skills", "visualizer"])
-    // Naming the LLM's use and turning off the console view change nothing the model sees.
-    settings.splice(settings.indexOf("usage_id"), 1)
-    settings.splice(settings.indexOf("visualizer"), 1)
-    settings.splice(settings.indexOf("model"), 1, "openai/model")
-    for (const setting of settings) {
-      if (!H_OPENHANDS_FIDELITY.some((note) => note.includes(setting))) throw new Error(`no fidelity note names ${setting}`)
+    const settings = [...new Set([...setup.matchAll(/\b(\w+)=/g)].map((match) => match[1]!))]
+    // Each setting's words in a fidelity note, or null for one the model can't notice: plumbing, naming, the console.
+    const noted: Record<string, string | null> = {
+      usage_id: null, base_url: null, api_key: null, llm: null, name: null, agent: null, workspace: null, visualizer: null, agent_context: null,
+      model: "openai/model", api_mode: "api_mode", num_retries: "num_retries", stream: "stream",
+      tools: "the terminal and the file editor", system_message_suffix: "system message's suffix", load_user_skills: "load_user_skills",
+      system_prompt_kwargs: "cli_mode",
+    }
+    expect(settings.filter((setting) => !(setting in noted))).toEqual([])
+    // And what the SDK's default preset gives that the arm leaves out.
+    const words = [...Object.values(noted).filter((word): word is string => word !== null), "condenser", "task tracker", "browser"]
+    for (const word of words) {
+      if (!H_OPENHANDS_FIDELITY.some((note) => note.includes(word))) throw new Error(`no fidelity note names ${word}`)
     }
   })
 })

@@ -112,14 +112,17 @@ export function openhandsArm(options: { start?: StartSupervisor; home?: string; 
       const specFile = path.join(home, ".arm-spec.json")
       fs.writeFileSync(specFile, JSON.stringify({ baseUrl: served.url, workdir, systemSuffix: `${personaPrompt(bundle)}\n\n${turn.labelLine}` }))
       // The SDK reads the model cost map it ships with rather than fetching one; the container has no route out.
-      // PWD keeps the neutral path in the terminal; without it, the shell resolves the link to the bundle's real path.
-      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True" } })
+      // The terminal's tmux keeps the neutral workdir as given; PWD keeps it too if the SDK falls back to a plain shell.
+      // AI_AGENT is set to a neutral name, since the SDK otherwise puts its own brand there for the shell.
+      const supervisor = start(specFile, { cwd: workdir, env: { HOME: home, PWD: workdir, PATH: process.env.PATH, LITELLM_LOCAL_MODEL_COST_MAP: "True", AI_AGENT: "agent" } })
       // OpenHands' `finish` call is the turn's reply.
       const traced = (): Array<TraceCall | TraceReply> => wire.timeline().map((entry) => entry.kind === "call" && entry.name === "finish"
         ? { kind: "reply", text: withoutThinking(finishMessage(entry.args)) }
         : entry.kind === "reply" ? { kind: "reply", text: withoutThinking(entry.text) } : entry)
       const turns: TelegramTurns = []
       let closed: { code: number; stderr: string } | null = null
+      // The supervisor is closed however the turns end, so Python never outlives the arm.
+      try {
       for (const [index, text] of [turn.userText, ...turn.followUps].entries()) {
         const record = { start: traced().length, finalReply: "", outcome: "settled", calls: 0 }
         turns.push(record)
@@ -146,7 +149,9 @@ export function openhandsArm(options: { start?: StartSupervisor; home?: string; 
         emitNervesEvent({ component: "eval", event: "eval.h_openhands_turn_end", message: "openhands ended a turn", meta: { index, outcome: record.outcome, calls: record.calls } })
         if (record.outcome !== "settled") break
       }
-      if (!closed) await supervisor.close()
+      } finally {
+        if (!closed) await supervisor.close()
+      }
       return { timeline: traced(), finalReply: turns[0]!.finalReply, outcome: turns[0]!.outcome, steps: wire.calls(), turns }
     } finally {
       await served.close()

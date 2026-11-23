@@ -42,6 +42,7 @@ test "$(git -C "$WORK/sdk-src" rev-parse HEAD)" = "$COMMIT"
 export UV_PYTHON_INSTALL_DIR="$SDK/python" UV_PROJECT_ENVIRONMENT="$SDK/venv" UV_CACHE_DIR="$WORK/uv-cache" UV_LINK_MODE=copy
 cd "$WORK/sdk-src"
 nice -n 19 "$WORK/bin/uv" sync --frozen --no-dev --no-editable --compile-bytecode --managed-python --package openhands-tools --python 3.13
-nice -n 19 "$SDK/venv/bin/python" -m compileall -q "$SDK/python" >/dev/null || true
+# Python's own test folders hold files that are broken on purpose, so they are left out; any other failure stops the build.
+nice -n 19 "$SDK/venv/bin/python" -m compileall -q -x '/(test|tests|idle_test|lib2to3)/' "$SDK/python"
 cp "$HERE/openhands/supervise.py" "$SDK/supervise.py"
 "$SDK/venv/bin/python" -c "import openhands.sdk, openhands.tools.terminal, openhands.tools.file_editor; print('openhands sdk ok')"

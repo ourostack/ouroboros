@@ -114,7 +114,7 @@ describe("the H wire's chat-completions translation", () => {
       ],
       tools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
     }
-    expect(chatRequest(body, PREFIX)).toEqual({
+    expect(chatRequest(body, PREFIX)).toStrictEqual({
       messages: [
         { role: "system", content: "You are a helpful agent." },
         ...PREFIX,
@@ -127,8 +127,8 @@ describe("the H wire's chat-completions translation", () => {
       activeTools: [{ type: "function", function: { name: "terminal", description: "Run a command.", parameters: { type: "object" } } }],
     })
     // A developer message is a system message; no tools is fine, and so is a tool with no description or schema.
-    expect(chatRequest({ messages: [{ role: "developer", content: "d" }, { role: "user", content: "u" }] }, [])).toEqual({ messages: [{ role: "system", content: "d" }, { role: "user", content: "u" }], activeTools: [] })
-    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t" } }] }, []).activeTools).toEqual([{ type: "function", function: { name: "t" } }])
+    expect(chatRequest({ messages: [{ role: "developer", content: "d" }, { role: "user", content: "u" }] }, [])).toStrictEqual({ messages: [{ role: "system", content: "d" }, { role: "user", content: "u" }], activeTools: [] })
+    expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t" } }] }, []).activeTools).toStrictEqual([{ type: "function", function: { name: "t" } }])
   })
 
   it("refuses what it can't carry faithfully, naming it", () => {
@@ -142,11 +142,13 @@ describe("the H wire's chat-completions translation", () => {
     // name, description and the whole schema, with its required lists, enums and nested objects.
     const openhands = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/openhands-tools-ecea9a91.json"), "utf8")) as unknown[]
     expect(openhands.length).toBe(4)
-    expect(chatRequest({ messages: [], tools: openhands }, []).activeTools).toEqual(openhands)
+    expect(chatRequest({ messages: [], tools: openhands }, []).activeTools).toStrictEqual(openhands)
     expect(() => chatRequest({ messages: [], tools: [{ type: "function" }] }, [])).toThrow("a chat tool needs its function")
     expect(() => chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", cache_control: {} } }] }, [])).toThrow("the H wire can't carry a tool's cache_control")
     expect(chatRequest({ messages: [], tools: [{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }] }, []).activeTools)
-      .toEqual([{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }])
+      .toStrictEqual([{ type: "function", function: { name: "t", description: "d", strict: false, parameters: { type: "object", additionalProperties: false } } }])
+    // Any other request field would go unseen, so it is refused by name.
+    expect(() => chatRequest({ messages: [], temperature: 0 }, [])).toThrow("the H wire can't carry a chat request's temperature")
   })
 
   it("answers with one chat completion: the reply, its calls, why it stopped and the usage", () => {
