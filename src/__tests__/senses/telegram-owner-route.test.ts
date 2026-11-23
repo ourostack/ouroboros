@@ -106,6 +106,17 @@ describe("createA2AOwnerRoute", () => {
     await expect(refused(ownerRouteItem("proactive:1", "hello", false))).resolves.toEqual({ status: "unreachable", detail: "not a friend" })
   })
 
+  it("probes the pinned card without sending anything", async () => {
+    const send = vi.fn()
+    const up = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card(SLUGGER_DID) as never, send })
+    await expect(up.probe!()).resolves.toEqual({ status: "delivered" })
+    const other = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => card("did:key:z6MkOther") as never, send })
+    await expect(other.probe!()).resolves.toMatchObject({ status: "unreachable" })
+    const down = createA2AOwnerRoute({ cardUrl: CARD_URL, did: SLUGGER_DID, loadIdentity: async () => identity, fetchCard: async () => { throw new Error("connect ETIMEDOUT") }, send })
+    await expect(down.probe!()).resolves.toEqual({ status: "unreachable", detail: "connect ETIMEDOUT" })
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it("uses the real card fetch and sealed send by default", async () => {
     const route = createA2AOwnerRoute({ cardUrl: "http://127.0.0.1:9/.well-known/agent-card.json", did: SLUGGER_DID, loadIdentity: async () => identity })
     const outcome = await route(ownerRouteItem("proactive:1", "hello", false))

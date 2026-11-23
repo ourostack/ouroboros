@@ -526,6 +526,20 @@ describe("Telegram effect adapter", () => {
     expect(api.request.mock.calls.map(([method]) => method)).toEqual(["sendMessage", "editMessageText", "answerCallbackQuery"])
   })
 
+  it("sends a silent text without a notification, on every resend, and refuses a stored silent flag that isn't true", async () => {
+    const store = journal()
+    const refusing = { request: vi.fn(async (_method: string, body: any) => { if (body.parse_mode) throw new TelegramApiError("bad html", { status: 400 }); return { message_id: 81 } }) }
+    const quiet = prepareTelegramEffect(store, { idempotencyKey: "text:silent", target, authorClass: "butler", effect: { kind: "text", text: "He is back.", silent: true }, authorization })
+    await executeTelegramEffect(store, quiet.id, refusing, () => authorization)
+    // HTML, then the safe HTML, then plain text: all three silent.
+    expect(refusing.request.mock.calls.map(([, body]: any[]) => body.disable_notification)).toEqual([true, true, true])
+    const filePath = path.join((store as unknown as { root: string }).root, `${quiet.id}.json`)
+    const corrupt = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    corrupt.effect.silent = "yes"
+    fs.writeFileSync(filePath, JSON.stringify(corrupt), { mode: 0o600 })
+    expect(() => store.read(quiet.id)).toThrow("invalid")
+  })
+
   it("sends a silent card without a notification, and refuses a stored silent flag that isn't true", async () => {
     const store = journal()
     const api = { request: vi.fn(async () => ({ message_id: 79 })) }

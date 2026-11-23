@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1377",
+      "changes": [
+        "The Butler checks Slugger's card every 5 minutes. After 3 failed checks it tells the owner once on Telegram that Slugger is unreachable, and silently when he is back."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1376",
       "changes": [
         "iMessage: a reply whose send timed out but arrived is recorded within a recovery pass instead of after 10 minutes, so status stops reporting it as not caught up."
