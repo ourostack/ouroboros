@@ -84,6 +84,7 @@ vi.mock("../../heart/identity", () => ({
 
 vi.mock("../../mind/pending", () => ({
   drainPending: (...args: any[]) => mockDrainPending(...args),
+  claimPending: () => ({ messages: [], settle: () => undefined, release: () => undefined }),
   getPendingDir: (...args: any[]) => mockGetPendingDir(...args),
   getPrivateRuntimePendingDir: (...args: any[]) => mockGetPrivateRuntimePendingDir(...args),
   queuePendingMessageOnce: (...args: any[]) => mockQueuePendingMessageOnce(...args),
@@ -1679,6 +1680,8 @@ describe("private runtime", () => {
 
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(typeof input.drainPending).toBe("function")
+    // Private-runtime notices are claimed, so a turn that dies does not lose them.
+    expect(typeof input.claimPending).toBe("function")
     expect(typeof input.runAgent).toBe("function")
     expect(typeof input.postTurn).toBe("function")
     expect(typeof input.accumulateFriendTokens).toBe("function")

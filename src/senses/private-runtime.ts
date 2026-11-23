@@ -17,6 +17,7 @@ import { renderRelationshipPreferences } from "../repertoire/relationship-author
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
+  claimPending,
   drainPending,
   getPrivateRuntimePendingDir,
   getDeferredReturnDir,
@@ -1644,6 +1645,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     friendStore: createNoOpFriendStore(),
     enforceTrustGate,
     drainPending,
+    // Mail, app-session and other notices stay on disk until the turn that read them is persisted.
+    claimPending,
     runAgent,
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)

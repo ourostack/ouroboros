@@ -10,7 +10,7 @@ import type { SessionTurnLease } from "../mind/session-transaction"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
-import type { PendingMessage } from "../mind/pending"
+import type { PendingClaim, PendingMessage } from "../mind/pending"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -530,6 +530,12 @@ export interface InboundTurnInput {
   // ── Dependency injection for testability ──
   enforceTrustGate: (input: TrustGateInput) => TrustGateResult
   drainPending: (pendingDir: string) => PendingMessage[]
+  /**
+   * When given, pending messages are claimed instead of drained: they stay on disk until the turn that read them is
+   * recorded (its session persisted, or its approval suspension checkpointed), and a turn that throws leaves them
+   * for the next turn.
+   */
+  claimPending?: (pendingDir: string) => PendingClaim
   drainDeferredReturns?: (friendId: string) => PendingMessage[]
   runAgent: (
     messages: ChatCompletionMessageParam[],
@@ -1037,6 +1043,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
   const liveLatencyMode = input.latencyMode === "live"
   let declinedForHome = false
+  let pendingClaim: PendingClaim | undefined
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
@@ -1123,7 +1130,13 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const deferredReturns = input.channel === "inner"
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
-  const sessionPending = input.drainPending(input.pendingDir)
+  pendingClaim = input.claimPending?.(input.pendingDir)
+  const sessionPending = pendingClaim ? pendingClaim.messages : input.drainPending(input.pendingDir)
+  // The turn is recorded once its session is persisted: only then may claimed pending messages go.
+  const persistTurn = async (...args: Parameters<InboundTurnInput["postTurn"]>): Promise<void> => {
+    await input.postTurn(...args)
+    pendingClaim?.settle()
+  }
   // A deferred return was saved for the friend's next message, whenever that comes, so a
   // sense's freshness window for its own pending never drops it.
   const pending = [
@@ -1388,6 +1401,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
 
   if (result.outcome === "suspended") {
     if (!result.suspension) throw new Error("suspended agent turn omitted durable approval suspension")
+    // The suspension checkpoint holds the turn, pending messages included.
+    pendingClaim?.settle()
     emitNervesEvent({
       component: "senses",
       event: "senses.pipeline_approval_suspended",
@@ -1433,7 +1448,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
         mustResolveBeforeHandoff,
         lastFriendActivityAt,
       })
-      await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, failoverNextState)
+      await persistTurn(sessionMessages, session.sessionPath, result.usage, undefined, failoverNextState)
       try {
         const agentRoot = getAgentRoot()
         const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
@@ -1501,7 +1516,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     mustResolveBeforeHandoff,
     lastFriendActivityAt,
   })
-  await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+  await persistTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   try {
     const agentRoot = getAgentRoot()
@@ -1562,6 +1577,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ...(result.outcome === "errored" && input.channel !== "inner" && input.channel !== "cli" ? { failoverMessage: erroredTurnReply(result.error?.message) } : {}),
   }
   } finally {
+    // A turn that ended without being recorded leaves its claimed pending messages for the next turn.
+    pendingClaim?.release()
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
     // turn's edits are recorded before the reply goes out; the push runs on
     // without being awaited, holding the lock, and records its own failure.

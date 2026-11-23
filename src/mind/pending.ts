@@ -136,6 +136,78 @@ function drainQueue(queueDir: string): { messages: PendingMessage[]; recovered: 
   }
 }
 
+/** How many turns may read a pending message without settling it before it is set aside as failed. */
+export const MAX_PENDING_CLAIMS = 3
+
+export interface PendingClaim {
+  messages: PendingMessage[]
+  /** The turn that read the messages has been recorded: delete them. */
+  settle(): void
+  /** The turn ended without being recorded: leave the messages for the next turn to read again. */
+  release(): void
+}
+
+/** Messages a turn in this process has claimed and not yet settled or released, by `.processing` path. */
+const heldClaims = new Set<string>()
+
+/**
+ * Take a queue's messages for one turn without deleting them. Each is renamed to `.processing` and deleted only by
+ * `settle()`, once the turn that read it has been recorded. A turn that throws releases its claim, and a process that
+ * dies holds it no longer, so the next claim reads the message again. After MAX_PENDING_CLAIMS reads that never
+ * settled, the message is set aside as `.json.failed` so it cannot fail every later turn.
+ */
+export function claimPending(pendingDir: string): PendingClaim {
+  const claimed: string[] = []
+  const messages: PendingMessage[] = []
+  let entries: string[] = []
+  try {
+    entries = fs.readdirSync(pendingDir)
+  } catch {
+    entries = []
+  }
+  const files = entries
+    .filter((name) => name.endsWith(".json") || name.endsWith(".json.processing"))
+    .sort((a, b) => a.localeCompare(b))
+  for (const name of files) {
+    const recovered = name.endsWith(".processing")
+    const processingPath = path.join(pendingDir, recovered ? name : `${name}.processing`)
+    if (heldClaims.has(processingPath)) continue
+    try {
+      if (!recovered) fs.renameSync(path.join(pendingDir, name), processingPath)
+      const { claims: earlierClaims, ...parsed } = JSON.parse(fs.readFileSync(processingPath, "utf-8")) as PendingMessage & { claims?: number }
+      const claims = (earlierClaims ?? 0) + 1
+      if (claims > MAX_PENDING_CLAIMS) {
+        fs.renameSync(processingPath, processingPath.replace(/\.processing$/, ".failed"))
+        emitNervesEvent({ level: "error", event: "mind.pending_message_failed", component: "mind", message: "set aside a pending message that no turn finished; it is kept as .json.failed", meta: { pendingDir, file: name, claims: MAX_PENDING_CLAIMS } })
+        continue
+      }
+      fs.writeFileSync(processingPath, JSON.stringify({ ...parsed, claims }))
+      heldClaims.add(processingPath)
+      claimed.push(processingPath)
+      messages.push(parsed)
+    } catch {
+      // Unreadable: nothing can ever read it, so it goes, as drainPending does.
+      try { fs.unlinkSync(processingPath) } catch { /* ignore */ }
+    }
+  }
+  let open = true
+  const end = (remove: boolean): void => {
+    if (!open) return
+    open = false
+    for (const processingPath of claimed) {
+      heldClaims.delete(processingPath)
+      if (!remove) continue
+      try {
+        fs.unlinkSync(processingPath)
+      } catch (error) {
+        emitNervesEvent({ level: "warn", event: "mind.pending_settle_error", component: "mind", message: "could not delete a settled pending message; the next turn reads it again", meta: { pendingDir, error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error) } })
+      }
+    }
+  }
+  emitNervesEvent({ event: "mind.pending_claimed", component: "mind", message: "pending messages claimed for a turn", meta: { pendingDir, count: messages.length } })
+  return { messages, settle: () => end(true), release: () => end(false) }
+}
+
 export function enqueueDeferredReturn(agentName: string, friendId: string, message: PendingMessage): string {
   const queueDir = getDeferredReturnDir(agentName, friendId)
   const filePath = writeQueueFile(queueDir, message)

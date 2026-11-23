@@ -575,6 +575,41 @@ describe("handleInboundTurn", () => {
       expect(input.drainPending).toHaveBeenCalledWith("/tmp/my-pending")
     })
 
+    it("deletes claimed pending messages only once the turn's session is persisted", async () => {
+      const claimed: PendingMessage[] = [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }]
+      const claim = { messages: claimed, settle: vi.fn(), release: vi.fn() }
+      const postTurn = vi.fn(async () => { expect(claim.settle).not.toHaveBeenCalled() })
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), postTurn })
+
+      const result = await handleInboundTurn(input)
+
+      expect(input.drainPending).not.toHaveBeenCalled()
+      expect(result.drainedPending).toEqual(claimed)
+      expect(postTurn).toHaveBeenCalledTimes(1)
+      expect(claim.settle).toHaveBeenCalledTimes(1)
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeGreaterThan(postTurn.mock.invocationCallOrder[0]!)
+    })
+
+    it("leaves claimed pending messages for the next turn when the turn throws", async () => {
+      const claim = { messages: [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }], settle: vi.fn(), release: vi.fn() }
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: vi.fn().mockRejectedValue(new Error("provider down")) })
+
+      await expect(handleInboundTurn(input)).rejects.toThrow("provider down")
+
+      expect(claim.settle).not.toHaveBeenCalled()
+      expect(claim.release).toHaveBeenCalledTimes(1)
+    })
+
+    it("leaves claimed pending messages for the next turn when persisting the session throws", async () => {
+      const claim = { messages: [], settle: vi.fn(), release: vi.fn() }
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), postTurn: vi.fn().mockRejectedValue(new Error("disk full")) })
+
+      await expect(handleInboundTurn(input)).rejects.toThrow("disk full")
+
+      expect(claim.settle).not.toHaveBeenCalled()
+      expect(claim.release).toHaveBeenCalledTimes(1)
+    })
+
     it("does NOT drain pending when gate rejects", async () => {
       const input = makeInput({
         enforceTrustGate: vi.fn().mockReturnValue({
