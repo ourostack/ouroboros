@@ -1,22 +1,15 @@
 name: publish-container
 
-# Builds each architecture on its own native runner once npm has published this push's version, then joins the two
-# images under the version and commit tags. Emulating arm64 took 20 to 30 minutes; a native runner takes a few. The
-# version is counted from npm's last release before this push along main's history (scripts/release-version.cjs), as
-# the npm publish job in coverage.yml counts it. The image waits for npm's release of this very commit and carries
-# the changelog.json npm shipped with it, so the two never differ, even when the npm job folds in the notes of
-# earlier pushes npm never published.
+# Builds each architecture on its own native runner once npm has published a version from this push's commit, then
+# joins the two images under that version and the commit tag. Emulating arm64 took 20 to 30 minutes; a native runner
+# takes a few. The image takes the version npm published from this very commit, so the package and the image never
+# carry different numbers, and writes the release files and changelog from main's history the same way the npm
+# publish job in coverage.yml does (scripts/release-version.cjs).
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-
-concurrency:
-  group: container-publish-${{ github.repository }}
-  cancel-in-progress: false
-  # Every merge keeps its own run, so a busy hour never drops a version's image.
-  queue: max
 
 # bash -eo pipefail, so a step that pipes a command into tee or grep fails when the command does (GitHub's default
 # shell has no pipefail: a failing release preflight piped into tee passed).
@@ -65,16 +58,19 @@ jobs:
             echo "This push releases nothing, so it publishes no image." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-  # Waits for coverage.yml's publish job to put this push's version on npm from this commit (its coverage gate and
-  # publish usually take 10 to 20 minutes; a queue of earlier releases can add more), then keeps the changelog.json
-  # npm shipped for the build. A manual run passes at once, since its plan already checked npm published HEAD.
-  npm-changelog:
+  # Waits for coverage.yml's publish job to put a version on npm from this commit (its coverage gate and publish
+  # usually take 10 to 20 minutes; a queue of earlier releases can add more), and hands that version to the build. A
+  # manual run passes at once, since its plan already checked npm published HEAD's version from HEAD. No concurrency
+  # group: a run whose npm publish failed waits out its own timeout without holding up later images.
+  npm-release:
     needs: plan
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.npm.outputs.version }}
     steps:
       - name: Checkout the commit
         uses: actions/checkout@v6
@@ -86,29 +82,26 @@ jobs:
         with:
           node-version: 22
 
-      - name: Wait for npm to publish this commit's version and keep its changelog
+      - name: Wait for npm to publish a version from this commit
+        id: npm
         env:
           RELEASE_WAIT_SECONDS: 5400
-        run: |
-          mkdir -p "$RUNNER_TEMP/npm-changelog"
-          node scripts/release-version.cjs published-changelog "${{ needs.plan.outputs.version }}" "$RUNNER_TEMP/npm-changelog/changelog.json"
+        run: node scripts/release-version.cjs wait-published | tee -a "$GITHUB_OUTPUT"
 
-      - name: Upload the changelog npm published
-        uses: actions/upload-artifact@v7
-        with:
-          name: npm-changelog
-          path: ${{ runner.temp }}/npm-changelog/changelog.json
-          if-no-files-found: error
-          retention-days: 1
-
+  # Every merge keeps its own build and tag, one at a time per architecture, so a busy hour never drops a version's
+  # image.
   build:
     name: build (${{ matrix.arch }})
     needs:
       - plan
-      - npm-changelog
+      - npm-release
     if: needs.plan.outputs.release == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    concurrency:
+      group: container-publish-build-${{ matrix.arch }}-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: true
       matrix:
@@ -137,7 +130,7 @@ jobs:
 
       - name: Resolve immutable image references
         run: |
-          PACKAGE_VERSION="${{ needs.plan.outputs.version }}"
+          PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"
           test -n "$PACKAGE_VERSION"
           {
             echo "PACKAGE_VERSION=$PACKAGE_VERSION"
@@ -162,23 +155,16 @@ jobs:
           test "$PUBLISH" = "true" || test "$PUBLISH" = "false"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
-      - name: Download the changelog npm published
-        if: steps.release-gate.outputs.publish == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: npm-changelog
-          path: ${{ runner.temp }}/npm-changelog
-
-      # The image carries package.json, changelog.json and the Sanctuary deploy files, so the release version is
-      # written into this checkout before the build, with the changelog npm published for it. A manual run has no
-      # push, so it plans from HEAD itself.
+      # The image carries package.json, changelog.json and the Sanctuary deploy files, so they are written into this
+      # checkout before the build, under the version npm published from this commit and with the changelog rebuilt
+      # from main's history as the npm job rebuilds it. A manual run has no push, so it plans from HEAD itself.
       - name: Build release assets
         if: steps.release-gate.outputs.publish == 'true'
         env:
           BEFORE: ${{ github.event.before || github.sha }}
         run: |
           npm ci
-          test "$(node scripts/release-version.cjs apply "$BEFORE" --changelog "$RUNNER_TEMP/npm-changelog/changelog.json")" = "$PACKAGE_VERSION"
+          test "$(node scripts/release-version.cjs apply "$BEFORE" --version "$PACKAGE_VERSION")" = "$PACKAGE_VERSION"
           node scripts/changelog-gate.cjs
           npm run build
 
@@ -270,10 +256,15 @@ jobs:
   publish:
     needs:
       - plan
+      - npm-release
       - build
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: container-publish-tag-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       packages: write
@@ -285,7 +276,7 @@ jobs:
 
       - name: Resolve immutable image references
         run: |
-          PACKAGE_VERSION="${{ needs.plan.outputs.version }}"
+          PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"
           test -n "$PACKAGE_VERSION"
           {
             echo "PACKAGE_VERSION=$PACKAGE_VERSION"

@@ -4,6 +4,15 @@ import { describe, expect, it } from "vitest"
 
 const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
 
+// One job's block of a workflow, from its name to the next job.
+function workflowJob(workflow: string, name: string): string {
+  const jobs = workflow.slice(workflow.indexOf("\njobs:\n"))
+  const start = jobs.indexOf(`\n  ${name}:\n`)
+  expect(start).toBeGreaterThan(0)
+  const next = jobs.slice(start + 1).search(/\n {2}[a-z-]+:\n/)
+  return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next)
+}
+
 describe("Ouro Butler Community Apps release", () => {
   it("builds and loads SQLite against the image libc instead of trusting an incompatible prebuild", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
@@ -16,16 +25,19 @@ describe("Ouro Butler Community Apps release", () => {
     expect(workflow).toContain("SELECT 1 AS ready")
   })
 
-  it("serializes repository container publications without cancelling an in-flight release", () => {
+  it("serializes the builds and tags without cancelling one, while each run waits for npm on its own", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
-    const concurrencyIndex = workflow.indexOf("\nconcurrency:\n")
-    const jobsIndex = workflow.indexOf("\njobs:\n")
-
-    expect(concurrencyIndex).toBeGreaterThan(0)
-    expect(concurrencyIndex).toBeLessThan(jobsIndex)
-    expect(workflow).toContain("group: container-publish-${{ github.repository }}")
-    expect(workflow).toContain("cancel-in-progress: false")
-    expect(workflow).toContain("queue: max")
+    // A run whose npm publish failed waits out its own timeout; a workflow-wide group would hold every later image.
+    expect(workflow).not.toMatch(/^concurrency:/m)
+    const build = workflowJob(workflow, "build")
+    expect(build).toContain("group: container-publish-build-${{ matrix.arch }}-${{ github.repository }}")
+    const publish = workflowJob(workflow, "publish")
+    expect(publish).toContain("group: container-publish-tag-${{ github.repository }}")
+    for (const job of [build, publish]) {
+      expect(job).toContain("cancel-in-progress: false")
+      expect(job).toContain("queue: max")
+    }
+    expect(workflowJob(workflow, "npm-release")).not.toContain("concurrency:")
   })
 
   it("rebuilds an image by hand only on main, from the commit npm published its version from", () => {
@@ -38,32 +50,26 @@ describe("Ouro Butler Community Apps release", () => {
     expect(build).toContain("BEFORE: ${{ github.event.before || github.sha }}")
   })
 
-  it("builds the image only after npm published this commit's version, carrying the changelog npm shipped", () => {
+  it("builds and tags the image under the version npm published from this commit, once it has", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
-    const jobs = workflow.slice(workflow.indexOf("\njobs:\n"))
-    const job = (name: string) => {
-      const start = jobs.indexOf(`\n  ${name}:\n`)
-      expect(start).toBeGreaterThan(0)
-      const next = jobs.slice(start + 1).search(/\n {2}[a-z-]+:\n/)
-      return next < 0 ? jobs.slice(start) : jobs.slice(start, start + 1 + next)
-    }
-    const wait = job("npm-changelog")
+    const wait = workflowJob(workflow, "npm-release")
     expect(wait).toContain("needs: plan")
     expect(wait).toContain("if: needs.plan.outputs.release == 'true'")
-    expect(wait).toContain('node scripts/release-version.cjs published-changelog "${{ needs.plan.outputs.version }}"')
-    expect(wait).toContain("name: npm-changelog")
-    // The wait covers the npm job's own run (coverage gate, publish, verify-npm's 70 minutes).
-    const minutes = Number(/timeout-minutes: (\d+)/.exec(wait)?.[1])
-    expect(minutes).toBeGreaterThanOrEqual(95)
+    expect(wait).toContain('node scripts/release-version.cjs wait-published | tee -a "$GITHUB_OUTPUT"')
+    expect(wait).toContain("version: ${{ steps.npm.outputs.version }}")
+    // The wait covers the npm job's own run (coverage gate, then publish).
+    expect(Number(/timeout-minutes: (\d+)/.exec(wait)?.[1])).toBeGreaterThanOrEqual(95)
     expect(wait).toContain("RELEASE_WAIT_SECONDS: 5400")
 
-    const build = job("build")
-    expect(build).toMatch(/needs:\n {6}- plan\n {6}- npm-changelog\n/)
-    expect(build).toContain("name: npm-changelog")
-    const assets = build.slice(build.indexOf("- name: Build release assets"))
-    expect(assets).toContain('apply "$BEFORE" --changelog "$RUNNER_TEMP/npm-changelog/changelog.json"')
-    expect(assets.indexOf("download-artifact")).toBe(-1)
-    expect(build.indexOf("download-artifact")).toBeLessThan(build.indexOf("- name: Build release assets"))
+    const build = workflowJob(workflow, "build")
+    expect(build).toMatch(/needs:\n {6}- plan\n {6}- npm-release\n/)
+    expect(build).toContain('PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"')
+    expect(build).toContain('apply "$BEFORE" --version "$PACKAGE_VERSION"')
+    expect(build).not.toContain("needs.plan.outputs.version")
+    const publish = workflowJob(workflow, "publish")
+    expect(publish).toContain("- npm-release")
+    expect(publish).toContain('PACKAGE_VERSION="${{ needs.npm-release.outputs.version }}"')
+    expect(publish).not.toContain("needs.plan.outputs.version")
   })
 
   it("publishes the required repository profile from canonical project metadata", () => {
