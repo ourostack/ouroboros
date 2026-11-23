@@ -1127,6 +1127,14 @@ export async function restoreIdentityPsyche(host, before, snapshotError, log) {
   ])
 }
 
+/** Whether the run changed an identity file, and whether sync must stay paused because one may still hold the change. */
+export function identityHold(suite) {
+  const result = suite.results.find((entry) => entry.id === IDENTITY_UNTOUCHED)
+  if (!result) return { changed: false, hold: false }
+  const putBack = result.checks.find((entry) => entry.name === "each changed identity file was put back before sync resumed")
+  return { changed: true, hold: !putBack?.ok }
+}
+
 /** Puts the replay principal's learned friend-record fields back to their snapshot after the run. Returns the result, or null when there was no snapshot. */
 async function restoreReplayFriend(host, learned, log) {
   if (learned === null || learned === undefined) { log("the replay friend's record was unreadable before the run, so it is left as found"); return null }
@@ -1319,6 +1327,10 @@ export async function syncLatencyResult(host) {
  * the restores are done (the pause is written inside the `try` whose `finally` removes it). Then one read-only turn times sync,
  * one sync runs, and the gate checks that the remote gained none of the residue of the cases or of that turn. The tracking check
  * comes last.
+ *
+ * Sync resumes only once the identity psyche files are known to hold what they held before the run. When the run changed one,
+ * no synced turn follows (the timing turn is skipped: its pre-turn pull is the sync that pushed SOUL.md on 0.1.0-alpha.1435).
+ * When one could not be put back or checked, the pause stays in force and no sync runs, so the edit never reaches the remote.
  */
 export async function runSuite(host, options = {}) {
   const sync = host.sync
@@ -1333,6 +1345,7 @@ export async function runSuite(host, options = {}) {
   let bracket
   let suite
   let untrackedAfter
+  let identity = null
   try {
     bracket = await openSyncBracket(sync, options.syncLockWaitMs === undefined ? {} : { waitMs: options.syncLockWaitMs })
     if (bracket.ok) {
@@ -1346,23 +1359,33 @@ export async function runSuite(host, options = {}) {
         sync.removeUntracked(made)
         log(`removed ${made.length} ${made.length === 1 ? "file" : "files"} the run created before sync resumed: ${made.join(", ")}`)
       }
+      identity = identityHold(suite)
     }
   } finally {
-    // The pause never outlives the run. A crash that skips this leaves a marker that expires on its own.
-    sync.resume()
+    // The pause never outlives the run, unless an identity file may still hold a candidate's edit. A crash that skips this
+    // leaves a marker that expires on its own.
+    if (identity?.hold) log("sync stays paused: an identity psyche file could not be put back or checked, so nothing syncs until someone looks")
+    else sync.resume()
+  }
+  if (identity?.hold) {
+    const held = { id: "no-sync-residue", status: "fail", checks: [check("sync resumed after the run", false, "sync stays paused until the marker expires: an identity psyche file could not be put back or checked")] }
+    const latency = { id: "sync-latency", status: "skipped", reason: "sync stayed paused", checks: [] }
+    return withSyncResults(suite, [held, trackingResult(sync), latency], options)
   }
   if (!bracket.ok) {
     const busy = { id: "no-sync-residue", status: "fail", checks: [check("sync let go of the bundle before the run", false, bracket.detail)] }
     return { results: [busy], summary: summarize([busy]) }
   }
   const windowRefused = suite.results.some((entry) => entry.id === "window-trusted")
-  const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] } : await syncLatencyResult(host)
+  const latency = windowRefused ? { id: "sync-latency", status: "skipped", reason: "the Butler did not trust the replay window", checks: [] }
+    : identity?.changed ? { id: "sync-latency", status: "skipped", reason: "the run changed an identity psyche file, so no synced turn follows", checks: [] }
+    : await syncLatencyResult(host)
   // A replay friend's record changes on every turn (its token count), so its path is not residue; what a case could teach the
   // Butler is, and the planted strings and the friend ids catch that in any file. Every other untracked file the run created or
   // changed is the gate's, and so is the release marker the upgrade plants before the gate runs.
   const replayFriends = [host.friends.principal, host.friends.stranger, host.friends.escalation].filter(Boolean)
   const created = createdDuringRun(bracket.untracked, untrackedAfter)
-  const touched = ["psyche/TACIT.md", "state/replay/", "psyche/.release-marker*", ...created.paths.filter((file) => !replayFriends.some((id) => file === `friends/${id}.json`))]
+  const touched = ["psyche/TACIT.md", ...IDENTITY_PSYCHE_FILES.map((name) => `psyche/${name}`), "state/replay/", "psyche/.release-marker*", ...created.paths.filter((file) => !replayFriends.some((id) => file === `friends/${id}.json`))]
   const planted = [...GATE_PLANTED_STRINGS, ...replayFriends]
   const residue = await closeSyncBracket(sync, bracket.head, { touched, planted, snapshotError: created.error })
   const tracking = trackingResult(sync)

@@ -2653,7 +2653,7 @@ describe("bundle sync around the run (M1c)", () => {
   const LS_REMOTE_CALL = ["docker", "exec", "-u", "10001:10001", "-e", "GIT_OPTIONAL_LOCKS=0", "-e", "GIT_SSH_COMMAND=sudo -n -u ouro-sync /usr/local/libexec/ouro-sync-ssh", "-e", "GIT_SSH_VARIANT=ssh", "ouro-butler", "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/home/ouro/AgentBundles/sanctuary.ouro", "ls-remote", "origin", "refs/heads/main"]
 
   /** A fake host whose cases act on a real synced bundle: the learns-into-tacit turn writes TACIT, a household friend changes and the owner pushes mid-run. */
-  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; latency?: [number, number | null] | [number, number | null][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
+  function bracketHost(repo: ReturnType<typeof syncRepo>, opts: { restoreTacit?: boolean; ownerFile?: string; latency?: [number, number | null] | [number, number | null][] | null; latencyWrites?: () => void; exec?: (file: string, args: string[]) => string } & ExecOpts = {}) {
     const clock = { t: Date.now() }
     const tacitFile = path.join(repo.bundle, "psyche", "TACIT.md")
     const wroteTacit = { events: [{ role: "assistant", toolCalls: [{ id: "1", function: { name: "edit_file", arguments: JSON.stringify({ path: "psyche/TACIT.md", old_string: "a", new_string: "b" }) } }] }, { role: "tool", toolCallId: "1", content: "ok" }] }
@@ -2688,7 +2688,7 @@ describe("bundle sync around the run (M1c)", () => {
         repo.put("friends/household.json", "{\"notes\":{\"tea\":\"green\"}}\n")
         // Every turn moves the replay principal's token count; the restore puts back only what a case can teach.
         repo.put("friends/p-0a4c19.json", `{"totalTokens":${seenDuringRun.length * 1000}}\n`)
-        ownerPush(repo.remote, repo.root, "psyche/SOUL.md", `# SOUL\nthe owner's edit ${Math.random().toString(36).slice(2)}\n`)
+        ownerPush(repo.remote, repo.root, opts.ownerFile ?? "psyche/SOUL.md", `# SOUL\nthe owner's edit ${Math.random().toString(36).slice(2)}\n`)
         return { text: "noted: english subtitles for anything not in english" }
       },
       restorePsycheFile: (_name: string, text: string) => { if (opts.restoreTacit !== false) fs.writeFileSync(tacitFile, text) },
@@ -2704,6 +2704,71 @@ describe("bundle sync around the run (M1c)", () => {
     expect(gate.NEVER_TRACKED).toEqual([...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json", "psyche/.release-marker"])
     expect(gate.PSYCHE_FILES.map((name: string) => `psyche/${name}`)).toEqual([...SANCTUARY_STARTER_PSYCHE_FILES])
     expect(gate.NEVER_EXCUSED).toEqual(expect.arrayContaining(["no-sync-residue", "psyche-git-tracked"]))
+  })
+
+  /**
+   * bracketHost whose case turn edits SOUL.md in the bundle, as 0.1.0-alpha.1435's candidate did, and whose timing turn runs sync
+   * first, as its pre-turn pull did (9f20ff5, "sync: pre-turn update"). The identity methods act on the real bundle.
+   */
+  function soulEditHost(repo: ReturnType<typeof syncRepo>, opts: { putBack?: boolean; ownerFile?: string } = {}) {
+    const latencySyncs: string[] = []
+    const run = bracketHost(repo, { ownerFile: opts.ownerFile, latencyWrites: () => { simulatedSync(repo.bundle); latencySyncs.push("synced") } })
+    const soul = path.join(repo.bundle, "psyche", "SOUL.md")
+    const send = run.host.send
+    run.host.send = async (req: { text: string; context: string }) => {
+      const reply = await send(req)
+      if (req.text !== gate.LATENCY_WORDS) fs.writeFileSync(soul, "# SOUL\nformal and flat\n")
+      return reply
+    }
+    const read = (name: string) => { const file = path.join(repo.bundle, "psyche", name); return fs.existsSync(file) ? { text: fs.readFileSync(file, "utf8"), mode: 0o644 } : { text: null, mode: null } }
+    Object.assign(run.host, {
+      readIdentityPsyche: () => Object.fromEntries(gate.IDENTITY_PSYCHE_FILES.map((name: string) => [name, read(name)])),
+      restoreIdentityPsyche: (name: string, before: { text: string }) => { if (opts.putBack !== false) fs.writeFileSync(path.join(repo.bundle, "psyche", name), before.text) },
+      keepPsycheCopy: (name: string) => `/client/${name}-before-restore.md`,
+    })
+    return { ...run, latencySyncs }
+  }
+  const remoteSawEdit = (repo: ReturnType<typeof syncRepo>) => g(repo.remote, ["log", "-p", "--all", "--", "psyche/SOUL.md"]).includes("formal and flat")
+
+  it("a candidate's SOUL.md edit never reaches the remote: it is put back before sync resumes, and no synced turn follows (0.1.0-alpha.1435)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = soulEditHost(repo)
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(remoteSawEdit(repo)).toBe(false)
+    expect(fs.readFileSync(path.join(repo.bundle, "psyche", "SOUL.md"), "utf8")).not.toContain("formal and flat")
+    expect(run.latencySyncs).toEqual([])
+    expect(byResult(suite, "sync-latency")).toEqual({ id: "sync-latency", status: "skipped", reason: "the run changed an identity psyche file, so no synced turn follows", checks: [] })
+    expect(byResult(suite, "psyche-identity-untouched")?.status).toBe("fail")
+    expect(byResult(suite, "no-sync-residue")?.status).toBe("pass")
+    // The owner's own SOUL.md edits, pushed from another machine during the run, still land.
+    expect(g(repo.remote, ["show", "main:psyche/SOUL.md"])).toContain("the owner's edit")
+  })
+
+  it("keeps sync paused, runs no sync and no synced turn when a changed identity file can't be put back", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const lines: string[] = []
+    const run = soulEditHost(repo, { putBack: false })
+    const suite = await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: (line: string) => { lines.push(line) } })
+    expect(remoteSawEdit(repo)).toBe(false)
+    expect(fs.existsSync(repo.marker)).toBe(true)
+    expect(run.latencySyncs).toEqual([])
+    expect(run.execCalls).toEqual([])
+    expect(byResult(suite, "no-sync-residue")).toEqual({ id: "no-sync-residue", status: "fail", checks: [{ name: "sync resumed after the run", ok: false, detail: "sync stays paused until the marker expires: an identity psyche file could not be put back or checked" }] })
+    expect(byResult(suite, "sync-latency")).toEqual({ id: "sync-latency", status: "skipped", reason: "sync stayed paused", checks: [] })
+    expect(lines).toContain("sync stays paused: an identity psyche file could not be put back or checked, so nothing syncs until someone looks")
+    expect(suite.summary.failed).toEqual(expect.arrayContaining(["psyche-identity-untouched", "no-sync-residue"]))
+  })
+
+  it("without the identity restore, the timing turn's sync would carry the edit to the remote (the 0.1.0-alpha.1435 path)", async () => {
+    const repo = syncRepo()
+    repo.cutover()
+    const run = soulEditHost(repo, { ownerFile: "friends/p.json" })
+    for (const name of ["readIdentityPsyche", "restoreIdentityPsyche", "keepPsycheCopy"]) delete (run.host as Record<string, unknown>)[name]
+    await gate.runSuite(run.host, { cases: ["learns-into-tacit"], log: () => undefined })
+    expect(run.latencySyncs).toEqual(["synced"])
+    expect(remoteSawEdit(repo)).toBe(true)
   })
 
   it("remote gains no gate residue during a gate run, even with a friend update mid-run", async () => {
