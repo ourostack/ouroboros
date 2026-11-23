@@ -1523,7 +1523,10 @@ export function hostLockTake(what, {
   let said = false
   for (;;) {
     let got
-    try { got = lockModule.tryAcquire(dir, { holder, ttlMs, pid, adopt: token }, { now }) } catch { got = { acquired: false, owner: { unreadable: true } } }
+    try { got = lockModule.tryAcquire(dir, { holder, ttlMs, pid, adopt: token }, { now }) } catch (error) {
+      if (!/guard .* is busy/.test(String(error?.message))) return { refusal: `the host lock could not be taken (${error?.message ?? error}), so ${what} did not run` }
+      got = { acquired: false, owner: { unreadable: true } }
+    }
     if (got.acquired) return { token: got.token, adopted: Boolean(got.adopted) }
     const owner = lockModule.describeOwner(got.owner)
     if (now() - start >= waitMs) return { refusal: `the host lock is held by ${owner}, so ${what} did not run` }
@@ -1536,7 +1539,7 @@ export function hostLockTake(what, {
 export function hostLockLeave(taken, { lockModule, dir = HOST_LOCK_DIR, holder }) {
   if (!lockModule || !taken.token) return
   try {
-    if (taken.adopted) lockModule.tryAcquire(dir, { holder, ttlMs: HAND_BACK_TTL_MS, pid: null, adopt: taken.token })
+    if (taken.adopted) lockModule.handBack(dir, taken.token, { holder, ttlMs: HAND_BACK_TTL_MS })
     else lockModule.release(dir, taken.token)
   } catch { /* the lock goes stale with this process */ }
 }

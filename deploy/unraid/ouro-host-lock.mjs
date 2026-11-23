@@ -69,8 +69,11 @@ function breakGuard(guard, ino, io) {
   try { renameSync(guard, aside) } catch { return }
   let moved
   try { moved = statSync(aside).ino } catch { return }
-  if (moved === ino) { try { rmdirSync(aside) } catch { /* emptied by no one; left */ } return }
-  try { renameSync(aside, guard) } catch { try { rmdirSync(aside) } catch { /* left */ } }
+  if (moved === ino) { try { rmdirSync(aside) } catch { /* left */ } return }
+  // That was a live guard: stand a fresh one in its place for its holder (who removes it when done), then drop the
+  // moved copy. Never rename onto the guard path, which would replace a guard a third process just made.
+  try { mkdirSync(guard) } catch { /* someone made one already */ }
+  try { rmdirSync(aside) } catch { /* left */ }
 }
 
 function withGuard(dir, io, work) {
@@ -87,7 +90,7 @@ function withGuard(dir, io, work) {
     if (Date.now() >= deadline) throw new Error(`the host lock's guard ${guard} is busy`)
     sleepSync(10)
   }
-  try { return work() } finally { rmdirSync(guard) }
+  try { return work() } finally { try { rmdirSync(guard) } catch (error) { if (error.code !== "ENOENT") throw error } }
 }
 
 /**
@@ -117,6 +120,17 @@ export function tryAcquire(dir, { holder, ttlMs, pid, adopt }, io) {
     const owner = { holder, token, pid: pid ?? null, host, acquiredAt: new Date(now()).toISOString(), expiresAt: new Date(now() + ttlMs).toISOString() }
     writeFileSync(join(dir, OWNER), `${JSON.stringify(owner)}\n`, { mode: 0o644 })
     return { acquired: true, token, owner, ...(broke ? { broke, staleBecause } : {}) }
+  })
+}
+
+/** Gives a lock this token holds back with no pid and a fresh expiry; creates nothing when it no longer holds it. */
+export function handBack(dir, token, { holder, ttlMs }, io) {
+  const { now } = defaults(io)
+  return withGuard(dir, io, () => {
+    const current = readOwner(dir, io)
+    if (!current || current.token !== token) return false
+    writeFileSync(join(dir, OWNER), `${JSON.stringify({ ...current, holder, pid: null, expiresAt: new Date(now() + ttlMs).toISOString() })}\n`, { mode: 0o644 })
+    return true
   })
 }
 

@@ -103,6 +103,17 @@ describe("tryAcquire", () => {
   })
 })
 
+describe("handBack", () => {
+  it("gives a held lock back with no pid and a fresh expiry, and creates nothing for a token that no longer holds it", () => {
+    const got = lock.tryAcquire(dir, { holder: "butler upgrade", ttlMs: 60_000, pid: 99 }, io())
+    expect(lock.handBack(dir, got.token, { holder: "butler:ship", ttlMs: 1_800_000 }, io())).toBe(true)
+    expect(owner()).toEqual(expect.objectContaining({ holder: "butler:ship", token: got.token, pid: null, expiresAt: "2026-11-23T12:30:00.000Z" }))
+    lock.release(dir, got.token, io())
+    expect(lock.handBack(dir, got.token, { holder: "butler:ship", ttlMs: 1_800_000 }, io())).toBe(false)
+    expect(fs.existsSync(dir)).toBe(false)
+  })
+})
+
 describe("release, heldBy and blocker", () => {
   it("releases only for the token that holds it", () => {
     const got = lock.tryAcquire(dir, { holder: "eval", ttlMs: 60_000, pid: null }, io())

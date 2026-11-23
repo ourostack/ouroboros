@@ -1013,10 +1013,27 @@ describe("the upgrade and its rollbacks wait for the host lock", () => {
     done()
   })
 
+  it("creates no lock when handing back one it no longer holds", () => {
+    const done = setup()
+    const ship = lock.tryAcquire(dir, { holder: "butler:ship", ttlMs: 60_000, pid: null })
+    const taken = upgrade.hostLockTake("the upgrade", { lockModule: lock, dir, token: ship.token, holder: "butler upgrade", pid: process.pid, ...clock().opts })
+    lock.release(dir, taken.token)
+    upgrade.hostLockLeave(taken, { lockModule: lock, dir, holder: "butler:ship" })
+    expect(fs.existsSync(dir)).toBe(false)
+    done()
+  })
+
+  it("refuses at once, with the reason, when the lock cannot be taken for a reason other than a busy guard", () => {
+    const done = setup()
+    const broken = { ...lock, tryAcquire: () => { throw new Error("EACCES: permission denied, mkdir '/var/lock/ouro-host.d'") } }
+    expect(upgrade.hostLockTake("the upgrade", { lockModule: broken, dir, holder: "x", pid: process.pid, ...clock().opts })).toEqual({ refusal: "the host lock could not be taken (EACCES: permission denied, mkdir '/var/lock/ouro-host.d'), so the upgrade did not run" })
+    done()
+  })
+
   it("keeps waiting through a busy guard instead of failing", () => {
     const done = setup()
     let calls = 0
-    const busy = { ...lock, tryAcquire: (...args: unknown[]) => { if (++calls === 1) throw new Error("the host lock's guard is busy"); return lock.tryAcquire(...args) } }
+    const busy = { ...lock, tryAcquire: (...args: unknown[]) => { if (++calls === 1) throw new Error("the host lock's guard /var/lock/ouro-host.d.guard is busy"); return lock.tryAcquire(...args) } }
     const c = clock()
     expect(upgrade.hostLockTake("the upgrade", { lockModule: busy, dir, holder: "x", pid: process.pid, ...c.opts }).token).toMatch(/^[0-9a-f]{32}$/)
     expect(c.log).toEqual([expect.stringMatching(/waiting: the host lock is held by an unknown holder/)])
