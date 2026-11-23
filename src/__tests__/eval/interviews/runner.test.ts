@@ -146,11 +146,11 @@ describe("the interview runner", () => {
   it("voids a session whose request names a brand, sends nothing for it, and goes on to the next session", async () => {
     const runCase = sandbox((_arm, run) => ({ brand: run === 2 }))
     const { d, model } = deps(runCase)
-    const { records } = await runInterviews(args({ sessions: ["X-pilot", "X-1"] }), d)
+    const { records } = await runInterviews(args({ sessions: ["X-1", "X-2"] }), d)
     expect(records[0]).toMatchObject({ status: "void", ended: "J: a request named ouro", ouroFirst: false, voidedBy: ["ouro"], final: null })
     expect(records[0]!.arms).toHaveLength(2)
     expect(model.sent.some((request) => JSON.stringify(request.messages).includes("ouro job"))).toBe(false)
-    expect(records[1]).toMatchObject({ id: "X-1", status: "complete", ouroFirst: true })
+    expect(records[1]).toMatchObject({ id: "X-2", status: "complete" })
   })
 
   it("ends a job conversation at its 13th call: the job does not pass, its note is empty, and the session goes on", async () => {
@@ -198,14 +198,14 @@ describe("the interview runner", () => {
 
   it("stops the study at a 429, and at a reservation a cap refuses, recording later sessions as not run", async () => {
     const limited = target(() => Object.assign(new Error("slow down"), { status: 429 }))
-    const stopped = await runInterviews(args({ sessions: ["X-pilot", "X-1"] }), deps(sandbox(() => ({})), limited).d)
+    const stopped = await runInterviews(args({ sessions: ["X-1", "X-2"] }), deps(sandbox(() => ({})), limited).d)
     expect(stopped.exitCode).toBe(2)
     expect(stopped.records[0]).toMatchObject({ status: "crashed", ended: expect.stringMatching(/^final: the provider answered 429/) })
     expect(stopped.records[1]).toMatchObject({ status: "not-run", ended: expect.stringMatching(/^the study stopped/) })
     const midJob = await runInterviews(args(), deps(sandbox(() => ({})), target(chooseOuro, {}, () => Object.assign(new Error("busy"), { status: 429 }))).d)
     expect(midJob.records[0]).toMatchObject({ status: "crashed", ended: expect.stringMatching(/^T: the provider answered 429/) })
 
-    const capped = await runInterviews(args({ sessions: ["X-pilot", "X-1"], budgetPremium: 50 }), deps(sandbox(() => ({}))).d)
+    const capped = await runInterviews(args({ sessions: ["X-1", "X-2"], budgetPremium: 50 }), deps(sandbox(() => ({}))).d)
     expect(capped.records.map((r) => r.status)).toEqual(["complete", "not-run"])
     expect(capped.records[1]!.ended).toMatch(/premium/)
     const none = await runInterviews(args({ budgetPremium: 10 }), deps(sandbox(() => ({}))).d)
@@ -214,17 +214,20 @@ describe("the interview runner", () => {
 
   it("runs the reduced design's sessions, every one by default", async () => {
     const { d } = deps(sandbox(() => ({})))
-    const { records } = await runInterviews(args({ sessions: [], reduced: true, budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, readText: () => ["## Appendix B", ...ROWS.slice(0, 3), "## Appendix C"].join("\n"), allocations: { [crypto.createHash("sha256").update(`${ROWS.slice(0, 3).join("\n")}\n`).digest("hex")]: 1 } })
-    expect(records.map((r) => r.id)).toEqual(["X-pilot", "X-1", "X-2"])
-    expect(records[2]!.arms[2]).toMatchObject({ arm: "ouro" })
+    const { records } = await runInterviews(args({ sessions: [], reduced: true, budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, readText: () => ["## Appendix B", ...ROWS.slice(1, 3), "## Appendix C"].join("\n"), allocations: { [crypto.createHash("sha256").update(`${ROWS.slice(1, 3).join("\n")}\n`).digest("hex")]: 1 } })
+    expect(records.map((r) => r.id)).toEqual(["X-1", "X-2"])
+    expect(records[1]!.arms[2]).toMatchObject({ arm: "ouro" })
   })
 
   it("runs only the target's own model's sessions: by default those, and a named session for another model is refused", async () => {
     const rows = [...ROWS.slice(0, 2), "| X-3 | other-model | remove-bad-copy | F=ouro, J=mcp-plain, K=cli-shell |"]
     const table = { readText: () => ["## Appendix B", ...rows, "## Appendix C"].join("\n"), allocations: { [crypto.createHash("sha256").update(`${rows.join("\n")}\n`).digest("hex")]: 1 } }
     const { d } = deps(sandbox(() => ({})))
-    const { records } = await runInterviews(args({ sessions: [], budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, ...table })
-    expect(records.map((r) => r.id)).toEqual(["X-pilot", "X-1"])
+    // A default run would mix the pilot with data sessions, which section 7 keeps apart, so it names them.
+    await expect(runInterviews(args({ sessions: [], budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, ...table })).rejects.toThrow("a run is either pilots or data sessions, never both (section 7); name the pilots, or the data sessions, with --session")
+    const { records } = await runInterviews(args({ sessions: ["X-1"], output: "/r/data.json", budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, ...table })
+    expect(records.map((r) => r.id)).toEqual(["X-1"])
+    await expect(runInterviews(args({ sessions: [], target: "minimax:MiniMax-M9", output: "/r/none.json" }), { ...deps(sandbox(() => ({}))).d, ...table })).rejects.toThrow("Appendix B has no session for MiniMax-M9 in this design")
     await expect(runInterviews(args({ sessions: ["X-3"], output: "/r/other.json" }), { ...deps(sandbox(() => ({}))).d, ...table })).rejects.toThrow("session X-3 is for other-model, not this run's target minimax:MiniMax-M3")
   })
 
@@ -273,7 +276,7 @@ describe("the interview runner", () => {
     const { records } = await runInterviews(args({ reduced: true }), v2.d)
     expect(records[0]).toMatchObject({ id: "X-pilot", status: "complete" })
     expect(started.has("v2/X-pilot")).toBe(true)
-    expect(v2.reports.at(-1)).toMatchObject({ preregistrationVersion: 2 })
+    expect(v2.reports.at(-1)).toMatchObject({ preregistrationVersion: 2, multiplierSource: "not a Copilot target" })
     expect(JSON.parse(v2.log[0]!)).toMatchObject({ session: "X-pilot", preregistrationVersion: 2 })
     const again = deps(sandbox(() => ({})), target(chooseOuro), { started, allocations: { [SHA]: 2 } })
     await expect(runInterviews(args({ output: "/r/again.json", reduced: true }), again.d)).rejects.toThrow("session X-pilot of version 2 has already started once")
@@ -296,9 +299,9 @@ describe("the interview runner", () => {
       add: (id) => { if (ids.size > 0) throw new Error(`refused to start ${id}`); ids.add(id) },
     }
     const { d, reports, model } = deps(sandbox(() => ({})), target(chooseOuro), { started })
-    await expect(runInterviews(args({ sessions: ["X-pilot", "X-1"] }), d)).rejects.toThrow("refused to start X-1")
-    expect([...ids]).toEqual(["X-pilot"])
-    expect((reports[0] as { sessions: Array<{ id: string }> }).sessions.map((x) => x.id)).toEqual(["X-pilot"])
+    await expect(runInterviews(args({ sessions: ["X-1", "X-2"] }), d)).rejects.toThrow("refused to start X-2")
+    expect([...ids]).toEqual(["X-1"])
+    expect((reports[0] as { sessions: Array<{ id: string }> }).sessions.map((x) => x.id)).toEqual(["X-1"])
     expect(model.sent.length).toBeGreaterThan(0)
   })
 

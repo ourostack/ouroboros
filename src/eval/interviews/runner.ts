@@ -284,6 +284,11 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   const otherModel = design.find((session) => args.sessions.includes(session.id) && session.model !== model)
   if (otherModel) throw new Error(`session ${otherModel.id} is for ${otherModel.model}, not this run's target ${args.target}`)
   const chosen = args.sessions.length > 0 ? design.filter((session) => args.sessions.includes(session.id)) : design.filter((session) => session.model === model)
+  if (chosen.length === 0) throw new Error(`Appendix B has no session for ${model} in this design`)
+  // Section 7: the pilots run, and any pilot amendment is recorded, before any data session starts.
+  if (chosen.some((session) => session.pilot) && chosen.some((session) => !session.pilot)) {
+    throw new Error("a run is either pilots or data sessions, never both (section 7); name the pilots, or the data sessions, with --session")
+  }
   const rerun = chosen.find((session) => deps.started.has(startedKey(version, session.id)))
   if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
@@ -319,7 +324,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     const totals = ledger.totals()
     deps.writeReport(args.output, {
       schemaVersion: 1, kind: "blind-interviews", preregistrationVersion: version, target: args.target, harnessRef: args.harnessRef, reduced: args.reduced, account: target.account,
-      premiumMultiplier: target.unitCost, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
+      premiumMultiplier: target.unitCost, multiplierSource: target.multiplierSource, caps: totals.caps, spent: totals.spent, calls: totals.calls, stopped, quota: { before, after: after ?? before },
       fidelity: FIDELITY, pricing, sessions: records,
     })
   }
