@@ -39,6 +39,20 @@ export function isOwnPersonaNote(key: string | undefined, content: string | unde
 export const OWN_PERSONA_NOTE_REFUSAL =
   "that note is about my own personality or voice, not about this person, so it belongs in my psyche, not in a friend note. what i learn about how the house works goes into psyche/TACIT.md, and the rest of my psyche changes when my owner asks me directly. a note about the person themselves (their facts, preferences, voice, a character in a game) saves normally.";
 
+// An unknown name is answered with the names that do load, so the fix needs no other tool: a profile may hold load_skill
+// without list_skills (the Sanctuary owner profile does), and the folder paths only invited the agent to go and look.
+function skillNotFound(name: string, error: unknown): string {
+  let names: string[];
+  try {
+    names = listSkills();
+  } catch {
+    return `error: ${error}`;
+  }
+  if (names.includes(name)) return `error: ${error}`;
+  if (names.length === 0) return `error: there is no skill called '${name}', and this agent has no skills installed. Work from the tools you have.`;
+  return `error: there is no skill called '${name}'. Skills you can load: ${names.join(", ")}. Call load_skill again with one of those names, spelled exactly.`;
+}
+
 export const notesToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -72,13 +86,13 @@ export const notesToolDefinitions: ToolDefinition[] = [
       try {
         return loadSkill(a.name);
       } catch (e) {
-        return withCode(`error: ${e}`, "skill-not-found");
+        return withCode(skillNotFound(a.name, e), "skill-not-found");
       }
     },
     summaryKeys: ["name"],
     riskProfile: { mutates: "none", risk: "low" },
-    ax: { id: "tool:load_skill", eager: true, group: "turn-skills", when: "Pick this to read a skill's full steps once list_skills has shown you its exact name.", effect: "read", idempotent: true, errors: [
-      { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the folders checked.", fix: "Call list_skills and load one of the names it returns, spelled exactly." },
+    ax: { id: "tool:load_skill", eager: true, group: "turn-skills", when: "Pick this to read a skill's full steps once you know its exact name.", effect: "read", idempotent: true, errors: [
+      { code: "skill-not-found", means: "No skill with that name could be found or read; the message lists the skills this agent can load, or says why a listed one could not be read.", fix: "Load one of the names the error lists, spelled exactly." },
     ] },
   },
   {
