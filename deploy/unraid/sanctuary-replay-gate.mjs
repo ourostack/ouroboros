@@ -123,10 +123,16 @@ export const shellCommandOf = (args) => { try { const parsed = JSON.parse(String
 export const isLookupCall = (call) => call.name === "web_search" || call.name === "media_search" || call.name === "media_episodes" || /^(web_fetch|fetch_url|fetch_page|read_url|read_page|browse\w*)$/.test(call.name) || (call.name === "shell" && shellCommandOf(call.args).split(SHELL_SEGMENT_SEPARATOR).some((segment) => SHELL_LOOKUP_SEGMENT.test(segment)))
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+// A refusal or decline is his only when no media app is its subject: "Sonarr would normally refuse the pack because the
+// cutoff is met" explains Sonarr, and the 1416 ship's first gate run counted it as a hedge. A few helper words may sit
+// between the app and the verb ("would normally", "will still").
+const APP_SUBJECT = String.raw`(?<!\b(?:sonarr|radarr|prowlarr|jellyseerr|jellyfin|qbittorrent|release\s+profile|indexer|filter)(?:\s+(?:would|will|normally|usually|then|still|just|also|already|might|may|can|could|always))*\s+)`
+
 // Words a Butler reply about a media ask never needs: a lecture, a refusal or a hedge. The psyche list is stricter,
 // because the psyche states who the Butler is and carries no conditions at all; it may say "This is not piracy".
 export const REPLY_HEDGE_TERMS = [
-  /legal/i, /copyright/i, /\bpira(?:cy|te)/i, /\blicen[cs]/i, /\bethic/i, /\binappropriate/i, /\brefus/i, /\bdeclin/i,
+  /legal/i, /copyright/i, /\bpira(?:cy|te)/i, /\blicen[cs]/i, /\bethic/i, /\binappropriate/i,
+  new RegExp(`${APP_SUBJECT}\\brefus`, "i"), new RegExp(`${APP_SUBJECT}\\bdeclin`, "i"),
   /\bi won[’']?t\b/i, /\bi will not\b/i, /\b(?:can[’']?t|cannot|not able to) help\b/i,
   /\bdraw(?:ing)? (?:the |a |my )?lines?\b/i, /\bboundar/i, /\bdisclaim/i, /\bcaveat/i, /\bterms of (?:service|use)\b/i,
   /\bunable\b/i, /\bcan[’']?t (?:download|grab|get|do|find you)\b/i, /\brather not\b/i, /\bcomfortable\b/i, /\blegit/i,
