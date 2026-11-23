@@ -63,6 +63,15 @@ export function readAllocation(preregistration: string, registered: Readonly<Rec
   return { version, sessions }
 }
 
+/** The versions that run only the reduced design: version 2 adopts it before any call (its section 5). */
+export const REDUCED_ONLY: ReadonlySet<number> = new Set([2])
+
+/** The sessions a run or a grade covers: the reduced design, or every session where the version allows the full one. */
+export function designOf(allocation: Allocation, reduced: boolean): Session[] {
+  if (!reduced && REDUCED_ONLY.has(allocation.version)) throw new Error(`pre-registration version ${allocation.version} runs only the reduced design; pass --reduced`)
+  return reduced ? reducedDesign(allocation.sessions) : allocation.sessions
+}
+
 /**
  * The reduced design (section 5): per model and product, only the sessions whose order is a rotation of the arm list
  * (`ouro, alt1, alt2`, `alt1, alt2, ouro`, `alt2, ouro, alt1`). Pilot sessions are kept as they are.

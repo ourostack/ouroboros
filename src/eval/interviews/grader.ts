@@ -204,10 +204,13 @@ export function formatGrade(grade: StudyGrade, reduced: boolean): string {
 }
 
 /** The request log's lines, refusing a line that is not one logged request. */
-export function readRequestLog(text: string): LoggedRequest[] {
+export function readRequestLog(text: string, version = 1): LoggedRequest[] {
   return text.split("\n").filter((line) => line.trim()).map((line, i) => {
-    const value = JSON.parse(line) as Partial<LoggedRequest>
+    const value = JSON.parse(line) as Partial<LoggedRequest> & { preregistrationVersion?: number }
     if (typeof value.session !== "string" || typeof value.kind !== "string" || typeof value.sent !== "boolean" || typeof value.body !== "string") throw new Error(`request log line ${i + 1} is not a logged request`)
+    // A line written before lines named their version is version 1's.
+    const from = value.preregistrationVersion ?? 1
+    if (from !== version) throw new Error(`request log line ${i + 1} is from pre-registration version ${from}, not version ${version}; versions are never pooled`)
     return value as LoggedRequest
   })
 }

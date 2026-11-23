@@ -1,6 +1,6 @@
 import crypto from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { REGISTERED_ALLOCATIONS, readAllocation, reducedDesign, startedKey } from "../../../eval/interviews/allocation"
+import { designOf, REGISTERED_ALLOCATIONS, readAllocation, reducedDesign, startedKey } from "../../../eval/interviews/allocation"
 import { brandHits, choiceQuestion, debriefQuestion, labelLine, ratingOf, scrubBrands } from "../../../eval/interviews/protocol"
 
 /** A pre-registration shaped like the real one: Appendix B's rows between its heading and Appendix C. */
@@ -61,6 +61,15 @@ describe("the allocation", () => {
       ca0b441641c6c62e70238ee2b31b2283d358103d683061a97e0174f6c29851f2: 1,
       "71fc28b44d71b1b3d09dffebafa377059a514b42c4a1524cbd3cf7182531c379": 2,
     })
+  })
+
+  it("runs version 1 in either design and version 2 only in the reduced one", () => {
+    const one = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 1 })
+    const two = readAllocation(preregistration(ROWS), { [sha(ROWS)]: 2 })
+    expect(designOf(one, false)).toHaveLength(5)
+    expect(designOf(one, true).map((s) => s.id)).toEqual(["X-pilot", "X-1", "X-2", "X-3"])
+    expect(designOf(two, true)).toHaveLength(4)
+    expect(() => designOf(two, false)).toThrow("pre-registration version 2 runs only the reduced design; pass --reduced")
   })
 
   it("keeps version 1's started ids as they are and gives later versions their own, so the same id can start once in each", () => {

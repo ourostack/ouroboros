@@ -136,7 +136,7 @@ describe("the interview runner", () => {
       turn: { product: "X", arm: "ouro", labelLine: "Your tools for this job are tool interface T.", prefix: cases.get("remove-bad-copy")!.prefix.slice(0, -1), userText: "yes please, get rid of the old one", followUps: [expect.stringContaining("In tool interface T:")] },
     })
     expect(log).toHaveLength(11)
-    expect(JSON.parse(log[0]!)).toMatchObject({ session: "X-pilot", kind: "job", sent: true })
+    expect(JSON.parse(log[0]!)).toMatchObject({ session: "X-pilot", preregistrationVersion: 1, kind: "job", sent: true })
     expect(JSON.parse(log[2]!)).toMatchObject({ kind: "debrief" })
     expect(JSON.parse(log.at(-1)!)).toMatchObject({ kind: "identify" })
     expect(printed[0]).toMatch(/^X-pilot complete ouro-first=yes jobs-passed=3\/3 calls=11 tokens-in=110000 tokens-out=5500 credits=3\.960 premium=11\nspent: 3\.960 credits, 11 premium requests$/)
@@ -219,6 +219,25 @@ describe("the interview runner", () => {
     expect(records[2]!.arms[2]).toMatchObject({ arm: "ouro" })
   })
 
+  it("runs only the target's own model's sessions: by default those, and a named session for another model is refused", async () => {
+    const rows = [...ROWS.slice(0, 2), "| X-3 | other-model | remove-bad-copy | F=ouro, J=mcp-plain, K=cli-shell |"]
+    const table = { readText: () => ["## Appendix B", ...rows, "## Appendix C"].join("\n"), allocations: { [crypto.createHash("sha256").update(`${rows.join("\n")}\n`).digest("hex")]: 1 } }
+    const { d } = deps(sandbox(() => ({})))
+    const { records } = await runInterviews(args({ sessions: [], budgetPremium: 10_000, budgetCredits: 10_000 }), { ...d, ...table })
+    expect(records.map((r) => r.id)).toEqual(["X-pilot", "X-1"])
+    await expect(runInterviews(args({ sessions: ["X-3"], output: "/r/other.json" }), { ...deps(sandbox(() => ({}))).d, ...table })).rejects.toThrow("session X-3 is for other-model, not this run's target minimax:MiniMax-M3")
+  })
+
+  it("passes the Copilot account and the premium multiplier to the target", async () => {
+    const seen: unknown[] = []
+    const { d } = deps(sandbox(() => ({})))
+    await runInterviews(args({ copilotAccount: "someone", premiumMultiplier: 1 }), { ...d, resolveTarget: async (_spec, creds) => { seen.push(creds); return d.resolveTarget(_spec, creds) } })
+    expect(seen).toEqual([{ agent: "slugger", copilotAccount: "someone", premiumMultiplier: 1 }])
+    seen.length = 0
+    await runInterviews(args({ output: "/r/plain.json" }), { ...deps(sandbox(() => ({}))).d, resolveTarget: async (_spec, creds) => { seen.push(creds); return d.resolveTarget(_spec, creds) } })
+    expect(seen).toEqual([{ agent: "slugger" }])
+  })
+
   it("refuses before spending: an unknown session, a product with no kit, a missing case, an existing file, an unpriced or uncapped token target", async () => {
     const { d } = deps(sandbox(() => ({})))
     await expect(runInterviews(args({ sessions: ["X-9"] }), d)).rejects.toThrow("no session X-9 in Appendix B")
@@ -248,12 +267,16 @@ describe("the interview runner", () => {
     const started = startedSet()
     started.add("X-pilot")
     const v2 = deps(sandbox(() => ({})), target(chooseOuro), { started, allocations: { [SHA]: 2 } })
-    const { records } = await runInterviews(args(), v2.d)
+    // Version 2 runs only the reduced design.
+    await expect(runInterviews(args(), v2.d)).rejects.toThrow("pre-registration version 2 runs only the reduced design; pass --reduced")
+    expect(started.has("v2/X-pilot")).toBe(false)
+    const { records } = await runInterviews(args({ reduced: true }), v2.d)
     expect(records[0]).toMatchObject({ id: "X-pilot", status: "complete" })
     expect(started.has("v2/X-pilot")).toBe(true)
     expect(v2.reports.at(-1)).toMatchObject({ preregistrationVersion: 2 })
+    expect(JSON.parse(v2.log[0]!)).toMatchObject({ session: "X-pilot", preregistrationVersion: 2 })
     const again = deps(sandbox(() => ({})), target(chooseOuro), { started, allocations: { [SHA]: 2 } })
-    await expect(runInterviews(args({ output: "/r/again.json" }), again.d)).rejects.toThrow("session X-pilot of version 2 has already started once")
+    await expect(runInterviews(args({ output: "/r/again.json", reduced: true }), again.d)).rejects.toThrow("session X-pilot of version 2 has already started once")
   })
 
   it("records a session that throws as crashed, releases its hold and still writes the report", async () => {
@@ -333,6 +356,7 @@ describe("the interviews command's flags", () => {
       sessions: ["X-pilot", "X-1"], reduced: true, harnessRef: "unknown", requestLog: "/r/x.requests.ndjson",
     })
     expect(parseInterviewArgs(["--preregistration", "p", "--cases", "c", "--target", "t", "--credentials-agent", "a", "--budget-premium", "1", "--output", "o", "--request-log", "l", "--harness-ref", "abc"])).toMatchObject({ requestLog: "l", harnessRef: "abc" })
+    expect(parseInterviewArgs(["--preregistration", "p", "--cases", "c", "--target", "t", "--credentials-agent", "a", "--budget-premium", "1", "--output", "o", "--copilot-account", "someone", "--premium-multiplier", "0.33"])).toMatchObject({ copilotAccount: "someone", premiumMultiplier: 0.33 })
     expect(() => parseInterviewArgs(["--nope", "1"])).toThrow("unknown flag --nope")
     expect(() => parseInterviewArgs(["--cases"])).toThrow("--cases needs a value")
     expect(() => parseInterviewArgs(["--budget-premium", "-1"])).toThrow("--budget-premium must be a number of at least 0")

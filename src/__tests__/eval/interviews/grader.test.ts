@@ -116,6 +116,13 @@ describe("the grader", () => {
     expect(() => readRequestLog(`{"session":"X-1"}`)).toThrow("request log line 1 is not a logged request")
   })
 
+  it("reads only the request log lines of the version it grades; a line from before lines named their version is version 1's", () => {
+    const line = (over: object) => JSON.stringify({ session: "X-1", kind: "job", sent: true, body: "{}", ...over })
+    expect(readRequestLog(`${line({ preregistrationVersion: 2 })}\n`, 2)).toHaveLength(1)
+    expect(readRequestLog(`${line({})}\n`, 1)).toHaveLength(1)
+    expect(() => readRequestLog(`${line({ preregistrationVersion: 2 })}\n${line({})}\n`, 2)).toThrow("request log line 2 is from pre-registration version 1, not version 2; versions are never pooled")
+  })
+
   it("grades only the reports of the pre-registration's own version, so versions are never pooled", () => {
     const [pilot] = design(2)
     const one = record(pilot!, "ouro")

@@ -20,7 +20,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { gradeRun } from "../report"
 import type { GuestChoice, RunCase, SandboxRun } from "../sandbox/remote"
 import type { ResolvedTarget, TargetCredentials } from "../targets"
-import { readAllocation, reducedDesign, startedKey, type LabelledArm, type Session } from "./allocation"
+import { designOf, readAllocation, startedKey, type LabelledArm, type Session } from "./allocation"
 import { runFinalConversation, type FinalResult } from "./final"
 import { buildArm, X_ARMS } from "./guest/arms"
 import type { BooksCore } from "./guest/books-core"
@@ -97,6 +97,10 @@ export type InterviewArgs = {
   cases: string
   target: string
   credentialsAgent: string
+  /** The one Copilot account to bill, when the stored credentials hold a pool. */
+  copilotAccount?: string
+  /** Premium requests per call, for a Copilot model whose `/models` entry gives no multiplier. */
+  premiumMultiplier?: number
   budgetPremium: number
   budgetCredits?: number
   priceIn?: number
@@ -191,6 +195,7 @@ async function runSession(input: {
   ledger: ReturnType<typeof createBudgetLedger>
   pricing: Pricing
   runCase: RunCase
+  version: number
   log(line: string): void
 }): Promise<SessionRecord> {
   const { session, latch } = input
@@ -202,7 +207,7 @@ async function runSession(input: {
   const c = input.cases.get(session.job)!
   const guard = (gateFor: (request: ProviderTurnRequest) => Gate): ProviderRuntime => guardedRuntime({
     inner: input.target.runtime, latch, ledger: input.ledger, pricing: input.pricing, gateFor,
-    log: (entry) => input.log(JSON.stringify({ session: session.id, ...entry })),
+    log: (entry) => input.log(JSON.stringify({ session: session.id, preregistrationVersion: input.version, ...entry })),
   })
   const end = (status: SessionStatus, why: string): void => {
     record.status = status
@@ -267,13 +272,18 @@ export function summarizeSessions(records: SessionRecord[], spent: Cost, stopped
 }
 
 export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): Promise<{ exitCode: number; records: SessionRecord[] }> {
-  const { version, sessions: all } = readAllocation(deps.readText(args.preregistration), deps.allocations)
-  const design = args.reduced ? reducedDesign(all) : all
+  const allocation = readAllocation(deps.readText(args.preregistration), deps.allocations)
+  const { version, sessions: all } = allocation
+  const design = designOf(allocation, args.reduced)
   const unknown = args.sessions.find((id) => !all.some((session) => session.id === id))
   if (unknown) throw new Error(`no session ${unknown} in Appendix B`)
   const outside = args.sessions.find((id) => !design.some((session) => session.id === id))
   if (outside) throw new Error(`session ${outside} is not in the reduced design`)
-  const chosen = args.sessions.length > 0 ? design.filter((session) => args.sessions.includes(session.id)) : design
+  // One run is one target, so it runs only that model's sessions; another model's would be recorded under the wrong one.
+  const model = args.target.slice(args.target.indexOf(":") + 1)
+  const otherModel = design.find((session) => args.sessions.includes(session.id) && session.model !== model)
+  if (otherModel) throw new Error(`session ${otherModel.id} is for ${otherModel.model}, not this run's target ${args.target}`)
+  const chosen = args.sessions.length > 0 ? design.filter((session) => args.sessions.includes(session.id)) : design.filter((session) => session.model === model)
   const rerun = chosen.find((session) => deps.started.has(startedKey(version, session.id)))
   if (rerun) throw new Error(`session ${rerun.id}${version === 1 ? "" : ` of version ${version}`} has already started once; a session is never rerun`)
   const missingKit = chosen.find((session) => !deps.kits[session.product])
@@ -287,7 +297,11 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   }
   if (args.budgetCredits !== undefined && !(args.reserveCreditsPerCall! > 0)) throw new Error("--reserve-credits-per-call must be more than 0 with a credits cap, or the cap reserves nothing")
 
-  const target = await deps.resolveTarget(args.target, { agent: args.credentialsAgent })
+  const target = await deps.resolveTarget(args.target, {
+    agent: args.credentialsAgent,
+    ...(args.copilotAccount !== undefined ? { copilotAccount: args.copilotAccount } : {}),
+    ...(args.premiumMultiplier !== undefined ? { premiumMultiplier: args.premiumMultiplier } : {}),
+  })
   const before = await target.quota()
   if (args.budgetCredits === undefined && (target.account === null || before.tokenBased !== false)) {
     throw new Error(`${args.target} is billed by the token (or not known not to be); pass --budget-credits with --price-in, --price-out and --reserve-credits-per-call`)
@@ -330,7 +344,7 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
     deps.started.add(startedKey(version, session.id))
     let record: SessionRecord
     try {
-      record = await runSession({ session, kit: deps.kits[session.product]!, cases, latch, target, ledger, pricing, runCase: deps.runCase, log })
+      record = await runSession({ session, kit: deps.kits[session.product]!, cases, latch, target, ledger, pricing, runCase: deps.runCase, version, log })
     } catch (error) {
       // Nothing that goes wrong in one session loses the sessions already run, or holds its reservation.
       record = { ...notRun(messageOf(error)), status: "crashed", voidedBy: latch.voided(), calls: latch.calls(), spent: latch.release() }
@@ -351,8 +365,8 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
 /** Every X arm, for the parser's check. */
 export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: [], X: X_ARMS }
 
-const STRING_FLAGS = { "--preregistration": "preregistration", "--cases": "cases", "--target": "target", "--credentials-agent": "credentialsAgent", "--output": "output", "--request-log": "requestLog", "--harness-ref": "harnessRef" } as const
-const NUMBER_FLAGS = { "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut", "--reserve-credits-per-call": "reserveCreditsPerCall" } as const
+const STRING_FLAGS = { "--preregistration": "preregistration", "--cases": "cases", "--target": "target", "--credentials-agent": "credentialsAgent", "--output": "output", "--request-log": "requestLog", "--harness-ref": "harnessRef", "--copilot-account": "copilotAccount" } as const
+const NUMBER_FLAGS = { "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut", "--reserve-credits-per-call": "reserveCreditsPerCall", "--premium-multiplier": "premiumMultiplier" } as const
 const REQUIRED = ["--preregistration", "--cases", "--target", "--credentials-agent", "--budget-premium", "--output"] as const
 
 export function parseInterviewArgs(argv: string[]): InterviewArgs {
