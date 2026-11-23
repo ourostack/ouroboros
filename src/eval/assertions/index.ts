@@ -133,18 +133,39 @@ const TEXT_ONLY = /^(?:echo|printf|grep|egrep|fgrep|rg)$/
 function argumentWords(command: string): string[] {
   return [...command.replace(/\\(.)/g, "$1").replace(/[<>]/g, " ").matchAll(SHELL_WORD)].map(([word]) => word.replace(/"([^"]*)"|'([^']*)'/g, "$1$2"))
 }
+/** Command substitution (`$(…)`, backticks, `<(…)`): a command run inside another command's words. */
+const SUBSTITUTION = /\$\(|`|[<>]\(/
+const QUOTED = /"(?:[^"\\]|\\.)*"|'[^']*'/g
+const SINGLE_QUOTED = /'[^']*'/g
+const blank = (span: string) => " ".repeat(span.length)
+/** A shell command's separate commands, split on `;`, `&`, `|`, `&&`, `||` and new lines outside quotes. */
+function splitCommands(command: string): string[] {
+  const parts = [""]
+  for (const [token] of command.matchAll(/"(?:[^"\\]|\\.)*"?|'[^']*'?|&&|\|\||[;&|\n]|[^"';&|\n]+/g)) {
+    if (/^(?:&&|\|\||[;&|\n])$/.test(token)) parts.push("")
+    else parts[parts.length - 1] += token
+  }
+  return parts.map(part => part.replace(/^\s*export\s+/, ""))
+}
 /**
- * Whether a shell command passes `source` (a pattern) as an argument. A command that runs text as code is read whole,
- * since any of its text may be a command (`sh -c '…'`, `bash <<EOF`, `python3 -c`), and fails on the pattern as a word
- * anywhere in it. Otherwise each command, with the call's own variables written out and heredoc bodies left out, fails
- * on an argument word that is the pattern or `pattern=value`, unless the program only prints or searches text.
+ * Whether a shell command passes `source` (a pattern) as an argument. A command that runs text as code, named outside
+ * quotes and heredoc bodies (`sh -c '…'`, `bash <<EOF`, `| sh`, `eval`, `python3 -c`), is read whole, heredoc bodies
+ * too, since any of its text may be a command. One that substitutes a command into its words is read whole apart from
+ * heredoc bodies. Either fails on the pattern as a word anywhere in what is read. Otherwise each command, with the
+ * call's own variables written out and heredoc bodies left out, fails on an argument word that is the pattern or
+ * `pattern=value`, unless the program only prints or searches text and nothing pipes it into `xargs`.
  */
 function passesArgument(command: string, start: string, source: string): boolean {
-  if (RUNS_TEXT.test(command)) return new RegExp(`(?:^|[^\\w-])(?:${source})(?![\\w-])`).test(command.replace(/\\(.)/g, "$1"))
+  const bodiless = command.replace(HEREDOC_BODY, "$1$4")
+  const asWord = new RegExp(`(?:^|[^\\w-])(?:${source})(?![\\w-])`)
+  const unescape = (text: string) => text.replace(/\\(.)/g, "$1")
+  if (RUNS_TEXT.test(bodiless.replace(QUOTED, blank))) return asWord.test(unescape(command))
+  if (SUBSTITUTION.test(bodiless.replace(SINGLE_QUOTED, blank))) return asWord.test(unescape(bodiless))
   const asArgument = new RegExp(`^(?:${source})(?:=.*)?$`)
-  return expandShell(command.replace(HEREDOC_BODY, "$1$4").split(COMMAND_SEPARATOR), start).some(({ text }) => {
+  const textOnlyCounts = /\bxargs\b/.test(bodiless)
+  return expandShell(splitCommands(bodiless), start).some(({ text }) => {
     const words = argumentWords(text).filter(word => !/^[A-Za-z_]\w*=/.test(word) || asArgument.test(word))
-    return !TEXT_ONLY.test(basename(words[0] ?? "")) && words.some(word => asArgument.test(word))
+    return (textOnlyCounts || !TEXT_ONLY.test(basename(words[0] ?? ""))) && words.some(word => asArgument.test(word))
   })
 }
 /** The folder a shell call starts in: its own `cwd` argument, against the bundle, where created paths are rooted. */
