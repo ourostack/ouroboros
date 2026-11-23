@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.1399",
+      "version": "0.1.0-alpha.1401",
       "changes": [
         "The owner route no longer shows the peer an approval or admission id: dedupe keys carry a hash of it."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.1399",
+      "changes": [
+        "A BlueBubbles webhook is no longer refused with 403 when the server is too busy to answer server info and the host account was confirmed in the last 10 minutes, and a proactive send that timed out is saved as sent once it shows up in the chat."
       ]
     },
     {

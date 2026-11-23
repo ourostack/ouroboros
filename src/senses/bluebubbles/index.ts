@@ -524,7 +524,9 @@ interface RuntimeDeps {
   recordProcessed: typeof recordProcessedBlueBubblesMessage
   withSessionTurnLease: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
   /** Confirm the BlueBubbles server runs under the agent's declared macOS host account; throws when it cannot be confirmed. */
-  verifyHostAccount: () => Promise<void>
+  verifyHostAccount: (options?: { recentConfirmationGraceMs?: number }) => Promise<void>
+  /** Waits between checks for a send that timed out; a seam so tests don't wait. */
+  waitMs: (ms: number) => Promise<void>
 }
 
 export interface BlueBubblesReplyTargetController {
@@ -579,17 +581,23 @@ const defaultDeps: RuntimeDeps = {
   withSessionTurnLease,
   // Incoming events recheck every time, like sends, so a server that takes over
   // the same URL under another account is refused immediately.
-  verifyHostAccount: () => verifyBlueBubblesServerAccount({
+  verifyHostAccount: (options) => verifyBlueBubblesServerAccount({
     agent: getAgentName(),
     hostUsername: loadAgentConfig().senses?.bluebubbles.hostUsername,
     serverUrl: getBlueBubblesConfig().serverUrl,
     password: getBlueBubblesConfig().password,
     requestTimeoutMs: getBlueBubblesChannelConfig().requestTimeoutMs,
     fresh: true,
+    ...options,
   }).then(() => undefined),
+  /* v8 ignore next -- a real timer; tests pass their own waitMs @preserve */
+  waitMs: (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref() }),
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+const BLUEBUBBLES_WEBHOOK_HOST_CONFIRMATION_GRACE_MS = 10 * 60_000
+const BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECK_MS = 30_000
+const BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECKS = 10
 /** After a failed sync, the next one comes sooner than the interval: 5 s, then 10 s, then 20 s. */
 const BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS = 5_000
 /**
@@ -4385,7 +4393,9 @@ export function createBlueBubblesWebhookHandler(
     // Only take in messages from the agent's own Apple ID: a server running
     // under another macOS account would hand the agent that person's iMessages.
     try {
-      await { ...defaultDeps, ...deps }.verifyHostAccount()
+      // BlueBubbles doesn't send a webhook again, so a server too busy to answer server info right now (as while
+      // Messages restarts) gets the benefit of a recent confirmation; a mismatch still refuses.
+      await { ...defaultDeps, ...deps }.verifyHostAccount({ recentConfirmationGraceMs: BLUEBUBBLES_WEBHOOK_HOST_CONFIRMATION_GRACE_MS })
     } catch (error) {
       writeJson(res, 403, { handled: false, notifiedAgent: false, error: error instanceof Error ? error.message : String(error) })
       return
@@ -4619,6 +4629,40 @@ function recordBlueBubblesProactiveSend(friend: FriendRecord, params: ProactiveB
   }
 }
 
+function sameMessageText(a: string, b: string): boolean {
+  const normalize = (value: string) => value.trim().replace(/\s+/g, " ")
+  return normalize(a) === normalize(b)
+}
+
+/**
+ * A proactive send that timed out may still go out: BlueBubbles retries after restarting Messages. Look in the chat
+ * every 30 seconds for 5 minutes, and once the message is there save it into its chat as sent, so the agent knows it
+ * went out and doesn't send it again.
+ */
+async function watchForTimedOutProactiveSend(
+  deps: RuntimeDeps, client: BlueBubblesClient, friend: FriendRecord, params: ProactiveBlueBubblesSessionSendParams,
+  chat: BlueBubblesChatRef, sentAt: number,
+): Promise<void> {
+  const chatGuid = chat.chatGuid
+  if (!chatGuid || !client.listRecentMessages) return
+  for (let checks = 1; checks <= BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECKS; checks++) {
+    await deps.waitMs(BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECK_MS)
+    const recent = await client.listRecentMessages({ chatGuid, limit: 25 }).catch(() => [])
+    const arrived = recent.find((message) => message.kind === "message" && message.fromMe && message.timestamp >= sentAt
+      && sameMessageText(message.text, params.text))
+    if (arrived) {
+      emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_proactive_send_arrived",
+        message: "a proactive bluebubbles send that timed out showed up in the chat, so it was saved as sent",
+        meta: { friendId: friend.id, sessionKey: params.sessionKey, messageGuid: arrived.messageGuid, checks } })
+      recordBlueBubblesProactiveSend(friend, params, chat, chatGuid)
+      return
+    }
+  }
+  emitNervesEvent({ level: "warn", component: "senses", event: "senses.bluebubbles_proactive_send_not_seen",
+    message: "a proactive bluebubbles send that timed out never showed up in the chat",
+    meta: { friendId: friend.id, sessionKey: params.sessionKey, checks: BLUEBUBBLES_PROACTIVE_ARRIVAL_CHECKS } })
+}
+
 export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
@@ -4748,6 +4792,7 @@ export async function sendProactiveBlueBubblesMessageToSession(
     return { delivered: false, reason: "internal_content_blocked" }
   }
 
+  const sentAt = Date.now()
   try {
     const sent = await client.sendText({ chat, text: params.text })
     emitNervesEvent({
@@ -4797,6 +4842,7 @@ export async function sendProactiveBlueBubblesMessageToSession(
     })
     const refused = error instanceof BlueBubblesSendError && error.httpStatus !== null && error.httpStatus >= 400 && error.httpStatus < 500 && error.httpStatus !== 408 && error.httpStatus !== 409
     const mayHaveGoneOut = error instanceof BlueBubblesSendError && error.transportInvoked && !refused
+    if (mayHaveGoneOut) void watchForTimedOutProactiveSend(resolvedDeps, client, friend, params, chat, sentAt)
     return { delivered: false, reason: "send_error", ...(mayHaveGoneOut ? { delivery: { state: "unknown" as const } } : {}) }
   }
 }

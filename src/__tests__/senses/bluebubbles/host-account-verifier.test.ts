@@ -40,6 +40,19 @@ describe("verifyBlueBubblesServerAccount", () => {
     await expect(verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl })).resolves.toBeUndefined()
   })
 
+  it("lets a caller that asks for it reuse a recent confirmation while the server is too busy to answer, never past the grace or after a mismatch", async () => {
+    const ok = serverInfo("clawdbot@ouroboros-host")
+    const down = vi.fn(async () => { throw new Error("The operation was aborted due to timeout") }) as unknown as typeof fetch
+    const at = (now: number, fetchImpl: typeof fetch, grace?: number) => verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fresh: true, now: () => now, fetchImpl, ...(grace === undefined ? {} : { recentConfirmationGraceMs: grace }) })
+    await at(1_000, ok)
+    await expect(at(2_000, down)).rejects.toBeInstanceOf(BlueBubblesHostAccountError)
+    await expect(at(2_000, down, 600_000)).resolves.toBeUndefined()
+    await expect(at(700_000, down, 600_000)).rejects.toBeInstanceOf(BlueBubblesHostAccountError)
+    await at(800_000, ok)
+    await expect(at(801_000, serverInfo("owner@ouroboros-host"), 600_000)).rejects.toBeInstanceOf(BlueBubblesHostAccountError)
+    await expect(at(802_000, down, 600_000)).rejects.toBeInstanceOf(BlueBubblesHostAccountError)
+  })
+
   it("refuses a server running under another account and treats the field as a human decision", async () => {
     const attempt = verifyBlueBubblesServerAccount({ ...base, hostUsername: "clawdbot", fetchImpl: serverInfo("owner@ouroboros-host") })
     await expect(attempt).rejects.toBeInstanceOf(BlueBubblesHostAccountError)

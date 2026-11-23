@@ -147,3 +147,84 @@ describe("container image release gate", () => {
     expect(result.stderr).toContain("canonical immutable")
   })
 })
+
+const verifyPath = join(process.cwd(), "scripts/container-post-push-verify.sh")
+
+// Each registry read of a reference takes the next state from its comma-separated sequence (the last one repeats).
+function runVerify(versionStates: string, shaStates: string, shaRaw = sharedRaw) {
+  const binDir = mkdtempSync(join(tmpdir(), "ouro-container-verify-"))
+  writeFileSync(
+    join(binDir, "docker"),
+    `#!/usr/bin/env bash
+set -eu
+reference=""
+for argument in "$@"; do
+  case "$argument" in ghcr.io/*) reference="$argument" ;; esac
+done
+if [ "$reference" = "$MOCK_VERSION_REF" ]; then key=version; states="$MOCK_VERSION_STATES"; raw="$MOCK_VERSION_RAW"; else key=sha; states="$MOCK_SHA_STATES"; raw="$MOCK_SHA_RAW"; fi
+counter="$MOCK_DIR/$key.count"
+n=$(cat "$counter" 2>/dev/null || echo 0)
+echo $((n + 1)) >"$counter"
+IFS=, read -r -a list <<<"$states"
+index=$n
+[ "$index" -lt "\${#list[@]}" ] || index=$((\${#list[@]} - 1))
+case "\${list[$index]}" in
+  present) printf '%s' "$raw" ;;
+  absent) printf 'ERROR: %s: not found\n' "$reference" >&2; exit 1 ;;
+  auth) printf 'ERROR: failed to authorize: 401 Unauthorized\n' >&2; exit 1 ;;
+  empty) exit 0 ;;
+esac
+`,
+    { mode: 0o755 },
+  )
+  const result = spawnSync(verifyPath, [versionRef, shaRef, "3", "0"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      MOCK_DIR: binDir,
+      MOCK_VERSION_REF: versionRef,
+      MOCK_SHA_REF: shaRef,
+      MOCK_VERSION_STATES: versionStates,
+      MOCK_SHA_STATES: shaStates,
+      MOCK_VERSION_RAW: sharedRaw,
+      MOCK_SHA_RAW: shaRaw,
+    },
+  })
+  rmSync(binDir, { recursive: true })
+  return result
+}
+
+describe("container post-push verification", () => {
+  it.each([
+    ["both absent then present", "absent,present", "absent,present"],
+    ["partial then present", "present", "absent,present"],
+  ])("retries observed absence: %s", (_name, versionStates, shaStates) => {
+    const result = runVerify(versionStates, shaStates)
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`publish=false\ndigest=${sharedDigest}\n`)
+  })
+
+  it("fails after the bounded attempts when the references stay absent", () => {
+    const result = runVerify("absent", "absent")
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("still not readable after 3 attempts")
+  })
+
+  it("fails at once, without retrying, on a digest mismatch", () => {
+    const result = runVerify("present", "present", '{"manifests":[{}],"schemaVersion":2}\n')
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain("immutable digest mismatch")
+    expect(result.stderr).not.toContain("attempt 1/3")
+  })
+
+  it.each([["auth"], ["empty"]])("fails at once on a %s inspection", (state) => {
+    const result = runVerify(state, "present")
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).not.toContain("attempt 1/3")
+  })
+})

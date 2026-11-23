@@ -27,14 +27,22 @@ export interface BlueBubblesServerAccountInput {
   now?: () => number
   /** Ignore a recent confirmation and ask the server again (used before every send). */
   fresh?: boolean
+  /**
+   * When the server doesn't answer server info, accept a confirmation this recent instead of refusing. Only for work
+   * that can't be asked for again, like an incoming webhook; a mismatch since then always refuses.
+   */
+  recentConfirmationGraceMs?: number
 }
 
 const VERIFIED_TTL_MS = 60_000
 const verifiedAt = new Map<string, number>()
+/** The last time each server confirmed the account; only a mismatch forgets it. */
+const confirmedAt = new Map<string, number>()
 
 /** Test seam: forget cached verifications. */
 export function resetBlueBubblesServerAccountCache(): void {
   verifiedAt.clear()
+  confirmedAt.clear()
 }
 
 function refuse(message: string, meta: Record<string, unknown>): never {
@@ -100,6 +108,18 @@ export async function verifyBlueBubblesServerAccount(input: BlueBubblesServerAcc
   const info = await readServerInfo(input)
   if (info === null) {
     verifiedAt.delete(key)
+    const confirmed = confirmedAt.get(key)
+    const grace = input.recentConfirmationGraceMs
+    if (grace !== undefined && confirmed !== undefined && now - confirmed < grace) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_host_account_recent_confirmation_used",
+        message: "BlueBubbles server info did not answer, so a recent confirmation of the host account was used",
+        meta: { agent, hostUsername, confirmedMsAgo: now - confirmed },
+      })
+      return undefined
+    }
     refuse(
       `BlueBubbles refused for agent "${agent}": could not confirm which macOS account the BlueBubbles server at ${serverUrl} runs under. Not acting.`,
       { agent, reason: "unconfirmed", hostUsername },
@@ -108,6 +128,7 @@ export async function verifyBlueBubblesServerAccount(input: BlueBubblesServerAcc
   const serverUsername = info.username
   if (serverUsername !== hostUsername) {
     verifiedAt.delete(key)
+    confirmedAt.delete(key)
     refuse(
       `BlueBubbles refused for agent "${agent}": the BlueBubbles server at ${serverUrl} runs under macOS account "${serverUsername}", `
       + `but the agent's iMessage host is "${hostUsername}". Not acting, so the agent neither speaks nor listens as "${serverUsername}"'s Apple ID. `
@@ -116,5 +137,6 @@ export async function verifyBlueBubblesServerAccount(input: BlueBubblesServerAcc
     )
   }
   verifiedAt.set(key, now)
+  confirmedAt.set(key, now)
   return info.facts
 }
