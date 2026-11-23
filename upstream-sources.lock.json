@@ -4,7 +4,7 @@
     {
       "id": "ourostack-ouro-ui-ax",
       "repository": "ourostack/ouro-ui",
-      "commit": "10622b6f75eb1da7270095dd55d2d5aed471fe5d",
+      "commit": "6c34d12d36b69de180417fcc5797f2a94ad50cbc",
       "license": "MIT",
       "files": [
         {
@@ -145,7 +145,7 @@
         {
           "sourcePath": "registry/ouro/ax/xray.ts",
           "generatedPath": "lib/ouro-ui/registry/ouro/ax/xray.ts",
-          "sha256": "92934984e9565fce6ffe98e90e28f3131eeaad58487b1e65bc344e872e46a0a6"
+          "sha256": "a7a6491d7300a02618dc649a2d5efa8ffa94a9ec719e4827106b10b2a070e413"
         }
       ]
     }

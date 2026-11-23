@@ -153,6 +153,24 @@ describe("the interview runner", () => {
     expect(records[1]).toMatchObject({ id: "X-2", status: "complete" })
   })
 
+  it("rewrites an arm's job and debrief with the kit's list for that arm, before the scan, and no other arm's or the final conversation", async () => {
+    const runCase = sandbox((arm) => ({ brand: arm === "ouro" }))
+    const asked: string[] = []
+    const kit = { ...X_KIT, replacements: (arm: string) => { asked.push(arm); return arm === "ouro" ? [{ pattern: /ouro/gi, with: "agent" }] : undefined } }
+    const { d, model, log } = deps(runCase, target(chooseOuro), { kits: { X: kit } })
+    const { records } = await runInterviews(args(), d)
+    const [record] = records as [SessionRecord]
+    expect(record).toMatchObject({ status: "complete", voidedBy: null })
+    expect(asked).toEqual(["ouro", "cli-shell", "mcp-plain"])
+    const sent = model.sent.map((request) => JSON.stringify(request.messages))
+    // The ouro arm's two job calls asked for "the ouro job"; the model was sent them rewritten.
+    expect(sent.filter((text) => text.includes("the agent job"))).toHaveLength(2)
+    expect(sent.some((text) => /ouro/i.test(text))).toBe(false)
+    // The debrief is still told from the job by the runner's own text, and counted as one.
+    expect(record.arms[0]).toMatchObject({ label: "T", arm: "ouro", jobCalls: 2, debriefCalls: 1 })
+    expect(log.map((line) => (JSON.parse(line) as { kind: string }).kind).slice(0, 3)).toEqual(["job", "job", "debrief"])
+  })
+
   it("ends a job conversation at its 13th call: the job does not pass, its note is empty, and the session goes on", async () => {
     const runCase = sandbox((arm) => (arm === "cli-shell" ? { jobCalls: 13 } : { debriefCalls: arm === "ouro" ? 3 : 1 }))
     const { d } = deps(runCase)
@@ -349,6 +367,89 @@ describe("scoring every arm the same way", () => {
 
   it("summarizes counts only", () => {
     expect(summarizeSessions([], { premium: 0, credits: 0 }, "the provider answered 429")).toBe("spent: 0.000 credits, 0 premium requests; stopped: the provider answered 429")
+  })
+})
+
+describe("a product kit's own job, grade and fidelity", () => {
+  const base = cases.get("remove-bad-copy")!
+  const own: Case = { ...base, id: "kit-job", prefix: [{ role: "user", content: "build it" }] }
+
+  it("takes the kit's job and verdict over the cases folder and the case's assertions, and adds its fidelity", async () => {
+    const inner = sandbox((arm) => ({ obs: arm === "ouro" ? "pass" : Object.keys(base.fixtures.fail)[0]! }))
+    const seen: string[] = []
+    const runCase: RunCase = async (input) => {
+      seen.push(input.case.id)
+      const run = await inner(input)
+      // The grade disagrees with the fixtures on purpose: only the kit's verdict may decide.
+      return { ...run, grade: (input.guest!.turn as { arm: string }).arm !== "ouro" }
+    }
+    const kit = {
+      ...X_KIT,
+      job: (id: string) => id === "remove-bad-copy" ? own : undefined,
+      grade: (run: SandboxRun) => ({ passed: run.grade === true, reason: run.grade === true ? null : "failed kit.check", checks: [{ name: "kit.check", ok: run.grade === true, detail: "d" }] }),
+      fidelity: { "X:kit": ["a note"] },
+    }
+    const { d, reports } = deps(runCase, target(chooseOuro), { kits: { X: kit }, loadCases: () => [] })
+    const { records } = await runInterviews(args(), d)
+    expect(seen).toEqual(["kit-job", "kit-job", "kit-job"])
+    const [record] = records as [SessionRecord]
+    expect(record.arms.map((arm) => [arm.arm, arm.passed, arm.reason, arm.checks.map((check) => check.name)])).toEqual([
+      ["ouro", false, "failed kit.check", ["kit.check"]], ["cli-shell", true, null, ["kit.check"]], ["mcp-plain", true, null, ["kit.check"]],
+    ])
+    expect(record.arms[0]!.observation).not.toHaveProperty("grade")
+    expect(reports[0]).toMatchObject({ fidelity: { "X:kit": ["a note"], "X:all": expect.any(Array) } })
+  })
+
+  it("still fails a kit-graded job whose call was refused", async () => {
+    const runCase: RunCase = async (input) => ({ ...(await sandbox(() => ({ jobCalls: 13 }))(input)), grade: true })
+    const kit = { ...X_KIT, grade: () => ({ passed: true, reason: null, checks: [] }) }
+    const { records } = await runInterviews(args(), deps(runCase, target(chooseOuro), { kits: { X: kit } }).d)
+    expect(records[0]!.arms[0]).toMatchObject({ passed: false, reason: expect.stringMatching(/^refused: /) })
+  })
+
+  it("fails a kit-graded job whose conversation did not settle, and one whose verdict throws", async () => {
+    const outcomes: Record<string, string> = { ouro: "trace-mismatch", "cli-shell": "settled", "mcp-plain": "settled" }
+    const runCase: RunCase = async (input) => {
+      const arm = (input.guest!.turn as { arm: string }).arm
+      return { ...(await sandbox(() => ({}))(input)), outcome: outcomes[arm]!, grade: arm === "mcp-plain" ? "bad" : true }
+    }
+    const kit = {
+      ...X_KIT,
+      grade: (run: SandboxRun) => {
+        if (run.grade === "bad") throw new Error("not a grade")
+        return { passed: true, reason: null, checks: [] }
+      },
+    }
+    const { records } = await runInterviews(args(), deps(runCase, target(chooseOuro), { kits: { X: kit } }).d)
+    expect(records[0]!.arms.map((arm) => [arm.arm, arm.passed, arm.reason])).toEqual([
+      ["ouro", false, "outcome trace-mismatch"],
+    ])
+    expect(records[0]!.status).toBe("crashed")
+    const settled = await runInterviews(args({ output: "/r/2.json" }), deps(async (input) => ({ ...(await sandbox(() => ({}))(input)), grade: (input.guest!.turn as { arm: string }).arm === "mcp-plain" ? "bad" : true }), target(chooseOuro), { kits: { X: kit } }).d)
+    expect(settled.records[0]!.arms.map((arm) => [arm.arm, arm.passed, arm.reason])).toEqual([["ouro", true, null], ["cli-shell", true, null], ["mcp-plain", false, "grade: not a grade"]])
+  })
+
+  it("reports only the fidelity of products in the run, and refuses a kit that restates a note before any session", async () => {
+    const h = { ...X_KIT, fidelity: { "H:codex": ["h note"] } }
+    const { d, reports } = deps(sandbox(() => ({})), target(chooseOuro), { kits: { X: X_KIT, H: h } })
+    await runInterviews(args(), d)
+    expect(reports[0]).not.toHaveProperty("fidelity.H:codex")
+    const restating = deps(sandbox(() => ({})), target(chooseOuro), { kits: { X: { ...X_KIT, fidelity: { "X:all": ["again"] } } } })
+    await expect(runInterviews(args(), restating.d)).rejects.toThrow("product X's kit restates the fidelity notes for X:all")
+    expect(restating.reports).toHaveLength(0)
+  })
+
+  it("leaves X as it was: no hooks, its case from the folder, graded by the case's assertions, and only its own fidelity", async () => {
+    expect(X_KIT.job).toBeUndefined()
+    expect(X_KIT.grade).toBeUndefined()
+    expect(X_KIT.fidelity).toBeUndefined()
+    const runCase = sandbox((arm) => ({ obs: arm === "ouro" ? "pass" : Object.keys(base.fixtures.fail)[0]! }))
+    const { d, reports } = deps(runCase)
+    const { records } = await runInterviews(args(), d)
+    expect(records[0]!.arms.map((arm) => [arm.arm, arm.passed])).toEqual([["ouro", true], ["cli-shell", false], ["mcp-plain", false]])
+    expect(Object.keys((reports[0] as { fidelity: object }).fidelity).sort()).toEqual(["X:all", "X:cli-shell", "X:mcp-plain", "X:ouro"])
+    const missing = deps(runCase, target(chooseOuro), { loadCases: () => [] })
+    await expect(runInterviews(args(), missing.d)).rejects.toThrow("needs case remove-bad-copy")
   })
 })
 

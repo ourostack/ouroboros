@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { TurnTally, emitTurnSummary, tallyToolEnds, TURN_SUMMARY_CHANNELS, TURN_SUMMARY_ERROR_CLASSES, TURN_SUMMARY_OUTCOMES } from "../../heart/turn-summary"
+import { TurnTally, emitTurnSummary, readRuntimeVersion, tallyToolEnds, TURN_SUMMARY_CHANNELS, TURN_SUMMARY_ERROR_CLASSES, TURN_SUMMARY_OUTCOMES } from "../../heart/turn-summary"
 import { setRuntimeLogger } from "../../nerves/runtime"
 import { createLogger } from "../../nerves/index"
+import { readFileSync } from "node:fs"
+import path from "node:path"
 
 const tool = (name: string) => ({ type: "function" as const, function: { name, description: "d", parameters: { type: "object" } } })
 
@@ -140,9 +142,32 @@ describe("emitTurnSummary", () => {
     expect(events[0]).toMatchObject({ event: "engine.turn_summary", component: "engine", trace_id: "t1", meta: { channel: "mail", steps: 0 } })
   })
 
+  it("is written even by a logger set to warn, as the iMessage, mail and voice senses are", () => {
+    const events: any[] = []
+    setRuntimeLogger(createLogger({ level: "warn", sinks: [(entry) => events.push(entry)] }))
+    emitTurnSummary(new TurnTally(), { channel: "bluebubbles", outcome: "settled", errorClass: "none" })
+    expect(events.map((entry) => entry.event)).toEqual(["engine.turn_summary"])
+  })
+
+  it("names the runtime version from the package", async () => {
+    const events: any[] = []
+    setRuntimeLogger(createLogger({ level: "debug", sinks: [(entry) => events.push(entry)] }))
+    emitTurnSummary(new TurnTally(), { channel: "cli", outcome: "settled", errorClass: "none" })
+    const { version } = JSON.parse(readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8"))
+    expect(events[0].meta.runtimeVersion).toBe(version)
+  })
+
+  it("names the runtime version unknown when the package can't be read or has no version", () => {
+    expect(readRuntimeVersion(() => { throw new Error("missing") })).toBe("unknown")
+    expect(readRuntimeVersion(() => JSON.stringify({ name: "x" }))).toBe("unknown")
+    expect(readRuntimeVersion(() => JSON.stringify({ version: "has spaces" }))).toBe("other")
+    expect(readRuntimeVersion(() => JSON.stringify({ version: "0.1.0-alpha.1500" }))).toBe("0.1.0-alpha.1500")
+  })
+
   it("swallows a logger that throws", () => {
     const throwing = createLogger({ level: "debug", sinks: [] })
-    setRuntimeLogger({ ...throwing, info: () => { throw new Error("disk full") } })
+    const fail = () => { throw new Error("disk full") }
+    setRuntimeLogger({ ...throwing, info: fail, emitDurable: fail })
     expect(() => emitTurnSummary(new TurnTally(), { channel: "cli", outcome: "settled", errorClass: "none" })).not.toThrow()
   })
 })

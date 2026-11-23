@@ -114,6 +114,18 @@ function waitForStagedVersion(spec, npm, { attempts, intervalMs, sleep }) {
   return lookupPublishedVersion(spec, npm) !== null;
 }
 
+// Keeps the start and the end: npm prints its closing lines (tag, provenance, "being processed") last.
+function boundedStream(text) {
+  const lines = String(text ?? "").split("\n").filter((line) => line.trim().length > 0).map((line) => line.slice(0, 300));
+  if (lines.length === 0) return "(no output)";
+  if (lines.length <= 20) return lines.join("\n");
+  return [...lines.slice(0, 5), `... ${lines.length - 20} lines omitted ...`, ...lines.slice(-15)].join("\n");
+}
+
+function boundedOutput(result) {
+  return `stdout:\n${boundedStream(result.stdout)}\nstderr:\n${boundedStream(result.stderr)}`;
+}
+
 function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
   const { attempts = 40, intervalMs = 15000, sleep = sleepSync } = wait;
   const { name, version } = readPackageIdentity(cwd);
@@ -123,7 +135,11 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
     const local = packLocal(cwd, workspace, npm);
     if (lookupPublishedVersion(spec, npm) === null) {
       const published = npm(["publish", "--access", "public", "--tag", tag], cwd);
-      if (published.status === 0) return { outcome: "published", spec };
+      if (published.status === 0) {
+        // npm's own words, bounded, so a version that never becomes readable can be compared with what npm said it did.
+        console.error(`npm publish ${spec} exited 0; its output (each stream: first 5 and last 15 lines, 300 characters each):\n${boundedOutput(published)}`);
+        return { outcome: "published", spec };
+      }
       if (lookupPublishedVersion(spec, npm) === null) {
         const output = `${published.stderr}${published.stdout}`;
         // Only the registry's own "version already exists" answers; any other 403 is policy or auth.

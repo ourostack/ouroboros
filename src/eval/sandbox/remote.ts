@@ -13,14 +13,15 @@ import type { Case, Observation } from "../domain/case"
 import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type GuestOutcome, type ProxyMessage } from "../transport/provider-proxy"
 import type { FollowUp, InterviewGuestEntry, SandboxImages } from "./docker"
 
-export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[] }
+/** `grade` is a guest's own grading, for a product scored in the container; the sandbox passes it on unread. */
+export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[]; grade?: unknown }
 /**
  * Where the job's files are on the remote host, which images there to run (the eval's own tags by default), and the
  * token of the host lock this command holds there, if any.
  */
 export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string; images?: SandboxImages; hostLockToken?: string }
-/** Another guest than the Telegram turn, as `runSandboxed` takes it. */
-export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown }
+/** Another guest than the Telegram turn, as `runSandboxed` takes it, and the name of its own agent image, if any. */
+export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown; image?: string }
 export type RemoteJob = RemotePaths & { case: Case; guest?: GuestChoice }
 export type RemoteProcess = { stdin: Writable; stdout: Readable; exited: Promise<number>; stderr(): string; kill?(): void }
 export type RunCase = (input: { case: Case; host: ProviderRuntime; budget: { take(): boolean }; guest?: GuestChoice }) => Promise<SandboxRun>

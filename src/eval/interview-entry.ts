@@ -15,11 +15,13 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { messageOf } from "./interviews/guest/loop"
 import { loadCases } from "./self-test"
 import { writePrivateReport } from "./report"
-import { dockerCli, runSandboxed, type SandboxImages } from "./sandbox/docker"
+import { dockerCli, runSandboxed } from "./sandbox/docker"
+import { parseSandboxImages, type SandboxImages } from "./sandbox/images"
 import { holdHostLock, HOST_LOCK_TTL_S, HOST_LOCK_WAIT_S, type HeldHostLock } from "./sandbox/host-lock"
 import { remoteRunCase, sshNode, sshStart, type RunCase } from "./sandbox/remote"
 import { resolveTarget } from "./targets"
 import { parseInterviewArgs, runInterviews, X_KIT } from "./interviews/runner"
+import { U_KIT } from "./interviews/u/kit"
 
 const REPO = path.resolve(__dirname, "../..")
 
@@ -83,7 +85,7 @@ async function main(): Promise<number> {
   const ssh = take(process.argv.slice(2), "--sandbox-ssh")
   const bundle = take(ssh.rest, "--bundle")
   const seed = take(bundle.rest, "--seed-bundle")
-  // `--images <agent>,<household>`: image tags of this run's own, so a run never uses images another checkout built.
+  // `--images <agent>,<household>[,<name>=<agent image>...]`: image tags of this run's own (`parseSandboxImages`).
   const tags = take(seed.rest, "--images")
   const hostLock = take(tags.rest, "--host-lock")
   if (!bundle.value) throw new Error("--bundle is required")
@@ -93,9 +95,7 @@ async function main(): Promise<number> {
     if (!/^[\w.:@+-]+$/.test(hostLock.value)) throw new Error("--host-lock takes one word of letters, digits and . : @ + - _ (it is sent over ssh)")
     if (!ssh.value) throw new Error("--host-lock needs --sandbox-ssh")
   }
-  const [agent, household] = tags.value?.split(",") ?? []
-  if (tags.value && !(agent && household)) throw new Error("--images must be <agent image>,<household image>")
-  const images = agent && household ? { agent, household } : undefined
+  const images = tags.value === undefined ? undefined : parseSandboxImages(tags.value)
   const args = parseInterviewArgs(hostLock.rest)
   let lock: HeldHostLock | undefined
   if (hostLock.value && ssh.value) {
@@ -143,7 +143,7 @@ async function interviews(args: ReturnType<typeof parseInterviewArgs>, deps: { r
     loadCases,
     resolveTarget: (spec, creds) => resolveTarget(spec, creds),
     runCase: deps.runCase,
-    kits: { X: X_KIT },
+    kits: { X: X_KIT, U: U_KIT },
     outputExists: (file) => fs.existsSync(file),
     writeReport: writePrivateReport,
     openLog: openPrivateLog,

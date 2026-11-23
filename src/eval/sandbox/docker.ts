@@ -38,6 +38,7 @@ import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
 import { DECLARED_GAPS } from "./declared-gaps"
+import { agentImageOf, type SandboxImages } from "./images"
 import { projectBundle } from "./projection"
 import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
 
@@ -51,7 +52,7 @@ export const EVAL_LABEL = "ouro.eval=1"
 export const BUTLER_CONTAINERS = "^/?ouro-butler(-staging|-rollback)?$"
 /** A lock on a Butler's host that its lifecycle (upgrade and rollback) honours while an eval run holds it. */
 export type HostLock = { held(): Promise<boolean> }
-export type SandboxImages = { agent: string; household: string }
+export type { SandboxImages } from "./images"
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
 const ALIASES = ["calibre-web", "smtp", ...LIBGEN_MIRRORS]
@@ -131,13 +132,17 @@ export type SandboxInput = {
    * Another guest than the real Telegram turn: the blind interviews' neutral loop, with the turn file it reads. Its
    * answer may have several user turns; the first is the job, scored as any run, and the rest come back as `followUps`.
    */
-  guest?: { entry: InterviewGuestEntry; turn: unknown }
+  guest?: { entry: InterviewGuestEntry; turn: unknown; image?: string }
   /** Lets the run share a host with the live Butler; without it, such a host is refused. */
   hostLock?: HostLock
 }
 
-/** The guest entries the agent image keeps besides the Telegram turn's. */
-export type InterviewGuestEntry = "interview-guest-entry.js"
+/**
+ * The guest entries the agent image keeps besides the Telegram turn's: the neutral loop's for U and X, and H's, which
+ * runs each arm's own agent loop. `deploy/eval/Dockerfile` keeps each of these and removes every other file.
+ */
+export const INTERVIEW_GUEST_ENTRIES = ["interview-guest-entry.js", "h-guest-entry.js"] as const
+export type InterviewGuestEntry = typeof INTERVIEW_GUEST_ENTRIES[number]
 
 /** A later user turn in the same conversation (the interviews' debrief): its answer and how it ended. */
 export type FollowUp = { finalReply: string; outcome: string; calls: number; toolCalls?: number }
@@ -219,13 +224,16 @@ type GuestTurns = Array<{ start: number } & FollowUp>
 const isTurns = (value: unknown): value is GuestTurns => Array.isArray(value) && value.every((turn: Record<string, unknown> | null) => typeof turn === "object" && turn !== null
   && Number.isInteger(turn.start) && typeof turn.finalReply === "string" && typeof turn.outcome === "string" && Number.isInteger(turn.calls))
 
-function guestTurn(outcome: GuestOutcome): GuestTurn & { turns?: GuestTurns } {
+function guestTurn(outcome: GuestOutcome): GuestTurn & { turns?: GuestTurns; grade?: unknown } {
   if (!outcome.ok) return { timeline: [], finalReply: "", outcome: `sandbox-error: ${outcome.error}` }
-  const result = outcome.result as Partial<GuestTurn> & { turns?: unknown } | null
+  const result = outcome.result as Partial<GuestTurn> & { turns?: unknown; grade?: unknown } | null
   if (!result || !Array.isArray(result.timeline) || typeof result.finalReply !== "string" || typeof result.outcome !== "string" || (result.turns !== undefined && !isTurns(result.turns))) {
     return { timeline: [], finalReply: "", outcome: "sandbox-error: the guest's result is malformed" }
   }
-  return { timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome, ...(result.turns ? { turns: result.turns } : {}) }
+  return {
+    timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome, ...(result.turns ? { turns: result.turns } : {}),
+    ...(result.grade !== undefined ? { grade: result.grade } : {}),
+  }
 }
 
 /** The job's part of a merged timeline and the later turns, by where the guest said each turn starts. */
@@ -241,9 +249,10 @@ export function splitTurns(observation: Observation, turns: GuestTurns | undefin
   }
 }
 
-export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[] }> {
+export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[]; grade?: unknown }> {
   const docker = input.docker ?? dockerCli()
-  const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
+  const images: SandboxImages = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
+  const agentImage = agentImageOf(images, input.guest?.image)
   const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
   const runLabels = ["--label", EVAL_LABEL, "--label", `ouro.eval.run=${runId}`]
   const last = input.case.prefix.at(-1)
@@ -321,7 +330,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
-      images.agent, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
+      agentImage, "node", ...(input.guest ? [`/opt/ouro/dist/eval/${input.guest.entry}`] : ["/opt/ouro/dist/eval/guest-entry.js", "--agent", "sanctuary"]),
     ])
     const hostCalls: TraceCall[] = []
     const recorded = recordModelTraffic(input.host, hostCalls)
@@ -360,7 +369,11 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     })
     const { observation, followUps } = splitTurns(assembled, turn.turns)
     emitNervesEvent({ component: "eval", event: "eval.sandbox_run_end", message: "finished a sandboxed eval run", meta: { caseId: input.case.id, runId, outcome: observation.outcome } })
-    return { ...observation, gaps: [...gaps, ...(input.guest ? [] : DECLARED_GAPS)], ...(input.guest ? { followUps } : {}) }
+    // A guest's own grade (a product scored in the container) goes back as it came, only from a turn read back whole.
+    return {
+      ...observation, gaps: [...gaps, ...(input.guest ? [] : DECLARED_GAPS)], ...(input.guest ? { followUps } : {}),
+      ...(input.guest && turn.grade !== undefined ? { grade: turn.grade } : {}),
+    }
   } catch (error) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.sandbox_run_error", message: "a sandboxed eval run failed", meta: { caseId: input.case.id, runId, error: (error as Error).message } })
     throw error

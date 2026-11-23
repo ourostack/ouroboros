@@ -7,7 +7,8 @@ import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
 import type { Case } from "../../../eval/domain/case"
-import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { buildSandboxImage, dockerCli, HOUSEHOLD_IMAGE, INTERVIEW_GUEST_ENTRIES, runSandboxed, SANDBOX_IMAGE, splitTurns, type Docker, type DockerProcess } from "../../../eval/sandbox/docker"
+import { agentImageOf, parseSandboxImages } from "../../../eval/sandbox/images"
 import { runGuest } from "../../../eval/sandbox/guest"
 import type { runTelegramTurn } from "../../../eval/transport/telegram-turn"
 
@@ -401,12 +402,62 @@ describe("runSandboxed", () => {
     expect(obs.gaps).not.toEqual(expect.arrayContaining([...DECLARED_GAPS]))
   })
 
+  it("reads --images as the agent's and household's tags, then any named agent images as name=tag", () => {
+    expect(parseSandboxImages("ouro-eval-a:1,ouro-eval-h:1")).toEqual({ agent: "ouro-eval-a:1", household: "ouro-eval-h:1" })
+    expect(parseSandboxImages("ouro-eval-a:1,ouro-eval-h:1,arm-a=ouro-eval-arm-a:1,arm-b=ouro-eval-arm-b:1")).toEqual({
+      agent: "ouro-eval-a:1", household: "ouro-eval-h:1", named: { "arm-a": "ouro-eval-arm-a:1", "arm-b": "ouro-eval-arm-b:1" },
+    })
+    const usage = "--images must be <agent image>,<household image>, then any <name>=<agent image>"
+    for (const bad of ["ouro-eval-a:1", "ouro-eval-a:1,", "a,h,arm-a", "a,h,=t", "a,h,arm-a=", "a,h,x=t,x=u", "a,h,arm-a=t,plain", "a,h,__proto__=t", "a,h,a b=t"]) expect(() => parseSandboxImages(bad)).toThrow(usage)
+    expect(parseSandboxImages(" a , h , constructor=t ")).toEqual({ agent: "a", household: "h", named: { constructor: "t" } })
+    expect(() => agentImageOf({ agent: "a", household: "h", named: { x: "t" } }, "toString")).toThrow("no agent image named toString: the run's images name x")
+  })
+
+  it("runs a guest that names an image in the agent image the run's images give that name, and refuses a name it lacks", async () => {
+    const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0, turns: [{ start: 0, finalReply: "", outcome: "settled", calls: 0 }] }
+    const named = fakeDocker({ runTurn: async () => reply as never })
+    const images = { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE, named: { "arm-a": "ouro-eval-arm-a:1" } }
+    const guest = { entry: "interview-guest-entry.js" as const, turn: { prefix: [], userText: "x" }, image: "arm-a" }
+    expect((await runSandboxed(input(named.docker, { images, guest }))).outcome).toBe("settled")
+    const agentRun = named.calls.find((args) => args.includes("--name") && args[args.indexOf("--name") + 1]!.endsWith("-agent"))!
+    expect(agentRun.slice(-3)).toEqual(["ouro-eval-arm-a:1", "node", "/opt/ouro/dist/eval/interview-guest-entry.js"])
+    // The household still runs from its own image.
+    expect(named.calls.some((args) => args.includes(HOUSEHOLD_IMAGE))).toBe(true)
+    const missing = fakeDocker({ runTurn: async () => reply as never })
+    await expect(runSandboxed(input(missing.docker, { images, guest: { ...guest, image: "arm-b" } }))).rejects.toThrow("no agent image named arm-b")
+    // Nothing ran for a refused guest, not even the Butler check that comes first.
+    expect(missing.calls).toEqual([])
+    expect(() => agentImageOf({ agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }, "arm-a")).toThrow("no agent image named arm-a: the run's images name none")
+    expect(agentImageOf(images, undefined)).toBe(SANDBOX_IMAGE)
+  })
+
   it("reports another guest's malformed turns as a sandbox error, and a single turn as no follow-ups", async () => {
     const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0 }
     const bad = fakeDocker({ runTurn: async () => ({ ...reply, turns: [{ start: "0" }] }) as never })
     expect((await runSandboxed(input(bad.docker, { guest: { entry: "interview-guest-entry.js", turn: { prefix: [], userText: "x" } } }))).outcome).toBe("sandbox-error: the guest's result is malformed")
     const one = fakeDocker({ runTurn: async () => ({ ...reply, turns: [{ start: 0, finalReply: "", outcome: "settled", calls: 0 }] }) as never })
     expect((await runSandboxed(input(one.docker, { guest: { entry: "interview-guest-entry.js", turn: { prefix: [], userText: "x" } } }))).followUps).toEqual([])
+  })
+
+  it("passes another guest's own grade back as it came, and nothing of the kind from the Telegram turn", async () => {
+    const reply = { timeline: [], finalReply: "", outcome: "settled", steps: 0, grade: { typecheck: true, axe: 0 } }
+    const guest = { entry: "interview-guest-entry.js" as const, turn: { prefix: [], userText: "x" } }
+    const graded = fakeDocker({ runTurn: async () => reply as never })
+    expect((await runSandboxed(input(graded.docker, { guest }))).grade).toEqual({ typecheck: true, axe: 0 })
+    const plain = fakeDocker({ runTurn: async () => ({ ...reply, grade: undefined }) as never })
+    expect(await runSandboxed(input(plain.docker, { guest }))).not.toHaveProperty("grade")
+    const telegram = fakeDocker({ runTurn: async () => reply as never })
+    expect(await runSandboxed(input(telegram.docker))).not.toHaveProperty("grade")
+  })
+
+  it("splits a job that ended on a turn-ending call, with no reply of its own, from its debrief", () => {
+    const call = (name: string) => ({ kind: "call" as const, name, args: "{}", result: "r" })
+    const observation = { timeline: [call("write_file"), call("finish"), call("read_file"), { kind: "reply" as const, text: "6\nok" }], finalReply: "Finished", outcome: "settled", steps: 4 }
+    const turns = [{ start: 0, finalReply: "Finished", outcome: "settled", calls: 2 }, { start: 2, finalReply: "6\nok", outcome: "settled", calls: 2 }]
+    expect(splitTurns(observation, turns)).toEqual({
+      observation: { ...observation, timeline: [call("write_file"), call("finish")] },
+      followUps: [{ finalReply: "6\nok", outcome: "settled", calls: 2, toolCalls: 1 }],
+    })
   })
 
   it("splits no follow-ups out of a timeline the guest's turn starts no longer index", () => {
@@ -522,5 +573,14 @@ describe("dockerCli", () => {
     await buildSandboxImage({ repoRoot: "/repo", images: { agent: "ouro-eval-a:1", household: "ouro-eval-h:1" }, docker })
     const build = (target: string, tag: string) => ["build", "--file", "/repo/deploy/eval/Dockerfile", "--target", target, "--tag", tag, "/repo"]
     expect(calls).toEqual([build("agent", SANDBOX_IMAGE), build("household", HOUSEHOLD_IMAGE), build("agent", "ouro-eval-a:1"), build("household", "ouro-eval-h:1")])
+  })
+
+  it("keeps every interview guest entry, and the folders their code is in, in the agent image", () => {
+    // The image removes every file of dist/eval it does not name, so an entry missing here fails in the container
+    // with "Cannot find module" and never in a unit test; the scripted sandbox runs check what each entry loads.
+    const dockerfile = fs.readFileSync(path.resolve(__dirname, "../../../../deploy/eval/Dockerfile"), "utf8")
+    expect(INTERVIEW_GUEST_ENTRIES).toEqual(["interview-guest-entry.js", "h-guest-entry.js"])
+    for (const entry of ["guest-entry.js", ...INTERVIEW_GUEST_ENTRIES]) expect(dockerfile).toContain(`! -name ${entry} `)
+    expect(dockerfile).toMatch(/find dist\/eval\/interviews -mindepth 1 -maxdepth 1 ! -name guest /)
   })
 })
