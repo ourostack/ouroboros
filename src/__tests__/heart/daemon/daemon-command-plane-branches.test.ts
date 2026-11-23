@@ -156,6 +156,19 @@ describe("daemon command plane branches", () => {
     expect((daemon as any).stateRetentionTimer).toBeNull()
   })
 
+  it("doesn't schedule another state retention pass when the daemon stops during one", async () => {
+    let finish!: () => void
+    const stateRetention = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+    const { daemon } = make(tmpSocketPath("state-retention-stop"), undefined, { stateRetention })
+    await daemon.start()
+    ;((daemon as any).stateRetentionTimer as { _onTimeout(): void })._onTimeout()
+    await daemon.stop()
+    finish()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(stateRetention).toHaveBeenCalledTimes(1)
+    expect((daemon as any).stateRetentionTimer).toBeNull()
+  })
+
   it("by default runs state retention over the enabled agents in its bundles root", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "state-retention-bundles-"))
     const archive = path.join(bundlesRoot, "slugger.ouro", "state", "sessions", "self", "inner", "dialog.archive.ndjson")
