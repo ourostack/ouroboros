@@ -9,8 +9,11 @@ import os from "node:os"
 import { lowerPriority, watchCli } from "./watch/cli"
 
 lowerPriority()
-process.exitCode = watchCli(process.argv.slice(2), {
+const code = watchCli(process.argv.slice(2), {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
   homedir: os.homedir(),
 })
+// stderr's last line names the failure for a script: 2 bad arguments, 1 a run that was refused or failed.
+if (code !== 0) process.stderr.write(`code: ${code === 2 ? "usage" : "watch-failed"}\n`)
+process.exitCode = code
