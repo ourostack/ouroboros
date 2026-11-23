@@ -105,6 +105,13 @@ describe("parseEvalArgs", () => {
     expect(() => parseEvalArgs([...required, "--sandbox-images", "x:local, x:local"])).toThrow(/--sandbox-images must be/)
     expect(parseEvalArgs([...required, "--sandbox-images", "a:local, h:local"])).toMatchObject({ sandboxImages: { agent: "a:local", household: "h:local" } })
   })
+
+  it("takes a host lock only for a sandbox on another host", () => {
+    const required = ["--cases", "c", "--bundle", "b", "--bundle-ref", "r", "--target", "t", "--budget-premium", "1", "--credentials-agent", "a", "--output", "o", "--runs", "1"]
+    expect(parseEvalArgs([...required, "--sandbox-ssh", "sanctuary:/tmp/x", "--host-lock", "eval:c17-replay"])).toMatchObject({ hostLock: "eval:c17-replay" })
+    expect(() => parseEvalArgs([...required, "--host-lock", "eval:c17-replay"])).toThrow(/--host-lock needs --sandbox-ssh/)
+    for (const bad of ["eval c17", "x;rm -rf /", "$(id)", ""]) expect(() => parseEvalArgs([...required, "--sandbox-ssh", "sanctuary:/tmp/x", "--host-lock", bad])).toThrow(/--host-lock takes one word/)
+  })
 })
 
 describe("runEvalCommand", () => {
