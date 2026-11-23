@@ -189,6 +189,8 @@ export async function runTelegramTurn(input: TelegramTurnInput): Promise<Telegra
       await app.stop()
     }
     if (turnError) throw turnError
+    // A bundle that already answered this message has its outcome recorded, and the sense does not run it again.
+    if (!turn) throw new Error("the sense did not run the turn: this bundle already has an outcome for its message, so use a fresh bundle")
     // The answer is every message sent after the model's last tool call: Telegram splits a long one into several.
     const lastCall = timeline.findLastIndex((entry) => entry.kind === "call")
     const result: TelegramTurnResult = {
