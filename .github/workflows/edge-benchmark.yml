@@ -57,11 +57,13 @@ jobs:
         run: npm ci
 
       - name: Pack
-        # prepack builds, so this is one build.
+        # prepack builds, so this is one build. The side's folder is inside the artifact, so the bench job finds
+        # pack/change and pack/base however many artifacts it downloads (download-artifact names a folder per
+        # artifact only when it downloads more than one).
         run: |
-          mkdir -p "$RUNNER_TEMP/pack"
-          npm pack --pack-destination "$RUNNER_TEMP/pack"
-          git rev-parse --short HEAD > "$RUNNER_TEMP/pack/commit"
+          mkdir -p "$RUNNER_TEMP/pack/${{ matrix.side }}"
+          npm pack --pack-destination "$RUNNER_TEMP/pack/${{ matrix.side }}"
+          git rev-parse --short HEAD > "$RUNNER_TEMP/pack/${{ matrix.side }}/commit"
 
       - name: Upload package
         uses: actions/upload-artifact@v7
@@ -98,16 +100,17 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: edge-benchmark-pack-*
+          merge-multiple: true
           path: ${{ runner.temp }}/pack
 
       - name: Measure
         run: |
           pack="$RUNNER_TEMP/pack"
-          bench=(node .github/scripts/edge-benchmark.cjs run --tarball "$(ls "$pack"/edge-benchmark-pack-change/*.tgz)" --out "$RUNNER_TEMP/edge-benchmark.json")
-          if [ -d "$pack/edge-benchmark-pack-base" ]; then
-            bench+=(--baseline-tarball "$(ls "$pack"/edge-benchmark-pack-base/*.tgz)" --baseline-out "$RUNNER_TEMP/baseline/edge-benchmark.json")
+          bench=(node .github/scripts/edge-benchmark.cjs run --tarball "$(ls "$pack"/change/*.tgz)" --out "$RUNNER_TEMP/edge-benchmark.json")
+          if [ -d "$pack/base" ]; then
+            bench+=(--baseline-tarball "$(ls "$pack"/base/*.tgz)" --baseline-out "$RUNNER_TEMP/baseline/edge-benchmark.json")
             mkdir -p "$RUNNER_TEMP/baseline"
-            echo "BASELINE_LABEL=the base, $(cat "$pack/edge-benchmark-pack-base/commit"), measured alongside on this runner" >> "$GITHUB_ENV"
+            echo "BASELINE_LABEL=the base, $(cat "$pack/base/commit"), measured alongside on this runner" >> "$GITHUB_ENV"
           fi
           if [ "$RUNNER_OS" = Linux ]; then
             sudo systemd-run --scope --quiet -p MemoryMax=1G -p MemorySwapMax=0 \
