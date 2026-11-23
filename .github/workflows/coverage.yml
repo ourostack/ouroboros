@@ -39,7 +39,7 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      # Missing version bumps, wrapper drift and changelog misses fail here,
+      # A missing change note, a leftover version bump or wrapper drift fails here,
       # before any coverage shard starts.
       - name: Release preflight (PRs only)
         id: preflight
