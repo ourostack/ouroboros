@@ -15,7 +15,7 @@ WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
 RUN npm ci --omit=dev --ignore-scripts --legacy-peer-deps --workspaces=false --no-audit --no-fund
 COPY dist ./dist
-RUN find dist/eval -mindepth 1 -maxdepth 1 ! -name guest-entry.js ! -name interview-guest-entry.js ! -name sandbox ! -name transport ! -name domain ! -name interviews -exec rm -rf {} + \
+RUN find dist/eval -mindepth 1 -maxdepth 1 ! -name guest-entry.js ! -name interview-guest-entry.js ! -name h-guest-entry.js ! -name sandbox ! -name transport ! -name domain ! -name interviews -exec rm -rf {} + \
   && find dist/eval/sandbox -mindepth 1 ! -name 'guest.js' -exec rm -rf {} + \
   # The interviews' neutral loop keeps only its guest and the protocol's brand scrub; the runner and grader stay out.
   && find dist/eval/interviews -mindepth 1 -maxdepth 1 ! -name guest ! -name 'protocol.js' -exec rm -rf {} + \
