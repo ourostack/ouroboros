@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 
 const {
   assessChangeNote,
+  assessCommitVersions,
   assessLockfileVersionSync,
   assessReleaseVersionUnchanged,
   assessWrapperPublishSync,
@@ -35,6 +36,7 @@ type ExecResponse = {
   tipNotes?: string[]
   auditOutput?: string
   auditFailureOutput?: string
+  versionCommits?: Array<{ sha: string; subject: string; from: string; to: string }>
 }
 
 type ReadResponse = {
@@ -63,6 +65,15 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
 
     if (command.startsWith("git merge-base ")) {
       return "base-sha\n"
+    }
+
+    if (command === "git log -G '^  \"version\": ' --format=%H%x1f%s 'origin/main..HEAD' -- package.json") {
+      return (response.versionCommits ?? []).map((commit) => `${commit.sha}\x1f${commit.subject}`).join("\n")
+    }
+
+    const versionCommit = (response.versionCommits ?? []).find((commit) => command === `git show '${commit.sha}:package.json'` || command === `git show '${commit.sha}^1:package.json'`)
+    if (versionCommit) {
+      return JSON.stringify({ version: command.includes("^1:") ? versionCommit.from : versionCommit.to })
     }
 
     if (command === "git show 'base-sha:package.json'") {
@@ -216,6 +227,13 @@ describe("release-preflight", () => {
     expect(versionBumpRequired(["scripts/release-smoke.cjs"])).toBe(true)
     expect(versionBumpRequired(["deploy/unraid/Dockerfile"])).toBe(true)
     expect(versionBumpRequired(["src/__tests__/scripts/changelog-gate.test.ts"])).toBe(false)
+  })
+
+  it("releases a change to any other file the package or image ships, such as a lockfile-only security fix", () => {
+    for (const file of ["npm-shrinkwrap.json", "package-lock.json", "SerpentGuide.ouro/agent.json", "RepairGuide.ouro/psyche/SOUL.md", "assets/ouroboros.png"]) {
+      expect(versionBumpRequired([file])).toBe(true)
+    }
+    expect(versionBumpRequired(["SerpentGuideNotes.md", "assetsplan.md"])).toBe(false)
   })
 
   it("requires a bump for mailbox-ui assets that ship in the CLI, not for their tests", () => {
@@ -638,6 +656,33 @@ describe("release-preflight", () => {
     expect(result.errors[0]).toContain("npm run release:drop-bump")
   })
 
+  it("fails a branch with a commit that changes the version even when a later commit puts it back, since a rebase merge keeps both", () => {
+    const result = preflight(
+      {
+        changedFiles: ["src/heart/daemon/daemon-cli.ts", "changes/daemon-fix.md"],
+        versionCommits: [
+          { sha: "b".repeat(40), subject: "drop the bump", from: "0.1.0-alpha.408", to: "0.1.0-alpha.407" },
+          { sha: "a".repeat(40), subject: "Release 0.1.0-alpha.408", from: "0.1.0-alpha.407", to: "0.1.0-alpha.408" },
+        ],
+      },
+      { notes: { "changes/daemon-fix.md": "Fix.\n" } },
+    )
+
+    expect(result.ok).toBe(false)
+    const said = result.errors.join("\n")
+    expect(said).toContain("aaaaaaaaaaaa (Release 0.1.0-alpha.408) changes package.json's version from 0.1.0-alpha.407 to 0.1.0-alpha.408")
+    expect(said).toContain("bbbbbbbbbbbb (drop the bump)")
+    expect(said).toContain("git reset --soft")
+  })
+
+  it("lets one commit start the new release line the branch ends on, and nothing else move the version", () => {
+    const start = { sha: "a".repeat(40), subject: "start 0.2", from: "0.1.0-alpha.407", to: "0.2.0-alpha.0" }
+    expect(assessCommitVersions({ versionCommits: [], newLineVersion: undefined })).toMatchObject({ ok: true })
+    expect(assessCommitVersions({ versionCommits: [start], newLineVersion: "0.2.0-alpha.0" })).toMatchObject({ ok: true })
+    expect(assessCommitVersions({ versionCommits: [start], newLineVersion: undefined })).toMatchObject({ ok: false })
+    expect(assessCommitVersions({ versionCommits: [{ ...start, to: "0.2.0-alpha.3" }], newLineVersion: "0.2.0-alpha.0" })).toMatchObject({ ok: false })
+  })
+
   it("fails a branch that adds a changelog.json entry instead of a change note", () => {
     const result = preflight(
       { changedFiles: ["src/heart/daemon/daemon-cli.ts", "changelog.json"], baseChangelogVersions: ["0.1.0-alpha.406"] },
@@ -756,7 +801,10 @@ describe("release-preflight", () => {
       changelogVersions: ["0.1.0-alpha.407"],
       notes: new Set(["changes/old.md"]),
       tipNotes: new Set(["changes/old.md"]),
+      versionCommits: [],
     })
+    const bump = { sha: "a".repeat(40), subject: "Release 0.1.0-alpha.408", from: "0.1.0-alpha.407", to: "0.1.0-alpha.408" }
+    expect(readBaseState("origin/main", makeExecSyncImpl({ versionCommits: [bump] })).versionCommits).toEqual([bump])
     expect(readBaseState("origin/main", makeExecSyncImpl({ baseChangelogVersions: null })).changelogVersions).toBeUndefined()
   })
 

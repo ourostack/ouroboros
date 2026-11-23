@@ -141,12 +141,29 @@ function readBaseState(baseRef, execSyncImpl) {
   const packageJson = show("package.json")
   const changelog = show("changelog.json")
   const versions = changelog ? JSON.parse(changelog).versions : undefined
+  const versionOf = (spec) => {
+    try {
+      return JSON.parse(execSyncImpl(`git show ${shellQuote(spec)}`, quiet)).version
+    } catch {
+      return undefined
+    }
+  }
+  // Every commit a rebase merge would replay that changes package.json's version, even one a later commit undoes.
+  const versionCommits = splitLines(execSyncImpl(
+    `git log -G ${shellQuote('^  "version": ')} --format=%H%x1f%s ${shellQuote(`${baseRef}..HEAD`)} -- package.json`, quiet,
+  )).flatMap((line) => {
+    const [sha, subject] = line.split("\x1f")
+    const to = versionOf(`${sha}:package.json`)
+    const from = versionOf(`${sha}^1:package.json`)
+    return to !== undefined && to !== from ? [{ sha, subject, from, to }] : []
+  })
   return {
     mergeBase,
     version: packageJson ? JSON.parse(packageJson).version : undefined,
     changelogVersions: Array.isArray(versions) ? versions.map((entry) => entry?.version) : undefined,
     notes: new Set(splitLines(execSyncImpl(`git ls-tree -r --name-only ${shellQuote(mergeBase)} -- changes/`, quiet))),
     tipNotes: new Set(splitLines(execSyncImpl(`git ls-tree -r --name-only ${shellQuote(baseRef)} -- changes/`, quiet))),
+    versionCommits,
   }
 }
 
@@ -174,6 +191,25 @@ function assessReleaseVersionUnchanged(input) {
     message:
       `package.json's version moved from ${input.baseVersion} to ${input.headVersion}, but the release job on main sets ` +
       `the version when a change lands, so a pull request leaves it alone. ${DROP_BUMP_HINT}`,
+  }
+}
+
+// No commit on the branch may change the version, other than the one that starts the new release line the branch ends
+// on. A rebase merge replays every commit, so a bump that a later commit undoes still lands on main as a version change.
+function assessCommitVersions(input) {
+  const stray = (input.versionCommits ?? []).filter((commit) => !(input.newLineVersion && commit.to === input.newLineVersion &&
+    semver.valid(commit.to) && semver.valid(commit.from) && semver.gt(commit.to, commit.from) &&
+    releaseLine(commit.to) !== releaseLine(commit.from)))
+  if (stray.length === 0) {
+    return { ok: true, message: "release version: no commit on this branch changes it" }
+  }
+  return {
+    ok: false,
+    message:
+      `${stray.map((commit) => `${commit.sha.slice(0, 12)} (${commit.subject}) changes package.json's version from ${commit.from} to ${commit.to}`).join("; ")}. ` +
+      "A rebase merge puts every commit on main as it is, so the branch must not carry a version change even when a later " +
+      "commit puts the version back. Run `npm run release:drop-bump`, then rebuild the branch as one commit on main " +
+      "(`git reset --soft $(git merge-base origin/main HEAD) && git commit`) and push it with `git push --force-with-lease`.",
   }
 }
 
@@ -491,6 +527,15 @@ function runReleasePreflight(options = {}, deps = {}) {
   } else {
     messages.push(versionResult.message)
   }
+  const commitVersionResult = assessCommitVersions({
+    versionCommits: baseState.versionCommits,
+    newLineVersion: versionResult.ok && versionResult.newLine ? packageJson.version : undefined,
+  })
+  if (!commitVersionResult.ok) {
+    errors.push(commitVersionResult.message)
+  } else {
+    messages.push(commitVersionResult.message)
+  }
 
   const changelogResult = validateChangelog(packageJson.version, changelog)
   if (!changelogResult.ok) {
@@ -613,6 +658,7 @@ runReleasePreflightCliIfMain()
 
 module.exports = {
   assessChangeNote,
+  assessCommitVersions,
   assessLockfileVersionSync,
   assessReleaseVersionUnchanged,
   assessWrapperPublishSync,

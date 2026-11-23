@@ -10,10 +10,17 @@ function isShippedMailboxUiAsset(file) {
     !/\.test\.tsx?$/.test(file)
 }
 
+// Files the package or image ships outside the folders below (package.json's files, and the lockfile the image
+// installs from), so a change to them alone, such as a lockfile-only security fix, still publishes.
+const SHIPPED_FILES = new Set(["npm-shrinkwrap.json", "package-lock.json"])
+const SHIPPED_DIRS = ["SerpentGuide.ouro/", "RepairGuide.ouro/", "assets/"]
+
 // A change to any of these publishes a new version.
 function versionBumpRequired(changedFiles) {
   return changedFiles.some(
     (file) => file === "package.json" ||
+      SHIPPED_FILES.has(file) ||
+      SHIPPED_DIRS.some((dir) => file.startsWith(dir)) ||
       file.startsWith("deploy/unraid/") ||
       file.startsWith("skills/") ||
       file.startsWith("scripts/") ||
