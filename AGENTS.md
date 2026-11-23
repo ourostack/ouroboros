@@ -28,6 +28,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - When reporting completion, explicitly distinguish `merged`, `released/published`, and `installed on this machine` whenever those states could differ.
 - Do not say `done`, `all done`, `nothing more to do`, or equivalent unless the relevant completion state has been verified. If a state is unknown, say it is unverified.
 - Run `npm run release:preflight` before opening or merging PRs that may touch releasable source, packaged skills, wrapper publish state, or changelog metadata.
+- A pull request never bumps the version or edits `changelog.json`. It adds its own change note, a new file `changes/<short-name>.md` saying what changed for the people who use it, one paragraph or bullet per change. The release job on `main` gives each landed change the next version and folds its notes into `changelog.json` (`scripts/release-version.cjs`; see [docs/versioning-strategy.md](docs/versioning-strategy.md#release-numbering)). A branch that still carries an old-style bump runs `npm run release:drop-bump`.
 - Keep `npm test` green.
 - Keep `npx tsc --noEmit` green.
 - Maintain complete coverage for new and modified code.
@@ -104,7 +105,7 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 
 - From opening a pull request to npm and the container registry is under 10 minutes. A pull request waits for its slowest check, so keep every job under about 5 minutes: add coverage shards (`strategy.matrix.shard` and the two `--count` arguments in `coverage.yml` move together), move a check beside the shards (lint and the mailbox-ui checks run in `static-checks` for that reason) or split a lane before accepting a wait.
 - Main requires `coverage`, `integration`, `package-e2e`, and `xray` and `actions` from `ax-xray.yml` (they fail when an Ouro AX must claim does not hold), up to date with `main`, and merges on green with auto-merge. There is no merge queue.
-- A merge publishes at once. `publish` in `coverage.yml` does not wait for that run's own tests, because the pull request already passed them on the same tree; the run's tests stay as the tripwire. The wait for npm's registry is its own job (`verify-npm`), so it holds up nothing but the GitHub release.
+- A merge publishes at once. `publish` in `coverage.yml` does not wait for that run's own tests, because the pull request already passed them; the run's tests stay as the tripwire. It works out the version from main's history and writes it, with the changelog, into the release files before it builds, so no pull request carries a version and merging one never conflicts with the others. The wait for npm's registry is its own job (`verify-npm`), so it holds up nothing but the GitHub release.
 - The container image builds each architecture on its own native runner and joins them (`container-publish.yml`). Never emulate arm64 in a release path.
 
 ### Configuration Policy (Required)

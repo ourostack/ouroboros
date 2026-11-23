@@ -1,5 +1,5 @@
 {
-  "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
+  "_note": "Each pull request writes its own change note under changes/; the release job on main gives each landed change its version and adds the notes here (scripts/release-version.cjs). On main this file stops at the last version set by hand; the published package has every release. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
       "version": "0.1.0-alpha.1398",

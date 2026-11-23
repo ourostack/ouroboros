@@ -20,6 +20,37 @@ This is the version reported by:
 
 It is the main answer to "what runtime am I running?"
 
+### Release numbering
+
+Pull requests never set the version. The release job on `main` (`publish` in
+`.github/workflows/coverage.yml`, and `container-publish.yml` for the image)
+runs `scripts/release-version.cjs`, which works it out from main's history:
+
+- The anchor is the last commit on main's first-parent line that changed
+  `package.json`'s version. It releases that version.
+- After it, every commit that releases something takes the next number in
+  order (`0.1.0-alpha.N`, then `N+1`). A commit releases something when it
+  changes shipped source, scripts, skills, the Unraid deploy files,
+  `package.json`, the `ouro.bot` wrapper, or adds a change note. A commit that
+  changes only docs, tests or workflows publishes nothing.
+- Its changelog entry is the change notes it added under `changes/`, one line
+  per paragraph or bullet, or its subject when it added none.
+
+The job writes the version into `package.json`, both lockfiles,
+`packages/ouro.bot/package.json` and the Sanctuary deploy files
+(`deploy/unraid/sanctuary.xml`, `deploy/unraid/sanctuary.ouro/bundle-meta.json`),
+and puts the new entries on top of `changelog.json`, in its own checkout only.
+Nothing is committed back, so on `main` those files keep the anchor's version;
+the published package and image carry the real one. The same commit always
+gets the same version, so every job agrees without asking npm.
+
+To start a new release line (for example `0.2.0-alpha.0`, or a stable
+`1.0.0`), a pull request sets that version with `npm run release:bump`; the
+preflight allows a move to a new, higher line and refuses a move within one.
+A branch made before this scheme that still carries a bump runs
+`npm run release:drop-bump`, which moves its `changelog.json` lines into a
+change note, puts the release files back and merges main.
+
 ## 2. Runtime Metadata
 
 Source:

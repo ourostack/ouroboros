@@ -30,6 +30,17 @@ describe("npm dist-tag policy", () => {
     })
   })
 
+  it("never moves latest back when a later prerelease published first", () => {
+    expect(planPublishTag({
+      localVersion: "0.1.0-alpha.539",
+      latestVersion: "0.1.0-alpha.540",
+    })).toEqual({
+      action: "publish",
+      tag: "alpha",
+      reason: "latest dist-tag already points at the later prerelease 0.1.0-alpha.540; publishing 0.1.0-alpha.539 on alpha so latest does not move back",
+    })
+  })
+
   it("publishes prereleases on latest when the latest tag is missing", () => {
     expect(planPublishTag({
       localVersion: "0.1.0-alpha.539",

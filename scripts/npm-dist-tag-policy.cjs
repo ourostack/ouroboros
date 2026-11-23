@@ -40,6 +40,15 @@ function planPublishTag({ localVersion, latestVersion }) {
     };
   }
 
+  // Two merges a minute apart publish in parallel, and the later version can reach npm first.
+  if (semver.gt(normalizedLatest, localVersion)) {
+    return {
+      action: "publish",
+      tag: channel,
+      reason: `latest dist-tag already points at the later prerelease ${normalizedLatest}; publishing ${localVersion} on ${channel} so latest does not move back`,
+    };
+  }
+
   return {
     action: "publish",
     tag: "latest",

@@ -5,13 +5,15 @@ import * as os from "os"
 import { describe, expect, it, vi } from "vitest"
 
 const {
-  assessChangelogFreshness,
+  assessChangeNote,
   assessLockfileVersionSync,
+  assessReleaseVersionUnchanged,
   assessWrapperPublishSync,
   collectChangedFiles,
   classifyOperationalContractChange,
   parseArgs,
   pathRequiresChangelogFreshness,
+  readBaseState,
   runReleasePreflightCli,
   runReleasePreflightCliIfMain,
   runReleasePreflight,
@@ -27,10 +29,9 @@ type ExecResponse = {
   changedFiles?: string[]
   workingTreeChangedFiles?: string[]
   untrackedFiles?: string[]
-  publishedCliVersion?: string
-  publishedWrapperVersion?: string
-  latestCommits?: Record<string, string>
-  ancestorChecks?: Record<string, boolean>
+  baseCliVersion?: string
+  baseChangelogVersions?: string[] | null
+  existingNotes?: string[]
   auditOutput?: string
   auditFailureOutput?: string
 }
@@ -42,6 +43,7 @@ type ReadResponse = {
   wrapperVersion?: string
   changelogVersion?: string
   changelogChanges?: string[]
+  notes?: Record<string, string>
 }
 
 function makeExecSyncImpl(response: ExecResponse = {}) {
@@ -58,33 +60,23 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
       return (response.untrackedFiles ?? []).join("\n")
     }
 
-    if (command.startsWith("git log --format=%H --max-count=1")) {
-      const file = command.match(/ -- '([^']+)'$/)?.[1]
-      return file ? `${response.latestCommits?.[file] ?? ""}\n` : ""
+    if (command.startsWith("git merge-base ")) {
+      return "base-sha\n"
     }
 
-    if (command.startsWith("git merge-base --is-ancestor")) {
-      const commits = Array.from(command.matchAll(/'([^']+)'/g)).map((match) => match[1])
-      const key = `${commits[0]}..${commits[1]}`
-      const result = response.ancestorChecks?.[key]
-      if (result === false) {
-        throw new Error("not ancestor")
-      }
-      return ""
+    if (command === "git show 'base-sha:package.json'") {
+      return JSON.stringify({ version: response.baseCliVersion ?? "0.1.0-alpha.407" })
     }
 
-    if (command.includes("@ouro.bot/cli@")) {
-      if (response.publishedCliVersion) {
-        return `${response.publishedCliVersion}\n`
-      }
-      throw new Error("not published")
+    if (command === "git show 'base-sha:changelog.json'") {
+      if (response.baseChangelogVersions === null) throw new Error("no changelog at base")
+      return JSON.stringify({
+        versions: (response.baseChangelogVersions ?? ["0.1.0-alpha.407"]).map((version) => ({ version, changes: ["x"] })),
+      })
     }
 
-    if (command.includes("ouro.bot@")) {
-      if (response.publishedWrapperVersion) {
-        return `${response.publishedWrapperVersion}\n`
-      }
-      throw new Error("not published")
+    if (command === "git ls-tree -r --name-only 'base-sha' -- changes/") {
+      return (response.existingNotes ?? []).join("\n")
     }
 
     if (command.includes("npm audit --audit-level=moderate") && !command.includes("--offline")) {
@@ -111,6 +103,9 @@ function makeReadFileSyncImpl(response: ReadResponse = {}) {
   const changelogChanges = response.changelogChanges ?? ["release metadata aligned"]
 
   return (filePath: string): string => {
+    const note = Object.entries(response.notes ?? {}).find(([file]) => filePath.endsWith(`/${file}`))
+    if (note) return note[1]
+
     if (filePath.endsWith("/packages/ouro.bot/package.json")) {
       return JSON.stringify({
         version: wrapperVersion,
@@ -325,7 +320,7 @@ describe("release-preflight", () => {
     fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(true)
-    expect(result.messages).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
+    expect(result.messages).toContain("no releasable changes: landing this publishes no new version")
     expect(result.messages).toContain("changelog gate: pass (0.1.0-alpha.407)")
     expect(result.messages).toContain("wrapper package unchanged")
     expect(result.messages).toContain("root npm audit: pass (found 0 vulnerabilities)")
@@ -600,227 +595,134 @@ describe("release-preflight", () => {
     expect(result.errors.join("\n")).toContain("coverage publish workflow must document the npm trusted publishing runtime floor")
   })
 
-  it("fails when releasable changes reuse an already-published cli version", () => {
+  function preflight(exec: ExecResponse, read: ReadResponse = {}) {
     const packageRoot = makePackageRootWithRequiredAssets()
-    const result = runReleasePreflight(
-      {},
-      {
-        execSyncImpl: makeExecSyncImpl({
-          changedFiles: ["src/heart/daemon/daemon-cli.ts"],
-          publishedCliVersion: "0.1.0-alpha.407",
-        }),
-        readFileSyncImpl: makeReadFileSyncImpl(),
+    try {
+      return runReleasePreflight({}, {
+        execSyncImpl: makeExecSyncImpl(exec),
+        readFileSyncImpl: makeReadFileSyncImpl(read),
         packageRoot,
-      },
-    )
-    fs.rmSync(packageRoot, { recursive: true, force: true })
+      })
+    } finally {
+      fs.rmSync(packageRoot, { recursive: true, force: true })
+    }
+  }
 
-    expect(result.ok).toBe(false)
-    expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
-    expect(result.errors[0]).toContain("npm run release:bump -- --version <next-version> --change")
-    expect(result.errors[0]).not.toContain("npm version prerelease")
+  it("passes releasable changes that carry a change note and leave the version alone, without asking npm", () => {
+    const result = preflight(
+      { changedFiles: ["src/heart/daemon/daemon-cli.ts", "changes/daemon-fix.md"] },
+      { notes: { "changes/daemon-fix.md": "The daemon stops doing the wrong thing.\n" } },
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.ok).toBe(true)
+    expect(result.releasableChanged).toBe(true)
+    expect(result.messages).toContain("releasable changes: the release job on main publishes the next version when this lands")
+    expect(result.messages).toContain("release version: left to the release job on main (0.1.0-alpha.407)")
+    expect(result.messages).toContain("change note: changes/daemon-fix.md")
   })
 
-  it("fails when package-truth changes reuse an already-published cli version", () => {
-    const packageRoot = makePackageRootWithRequiredAssets()
-    const result = runReleasePreflight(
-      {},
-      {
-        execSyncImpl: makeExecSyncImpl({
-          changedFiles: ["scripts/package-assets.cjs"],
-          publishedCliVersion: "0.1.0-alpha.407",
-        }),
-        readFileSyncImpl: makeReadFileSyncImpl(),
-        packageRoot,
-      },
+  it("fails a branch that bumps the version, with the one command that drops the bump", () => {
+    const result = preflight(
+      { changedFiles: ["src/heart/daemon/daemon-cli.ts", "changes/daemon-fix.md"], baseCliVersion: "0.1.0-alpha.406" },
+      { notes: { "changes/daemon-fix.md": "Fix.\n" } },
     )
-    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(false)
-    expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
+    expect(result.errors[0]).toContain("package.json's version moved from 0.1.0-alpha.406 to 0.1.0-alpha.407")
+    expect(result.errors[0]).toContain("npm run release:drop-bump")
   })
 
-  it("requires a release bump when releasable changes are only in the working tree", () => {
-    const packageRoot = makePackageRootWithRequiredAssets()
-    const result = runReleasePreflight(
-      {},
-      {
-        execSyncImpl: makeExecSyncImpl({
-          changedFiles: ["docs/agent-mail-setup.md"],
-          workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
-        }),
-        readFileSyncImpl: makeReadFileSyncImpl(),
-        packageRoot,
-      },
+  it("fails a branch that adds a changelog.json entry instead of a change note", () => {
+    const result = preflight(
+      { changedFiles: ["src/heart/daemon/daemon-cli.ts", "changelog.json"], baseChangelogVersions: ["0.1.0-alpha.406"] },
     )
-    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("changelog.json gains an entry for 0.1.0-alpha.407 on this branch")
+    expect(result.errors.join("\n")).toContain("npm run release:drop-bump")
+  })
+
+  it("fails releasable implementation changes without a change note", () => {
+    const result = preflight({ changedFiles: ["src/mailroom/core.ts"], workingTreeChangedFiles: ["scripts/package-assets.cjs"] })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("add a change note for scripts/package-assets.cjs, src/mailroom/core.ts: a new file changes/<short-name>.md")
+  })
+
+  it("counts an untracked note in a local run", () => {
+    const result = preflight(
+      { changedFiles: ["src/mailroom/core.ts"], untrackedFiles: ["changes/mailroom.md"] },
+      { notes: { "changes/mailroom.md": "- Mailroom fix.\n" } },
+    )
 
     expect(result.ok).toBe(true)
-    expect(result.changedFiles).toContain("src/mailroom/core.ts")
-    expect(result.releasableChanged).toBe(true)
-    expect(result.messages).toContain("@ouro.bot/cli@0.1.0-alpha.407 is not yet published — ready to merge and publish")
   })
 
-  it("fails when releasable implementation changes do not touch the changelog", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["src/senses/voice/twilio-phone.ts"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["old voice tuning"] }],
-      },
-      execSyncImpl: makeExecSyncImpl(),
-    })
+  it("does not ask for a note when only docs or tests changed", () => {
+    const result = preflight({ changedFiles: ["docs/auth-and-providers.md", "src/__tests__/x.test.ts"] })
 
-    expect(result).toEqual({
+    expect(result.ok).toBe(true)
+    expect(result.messages).toContain("no releasable changes: landing this publishes no new version")
+    expect(result.messages).toContain("change note: not needed (no releasable implementation paths)")
+  })
+
+  it("reads the base from the merge base", () => {
+    expect(readBaseState("origin/main", makeExecSyncImpl({ existingNotes: ["changes/old.md"], baseCliVersion: "0.1.0-alpha.9" }))).toEqual({
+      mergeBase: "base-sha",
+      version: "0.1.0-alpha.9",
+      changelogVersions: ["0.1.0-alpha.407"],
+      notes: new Set(["changes/old.md"]),
+    })
+    expect(readBaseState("origin/main", makeExecSyncImpl({ baseChangelogVersions: null })).changelogVersions).toBeUndefined()
+  })
+
+  it("lets a branch start a new release line, but never move within one or go back", () => {
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "0.1.0-alpha.12" }).ok).toBe(true)
+    expect(assessReleaseVersionUnchanged({ baseVersion: undefined, headVersion: "0.1.0-alpha.12" }).ok).toBe(true)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "0.2.0-alpha.0" })).toEqual({
+      ok: true,
+      message: "release version: this branch starts a new release line at 0.2.0-alpha.0",
+    })
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "1.0.0" }).ok).toBe(true)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "1.0.0", headVersion: "1.1.0" }).ok).toBe(true)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "0.1.0-alpha.13" }).ok).toBe(false)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "1.0.0", headVersion: "1.0.4" }).ok).toBe(false)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.2.0-alpha.3", headVersion: "0.1.0-beta.0" }).ok).toBe(false)
+    expect(assessReleaseVersionUnchanged({ baseVersion: "0.1.0-alpha.12", headVersion: "not-semver" }).ok).toBe(false)
+  })
+
+  it("counts only notes the branch adds, and rejects an empty one", () => {
+    const base = {
+      changedFiles: ["src/a.ts", "changes/old.md", "changes/gone.md"],
+      existingNotes: new Set(["changes/old.md"]),
+      baseChangelogVersions: ["0.1.0-alpha.1"],
+      changelog: { versions: [{ version: "0.1.0-alpha.1", changes: ["x"] }] },
+    }
+    const missing = () => { throw new Error("ENOENT") }
+    expect(assessChangeNote({ ...base, readNote: missing }).ok).toBe(false)
+    expect(assessChangeNote({ ...base, changedFiles: [...base.changedFiles, "changes/new.md"], readNote: (file: string) => (file === "changes/new.md" ? "# Only a heading\n" : missing()) })).toEqual({
       ok: false,
-      message:
-        "changelog.json must be updated alongside releasable implementation changes: src/senses/voice/twilio-phone.ts",
+      message: "change note changes/new.md says nothing; write what changed for the people who use it",
     })
+    expect(assessChangeNote({ ...base, changelog: undefined, baseChangelogVersions: undefined, changedFiles: ["src/a.ts", "changes/new.md"], readNote: () => "Fix." })).toEqual({
+      ok: true,
+      message: "change note: changes/new.md",
+    })
+    expect(assessChangeNote({ ...base, changedFiles: [...base.changedFiles, "changes/README.md"], readNote: (file: string) => (file === "changes/README.md" ? "Fix." : missing()) }).ok).toBe(false)
   })
 
-  it("truncates long freshness path lists in changelog guidance", () => {
-    const changedFiles = [
-      "src/path/a.ts",
-      "src/path/b.ts",
-      "src/path/c.ts",
-      "src/path/d.ts",
-      "src/path/e.ts",
-      "src/path/f.ts",
-      "src/path/g.ts",
-      "src/path/h.ts",
-      "src/path/i.ts",
-    ]
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles,
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["old entry"] }],
-      },
-      execSyncImpl: makeExecSyncImpl(),
-    })
-
-    expect(result.ok).toBe(false)
+  it("truncates long path lists in the change-note guidance", () => {
+    const changedFiles = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map((name) => `src/path/${name}.ts`)
+    const result = assessChangeNote({ changedFiles, existingNotes: new Set(), baseChangelogVersions: undefined, changelog: undefined, readNote: () => "" })
     expect(result.message).toContain("src/path/a.ts, src/path/b.ts, src/path/c.ts, src/path/d.ts, src/path/e.ts, src/path/f.ts, src/path/g.ts, src/path/h.ts, and 1 more")
   })
 
-  it("fails when uncommitted releasable changes are newer than a committed changelog", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["src/mailroom/core.ts", "changelog.json"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["mailroom runtime update"] }],
-      },
-      execSyncImpl: makeExecSyncImpl({
-        workingTreeChangedFiles: ["src/mailroom/core.ts"],
-      }),
-    })
-
-    expect(result).toEqual({
-      ok: false,
-      message: "changelog.json must be updated in the working tree after uncommitted releasable changes: src/mailroom/core.ts",
-    })
-  })
-
-  it("fails when the current version is not the top changelog entry for releasable changes", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["scripts/release-preflight.cjs", "changelog.json"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [
-          { version: "0.1.0-alpha.406", changes: ["older entry"] },
-          { version: "0.1.0-alpha.407", changes: ["release metadata aligned"] },
-        ],
-      },
-      execSyncImpl: makeExecSyncImpl(),
-    })
-
-    expect(result.ok).toBe(false)
-    expect(result.message).toContain("must be the top changelog entry")
-  })
-
-  it("passes when the changelog is updated in the working tree with releasable working-tree changes", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["src/mailroom/core.ts", "changelog.json"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["mailroom runtime update"] }],
-      },
-      execSyncImpl: makeExecSyncImpl({
-        workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
-      }),
-    })
-
-    expect(result).toEqual({ ok: true, message: "changelog freshness: pass" })
-  })
-
-  it("passes changelog freshness when committed implementation changes are older than changelog", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["src/senses/voice/twilio-phone.ts", "changelog.json"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["fresh voice tuning"] }],
-      },
-      execSyncImpl: makeExecSyncImpl({
-        latestCommits: {
-          "changelog.json": "newer",
-          "src/senses/voice/twilio-phone.ts": "older",
-        },
-        ancestorChecks: {
-          "older..newer": true,
-        },
-      }),
-    })
-
-    expect(result).toEqual({ ok: true, message: "changelog freshness: pass" })
-  })
-
-  it("fails when the changelog commit is older than a releasable implementation commit", () => {
-    const result = assessChangelogFreshness({
-      baseRef: "origin/main",
-      changedFiles: ["src/senses/voice/twilio-phone.ts", "changelog.json"],
-      currentVersion: "0.1.0-alpha.407",
-      changelog: {
-        versions: [{ version: "0.1.0-alpha.407", changes: ["old voice tuning"] }],
-      },
-      execSyncImpl: makeExecSyncImpl({
-        latestCommits: {
-          "changelog.json": "older",
-          "src/senses/voice/twilio-phone.ts": "newer",
-        },
-        ancestorChecks: {
-          "newer..older": false,
-        },
-      }),
-    })
-
-    expect(result).toEqual({
-      ok: false,
-      message:
-        "changelog.json is older than releasable implementation changes; update it after touching: src/senses/voice/twilio-phone.ts",
-    })
-  })
-
   it("fails when the current version is missing from the changelog", () => {
-    const packageRoot = makePackageRootWithRequiredAssets()
-    const result = runReleasePreflight(
-      {},
-      {
-        execSyncImpl: makeExecSyncImpl({
-          changedFiles: ["docs/auth-and-providers.md"],
-        }),
-        readFileSyncImpl: makeReadFileSyncImpl({
-          changelogVersion: "0.1.0-alpha.406",
-        }),
-        packageRoot,
-      },
+    const result = preflight(
+      { changedFiles: ["docs/auth-and-providers.md"] },
+      { changelogVersion: "0.1.0-alpha.406" },
     )
-    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("0.1.0-alpha.407")
@@ -831,44 +733,20 @@ describe("release-preflight", () => {
       changedFiles: ["src/heart/daemon/daemon-cli.ts"],
       localVersion: "0.1.0-alpha.406",
       cliVersion: "0.1.0-alpha.407",
-      publishedVersion: "0.1.0-alpha.406",
     })).toEqual({
       ok: false,
       message: "ouro.bot wrapper version 0.1.0-alpha.406 must match @ouro.bot/cli version 0.1.0-alpha.407",
     })
   })
 
-  it("passes when the wrapper changed and its local version is unpublished", () => {
-    expect(assessWrapperPublishSync({
-      changedFiles: ["packages/ouro.bot/index.js"],
-      localVersion: "0.1.0-alpha.407",
-      cliVersion: "0.1.0-alpha.407",
-      publishedVersion: "",
-    })).toEqual({
-      ok: true,
-      message: "wrapper package changed and local wrapper version is unpublished",
-    })
-  })
-
-  it("fails when the wrapper package changed but the wrapper version is already published", () => {
-    const packageRoot = makePackageRootWithRequiredAssets()
-    const result = runReleasePreflight(
-      {},
-      {
-        execSyncImpl: makeExecSyncImpl({
-          changedFiles: ["packages/ouro.bot/index.js"],
-          publishedWrapperVersion: "0.1.0-alpha.407",
-        }),
-        readFileSyncImpl: makeReadFileSyncImpl(),
-        packageRoot,
-      },
+  it("lets a wrapper change through: the release job publishes the wrapper with the next version", () => {
+    const result = preflight(
+      { changedFiles: ["packages/ouro.bot/index.js", "changes/wrapper.md"] },
+      { notes: { "changes/wrapper.md": "Wrapper fix.\n" } },
     )
-    fs.rmSync(packageRoot, { recursive: true, force: true })
 
-    expect(result.ok).toBe(false)
-    expect(result.errors).toContain(
-      "ouro.bot wrapper changed but ouro.bot@0.1.0-alpha.407 is already published; bump packages/ouro.bot/package.json before merging",
-    )
+    expect(result.ok).toBe(true)
+    expect(result.messages).toContain("wrapper package changed; the release job publishes it with the next version")
   })
 
   it("runs the command-line wrapper success, failure, and argument-error paths", () => {

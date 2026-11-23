@@ -3,8 +3,16 @@
 const { execSync } = require("child_process")
 const path = require("path")
 const fs = require("fs")
+const semver = require("semver")
 
 const { validateChangelog } = require("./changelog-gate.cjs")
+const {
+  isChangeNotePath,
+  pathRequiresChangelogFreshness,
+  versionBumpRequired,
+  wrapperPackageChanged,
+} = require("./release-paths.cjs")
+const { parseChangeNote } = require("./release-version.cjs")
 const { validatePackageAssets } = require("./package-assets.cjs")
 const { validateTrustedPublisherLocalContract } = require("./npm-trusted-publishers.cjs")
 const { validateIntentionalDebtFile, validDateOnly } = require("./intentional-debt-gate.cjs")
@@ -32,36 +40,6 @@ function parseArgs(argv) {
     throw new Error(`unknown argument: ${arg}`)
   }
   return options
-}
-
-function isShippedMailboxUiAsset(file) {
-  return file.startsWith("packages/mailbox-ui/") &&
-    (file.startsWith("packages/mailbox-ui/src/") || file === "packages/mailbox-ui/index.html") &&
-    !/\.test\.tsx?$/.test(file)
-}
-
-function versionBumpRequired(changedFiles) {
-  return changedFiles.some(
-    (file) => file === "package.json" ||
-      file.startsWith("deploy/unraid/") ||
-      file.startsWith("skills/") ||
-      file.startsWith("scripts/") ||
-      isShippedMailboxUiAsset(file) ||
-      (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
-  )
-}
-
-function wrapperPackageChanged(changedFiles) {
-  return changedFiles.some((file) => file.startsWith("packages/ouro.bot/"))
-}
-
-function pathRequiresChangelogFreshness(file) {
-  return file.startsWith("deploy/unraid/") ||
-    file.startsWith("scripts/") ||
-    file.startsWith("skills/") ||
-    isShippedMailboxUiAsset(file) ||
-    (file.startsWith("src/") && !file.startsWith("src/__tests__/")) ||
-    (file.startsWith("packages/ouro.bot/") && file !== "packages/ouro.bot/package.json")
 }
 
 function assessLockfileVersionSync(cliVersion, packageLock, shrinkwrap) {
@@ -139,116 +117,109 @@ function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`
 }
 
-function latestCommitForPath(baseRef, file, execSyncImpl) {
-  try {
-    return execSyncImpl(
-      `git log --format=%H --max-count=1 ${shellQuote(`${baseRef}..HEAD`)} -- ${shellQuote(file)}`,
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim()
-  } catch {
-    return ""
-  }
-}
-
-function isAncestorCommit(ancestor, descendant, execSyncImpl) {
-  try {
-    execSyncImpl(`git merge-base --is-ancestor ${shellQuote(ancestor)} ${shellQuote(descendant)}`, {
-      stdio: ["ignore", "ignore", "ignore"],
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function collectUncommittedFiles(execSyncImpl) {
-  const workingTreeFiles = splitLines(
-    execSyncImpl("git diff --name-only HEAD", { encoding: "utf-8" }),
-  )
-  const untrackedFiles = splitLines(
-    execSyncImpl("git ls-files --others --exclude-standard", { encoding: "utf-8" }),
-  )
-
-  return new Set([...workingTreeFiles, ...untrackedFiles])
-}
-
 function formatPathList(files) {
   const shown = files.slice(0, 8).join(", ")
   return files.length > 8 ? `${shown}, and ${files.length - 8} more` : shown
 }
 
-function assessChangelogFreshness(input) {
-  const freshnessFiles = input.changedFiles.filter(pathRequiresChangelogFreshness)
-  if (freshnessFiles.length === 0) {
-    return { ok: true, message: "changelog freshness: skipped (no releasable implementation paths)" }
-  }
+const DROP_BUMP_HINT =
+  "Run `npm run release:drop-bump` (then `git push`): it moves this branch's changelog.json lines into a change note " +
+  "under changes/, puts the release files back and merges main."
 
-  const topEntry = Array.isArray(input.changelog?.versions) ? input.changelog.versions[0] : undefined
-  if (!topEntry || topEntry.version !== input.currentVersion) {
-    return {
-      ok: false,
-      message:
-        `changelog entry for version ${input.currentVersion} must be the top changelog entry when releasable implementation paths change.`,
+// What the branch started from: its merge base's version, changelog versions and change notes.
+function readBaseState(baseRef, execSyncImpl) {
+  const quiet = { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }
+  const mergeBase = execSyncImpl(`git merge-base ${shellQuote(baseRef)} HEAD`, quiet).trim()
+  const show = (file) => {
+    try {
+      return execSyncImpl(`git show ${shellQuote(`${mergeBase}:${file}`)}`, quiet)
+    } catch {
+      return null
     }
   }
-
-  if (!input.changedFiles.includes("changelog.json")) {
-    return {
-      ok: false,
-      message:
-        `changelog.json must be updated alongside releasable implementation changes: ${formatPathList(freshnessFiles)}`,
-    }
+  const packageJson = show("package.json")
+  const changelog = show("changelog.json")
+  const versions = changelog ? JSON.parse(changelog).versions : undefined
+  return {
+    mergeBase,
+    version: packageJson ? JSON.parse(packageJson).version : undefined,
+    changelogVersions: Array.isArray(versions) ? versions.map((entry) => entry?.version) : undefined,
+    notes: new Set(splitLines(execSyncImpl(`git ls-tree -r --name-only ${shellQuote(mergeBase)} -- changes/`, quiet))),
   }
-
-  const uncommittedFiles = collectUncommittedFiles(input.execSyncImpl)
-  const uncommittedFreshnessFiles = freshnessFiles.filter((file) => uncommittedFiles.has(file))
-  const changelogUncommitted = uncommittedFiles.has("changelog.json")
-  if (uncommittedFreshnessFiles.length > 0 && !changelogUncommitted) {
-    return {
-      ok: false,
-      message:
-        `changelog.json must be updated in the working tree after uncommitted releasable changes: ${formatPathList(uncommittedFreshnessFiles)}`,
-    }
-  }
-
-  return changelogUncommitted
-    ? { ok: true, message: "changelog freshness: pass" }
-    : assessCommittedChangelogFreshness({
-      baseRef: input.baseRef,
-      freshnessFiles,
-      execSyncImpl: input.execSyncImpl,
-    })
 }
 
-function assessCommittedChangelogFreshness(input) {
-  const changelogCommit = latestCommitForPath(input.baseRef, "changelog.json", input.execSyncImpl)
-  return changelogCommit
-    ? assessCommittedChangelogOrder({
-      baseRef: input.baseRef,
-      freshnessFiles: input.freshnessFiles,
-      changelogCommit,
-      execSyncImpl: input.execSyncImpl,
-    })
-    : {
-      ok: false,
-      message:
-        `changelog.json must be committed on this branch alongside releasable implementation changes: ${formatPathList(input.freshnessFiles)}`,
-    }
+// The release line a version belongs to: everything but the number the release job counts (scripts/release-version.cjs
+// counts a prerelease's last number, or else the patch).
+function releaseLine(version) {
+  const prerelease = semver.prerelease(version)
+  return prerelease && typeof prerelease[prerelease.length - 1] === "number"
+    ? String(version).replace(/\.\d+$/, "")
+    : `${semver.major(version)}.${semver.minor(version)}`
 }
 
-function assessCommittedChangelogOrder(input) {
-  const staleFiles = input.freshnessFiles.filter((file) => {
-    const fileCommit = latestCommitForPath(input.baseRef, file, input.execSyncImpl)
-    return fileCommit && !isAncestorCommit(fileCommit, input.changelogCommit, input.execSyncImpl)
-  })
+// A pull request leaves the version alone: the release job on main gives each landed change the next number. It may
+// start a new release line on purpose (0.2.0-alpha.0, or a stable 1.0.0), which the release job then counts from.
+function assessReleaseVersionUnchanged(input) {
+  if (!input.baseVersion || input.baseVersion === input.headVersion) {
+    return { ok: true, message: `release version: left to the release job on main (${input.headVersion})` }
+  }
+  if (semver.valid(input.baseVersion) && semver.valid(input.headVersion) &&
+    semver.gt(input.headVersion, input.baseVersion) && releaseLine(input.headVersion) !== releaseLine(input.baseVersion)) {
+    return { ok: true, message: `release version: this branch starts a new release line at ${input.headVersion}` }
+  }
+  return {
+    ok: false,
+    message:
+      `package.json's version moved from ${input.baseVersion} to ${input.headVersion}, but the release job on main sets ` +
+      `the version when a change lands, so a pull request leaves it alone. ${DROP_BUMP_HINT}`,
+  }
+}
 
-  return staleFiles.length > 0
-    ? {
+// Every pull request that changes something a person would notice adds its own change note: a new Markdown file in
+// changes/, one paragraph or bullet per change. The release job folds the notes into changelog.json.
+function assessChangeNote(input) {
+  const baseVersions = input.baseChangelogVersions
+  const addedVersions = baseVersions && Array.isArray(input.changelog?.versions)
+    ? input.changelog.versions.map((entry) => entry?.version).filter((version) => !baseVersions.includes(version))
+    : []
+  if (addedVersions.length > 0) {
+    return {
       ok: false,
       message:
-        `changelog.json is older than releasable implementation changes; update it after touching: ${formatPathList(staleFiles)}`,
+        `changelog.json gains an entry for ${addedVersions.join(", ")} on this branch; the release job writes changelog.json ` +
+        `from change notes now. ${DROP_BUMP_HINT}`,
     }
-    : { ok: true, message: "changelog freshness: pass" }
+  }
+
+  const notes = input.changedFiles
+    .filter((file) => isChangeNotePath(file) && !input.existingNotes.has(file))
+    .flatMap((file) => {
+      let text
+      try {
+        text = input.readNote(file)
+      } catch {
+        return []
+      }
+      return [{ file, changes: parseChangeNote(text) }]
+    })
+  const empty = notes.filter((note) => note.changes.length === 0)
+  if (empty.length > 0) {
+    return { ok: false, message: `change note ${formatPathList(empty.map((note) => note.file))} says nothing; write what changed for the people who use it` }
+  }
+
+  const needsNote = input.changedFiles.filter(pathRequiresChangelogFreshness)
+  if (notes.length > 0) {
+    return { ok: true, message: `change note: ${notes.map((note) => note.file).join(", ")}` }
+  }
+  if (needsNote.length === 0) {
+    return { ok: true, message: "change note: not needed (no releasable implementation paths)" }
+  }
+  return {
+    ok: false,
+    message:
+      `add a change note for ${formatPathList(needsNote)}: a new file changes/<short-name>.md saying what changed for the ` +
+      "people who use it, one paragraph or bullet per change. The release job adds it to changelog.json.",
+  }
 }
 
 function collectChangedFiles(baseRef, execSyncImpl) {
@@ -273,39 +244,16 @@ function assessWrapperPublishSync(input) {
     }
   }
 
-  if (!wrapperPackageChanged(input.changedFiles)) {
-    return {
-      ok: true,
-      message: "wrapper package unchanged",
-    }
-  }
-
-  if (input.publishedVersion === input.localVersion) {
-    return {
-      ok: false,
-      message: `ouro.bot wrapper changed but ouro.bot@${input.localVersion} is already published; bump packages/ouro.bot/package.json before merging`,
-    }
-  }
-
   return {
     ok: true,
-    message: "wrapper package changed and local wrapper version is unpublished",
+    message: wrapperPackageChanged(input.changedFiles)
+      ? "wrapper package changed; the release job publishes it with the next version"
+      : "wrapper package unchanged",
   }
 }
 
 function readJson(filePath, readFileSyncImpl) {
   return JSON.parse(readFileSyncImpl(filePath, "utf8"))
-}
-
-function publishedVersionFor(packageName, version, execSyncImpl) {
-  try {
-    return execSyncImpl(`npm view "${packageName}@${version}" version`, {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim()
-  } catch {
-    return ""
-  }
 }
 
 function npmAuditCommand({ offline = false } = {}) {
@@ -486,20 +434,16 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(lockfileResult.message)
   }
 
-  if (releasableChanged) {
-    const publishedCliVersion = publishedVersionFor("@ouro.bot/cli", packageJson.version, execSyncImpl)
-    if (publishedCliVersion === packageJson.version) {
-      errors.push(
-        `@ouro.bot/cli@${packageJson.version} is already published on npm.\n\n` +
-          `Bump the version before merging:\n` +
-          `  npm run release:bump -- --version <next-version> --change "Describe this release."\n` +
-          `  git push`,
-      )
-    } else {
-      messages.push(`@ouro.bot/cli@${packageJson.version} is not yet published — ready to merge and publish`)
-    }
+  messages.push(releasableChanged
+    ? "releasable changes: the release job on main publishes the next version when this lands"
+    : "no releasable changes: landing this publishes no new version")
+
+  const baseState = readBaseState(baseRef, execSyncImpl)
+  const versionResult = assessReleaseVersionUnchanged({ baseVersion: baseState.version, headVersion: packageJson.version })
+  if (!versionResult.ok) {
+    errors.push(versionResult.message)
   } else {
-    messages.push("No releasable src/ or packaged skills changes detected — version bump not required")
+    messages.push(versionResult.message)
   }
 
   const changelogResult = validateChangelog(packageJson.version, changelog)
@@ -507,25 +451,25 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(changelogResult.error)
   } else {
     messages.push(`changelog gate: pass (${packageJson.version})`)
-    const changelogFreshnessResult = assessChangelogFreshness({
-      baseRef,
-      changedFiles,
-      currentVersion: packageJson.version,
-      changelog,
-      execSyncImpl,
-    })
-    if (!changelogFreshnessResult.ok) {
-      errors.push(changelogFreshnessResult.message)
-    } else {
-      messages.push(changelogFreshnessResult.message)
-    }
+  }
+
+  const changeNoteResult = assessChangeNote({
+    changedFiles,
+    existingNotes: baseState.notes,
+    baseChangelogVersions: baseState.changelogVersions,
+    changelog,
+    readNote: (file) => readFileSyncImpl(path.join(packageRoot, file), "utf8"),
+  })
+  if (!changeNoteResult.ok) {
+    errors.push(changeNoteResult.message)
+  } else {
+    messages.push(changeNoteResult.message)
   }
 
   const wrapperResult = assessWrapperPublishSync({
     changedFiles,
     localVersion: wrapperPackageJson.version,
     cliVersion: packageJson.version,
-    publishedVersion: publishedVersionFor("ouro.bot", wrapperPackageJson.version, execSyncImpl),
   })
   if (!wrapperResult.ok) {
     errors.push(wrapperResult.message)
@@ -619,13 +563,15 @@ function runReleasePreflightCliIfMain(moduleRef = module, requireRef = require, 
 runReleasePreflightCliIfMain()
 
 module.exports = {
-  assessChangelogFreshness,
+  assessChangeNote,
   assessLockfileVersionSync,
+  assessReleaseVersionUnchanged,
   assessWrapperPublishSync,
   classifyOperationalContractChange,
   collectChangedFiles,
   parseArgs,
   pathRequiresChangelogFreshness,
+  readBaseState,
   runReleasePreflightCli,
   runReleasePreflightCliIfMain,
   runReleasePreflight,
