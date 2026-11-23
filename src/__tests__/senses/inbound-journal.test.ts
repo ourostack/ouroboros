@@ -151,6 +151,19 @@ describe("the shared inbound journal", () => {
     expect(journal.pending()).toEqual([])
   })
 
+  it("keeps its files in a folder the sense names, when it has one", () => {
+    const root = agentRoot()
+    const dir = path.join(root, "calls", "utterances")
+    const journal = openInboundJournal<{ text: string }>(root, "voice", { dir })
+    journal.record("utterance-1", { text: "hello" })
+    expect(fs.readdirSync(path.join(dir, "pending-inbound"))).toHaveLength(1)
+    expect(fs.existsSync(path.join(root, "state"))).toBe(false)
+    expect(journal.outcome("utterance-1")).toBeNull()
+    journal.settle("utterance-1", "answered")
+    expect(journal.outcome("utterance-1")).toMatchObject({ id: "utterance-1", sense: "voice", outcome: "answered" })
+    expect(openInboundJournal(root, "voice", { dir }).outcome("utterance-1")).toMatchObject({ outcome: "answered" })
+  })
+
   it("forgets outcomes older than the retention window", () => {
     const root = agentRoot()
     let now = Date.parse("2026-11-01T00:00:00.000Z")

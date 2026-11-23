@@ -62,6 +62,8 @@ export interface InboundJournal<T> {
   refundAttempt(id: string): void
   /** Note that part of the reply may have reached the person, and what it was when the sense knows. */
   markSpoke(id: string, spoke?: TurnSpoke): void
+  /** The inbound's recorded outcome, or null when it has none (still pending, never seen, or past retention). */
+  outcome(id: string): InboundOutcomeRecord | null
   /** Record the inbound's one outcome. False when it was not pending (never recorded, or already settled). */
   settle(id: string, outcome: InboundOutcome, detail?: string): boolean
   /** Pending inbounds, oldest first. */
@@ -72,6 +74,8 @@ export interface InboundJournal<T> {
 
 export interface InboundJournalOptions {
   now?: () => number
+  /** The folder to keep the journal in, for a sense whose state lives outside `<agentRoot>/state/senses/<sense>`. */
+  dir?: string
 }
 
 /** Counts inbounds recorded by this process; see PendingInbound.sequence. */
@@ -108,8 +112,9 @@ export function readInboundOutcome(agentRoot: string, sense: string, id: string)
 
 export function openInboundJournal<T>(agentRoot: string, sense: string, options: InboundJournalOptions = {}): InboundJournal<T> {
   const now = options.now ?? Date.now
-  const pendingDir = path.join(journalDir(agentRoot, sense), "pending-inbound")
-  const outcomesDir = path.join(journalDir(agentRoot, sense), "inbound-outcomes")
+  const dir = options.dir ?? journalDir(agentRoot, sense)
+  const pendingDir = path.join(dir, "pending-inbound")
+  const outcomesDir = path.join(dir, "inbound-outcomes")
   fs.mkdirSync(pendingDir, { recursive: true })
   fs.mkdirSync(outcomesDir, { recursive: true })
 
@@ -165,6 +170,9 @@ export function openInboundJournal<T>(agentRoot: string, sense: string, options:
       return entry
     },
     get,
+    outcome(id) {
+      return readJson<InboundOutcomeRecord>(outcomePath(id))
+    },
     beginAttempt(id) {
       return update(id, (entry) => ({ ...entry, attempts: entry.attempts + 1 }))?.attempts ?? 0
     },
