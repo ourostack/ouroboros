@@ -147,7 +147,13 @@ describe("Telegram messages whose turn a stopped process left", () => {
     expect(onMessage).toHaveBeenCalledTimes(1)
     expect(offset.value).toBe(23)
     expect(dropped()).toHaveLength(1)
-    expect(vi.mocked(nerves.emitNervesEvent).mock.calls.filter(([event]) => event.event === "telegram.update_replay_failed")).toHaveLength(1)
+    expect(vi.mocked(nerves.emitNervesEvent).mock.calls.filter(([event]) => event.event === "telegram.update_replay_failed")).toEqual([[expect.objectContaining({ meta: { error: "Error" } })]])
+
+    // Something thrown that is not an Error is named as unknown.
+    const again = inboxPath()
+    strandedInbox(again)
+    await poll({ filePath: again, offset: { value: 0 }, onMessage, replayIndeterminate: () => { throw "journal down" } }).pollOnce()
+    expect(vi.mocked(nerves.emitNervesEvent).mock.calls.filter(([event]) => event.event === "telegram.update_replay_failed").at(-1)).toEqual([expect.objectContaining({ meta: { error: "unknown" } })])
   })
 
   it("reports a stranded message as dropped when Telegram does not send it again, and other stranded updates at once", async () => {

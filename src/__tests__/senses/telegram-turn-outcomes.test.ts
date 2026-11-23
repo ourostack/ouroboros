@@ -468,6 +468,12 @@ describe("Telegram turn outcomes", () => {
     const restarted = butler(root, reply("hi"))
     expect(await restarted.replay(redelivered(52), () => { throw new Error("inbox unreadable") })).toBe(false)
     expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed", detail: "deciding whether to run it again failed (Error)" })])
+
+    const second = butler(root, never)
+    void second.onMessage(message(53))
+    await vi.waitFor(() => expect(second.runTurn).toHaveBeenCalled())
+    expect(await restarted.replay(redelivered(53), () => { throw "inbox unreadable" })).toBe(false)
+    expect(outcomes(root).map((outcome) => outcome.detail)).toContain("deciding whether to run it again failed (unknown)")
   })
 
   it("leaves callbacks, and messages from people it does not know, to their own recovery", async () => {
@@ -596,6 +602,12 @@ describe("Telegram household Friend outcomes", () => {
     const broken = household(root, reply("hi"), async () => { throw new RangeError("friends store down") })
     expect(await broken.replay(householdUpdate(46))).toBe(false)
     expect(readInboundOutcome(root, "telegram", householdId(46))).toMatchObject({ outcome: "failed", detail: "deciding whether to run it again failed (RangeError)" })
+    // With no entry the sender may be a stranger, so the failure is logged and nothing is recorded.
+    vi.spyOn(nerves, "emitNervesEvent")
+    expect(await broken.replay(householdUpdate(48))).toBe(false)
+    expect(readInboundOutcome(root, "telegram", householdId(48))).toBeNull()
+    expect(pending(root)).toEqual([])
+    expect(emitted("senses.telegram_inbound_record_failed")).toHaveLength(1)
     await crashed.app.stop()
     await broken.app.stop()
   })
@@ -607,7 +619,7 @@ describe("Telegram household Friend outcomes", () => {
       throw new TypeError("provider exploded")
     })
     await expect(b.onUnknownMessage(47)).rejects.toThrow("provider exploded")
-    expect(readInboundOutcome(root, "telegram", householdId(47))).toMatchObject({ outcome: "failed", detail: "the turn stopped with an error (TypeError) after part of the reply went out" })
+    expect(readInboundOutcome(root, "telegram", householdId(47))).toMatchObject({ outcome: "failed", detail: "the turn stopped with an error (TypeError) after a reply may have gone out" })
     await b.app.stop()
   })
 

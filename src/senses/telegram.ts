@@ -2070,7 +2070,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await body()
       } catch (error) {
         const stopped = `the turn stopped with an error (${error instanceof Error ? error.name : "unknown"})`
-        if (turn.id) settleInbound(turn.id, "failed", turn.spoke ? `${stopped} after part of the reply went out` : `${stopped}, and no reply reached them`)
+        if (turn.id) settleInbound(turn.id, "failed", turn.spoke ? `${stopped} after a reply may have gone out` : `${stopped}, and no reply reached them`)
         throw error
       }
       if (turn.id) settleInbound(turn.id, turn.failure ? "failed" : turn.spoke ? "answered" : "silent", turn.failure ?? undefined)
@@ -2101,8 +2101,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     if (!owner && (!update.message || !botId || !options.admission)) return false
     const reference = owner ? null : telegramHouseholdReference(identityKey, botId!, coordinates.userId, update.update_id, coordinates.messageId)
     const id = reference ? householdInboundIdFor(reference) : inboundIdFor(update.update_id)
+    let entry: PendingInbound<TelegramInboundPayload> | null = null
     try {
-      const entry = getInboundJournal().get(id)
+      entry = getInboundJournal().get(id)
       if (!entry && readInboundOutcome(agentRoot, "telegram", id)) return false
       if (reference && !await options.admission!.resolveApprovedFriend({ botId: botId!, userId: coordinates.userId, chatId: coordinates.chatId })) {
         if (entry) failInbound(id, "they are no longer a household Friend, so it is not run again")
@@ -2132,7 +2133,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
       return true
     } catch (error) {
-      failInbound(id, `deciding whether to run it again failed (${error instanceof Error ? error.name : "unknown"})`)
+      // A message with no entry from someone who is not the owner may be a stranger's, which never gets a record.
+      if (entry || owner) failInbound(id, `deciding whether to run it again failed (${error instanceof Error ? error.name : "unknown"})`)
+      else inboundJournalFailed(error)
       return false
     }
   }
