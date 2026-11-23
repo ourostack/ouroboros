@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.1383",
       "changes": [
-        "A bundle can declare its own MCP server's tools in a tools.json from Ouro UI core's ouro-actions-tools (agent.json mcpServers.<name>.tools); the harness then gives those tools the declared description, parameters and Ouro AX card, with risk from the card's effect."
+        "A bundle can declare its own MCP server's tools in a tools.json from Ouro UI core's ouro-actions-tools (agent.json mcpServers.<name>.tools); the harness then gives those tools the declared description, parameters and Ouro AX card, with risk from the card's effect.",
+        "Update the Ouro UI files to Ouro UI v1.3.458."
       ]
     },
     {
