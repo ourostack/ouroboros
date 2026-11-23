@@ -3,6 +3,8 @@ import os from "node:os"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
 import { buildArm, X_ARMS } from "../../../eval/interviews/guest/arms"
+import type { JsonObject } from "../../../heart/approval-store"
+import { mcpToolSchema } from "../../../repertoire/mcp-tools"
 import { booksCore, coreError, relativize, type BooksCore, type CoreResult } from "../../../eval/interviews/guest/books-core"
 import { commandHelp, humanText, overviewHelp, parseBooks, tokenize } from "../../../eval/interviews/guest/cli-shell"
 import { argvOf, commandLine, OPERATIONS, shellQuote } from "../../../eval/interviews/guest/operations"
@@ -26,6 +28,17 @@ function fakeCore(): BooksCore & { ran: string[][] } {
   core.ran = ran
   return core
 }
+
+describe("the arms' tools as the model sees them", () => {
+  it("go out with the arm's own name, description and schema, and nothing added", () => {
+    for (const key of X_ARMS) {
+      for (const tool of buildArm(key, fakeCore()).tools) {
+        expect(tool.description.length).toBeGreaterThan(0)
+        expect(mcpToolSchema({ server: tool.name }, { name: tool.name, description: tool.description, inputSchema: tool.parameters as JsonObject })).toEqual({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } })
+      }
+    }
+  })
+})
 
 describe("the operations", () => {
   it("write an input as the books command's argv and command line, quoting only where needed", () => {

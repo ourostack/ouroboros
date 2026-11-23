@@ -14,7 +14,10 @@ import type { ChannelCallbacks, ProviderRuntime } from "../../../heart/core"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import type { TraceCall, TraceReply } from "../../domain/case"
 import { scrubBrands, type Product } from "../protocol"
-import type { Arm, ArmTool } from "./arms"
+import type { JsonObject } from "../../../heart/approval-store"
+import type { McpToolInfo } from "../../../repertoire/mcp-client"
+import { mcpToolSchema } from "../../../repertoire/mcp-tools"
+import type { Arm } from "./arms"
 
 export type TurnRecord = {
   /** Index in the conversation's timeline where this user turn's entries start. */
@@ -33,14 +36,6 @@ export const NO_CALLBACKS: ChannelCallbacks = {
   onToolStart: () => undefined, onToolEnd: () => undefined, onError: () => undefined,
 }
 
-/**
- * One of the arm's tools in the chat-completions shape, its name, description and schema forwarded as the arm gives
- * them. The arm's tools are the study's interfaces under test, not the harness's own; the census reads this as a
- * passthrough (ax/census.config.json).
- */
-export function chatTool(tool: ArmTool): OpenAI.ChatCompletionFunctionTool {
-  return { type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } }
-}
 
 /** A caught value's message. */
 export function messageOf(error: unknown): string {
@@ -62,8 +57,11 @@ export async function runConversation(input: {
   arm: Arm
 }): Promise<Conversation> {
   const scrub = (text: string): string => scrubBrands(text, input.product)
-  const scrubbed: ArmTool[] = input.arm.tools.map((tool) => ({ name: scrub(tool.name), description: scrub(tool.description), parameters: JSON.parse(scrub(JSON.stringify(tool.parameters))) as ArmTool["parameters"] }))
-  const activeTools = scrubbed.map((tool) => chatTool(tool))
+  const scrubbed: McpToolInfo[] = input.arm.tools.map((tool) => ({ name: scrub(tool.name), description: scrub(tool.description), inputSchema: JSON.parse(scrub(JSON.stringify(tool.parameters))) as JsonObject }))
+  // Each arm's tools are the study's interfaces under test, not the harness's own, so they go to the model the way a
+  // connected MCP server's tools do: `mcpToolSchema`, the census's passthrough (ax/census.config.json). A tool named
+  // as its own server keeps its name, and every arm's tools have a description, so nothing is added to either.
+  const activeTools: OpenAI.ChatCompletionFunctionTool[] = scrubbed.map((tool) => mcpToolSchema({ server: tool.name }, tool))
   const messages: OpenAI.ChatCompletionMessageParam[] = [{ role: "system", content: scrub(input.system) }, ...input.prefix]
   const timeline: Conversation["timeline"] = []
   const turns: TurnRecord[] = []
