@@ -23,7 +23,6 @@
     "tool:shepherd_send",
     "tool:shepherd_signal",
     "tool:shepherd_update_principle",
-    "tool:steward_policy_manage",
     "tool:stripe_create_card",
     "tool:trip_ensure_ledger",
     "tool:user_profile_get",

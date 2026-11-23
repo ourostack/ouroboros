@@ -14,7 +14,7 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "steward_policy_manage",
-      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated owner Telegram request and fresh authorization. Replay identities can never update it. correct_provenance (key, source, correction) is only for fixing a wrong attribution on an existing desired state: it replaces the recorded source and records the correction note, never changes the value, and leaves an audit row; do not use it to change a value. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
+      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated owner Telegram request and fresh authorization. Replay identities can't update it. correct_provenance (key, source, correction) fixes a wrong attribution on an existing desired state: it replaces the recorded source, records the correction note and leaves an audit row, and the value stays as it was; a value changes through set_desired_state. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
       parameters: {
         type: "object",
         properties: {
