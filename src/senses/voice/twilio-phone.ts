@@ -5906,8 +5906,7 @@ function admitMediaStreamStart(
   return identity
 }
 
-/** Each bridge's lock on its output folder, so the server that listens for it can take the folder. */
-/** The id each bridge's utterance records carry. */
+/** The id each bridge's utterance records carry, so the server that listens for it sweeps as that bridge. */
 const bridgeUtteranceIds = new WeakMap<TwilioPhoneBridge, string>()
 
 export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): TwilioPhoneBridge {

@@ -3278,7 +3278,8 @@ describe("Twilio phone voice bridge", () => {
 
       expect(response.statusCode).toBe(200)
       await waitForSocketClose(socket)
-      // The call ends saying why, so what the caller said is recorded as silent rather than failed.
+      // The bridge ends the call saying why. A Realtime session records what it heard as silent with this reason;
+      // this cascade session takes no reason.
       expect(end).toHaveBeenCalledWith("a voicemail or fax machine answered the call, so it was ended")
       expect(options.runSenseTurn).not.toHaveBeenCalled()
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-async-machine"), "utf8")) as { status?: string; answeredBy?: string; transportCallSid?: string; events?: Array<{ status: string; answeredBy?: string }> }
