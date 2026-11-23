@@ -17,7 +17,7 @@ describe("sent message ledger", () => {
   it("finds a message the agent sent by the app's id, only in its own conversation", () => {
     const agentRoot = tempRoot()
     const scope = { agentRoot, channel: "teams", conversationId: "conv-a" }
-    recordSentMessage(scope, "m1", "  the plan is ready  ")
+    recordSentMessage(() => scope, "m1", "  the plan is ready  ")
     expect(sentMessageLookup(scope)("m1")).toEqual({ text: "the plan is ready", fromAgent: true })
     expect(sentMessageLookup({ ...scope, conversationId: "conv-b" })("m1")).toBeNull()
     expect(sentMessageLookup(scope)("m2")).toBeNull()
@@ -64,5 +64,6 @@ describe("sent message ledger", () => {
     fs.writeFileSync(path.join(agentRoot, "state"), "a file where the folder should be")
     expect(() => recordSentMessage({ agentRoot, channel: "teams", conversationId: "c" }, "m1", "hi")).not.toThrow()
     expect(() => recordSentMessage({ agentRoot, channel: "teams", conversationId: "c" }, "m1", "hi", new Date(0))).not.toThrow()
+    expect(() => recordSentMessage(() => { throw new Error("no agent root") }, "m1", "hi")).not.toThrow()
   })
 })

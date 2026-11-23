@@ -53,19 +53,23 @@ function readLedger(file: string): SentMessageEntry[] {
 }
 
 /** Note a message the agent sent. Never throws: losing one entry only means a later reaction to it reads as unidentified. */
-export function recordSentMessage(scope: SentMessageLedgerScope, messageId: string, text: string, now: Date = new Date()): void {
+export function recordSentMessage(scope: SentMessageLedgerScope | (() => SentMessageLedgerScope), messageId: string, text: string, now: Date = new Date()): void {
   const trimmed = text.trim()
   if (!messageId || !trimmed) return
-  const file = ledgerPath(scope.agentRoot, scope.channel)
+  let channel = "unknown"
   try {
-    const key = entryKey(scope.conversationId, messageId)
+    // A scope can be computed lazily (finding the agent root can fail), and that failure is caught here too.
+    const resolved = typeof scope === "function" ? scope() : scope
+    channel = resolved.channel
+    const file = ledgerPath(resolved.agentRoot, resolved.channel)
+    const key = entryKey(resolved.conversationId, messageId)
     const entries = readLedger(file).filter((entry) => entry.key !== key)
     entries.push({ key, text: trimmed.slice(0, SENT_MESSAGE_LEDGER_MAX_TEXT), sentAt: now.toISOString() })
     const body: SentMessageLedgerFile = { version: 1, entries: entries.slice(-SENT_MESSAGE_LEDGER_MAX_ENTRIES) }
     writeFileAtomicSync(file, `${JSON.stringify(body)}\n`)
-    emitNervesEvent({ component: "senses", event: "senses.sent_message_recorded", message: "noted a sent message for later reactions", meta: { channel: scope.channel } })
+    emitNervesEvent({ component: "senses", event: "senses.sent_message_recorded", message: "noted a sent message for later reactions", meta: { channel } })
   } catch (error) {
-    emitNervesEvent({ level: "warn", component: "senses", event: "senses.sent_message_record_failed", message: "could not note a sent message", meta: { channel: scope.channel, reason: error instanceof Error ? error.message : String(error) } })
+    emitNervesEvent({ level: "warn", component: "senses", event: "senses.sent_message_record_failed", message: "could not note a sent message", meta: { channel, reason: String(error) } })
   }
 }
 

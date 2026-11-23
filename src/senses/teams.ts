@@ -146,7 +146,7 @@ function teamsSentScope(conversationId: string) {
 /** Note a Teams message the agent sent, from the receipt Teams returned for it. */
 export function noteTeamsSentMessage(conversationId: string, receipt: unknown, text: string): void {
   const id = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
-  if (id) recordSentMessage(teamsSentScope(conversationId), id, text)
+  if (id) recordSentMessage(() => teamsSentScope(conversationId), id, text)
 }
 
 // Build synthetic message text from a Teams feedback reaction (the thumbs on an AI-labeled reply).
