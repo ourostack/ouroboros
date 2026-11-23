@@ -531,9 +531,9 @@ export interface InboundTurnInput {
   enforceTrustGate: (input: TrustGateInput) => TrustGateResult
   drainPending: (pendingDir: string) => PendingMessage[]
   /**
-   * When given, pending messages are claimed instead of drained: they stay on disk until the turn that read them is
-   * recorded (its session persisted, or its approval suspension checkpointed), and a turn that throws leaves them
-   * for the next turn.
+   * When given, pending messages are claimed instead of drained: they stay on disk until a turn has handled them.
+   * A turn handled them when it finished and its postTurn ran, was suspended for approval, or reached a tool call,
+   * even one that was then refused (a retry could repeat what it did). Any other turn puts them back for the next one.
    */
   claimPending?: (pendingDir: string) => PendingClaim
   drainDeferredReturns?: (friendId: string) => PendingMessage[]
@@ -1044,6 +1044,9 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const liveLatencyMode = input.latencyMode === "live"
   let declinedForHome = false
   let pendingClaim: PendingClaim | undefined
+  let turnActed = false
+  let turnThrew = false
+  let turnFailedOnMessages = false
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
@@ -1132,11 +1135,6 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
   pendingClaim = input.claimPending?.(input.pendingDir)
   const sessionPending = pendingClaim ? pendingClaim.messages : input.drainPending(input.pendingDir)
-  // The turn is recorded once its session is persisted: only then may claimed pending messages go.
-  const persistTurn = async (...args: Parameters<InboundTurnInput["postTurn"]>): Promise<void> => {
-    await input.postTurn(...args)
-    pendingClaim?.settle()
-  }
   // A deferred return was saved for the friend's next message, whenever that comes, so a
   // sense's freshness window for its own pending never drops it.
   const pending = [
@@ -1147,6 +1145,23 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
       messages: sessionPending,
     }),
   ]
+  // Expired messages were archived just now; reading them again next turn would archive them again.
+  const expiredPending = sessionPending.filter((message) => !pending.includes(message))
+  if (expiredPending.length > 0) pendingClaim?.settle(expiredPending)
+  // A turn that reaches a tool call may act on its pending messages, so they are settled at once: a retry in this
+  // process or after a crash or shutdown must not read them again and repeat what the tool did.
+  const turnCallbacks: ChannelCallbacks = pendingClaim
+    ? {
+      ...input.callbacks,
+      onToolStart(name: string, args: Record<string, string>) {
+        if (!turnActed) {
+          turnActed = true
+          pendingClaim?.settle()
+        }
+        input.callbacks.onToolStart(name, args)
+      },
+    }
+    : input.callbacks
 
   const promotedPendingUserMessages = input.channel === "inner"
     ? pending
@@ -1343,7 +1358,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   try {
     result = await input.runAgent(
       sessionMessages,
-      input.callbacks,
+      turnCallbacks,
       input.channel,
       input.signal,
       runAgentOptions,
@@ -1398,6 +1413,17 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ...(result.error ? { errorName: result.error.name } : {}),
     ...(result.errorClassification ? { errorCode: result.errorClassification } : {}),
   }))
+
+  // The turn reached its end: once postTurn has run, its pending messages are handled. A turn that errored, was
+  // aborted or was superseded (a provider outage, a shutdown, a newer message) never got to them unless it acted.
+  const turnFinished = result.outcome !== "errored" && result.outcome !== "aborted" && result.outcome !== "superseded"
+  // An error the provider did not classify may come from the messages themselves (one too large for the evidence
+  // budget, say), so it counts against them; outages, limits and auth failures do not.
+  turnFailedOnMessages = result.outcome === "errored" && result.errorClassification === "unknown"
+  const persistTurn = async (...args: Parameters<InboundTurnInput["postTurn"]>): Promise<void> => {
+    await input.postTurn(...args)
+    if (turnFinished) pendingClaim?.settle()
+  }
 
   if (result.outcome === "suspended") {
     if (!result.suspension) throw new Error("suspended agent turn omitted durable approval suspension")
@@ -1576,9 +1602,13 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.
     ...(result.outcome === "errored" && input.channel !== "inner" && input.channel !== "cli" ? { failoverMessage: erroredTurnReply(result.error?.message) } : {}),
   }
+  } catch (error) {
+    turnThrew = true
+    throw error
   } finally {
-    // A turn that ended without being recorded leaves its claimed pending messages for the next turn.
-    pendingClaim?.release()
+    // Pending messages a turn did not handle go back for the next turn; a throw or an unclassified error counts
+    // against them. After the first tool start the claim holds nothing, so this is a no-op.
+    pendingClaim?.release({ failed: turnThrew || turnFailedOnMessages })
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
     // turn's edits are recorded before the reply goes out; the push runs on
     // without being awaited, holding the lock, and records its own failure.

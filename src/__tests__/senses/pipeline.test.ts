@@ -575,39 +575,143 @@ describe("handleInboundTurn", () => {
       expect(input.drainPending).toHaveBeenCalledWith("/tmp/my-pending")
     })
 
+    function claimOf(messages: PendingMessage[] = [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }]) {
+      return { messages, settle: vi.fn(), release: vi.fn() }
+    }
+    const startsATool = (outcome: Promise<unknown>) => vi.fn(async (_messages: unknown, callbacks: { onToolStart(name: string, args: Record<string, string>): void }) => {
+      callbacks.onToolStart("send_mail", { to: "ana" })
+      return outcome
+    })
+
     it("deletes claimed pending messages only once the turn's session is persisted", async () => {
-      const claimed: PendingMessage[] = [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }]
-      const claim = { messages: claimed, settle: vi.fn(), release: vi.fn() }
+      const claim = claimOf()
       const postTurn = vi.fn(async () => { expect(claim.settle).not.toHaveBeenCalled() })
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), postTurn })
 
       const result = await handleInboundTurn(input)
 
       expect(input.drainPending).not.toHaveBeenCalled()
-      expect(result.drainedPending).toEqual(claimed)
+      expect(result.drainedPending).toEqual(claim.messages)
       expect(postTurn).toHaveBeenCalledTimes(1)
-      expect(claim.settle).toHaveBeenCalledTimes(1)
-      expect(claim.settle.mock.invocationCallOrder[0]).toBeGreaterThan(postTurn.mock.invocationCallOrder[0]!)
+      expect(claim.settle).toHaveBeenCalledWith()
+      expect(claim.settle.mock.invocationCallOrder.at(-1)).toBeGreaterThan(postTurn.mock.invocationCallOrder[0]!)
+      expect(claim.release).not.toHaveBeenCalledWith({ failed: true })
     })
 
-    it("leaves claimed pending messages for the next turn when the turn throws", async () => {
-      const claim = { messages: [{ from: "mail", content: "new mail from Ana", timestamp: 1000 }], settle: vi.fn(), release: vi.fn() }
+    it.each(["errored", "aborted", "superseded"] as const)("puts claimed pending messages back, without using up a try, when the turn is %s before it acts", async (outcome) => {
+      const claim = claimOf()
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome }) })
+
+      await handleInboundTurn(input)
+
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed: false })
+    })
+
+    it("puts claimed pending messages back, counting the try, when the turn throws before it acts", async () => {
+      const claim = claimOf()
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: vi.fn().mockRejectedValue(new Error("provider down")) })
 
       await expect(handleInboundTurn(input)).rejects.toThrow("provider down")
 
-      expect(claim.settle).not.toHaveBeenCalled()
-      expect(claim.release).toHaveBeenCalledTimes(1)
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed: true })
     })
 
-    it("leaves claimed pending messages for the next turn when persisting the session throws", async () => {
-      const claim = { messages: [], settle: vi.fn(), release: vi.fn() }
+    it("counts the try when persisting a finished turn throws before it acted", async () => {
+      const claim = claimOf()
       const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), postTurn: vi.fn().mockRejectedValue(new Error("disk full")) })
 
       await expect(handleInboundTurn(input)).rejects.toThrow("disk full")
 
-      expect(claim.settle).not.toHaveBeenCalled()
-      expect(claim.release).toHaveBeenCalledTimes(1)
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed: true })
+    })
+
+    it.each([
+      ["errors", () => startsATool(Promise.resolve({ usage: usageData, outcome: "errored" }))],
+      ["throws", () => startsATool(Promise.reject(new Error("provider down")))],
+    ])("never reads claimed pending messages again once the turn started a tool, even when it then %s", async (_how, runAgent) => {
+      const claim = claimOf()
+      const callbacks = makeCallbacks()
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent() as InboundTurnInput["runAgent"], callbacks })
+
+      await handleInboundTurn(input).catch(() => undefined)
+
+      expect(callbacks.onToolStart).toHaveBeenCalledWith("send_mail", { to: "ana" })
+      // Settled before the tool runs, so a crash or shutdown during the tool cannot hand the messages to a retry.
+      expect(claim.settle).toHaveBeenCalledWith()
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolStart.mock.invocationCallOrder[0]!)
+    })
+
+    it("settles claimed pending messages once, at the first tool start", async () => {
+      const claim = claimOf()
+      const callbacks = makeCallbacks()
+      const runAgent = vi.fn(async (_messages: unknown, turnCallbacks: { onToolStart(name: string, args: Record<string, string>): void }) => {
+        turnCallbacks.onToolStart("read_mail", {})
+        turnCallbacks.onToolStart("send_mail", { to: "ana" })
+        return { usage: usageData, outcome: "completed" }
+      })
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: runAgent as unknown as InboundTurnInput["runAgent"], callbacks })
+
+      await handleInboundTurn(input)
+
+      expect(callbacks.onToolStart).toHaveBeenCalledTimes(2)
+      // Once at the tool start, then the no-op settle after persisting.
+      expect(claim.settle.mock.invocationCallOrder[0]).toBeLessThan(callbacks.onToolStart.mock.invocationCallOrder[0]!)
+      expect(claim.settle.mock.invocationCallOrder[1]).toBeGreaterThan(callbacks.onToolStart.mock.invocationCallOrder[1]!)
+    })
+
+    it("hands the turn every callback the sense gave it, as its own properties", async () => {
+      const claim = claimOf()
+      const callbacks = { ...makeCallbacks(), onModelStreamStart: vi.fn(), settleOutputMode: "final_only" } as ReturnType<typeof makeCallbacks>
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), callbacks })
+
+      await handleInboundTurn(input)
+
+      const handed = vi.mocked(input.runAgent).mock.calls[0]![1] as unknown as Record<string, unknown>
+      // core.ts spreads the callbacks, which copies own properties only.
+      const spread = { ...handed }
+      for (const key of Object.keys(callbacks)) expect(spread).toHaveProperty(key)
+      expect(spread.onModelStreamStart).toBe((callbacks as unknown as Record<string, unknown>).onModelStreamStart)
+      expect(spread.settleOutputMode).toBe("final_only")
+    })
+
+    it.each([
+      ["counts the try for an error the provider did not classify", "unknown", true],
+      ["does not count the try for a network outage", "network-error", false],
+      ["does not count the try for a rate limit", "rate-limit", false],
+    ] as const)("%s", async (_case, errorClassification, failed) => {
+      const claim = claimOf()
+      const input = makeInput({ claimPending: vi.fn().mockReturnValue(claim), runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored", errorClassification }) })
+
+      await handleInboundTurn(input)
+
+      expect(claim.settle).not.toHaveBeenCalledWith()
+      expect(claim.release).toHaveBeenCalledWith({ failed })
+    })
+
+    it("settles an expired claimed pending message at once, so it is archived only once", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claimed-pending-expiry-"))
+      vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const expired: PendingMessage = { from: "mail", content: "old notice", timestamp: 1000, expiresAt: Date.now() - 1 }
+      const current: PendingMessage = { from: "mail", content: "new notice", timestamp: 2000 }
+      const claim = claimOf([expired, current])
+      const input = makeInput({
+        claimPending: vi.fn().mockReturnValue(claim),
+        pendingDir: path.join(agentRoot, "state", "pending", "self", "inner", "dialog"),
+        runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "errored" }),
+      })
+
+      try {
+        await handleInboundTurn(input)
+
+        expect(claim.settle).toHaveBeenCalledWith([expired])
+        expect(claim.settle).not.toHaveBeenCalledWith()
+        expect(claim.release).toHaveBeenCalledWith({ failed: false })
+      } finally {
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
     })
 
     it("does NOT drain pending when gate rejects", async () => {
