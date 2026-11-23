@@ -63,7 +63,7 @@ describe("getSharedMcpManager + the built-in Desk", () => {
 
     expect(listDeskMcpServers).toHaveBeenCalledWith(expect.objectContaining(OWNER), expect.objectContaining({ desks: { ari: "~/desk" } }))
     expect(connected.sort()).toEqual(["ari-desk", "calc", "own-desk"])
-    expect(manager!.entries.filter((entry) => entry.source === "desk").map((entry) => entry.server).sort()).toEqual(["desk", "desk-ari"])
+    expect(manager!.entries.filter((entry) => entry.source === "desk").map((entry) => [entry.server, entry.pluginId]).sort()).toEqual([["desk", "desk"], ["desk-ari", "desk"]])
     expect(events.filter((event) => event.event === "mcp.server_name_reserved").map((event) => event.meta)).toEqual([
       { server: "desk-ari", declaredBy: "plugin desk" },
       { server: "desk", declaredBy: "agent.json mcpServers" },

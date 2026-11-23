@@ -62,6 +62,9 @@ const REQUIRED_PACKAGE_ASSET_SOURCES = {
   "dist/heart/daemon/sanctuary-authority-root-lifecycle.js": "src/heart/daemon/sanctuary-authority-root-lifecycle.ts",
   "dist/heart/daemon/sanctuary-telegram-authority-entry.js": "src/heart/daemon/sanctuary-telegram-authority-entry.ts",
   "dist/heart/daemon/sanctuary-host-supervisor-entry.js": "src/heart/daemon/sanctuary-host-supervisor-entry.ts",
+  // The build vendors the Desk release the lock pins (scripts/desk-vendor.cjs).
+  "vendor/desk/.ouro-desk.json": "desk.lock.json",
+  "vendor/desk/mcp/bootstrap.cjs": "desk.lock.json",
 }
 
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [

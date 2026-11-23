@@ -106,7 +106,8 @@ function buildMergedServerConfig(owner: McpOwner, runtimeServers?: RuntimeMcpSer
   const config = loadAgentConfig(owner)
   const desired = new Map<string, DesiredServer>()
   for (const [name, server] of Object.entries(listDeskMcpServers(owner, config))) {
-    desired.set(name, { config: server, source: "desk" })
+    // Desk's servers are the Desk plugin's, run from the package, so their tools take the plugin's names.
+    desired.set(name, { config: server, source: "desk", pluginId: "desk" })
   }
   for (const plugin of listPluginMcpServers(undefined, owner)) {
     if (reservedName(desired, plugin.serverName, `plugin ${plugin.pluginId}`)) continue
@@ -330,7 +331,7 @@ export class McpManager {
       || entry.configDigest !== binding.configDigest || entry.generation !== binding.generation) return false
     const tools = entry.cachedTools.filter((tool) => tool.name === binding.rawName)
     if (tools.length !== 1) return false
-    const schema = mcpToolSchema({ server: entry.name, source: entry.source, pluginId: entry.pluginId }, tools[0])
+    const schema = mcpToolSchema({ server: entry.name, pluginId: entry.pluginId }, tools[0])
     return schema.function.name === binding.surfacedName && digestJson(schema) === binding.schemaDigest
   }
 

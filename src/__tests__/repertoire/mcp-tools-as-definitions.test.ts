@@ -60,6 +60,7 @@ describe("mcpToolsAsDefinitions", () => {
     const mgr = makeMockMcpManager([{
       server: "desk-ari",
       source: "desk",
+      pluginId: "desk",
       tools: [
         { name: "desk_status", description: "Status", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
         { name: "task_update", description: "Update", inputSchema: { type: "object" } },

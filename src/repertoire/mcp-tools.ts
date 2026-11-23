@@ -37,11 +37,11 @@ export function splitMcpContent(content: McpContentPart[]): { text: string; imag
   return { text, images }
 }
 
-export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId"> & Partial<Pick<McpServerView, "source">>, tool: McpToolInfo) {
+export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId">, tool: McpToolInfo) {
   return {
     type: "function" as const,
     function: {
-      name: entry.pluginId || entry.source === "desk"
+      name: entry.pluginId
         ? `mcp__${entry.server}__${tool.name}`
         : tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
           ? tool.name
