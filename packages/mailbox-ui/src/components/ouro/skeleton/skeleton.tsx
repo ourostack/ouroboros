@@ -1,10 +1,11 @@
 "use client";
 
-import { useLayoutEffect, useState } from "react";
-import type { CSSProperties, HTMLAttributes, JSX, Ref } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { CSSProperties, HTMLAttributes, JSX, Ref, RefCallback } from "react";
 import { useAppearanceClassNameCheck } from "@/lib/ouro/class-name-check";
 import { cn } from "@/lib/ouro/cn";
 import { joinWave } from "@/components/ouro/skeleton/skeleton-styles";
+import { useMergedRef } from "@/lib/ouro/refs";
 import { useDevWarnings } from "@/lib/ouro/use-dev-messages";
 
 /** Avatar's sizes, for `<Skeleton shape="circle" size>`. */
@@ -132,14 +133,18 @@ export type SkeletonRowOrCardProps = SkeletonBaseProps & SkeletonRowOrCardShape;
 /** Props for {@link Skeleton}: its own props and the `<span>` attributes it passes through, by shape. */
 export type SkeletonProps = SkeletonRectProps | SkeletonTextProps | SkeletonCircleProps | SkeletonRowOrCardProps;
 
-// Class strings are literal so the app's Tailwind finds them when it compiles. The placeholder holds still for its
-// first second, since most loads end sooner, then breathes: its opacity eases down and back, so the loop has no seam.
-// Opacity runs on the compositor and nothing repaints. With reduced motion it holds still.
+// Class strings are literal so the app's Tailwind finds them when it compiles, so the keyframes name is a plain
+// literal here, kept in step with the constant below by the test that reads both. The placeholder holds still
+// for its first second, since most loads end sooner, then breathes: its opacity eases down and back, so the loop
+// has no seam. Opacity runs on the compositor and nothing repaints. With reduced motion it holds still.
 const fill =
   "relative block overflow-hidden bg-muted " +
   "animate-[ouro-skeleton-breathe_2.4s_ease-in-out_var(--ouro-skeleton-delay,1s)_infinite] motion-reduce:animate-none " +
   // Forced colours paint the fill as the page's own Canvas, so an outline in the text colour keeps the shape.
   "forced-colors:outline forced-colors:outline-1 forced-colors:-outline-offset-1 forced-colors:outline-[CanvasText]";
+
+// The keyframes name above, as a plain value: which CSSAnimation the join correction below applies to.
+const breatheAnimationName = "ouro-skeleton-breathe";
 
 // `shimmer={false}`: no breathing at all.
 const still = "animate-none";
@@ -158,8 +163,30 @@ let breathing = 0;
 let waveStart = 0;
 let emptiedAt = Number.NEGATIVE_INFINITY;
 
-function useBreathes(shimmer: boolean): { breathes: boolean; style: CSSProperties | undefined } {
+function useBreathes(shimmer: boolean): { breathes: boolean; style: CSSProperties | undefined; registerNode: (index: number) => RefCallback<Element> } {
   const [claim, setClaim] = useState<{ breathes: boolean; delay: string | undefined }>({ breathes: true, delay: undefined });
+  // Where the wave's own start was when this placeholder joined it, so a later correction (below) can read it again.
+  const startRef = useRef<number | undefined>(undefined);
+  // Every drawn element of this placeholder (the root, or one Bar per row/card item beyond the first), so the
+  // correction below can reach each of their animations. Keyed by index, so re-renders reuse the same callback
+  // identity instead of detaching and reattaching on every one.
+  const nodesRef = useRef<Map<number, Element>>(new Map());
+  const callbacksRef = useRef<Map<number, RefCallback<Element>>>(new Map());
+  const registerNode = useCallback((index: number): RefCallback<Element> => {
+    let callback = callbacksRef.current.get(index);
+    if (!callback) {
+      callback = (node) => {
+        if (node) nodesRef.current.set(index, node);
+        else nodesRef.current.delete(index);
+      };
+      callbacksRef.current.set(index, callback);
+    }
+    return callback;
+  },
+  // The closing array sits on its own line so this comment leads it directly: placed where the array itself
+  // starts, the disable reaches the exact node the mutator rewrites, rather than trailing the return above it.
+  // Stryker disable next-line ArrayDeclaration: not equivalent in syntax but unobservable here; every render passes the same number of elements, so React's per-index equality check compares them the same way regardless of what the array holds, and registerNode stays memoized forever either way.
+  []);
   // A layout effect, so a placeholder past the limit is still, and one that breathes is on the wave, on its first frame.
   useLayoutEffect(() => {
     if (!shimmer) return;
@@ -170,6 +197,7 @@ function useBreathes(shimmer: boolean): { breathes: boolean; style: CSSPropertie
       const joined = joinWave(performance.now(), breathing, emptiedAt, waveStart);
       waveStart = joined.start;
       delay = joined.delay;
+      startRef.current = joined.start;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setClaim({ breathes: place, delay });
@@ -180,8 +208,55 @@ function useBreathes(shimmer: boolean): { breathes: boolean; style: CSSPropertie
       if (breathing === 0) emptiedAt = performance.now();
     };
   }, [shimmer]);
-  // Stryker disable next-line ConditionalExpression: a style object whose only value is undefined draws the same as none.
-  return { breathes: shimmer && claim.breathes, style: claim.delay === undefined ? undefined : ({ "--ouro-skeleton-delay": claim.delay } as CSSProperties) };
+  // The delay above is a clock read at commit time, written into a custom property before the first frame draws.
+  // A CSS animation's own clock (its startTime) is pegged only once that frame actually draws, which, past a hold
+  // of the main thread between the two, can land much later than the read the delay came from — so the animation
+  // starts that much out of step with the rest of the wave. Once a frame finally draws, read the join fresh and
+  // set each animation's own clock to it directly, so the join no longer depends on when that frame lands.
+  useLayoutEffect(() => {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: whichever side is true, this placeholder
+    // has no CSS animation at all yet (still, or not yet past its first frame), so the loop below finds none and
+    // removing the guard changes nothing observable.
+    if (!shimmer || claim.delay === undefined || startRef.current === undefined) return;
+    const start = startRef.current;
+    const staleDelayMs = Number.parseFloat(claim.delay);
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      // Stryker disable next-line ConditionalExpression: cancelAnimationFrame below always runs before a
+      // cancelled frame could fire, so this callback never actually observes cancelled true.
+      /* istanbul ignore next @preserve -- cancelAnimationFrame below always runs before a cancelled frame could
+         fire, so this callback never actually observes cancelled true; the guard only protects a browser race
+         no test can force. */
+      if (cancelled) return;
+      // Reusing joinWave with a nonzero `breathing` always takes its `waveStart` argument as the wave's start,
+      // so this reads the same join fresh, from this placeholder's own start, without touching the shared module
+      // state a placeholder mounting or unmounting elsewhere since may have moved on.
+      const freshDelayMs = Number.parseFloat(joinWave(performance.now(), 1, 0, start).delay);
+      const correction = staleDelayMs - freshDelayMs;
+      for (const node of nodesRef.current.values()) {
+        // jsdom, where apps often run their component tests, has no getAnimations: there is no wave to correct.
+        for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
+          // Stryker disable next-line ConditionalExpression,LogicalOperator: registerNode only ever sees this
+          // component's own Bar elements, which carry no animation but the breathe one it applies itself.
+          /* istanbul ignore next @preserve -- registerNode only ever sees this component's own Bar elements,
+             which carry no animation but the breathe one this component applies itself, so the non-matching
+             branch never runs. */
+          if (animation instanceof CSSAnimation && animation.animationName === breatheAnimationName) animation.currentTime = correction;
+        }
+      }
+    });
+    return () => {
+      // Stryker disable next-line BooleanLiteral: only read by the cancelled check above, itself disabled as unreachable.
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [shimmer, claim.delay]);
+  return {
+    breathes: shimmer && claim.breathes,
+    // Stryker disable next-line ConditionalExpression: a style object whose only value is undefined draws the same as none.
+    style: claim.delay === undefined ? undefined : ({ "--ouro-skeleton-delay": claim.delay } as CSSProperties),
+    registerNode,
+  };
 }
 
 const shapes = {
@@ -266,7 +341,8 @@ export function Skeleton(props: SkeletonProps): JSX.Element {
   const { shape: shapeProp = "rect", size: sizeProp, lines: linesProp, count: countProp, className, shimmer: shimmerProp = true, variant, animation, width, height, ref, ...rest } =
     props as SkeletonCommonProps &
       Omit<HTMLAttributes<HTMLSpanElement>, "children"> & { shape?: string; size?: string; lines?: number; count?: number };
-  const { breathes: shimmer, style: waveStyle } = useBreathes(shimmerProp);
+  const { breathes: shimmer, style: waveStyle, registerNode } = useBreathes(shimmerProp);
+  const mergedRef = useMergedRef(ref, registerNode(0));
   // A shape that is not one of Ouro UI's (a type error) warns and renders the default.
   const shape: Shape = shapeNames.includes(shapeProp) ? (shapeProp as Shape) : "rect";
   const sizes: object = sizesFor[shape];
@@ -307,12 +383,12 @@ export function Skeleton(props: SkeletonProps): JSX.Element {
 
   if (shape === "rect" || shape === "circle") {
     const shapeClass = shape === "circle" ? cn(shapes.circle, avatarSizes[(size ?? "md") as SkeletonAvatarSize]) : shapes.rect;
-    return <span {...rest} {...common} ref={ref} style={waveStyle ? { ...rest.style, ...waveStyle } : rest.style} className={cn(fill, !shimmer && still, shapeClass, className)} />;
+    return <span {...rest} {...common} ref={mergedRef} style={waveStyle ? { ...rest.style, ...waveStyle } : rest.style} className={cn(fill, !shimmer && still, shapeClass, className)} />;
   }
   if (shape === "text") {
     const lines = atLeastOne(linesProp);
     return (
-      <span {...rest} {...common} ref={ref} style={waveStyle ? { ...rest.style, ...waveStyle } : rest.style} className={cn("block w-full", size && textSizes[size as keyof typeof textSizes], className)}>
+      <span {...rest} {...common} ref={mergedRef} style={waveStyle ? { ...rest.style, ...waveStyle } : rest.style} className={cn("block w-full", size && textSizes[size as keyof typeof textSizes], className)}>
         {Array.from({ length: lines }, (_, index) => (
           <span key={index} className={line}>
             <Bar shimmer={shimmer} className={lines > 1 && index === lines - 1 ? "w-2/3" : "w-full"} />
@@ -326,7 +402,7 @@ export function Skeleton(props: SkeletonProps): JSX.Element {
   return (
     <>
       {Array.from({ length: count }, (_, index) => {
-        const own = index === 0 ? { ...rest, ref } : { ...rest, id: undefined };
+        const own = index === 0 ? { ...rest, ref: mergedRef } : { ...rest, id: undefined, ref: registerNode(index) };
         const title = titleWidths[index % titleWidths.length];
         const detail = detailWidths[index % detailWidths.length];
         if (shape === "row") {
