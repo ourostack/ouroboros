@@ -75,12 +75,15 @@ describe("media MCP: release profiles", () => {
     expect(writes()).toEqual([])
   })
 
-  it("is a closed tool the owner profile grants", async () => {
+  it("is a closed tool every chat profile with media grants, applied only by family", async () => {
     const tool = mod.TOOLS.find((t: any) => t.name === "media_release_profile")
     expect(tool.inputSchema.additionalProperties).toBe(false)
     expect(tool.description).toMatch(/end-anchored/u)
     const profiles = JSON.parse(readFileSync(join(__dirname, "../../../deploy/unraid/sanctuary.ouro/tool-profiles.json"), "utf8")).profiles
     expect(profiles["sanctuary-owner"].toolNames).toContain("media_release_profile")
-    expect(profiles["sanctuary-household"].toolNames).not.toContain("media_release_profile")
+    // A friend may read the profiles (spec R12b); applying one is family-only in mcp-write-guard.
+    expect(profiles["sanctuary-household"].toolNames).toContain("media_release_profile")
+    const { FAMILY_ONLY_ARGUMENTS } = await import("../../repertoire/mcp-write-guard")
+    expect(FAMILY_ONLY_ARGUMENTS.media_release_profile!.used({ action: "set" })).toBe(true)
   })
 })
