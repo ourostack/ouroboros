@@ -2549,6 +2549,108 @@ describe("daemon sense manager", () => {
     )
   })
 
+  describe("a turn that stops moving on another sense", () => {
+    async function a2aManager(snapshot: { status: string; startedAt?: string | null; pid?: number | null }) {
+      const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-turn-watch-"))
+      writeAgentJson(bundlesRoot, "slugger", {
+        version: 1,
+        enabled: true,
+        provider: "anthropic",
+        senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: true } },
+        phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+      })
+      await cacheMachineRuntimeConfig("slugger", { a2a: { port: 19998 } })
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      const manager = new DaemonSenseManager({
+        agents: ["slugger"],
+        bundlesRoot,
+        processManager: {
+          startAutoStartAgents: async () => undefined,
+          stopAll: async () => undefined,
+          listAgentSnapshots: () => [{ name: "slugger:a2a", pid: process.pid, ...snapshot }],
+        },
+      })
+      const turnsDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "a2a", "turns-in-flight")
+      fs.mkdirSync(turnsDir, { recursive: true })
+      const writeTurn = (startedAgoMs: number, quietForMs: number, name = `${process.pid}-1.json`, pid = process.pid) => fs.writeFileSync(path.join(turnsDir, name), JSON.stringify({
+        pid,
+        sessionKey: "peer",
+        startedAt: new Date(Date.now() - startedAgoMs).toISOString(),
+        lastProgressAt: new Date(Date.now() - quietForMs).toISOString(),
+        toolsRunning: 0,
+      }))
+      return { manager, writeTurn }
+    }
+    const row = (manager: { listSenseRows(): Array<{ sense: string }> }) => manager.listSenseRows().find((entry) => entry.sense === "a2a")
+
+    it("shows the sense as an error once a turn has gone quiet for five minutes", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: new Date(Date.now() - 3_600_000).toISOString() })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(manager)).toEqual(expect.objectContaining({
+        status: "error",
+        failureLayer: "live_turn_stall",
+        activeTurnCount: 1,
+        stalledTurnCount: 1,
+        oldestActiveTurnAgeMs: expect.any(Number),
+        detail: "1 turn has recorded no progress for 6m",
+        lastFailure: "1 turn has recorded no progress for 6m",
+        recoveryAction: "look in the sense's log for the turn's last step; restarting the sense ends the turn",
+      }))
+    })
+
+    it("says when the stalled turn runs outside the sense's worker, where a restart won't end it", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: 4242 })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(manager)).toEqual(expect.objectContaining({
+        status: "error",
+        recoveryAction: `look in the sense's log for the turn's last step; the turn in process ${process.pid} runs outside the sense's worker and ends only with that process`,
+      }))
+    })
+
+    it("names both remedies when stalled turns sit in the worker and outside it", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: process.ppid })
+      writeTurn(10 * 60_000, 6 * 60_000, "in-worker.json", process.ppid)
+      writeTurn(10 * 60_000, 6 * 60_000, "outside.json")
+      expect(row(manager)).toEqual(expect.objectContaining({
+        stalledTurnCount: 2,
+        recoveryAction: `look in the sense's log for the turn's last step; restarting the sense ends the worker's turn; the turn in process ${process.pid} runs outside the sense's worker and ends only with that process`,
+      }))
+    })
+
+    it("doesn't guess where the turn runs when the worker's pid is unknown", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null, pid: null })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(manager)).toEqual(expect.objectContaining({
+        recoveryAction: `look in the sense's log for the turn's last step; the turn runs in process ${process.pid}; if that is the sense's worker, restarting the sense ends it`,
+      }))
+    })
+
+    it("shows a turn that is still moving without calling the sense broken", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: new Date(Date.now() - 3_600_000).toISOString() })
+      writeTurn(10 * 60_000, 60_000)
+      const current = row(manager)
+      expect(current).toEqual(expect.objectContaining({ status: "running", activeTurnCount: 1, stalledTurnCount: 0, detail: ":19998 /a2a" }))
+      expect(current).not.toHaveProperty("failureLayer")
+    })
+
+    it("ignores turns while the sense isn't running, and turns left from before its process started", async () => {
+      const stopped = await a2aManager({ status: "stopped" })
+      stopped.writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(stopped.manager)).not.toHaveProperty("stalledTurnCount")
+      const restarted = await a2aManager({ status: "running", startedAt: new Date(Date.now() - 60_000).toISOString() })
+      restarted.writeTurn(10 * 60_000, 6 * 60_000)
+      expect(row(restarted.manager)).toEqual(expect.objectContaining({ status: "running" }))
+      expect(row(restarted.manager)).not.toHaveProperty("stalledTurnCount")
+    })
+
+    it("counts every turn when the process start time is unknown", async () => {
+      const { manager, writeTurn } = await a2aManager({ status: "running", startedAt: null })
+      writeTurn(10 * 60_000, 6 * 60_000)
+      writeTurn(20 * 60_000, 12 * 60_000, `${process.pid}-2.json`)
+      expect(row(manager)).toEqual(expect.objectContaining({ status: "error", stalledTurnCount: 2, detail: "2 turns have recorded no progress for 12m" }))
+    })
+  })
+
   it("marks BlueBubbles unhealthy when a fresh runtime state reports a stalled live turn", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const freshCheckedAt = new Date().toISOString()

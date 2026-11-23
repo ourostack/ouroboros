@@ -33,6 +33,8 @@ export type ProxyMessage =
   | { type: "resetTurnState"; messages: ProviderTurnRequest["messages"] }
   | { type: "error"; turn: number; error: WireError }
   | { type: "abort"; turn: number }
+  /** What a remote sandbox host is asked to run, sent before anything else. The proxy itself ignores it. */
+  | { type: "job"; job: Record<string, unknown> }
   /** The guest's last message: the turn's result, or why it could not run. The proxy itself ignores it. */
   | { type: "done"; outcome: GuestOutcome }
   /** Never sent: a channel delivers it when a line is not a message or a stream fails. */
@@ -81,6 +83,7 @@ const SHAPES: Record<string, (msg: Record<string, unknown>) => boolean> = {
   resetTurnState: (msg) => Array.isArray(msg.messages),
   error: (msg) => isTurn(msg.turn) && isObject(msg.error) && typeof msg.error.message === "string",
   abort: (msg) => isTurn(msg.turn),
+  job: (msg) => isObject(msg.job),
   done: (msg) => isObject(msg.outcome) && typeof msg.outcome.ok === "boolean",
 }
 

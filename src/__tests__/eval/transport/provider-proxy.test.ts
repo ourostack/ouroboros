@@ -382,6 +382,16 @@ describe("createStreamChannel", () => {
     expect(received[1]).toMatchObject({ type: "invalid" })
   })
 
+  it("carries a remote host's job, and treats a job that is not an object as a broken line", async () => {
+    const input = new PassThrough()
+    const received: ProxyMessage[] = []
+    createStreamChannel(input, new PassThrough()).onMessage((msg) => received.push(msg))
+    input.write(`${JSON.stringify({ type: "job", job: { caseId: "c" } })}\n${JSON.stringify({ type: "job", job: "c" })}\n`)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(received[0]).toEqual({ type: "job", job: { caseId: "c" } })
+    expect(received[1]).toMatchObject({ type: "invalid" })
+  })
+
   it("keeps a character whose bytes are split across chunks", async () => {
     const input = new PassThrough()
     const received: ProxyMessage[] = []
