@@ -9,6 +9,8 @@ import {
 import { transcriptToPromptText } from "./transcript"
 import type { VoiceTranscript, VoiceTtsResult, VoiceTtsService } from "./types"
 import type { ToolContext } from "../../repertoire/tools-base"
+import { turnSpoke } from "../turn-attempts"
+import type { VoiceUtteranceTurn } from "./utterances"
 
 export type VoiceRunSenseTurn = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 
@@ -36,6 +38,8 @@ export interface VoiceLoopbackTurnOptions {
   runSenseTurn?: VoiceRunSenseTurn
   onAudioChunk?: (chunk: Uint8Array) => void | Promise<void>
   voiceCall?: ToolContext["voiceCall"]
+  /** The caller's utterance this turn answers: speech and sends are noted on it before they go, and it gets the outcome. */
+  utterance?: VoiceUtteranceTurn | null
 }
 
 export interface VoiceSpeechSegment {
@@ -91,7 +95,22 @@ function deliveryErrorMessage(error: unknown): string {
 }
 
 export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): Promise<VoiceLoopbackTurnResult> {
+  const utterance = options.utterance
+  utterance?.beginAttempt()
+  try {
+    const result = await runRecordedVoiceTurn(options)
+    if (result.tts.status === "delivered") utterance?.settle("answered")
+    else utterance?.settle("failed", `the reply could not be spoken: ${result.tts.error}`)
+    return result
+  } catch (error) {
+    utterance?.settle("failed", `the turn failed: ${deliveryErrorMessage(error)}`)
+    throw error
+  }
+}
+
+async function runRecordedVoiceTurn(options: VoiceLoopbackTurnOptions): Promise<VoiceLoopbackTurnResult> {
   const runSenseTurn = options.runSenseTurn ?? defaultRunSenseTurn
+  const utterance = options.utterance
   let userMessage: string
   try {
     userMessage = transcriptToPromptText(options.transcript)
@@ -125,6 +144,8 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
   const synthesizeDelivery = async (delivery: OutwardSenseDelivery): Promise<void> => {
     deliveryIndex += 1
     const segmentUtteranceId = `${options.transcript.utteranceId}-${deliveryIndex}-${delivery.kind}`
+    // Noted before it can play, so a stopped call's record says what the caller heard.
+    utterance?.noteSpoke(turnSpoke(`speech:${delivery.kind}`, delivery.text))
     try {
       const spoken = await options.tts.synthesize({
         utteranceId: segmentUtteranceId,
@@ -157,6 +178,7 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
     userMessage,
     latencyMode: "live",
     deliverySink: { onDelivery: synthesizeDelivery },
+    ...(utterance ? { onOutwardSend: (spoke: Parameters<VoiceUtteranceTurn["noteSpoke"]>[0]) => utterance.noteSpoke(spoke) } : {}),
     ...(options.voiceCall ? { toolContext: { voiceCall: options.voiceCall } } : {}),
   })
 
@@ -206,6 +228,7 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
   }
 
   try {
+    utterance?.noteSpoke(turnSpoke("speech:text", turn.response))
     const spoken: VoiceTtsResult = await options.tts.synthesize({
       utteranceId: options.transcript.utteranceId,
       text: turn.response,

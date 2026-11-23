@@ -1,0 +1,172 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { buildVoiceTranscript } from "../../../senses/voice"
+import * as nerves from "../../../nerves/runtime"
+import type { VoiceCallIdentity } from "../../../senses/voice/call-auth"
+import { TwilioAudioStreamJobStore, TwilioMediaStreamSession, createTwilioPhoneBridge, type VoiceSessionSocket } from "../../../senses/voice/twilio-phone"
+import { recordVoiceUtterance, voiceUtterances } from "../../../senses/voice/utterances"
+import { CALLER, LINE, cleanupFixtures, fixture, start } from "./twilio-auth-fixture"
+
+afterEach(async () => {
+  vi.restoreAllMocks()
+  await cleanupFixtures()
+})
+
+const recording = (recordingSid: string) => ({
+  CallSid: "CAone", RecordingSid: recordingSid, RecordingUrl: `https://api.twilio.com/Recordings/${recordingSid}`, From: CALLER, To: LINE,
+})
+
+function fakeSocket() {
+  const state = { open: true }
+  const sent: string[] = []
+  const socket: VoiceSessionSocket = {
+    send: (data: string) => { sent.push(data) },
+    close: () => { state.open = false },
+    isOpen: () => state.open,
+    on: (() => undefined) as VoiceSessionSocket["on"],
+  }
+  return { socket, sent }
+}
+
+function media(byte: number): string {
+  return JSON.stringify({ event: "media", media: { payload: Buffer.alloc(160, byte).toString("base64") } })
+}
+
+const identity = (overrides: Partial<VoiceCallIdentity> = {}): VoiceCallIdentity => ({
+  callSid: "CAone", agentName: "slugger", direction: "inbound", from: CALLER, to: LINE, engine: "cascade", ...overrides,
+})
+
+/** Speak one utterance into a session: a few voiced frames, then silence. */
+function speak(session: TwilioMediaStreamSession): void {
+  for (let i = 0; i < 4; i += 1) session.handleRawMessage(media(0x00))
+  for (let i = 0; i < 4; i += 1) session.handleRawMessage(media(0xff))
+}
+
+function emitted(name: string): unknown[] {
+  return vi.mocked(nerves.emitNervesEvent).mock.calls.map(([event]) => event).filter((event) => event.event === name)
+}
+
+describe("Twilio recording outcomes", () => {
+  it("records a recording's turn as answered, and runs a repeated callback for it only once", async () => {
+    const f = await fixture({ transportMode: "record-play" })
+    vi.spyOn(nerves, "emitNervesEvent")
+    await f.post("/voice/twilio/recording", recording("REone"))
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REone")).toMatchObject({ outcome: "answered", attempts: 1 })
+    const turns = f.runSenseTurn.mock.calls.length
+
+    const again = await f.post("/voice/twilio/recording", recording("REone"))
+    expect(f.runSenseTurn).toHaveBeenCalledTimes(turns)
+    expect(String(again.body)).toContain("<Redirect")
+    expect(String(again.body)).not.toContain("<Play>")
+    expect(emitted("senses.voice_twilio_recording_duplicate")).toHaveLength(1)
+  })
+
+  it("records a streamed recording's turn, and one that could not be downloaded as failed", async () => {
+    const f = await fixture({ transportMode: "record-play", playbackMode: "stream" })
+    await f.post("/voice/twilio/recording", recording("REstream"))
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REstream")).toMatchObject({ outcome: "answered" }))
+
+    vi.mocked(f.options.downloadRecording!).mockRejectedValueOnce(new Error("twilio 404"))
+    await f.post("/voice/twilio/recording", recording("REgone"))
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REgone")).toMatchObject({
+      outcome: "failed", detail: "the turn failed: twilio 404",
+    }))
+  })
+
+  it("records a buffered recording that could not be downloaded as failed, and one with no speech as answered by the prompt", async () => {
+    const f = await fixture({ transportMode: "record-play" })
+    vi.mocked(f.options.downloadRecording!).mockRejectedValueOnce(new Error("twilio 500"))
+    await f.post("/voice/twilio/recording", recording("REfail"))
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REfail")).toMatchObject({ outcome: "failed", detail: "the turn failed: twilio 500" })
+
+    vi.mocked(f.options.transcriber.transcribe).mockResolvedValueOnce(buildVoiceTranscript({ utteranceId: "x", text: "[BLANK_AUDIO]", source: "whisper.cpp" }))
+    await f.post("/voice/twilio/recording", recording("REquiet"))
+    expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-REquiet")).toMatchObject({ outcome: "answered" })
+  })
+})
+
+describe("Twilio Media Stream utterance outcomes", () => {
+  it("records what the caller said as answered once the reply is spoken", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const fake = fakeSocket()
+    const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    speak(session)
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({ outcome: "answered", attempts: 1 }))
+    expect(voiceUtterances(f.outputDir).pending()).toEqual([])
+  })
+
+  it("records an utterance as failed when the call ends before its turn, or its transcription fails", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const fake = fakeSocket()
+    const release = Promise.withResolvers<void>()
+    const transcribe = vi.mocked(f.options.transcriber.transcribe)
+    transcribe.mockImplementationOnce(async (request) => {
+      await release.promise
+      return buildVoiceTranscript({ utteranceId: request.utteranceId, text: "hello?", source: "whisper.cpp" })
+    })
+    const session = new TwilioMediaStreamSession(fake.socket, identity(), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    speak(session)
+    await vi.waitFor(() => expect(transcribe).toHaveBeenCalled())
+    session.handleRawMessage(JSON.stringify({ event: "stop" }))
+    release.resolve()
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({
+      outcome: "failed", detail: "the call ended before this was answered",
+    }))
+
+    const second = new TwilioMediaStreamSession(fakeSocket().socket, identity({ callSid: "CAtwo" }), f.options, new TwilioAudioStreamJobStore())
+    second.attach()
+    second.handleRawMessage(start("CAtwo", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn.mock.calls.length).toBeGreaterThanOrEqual(2))
+    transcribe.mockRejectedValueOnce(new Error("whisper crashed"))
+    speak(second)
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAtwo-1")).toMatchObject({
+      outcome: "failed", detail: "the turn failed: whisper crashed",
+    }))
+  })
+
+  it("records an outbound call's utterance as silent when a voicemail menu answered", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const fake = fakeSocket()
+    const session = new TwilioMediaStreamSession(fake.socket, identity({ direction: "outbound" }), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    vi.mocked(f.options.transcriber.transcribe).mockResolvedValueOnce(buildVoiceTranscript({
+      utteranceId: "twilio-CAone-1", text: "If you are satisfied with the message, press 1.", source: "whisper.cpp",
+    }))
+    speak(session)
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({
+      outcome: "silent", detail: "a voicemail menu answered the call, so it was ended",
+    }))
+  })
+})
+
+describe("voice utterances a stopped process left", () => {
+  it("records them as failed when the bridge starts and when it shuts down", async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-voice-leftover-"))
+    try {
+      const payload = { callSid: "CAold", friendId: "ari", sessionKey: "phone", transport: "recording" as const }
+      recordVoiceUtterance(outputDir, "twilio-CAold-REold", payload)
+      const f = await fixture({ outputDir })
+      expect(voiceUtterances(outputDir).outcome("twilio-CAold-REold")).toMatchObject({
+        outcome: "failed", detail: "the voice sense restarted before this was answered; live audio is not replayed",
+      })
+      const bridge = createTwilioPhoneBridge({ ...f.options, outputDir })
+      recordVoiceUtterance(outputDir, "twilio-CAold-RElate", payload)
+      await bridge.close!()
+      expect(voiceUtterances(outputDir).outcome("twilio-CAold-RElate")).toMatchObject({
+        outcome: "failed", detail: "the voice sense shut down before this was answered; live audio is not replayed",
+      })
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true })
+    }
+  })
+})

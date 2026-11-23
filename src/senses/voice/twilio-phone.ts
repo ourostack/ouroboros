@@ -21,6 +21,7 @@ import { createRealtimeToolAdvertiser, type RealtimeFunctionTool, type RealtimeT
 import { writeVoicePlaybackArtifact } from "./playback"
 import { buildVoiceTranscript } from "./transcript"
 import { runVoiceLoopbackTurn, type VoiceLoopbackTurnResult, type VoiceRunSenseTurn } from "./turn"
+import { failLeftoverVoiceUtterances, recordVoiceUtterance, seenVoiceUtterance, type VoiceUtteranceTurn } from "./utterances"
 import type { VoiceTranscript, VoiceTranscriber, VoiceTtsService } from "./types"
 import { normalizeTwilioE164PhoneNumber } from "./phone"
 import { prepareVoiceCallAudio } from "./audio-playback"
@@ -1274,6 +1275,19 @@ export class TwilioMediaStreamSession {
 
   /* v8 ignore stop */
   private async processUtterance(utterance: TwilioMediaStreamUtterance): Promise<void> {
+    // Recorded before anything can fail, so what the caller said ends in an outcome even if this process stops.
+    const record = recordVoiceUtterance(this.options.outputDir, utterance.utteranceId, {
+      callSid: this.callSid, friendId: this.friendId, sessionKey: this.sessionKey, transport: "media-stream",
+    })
+    try {
+      await this.answerUtterance(utterance, record)
+    } catch (error) {
+      record?.settle("failed", `the turn failed: ${errorMessage(error)}`)
+      throw error
+    }
+  }
+
+  private async answerUtterance(utterance: TwilioMediaStreamUtterance, record: VoiceUtteranceTurn | null): Promise<void> {
     await fs.mkdir(this.callDir, { recursive: true })
     const inputPath = path.join(this.callDir, `${safeSegment(utterance.utteranceId)}.wav`)
     await fs.writeFile(inputPath, mulawFramesToPcm16Wav(utterance.frames))
@@ -1302,6 +1316,7 @@ export class TwilioMediaStreamSession {
           outboundId: safeSegment(this.outboundId || "unknown"),
         },
       })
+      record?.settle("silent", "a voicemail menu answered the call, so it was ended")
       this.socket.close()
       this.close()
       return
@@ -1319,13 +1334,17 @@ export class TwilioMediaStreamSession {
           source: transcript.source,
         })
       : transcript
-    await this.runTranscriptTurn(turnTranscript, utterance.wasBargeIn)
+    await this.runTranscriptTurn(turnTranscript, utterance.wasBargeIn, record)
   }
 
-  private async runTranscriptTurn(transcript: VoiceTranscript, wasBargeIn: boolean): Promise<void> {
-    if (this.closed || !this.streamSid) return
+  private async runTranscriptTurn(transcript: VoiceTranscript, wasBargeIn: boolean, record: VoiceUtteranceTurn | null = null): Promise<void> {
+    if (this.closed || !this.streamSid) {
+      record?.settle("failed", "the call ended before this was answered")
+      return
+    }
     const generation = this.startPlayback()
     const turn = await runVoiceLoopbackTurn({
+      utterance: record,
       agentName: this.options.agentName,
       friendId: this.friendId,
       sessionKey: this.sessionKey,
@@ -4618,6 +4637,8 @@ async function runPhonePromptTurn(options: {
   sessionKey: string
   promptText: string
   afterPlayback: "record" | "redirect"
+  /** The caller's recording this prompt answers, when it answers one. */
+  utterance?: VoiceUtteranceTurn | null
 }): Promise<TwilioPhoneBridgeResponse> {
   const transcript = buildVoiceTranscript({
     utteranceId: options.utteranceId,
@@ -4631,6 +4652,7 @@ async function runPhonePromptTurn(options: {
     transcript,
     tts: options.bridgeOptions.tts,
     runSenseTurn: options.bridgeOptions.runSenseTurn,
+    utterance: options.utterance,
   })
   const after = nextInputTwiml(options.bridgeOptions, options.basePath, options.afterPlayback)
 
@@ -5451,6 +5473,17 @@ async function handleRecording(
   const callDir = path.join(options.outputDir, safeCallSid)
   const inputPath = path.join(callDir, `${safeRecordingSid}.wav`)
   const utteranceId = `twilio-${safeCallSid}-${safeRecordingSid}`
+  // Twilio retries a recording callback it did not hear back from; the first one is already being answered.
+  if (seenVoiceUtterance(options.outputDir, utteranceId)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.voice_twilio_recording_duplicate",
+      message: "Twilio sent a recording that already has a turn; it is not run again",
+      meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid },
+    })
+    return xmlResponse(redirectTwiml(options.publicBaseUrl, basePath))
+  }
   const downloadRecording = options.downloadRecording ?? defaultTwilioRecordingDownloader
   // Outbound calls are placed by us (defaultFriendId stays their fallback); inbound callers are
   // identified by the signed caller ID only.
@@ -5471,6 +5504,10 @@ async function handleRecording(
     message: "starting Twilio voice turn",
     meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, sessionKey },
   })
+  const record = recordVoiceUtterance(options.outputDir, utteranceId, {
+    callSid: safeCallSid, friendId, sessionKey, transport: "recording",
+  })
+  const failRecord = (error: unknown): void => record?.settle("failed", `the turn failed: ${errorMessage(error)}`)
 
   try {
     if (normalizeTwilioPhonePlaybackMode(options.playbackMode) === "stream") {
@@ -5484,28 +5521,34 @@ async function handleRecording(
         jobId,
         baseUtteranceId: utteranceId,
         runTurn: async (onAudioChunk) => {
-          await fs.mkdir(callDir, { recursive: true })
-          const mediaUrl = twilioRecordingMediaUrl(recording.recordingUrl)
-          const audio = await downloadRecording({
-            recordingUrl: mediaUrl,
-            accountSid: options.twilioAccountSid?.trim() || undefined,
-            authToken: options.twilioAuthToken?.trim(),
-          })
-          await fs.writeFile(inputPath, audio)
-          const turnTranscript = await transcribeRecordingOrNoSpeech({
-            transcriber: options.transcriber,
-            utteranceId,
-            inputPath,
-          })
-          return runVoiceLoopbackTurn({
-            agentName: options.agentName,
-            friendId,
-            sessionKey,
-            transcript: turnTranscript,
-            tts: options.tts,
-            runSenseTurn: options.runSenseTurn,
-            onAudioChunk,
-          })
+          try {
+            await fs.mkdir(callDir, { recursive: true })
+            const mediaUrl = twilioRecordingMediaUrl(recording.recordingUrl)
+            const audio = await downloadRecording({
+              recordingUrl: mediaUrl,
+              accountSid: options.twilioAccountSid?.trim() || undefined,
+              authToken: options.twilioAuthToken?.trim(),
+            })
+            await fs.writeFile(inputPath, audio)
+            const turnTranscript = await transcribeRecordingOrNoSpeech({
+              transcriber: options.transcriber,
+              utteranceId,
+              inputPath,
+            })
+            return await runVoiceLoopbackTurn({
+              agentName: options.agentName,
+              friendId,
+              sessionKey,
+              transcript: turnTranscript,
+              tts: options.tts,
+              runSenseTurn: options.runSenseTurn,
+              onAudioChunk,
+              utterance: record,
+            })
+          } catch (error) {
+            failRecord(error)
+            throw error
+          }
         },
         meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, utteranceId },
       })
@@ -5538,6 +5581,7 @@ async function handleRecording(
         sessionKey,
         promptText: noSpeechPrompt(),
         afterPlayback: "redirect",
+        utterance: record,
       })
     }
 
@@ -5548,6 +5592,7 @@ async function handleRecording(
       transcript,
       tts: options.tts,
       runSenseTurn: options.runSenseTurn,
+      utterance: record,
     })
 
     if (turn.tts.status !== "delivered") {
@@ -5572,6 +5617,7 @@ async function handleRecording(
 
     return xmlResponse(`${playManyTwiml(audioUrls)}${redirectTwiml(options.publicBaseUrl, basePath)}`)
   } catch (error) {
+    failRecord(error)
     emitNervesEvent({
       level: "error",
       component: "senses",
@@ -5704,6 +5750,8 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
   const activeSipSessions = new ActiveOpenAISipSessions()
   const pendingCalls = options.pendingVoiceCalls ?? new PendingVoiceCalls()
   const recentSipWebhooks = new RecentIds()
+  // Live audio is never replayed: whatever a stopped process left unanswered is recorded as failed.
+  failLeftoverVoiceUtterances(options.outputDir, "start")
 
   mediaStreams.on("connection", (ws: WebSocket) => {
     // A malformed frame makes `ws` emit `error`; with no listener that is an uncaught exception,
@@ -5858,6 +5906,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       return true
     },
     close(): Promise<void> {
+      failLeftoverVoiceUtterances(options.outputDir, "shutdown")
       return new Promise((resolve, reject) => {
         mediaStreams.close((error?: Error) => error ? reject(error) : resolve())
       })
