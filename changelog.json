@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1400",
+      "changes": [
+        "BlueBubbles names macOS's Automation denial (-1743) with the steps to fix it, and status shows the sense as erroring until an AppleScript send goes through again."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1399",
       "changes": [
         "A BlueBubbles webhook is no longer refused with 403 when the server is too busy to answer server info and the host account was confirmed in the last 10 minutes, and a proactive send that timed out is saved as sent once it shows up in the chat."
