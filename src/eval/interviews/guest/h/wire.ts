@@ -38,19 +38,15 @@ function textOf(content: unknown): string {
   }).join("\n")
 }
 
-/**
- * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
- * become the one system message; the case's conversation goes before the first user message; a call joins the
- * assistant message before it, and each output becomes its tool result. Reasoning items are not sent back.
- */
 /** A function tool the arm declares, as its request carries it. */
 type ArmTool = { name: string; description?: string; parameters?: Record<string, unknown> }
 
 /**
  * The arm's own tool, passed through to the host's runtime under the arm's name, in the harness's shape. It is the
- * arm's door, not the harness's, so the census counts it as a passthrough (ax/census.config.json).
+ * arm's door, not the harness's: the arm runs each call to it, and nothing in the harness does, so the census counts
+ * it as a passthrough (ax/census.config.json). Only a tool from the arm's request body may come through here.
  */
-export function wireTool(tool: ArmTool): Tool {
+function wireTool(tool: ArmTool): Tool {
   return {
     type: "function",
     function: {
@@ -61,6 +57,11 @@ export function wireTool(tool: ArmTool): Tool {
   }
 }
 
+/**
+ * A Responses body as the harness's request. The harness's instructions (its leading developer and system messages)
+ * become the one system message; the case's conversation goes before the first user message; a call joins the
+ * assistant message before it, and each output becomes its tool result. Reasoning items are not sent back.
+ */
 export function responsesRequest(body: unknown, prefix: Message[]): WireRequest {
   if (!isRecord(body) || !Array.isArray(body.input)) throw new Error("a Responses body needs an input list")
   const leading: string[] = []
