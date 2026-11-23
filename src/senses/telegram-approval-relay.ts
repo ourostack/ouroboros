@@ -1,6 +1,6 @@
 /**
  * The Telegram sense's door for a relayed approval answer. The A2A process forwards the raw sealed message here,
- * over `state/approvals/relay.sock`, without opening it. This process opens it and checks it, then decides it under
+ * over `state/approvals/relay/sock`, without opening it. This process opens it and checks it, then decides it under
  * the same lock as a tap, because this is the process that owns the approval cards (security review H3).
  *
  * Every answer re-reads the switch, so revoking or letting it expire takes effect on the next one. The checks, in order:
@@ -84,18 +84,41 @@ export async function handleRelayedApprovalAnswer(deps: RelayedAnswerDeps, messa
   })
 }
 
-/** The socket the A2A process forwards tagged envelopes to. */
+/** The socket the A2A process forwards tagged envelopes to, alone in a folder only this agent's user can enter. */
 export function approvalRelaySocketPath(agentRoot: string): string {
-  return path.join(agentRoot, "state", "approvals", "relay.sock")
+  return path.join(agentRoot, "state", "approvals", "relay", "sock")
 }
 
 const MAX_REQUEST_BYTES = 256 * 1024
+/** macOS takes a socket path of at most 104 bytes and mishandles a longer one, so a longer path is refused instead. */
+export const MAX_SOCKET_PATH_BYTES = 104
+/** Answers come one at a time from one peer; a few slots are plenty, and a client that holds one can't hold them all. */
+export const MAX_RELAY_CONNECTIONS = 4
+
+/**
+ * Makes the socket's folder 0700 and owned by this user, so no other user can reach the socket whatever its own mode
+ * is while listen() creates it. A symlink or another user's folder there is refused rather than used.
+ */
+function makePrivateFolder(dir: string): void {
+  fs.mkdirSync(path.dirname(dir), { recursive: true })
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 })
+  } catch (error) {
+    /* v8 ignore next -- only an existing folder is expected here; anything else is a real fault @preserve */
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
+  const stat = fs.lstatSync(dir)
+  if (!stat.isDirectory() || stat.uid !== process.getuid!()) {
+    throw new Error(`the relay socket's folder ${dir} isn't a folder this user owns`)
+  }
+  fs.chmodSync(dir, 0o700)
+}
 /** A connection that sends no byte for this long before its request line is in is dropped. */
 export const RELAY_SOCKET_IDLE_TIMEOUT_MS = 10_000
 
 /**
- * Listens on `relay.sock` (mode 0600, so only this agent's own user can connect). Each connection sends one
- * JSON line `{"message": <A2A message>}` and gets back one line `{"reply": "<RelayReply>"}`.
+ * Listens on `relay/sock` inside a 0700 folder, so only this agent's own user can connect, with at most
+ * MAX_RELAY_CONNECTIONS connections open at once. Each connection sends one JSON line `{"message": <A2A message>}` and gets back one line `{"reply": "<RelayReply>"}`.
  */
 export async function startApprovalRelaySocket(input: {
   socketPath: string
@@ -103,7 +126,10 @@ export async function startApprovalRelaySocket(input: {
   /** Tests: how long a connection may wait between bytes before its request line is in. */
   idleTimeoutMs?: number
 }): Promise<{ close(): Promise<void> }> {
-  fs.mkdirSync(path.dirname(input.socketPath), { recursive: true })
+  if (Buffer.byteLength(input.socketPath) > MAX_SOCKET_PATH_BYTES) {
+    throw new Error(`the relay socket path is over ${MAX_SOCKET_PATH_BYTES} bytes: ${input.socketPath}`)
+  }
+  makePrivateFolder(path.dirname(input.socketPath))
   try {
     if (fs.lstatSync(input.socketPath).isSocket()) fs.rmSync(input.socketPath)
   } catch (error) {
@@ -148,15 +174,11 @@ export async function startApprovalRelaySocket(input: {
     /* v8 ignore next -- a client that resets mid-request; whether that surfaces as an error is up to the OS @preserve */
     socket.on("error", () => socket.destroy())
   })
+  // Node closes a connection past this limit as soon as it arrives.
+  server.maxConnections = MAX_RELAY_CONNECTIONS
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
-    // The socket file is created inside listen(), synchronously, so this umask covers it and no other code runs between.
-    const previous = process.umask(0o177)
-    try {
-      server.listen(input.socketPath, () => resolve())
-    } finally {
-      process.umask(previous)
-    }
+    server.listen(input.socketPath, () => resolve())
   })
   fs.chmodSync(input.socketPath, 0o600)
   emitNervesEvent({ component: "senses", event: "senses.telegram_relay_socket_listening", message: "listening for relayed approval answers", meta: { socketPath: input.socketPath } })
