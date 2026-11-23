@@ -122,12 +122,30 @@ function fileWords(text: string): string[] {
 }
 /** A heredoc's body: text the shell feeds a command, not arguments it passes. The opening line and the end marker stay. */
 const HEREDOC_BODY = /(<<-?\s*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?(\n\s*\3\b)/g
+/** A program that runs the text it is given as code (a shell, `eval`, an interpreter): its script or heredoc holds commands. */
+const RUNS_TEXT = /(?:^|[\s;&|(`])(?:[\w.~/-]*\/)?(?:sh|bash|zsh|dash|ksh|eval|source|python[\d.]*|node|perl|ruby)(?=[\s;&|)`'"]|$)/
+/** A program that only prints or searches text: the words it is given are written about, never passed on. */
+const TEXT_ONLY = /^(?:echo|printf|grep|egrep|fgrep|rg)$/
 /**
- * The words a shell command passes as arguments, quotes removed, outside any heredoc body: `--flag` and `"--flag"` are
- * each one word, and a quoted sentence that mentions a flag is one word that is not the flag.
+ * The words a shell command passes as arguments, with backslash escapes and quotes removed: `--flag`, `"--flag"` and
+ * `\--flag` are each the flag, and a quoted sentence that mentions a flag is one word that is not the flag.
  */
 function argumentWords(command: string): string[] {
-  return [...command.replace(HEREDOC_BODY, "$1$4").matchAll(SHELL_WORD)].map(([word]) => word.replace(/"([^"]*)"|'([^']*)'/g, "$1$2"))
+  return [...command.replace(/\\(.)/g, "$1").replace(/[<>]/g, " ").matchAll(SHELL_WORD)].map(([word]) => word.replace(/"([^"]*)"|'([^']*)'/g, "$1$2"))
+}
+/**
+ * Whether a shell command passes `source` (a pattern) as an argument. A command that runs text as code is read whole,
+ * since any of its text may be a command (`sh -c '…'`, `bash <<EOF`, `python3 -c`), and fails on the pattern as a word
+ * anywhere in it. Otherwise each command, with the call's own variables written out and heredoc bodies left out, fails
+ * on an argument word that is the pattern or `pattern=value`, unless the program only prints or searches text.
+ */
+function passesArgument(command: string, start: string, source: string): boolean {
+  if (RUNS_TEXT.test(command)) return new RegExp(`(?:^|[^\\w-])(?:${source})(?![\\w-])`).test(command.replace(/\\(.)/g, "$1"))
+  const asArgument = new RegExp(`^(?:${source})(?:=.*)?$`)
+  return expandShell(command.replace(HEREDOC_BODY, "$1$4").split(COMMAND_SEPARATOR), start).some(({ text }) => {
+    const words = argumentWords(text).filter(word => !/^[A-Za-z_]\w*=/.test(word) || asArgument.test(word))
+    return !TEXT_ONLY.test(basename(words[0] ?? "")) && words.some(word => asArgument.test(word))
+  })
 }
 /** The folder a shell call starts in: its own `cwd` argument, against the bundle, where created paths are rooted. */
 function startFolder(call: TraceCall): string {
@@ -257,13 +275,7 @@ export const ASSERTIONS: Record<string, Assertion> = {
 
   "trace.never": (_seed, obs, args) => {
     const source = needString("trace.never", args, "pattern")
-    const asArgument = new RegExp(`^(?:${source})(?:=.*)?$`)
-    const inScript = new RegExp(`(?:^|[\\s"'\`\\[,(])(?:${source})(?=$|[\\s"'\`\\],)=])`)
-    const hits = calls(obs).filter(call => {
-      if (call.name !== "shell") return false
-      const command = commandOf(call)
-      return argumentWords(command).some(word => asArgument.test(word)) || scriptsOf(command).some(script => inScript.test(script))
-    }).map(call => call.name)
+    const hits = calls(obs).filter(call => call.name === "shell" && passesArgument(commandOf(call), startFolder(call), source)).map(call => call.name)
     return check("trace.never", hits.length === 0, `matching calls: ${listed(hits)}`)
   },
 
