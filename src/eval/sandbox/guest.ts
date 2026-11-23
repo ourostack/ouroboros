@@ -5,6 +5,7 @@
  * host builds the scored observation from its own sources and uses this result only for the replies and their order.
  */
 import fs from "node:fs"
+import path from "node:path"
 import type { Readable, Writable } from "node:stream"
 import { getAgentRoot } from "../../heart/identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -20,6 +21,20 @@ export type GuestInput = {
   turnFile: string
   /** `runTelegramTurn` in the container; a test passes its own. */
   runTurn: typeof runTelegramTurn
+  /** The agent's bundle: in the container, the one `--agent` names. Without it, the Butler's. */
+  agentRoot?: string
+}
+
+/**
+ * The one bundle the sandbox mounted in the bundles folder (`$HOME/AgentBundles`, as `getAgentBundlesRoot()` gives
+ * it), so a guest needs no agent name of its own and its command line stays the same for every agent. Every guest
+ * entry other than the Telegram one, which takes `--agent`, finds its bundle this way. It lives here because the
+ * agent image keeps only this file of the sandbox's. Throws if there is no bundle, or more than one.
+ */
+export function mountedAgentRoot(bundlesRoot: string, list: (dir: string) => string[] = (dir) => fs.readdirSync(dir)): string {
+  const bundles = list(bundlesRoot).filter((name) => name.endsWith(".ouro")).sort()
+  if (bundles.length !== 1) throw new Error(`expected one agent bundle in ${bundlesRoot}, found ${bundles.length}`)
+  return path.join(bundlesRoot, bundles[0]!)
 }
 
 function readTurnFile(file: string): GuestTurnFile {
@@ -35,7 +50,7 @@ export async function runGuest(input: GuestInput): Promise<GuestOutcome> {
   try {
     const turn = readTurnFile(input.turnFile)
     const providerRuntime = await createProxyRuntime(channel)
-    const result = await input.runTurn({ agentRoot: getAgentRoot("sanctuary"), prefix: turn.prefix, userText: turn.userText, providerRuntime })
+    const result = await input.runTurn({ agentRoot: input.agentRoot ?? getAgentRoot("sanctuary"), prefix: turn.prefix, userText: turn.userText, providerRuntime })
     outcome = { ok: true, result }
     emitNervesEvent({ component: "eval", event: "eval.guest_end", message: "sandbox guest finished its turn", meta: { outcome: result.outcome } })
   } catch (error) {
