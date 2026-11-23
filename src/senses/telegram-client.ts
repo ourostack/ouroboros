@@ -1,6 +1,6 @@
 import { escapeTelegramHtml, splitTelegramText, type TelegramChunkOptions } from "./telegram-markdown"
 import { emitNervesEvent } from "../nerves/runtime"
-import { approvalRelayToken, relayTokensEqual } from "../a2a/approval-relay"
+import { approvalRelayToken, MIN_RELAY_KEY_LENGTH, relayTokensEqual } from "../a2a/approval-relay"
 import { readFileSync } from "node:fs"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { writeFileAtomicSync } from "../heart/atomic-file"
@@ -1822,17 +1822,18 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     reconcileExpired,
     async relayDeny(input) {
       const receivedAt = now()
-      let match: TelegramPendingApproval | undefined
-      for (const candidate of uniquePending()) {
-        if (candidate.deliveryState !== "bound" || candidate.messageId === null) continue
+      const matches = async (candidate: TelegramPendingApproval): Promise<boolean> => {
+        if (candidate.deliveryState !== "bound" || candidate.messageId === null) return false
         const decisionToken = candidate.decisionToken ?? await options.resolveDecisionToken?.(candidate.approvalId)
-        if (!decisionToken) continue
-        const expected = approvalRelayToken({ decisionToken, approvalId: candidate.approvalId, routeDid: input.routeDid })
-        if (relayTokensEqual(expected, input.relayToken)) match = candidate
+        if (!decisionToken || decisionToken.length < MIN_RELAY_KEY_LENGTH) return false
+        return relayTokensEqual(approvalRelayToken({ decisionToken, approvalId: candidate.approvalId, routeDid: input.routeDid }), input.relayToken)
       }
+      let match: TelegramPendingApproval | undefined
+      for (const candidate of uniquePending()) if (await matches(candidate)) match = candidate
       const result = match === undefined ? undefined : await withApprovalExclusive(match.approvalId, true, async (): Promise<TelegramRelayDenyResult> => {
+        // Looked up again under the lock: a tap may have settled it, or its token may be gone, while we waited.
         const pending = uniquePending().find((record) => record.approvalId === match!.approvalId)
-        if (!pending || pending.deliveryState !== "bound" || classifyTelegramPersistedApprovalState(pending) !== "ordinary") return { status: "not_pending" }
+        if (!pending || !await matches(pending) || classifyTelegramPersistedApprovalState(pending) !== "ordinary") return { status: "not_pending" }
         const lowerBound = pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS
         if (receivedAt >= pending.expiresAt || receivedAt < lowerBound) return { status: "expired" }
         try {

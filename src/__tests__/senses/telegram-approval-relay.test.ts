@@ -10,7 +10,7 @@ import {
 
 // Ari says no through Slugger instead of tapping: the Telegram process decides it beside the tap path.
 const ROUTE = "did:key:z6MkSyntheticSluggerRoute"
-const TOKEN = "restored-secret-token"
+const TOKEN = "restored-secret-token-of-43-characters-long!"
 type Records = ReturnType<TelegramPendingApprovalStore["load"]>
 
 function fixture(input: {

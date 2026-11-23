@@ -551,7 +551,6 @@ export function createTelegramApprovalRuntime(options: {
             decision: "deny",
             senderDid: decision.relay.senderDid,
             envelopeBindingId: decision.relay.envelopeBindingId,
-            decisionAt: decision.decisionAt,
           })
         } else if (existing.state === "denied" || existing.state === "expired") {
           record = existing
