@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { buildVoiceTranscript } from "../../../senses/voice"
 import { runVoiceLoopbackTurn } from "../../../senses/voice/turn"
+import { recordVoiceUtterance, voiceUtterances } from "../../../senses/voice/utterances"
+import { turnSpoke } from "../../../senses/turn-attempts"
 import type { VoiceTtsService } from "../../../senses/voice"
 
 describe("voice loopback turn", () => {
@@ -402,5 +407,154 @@ describe("voice loopback turn", () => {
         error: "shared speaker down",
       },
     })
+  })
+})
+
+// Each thing a caller says ends in a recorded outcome, and what they heard is noted before it plays.
+describe("voice turn outcomes", () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+  function utterance(id: string) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "voice-turn-outcomes-"))
+    dirs.push(dir)
+    const turn = recordVoiceUtterance(dir, id, { callSid: "CA1", friendId: "ari", sessionKey: "phone", transport: "media-stream" })!
+    return { turn, journal: voiceUtterances(dir) }
+  }
+  const spoken = (utteranceId: string) => ({
+    utteranceId, audio: Buffer.from("audio"), byteLength: 5, chunkCount: 1,
+    modelId: "eleven_flash_v2_5", voiceId: "voice_123", mimeType: "audio/pcm;rate=16000",
+  })
+
+  it("notes each spoken delivery before it is synthesized, and records the utterance as answered", async () => {
+    const { turn, journal } = utterance("utt_outcome_segments")
+    const noted: unknown[] = []
+    const tts: VoiceTtsService = {
+      synthesize: vi.fn(async (request) => {
+        noted.push(journal.get("utt_outcome_segments")?.spokeRecords?.map((spoke) => spoke.kind))
+        return spoken(request.utteranceId)
+      }),
+    }
+    const runSenseTurn = vi.fn(async (request) => {
+      await request.deliverySink?.onDelivery({ kind: "speak", text: "One second." })
+      request.onOutwardSend?.(turnSpoke("tool:send_message", null))
+      await request.deliverySink?.onDelivery({ kind: "settle", text: "Done now." })
+      return { response: "One second. Done now.", ponderDeferred: false }
+    })
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", runSenseTurn, tts, utterance: turn,
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_segments", text: "status?", source: "loopback" }),
+    })
+    expect(noted).toEqual([["speech:speak"], ["speech:speak", "tool:send_message", "speech:settle"]])
+    expect(journal.outcome("utt_outcome_segments")).toMatchObject({ outcome: "answered", attempts: 1 })
+  })
+
+  it("notes the whole reply before it is synthesized when nothing was delivered during the turn", async () => {
+    const { turn, journal } = utterance("utt_outcome_whole")
+    let noted: unknown
+    const tts: VoiceTtsService = {
+      synthesize: vi.fn(async (request) => {
+        noted = journal.get("utt_outcome_whole")
+        return spoken(request.utteranceId)
+      }),
+    }
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", tts, utterance: turn,
+      runSenseTurn: vi.fn(async () => ({ response: "Loud and clear.", ponderDeferred: false })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_whole", text: "hear me?", source: "loopback" }),
+    })
+    expect(noted).toMatchObject({ spoke: true, spokeRecords: [expect.objectContaining({ kind: "speech:text", textLength: 15 })] })
+    expect(journal.outcome("utt_outcome_whole")).toMatchObject({ outcome: "answered" })
+  })
+
+  it("records an utterance whose reply could not be spoken as failed", async () => {
+    const whole = utterance("utt_outcome_tts_fail")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: whole.turn,
+      tts: { synthesize: vi.fn(async () => { throw new Error("speaker unplugged") }) },
+      runSenseTurn: vi.fn(async () => ({ response: "No audio.", ponderDeferred: false })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_tts_fail", text: "answer", source: "loopback" }),
+    })
+    expect(whole.journal.outcome("utt_outcome_tts_fail")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: speaker unplugged" })
+
+    const segment = utterance("utt_outcome_segment_fail")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: segment.turn,
+      tts: { synthesize: vi.fn() },
+      runSenseTurn: vi.fn(async () => ({
+        response: "No audio.", ponderDeferred: false, deliveries: [],
+        deliveryFailures: [{ kind: "settle" as const, text: "No audio.", error: "shared speaker down" }],
+      })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_segment_fail", text: "answer", source: "loopback" }),
+    })
+    expect(segment.journal.outcome("utt_outcome_segment_fail")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: shared speaker down" })
+  })
+
+  it("records an utterance whose turn threw as failed and passes the error on", async () => {
+    const { turn, journal } = utterance("utt_outcome_threw")
+    await expect(runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: turn, tts: { synthesize: vi.fn() },
+      runSenseTurn: vi.fn(async () => { throw new Error("provider down") }),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_threw", text: "answer", source: "loopback" }),
+    })).rejects.toThrow("provider down")
+    expect(journal.outcome("utt_outcome_threw")).toMatchObject({ outcome: "failed", detail: "the turn failed: provider down", attempts: 1 })
+
+    const empty = utterance("utt_outcome_empty")
+    await expect(runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: empty.turn, tts: { synthesize: vi.fn() },
+      runSenseTurn: vi.fn(),
+      transcript: { ...buildVoiceTranscript({ utteranceId: "utt_outcome_empty", text: "x", source: "loopback" }), text: "   " },
+    })).rejects.toThrow("voice transcript text is empty")
+    expect(empty.journal.outcome("utt_outcome_empty")).toMatchObject({ outcome: "failed", detail: "the turn failed: voice transcript text is empty" })
+  })
+
+  it("records a turn with nothing to say as silent, without noting speech that never went out", async () => {
+    const { turn, journal } = utterance("utt_outcome_silent")
+    let noted: unknown
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: turn,
+      tts: { synthesize: vi.fn(async () => { noted = journal.get("utt_outcome_silent"); throw new Error("voice TTS text is empty") }) },
+      runSenseTurn: vi.fn(async () => ({ response: "  ", ponderDeferred: false })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_silent", text: "never mind", source: "loopback" }),
+    })
+    expect(noted).toMatchObject({ spoke: false })
+    expect(journal.outcome("utt_outcome_silent")).toMatchObject({ outcome: "silent", detail: "the agent had nothing to say" })
+  })
+
+  it("records a turn whose only speech could not be spoken as failed, even when its final reply is empty", async () => {
+    const { turn, journal } = utterance("utt_outcome_mid_turn_fail")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: turn,
+      tts: { synthesize: vi.fn(async () => { throw new Error("speaker unplugged") }) },
+      runSenseTurn: vi.fn(async (request) => {
+        // As the real turn does, a failed delivery is caught and the turn goes on.
+        await request.deliverySink?.onDelivery({ kind: "speak", text: "Checking now." }).catch(() => undefined)
+        return { response: "", ponderDeferred: false }
+      }),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_mid_turn_fail", text: "status?", source: "loopback" }),
+    })
+    expect(journal.outcome("utt_outcome_mid_turn_fail")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: speaker unplugged" })
+
+    const failures = utterance("utt_outcome_delivery_failures")
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", utterance: failures.turn, tts: { synthesize: vi.fn() },
+      runSenseTurn: vi.fn(async () => ({
+        response: "", ponderDeferred: false, deliveries: [],
+        deliveryFailures: [{ kind: "speak" as const, text: "Checking now.", error: "shared speaker down" }],
+      })),
+      transcript: buildVoiceTranscript({ utteranceId: "utt_outcome_delivery_failures", text: "status?", source: "loopback" }),
+    })
+    expect(failures.journal.outcome("utt_outcome_delivery_failures")).toMatchObject({ outcome: "failed", detail: "the reply could not be spoken: shared speaker down" })
+  })
+
+  it("passes no outward-send hook when the utterance has no record", async () => {
+    const runSenseTurn = vi.fn(async () => ({ response: "Hi.", ponderDeferred: false }))
+    await runVoiceLoopbackTurn({
+      agentName: "slugger", friendId: "ari", sessionKey: "phone", runSenseTurn,
+      tts: { synthesize: vi.fn(async (request) => spoken(request.utteranceId)) },
+      transcript: buildVoiceTranscript({ utteranceId: "utt_no_record", text: "hi", source: "loopback" }),
+    })
+    expect(runSenseTurn.mock.calls[0]![0]).not.toHaveProperty("onOutwardSend")
   })
 })
