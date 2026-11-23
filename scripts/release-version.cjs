@@ -5,14 +5,16 @@
 // Counting starts at npm's last release: the newest published version whose commit (npm's gitHead, or its v<version>
 // tag) is in this push's history before the push. Every later first-parent commit that releases something (see
 // isReleasableCommit) takes the next number, in order. Numbers already on npm never depend on today's rules. A commit
-// that changes package.json's version starts a new line from that version, and must move the version forward; one
-// that does not stops the release rather than reuse a number. With nothing on npm, counting starts at the last commit
-// that changed the version (the anchor).
+// that changes package.json's version starts a new line from that version. It must go above npm's last release and
+// any version an earlier commit set, or the release stops rather than reuse a number; it may land on a number counted
+// since npm's release, since npm never had that one. With nothing on npm, counting starts at the last commit that
+// changed the version (the anchor).
 //
-// A push publishes once: the version of the newest releasable commit it brought, with every change note from all of
-// its commits, as its last commit left them, in that version's changelog entry. A push of several commits (a rebase
-// merge) therefore skips the numbers of its earlier commits. Earlier entries are the changelog npm's last release
-// carried, plus one per numbered commit since. A commit's entry is the notes it added under changes/, or its subject.
+// A push publishes once: the version of the newest releasable commit it brought. npm never had the numbers counted
+// between its last release and this push, so that version's changelog entry holds the change notes of every numbered
+// commit since npm's last release, as the push's last numbered commit left them (a commit with no notes gives its
+// subject). Below it come main's changelog.json, then the older entries npm's last release carried, main's copy
+// winning where both have a version.
 //
 //   node scripts/release-version.cjs version              prints HEAD's version
 //   node scripts/release-version.cjs push <before>        for the push before..HEAD, prints version=<v> and
@@ -20,13 +22,21 @@
 //   node scripts/release-version.cjs dispatch             the same for a manual run on HEAD; fails unless npm
 //                                                          published HEAD's version from HEAD, so an image never
 //                                                          carries code npm did not ship
-//   node scripts/release-version.cjs apply [<before>]     writes the version and changelog into the release files,
-//                                                          prints the version
+//   node scripts/release-version.cjs apply [<before>] [--changelog <file>]
+//                                                          writes the version and changelog into the release files,
+//                                                          prints the version; with --changelog, the file's versions
+//                                                          are the changelog, as written
 //   node scripts/release-version.cjs assert-new <version> fails unless <version> is above npm's highest, or HEAD
 //                                                          already published it (a re-run)
+//   node scripts/release-version.cjs published-changelog <version> <out>
+//                                                          waits (RELEASE_WAIT_SECONDS, default 5400) for npm to
+//                                                          publish <version> from HEAD, then writes the changelog
+//                                                          its tarball carries to <out>
 //
-// Every command reads npm (npm view, and npm pack for the last release's changelog). `apply` also loads
-// release-bump.cjs (and semver).
+// Planning reads npm's version list and every version's gitHead (two npm view calls). Only `apply` and
+// `published-changelog` download a tarball (npm pack), waiting out ETARGET while npm cannot serve a new version yet;
+// `apply` falls back to an older release's changelog if it still cannot. `apply` also loads release-bump.cjs (and
+// semver).
 
 const { execFileSync } = require("child_process")
 const fs = require("fs")
@@ -188,41 +198,79 @@ function resolvePushStart(git, before) {
 }
 
 const PACKAGE = "@ouro.bot/cli"
-const EMPTY_REGISTRY = { versions: () => [], gitHead: () => undefined, changelog: () => [] }
+const EMPTY_REGISTRY = { versions: () => [], gitHeads: () => new Map(), gitHead: () => undefined, changelog: () => [] }
 
-// npm as the release plan reads it: the published versions, the commit each was published from, and the changelog
-// a version's tarball carries. Each answer is asked once.
-function npmRegistry(execFileSyncImpl = execFileSync) {
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
+}
+
+// npm as the release reads it: the published versions, the commit each was published from (gitHead), and the
+// changelog a version's tarball carries. The version list and the gitHeads are one call each, asked once; a single
+// version's gitHead is asked fresh, since a wait polls it. npm can list a version before it serves the tarball
+// (ETARGET), so fetching one waits that out, bounded, as scripts/npm-publish-idempotency.cjs does.
+function npmRegistry(execFileSyncImpl = execFileSync, { attempts = 20, intervalMs = 15_000, sleep = sleepSync } = {}) {
   const npm = (...args) => execFileSyncImpl("npm", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 })
-  const memo = (fn) => {
-    const cache = new Map()
-    return (key) => {
-      if (!cache.has(key)) cache.set(key, fn(key))
-      return cache.get(key)
+  const once = (fn) => {
+    let value
+    let done = false
+    return () => {
+      if (!done) {
+        value = fn()
+        done = true
+      }
+      return value
     }
   }
+  const versions = once(() => {
+    const parsed = JSON.parse(npm("view", PACKAGE, "versions", "--json"))
+    return Array.isArray(parsed) ? parsed : [parsed]
+  })
+  // A range of every version's major.minor.patch with -0 takes in their prereleases too.
+  const gitHeads = once(() => {
+    const cores = [...new Set(versions().map((version) => String(version).split(/[-+]/)[0]))]
+    const heads = new Map()
+    if (cores.length === 0) return heads
+    const output = npm("view", `${PACKAGE}@${cores.map((core) => `>=${core}-0`).join(" || ")}`, "gitHead")
+    for (const line of String(output).split("\n")) {
+      const match = /^\S+@(\S+) '([0-9a-f]{40})'$/.exec(line.trim())
+      if (match) heads.set(match[1], match[2])
+    }
+    return heads
+  })
   return {
-    versions: memo(() => {
-      const parsed = JSON.parse(npm("view", PACKAGE, "versions", "--json"))
-      return Array.isArray(parsed) ? parsed : [parsed]
-    }),
-    gitHead: memo((version) => npm("view", `${PACKAGE}@${version}`, "gitHead").trim() || undefined),
-    changelog: memo((version) => {
+    versions,
+    gitHeads,
+    gitHead: (version) => gitHeads().get(version) ?? (npm("view", `${PACKAGE}@${version}`, "gitHead").trim() || undefined),
+    changelog: (version) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-version-"))
       try {
-        const [packed] = JSON.parse(npm("pack", `${PACKAGE}@${version}`, "--pack-destination", dir, "--json"))
-        const text = execFileSyncImpl("tar", ["-xzOf", path.join(dir, packed.filename), "package/changelog.json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
-        const versions = JSON.parse(text).versions
-        if (!Array.isArray(versions)) throw new Error(`${PACKAGE}@${version}'s changelog.json has no versions array`)
-        return versions
+        let packed
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            packed = npm("pack", `${PACKAGE}@${version}`, "--pack-destination", dir, "--json")
+            break
+          } catch (failure) {
+            const said = `${failure.stderr ?? ""}${failure.stdout ?? ""}${failure.message ?? ""}`
+            if (!/\bETARGET\b/.test(said) || attempt >= attempts) {
+              throw new Error(`could not download ${PACKAGE}@${version} from npm after ${attempt} attempt${attempt === 1 ? "" : "s"}: ${said.trim()}`)
+            }
+            sleep(intervalMs)
+          }
+        }
+        const [{ filename }] = JSON.parse(packed)
+        const text = execFileSyncImpl("tar", ["-xzOf", path.join(dir, filename), "package/changelog.json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+        const entries = JSON.parse(text).versions
+        if (!Array.isArray(entries)) throw new Error(`${PACKAGE}@${version}'s changelog.json has no versions array`)
+        return entries
       } finally {
         fs.rmSync(dir, { recursive: true, force: true })
       }
-    }),
+    },
   }
 }
 
-const NEWEST_RELEASES_TRIED = 20
+// When npm cannot serve the last release's tarball, apply reads the changelog of one of these older ones instead.
+const FALLBACK_RELEASES = 5
 
 function planRelease(input = {}) {
   const root = path.resolve(input.root ?? process.cwd())
@@ -272,8 +320,9 @@ function planRelease(input = {}) {
   const isInPush = (sha) => (inPush ? inPush.has(sha) : true)
 
   // npm's last release before this push: the newest published version whose commit HEAD's history had then.
+  const heads = registry.gitHeads()
   const commitOf = (version) => {
-    const fromNpm = registry.gitHead(version)
+    const fromNpm = heads.get(version)
     if (fromNpm && /^[0-9a-f]{40}$/.test(fromNpm)) return fromNpm
     try {
       return git("rev-parse", "--verify", "-q", `refs/tags/v${version}^{commit}`).trim()
@@ -284,17 +333,18 @@ function planRelease(input = {}) {
   const releasedBefore = (sha) => Boolean(pushStart) && succeeds("merge-base", "--is-ancestor", sha, pushStart)
   const published = registry.versions().filter((version) => SEMVER.test(version)).sort((a, b) => compareVersions(b, a))
   let last = null
-  for (const version of published.slice(0, NEWEST_RELEASES_TRIED)) {
+  const fallbacks = []
+  for (const version of published) {
     const sha = commitOf(version)
-    if (sha && succeeds("cat-file", "-e", `${sha}^{commit}`) && releasedBefore(sha)) {
-      last = { version, sha }
-      break
-    }
+    if (!sha || !succeeds("cat-file", "-e", `${sha}^{commit}`) || !releasedBefore(sha)) continue
+    if (!last) last = { version, sha }
+    else fallbacks.push(version)
+    if (fallbacks.length >= FALLBACK_RELEASES) break
   }
   if (published.length > 0 && !last && pushStart) {
     throw new Error(
-      `none of npm's published versions came from a commit in this history before ${pushStart.slice(0, 12)} ` +
-      `(tried the newest ${Math.min(published.length, NEWEST_RELEASES_TRIED)}), so there is no release to count from`,
+      `none of npm's published versions came from a commit in this history before ${pushStart.slice(0, 12)}, ` +
+      "so there is no release to count from",
     )
   }
 
@@ -304,20 +354,26 @@ function planRelease(input = {}) {
   let base = last ? last.version : versionAt(start)
   let current = base
   let count = 0
+  // A version change must go above what npm last released, and above any version an earlier change set. Numbers
+  // counted since npm's release were never published, so a change may land on one of them.
+  let floor = base
+  let floorSource = last ? "the version npm last released before it" : "the version set before it"
   let lineStartInPush = !last && !previousAnchor && isInPush(anchor)
-  const earlier = []
+  const numbered = []
   const pushCommits = []
 
   for (const commit of firstParentCommits(git, `${start}..HEAD`)) {
     if (changesVersion(commit.sha)) {
       const version = versionAt(commit.sha)
-      if (!SEMVER.test(version) || compareVersions(version, current) <= 0) {
+      if (!SEMVER.test(version) || compareVersions(version, floor) <= 0) {
         throw new Error(
           `${commit.sha.slice(0, 12)} (${commit.subject}) sets package.json's version to ${version}, which is not ` +
-          `above ${current}, the version already released before it. A release never reuses or goes back to a ` +
-          `number: revert that version change (npm run release:drop-bump on its branch), or set a version above ${current}.`,
+          `above ${floor}, ${floorSource}. A release never reuses or goes back to a number: revert that version ` +
+          `change (npm run release:drop-bump on its branch), or set a version above ${floor}.`,
         )
       }
+      floor = version
+      floorSource = "the version an earlier commit set"
       base = version
       current = version
       count = 0
@@ -333,11 +389,13 @@ function planRelease(input = {}) {
         subject: commit.subject,
         notes: commit.changes.filter((change) => change.status === "A" && isChangeNotePath(change.file)).map((change) => change.file),
       }
+      numbered.push(entry)
       if (isInPush(commit.sha)) pushCommits.push(entry)
-      else earlier.push(entry)
     }
   }
-  const groups = [...earlier.map((entry) => [entry]), ...(pushCommits.length > 0 ? [pushCommits] : [])]
+  // npm never had the numbers counted since its last release, except the one this push publishes, so every one of
+  // those commits' notes goes into this push's entry.
+  const groups = numbered.length > 0 ? [numbered] : []
 
   // A group's notes as its last commit left them, or as they were added when a later commit removed them.
   const noteSpecs = (group) => group.flatMap((commit) => commit.notes.map((file) => ({
@@ -362,10 +420,10 @@ function planRelease(input = {}) {
     baseVersion: base,
     published: last ? last.version : null,
     publishedCommit: last ? last.sha : null,
+    fallbacks,
     version: current,
     release: pushCommits.length > 0 || lineStartInPush,
     entries,
-    history: last ? registry.changelog(last.version) : [],
   }
 }
 
@@ -380,10 +438,36 @@ function applyRelease(input) {
     throw new Error("changelog.json must contain a versions array")
   }
   const writeVersion = prepareReleaseVersion({ root, version: plan.version })
-  // This push's entries first, then what npm's last release carried, then what main's changelog.json has besides.
+  if (Array.isArray(input.changelog)) {
+    changelog.versions = input.changelog
+    writeVersion()
+    writeJson(changelogPath, changelog)
+    return plan.version
+  }
+  const registry = input.registry ?? EMPTY_REGISTRY
+  const warn = input.warn ?? console.error
+  let history = []
+  if (plan.published) {
+    let lastFailure
+    history = null
+    for (const version of [plan.published, ...(plan.fallbacks ?? [])]) {
+      try {
+        history = registry.changelog(version)
+        break
+      } catch (failure) {
+        lastFailure = failure
+        warn(`could not read ${version}'s changelog from npm (${failure instanceof Error ? failure.message : failure}); trying an older release`)
+      }
+    }
+    if (!history) {
+      throw new Error(`could not read the changelog of any release npm has before this push: ${lastFailure instanceof Error ? lastFailure.message : lastFailure}`)
+    }
+  }
+  // This push's entry first, then main's changelog.json (so a fix to an older entry wins), then what npm's last
+  // release carried besides.
   const merged = []
   const seen = new Set()
-  for (const entry of [...plan.entries.map((e) => ({ version: e.version, changes: e.changes })), ...(plan.history ?? []), ...changelog.versions]) {
+  for (const entry of [...plan.entries.map((e) => ({ version: e.version, changes: e.changes })), ...changelog.versions, ...history]) {
     if (seen.has(entry?.version)) continue
     seen.add(entry?.version)
     merged.push(entry)
@@ -404,14 +488,45 @@ function runReleaseVersionCli(argv = process.argv.slice(2), deps = {}) {
   const log = deps.log ?? console.log
   const error = deps.error ?? console.error
   const registry = deps.registry ?? npmRegistry(deps.execFileSyncImpl)
-  const [command, argument] = argv
-  if (!["version", "push", "dispatch", "apply", "assert-new"].includes(command) ||
-    (["push", "assert-new"].includes(command) && !argument)) {
-    error("usage: node scripts/release-version.cjs version | push <before> | dispatch | apply [<before>] | assert-new <version>")
+  const args = [...argv]
+  const flag = args.indexOf("--changelog")
+  const changelogFile = flag >= 0 ? args.splice(flag, 2)[1] : undefined
+  const [command, argument, extra] = args
+  if (!["version", "push", "dispatch", "apply", "assert-new", "published-changelog"].includes(command) ||
+    (["push", "assert-new"].includes(command) && !argument) ||
+    (command === "published-changelog" && !(argument && extra)) ||
+    (flag >= 0 && (command !== "apply" || !changelogFile))) {
+    error(
+      "usage: node scripts/release-version.cjs version | push <before> | dispatch | apply [<before>] [--changelog <file>] | " +
+      "assert-new <version> | published-changelog <version> <out>",
+    )
     return 2
   }
   try {
     const head = () => gitRunner(path.resolve(root), deps.execFileSyncImpl ?? execFileSync)("rev-parse", "HEAD").trim()
+    if (command === "published-changelog") {
+      // The image waits for npm's release of this very commit, then carries the changelog npm shipped with it.
+      const now = deps.now ?? Date.now
+      const sleep = deps.sleep ?? sleepSync
+      const waitSeconds = deps.waitSeconds ?? Number(process.env.RELEASE_WAIT_SECONDS || 5400)
+      const intervalMs = 30_000
+      const commit = head()
+      const started = now()
+      for (;;) {
+        const from = registry.gitHead(argument)
+        if (from === commit) break
+        if (from) {
+          throw new Error(`npm published ${argument} from ${from.slice(0, 12)}, not ${commit.slice(0, 12)}, so this commit's image must not carry that release`)
+        }
+        if (now() - started >= waitSeconds * 1000) {
+          throw new Error(`npm has not published ${argument} from ${commit.slice(0, 12)} after ${waitSeconds}s; the npm job has not finished or failed`)
+        }
+        sleep(intervalMs)
+      }
+      fs.writeFileSync(extra, `${JSON.stringify({ versions: registry.changelog(argument) }, null, 2)}\n`)
+      error(`wrote the changelog npm published with ${argument} to ${extra}`)
+      return 0
+    }
     if (command === "assert-new") {
       const highest = registry.versions().filter((version) => SEMVER.test(version)).sort((a, b) => compareVersions(b, a))[0]
       if (highest && compareVersions(argument, highest) <= 0 && !(argument === highest && registry.gitHead(argument) === head())) {
@@ -426,7 +541,9 @@ function runReleaseVersionCli(argv = process.argv.slice(2), deps = {}) {
     if (command === "version") {
       log(plan.version)
     } else if (command === "apply") {
-      applyRelease({ root, plan })
+      const given = changelogFile ? JSON.parse(fs.readFileSync(changelogFile, "utf8")).versions : undefined
+      if (changelogFile && !Array.isArray(given)) throw new Error(`${changelogFile} has no versions array`)
+      applyRelease({ root, plan, registry, warn: error, changelog: given })
       error(`release files written for ${plan.version} (counted from ${plan.published ?? `the version change at ${plan.anchor.slice(0, 12)}`})`)
       log(plan.version)
     } else if (command === "dispatch") {

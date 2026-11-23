@@ -72,11 +72,18 @@ function head(root: string): string {
 type Published = Record<string, { commit?: string; changelog?: Array<{ version: string; changes: string[] }> }>
 
 // What npm has published: each version's commit (gitHead) and the changelog.json its tarball carries.
-function registry(published: Published) {
+function registry(published: Published, unreadable: string[] = []) {
+  const asked: string[] = []
   return {
+    asked,
     versions: () => Object.keys(published),
+    gitHeads: () => new Map(Object.entries(published).flatMap(([version, release]) => (release.commit ? [[version, release.commit]] : []))),
     gitHead: (version: string) => published[version]?.commit,
-    changelog: (version: string) => published[version]?.changelog ?? [],
+    changelog: (version: string) => {
+      asked.push(version)
+      if (unreadable.includes(version)) throw new Error(`could not download @ouro.bot/cli@${version} from npm: ETARGET`)
+      return published[version]?.changelog ?? []
+    },
   }
 }
 
@@ -166,11 +173,8 @@ describe("planRelease", { timeout: 30_000 }, () => {
 
     const plan = planRelease({ root })
     expect(plan.version).toBe("0.1.0-alpha.13")
-    expect(plan.entries.map((entry: { version: string; changes: string[] }) => [entry.version, entry.changes])).toEqual([
-      ["0.1.0-alpha.13", ["Third."]],
-      ["0.1.0-alpha.12", ["second without a note (#5)"]],
-      ["0.1.0-alpha.11", ["First fix.", "And a detail."]],
-    ])
+    // Nothing is on npm, so every numbered commit is unpublished, and its notes fold into the one entry.
+    expect(entryPairs(plan)).toEqual([["0.1.0-alpha.13", ["First fix.", "And a detail.", "Third."]]])
   })
 
   it("keeps the version of the last release for a commit that releases nothing", () => {
@@ -183,14 +187,15 @@ describe("planRelease", { timeout: 30_000 }, () => {
     expect(planRelease({ root }).version).toBe("0.1.0-alpha.11")
   })
 
-  it("counts only notes a commit adds, not edits to an earlier note", () => {
+  it("counts only notes a commit adds, not edits to a note npm already released", () => {
     const root = makeRepo()
     write(root, "changes/first.md", "First.\n")
     commit(root, "first (#3)")
+    const published = registry({ "0.1.0-alpha.11": { commit: head(root) } })
     write(root, "changes/first.md", "First, reworded.\n")
     write(root, "src/a.ts", "export const a = 3\n")
     commit(root, "second (#4)")
-    const plan = planRelease({ root })
+    const plan = planRelease({ root, registry: published })
     expect(plan.entries[0]).toMatchObject({ version: "0.1.0-alpha.12", changes: ["second (#4)"] })
   })
 
@@ -207,7 +212,7 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const plan = planRelease({ root })
     expect(plan.baseVersion).toBe(lineStart)
     expect(plan.version).toBe("0.2.0-alpha.1")
-    expect(plan.entries.map((entry: { version: string }) => entry.version)).toEqual(["0.2.0-alpha.1", "0.1.0-alpha.11"])
+    expect(entryPairs(plan)).toEqual([["0.2.0-alpha.1", ["First.", "Next."]]])
   })
 
   it("ignores dependency-only edits to package.json when finding the anchor", () => {
@@ -233,7 +238,7 @@ describe("planRelease", { timeout: 30_000 }, () => {
     commit(root, "next (#5)")
     const plan = planRelease({ root })
     expect(plan).toMatchObject({ anchor, baseVersion: BASE, version: "0.1.0-alpha.13" })
-    expect(entryPairs(plan).map(([v]) => v)).toEqual(["0.1.0-alpha.13", "0.1.0-alpha.12", "0.1.0-alpha.11"])
+    expect(entryPairs(plan).map(([v]) => v)).toEqual(["0.1.0-alpha.13"])
   })
 
   it("reads a change note in a push as the push left it", () => {
@@ -315,34 +320,26 @@ describe("planRelease", { timeout: 30_000 }, () => {
     for (const before of [undefined, "0000000000000000000000000000000000000000", "not-a-commit"]) {
       const plan = planRelease({ root, before })
       expect(plan.release).toBe(true)
-      expect(entryPairs(plan)).toEqual([["0.1.0-alpha.12", ["Second."]], ["0.1.0-alpha.11", ["First."]]])
+      expect(entryPairs(plan)).toEqual([["0.1.0-alpha.12", ["First.", "Second."]]])
     }
   })
 
-  it("rebuilds earlier entries one per commit, whatever tags exist, so every job writes the same changelog", () => {
+  it("folds the notes of every commit npm never released into this push's entry, whatever tags exist", () => {
     const root = makeRepo()
     write(root, "changes/a.md", "A.\n")
     commit(root, "a (#3)")
+    const published = registry({ "0.1.0-alpha.11": { commit: head(root) } })
     write(root, "changes/b.md", "B.\n")
-    commit(root, "b, first of a rebase merge")
-    write(root, "changes/c.md", "C.\n")
-    commit(root, "c, second of a rebase merge")
+    commit(root, "b, whose push failed to publish (#4)")
     const before = head(root)
-    write(root, "changes/d.md", "D.\n")
-    commit(root, "d (#5)")
+    write(root, "changes/c.md", "C.\n")
+    commit(root, "c (#5)")
 
-    const untagged = planRelease({ root, before })
-    git(root, "tag", "v0.1.0-alpha.11", "HEAD~3")
-    git(root, "tag", "v0.1.0-alpha.13", "HEAD~1")
-    const tagged = planRelease({ root, before })
-    expect(tagged).toEqual(untagged)
-    expect(untagged.version).toBe("0.1.0-alpha.14")
-    expect(entryPairs(untagged)).toEqual([
-      ["0.1.0-alpha.14", ["D."]],
-      ["0.1.0-alpha.13", ["C."]],
-      ["0.1.0-alpha.12", ["B."]],
-      ["0.1.0-alpha.11", ["A."]],
-    ])
+    const untagged = planRelease({ root, before, registry: published })
+    git(root, "tag", "v0.1.0-alpha.12", "HEAD~1")
+    expect(planRelease({ root, before, registry: published })).toEqual(untagged)
+    expect(untagged.version).toBe("0.1.0-alpha.13")
+    expect(entryPairs(untagged)).toEqual([["0.1.0-alpha.13", ["B.", "C."]]])
   })
 
   it("keeps npm's published history once a new release line starts", () => {
@@ -362,7 +359,7 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const plan = planRelease({ root, registry: published })
     expect(plan.version).toBe("0.2.0-alpha.1")
     expect(entryPairs(plan)).toEqual([["0.2.0-alpha.1", ["Next."]]])
-    applyRelease({ root, plan })
+    applyRelease({ root, plan, registry: published })
     const versions = readJson(root, "changelog.json").versions
     expect(versions.map((entry: { version: string }) => entry.version)).toEqual(["0.2.0-alpha.1", lineStart, "0.1.0-alpha.11", BASE, "0.1.0-alpha.9"])
     expect(versions[2].changes).toEqual(["First, as published."])
@@ -411,7 +408,7 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const plan = planRelease({ root, before, registry: published })
     expect(plan).toMatchObject({ release: true, version: "0.1.0-alpha.13", baseVersion: "0.1.0-alpha.12", published: "0.1.0-alpha.12" })
     expect(entryPairs(plan)).toEqual([["0.1.0-alpha.13", ["B."]]])
-    expect(plan.history).toEqual([{ version: "0.1.0-alpha.12", changes: ["Docs."] }, { version: "0.1.0-alpha.11", changes: ["A."] }])
+    expect(published.asked).toEqual([])
   })
 
   it("counts from a release published before this push, even when npm already has this push's own version", () => {
@@ -464,9 +461,30 @@ describe("planRelease", { timeout: 30_000 }, () => {
     const fallback = makeRepo()
     write(fallback, "changes/a.md", "A.\n")
     commit(fallback, "a (#3)")
-    writeReleaseFiles(fallback, "0.1.0-alpha.11", readJson(fallback, "changelog.json").versions)
-    commit(fallback, "an old-style bump (#4)")
-    expect(() => planRelease({ root: fallback })).toThrow("which is not above 0.1.0-alpha.11")
+    writeReleaseFiles(fallback, "0.1.0-alpha.3", readJson(fallback, "changelog.json").versions)
+    commit(fallback, "an old-style bump back to 3 (#4)")
+    expect(() => planRelease({ root: fallback })).toThrow(`which is not above ${BASE}`)
+  })
+
+  it("accepts a version change above npm's release even when a number counted since then reaches it, so main never wedges", () => {
+    const root = makeRepo()
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a (#3)")
+    const published = registry({ "0.1.0-alpha.11": { commit: head(root) } })
+    write(root, "changes/b.md", "B.\n")
+    commit(root, "b, counted 12 but never published (#4)")
+    writeReleaseFiles(root, "0.1.0-alpha.12", readJson(root, "changelog.json").versions)
+    commit(root, "an old-style bump to 12 that landed late (#5)")
+    write(root, "changes/c.md", "C.\n")
+    commit(root, "c (#6)")
+    const plan = planRelease({ root, registry: published })
+    expect(plan.version).toBe("0.1.0-alpha.13")
+    expect(entryPairs(plan)).toEqual([["0.1.0-alpha.13", ["B.", "C."]]])
+    writeReleaseFiles(root, "0.2.0-alpha.0", readJson(root, "changelog.json").versions)
+    commit(root, "start 0.2 (#7)")
+    writeReleaseFiles(root, "0.1.0-alpha.20", readJson(root, "changelog.json").versions)
+    commit(root, "a stale bump back onto the old line (#8)")
+    expect(() => planRelease({ root, registry: published })).toThrow("which is not above 0.2.0-alpha.0")
   })
 
   it("refuses a history with no version anywhere in package.json", () => {
@@ -492,49 +510,129 @@ describe("compareVersions", () => {
 })
 
 describe("npmRegistry", { timeout: 30_000 }, () => {
-  it("reads npm's versions, a version's gitHead and the changelog its tarball carries, asking each once", () => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-registry-"))
-    json(work, "package/changelog.json", { versions: [{ version: "0.1.0-alpha.11", changes: ["A."] }] })
+  function tarball(work: string, changelog: unknown): string {
+    json(work, "package/changelog.json", changelog)
     execFileSync("tar", ["-czf", path.join(work, "cli.tgz"), "-C", work, "package"])
+    return path.join(work, "cli.tgz")
+  }
+  function failure(stderr: string): Error {
+    return Object.assign(new Error("npm failed"), { status: 1, stderr })
+  }
+
+  it("reads npm's versions and every version's gitHead in one call each, asking once", () => {
     const calls: string[] = []
-    const exec = (command: string, args: string[], options: object) => {
+    const exec = (command: string, args: string[]) => {
       calls.push(`${command} ${args.join(" ")}`)
-      if (command !== "npm") return execFileSync(command, args, options)
-      if (args[1] === "@ouro.bot/cli") return args.includes("--json") ? '["0.1.0-alpha.10","0.1.0-alpha.11"]' : ""
-      if (args[0] === "view") return args[1].endsWith("alpha.11") ? "a".repeat(40) + "\n" : "\n"
-      fs.copyFileSync(path.join(work, "cli.tgz"), path.join(args[args.indexOf("--pack-destination") + 1], "cli.tgz"))
-      return JSON.stringify([{ filename: "cli.tgz" }])
+      if (args.includes("versions")) return '["0.0.1","0.1.0-alpha.10","0.1.0-alpha.11","0.2.0"]'
+      if (args[1] === "@ouro.bot/cli@0.1.0-alpha.12") return `${"c".repeat(40)}\n`
+      if (args[1] === "@ouro.bot/cli@0.1.0-alpha.13") return "\n"
+      return `@ouro.bot/cli@0.1.0-alpha.10 '${"a".repeat(40)}'\n@ouro.bot/cli@0.1.0-alpha.11 '${"b".repeat(40)}'\nnoise\n`
     }
     const npm = npmRegistry(exec)
-    expect(npm.versions()).toEqual(["0.1.0-alpha.10", "0.1.0-alpha.11"])
-    expect(npm.versions()).toEqual(["0.1.0-alpha.10", "0.1.0-alpha.11"])
-    expect(npm.gitHead("0.1.0-alpha.11")).toBe("a".repeat(40))
-    expect(npm.gitHead("0.1.0-alpha.10")).toBeUndefined()
-    expect(npm.changelog("0.1.0-alpha.11")).toEqual([{ version: "0.1.0-alpha.11", changes: ["A."] }])
-    expect(calls.filter((call) => call === "npm view @ouro.bot/cli versions --json")).toHaveLength(1)
+    expect(npm.versions()).toEqual(["0.0.1", "0.1.0-alpha.10", "0.1.0-alpha.11", "0.2.0"])
+    expect(npm.versions()).toHaveLength(4)
+    expect(npm.gitHeads()).toEqual(new Map([["0.1.0-alpha.10", "a".repeat(40)], ["0.1.0-alpha.11", "b".repeat(40)]]))
+    expect(npm.gitHead("0.1.0-alpha.11")).toBe("b".repeat(40))
+    expect(npm.gitHead("0.1.0-alpha.12")).toBe("c".repeat(40))
+    expect(npm.gitHead("0.1.0-alpha.13")).toBeUndefined()
+    expect(calls.filter((call) => call.includes("gitHead")).slice(0, 1)).toEqual(["npm view @ouro.bot/cli@>=0.0.1-0 || >=0.1.0-0 || >=0.2.0-0 gitHead"])
+    expect(calls.filter((call) => call.includes("versions"))).toHaveLength(1)
+    expect(npmRegistry((command: string, args: string[]) => (args.includes("versions") ? '"0.1.0-alpha.1"' : "")).versions()).toEqual(["0.1.0-alpha.1"])
+  })
 
-    const single = npmRegistry((command: string, args: string[]) => (args.includes("versions") ? '"0.1.0-alpha.1"' : ""))
-    expect(single.versions()).toEqual(["0.1.0-alpha.1"])
-    json(work, "package/changelog.json", { notVersions: true })
-    execFileSync("tar", ["-czf", path.join(work, "cli.tgz"), "-C", work, "package"])
+  it("reads the changelog a version's tarball carries, waiting out ETARGET while npm cannot serve it yet", () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-registry-"))
+    const file = tarball(work, { versions: [{ version: "0.1.0-alpha.11", changes: ["A."] }] })
+    let refusals = 2
+    const slept: number[] = []
+    const exec = (command: string, args: string[], options: object) => {
+      if (command !== "npm") return execFileSync(command, args, options)
+      if (refusals > 0) {
+        refusals -= 1
+        throw failure("npm error code ETARGET\nnpm error notarget No matching version found")
+      }
+      fs.copyFileSync(file, path.join(args[args.indexOf("--pack-destination") + 1], "cli.tgz"))
+      return JSON.stringify([{ filename: "cli.tgz" }])
+    }
+    const npm = npmRegistry(exec, { attempts: 3, intervalMs: 5, sleep: (ms: number) => slept.push(ms) })
+    expect(npm.changelog("0.1.0-alpha.11")).toEqual([{ version: "0.1.0-alpha.11", changes: ["A."] }])
+    expect(slept).toEqual([5, 5])
+
+    refusals = 5
+    expect(() => npmRegistry(exec, { attempts: 3, intervalMs: 0, sleep: () => undefined }).changelog("0.1.0-alpha.11")).toThrow("ETARGET")
+    const offline = npmRegistry(() => { throw failure("npm error code ENOTFOUND") }, { attempts: 3, sleep: () => { throw new Error("must not wait") } })
+    expect(() => offline.changelog("0.1.0-alpha.11")).toThrow("ENOTFOUND")
+    tarball(work, { notVersions: true })
+    refusals = 0
     expect(() => npmRegistry(exec).changelog("0.1.0-alpha.11")).toThrow("changelog.json has no versions array")
   })
 })
 
 describe("applyRelease", { timeout: 30_000 }, () => {
+  it("reads npm's changelog only when writing the release, falling back to an older release npm cannot serve yet", () => {
+    const root = makeRepo()
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a (#3)")
+    write(root, "changes/b.md", "B.\n")
+    commit(root, "b (#4)")
+    const releases: Published = {
+      [BASE]: { commit: git(root, "rev-parse", "HEAD~2").trim(), changelog: [{ version: BASE, changes: ["base, as published"] }] },
+      "0.1.0-alpha.11": { commit: git(root, "rev-parse", "HEAD~1").trim() },
+    }
+    const published = registry(releases, ["0.1.0-alpha.11"])
+    const plan = planRelease({ root, registry: published })
+    expect(published.asked).toEqual([])
+    const warnings: string[] = []
+    applyRelease({ root, plan, registry: published, warn: (line: string) => warnings.push(line) })
+    expect(published.asked).toEqual(["0.1.0-alpha.11", BASE])
+    expect(warnings.join("\n")).toContain("could not read 0.1.0-alpha.11's changelog from npm")
+    expect(readJson(root, "changelog.json").versions[0]).toEqual({ version: "0.1.0-alpha.12", changes: ["B."] })
+    expect(() => applyRelease({ root, plan, registry: registry(releases, ["0.1.0-alpha.11", BASE]) }))
+      .toThrow("could not read the changelog of any release npm has before this push")
+  })
+
+  it("lets main's changelog.json win over npm's copy, so a fix to an older entry lands", () => {
+    const root = makeRepo()
+    const fixed = readJson(root, "changelog.json")
+    fixed.versions[0].changes = ["base release, typo fixed"]
+    json(root, "changelog.json", fixed)
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a, with a fix to the base entry (#3)")
+    const published = registry({ [BASE]: { commit: git(root, "rev-parse", "HEAD~1").trim(), changelog: [{ version: BASE, changes: ["base release"] }, { version: "0.1.0-alpha.8", changes: ["only on npm"] }] } })
+    const plan = planRelease({ root, registry: published })
+    applyRelease({ root, plan, registry: published })
+    expect(readJson(root, "changelog.json").versions).toEqual([
+      { version: "0.1.0-alpha.11", changes: ["A."] },
+      { version: BASE, changes: ["base release, typo fixed"] },
+      { version: "0.1.0-alpha.9", changes: ["older"] },
+      { version: "0.1.0-alpha.8", changes: ["only on npm"] },
+    ])
+  })
+
+  it("writes a given changelog as it is, for an image that must match npm's package", () => {
+    const root = makeRepo()
+    write(root, "changes/a.md", "A.\n")
+    commit(root, "a (#3)")
+    const npmCopy = [{ version: "0.1.0-alpha.11", changes: ["A, as npm has it."] }]
+    applyRelease({ root, plan: planRelease({ root }), changelog: npmCopy })
+    expect(readJson(root, "changelog.json").versions).toEqual(npmCopy)
+    expect(readJson(root, "package.json").version).toBe("0.1.0-alpha.11")
+  })
+
   it("rebuilds exactly what npm published when nothing is new since that release", () => {
     const root = makeRepo()
     write(root, "changes/a.md", "A.\n")
     commit(root, "a (#3)")
     const changelog = [{ version: "0.1.0-alpha.11", changes: ["A, as published."] }, { version: BASE, changes: ["base release"] }, { version: "0.1.0-alpha.9", changes: ["older"] }]
-    const plan = planRelease({ root, before: head(root), registry: registry({ "0.1.0-alpha.11": { commit: head(root), changelog } }) })
+    const published = registry({ "0.1.0-alpha.11": { commit: head(root), changelog } })
+    const plan = planRelease({ root, before: head(root), registry: published })
     expect(plan).toMatchObject({ version: "0.1.0-alpha.11", release: false, entries: [] })
-    applyRelease({ root, plan })
+    applyRelease({ root, plan, registry: published })
     expect(readJson(root, "changelog.json").versions).toEqual(changelog)
     expect(readJson(root, "package.json").version).toBe("0.1.0-alpha.11")
   })
 
-  it("writes the planned version into every release file and puts the new entries on top of the changelog", () => {
+  it("writes the planned version into every release file and puts one entry, for every unpublished commit, on top of the changelog", () => {
     const root = makeRepo()
     write(root, "changes/first.md", "First.\n")
     commit(root, "first (#3)")
@@ -555,8 +653,7 @@ describe("applyRelease", { timeout: 30_000 }, () => {
     expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")).toContain(`ouroboros-butler:${next}</Repository>`)
     expect(readJson(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json").runtimeVersion).toBe(next)
     expect(readJson(root, "changelog.json").versions).toEqual([
-      { version: next, changes: ["Second."] },
-      { version: "0.1.0-alpha.11", changes: ["First."] },
+      { version: next, changes: ["First.", "Second."] },
       { version: BASE, changes: ["base release"] },
       { version: "0.1.0-alpha.9", changes: ["older"] },
     ])
@@ -656,6 +753,43 @@ describe("runReleaseVersionCli", { timeout: 30_000 }, () => {
     expect(behind.code).toBe(1)
     expect(behind.err.join("\n")).toContain("npm's highest version is 0.1.0-alpha.12")
     expect(capture(root, ["assert-new"], registry(published))).toMatchObject({ code: 2 })
+  })
+
+  it("waits for npm to publish this commit's version, then writes the changelog its tarball carries", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const out = path.join(root, "npm-changelog.json")
+    const npmCopy = [{ version: "0.1.0-alpha.11", changes: ["First, as npm has it."] }]
+    const published: Published = {}
+    let clock = 0
+    const timing = { now: () => clock, sleep: (ms: number) => { clock += ms; if (clock >= 60_000) published["0.1.0-alpha.11"] = { commit: head(root), changelog: npmCopy } } }
+    const run = (releases: Published, deadline = 600) => {
+      const err: string[] = []
+      const code = runReleaseVersionCli(["published-changelog", "0.1.0-alpha.11", out], { root, registry: registry(releases), ...timing, waitSeconds: deadline, log: () => undefined, error: (line: string) => err.push(line) })
+      return { code, err }
+    }
+    expect(run(published)).toMatchObject({ code: 0 })
+    expect(JSON.parse(fs.readFileSync(out, "utf8"))).toEqual({ versions: npmCopy })
+    expect(clock).toBe(60_000)
+
+    const elsewhere = run({ "0.1.0-alpha.11": { commit: "e".repeat(40) } })
+    expect(elsewhere.code).toBe(1)
+    expect(elsewhere.err.join("\n")).toContain("npm published 0.1.0-alpha.11 from eeeeeeeeeeee")
+    clock = 0
+    const late = run({}, 30)
+    expect(late.code).toBe(1)
+    expect(late.err.join("\n")).toContain("npm has not published 0.1.0-alpha.11 from")
+  })
+
+  it("applies with a given changelog file", () => {
+    const root = makeRepo()
+    write(root, "changes/first.md", "First.\n")
+    commit(root, "first (#3)")
+    const file = path.join(os.tmpdir(), `npm-changelog-${process.pid}.json`)
+    fs.writeFileSync(file, JSON.stringify({ versions: [{ version: "0.1.0-alpha.11", changes: ["npm's"] }] }))
+    expect(capture(root, ["apply", head(root) + "^", "--changelog", file])).toMatchObject({ code: 0, out: ["0.1.0-alpha.11"] })
+    expect(readJson(root, "changelog.json").versions).toEqual([{ version: "0.1.0-alpha.11", changes: ["npm's"] }])
   })
 
   it("fails with usage for an unknown command and with the reason for a planning error", () => {
