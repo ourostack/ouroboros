@@ -35,6 +35,8 @@ describe("projectBundle", () => {
       "books/removed/187-old.epub", "books/work/1-abc/copy.epub", "books/.git/HEAD",
       "friends/ari.json", "state/sessions/ari.json", "desk/today.md", "house/notes.md", "diary/today.md",
       "arc/private.md", "tool-profiles.json", ".git/config", "secrets.txt",
+      // An old agent's fact store, which the record migration would move into the now-writable desk (#1734).
+      "psyche/memory/facts.jsonl",
     ]) write(bundleDir, file, `private ${file}`)
     fs.chmodSync(path.join(bundleDir, "books/books"), 0o755)
     for (const file of [
