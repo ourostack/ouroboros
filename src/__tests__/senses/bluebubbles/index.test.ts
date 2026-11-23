@@ -14508,6 +14508,45 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     expect(result).toEqual({ delivered: false, reason: "send_error" })
   })
 
+  it("says a proactive BlueBubbles send may have gone out only when the server got it and did not refuse it", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+    const { BlueBubblesSendError } = await import("../../../senses/bluebubbles/client")
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const sendWith = async (error: unknown) => {
+      mocks.sendText.mockReset().mockRejectedValue(error)
+      return bluebubbles.sendProactiveBlueBubblesMessageToSession({
+        friendId: "friend-uuid-1",
+        sessionKey: "chat:any;-;alice@icloud.com",
+        text: "surface this now",
+      }, {
+        createClient: () => ({
+          sendText: mocks.sendText,
+          editMessage: mocks.editMessage,
+          setTyping: mocks.setTyping,
+          markChatRead: mocks.markChatRead,
+          checkHealth: mocks.checkHealth,
+          repairEvent: mocks.repairEvent,
+          getMessageText: mocks.getMessageText,
+        }),
+        createFriendStore: () => friendStore as any,
+      })
+    }
+    const sendError = (httpStatus: number | null, transportInvoked: boolean) =>
+      new BlueBubblesSendError({ message: "send failed", httpStatus, errorCode: httpStatus ? `http_${httpStatus}` : "timeout", transportInvoked })
+
+    expect(await sendWith(sendError(null, true))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    expect(await sendWith(sendError(503, true))).toEqual({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
+    expect(await sendWith(sendError(400, true))).toEqual({ delivered: false, reason: "send_error" })
+    expect(await sendWith(sendError(null, false))).toEqual({ delivered: false, reason: "send_error" })
+  })
+
   it("stringifies non-Error proactive BlueBubbles send failures", async () => {
     const friendStore = {
       get: vi.fn().mockResolvedValue(makeFriend()),

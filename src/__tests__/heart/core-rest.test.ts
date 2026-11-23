@@ -525,6 +525,10 @@ describe("rest tool in runAgent", () => {
     // Friend ids compare trimmed and case-blind, and a send that may have gone out counts as reaching them.
     expect(unsentSurfaceResult([surface(notSent, " Friend-1 "), surface("delivered — sent to Telegram now", "friend-1")])).toBeNull()
     expect(unsentSurfaceResult([surface(notSent), surface("unconfirmed — the iMessage send failed partway, so it may have reached them; don't resend unless they say they didn't get it")])).toBeNull()
+    // A surface addressed by delegationId is tracked by that held thought, so reaching another one does not clear it.
+    const held = (result: string, delegationId: string) => ({ name: "surface", args: { delegationId }, result })
+    expect(unsentSurfaceResult([held(notSent, "d-1"), held("delivered — sent to Telegram now", "d-2")])).toBe(notSent)
+    expect(unsentSurfaceResult([held(notSent, "d-1"), held("delivered — sent to Telegram now", "d-1")])).toBeNull()
   })
 
   it("names the saved surfaces that a later send in the turn made redundant", async () => {
@@ -533,11 +537,17 @@ describe("rest tool in runAgent", () => {
     const reached = "delivered — sent to Telegram now"
     expect(surfacesReachedLater([])).toEqual([])
     expect(surfacesReachedLater([surface(notSent, "friend-1")])).toEqual([])
-    expect(surfacesReachedLater([surface(notSent, " friend-1 "), surface(notSent, "friend-2"), surface(reached, "Friend-1", "other words")]))
+    // The same words reaching the same friend (ids and spacing compared loosely) make the saved copy redundant.
+    expect(surfacesReachedLater([surface(notSent, " friend-1 "), surface(notSent, "friend-2"), surface(reached, "Friend-1", "  The   news ")]))
       .toEqual([{ friendId: "friend-1", content: "the news" }])
-    // Only the copies saved since the friend was last reached.
-    expect(surfacesReachedLater([surface(notSent, "friend-1", "old"), surface(reached, "friend-1"), surface(notSent, "friend-1", "new"), surface(reached, "friend-1")]))
-      .toEqual([{ friendId: "friend-1", content: "new" }])
+    expect(surfacesReachedLater([surface(notSent, "friend-1"), { name: "send_message", args: { friendId: "friend-1", content: "the news" }, result: "delivered now\nsent to the active bluebubbles chat now" }]))
+      .toEqual([{ friendId: "friend-1", content: "the news" }])
+    // Other news reaching them leaves the saved copy alone, and so does a send with no words.
+    expect(surfacesReachedLater([surface(notSent, "friend-1"), surface(reached, "friend-1", "dinner is at 7")])).toEqual([])
+    expect(surfacesReachedLater([surface(notSent, "friend-1", ""), surface(reached, "friend-1", "")])).toEqual([])
+    // Only the copies saved since those words last reached them.
+    expect(surfacesReachedLater([surface(notSent, "friend-1"), surface(reached, "friend-1"), surface(notSent, "friend-1"), surface(reached, "friend-1")]))
+      .toEqual([{ friendId: "friend-1", content: "the news" }])
     // A surface addressed by delegationId names no friend, so nothing is withdrawn for it.
     expect(surfacesReachedLater([{ name: "surface", args: { content: "x" }, result: notSent }, { name: "surface", args: { content: "x" }, result: reached }])).toEqual([])
   })

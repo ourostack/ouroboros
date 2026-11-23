@@ -735,7 +735,11 @@ function stripThinkBlocksForViolationCheck(input: string): string {
   return out.trim()
 }
 
-const surfaceFriendKey = (record: TurnToolRecord): string => (record.args.friendId ?? "").trim().toLowerCase()
+/** Who a send was for: its friendId, or for a surface addressed only by delegationId, that held thought. */
+const surfaceFriendKey = (record: TurnToolRecord): string => {
+  const friendId = (record.args.friendId ?? "").trim().toLowerCase()
+  return friendId || (record.args.delegationId ? `delegation:${record.args.delegationId.trim()}` : "")
+}
 const isUnsentSurface = (record: TurnToolRecord): boolean =>
   record.name === "surface" && /\(code: surface-not-sent\)$/u.test(record.result)
 /** A surface or send_message that reached the friend now, or may have (unconfirmed). */
@@ -761,18 +765,25 @@ export function unsentSurfaceResult(records: TurnToolRecord[]): string | null {
   return [...unsent.values()].at(-1) ?? null
 }
 
+const sameWords = (left: string | undefined, right: string | undefined): boolean => {
+  const words = (text: string | undefined): string => (text ?? "").trim().replace(/\s+/gu, " ").toLowerCase()
+  return words(left) !== "" && words(left) === words(right)
+}
+
 /**
- * When the newest record reached a friend, the surfaces to that friend saved since they were last reached: their
- * saved copies are now redundant. A surface addressed only by delegationId names no friend and is left alone.
+ * When the newest record reached a friend with the same words as surfaces to that friend saved earlier this turn,
+ * those saved copies are now redundant. Different words leave the saved copy alone, since that news has not reached
+ * them. A surface addressed only by delegationId names no friend and is left alone.
  */
 export function surfacesReachedLater(records: TurnToolRecord[]): Array<{ friendId: string; content: string }> {
   const latest = records.at(-1)
-  if (!latest || !reachedSurfaceFriend(latest) || !surfaceFriendKey(latest)) return []
+  if (!latest || !reachedSurfaceFriend(latest) || !latest.args.friendId?.trim()) return []
+  const said = latest.args.content
   let saved: Array<{ friendId: string; content: string }> = []
   for (const record of records.slice(0, -1)) {
     if (surfaceFriendKey(record) !== surfaceFriendKey(latest)) continue
-    if (isUnsentSurface(record)) saved.push({ friendId: record.args.friendId!.trim(), content: record.args.content ?? "" })
-    else if (reachedSurfaceFriend(record)) saved = []
+    if (isUnsentSurface(record) && sameWords(record.args.content, said)) saved.push({ friendId: record.args.friendId!.trim(), content: record.args.content! })
+    else if (reachedSurfaceFriend(record) && sameWords(record.args.content, said)) saved = []
   }
   return saved
 }

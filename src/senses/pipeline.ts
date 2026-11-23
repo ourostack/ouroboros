@@ -1124,11 +1124,16 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
   const sessionPending = input.drainPending(input.pendingDir)
-  const pending = filterDeliverablePendingMessages({
-    pendingDir: input.pendingDir,
-    channel: input.channel,
-    messages: [...deferredReturns, ...sessionPending],
-  })
+  // A deferred return was saved for the friend's next message, whenever that comes, so a
+  // sense's freshness window for its own pending never drops it.
+  const pending = [
+    ...deferredReturns,
+    ...filterDeliverablePendingMessages({
+      pendingDir: input.pendingDir,
+      channel: input.channel,
+      messages: sessionPending,
+    }),
+  ]
 
   const promotedPendingUserMessages = input.channel === "inner"
     ? pending

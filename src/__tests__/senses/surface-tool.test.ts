@@ -981,7 +981,7 @@ describe("surface tool", () => {
 
       expect(result).toContain("delivered")
       expect(mockSendTeamsOffTurn).toHaveBeenCalledWith(
-        { friendId: "ari", key: "a:chat-1", text: "Ari is at the office.", origin: "proactive" },
+        { friendId: "ari", key: "a:chat-1", text: "Ari is at the office.", origin: "proactive", captureReceipt: true },
         expect.objectContaining({ agentRoot: expect.any(String) }),
       )
     })
@@ -1085,7 +1085,8 @@ describe("surface tool", () => {
 
     it("surfaceToolDefinition tries the next chat when one does not send, and never returns queued", async () => {
       const fs = await import("fs")
-      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "missing_target" })
+      // An iMessage send that failed before the server took it (no delivery receipt) did not go out, so the next chat is tried.
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error" })
       mockSendTelegramAwaitFollowUp.mockResolvedValue({ status: "blocked", detail: "relationship follow-up is not bound to an active request await" })
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: true })
       mockListSessionActivity.mockReturnValue([
@@ -1101,7 +1102,7 @@ describe("surface tool", () => {
       expect(result).toBe("delivered — sent to Teams now")
       expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledTimes(1)
       expect(mockSendTelegramAwaitFollowUp).toHaveBeenCalledWith("test", expect.objectContaining({ key: "telegram:777:42", intent: "generic_outreach" }))
-      expect(mockSendTeamsOffTurn).toHaveBeenCalledWith({ friendId: "friend-1", key: "a:chat-1", text: "the build is out", origin: "proactive" }, expect.anything())
+      expect(mockSendTeamsOffTurn).toHaveBeenCalledWith({ friendId: "friend-1", key: "a:chat-1", text: "the build is out", origin: "proactive", captureReceipt: true }, expect.anything())
       expect(fs.writeFileSync).not.toHaveBeenCalled()
     })
 
@@ -1293,7 +1294,7 @@ describe("surface tool", () => {
 
     it("surfaceToolDefinition stops at an iMessage send that failed partway, says it may have reached them, and saves no copy", async () => {
       const fs = await import("fs")
-      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error" })
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
       mockListSessionActivity.mockReturnValue([session("bluebubbles", dm), session("telegram", "telegram_777_42", 1_000)])
 
       const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
@@ -1316,6 +1317,32 @@ describe("surface tool", () => {
       mockSendTeamsOffTurn.mockResolvedValueOnce({ delivered: false, reason: "send_error", delivery: { state: "not_sent" } })
       expect(await surfaceToolDefinition.handler({ content: "try telegram", friendId: "friend-1" }, { delegatedOrigins: [] } as any))
         .toBe("delivered — sent to Telegram now")
+    })
+
+    it("surfaceToolDefinition refuses text a content guard refused instead of trying it on another chat", async () => {
+      const fs = await import("fs")
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
+      mockListSessionActivity.mockReturnValue([session("bluebubbles", dm), session("telegram", "telegram_777_42", 1_000)])
+      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toBe(
+        "failed — blocked: iMessage refused this text as internal (internal_content_blocked), so no chat sends it; rewrite it as plain words for them (code: delivery-blocked)",
+      )
+
+      mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
+      mockListSessionActivity.mockReturnValue([session("teams", "a:chat-1"), session("telegram", "telegram_777_42", 1_000)])
+      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toMatch(/^failed — blocked: Teams refused/u)
+      expect(mockSendTelegramAwaitFollowUp).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
+    it("surfaceToolDefinition reports a Telegram hand-off to the machine that runs Telegram as forwarded", async () => {
+      mockSendTelegramAwaitFollowUp.mockResolvedValue({ status: "forwarded", detail: "mini-host sends it" })
+      mockListSessionActivity.mockReturnValue([session("telegram", "telegram_777_42"), session("teams", "a:chat-1", 1_000)])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      expect(await surfaceToolDefinition.handler({ content: "over to the mini", friendId: "friend-1" }, { delegatedOrigins: [] } as any))
+        .toBe("forwarded — handed to the machine that runs Telegram: mini-host sends it")
+      expect(mockSendTeamsOffTurn).not.toHaveBeenCalled()
     })
 
     it("surfaceToolDefinition keeps the freshest-session queue for an agent friend, whose MCP session is how it reads", async () => {
@@ -1359,7 +1386,7 @@ describe("surface tool", () => {
       await surfaceToolDefinition.handler({ content: "nobody home", friendId: "friend-new" }, { delegatedOrigins: [], habitSession: { recordSurfaceAttempt } } as any)
       expect(recordSurfaceAttempt).toHaveBeenLastCalledWith(expect.objectContaining({ reason: "answer", result: "deferred", rawStatus: "deferred" }))
 
-      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error" })
+      mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "send_error", delivery: { state: "unknown" } })
       mockListSessionActivity.mockReturnValue([session("bluebubbles", dm)])
       await surfaceToolDefinition.handler({ content: "maybe", friendId: "friend-1" }, { delegatedOrigins: [], habitSession: { recordSurfaceAttempt } } as any)
       expect(recordSurfaceAttempt).toHaveBeenLastCalledWith(expect.objectContaining({ reason: "answer", result: "sent", rawStatus: "unconfirmed" }))

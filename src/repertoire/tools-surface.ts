@@ -126,15 +126,22 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const PUSH_CHANNEL_LABELS: Record<string, string> = { bluebubbles: "iMessage", telegram: "Telegram", teams: "Teams" }
 
 interface OutreachSession { friendId: string; friendName?: string; channel: string; key: string; lastActivityMs: number }
-/** unconfirmed: the send failed partway, so it may have gone out; trying another chat or saving a copy could send it twice. */
-type OutreachAttempt = { status: "delivered" | "forwarded" | "unconfirmed"; detail: string } | { status: "unsent"; why: string }
+/**
+ * unconfirmed: the send failed partway, so it may have gone out; trying another chat or saving a copy could send it twice.
+ * refused: the sense's content guard refused the text itself, so no other chat may carry it either.
+ */
+type OutreachAttempt =
+  | { status: "delivered" | "forwarded" | "unconfirmed"; detail: string }
+  | { status: "unsent"; why: string }
+  | { status: "refused"; why: string }
 type OutreachSenders = Record<"bluebubbles" | "telegram" | "teams", (target: OutreachSession) => Promise<OutreachAttempt>>
 
 /**
  * Spontaneous outreach: send now on the friend's chats that reach a person (iMessage, Telegram, Teams), newest first,
  * skipping group chats and chats quiet for more than SPONTANEOUS_OUTREACH_FRESH_DAYS, until one sends. It never
  * picks an MCP session (the next connecting agent would read it) or a CLI session (they see it only when they reopen
- * it). A send that failed partway stops the search, since it may have reached them. When none sends it returns the
+ * it). A send that failed partway stops the search, since it may have reached them, and so does a content guard's
+ * refusal, since no other chat should carry that text. When none sends it returns the
  * detail for a deferred return: why, and a call only if the friend takes calls.
  */
 export async function sendSpontaneousOutreach(
@@ -153,6 +160,10 @@ export async function sendSpontaneousOutreach(
       attempt = await senders[target.channel as keyof OutreachSenders](target)
     } catch (error) {
       attempt = { status: "unsent", why: error instanceof Error ? error.message : String(error) }
+    }
+    if (attempt.status === "refused") {
+      const detail = `blocked: ${PUSH_CHANNEL_LABELS[target.channel]} refused this text as internal (${attempt.why}), so no chat sends it; rewrite it as plain words for them`
+      return { sent: { status: "failed", detail: withCode(detail, "delivery-blocked") } }
     }
     if (attempt.status !== "unsent") return { sent: { status: attempt.status, detail: attempt.detail } }
     const failure = `${PUSH_CHANNEL_LABELS[target.channel]} did not send (${attempt.why})`
@@ -178,6 +189,8 @@ export async function sendSpontaneousOutreach(
   return { unsentDetail: `${lead} ${why}${call}` }
 }
 
+/** Send outcomes where a sense's guard refused the text itself, not the chat. */
+const CONTENT_REFUSALS: ReadonlySet<string> = new Set(["internal_content_blocked", "blocked_meta_content"])
 const unconfirmedDetail = (sense: string): string =>
   `the ${sense} send failed partway, so it may have reached them; don't resend unless they say they didn't get it`
 const teamsForwardedDetail = (machine: string): string => `handed to ${machine}, which runs Teams; it sends on its next sync`
@@ -192,7 +205,9 @@ function spontaneousOutreachSenders(agentName: string, agentRoot: string, conten
       const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
       const sent = await sendProactiveBlueBubblesMessageToSession({ friendId: target.friendId, sessionKey: target.key, text: content, intent: "generic_outreach", origin: "proactive" })
       if (sent.delivered) return { status: "delivered", detail: "texted them by iMessage now" }
-      return sent.reason === "send_error" ? { status: "unconfirmed", detail: unconfirmedDetail("iMessage") } : { status: "unsent", why: sent.reason ?? "not delivered" }
+      if (sent.delivery?.state === "unknown") return { status: "unconfirmed", detail: unconfirmedDetail("iMessage") }
+      if (sent.reason && CONTENT_REFUSALS.has(sent.reason)) return { status: "refused", why: sent.reason }
+      return { status: "unsent", why: sent.reason ?? "not delivered" }
     },
     telegram: async (target) => {
       const telegramKey = canonicalizeTelegramSessionKey(target.key)
@@ -207,14 +222,17 @@ function spontaneousOutreachSenders(agentName: string, agentRoot: string, conten
         deliveryId: queueItem?.obligationId ? `surface:${queueItem.obligationId}:${hash}` : `surface:${hash}`,
         intent: "generic_outreach",
       })
-      return delivered.status === "delivered_now" ? { status: "delivered", detail: "sent to Telegram now" } : { status: "unsent", why: delivered.detail ?? delivered.status }
+      if (delivered.status === "delivered_now") return { status: "delivered", detail: "sent to Telegram now" }
+      if (delivered.status === "forwarded") return { status: "forwarded", detail: `handed to the machine that runs Telegram: ${delivered.detail}` }
+      return { status: "unsent", why: delivered.detail ?? delivered.status }
     },
     teams: async (target) => {
       const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
-      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive" }, { agentRoot })
+      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive", captureReceipt: true }, { agentRoot })
       if (sent?.forwardedTo) return { status: "forwarded", detail: teamsForwardedDetail(sent.forwardedTo) }
       if (sent?.delivered) return { status: "delivered", detail: "sent to Teams now" }
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }
+      if (sent?.reason && CONTENT_REFUSALS.has(sent.reason)) return { status: "refused", why: sent.reason }
       return { status: "unsent", why: sent?.reason ?? "not available here" }
     },
   }
@@ -275,7 +293,7 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
 
     const deliverTeamsOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
       const { sendTeamsOffTurn } = await import("../senses/teams-off-turn")
-      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive" }, { agentRoot })
+      const sent = await sendTeamsOffTurn({ friendId: target.friendId, key: target.key, text: content, origin: "proactive", captureReceipt: true }, { agentRoot })
       if (sent?.forwardedTo) return { status: "forwarded", detail: teamsForwardedDetail(sent.forwardedTo) }
       if (sent?.delivered) return { status: "delivered", detail: "sent to Teams now" }
       if (sent && teamsSendMayHaveGoneOut(sent)) return { status: "unconfirmed", detail: unconfirmedDetail("Teams") }

@@ -689,6 +689,34 @@ describe("handleInboundTurn", () => {
       }
     })
 
+    it("keeps a surface saved for the person's next message on a later Telegram or voice turn, however old", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "deferred-return-expiry-"))
+      const now = Date.parse("2026-05-09T01:30:00.000Z")
+      vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      vi.spyOn(identity, "getAgentName" as any).mockReturnValue("sanctuary")
+      vi.spyOn(Date, "now").mockReturnValue(now)
+      const saved: PendingMessage = { from: "sanctuary", friendId: "friend-1", channel: "deferred", key: "return", content: "your sign-in is done", timestamp: now - (3 * 60 * 60 * 1_000) }
+      try {
+        for (const channel of ["telegram", "voice"] as const) {
+          const input = makeInput({
+            channel: channel as Channel,
+            capabilities: makeCapabilities({ channel, senseType: channel === "voice" ? "local" : "remote" }),
+            pendingDir: path.join(agentRoot, "state", "pending", "friend-1", channel, "k"),
+            drainPending: vi.fn().mockReturnValue([]),
+          }) as any
+          input.drainDeferredReturns = vi.fn().mockReturnValue([saved])
+
+          await handleInboundTurn(input)
+
+          const options = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0][4] as RunAgentOptions
+          expect(options.pendingMessages, channel).toEqual([{ from: "sanctuary", content: "your sign-in is done" }])
+        }
+        expect(fs.existsSync(path.join(agentRoot, "state", "pending-expired"))).toBe(false)
+      } finally {
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
     it("does not inject live world-state checkpoint in user messages (moved to system prompt)", async () => {
       const input = makeInput({
         continuityIngressTexts: ["what are you up to?"],
