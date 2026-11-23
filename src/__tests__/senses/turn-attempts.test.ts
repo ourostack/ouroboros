@@ -104,6 +104,8 @@ describe("turn attempts that survive a restart", () => {
     expect(turnSpokeForTool("send_message", { friendId: " self ", channel: "inner", content: "note" })).toBeNull()
     expect(turnSpokeForTool("shepherd_send", { content: "y" })?.kind).toBe("tool:shepherd_send")
     expect(turnSpokeForTool("send_result", { content: "done" })?.kind).toBe("tool:send_result")
+    expect(turnSpokeForTool("react", { reaction: "love" })?.kind).toBe("tool:react")
+    expect(turnSpokeForTool("coordinate", { peer: "butler" })?.kind).toBe("tool:coordinate")
     expect(turnSpokeForTool("surface", { content: "ready" })?.kind).toBe("tool:surface")
     expect(turnSpokeForTool("teams_send_message", { message: "hello" })?.textLength).toBe(5)
     expect(turnSpokeForTool("mail_send", { draftId: "d1" })).toMatchObject({ kind: "tool:mail_send", textHash: null, textLength: null })

@@ -67,8 +67,11 @@ export function turnSpoke(kind: string, text: string | null, outboundRecordId: s
   }
 }
 
-/** Name what went out for a recorded outcome, such as `1 send (tool:send_message at 2026-11-22T10:00:00.000Z)`. */
-export function describeTurnSpokes(spoke: readonly TurnSpoke[]): string {
+/**
+ * Name what went out for a recorded outcome, such as `1 send (tool:send_message at 2026-11-22T10:00:00.000Z)`. An
+ * entry written before sends were itemized has none, and reads as "a message".
+ */
+export function describeTurnSpokes(spoke: readonly TurnSpoke[] = []): string {
   if (spoke.length === 0) return "a message"
   const sends = spoke.map((entry) => `${entry.kind} at ${entry.sentAt}`).join(", ")
   return `${spoke.length} ${spoke.length === 1 ? "send" : "sends"} (${sends})`
@@ -84,6 +87,8 @@ const PERSON_MESSAGING_TOOLS: ReadonlySet<string> = new Set([
   "send_result",
   "house_digest_send",
   "shepherd_send",
+  "react",
+  "coordinate",
 ])
 
 /**

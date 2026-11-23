@@ -838,16 +838,17 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         journal.settle(inboundId, "canceled")
         return respondWith(taskStore.get(record.taskId, tokenScope)!)
       }
-      const spoke = journal.get(inboundId)?.spokeRecords ?? []
-      if (stop === "shutdown" && record.origin === "relay" && spoke.length === 0) {
+      const spokeEntry = journal.get(inboundId)
+      const spoke = spokeEntry?.spoke === true
+      if (stop === "shutdown" && record.origin === "relay" && !spoke) {
         // Nobody waits on a relayed message's reply: it stays pending, and the next process runs it again. A clean
         // shutdown is not the turn failing, so it gives its attempt back; only crashes use attempts up.
         journal.refundAttempt(inboundId)
         return errorResponse(rpcId, -32000, AGENT_RESTARTING)
       }
-      if (stop === "shutdown" && spoke.length > 0) {
+      if (stop === "shutdown" && spoke) {
         // Running it again would send what already went out a second time.
-        const detail = `the agent stopped before it finished answering, after ${describeTurnSpokes(spoke)} went out; it is not run again`
+        const detail = `the agent stopped before it finished answering, after ${describeTurnSpokes(spokeEntry!.spokeRecords)} went out; it is not run again`
         recordFailure(inboundId, record, detail)
         return failureResponse(rpcId, record, detail, accessToken)
       }
@@ -932,7 +933,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     }
     if (entry.spoke) {
       // The earlier turn already messaged someone; a replay would send that again.
-      recordFailure(entry.id, record, `the turn stopped after ${describeTurnSpokes(entry.spokeRecords ?? [])} went out, so it is not run again`)
+      recordFailure(entry.id, record, `the turn stopped after ${describeTurnSpokes(entry.spokeRecords)} went out, so it is not run again`)
       return
     }
     if (record.verifiedChat?.onBehalfOf === "principal") {

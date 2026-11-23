@@ -2416,7 +2416,8 @@ async function handleBlueBubblesNormalizedEvent(
           )}:turn-${randomUUID()}`,
         },
         noteSend: (spoke) => {
-          // Set first: a tool runs even if the write below fails, and this process must still not replay it.
+          // Set first, so this process never replays a turn whose send may have gone out. If the write below fails,
+          // the send is stopped, and the turn errs toward a recorded outcome over a replay.
           spokeBeforeFinalTransport = true
           blueBubblesTurnAttempts().noteSpoke(options.currentIngressEvidence.captureKeyHash, spoke)
         },
