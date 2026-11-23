@@ -58,6 +58,8 @@ const PROTECTED_PATH_SEGMENTS = [
   "state/a2a/relay-contacts/",
   // Relay retirements awaiting their vault write; a forged marker would skip draining an old relay inbox.
   "state/a2a/relay-retired/",
+  // Each sense's inbound journal: a forged pending entry would be replayed as a message from a verified sender.
+  "state/senses/",
   "state/outbox/",
   "state/reports/",
 ]

@@ -232,6 +232,13 @@ export interface RunSenseTurnOptions {
   turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
   /** Optional caller cancellation forwarded through the full agent turn. */
   signal?: AbortSignal
+  /**
+   * Stop waiting in the process-wide turn queue when `signal` aborts, and throw its reason instead of running the
+   * turn. Only for a caller that records the outcome of a turn it cancelled itself (see `InboundTurnInput`).
+   */
+  stopQueueWaitOnAbort?: boolean
+  /** Called once the turn has its place in the process-wide turn queue, before it runs. */
+  onTurnStart?: () => void
   /** Optional frontend event stream for attached clients and durable journals. */
   frontendEventSink?: FrontendTurnEventSink
 }
@@ -490,7 +497,9 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   options = { ...options, ...(options.shepherdSession ? { shepherdSession: Object.freeze({ ...options.shepherdSession }) } : {}) }
+  const queueSignal = options.stopQueueWaitOnAbort ? options.signal : undefined
   return withTurnExecutionLease(async () => {
+    options.onTurnStart?.()
     const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
     setAgentName(owner.agentName)
     try {
@@ -500,7 +509,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
         await releaseRuntimeMcpServersAfterTurn(owner)
       }
     }
-  })
+  }, queueSignal)
 }
 
 async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {

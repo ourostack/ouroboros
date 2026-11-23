@@ -5,6 +5,7 @@ import { FileFriendStore } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runSenseTurn } from "../senses/shared-turn"
+import { MAX_INBOUND_ATTEMPTS, openInboundJournal, type PendingInbound } from "../senses/inbound-journal"
 import { buildA2AAgentCard } from "./card"
 import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
 import type { A2AIdentity } from "./identity"
@@ -30,6 +31,9 @@ import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
 const MAX_A2A_MESSAGE_TEXT_CHARS = 16_000
 
+/** How long one A2A turn may run before it is stopped and recorded as failed: the iMessage turn deadline. */
+export const A2A_TURN_TIMEOUT_MS = 10 * 60_000
+
 type A2AResponseStyle = "latest" | "legacy"
 
 export interface A2ATurnRunnerInput {
@@ -42,6 +46,10 @@ export interface A2ATurnRunnerInput {
   relationshipAuthorization?: RelationshipAuthorizationEvaluator
   /** Present only when the server admitted a delegated principal command. */
   delegatedCommand?: DelegatedCommandContext
+  /** Aborts when the sender cancels the task, the turn passes its deadline, or the sense shuts down. */
+  signal?: AbortSignal
+  /** Call when the turn gets its place in the turn queue: its deadline starts again from there. */
+  onTurnStart?: () => void
 }
 
 export interface A2ATurnRunnerOutput {
@@ -72,6 +80,8 @@ export interface StartA2AServerOptions {
   /** This agent's friends-relay inbox (needs `identity`): peers queue sealed messages there while it is offline, and the
    * server polls it and runs each one as a `message/send`. Absent: no relay inbox. */
   relay?: { config: RelayConfigStore; fetchImpl?: typeof fetch; intervalMs?: number; timers?: RelayTimers; notifyOwner?: RelayOwnerNotifier }
+  /** How long one turn may run before it is stopped and recorded as failed. Default `A2A_TURN_TIMEOUT_MS`. */
+  turnTimeoutMs?: number
 }
 
 export const ESCALATION_CONFIRM_INTERVAL_MS = 5 * 60 * 1000
@@ -82,8 +92,48 @@ export interface A2AServerHandle {
   endpointUrl: string
   /** The relay inbox poller, when `relay` was given with an identity. */
   relay?: RelayInboxHandle
+  /** Settles once the inbounds an earlier process left pending have been replayed or recorded as failed. */
+  replayed: Promise<void>
+  /** Stops in-flight turns (a relayed message stays pending for the next process) and closes the server. */
   close(): Promise<void>
 }
+
+/** Where an inbound came from: a direct POST, whose sender waits on the HTTP reply, or the relay inbox, whose sender does not. */
+type A2AInboundOrigin = "direct" | "relay"
+
+/**
+ * One inbound turn as plain data, written to the inbound journal before the turn runs, so the next process can replay
+ * it (a relayed message) or record why it can't (a direct one, whose reply channel closed with the old process).
+ */
+interface A2AInboundRecord {
+  origin: A2AInboundOrigin
+  responseStyle: A2AResponseStyle
+  taskId: string
+  accessTokenHash: string
+  contextId: string
+  inbound: A2AMessage
+  clientTaskId?: string
+  previousTask?: A2ATask
+  peerAgentId: string
+  peerName: string
+  /** The verified or plain text, before the server adds any banner. */
+  text: string
+  verifiedChat?: { did: string; friendId?: string; onBehalfOf?: "principal"; bindingId?: string; issuedAt?: string }
+}
+
+type A2ATurnStopReason = "canceled" | "shutdown" | "deadline"
+
+class A2ATurnStopped extends Error {
+  constructor(readonly reason: A2ATurnStopReason) {
+    super(`A2A turn stopped: ${reason}`)
+  }
+}
+
+/** The direct sender's view when the process stops mid-turn: the old HTTP reply is gone, so the message is not run again. */
+const STOPPED_BEFORE_ANSWERING = "the agent stopped before answering this message; send it again"
+
+/** What a message that arrives during shutdown hears. It is recorded, so the next process replays it or records why not. */
+const AGENT_RESTARTING = "the agent is restarting and did not run this message yet"
 
 class A2ARequestError extends Error {
   constructor(readonly status: number, readonly code: number, message: string) {
@@ -183,6 +233,9 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
     sessionKey: input.sessionKey,
     userMessage: input.message,
     latencyMode: "standard",
+    // The server records the outcome of a turn it stops itself, so a stopped turn leaves the queue at once.
+    ...(input.signal ? { signal: input.signal, stopQueueWaitOnAbort: true } : {}),
+    onTurnStart: input.onTurnStart,
     identity: {
       provider: "a2a-agent",
       externalId: input.peerAgentId,
@@ -219,8 +272,12 @@ function accessTokenHash(accessToken: string): string {
   return createHash("sha256").update(accessToken).digest("hex")
 }
 
+function tokenHashScope(tokenHash: string): string {
+  return `a2a-task-token:${tokenHash}`
+}
+
 function accessTokenScope(accessToken: string): string {
-  return `a2a-task-token:${accessTokenHash(accessToken)}`
+  return tokenHashScope(accessTokenHash(accessToken))
 }
 
 function untrustedTurnPeerExternalId(): string {
@@ -370,7 +427,7 @@ function taskAuthorized(task: A2ATask, accessToken: string): boolean {
 
 function taskFor(input: {
   taskId: string
-  accessToken: string
+  accessTokenHash: string
   contextId: string
   inbound: A2AMessage
   state: A2ATask["status"]["state"]
@@ -409,7 +466,7 @@ function taskFor(input: {
       ...input.previousTask?.metadata,
       a2a: {
         ...previousA2A,
-        accessTokenHash: accessTokenHash(input.accessToken),
+        accessTokenHash: input.accessTokenHash,
         ...(input.clientTaskId ? { clientTaskId: input.clientTaskId } : {}),
       },
     },
@@ -431,6 +488,15 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
   /* v8 ignore next -- foreground CLI/default daemon paths own the ambient agent-root fallback; protocol tests inject an isolated root @preserve */
   const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
   const taskStore = new FileA2ATaskStore(agentRoot)
+  const journal = openInboundJournal<A2AInboundRecord>(agentRoot, "a2a")
+  // Taken before the server listens: anything journaled after this belongs to this process's own live turns.
+  const leftOver = journal.pending()
+  const turnTimeoutMs = options.turnTimeoutMs ?? A2A_TURN_TIMEOUT_MS
+  /** In-flight turns, so CancelTask and shutdown can stop them. */
+  const activeTurns = new Set<{ task: string; controller: AbortController }>()
+  // Set by close(): from then on nothing new starts, so a shutdown never spends attempts on turns it would kill.
+  let closing = false
+  const activeTaskKey = (taskId: string, tokenScope: string): string => `${tokenScope}\n${taskId}`
   /* v8 ignore next -- default runner crosses into the full live agent pipeline; shared-turn covers that pipeline and server tests inject a deterministic runner @preserve */
   const turnRunner = options.turnRunner ?? defaultTurnRunner
 
@@ -467,7 +533,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
 
   // The message/send branch as one function, so a sealed message that arrives through the relay inbox runs exactly the
   // path a direct POST runs. `req` is absent for a relayed message: there are no HTTP headers to take a sender hint from.
-  const handleMessageSend = async (rpc: A2AJsonRpcRequest, req?: http.IncomingMessage): Promise<A2AJsonRpcResponse> => {
+  const handleMessageSend = async (rpc: A2AJsonRpcRequest, req?: http.IncomingMessage, origin: A2AInboundOrigin = "direct"): Promise<A2AJsonRpcResponse> => {
     const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
     const parsedInbound = messageFromParams(rpc.params)
     const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
@@ -500,7 +566,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       const contextId = inbound.contextId ?? "default"
       const taskId = randomUUID()
       const accessToken = randomUUID()
-      const ackTask = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: ackText })
+      const ackTask = taskFor({ taskId, accessTokenHash: accessTokenHash(accessToken), contextId, inbound, state: "TASK_STATE_COMPLETED", response: ackText })
       taskStore.put(ackTask, accessTokenScope(accessToken))
       return jsonResponse(rpc.id, publicTask(ackTask, accessToken, responseStyle, true))
     }
@@ -562,67 +628,273 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     const contextId = inbound.contextId ?? continuationTask?.contextId ?? "default"
     const taskId = continuationTask?.id ?? randomUUID()
     const accessToken = continuationToken && continuationTask ? continuationToken : randomUUID()
-    const tokenScope = accessTokenScope(accessToken)
     const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
-    let relationshipAuthorization = verifiedChat?.friend
-      ? a2aChatRelationship(agentRoot, verifiedChat.friend, taskId)
-      : undefined
-    let turnText = text
-    let delegatedCommand: DelegatedCommandContext | undefined
+    const record: A2AInboundRecord = {
+      origin,
+      responseStyle,
+      taskId,
+      accessTokenHash: accessTokenHash(accessToken),
+      contextId,
+      inbound,
+      ...(clientTaskId ? { clientTaskId } : {}),
+      ...(continuationTask ? { previousTask: continuationTask } : {}),
+      peerAgentId,
+      peerName,
+      text,
+      // Absent fields drop out when the record is written as JSON.
+      ...(verifiedChat ? { verifiedChat: { did: verifiedChat.did, friendId: verifiedChat.friend?.id, onBehalfOf: verifiedChat.onBehalfOf, bindingId: verifiedChat.bindingId, issuedAt: verifiedChat.issuedAt } } : {}),
+    }
+    // Written down before anything runs, so a process that dies from here on leaves it pending, not lost.
+    const inboundId = randomUUID()
+    journal.record(inboundId, record)
+    return runInboundTurn(rpc.id, inboundId, record, { accessToken, friend: verifiedChat?.friend })
+  }
+
+  /**
+   * Record a visible failure for an inbound: the task ends FAILED with the reason, then the journal records the
+   * outcome. The journal entry is settled even when the task cannot be written, so it is never left pending for the
+   * life of the process.
+   */
+  const recordFailure = (inboundId: string, record: A2AInboundRecord, detail: string): void => {
+    if (!journal.get(inboundId)) return
+    const task = taskFor({
+      taskId: record.taskId,
+      accessTokenHash: record.accessTokenHash,
+      contextId: record.contextId,
+      inbound: record.inbound,
+      state: "TASK_STATE_FAILED",
+      response: detail,
+      clientTaskId: record.clientTaskId,
+      previousTask: record.previousTask,
+    })
+    try {
+      taskStore.put(task, tokenHashScope(record.accessTokenHash))
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "channels", event: "channel.a2a_failed_task_write_error", message: "could not write an A2A message's FAILED task; its failure is still recorded", meta: { agentName: options.agentName, inboundId, error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error) } })
+    }
+    journal.settle(inboundId, "failed", detail)
+  }
+
+  const failureResponse = (rpcId: A2AJsonRpcRequest["id"], record: A2AInboundRecord, message: string, accessToken: string | undefined): A2AJsonRpcResponse =>
+    // A replay has no token and no one waiting; an absent token drops out of the JSON.
+    errorResponse(rpcId, -32000, message, { taskId: record.taskId, state: "TASK_STATE_FAILED", accessToken })
+
+  /**
+   * Run (or replay) one journaled inbound to its one outcome. `accessToken` is known only to the live request that
+   * minted it; a replay has no one waiting on its reply.
+   */
+  const runInboundTurn = async (
+    rpcId: A2AJsonRpcRequest["id"],
+    inboundId: string,
+    record: A2AInboundRecord,
+    context: { accessToken?: string; friend?: FriendRecord },
+  ): Promise<A2AJsonRpcResponse> => {
+    if (closing) {
+      // Recorded but not started, with no attempt spent: the next process replays it or records why not.
+      return errorResponse(rpcId, -32000, AGENT_RESTARTING)
+    }
+    try {
+      return await runRecordedInbound(rpcId, inboundId, record, context)
+    } catch (error) {
+      // Anything that throws before or around the turn still ends the inbound in a recorded failure.
+      const detail = error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error)
+      recordFailure(inboundId, record, detail)
+      return failureResponse(rpcId, record, detail, context.accessToken)
+    }
+  }
+
+  const runRecordedInbound = async (
+    rpcId: A2AJsonRpcRequest["id"],
+    inboundId: string,
+    record: A2AInboundRecord,
+    context: { accessToken?: string; friend?: FriendRecord },
+  ): Promise<A2AJsonRpcResponse> => {
+    const { accessToken, friend } = context
+    const tokenScope = tokenHashScope(record.accessTokenHash)
+    const respondWith = (task: A2ATask): A2AJsonRpcResponse =>
+      jsonResponse(rpcId, publicTask(task, accessToken ?? "", record.responseStyle, accessToken !== undefined))
+    let relationshipAuthorization = friend ? a2aChatRelationship(agentRoot, friend, record.taskId) : undefined
     // Only the server writes the delegated banner. Any turn that is not about to be admitted as a delegated command
     // (verified or not, including a plain unauthenticated text turn) gets a typed banner marked as the sender's own words.
-    if (verifiedChat?.onBehalfOf !== "principal") turnText = shieldDelegatedBanner(text)
-    if (verifiedChat?.onBehalfOf === "principal") {
+    let turnText = record.verifiedChat?.onBehalfOf === "principal" ? record.text : shieldDelegatedBanner(record.text)
+    let delegatedCommand: DelegatedCommandContext | undefined
+    if (record.verifiedChat?.onBehalfOf === "principal") {
       // A delegated command runs with the principal's authority only after the
       // server, never the model, has checked the grant and told the principal.
       let registry
       try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
       /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
-      if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
-      const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: commandIdFor(verifiedChat), store: inboundShareDeps!.store, registry, options: options.delegation })
+      if (!friend) throw new Error("verified chat has no friend record")
+      const admission = await admitDelegatedCommand({ friend, did: record.verifiedChat.did, text: record.text, commandId: commandIdFor(record.verifiedChat), store: inboundShareDeps!.store, registry, options: options.delegation })
       if (!admission.ok) {
         // The code and the "delegated command refused: <reason>" prefix stay: the replay gate and older CLIs match them.
         // Only an active family peer is told why: anyone else gets no_grant whatever the real reason was (a broken trust file, a key mismatch), which stays in the local log and nerves.
-        const activeFamily = verifiedChat.friend.trustLevel === "family" && verifiedChat.friend.admissionState === "active"
+        const activeFamily = friend.trustLevel === "family" && friend.admissionState === "active"
         const shown = activeFamily ? admission.reason : "no_grant"
-        const guidance = delegationRefusalGuidance(shown, { legacyRecordGrant: activeFamily && verifiedChat.friend.delegationGrant !== undefined })
-        return errorResponse(rpc.id, -32004, `delegated command refused: ${shown} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: shown, nothingRan: true, retry: guidance.retry, next: guidance.next })
+        const guidance = delegationRefusalGuidance(shown, { legacyRecordGrant: activeFamily && friend.delegationGrant !== undefined })
+        journal.settle(inboundId, "failed", `delegated command refused: ${admission.reason}`)
+        return errorResponse(rpcId, -32004, `delegated command refused: ${shown} (${guidance.message}). Nothing ran. Next: ${guidance.next}`, { reason: shown, nothingRan: true, retry: guidance.retry, next: guidance.next })
       }
       relationshipAuthorization = admission.relationship
       turnText = admission.turnText
       delegatedCommand = admission.context
     }
-    taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
-    const turn = await turnRunner({
-      agentName: options.agentName,
-      peerAgentId,
-      peerName,
-      sessionKey: contextId,
-      message: turnText,
-      ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
-      ...(delegatedCommand ? { delegatedCommand } : {}),
+
+    journal.beginAttempt(inboundId)
+    const controller = new AbortController()
+    const active = { task: activeTaskKey(record.taskId, tokenScope), controller }
+    activeTurns.add(active)
+    // The deadline first bounds the wait for a place in the turn queue, then starts again for the turn itself.
+    let started = false
+    let deadline = setTimeout(() => controller.abort(new A2ATurnStopped("deadline")), turnTimeoutMs)
+    const onTurnStart = (): void => {
+      // A runner that reports its start after the turn has ended must not leave a new deadline running.
+      if (!activeTurns.has(active)) return
+      started = true
+      clearTimeout(deadline)
+      deadline = setTimeout(() => controller.abort(new A2ATurnStopped("deadline")), turnTimeoutMs)
+    }
+    // A turn that ignores its signal still ends the wait: the stop is what the sender hears, whatever the turn does next.
+    const stopped = new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true })
     })
+    stopped.catch(() => undefined)
+    let turn: A2ATurnRunnerOutput
+    try {
+      taskStore.put(taskFor({ taskId: record.taskId, accessTokenHash: record.accessTokenHash, contextId: record.contextId, inbound: record.inbound, state: "TASK_STATE_WORKING", clientTaskId: record.clientTaskId, previousTask: record.previousTask }), tokenScope)
+      turn = await Promise.race([
+        turnRunner({
+          agentName: options.agentName,
+          peerAgentId: record.peerAgentId,
+          peerName: record.peerName,
+          sessionKey: record.contextId,
+          message: turnText,
+          signal: controller.signal,
+          onTurnStart,
+          ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
+          ...(delegatedCommand ? { delegatedCommand } : {}),
+        }),
+        stopped,
+      ])
+    } catch (error) {
+      const stop = controller.signal.aborted ? (controller.signal.reason as A2ATurnStopped).reason : undefined
+      if (stop === "canceled") {
+        // CancelTask already wrote the CANCELED task; the turn's end must not overwrite it.
+        journal.settle(inboundId, "canceled")
+        return respondWith(taskStore.get(record.taskId, tokenScope)!)
+      }
+      if (stop === "shutdown" && record.origin === "relay") {
+        // Nobody waits on a relayed message's reply: it stays pending, and the next process runs it again. A clean
+        // shutdown is not the turn failing, so it gives its attempt back; only crashes use attempts up.
+        journal.refundAttempt(inboundId)
+        return errorResponse(rpcId, -32000, AGENT_RESTARTING)
+      }
+      const seconds = Math.round(turnTimeoutMs / 1000)
+      const detail = stop === "shutdown"
+        ? STOPPED_BEFORE_ANSWERING
+        : stop === "deadline"
+          ? started ? `the turn was stopped after ${seconds} s without finishing` : `the turn was stopped after ${seconds} s waiting for the turn ahead of it`
+          : error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error)
+      recordFailure(inboundId, record, detail)
+      return failureResponse(rpcId, record, detail, accessToken)
+    } finally {
+      clearTimeout(deadline)
+      activeTurns.delete(active)
+    }
+    try {
+      return finishAnswered(rpcId, inboundId, record, turn.response, respondWith)
+    } catch (error) {
+      // The turn ran but its answer could not be stored: a visible failure, not an entry left pending.
+      const detail = error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error)
+      recordFailure(inboundId, record, detail)
+      return failureResponse(rpcId, record, detail, accessToken)
+    }
+  }
+
+  const finishAnswered = (
+    rpcId: A2AJsonRpcRequest["id"],
+    inboundId: string,
+    record: A2AInboundRecord,
+    response: string,
+    respondWith: (task: A2ATask) => A2AJsonRpcResponse,
+  ): A2AJsonRpcResponse => {
+    const tokenScope = tokenHashScope(record.accessTokenHash)
     let responseParts: A2AMessage["parts"] | undefined
-    if (verifiedChat) {
+    if (record.verifiedChat) {
       // A verified chat's reply is sealed to the sender and stored sealed, so neither
       // the wire nor a later GetTask ever carries the plaintext.
-      const pinned = inboundShareDeps!.pinStore.get(verifiedChat.did)
-      /* v8 ignore next 4 -- receiveShare pins the verified sender before it reports a completed chat; refuse rather than reply in plaintext @preserve */
+      const pinned = inboundShareDeps?.pinStore.get(record.verifiedChat.did)
+      /* v8 ignore next 5 -- receiveShare pins the verified sender before it reports a completed chat; refuse rather than reply in plaintext @preserve */
       if (!pinned) {
-        return errorResponse(rpc.id, -32003, "A2A chat reply cannot be sealed to the sender")
+        const detail = "A2A chat reply cannot be sealed to the sender"
+        recordFailure(inboundId, record, detail)
+        return errorResponse(rpcId, -32003, detail)
       }
       responseParts = sealChatMessage({
         sodium: inboundShareDeps!.sodium,
         from: options.identity!,
-        recipientDid: verifiedChat.did,
+        recipientDid: record.verifiedChat.did,
         recipientEd25519Pub: pinned.ed25519Pub,
-        text: turn.response,
-        conversationId: contextId,
+        text: response,
+        conversationId: record.contextId,
       }).parts
     }
-    const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, responseParts, clientTaskId, previousTask: continuationTask ?? undefined })
+    const task = taskFor({ taskId: record.taskId, accessTokenHash: record.accessTokenHash, contextId: record.contextId, inbound: record.inbound, state: "TASK_STATE_COMPLETED", response, responseParts, clientTaskId: record.clientTaskId, previousTask: record.previousTask })
     taskStore.put(task, tokenScope)
-    return jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, true))
+    journal.settle(inboundId, "answered")
+    return respondWith(task)
+  }
+
+  /**
+   * The inbounds an earlier process left pending. A direct one's sender saw its connection drop and can't receive a
+   * late reply, so it is recorded as failed. A relayed one is run again, until it has used its attempts.
+   */
+  const replayOne = async (leftOverEntry: PendingInbound<A2AInboundRecord>): Promise<void> => {
+    // Read again: it may have been settled since the list was taken, and its attempts are counted on disk.
+    const entry = journal.get(leftOverEntry.id)
+    if (!entry) return
+    const record = entry.payload
+    // The task was finished just before the process died, so the journal only catches up with it.
+    const state = taskStore.get(record.taskId, tokenHashScope(record.accessTokenHash))?.status.state
+    if (state === "TASK_STATE_COMPLETED" || state === "TASK_STATE_CANCELED") {
+      journal.settle(entry.id, state === "TASK_STATE_COMPLETED" ? "answered" : "canceled")
+      return
+    }
+    if (record.origin === "direct") {
+      recordFailure(entry.id, record, STOPPED_BEFORE_ANSWERING)
+      return
+    }
+    if (entry.attempts >= MAX_INBOUND_ATTEMPTS) {
+      recordFailure(entry.id, record, `stopped after ${entry.attempts} attempts without an answer`)
+      return
+    }
+    if (record.verifiedChat?.onBehalfOf === "principal") {
+      // It may already have acted with the principal's authority, and its grant was checked only for that moment.
+      recordFailure(entry.id, record, "a delegated command is not run again after a restart; send it again")
+      return
+    }
+    const friendId = record.verifiedChat?.friendId
+    const friend = friendId && inboundShareDeps ? await inboundShareDeps.store.get(friendId) ?? undefined : undefined
+    if (record.verifiedChat && !friend) {
+      recordFailure(entry.id, record, "the sender's friend record or this agent's A2A identity is gone, so the message cannot be answered")
+      return
+    }
+    emitNervesEvent({ component: "channels", event: "channel.a2a_inbound_replayed", message: "replaying a relayed message an earlier process left pending", meta: { agentName: options.agentName, inboundId: entry.id, attempts: entry.attempts } })
+    await runInboundTurn(null, entry.id, record, { friend })
+  }
+
+  const replayPendingInbound = async (): Promise<void> => {
+    for (const entry of leftOver) {
+      if (closing) break
+      try {
+        await replayOne(entry)
+      } catch (error) {
+        // Counted, so a message that throws every time is failed once it has used its attempts instead of
+        // blocking every start; the messages behind it still run.
+        try { journal.beginAttempt(entry.id) } catch { /* the event below still reports the failure */ }
+        emitNervesEvent({ level: "error", component: "channels", event: "channel.a2a_inbound_replay_error", message: "replaying a pending A2A message failed; it stays pending for the next start", meta: { agentName: options.agentName, inboundId: entry.id, error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error throw branch @preserve */ String(error) } })
+      }
+    }
   }
 
   let relayInbox: RelayInboxHandle | undefined
@@ -759,6 +1031,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           status: { state: "TASK_STATE_CANCELED", timestamp: new Date().toISOString() },
         }
         taskStore.put(canceled, tokenScope)
+        const canceledKey = activeTaskKey(taskId, tokenScope)
+        for (const active of [...activeTurns].filter((turn) => turn.task === canceledKey)) active.controller.abort(new A2ATurnStopped("canceled"))
         writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken, responseStyle, false)))
         return
       }
@@ -805,11 +1079,13 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
       retirements: fileRelayRetirements(agentRoot),
       did: inboundShareDeps.identity.did,
       agentName: options.agentName,
-      handle: (rpc) => handleMessageSend(rpc),
+      handle: (rpc) => handleMessageSend(rpc, undefined, "relay"),
       // Asked only after a handler throws: was this copy verified (and so recorded) before it failed?
       seen: seen.has.bind(seen),
     })
   }
+
+  const replayed = replayPendingInbound()
 
   emitNervesEvent({
     component: "channels",
@@ -823,7 +1099,10 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     url: publicBaseUrl,
     endpointUrl: endpointUrl.toString(),
     ...(relayInbox ? { relay: relayInbox } : {}),
+    replayed,
     close: () => new Promise<void>((resolve, reject) => {
+      closing = true
+      for (const active of activeTurns) active.controller.abort(new A2ATurnStopped("shutdown"))
       clearInterval(confirmTimer)
       relayInbox?.stop()
       server.close((error) => {
