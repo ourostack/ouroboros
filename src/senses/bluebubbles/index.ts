@@ -78,7 +78,7 @@ import {
   type BlueBubblesSemanticCaptureWriteResult,
   type BlueBubblesSemanticHandledOutcome,
 } from "./semantic-receipts"
-import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
+import { readBlueBubblesRuntimeState, touchBlueBubblesRuntimeHeartbeat, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import {
   awaitDeliveryAdmission,
@@ -588,6 +588,13 @@ const defaultDeps: RuntimeDeps = {
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+/** After a failed sync, the next one comes sooner than the interval: 5 s, then 10 s, then 20 s. */
+const BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS = 5_000
+/**
+ * A sync that makes no progress (no probe answer, catch-up page or capture) for this long is abandoned so the next
+ * one can start. Every request times out in 30 s, so only a hang gets here; a slow catch-up that keeps going finishes.
+ */
+const BLUEBUBBLES_RUNTIME_SYNC_STALL_MS = 2 * 60_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
 // A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
@@ -3663,7 +3670,8 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
     return nowMs - BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS
   }
 
-  const lastCheckedAt = parseTimestampMs(previousState.lastCheckedAt)
+  // A sync abandoned partway through catch-up has moved lastCheckedAt but not the cursor.
+  const lastCheckedAt = parseTimestampMs(previousState.catchUpThrough ?? previousState.lastCheckedAt)
   if (lastCheckedAt !== null) {
     return Math.max(0, lastCheckedAt - BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS)
   }
@@ -3712,32 +3720,52 @@ function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now(
   }
 }
 
+/** ok: the probe passed and the state was written. error: an error state was written. aborted: shutdown or abandonment. */
+type BlueBubblesRuntimeSyncOutcome = "ok" | "error" | "aborted"
+
 async function syncBlueBubblesRuntime(
   deps: Partial<RuntimeDeps> = {},
   options: {
     catchUpObservationBatch?: BlueBubblesObservationBatch
     lifecycleSignal?: AbortSignal
+    onProgress?: () => void
   } = {},
-): Promise<void> {
+): Promise<BlueBubblesRuntimeSyncOutcome> {
   options.lifecycleSignal?.throwIfAborted()
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
-  // Allocate before the first health-probe await. Any live webhook accepted
-  // while that probe is pending must remain causally newer than this pass.
-  const catchUpObservationBatch = options.catchUpObservationBatch ?? beginObservationBatch(
-    BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
-  )
-  pruneBlueBubblesSemanticObservationGenerations(
-    Date.now(),
-    new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
-  )
-  const client = resolvedDeps.createClient()
   const checkedAt = new Date().toISOString()
   const previousState = readBlueBubblesRuntimeState(agentName)
+  let probeStarted = false
+  let probePassed = false
 
   try {
+    // Setup failures land in the catch below too, so they write an error proof like any failed sync.
+    // Allocate before the first health-probe await. Any live webhook accepted
+    // while that probe is pending must remain causally newer than this pass.
+    const catchUpObservationBatch = options.catchUpObservationBatch ?? beginObservationBatch(
+      BLUEBUBBLES_CATCHUP_PAGE_SIZE * BLUEBUBBLES_CATCHUP_MAX_PAGES,
+    )
+    pruneBlueBubblesSemanticObservationGenerations(
+      Date.now(),
+      new Set(listPendingBlueBubblesSemanticCaptures(agentName).map((capture) => capture.keyHash)),
+    )
+    const client = resolvedDeps.createClient()
+    probeStarted = true
     await client.checkHealth()
     options.lifecycleSignal?.throwIfAborted()
+    probePassed = true
+    options.onProgress?.()
+    // The listener logs at warn, so a healthy pass is silent; a recovery must not be.
+    if (previousState.upstreamStatus === "error") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_upstream_recovered",
+        message: "bluebubbles upstream answered again after a failed sync",
+        meta: { previousDetail: previousState.detail, previousCheckedAt: previousState.lastCheckedAt },
+      })
+    }
     const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     const activeBeforeCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
@@ -3754,6 +3782,7 @@ async function syncBlueBubblesRuntime(
       processTurns: false,
       observationBatch: catchUpObservationBatch,
       lifecycleSignal: options.lifecycleSignal,
+      onProgress: options.onProgress,
     })
     options.lifecycleSignal?.throwIfAborted()
     const failed = catchUp.failed
@@ -3768,6 +3797,7 @@ async function syncBlueBubblesRuntime(
       upstreamStatus: "ok",
       detail: formatBlueBubblesRuntimeDetail(pendingAfterCatchup, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
+      catchUpThrough: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
       ...activeAfterCatchup,
@@ -3776,17 +3806,30 @@ async function syncBlueBubblesRuntime(
       lastRecoveredAt: previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
+    return "ok"
   } catch (error) {
-    if (options.lifecycleSignal?.aborted) return
+    if (options.lifecycleSignal?.aborted) return "aborted"
+    const detail = error instanceof Error ? error.message : String(error)
+    // A failed probe logs itself, so a streak of them adds only the line that starts it. Anything else logs here.
+    if (!probeStarted || probePassed || previousState.upstreamStatus !== "error") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_runtime_sync_failed",
+        message: "bluebubbles runtime sync failed; recorded upstream error",
+        meta: { reason: detail, probePassed },
+      })
+    }
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "error",
-      detail: error instanceof Error ? error.message : String(error),
+      detail,
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...blueBubblesPendingRecoverySnapshot(agentName),
       ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
       failedRecoveryCount: 0,
     })
+    return "error"
   }
 }
 
@@ -3873,6 +3916,8 @@ interface BlueBubblesCatchUpOptions {
   processTurns?: boolean
   observationBatch?: BlueBubblesObservationBatch
   lifecycleSignal?: AbortSignal
+  /** Called after each page and each capture, so a slow catch-up that keeps going is not taken for a hung one. */
+  onProgress?: () => void
 }
 
 export function catchUpMissedBlueBubblesMessages(
@@ -3957,6 +4002,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
       break
     }
     options.lifecycleSignal?.throwIfAborted()
+    options.onProgress?.()
 
     const pageMessages = pageEvents
       .filter((event): event is BlueBubblesNormalizedMessage => event.kind === "message")
@@ -4034,6 +4080,7 @@ async function catchUpMissedBlueBubblesMessagesInScope(
           "upstream-catchup",
           observationReservation,
         )
+        options.onProgress?.()
         if (captured.status === "audit_only") {
           result.skipped++
           continue
@@ -4974,7 +5021,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleSignal: lifecycleController.signal,
   }))
   let recoveryPassRunning = false
-  let runtimeSyncRunning = false
+  let runtimeSync: { startedAt: number; lastProgressAt: number; controller: AbortController } | null = null
+  let runtimeSyncFailures = 0
+  let runtimeSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
   let webhookReconciler: ReturnType<typeof createBlueBubblesWebhookReconciler> | null = null
   let closed = false
@@ -5015,17 +5064,62 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     }, BLUEBUBBLES_RECOVERY_PASS_DELAY_MS)
   }
 
+  function scheduleRuntimeSyncRetry(): void {
+    runtimeSyncFailures += 1
+    const delayMs = BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS * 2 ** (runtimeSyncFailures - 1)
+    // From here the 30 s interval retries soon enough.
+    if (closed || delayMs >= BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS) return
+    runtimeSyncRetryTimer = setTimeout(() => {
+      runtimeSyncRetryTimer = null
+      triggerRuntimeSync()
+    }, delayMs)
+  }
+
   function triggerRuntimeSync(
     catchUpObservationBatch?: BlueBubblesObservationBatch,
   ): void {
-    if (closed || runtimeSyncRunning) return
-    runtimeSyncRunning = true
+    /* v8 ignore next -- close clears the interval and the retry timer; guard covers an already-queued host callback @preserve */
+    if (closed) return
+    if (runtimeSync) {
+      const runningMs = Date.now() - runtimeSync.startedAt
+      const idleMs = Date.now() - runtimeSync.lastProgressAt
+      if (idleMs < BLUEBUBBLES_RUNTIME_SYNC_STALL_MS) {
+        // A slow pass is still a live loop; say so, so the daemon does not take it for a stopped one.
+        touchBlueBubblesRuntimeHeartbeat(resolvedDeps.getAgentName())
+        return
+      }
+      // A sync that never finishes must not stop every later one, which would leave the proof to go stale.
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_runtime_sync_timeout",
+        message: "abandoned a bluebubbles runtime sync that did not finish",
+        meta: { runningMs, idleMs },
+      })
+      runtimeSync.controller.abort(new Error("bluebubbles_runtime_sync_timeout"))
+      runtimeSync = null
+    }
+    if (runtimeSyncRetryTimer !== null) {
+      clearTimeout(runtimeSyncRetryTimer)
+      runtimeSyncRetryTimer = null
+    }
+    const sync = { startedAt: Date.now(), lastProgressAt: Date.now(), controller: new AbortController() }
+    runtimeSync = sync
     void syncBlueBubblesRuntime(resolvedDeps, {
       ...(catchUpObservationBatch ? { catchUpObservationBatch } : {}),
-      lifecycleSignal: lifecycleController.signal,
+      lifecycleSignal: AbortSignal.any([lifecycleController.signal, sync.controller.signal]),
+      onProgress: () => { sync.lastProgressAt = Date.now() },
     })
-      .then(scheduleRecoveryPass)
+      .then((outcome) => {
+        if (runtimeSync !== sync) return
+        runtimeSync = null
+        if (outcome === "error") scheduleRuntimeSyncRetry()
+        else runtimeSyncFailures = 0
+        scheduleRecoveryPass()
+      })
+      /* v8 ignore start -- defensive: every failure of the sync itself is caught inside it and written as an error proof @preserve */
       .catch((error) => {
+        if (runtimeSync === sync) runtimeSync = null
         if (closed) return
         emitNervesEvent({
           level: "warn",
@@ -5034,10 +5128,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
           message: "bluebubbles runtime sync failed",
           meta: { reason: error instanceof Error ? error.message : String(error) },
         })
+        scheduleRuntimeSyncRetry()
       })
-      .finally(() => {
-        runtimeSyncRunning = false
-      })
+      /* v8 ignore stop */
   }
 
   const runtimeTimer = setInterval(() => {
@@ -5054,6 +5147,10 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleController.abort(new Error("bluebubbles_runtime_shutdown"))
     clearInterval(runtimeTimer)
     clearInterval(recoveryTimer)
+    if (runtimeSyncRetryTimer !== null) {
+      clearTimeout(runtimeSyncRetryTimer)
+      runtimeSyncRetryTimer = null
+    }
     if (recoveryDelayTimer !== null) {
       clearTimeout(recoveryDelayTimer)
       recoveryDelayTimer = null

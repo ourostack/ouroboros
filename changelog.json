@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.1396",
+      "changes": [
+        "A BlueBubbles listener that stops proving itself now reads as an error and is restarted, timed on the daemon's own clock so sleep never triggers it, and slow syncs, failed syncs and recoveries are logged."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1394",
       "changes": [
         "Groundwork for relaying Ari's approval answers: the relay token, the trust-folder switch and a store method for a relayed deny. Nothing uses them yet."
