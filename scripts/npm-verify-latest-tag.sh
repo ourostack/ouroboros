@@ -30,11 +30,20 @@ echo "::group::${package} latest diagnostics at $(date -u +%H:%M:%SZ)"
 echo "npm view dist-tags: $(npm view "$package" dist-tags --json 2>&1 | tr -d '\n ' | cut -c1-300 || true)"
 echo "npm dist-tag ls: $(npm dist-tag ls "$package" 2>&1 | tr '\n' ' ' | cut -c1-300 || true)"
 endpoint="https://registry.npmjs.org/-/package/${package}/dist-tags"
-if headers=$(curl -sS -m 20 -D - -o /tmp/npm-latest-body "$endpoint" 2>&1); then
-  echo "dist-tags endpoint: $(tr -d '\n ' < /tmp/npm-latest-body | cut -c1-300)"
-  echo "dist-tags endpoint headers: $(printf '%s' "$headers" | grep -iE '^(HTTP|age|cache-control|date|x-served-by|x-cache)' | tr -d '\r' | tr '\n' ';' | cut -c1-400)"
+body_file=$(mktemp)
+header_file=$(mktemp)
+trap 'rm -f "$body_file" "$header_file"' EXIT
+# curl exits 0 on 403/404/500, so the HTTP status is captured and labelled; only a 200 body is tag data.
+if status=$(curl -sS -m 20 -D "$header_file" -o "$body_file" -w '%{http_code}' "$endpoint" 2>&1); then
+  body=$(tr -d '\n ' < "$body_file" | cut -c1-300)
+  if [ "$status" = 200 ]; then
+    echo "dist-tags endpoint: HTTP ${status}, tags ${body}"
+  else
+    echo "dist-tags endpoint: HTTP ${status}, not tag data; body ${body}"
+  fi
+  echo "dist-tags endpoint headers: $(grep -iE '^(age|cache-control|date|x-served-by|x-cache)' "$header_file" | tr -d '\r' | tr '\n' ';' | cut -c1-400)"
 else
-  echo "dist-tags endpoint read failed: $(printf '%s' "$headers" | head -n 3 | cut -c1-300)"
+  echo "dist-tags endpoint read failed: $(printf '%s' "$status" | head -n 3 | cut -c1-300)"
 fi
 if times=$(npm view "$package" time --json 2>&1); then
   echo "latest publish times: $(printf '%s' "$times" | grep -E '"[0-9]+\.[0-9]+\.[0-9]+' | tail -n 4 | tr -d '\n ' | cut -c1-400)"
