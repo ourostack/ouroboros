@@ -37,7 +37,7 @@ describe("bluebubbles entrypoint", () => {
 
     const startBlueBubblesApp = vi.fn(() => createAlreadyClosedServer())
     const configureDaemonRuntimeLogger = vi.fn()
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
     mockRuntimeCredentials()
@@ -66,7 +66,7 @@ describe("bluebubbles entrypoint", () => {
     const refreshRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("vault locked")
     })
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
     mockRuntimeCredentials({
@@ -99,7 +99,7 @@ describe("bluebubbles entrypoint", () => {
     const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("machine vault locked")
     })
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
     mockRuntimeCredentials({
@@ -131,7 +131,7 @@ describe("bluebubbles entrypoint", () => {
     const refreshMachineRuntimeCredentialConfig = vi.fn(() => new Promise<{ ok: false; reason: "missing" }>((resolve) => {
       resolveMachineRefresh = resolve
     }))
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
     mockRuntimeCredentials({
@@ -167,7 +167,7 @@ describe("bluebubbles entrypoint", () => {
     const configureDaemonRuntimeLogger = vi.fn()
     const waitForRuntimeCredentialBootstrap = vi.fn(async () => true)
     const refreshMachineRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity("machine_entry")
     mockRuntimeCredentials({
@@ -193,32 +193,15 @@ describe("bluebubbles entrypoint", () => {
     argvSpy.mockRestore()
   })
 
-  it("closes the BlueBubbles server on managed SIGTERM and removes both signal handlers", async () => {
+  it("hands shutdown to the shared sense shutdown, which stops the BlueBubbles app", async () => {
     vi.resetModules()
 
-    const signalHandlers: Partial<Record<NodeJS.Signals, () => void>> = {}
-    const originalOnce = process.once.bind(process)
-    const processOnce = vi.spyOn(process, "once").mockImplementation(((event: string, listener: (...args: any[]) => void) => {
-      if (event === "SIGTERM" || event === "SIGINT") {
-        signalHandlers[event] = listener
-        return process
-      }
-      return originalOnce(event as any, listener as any)
-    }) as typeof process.once)
-    const removeListener = vi.spyOn(process, "removeListener")
-    let closeHandler: (() => void) | undefined
-    const server = {
-      close: vi.fn(() => {
-        closeHandler?.()
-        return server
-      }),
-      once: vi.fn((event: string, listener: () => void) => {
-        if (event === "close") closeHandler = listener
-        return server
-      }),
-    }
-    const startBlueBubblesApp = vi.fn(async () => server)
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    const server = createAlreadyClosedServer()
+    const startBlueBubblesApp = vi.fn(() => server)
+    const stopBlueBubblesApp = vi.fn(async () => 0)
+    const installSenseShutdown = vi.fn()
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp }))
+    vi.doMock("../../../senses/sense-shutdown", () => ({ installSenseShutdown }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
     mockMachineIdentity()
     mockRuntimeCredentials()
@@ -231,18 +214,11 @@ describe("bluebubbles entrypoint", () => {
 
     await import("../../../senses/bluebubbles/entry")
     await vi.waitFor(() => {
-      expect(signalHandlers.SIGTERM).toEqual(expect.any(Function))
-      expect(signalHandlers.SIGINT).toEqual(expect.any(Function))
+      expect(installSenseShutdown).toHaveBeenCalledWith(expect.objectContaining({ sense: "bluebubbles" }))
     })
 
-    signalHandlers.SIGTERM?.()
-    signalHandlers.SIGINT?.()
-
-    expect(server.close).toHaveBeenCalledTimes(1)
-    expect(removeListener).toHaveBeenCalledWith("SIGTERM", signalHandlers.SIGTERM)
-    expect(removeListener).toHaveBeenCalledWith("SIGINT", signalHandlers.SIGTERM)
-    expect(processOnce).toHaveBeenCalledWith("SIGTERM", expect.any(Function))
-    expect(processOnce).toHaveBeenCalledWith("SIGINT", expect.any(Function))
+    await installSenseShutdown.mock.calls[0]![0].stop()
+    expect(stopBlueBubblesApp).toHaveBeenCalledWith(server)
     argvSpy.mockRestore()
   })
 
@@ -272,11 +248,11 @@ describe("bluebubbles entrypoint", () => {
   it("prints BlueBubbles startup errors and exits", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn(async () => {
+    const startBlueBubblesApp = vi.fn(() => {
       throw new Error("bluebubbles failed")
     })
     const configureDaemonRuntimeLogger = vi.fn()
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
     mockRuntimeCredentials()
@@ -304,11 +280,11 @@ describe("bluebubbles entrypoint", () => {
   it("stringifies non-Error BlueBubbles startup failures", async () => {
     vi.resetModules()
 
-    const startBlueBubblesApp = vi.fn(async () => {
+    const startBlueBubblesApp = vi.fn(() => {
       throw "bluebubbles string failure"
     })
     const configureDaemonRuntimeLogger = vi.fn()
-    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp, stopBlueBubblesApp: vi.fn(async () => 0) }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     mockMachineIdentity()
     mockRuntimeCredentials()

@@ -68,9 +68,36 @@ describe("BlueBubbles active turn markers", () => {
     expect(snapshotBlueBubblesActiveTurns("slugger", 90_000, Date.now() + 120_000)).toEqual({
       activeTurnCount: 0,
       stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
       oldestActiveTurnStartedAt: undefined,
       oldestActiveTurnAgeMs: undefined,
     })
+  })
+
+  it("counts a turn waiting over a minute for permission to send as stalled, and clears it", async () => {
+    const {
+      beginBlueBubblesActiveTurn,
+      noteBlueBubblesActiveTurnAdmissionWait,
+      snapshotBlueBubblesActiveTurns,
+    } = await import("../../../senses/bluebubbles/active-turns")
+    const nowMs = Date.now()
+    const turnId = beginBlueBubblesActiveTurn("slugger", event("msg-waiting"))
+    const freshId = beginBlueBubblesActiveTurn("slugger", event("msg-fresh-wait"))
+
+    noteBlueBubblesActiveTurnAdmissionWait("slugger", turnId, new Date(nowMs - 90_000).toISOString())
+    noteBlueBubblesActiveTurnAdmissionWait("slugger", freshId, new Date(nowMs - 10_000).toISOString())
+    expect(snapshotBlueBubblesActiveTurns("slugger", 5 * 60_000, nowMs)).toEqual(expect.objectContaining({
+      activeTurnCount: 2,
+      stalledTurnCount: 1,
+      admissionStalledTurnCount: 1,
+      oldestAdmissionWaitAgeMs: 90_000,
+    }))
+
+    noteBlueBubblesActiveTurnAdmissionWait("slugger", turnId, null)
+    expect(snapshotBlueBubblesActiveTurns("slugger", 5 * 60_000, nowMs)).toEqual(expect.objectContaining({
+      stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
+    }))
   })
 
   it("records null coordinates when a legacy caller has neither optional chat field", async () => {
@@ -129,6 +156,7 @@ describe("BlueBubbles active turn markers", () => {
     expect(snapshotBlueBubblesActiveTurns("slugger", 90_000)).toEqual({
       activeTurnCount: 0,
       stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
       oldestActiveTurnStartedAt: undefined,
       oldestActiveTurnAgeMs: undefined,
     })
@@ -222,6 +250,7 @@ describe("BlueBubbles active turn markers", () => {
     expect(snapshotBlueBubblesActiveTurns("slugger", 90_000, Date.parse("2026-04-30T00:05:00.000Z"))).toEqual({
       activeTurnCount: 0,
       stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
       oldestActiveTurnStartedAt: undefined,
       oldestActiveTurnAgeMs: undefined,
     })
