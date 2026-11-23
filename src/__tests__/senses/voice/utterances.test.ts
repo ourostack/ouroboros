@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { spawnSync } from "node:child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as nerves from "../../../nerves/runtime"
 import { turnSpoke } from "../../../senses/turn-attempts"
@@ -8,6 +9,7 @@ import {
   failLeftoverVoiceUtterances,
   recordVoiceUtterance,
   seenVoiceUtterance,
+  voiceOutputDirLock,
   voiceUtterances,
   type VoiceUtterancePayload,
 } from "../../../senses/voice/utterances"
@@ -137,5 +139,64 @@ describe("voice utterance records", () => {
     vi.spyOn(nerves, "emitNervesEvent")
     expect(failLeftoverVoiceUtterances("/dev/null/not-a-dir", "start")).toBe(0)
     expect(emitted("senses.voice_utterance_record_failed")).toEqual([expect.objectContaining({ level: "error" })])
+  })
+})
+
+describe("voice output folder lock", () => {
+  const lockFile = (dir: string) => path.join(dir, "utterances", "bridge.lock")
+
+  it("lets one bridge in this process hold a folder until it lets go", () => {
+    const dir = outputDir()
+    const first = voiceOutputDirLock(dir)
+    const second = voiceOutputDirLock(path.join(dir, "."))
+    expect(first.claim()).toBe(true)
+    expect(first.claim()).toBe(true)
+    expect(JSON.parse(fs.readFileSync(lockFile(dir), "utf8"))).toMatchObject({ pid: process.pid })
+    expect(second.claim()).toBe(false)
+    second.release()
+    expect(fs.existsSync(lockFile(dir))).toBe(true)
+    first.release()
+    expect(fs.existsSync(lockFile(dir))).toBe(false)
+    expect(second.claim()).toBe(true)
+    second.release()
+  })
+
+  it("leaves a folder another live process holds alone, and takes one a stopped process or a torn file left", () => {
+    const dir = outputDir()
+    fs.mkdirSync(path.join(dir, "utterances"), { recursive: true })
+    const lock = voiceOutputDirLock(dir)
+    fs.writeFileSync(lockFile(dir), JSON.stringify({ pid: process.ppid }))
+    expect(lock.claim()).toBe(false)
+    lock.release()
+    expect(JSON.parse(fs.readFileSync(lockFile(dir), "utf8"))).toMatchObject({ pid: process.ppid })
+    // A process this user may not signal, such as launchd or init, is still running.
+    fs.writeFileSync(lockFile(dir), JSON.stringify({ pid: 1 }))
+    expect(asRoot || !lock.claim()).toBe(true)
+    lock.release()
+
+    const stopped = spawnSync(process.execPath, ["-e", ""]).pid!
+    fs.writeFileSync(lockFile(dir), JSON.stringify({ pid: stopped }))
+    expect(lock.claim()).toBe(true)
+    lock.release()
+
+    fs.writeFileSync(lockFile(dir), "{torn")
+    expect(lock.claim()).toBe(true)
+    lock.release()
+    fs.writeFileSync(lockFile(dir), JSON.stringify({ pid: "not a pid" }))
+    expect(lock.claim()).toBe(true)
+    lock.release()
+    // A file this process left from an earlier bridge that never let go is not another bridge's.
+    fs.writeFileSync(lockFile(dir), JSON.stringify({ pid: process.pid }))
+    expect(lock.claim()).toBe(true)
+    lock.release()
+  })
+
+  it("holds a folder only in this process when it cannot write the lock file, and logs it", () => {
+    vi.spyOn(nerves, "emitNervesEvent")
+    const lock = voiceOutputDirLock("/dev/null/not-a-dir")
+    expect(lock.claim()).toBe(true)
+    expect(voiceOutputDirLock("/dev/null/not-a-dir").claim()).toBe(false)
+    expect(emitted("senses.voice_output_lock_failed")).toEqual([expect.objectContaining({ level: "warn" })])
+    lock.release()
   })
 })

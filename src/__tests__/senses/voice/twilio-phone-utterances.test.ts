@@ -2,10 +2,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { buildVoiceTranscript } from "../../../senses/voice"
+import { buildVoiceTranscript, closeTwilioPhoneBridgeServer } from "../../../senses/voice"
 import * as nerves from "../../../nerves/runtime"
 import type { VoiceCallIdentity } from "../../../senses/voice/call-auth"
-import { TwilioAudioStreamJobStore, TwilioMediaStreamSession, createTwilioPhoneBridge, startTwilioPhoneBridgeServer, type VoiceSessionSocket } from "../../../senses/voice/twilio-phone"
+import { TwilioAudioStreamJobStore, TwilioMediaStreamSession, startTwilioPhoneBridgeServer, type VoiceSessionSocket } from "../../../senses/voice/twilio-phone"
 import { recordVoiceUtterance, voiceUtterances } from "../../../senses/voice/utterances"
 import { CALLER, LINE, cleanupFixtures, fixture, start } from "./twilio-auth-fixture"
 
@@ -325,19 +325,34 @@ describe("voice utterances a stopped process left", () => {
     try {
       const payload = { callSid: "CAold", friendId: "ari", sessionKey: "phone", transport: "recording" as const }
       recordVoiceUtterance(outputDir, "twilio-CAold-REold", payload)
-      const f = await fixture({ outputDir })
+      const { options } = await fixture()
+      const owner = await startTwilioPhoneBridgeServer({ ...options, outputDir })
       expect(voiceUtterances(outputDir).outcome("twilio-CAold-REold")).toMatchObject({
         outcome: "failed", detail: "the voice sense restarted before this was answered; live audio is not replayed",
       })
-      const bridge = createTwilioPhoneBridge({ ...f.options, outputDir })
+      const second = await startTwilioPhoneBridgeServer({ ...options, outputDir })
       recordVoiceUtterance(outputDir, "twilio-CAold-RElate", payload)
-      await bridge.close!()
+      // A bridge that never held the folder leaves its utterances to the one that does.
+      await closeTwilioPhoneBridgeServer(second)
+      expect(voiceUtterances(outputDir).get("twilio-CAold-RElate")).not.toBeNull()
+      await closeTwilioPhoneBridgeServer(owner)
       expect(voiceUtterances(outputDir).outcome("twilio-CAold-RElate")).toMatchObject({
         outcome: "failed", detail: "the voice sense shut down before this was answered; live audio is not replayed",
       })
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true })
     }
+  })
+
+  it("leaves a running bridge's utterances alone when a second bridge starts with the same folder on another port", async () => {
+    const f = await fixture()
+    vi.spyOn(nerves, "emitNervesEvent")
+    recordVoiceUtterance(f.outputDir, "twilio-CAlive-RElive", { callSid: "CAlive", friendId: "ari", sessionKey: "phone", transport: "recording" })
+    const second = await startTwilioPhoneBridgeServer({ ...f.options, port: 0, host: "127.0.0.1" })
+    expect(voiceUtterances(f.outputDir).get("twilio-CAlive-RElive")).not.toBeNull()
+    expect(emitted("senses.voice_output_folder_held")).toEqual([expect.objectContaining({ level: "warn" })])
+    await closeTwilioPhoneBridgeServer(second)
+    expect(voiceUtterances(f.outputDir).get("twilio-CAlive-RElive")).not.toBeNull()
   })
 
   it("leaves another process's utterances alone when this bridge cannot take the port", async () => {
