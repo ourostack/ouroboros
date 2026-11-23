@@ -33,6 +33,14 @@ export interface ApprovalOwnerBinding {
   profileVersion: number
 }
 
+/** Ari answered through his primary agent's relay instead of tapping the card: who carried it, and which signed envelope. */
+export interface ApprovalRelayDecision {
+  actor: "owner-via-relay"
+  senderDid: string
+  envelopeBindingId: string
+  decidedAt: string
+}
+
 export interface ApprovalRecord {
   approvalId: string
   state: ApprovalState
@@ -65,6 +73,8 @@ export interface ApprovalRecord {
   reason: string | null
   frozenAssistantMessage: JsonObject
   ownerBinding?: ApprovalOwnerBinding
+  /** Present only on a record denied through the relay. */
+  relayDecision?: ApprovalRelayDecision
 }
 
 export interface PrepareApprovalInput {
@@ -135,6 +145,19 @@ export interface ApprovalStore {
     sessionKey: string
     ownerId: string
     decisionAt?: number
+  }): ApprovalRecord
+  /**
+   * Ari's answer relayed by his primary agent, checked by the caller (signature, sender, switch). Deny only: a relayed
+   * approve is refused here whatever the caller passes. It needs the approval's own decision token, like a tap, but not
+   * the tap's Telegram binding, and records the relay as its own actor. The time is always the store's own clock, never
+   * the caller's or the envelope's, so a late answer can't be dated back inside the approval's window.
+   */
+  decideRelayed(input: {
+    approvalId: string
+    decisionToken: string
+    decision: "deny"
+    senderDid: string
+    envelopeBindingId: string
   }): ApprovalRecord
   expire(input: { approvalId: string }): ApprovalRecord
   markAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord
@@ -253,7 +276,9 @@ export function canonicalApprovalArguments(value: JsonObject): { canonical: stri
 
 function hasExactKeys(value: Record<string, unknown>): boolean {
   const actual = Object.keys(value).sort()
-  const expected = [...RECORD_KEYS, ...("ownerBinding" in value ? ["ownerBinding"] : [])].sort()
+  const expected = [
+    ...RECORD_KEYS, ...("ownerBinding" in value ? ["ownerBinding"] : []), ...("relayDecision" in value ? ["relayDecision"] : []),
+  ].sort()
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
 }
 
@@ -261,6 +286,11 @@ function validOwnerBinding(value: unknown): value is ApprovalOwnerBinding {
   return isObject(value) && Object.keys(value).length === 5
     && ["friendId", "requestId", "sessionEventId", "sessionKey"].every((key) => isNonEmpty(value[key]) && value[key] === value[key].trim())
     && typeof value.profileVersion === "number" && Number.isSafeInteger(value.profileVersion) && value.profileVersion > 0
+}
+
+function validRelayDecision(value: unknown): value is ApprovalRelayDecision {
+  return isObject(value) && Object.keys(value).sort().join(",") === "actor,decidedAt,envelopeBindingId,senderDid"
+    && value.actor === "owner-via-relay" && isNonEmpty(value.senderDid) && isNonEmpty(value.envelopeBindingId) && isTimestamp(value.decidedAt)
 }
 
 function validStateShape(record: ApprovalRecord): boolean {
@@ -331,6 +361,7 @@ function validStateShape(record: ApprovalRecord): boolean {
 export function parseApprovalRecord(value: unknown): ApprovalRecord {
   if (!isObject(value) || !hasExactKeys(value)) fail("corrupt_record")
   if ("ownerBinding" in value && !validOwnerBinding(value.ownerBinding)) fail("corrupt_record")
+  if ("relayDecision" in value && (!validRelayDecision(value.relayDecision) || value.state !== "denied")) fail("corrupt_record")
   const record = value as unknown as ApprovalRecord
   if (!UUID.test(record.approvalId)) fail("corrupt_record")
   for (const field of [
@@ -439,6 +470,17 @@ function observeDecide<T>(operation: () => T): T {
     return result
   } catch (error) {
     emitNervesEvent({ level: "error", component: "heart", event: "approval.store_decide", message: "approval decision failed", meta: operationErrorMeta("decide", error) })
+    throw error
+  }
+}
+
+function observeDecideRelayed<T>(operation: () => T): T {
+  try {
+    const result = operation()
+    emitNervesEvent({ component: "heart", event: "approval.store_decide_relayed", message: "relayed approval decision completed", meta: { operation: "decide_relayed", outcome: "success" } })
+    return result
+  } catch (error) {
+    emitNervesEvent({ level: "error", component: "heart", event: "approval.store_decide_relayed", message: "relayed approval decision failed", meta: operationErrorMeta("decide_relayed", error) })
     throw error
   }
 }
@@ -811,6 +853,26 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
         }
         return cas(previous, { ...previous, state: "claimed", ownerId: input.ownerId, epoch: previous.epoch + 1, updatedAt: timestamp() })
+      })
+    },
+
+    decideRelayed(input) {
+      return observeDecideRelayed(() => {
+        if ((input as { decision: unknown }).decision !== "deny") fail("relay_decision_not_allowed")
+        if (!isNonEmpty(input.senderDid) || !isNonEmpty(input.envelopeBindingId)) fail("invalid_relay_decision")
+        const previous = requireRecord(input.approvalId)
+        const decisionAt = now().getTime()
+        if (!tokenMatches(input.decisionToken, previous.decisionTokenDigest)) fail("decision_binding_mismatch")
+        if (previous.state === "denied" && previous.relayDecision?.envelopeBindingId === input.envelopeBindingId
+          && previous.relayDecision.senderDid === input.senderDid) return previous
+        if (previous.state !== "proposed") fail("decision_not_eligible")
+        if (decisionAt >= Date.parse(previous.expiresAt)) {
+          return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
+        }
+        const relayDecision: ApprovalRelayDecision = {
+          actor: "owner-via-relay", senderDid: input.senderDid, envelopeBindingId: input.envelopeBindingId, decidedAt: timestamp(),
+        }
+        return cas(previous, { ...previous, state: "denied", relayDecision, updatedAt: timestamp() })
       })
     },
 
