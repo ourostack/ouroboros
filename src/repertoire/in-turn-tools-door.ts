@@ -27,6 +27,11 @@ export const DISPATCH_ERRORS = [
   { code: "not-run", means: "This X-ray door checked the call but runs no tool.", fix: "Nothing to fix: in a real turn the tool runs." },
 ] as const
 
+/** The door's sign-in: it never starts one, since no tool it answers runs. */
+export async function neverSignIn(): Promise<undefined> {
+  return undefined
+}
+
 const FLOW_TOOLS = [settleTool, speakTool, observeTool, restTool, ponderTool]
 /** Tools a runner other than the dispatcher runs, which declare their cards beside their schemas. */
 const DECLARED = [findToolsDefinition, ...specialistToolDefinitions]
@@ -50,7 +55,7 @@ export function listInTurnTools(): ListedInTurnTool[] {
 /** A call answered by the dispatcher's checks over every registered tool; one that passes them is not run. */
 export async function callInTurnTool(name: string, args: Record<string, string>): Promise<TypedToolOutcome> {
   const selection = { ordinary: registeredToolDefinitions(), engine: ENGINE_TOOLS }
-  const prepared = await preflightToolCall(name, args, { toolSelection: selection, signin: async () => undefined })
+  const prepared = await preflightToolCall(name, args, { toolSelection: selection, signin: neverSignIn })
   const outcome = prepared.kind === "ready"
     ? { state: "refused" as const, text: `${name} passed the dispatcher's checks; this X-ray door runs no tool (code: not-run)`, code: "not-run" }
     : typedOutcome(prepared)

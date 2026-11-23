@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { callInTurnTool, DISPATCH_ERRORS, listInTurnTools } from "../../repertoire/in-turn-tools-door"
+import { callInTurnTool, DISPATCH_ERRORS, listInTurnTools, neverSignIn } from "../../repertoire/in-turn-tools-door"
 
 describe("the in-turn tools door", () => {
   it("lists every registered tool once, each a function definition with an Ouro AX card", () => {
@@ -38,6 +38,10 @@ describe("the in-turn tools door", () => {
     await expect(callInTurnTool("settle", { answer: "hi" })).resolves.toEqual({
       state: "refused", text: "settle passed the dispatcher's checks; this X-ray door runs no tool (code: not-run)", code: "not-run",
     })
+  })
+
+  it("never starts a sign-in", async () => {
+    await expect(neverSignIn()).resolves.toBeUndefined()
   })
 
   it("cards every code the door answers", () => {
