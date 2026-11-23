@@ -150,6 +150,7 @@ function createClosableServer(): { server: any; close: () => void } {
       return server
     }),
     close: vi.fn(),
+    closeAllConnections: vi.fn(),
   }
 
   return {
@@ -2015,7 +2016,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("times out a pre-send live turn as observed so recovery cannot re-answer it", async () => {
+  it("keeps a live turn that timed out before saying anything pending, and recovery answers it", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -2024,8 +2025,6 @@ describe("BlueBubbles sense runtime", () => {
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handling = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
-    let settled = false
-    void handling.finally(() => { settled = true })
     for (let attempt = 0; attempt < 10 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
       await vi.advanceTimersByTimeAsync(0)
       await flushAsyncWork()
@@ -2042,15 +2041,46 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("live iMessage turn timed out"),
     }))
-    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", dmThreadPayload.data.guid)).toBe(false)
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
 
-    const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
-    expect(recovery).toEqual(expect.objectContaining({ recovered: 0, failed: 0 }))
+    const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(recovery).resolves.toEqual(expect.objectContaining({ recovered: 1, failed: 0 }))
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "got it" }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+  })
+
+  it("records a turn that keeps timing out as abandoned after three attempts instead of retrying forever", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.handleInboundTurn.mockImplementation(rejectWhenTurnAborts)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const live = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(live).resolves.toEqual(expect.objectContaining({ reason: "turn_timeout" }))
+
+    for (let attempt = 2; attempt <= 3; attempt++) {
+      // Recovery spaces retries of one message by the autonomy budget's 10 minute duplicate window.
+      await vi.advanceTimersByTimeAsync(60_000)
+      const recovery = bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+      await vi.advanceTimersByTimeAsync(600_000)
+      await recovery
+      expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(attempt)
+    }
+
     expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
       "testagent",
       expect.objectContaining({ outcome: "message_observed" }),
     )
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.sendText).not.toHaveBeenCalled()
   })
 
   it("releases the live webhook lane when timeout cleanup transport hangs", async () => {
@@ -5589,10 +5619,55 @@ describe("BlueBubbles sense runtime", () => {
       pendingRecoveryCount: 0,
     }, { processTurns: false })
     expect(sync).toEqual(expect.objectContaining({ skipped: 1, failed: 0 }))
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toEqual([])
 
     releaseRepair.resolve()
     await expect(live).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
     expect(mocks.sendText).toHaveBeenCalledTimes(2)
+  })
+
+  it("counts a missed message that runtime sync left for recovery as owned only while it is still pending", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const now = Date.now()
+    mocks.listRecentMessages.mockResolvedValueOnce([makeCatchUpMessage({
+      messageGuid: "MISSED-FOR-OWNERSHIP-AUDIT",
+      timestamp: now - 1_000,
+    })])
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.catchUpMissedBlueBubblesMessages({}, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable",
+      lastCheckedAt: new Date(now - 10_000).toISOString(),
+      pendingRecoveryCount: 0,
+    }, { processTurns: false })
+
+    const pending = new Set<string>(mocks.listPendingSemanticCaptures("testagent").map((capture: any) => capture.keyHash))
+    expect(pending.size).toBe(1)
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(pending)).toEqual([])
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toHaveLength(1)
+  })
+
+  it("counts a webhook's reservation as owned while the webhook is still capturing it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    let duringCapture: unknown[] | undefined
+    const defaultWrite = mocks.writeSemanticCapture.getMockImplementation()!
+    mocks.writeSemanticCapture.mockImplementationOnce((...args: any[]) => {
+      expect(latestTurns.listPendingObservationsForAudit()).toHaveLength(1)
+      duringCapture = bluebubbles.auditBlueBubblesObservationOwnership(new Set())
+      return defaultWrite(...args)
+    })
+
+    await bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+
+    expect(duringCapture).toEqual([])
+    const orphan = latestTurns.reserveObservation({ chatGuid: "any;-;owner@example.test", chatIdentifier: "owner@example.test" })
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toEqual([orphan])
+    latestTurns.clearPending(orphan)
   })
 
   it("sends the reply to the second of two quick texts when the context fetch fails and runtime sync re-reads both", async () => {
@@ -5647,10 +5722,301 @@ describe("BlueBubbles sense runtime", () => {
       lastCheckedAt: new Date(now - 60_000).toISOString(),
       pendingRecoveryCount: 0,
     }, { processTurns: false })
+    expect(bluebubbles.auditBlueBubblesObservationOwnership(new Set())).toEqual([])
 
     releaseSecondModel.resolve()
     await expect(secondHandling).resolves.toEqual(expect.objectContaining({ notifiedAgent: true }))
     expect(mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)).toEqual(["send me the code when it arrives"])
+  })
+
+  it("marks a reply waiting for send permission as stalled, then gives up at the turn deadline and keeps the message pending", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    let fence: ReturnType<typeof latestTurns.reserveObservation> | undefined
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      // A newer same-chat observation that nothing will ever settle.
+      fence = latestTurns.reserveObservation({
+        chatGuid: "any;-;owner@example.test",
+        chatIdentifier: "owner@example.test",
+      })
+      callbacks.onTextChunk("got it")
+      return { outcome: "settled", completion: { answer: "got it", intent: "complete" } }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && !fence; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(fence).toBeDefined()
+
+    await vi.advanceTimersByTimeAsync(61_000)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_delivery_admission_stalled",
+    }))
+    const { snapshotBlueBubblesActiveTurns } = await import("../../../senses/bluebubbles/active-turns")
+    expect(snapshotBlueBubblesActiveTurns("testagent", 5 * 60_000)).toEqual(expect.objectContaining({
+      admissionStalledTurnCount: 1,
+      stalledTurnCount: 1,
+    }))
+
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "turn_timeout",
+    }))
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    expect(snapshotBlueBubblesActiveTurns("testagent", 5 * 60_000)).toEqual(expect.objectContaining({
+      activeTurnCount: 0,
+      admissionStalledTurnCount: 0,
+    }))
+    latestTurns.clearPending(fence!)
+  })
+
+  it("gives up waiting to start a turn behind a fence nobody settles and keeps the message pending", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const releaseRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseRepair.promise
+      return event
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && mocks.repairEvent.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    const fence = latestTurns.reserveObservation({
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
+    })
+    releaseRepair.resolve()
+
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      handled: true,
+      notifiedAgent: false,
+      reason: "delivery_admission_timeout",
+    }))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_delivery_admission_timeout",
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    latestTurns.clearPending(fence)
+  })
+
+  it("keeps the message pending when the turn deadline cancels a final send that never reached the transport", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    let sendStarted = false
+    mocks.sendTextBeforeTransport.mockImplementationOnce((params: { signal?: AbortSignal }) => {
+      sendStarted = true
+      return new Promise((_resolve, reject) => {
+        params.signal?.addEventListener("abort", () => reject(params.signal?.reason), { once: true })
+      })
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && !sendStarted; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(sendStarted).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({ notifiedAgent: false, reason: "turn_timeout" }))
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+  })
+
+  it("stops waiting to start a turn when the sense shuts down, leaving the message pending", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const latestTurns = await import("../../../senses/bluebubbles/latest-turn")
+    const releaseRepair = createDeferred<void>()
+    mocks.repairEvent.mockImplementationOnce(async (event: unknown) => {
+      await releaseRepair.promise
+      return event
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.repairEvent.mock.calls.length === 1)
+    const fence = latestTurns.reserveObservation({
+      chatGuid: "any;-;owner@example.test",
+      chatIdentifier: "owner@example.test",
+    })
+    releaseRepair.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    await bluebubbles.stopBlueBubblesApp(server)
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    latestTurns.clearPending(fence)
+  })
+
+  it("stops the sense at once on shutdown, leaving an in-flight message pending for the next process", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.handleInboundTurn.mockImplementationOnce(rejectWhenTurnAborts)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    const response = createMockResponse()
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), response.res)
+    await waitFor(() => mocks.handleInboundTurn.mock.calls.length === 1)
+
+    await expect(bluebubbles.stopBlueBubblesApp(server)).resolves.toBeGreaterThanOrEqual(1)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    await expect(bluebubbles.stopBlueBubblesApp(server)).resolves.toBe(0)
+  })
+
+  it("records a turn that already spoke when shutdown stopped it, so the next process does not repeat it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    const response = createMockResponse()
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), response.res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    await bluebubbles.stopBlueBubblesApp(server)
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "shutdown", spokeBeforeEnd: true }),
+    }))
+  })
+
+  it("records a turn whose mid-turn message was still sending when the deadline fired, so recovery does not repeat it", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const speakLands = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockImplementationOnce(() => speakLands.promise)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && mocks.sendText.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    // The deadline fires while the message is on its way; it lands afterwards.
+    await vi.advanceTimersByTimeAsync(600_000)
+    speakLands.resolve({ messageGuid: "speak-guid" })
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      reason: "turn_timeout",
+      spokeBeforeEnd: true,
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "turn_timeout", spokeBeforeEnd: true }),
+    }))
+  })
+
+  it("records a turn whose mid-turn message was still sending when shutdown stopped it", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const speakLands = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockImplementationOnce(() => speakLands.promise)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      return rejectWhenTurnAborts(input)
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    const stopping = bluebubbles.stopBlueBubblesApp(server)
+    speakLands.resolve({ messageGuid: "speak-guid" })
+    await stopping
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "shutdown", spokeBeforeEnd: true }),
+    }))
+  })
+
+  it("records a spoken turn stopped by shutdown before waiting for the turn's cleanup", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const releaseTurn = createDeferred<never>()
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      // A provider that ignores the abort keeps the turn running for a while.
+      return releaseTurn.promise
+    })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const server = bluebubbles.startBlueBubblesApp()
+    const handler = mocks.createServer.mock.calls[0]?.[0] as (req: unknown, res: unknown) => Promise<void>
+    void handler(createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmTopLevelPayload), createMockResponse().res)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+
+    const stopping = bluebubbles.stopBlueBubblesApp(server)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The process may exit here, before the turn's cleanup finishes.
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+
+    releaseTurn.reject(new Error("provider stopped"))
+    await stopping
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
   })
 
   it("stops paginating catch-up once a full page reaches the catch-up cutoff", async () => {
@@ -6141,7 +6507,7 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("settles timed-out upstream catch-up turns as observed after repair succeeds", async () => {
+  it("keeps a timed-out upstream catch-up turn pending for replay after repair succeeds", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -6178,10 +6544,8 @@ describe("BlueBubbles sense runtime", () => {
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"catchup-timeout-guid\"")
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "message_observed" }),
-    )
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_error",
       meta: expect.objectContaining({
@@ -6796,6 +7160,29 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("surfaces a reply stuck waiting for permission to send in runtime state detail", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const activeTurns = await import("../../../senses/bluebubbles/active-turns")
+    const turnId = activeTurns.beginBlueBubblesActiveTurn("testagent", makeCatchUpMessage({ messageGuid: "runtime-admission-guid" }))
+    activeTurns.noteBlueBubblesActiveTurnAdmissionWait("testagent", turnId, new Date(Date.now() - 90_000).toISOString())
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("waiting for permission to send"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail)
+      .toMatch(/^iMessage reply stalled; 1 turn\(s\) waiting for permission to send for 9\ds$/)
+    closableServer.close()
+  })
+
   it("surfaces active live turns in runtime state before they reach the stall threshold", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -6855,11 +7242,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("without a reply or recorded outcome"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 1 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
         pendingRecoveryCount: 1,
       }),
     )
@@ -9290,7 +9677,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("settles captured inbound recovery timeouts as observed without marking them processed", async () => {
+  it("keeps a captured inbound whose recovery turn timed out pending, and the next pass answers it", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -9323,14 +9710,17 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual({ recovered: 0, skipped: 1, failed: 0 })
     expect(timeoutTurnCalls()[0]?.[0]?.signal.aborted).toBe(true)
-    expect(mocks.semanticHandled.get(capture.keyHash)).toEqual(expect.objectContaining({ outcome: "message_observed" }))
+    expect(mocks.semanticHandled.get(capture.keyHash)).toBeUndefined()
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;owner@example.test", "captured-timeout-guid")).toBe(false)
     const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;owner@example.test")
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"captured-timeout-guid\"")
-    const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
-    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 0 }))
+    // Recovery spaces retries of one message by the autonomy budget's 10 minute duplicate window.
+    await vi.advanceTimersByTimeAsync(60_000)
+    const queued = bluebubbles.recoverQueuedBlueBubblesMessages()
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(queued).resolves.toEqual(expect.objectContaining({ recovered: 1, failed: 0, pendingRecoveryCount: 0 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "senses.bluebubbles_turn_timeout",
@@ -9438,7 +9828,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 2 })
     expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({
       upstreamStatus: "ok",
-      detail: "upstream reachable but iMessage is not caught up; 2 recovery item(s) queued",
+      detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 2 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
       pendingRecoveryCount: 2,
       failedRecoveryCount: 0,
       lastRecoveredAt: "2026-04-24T22:00:00.000Z",
@@ -9746,11 +10136,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("without a reply or recorded outcome"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 1 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
         pendingRecoveryCount: 1,
       }),
     )
@@ -9811,11 +10201,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("without a reply or recorded outcome"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 1 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
         pendingRecoveryCount: 1,
       }),
     )
@@ -9842,11 +10232,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("without a reply or recorded outcome"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 1 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
         pendingRecoveryCount: 1,
       }),
     )
@@ -9875,11 +10265,11 @@ describe("BlueBubbles sense runtime", () => {
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
     await waitFor(() => fs.existsSync(runtimePath)
-      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("without a reply or recorded outcome"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
         upstreamStatus: "ok",
-        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        detail: expect.stringMatching(/^upstream reachable but iMessage is not caught up; 1 message\(s\) without a reply or recorded outcome, oldest \d+s$/),
         pendingRecoveryCount: 1,
       }),
     )
@@ -12191,7 +12581,7 @@ describe("BlueBubbles sense runtime", () => {
     ])
   })
 
-  it("publishes observed truth and discards late staged state when timeout wins before final transport", async () => {
+  it("keeps the message pending and discards late staged state when timeout wins before final transport", async () => {
     vi.useFakeTimers()
     const releaseProvider = createDeferred<void>()
     const promoteFailoverState = vi.fn()
@@ -12252,10 +12642,8 @@ describe("BlueBubbles sense runtime", () => {
       reason: "turn_timeout",
     }))
     expect(leaseReleased).toHaveBeenCalledTimes(1)
-    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith(
-      "testagent",
-      expect.objectContaining({ outcome: "message_observed" }),
-    )
+    expect(mocks.writeSemanticHandled).not.toHaveBeenCalled()
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
     expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "late unseen reply" }))
     expect(mocks.postTurnPersist).not.toHaveBeenCalled()
     expect(mocks.accumulateFriendTokens).not.toHaveBeenCalled()
@@ -14979,6 +15367,7 @@ describe("BlueBubbles reaction capture-only policy", () => {
     expect(snapshotBlueBubblesActiveTurns("testagent", 1)).toEqual({
       activeTurnCount: 0,
       stalledTurnCount: 0,
+      admissionStalledTurnCount: 0,
       oldestActiveTurnStartedAt: undefined,
       oldestActiveTurnAgeMs: undefined,
     })

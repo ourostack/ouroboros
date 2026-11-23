@@ -1373,7 +1373,12 @@ describe("runAgent tool loop guard", () => {
 
     const { runAgent } = await import("../../heart/core")
     const captureKeyHash = "c".repeat(64)
-    await runAgent([{ role: "user", content: "Please end this report." }], makeCallbacks(), "bluebubbles", undefined, {
+    // An earlier step found habit_cancel, so this step advertises it with the bound schema.
+    await runAgent([
+      { role: "user", content: "Please end this report." },
+      { role: "assistant", content: null, tool_calls: [{ id: "f0", type: "function", function: { name: "find_tools", arguments: '{"query":"select:habit_cancel"}' } }] },
+      { role: "tool", tool_call_id: "f0", content: "loaded; callable on your next step:\n- habit_cancel(): cancel" },
+    ] as any, makeCallbacks(), "bluebubbles", undefined, {
       toolChoiceRequired: true,
       toolContext: {
         signin: async () => undefined,

@@ -9351,8 +9351,10 @@ describe("integration: kick + tool_choice required combined", () => {
     await runAgent(messages, callbacks, "teams")
 
     const toolNames = usedTools?.map((t: any) => t.function.name) || []
-    expect(toolNames).toContain("graph_profile")
-    expect(toolNames).toContain("ado_work_items")
+    // Doors whose card isn't eager are held back and named in find_tools's description.
+    const findTools = usedTools?.find((t: any) => t.function.name === "find_tools")
+    expect(findTools?.function.description).toContain("graph_profile")
+    expect(findTools?.function.description).toContain("ado_work_items")
     // All base tools now returned (no channel-level blocking)
     expect(toolNames).toContain("read_file")
     expect(toolNames).toContain("shell")
