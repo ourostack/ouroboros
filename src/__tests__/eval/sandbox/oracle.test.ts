@@ -17,6 +17,7 @@ describe("dockerOracle", () => {
     const args = seen[0]!
     expect(args.slice(0, 2)).toEqual(["run", "--rm"])
     expect(args).toEqual(expect.arrayContaining(["--network", "none", "--read-only", "--cap-drop", "ALL", "--log-driver", "none"]))
+    expect(args).toEqual(expect.arrayContaining(["--label", "ouro.eval=1"]))
     expect(args).toEqual(expect.arrayContaining(["/tmp/ouro-eval-x/oracle/lib:/oracle:ro", "/tmp/ouro-eval-x/work/books/work/1/a.epub:/book.epub:ro", "ouro-eval-household:local"]))
   })
 

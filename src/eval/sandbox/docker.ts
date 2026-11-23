@@ -19,7 +19,12 @@
  * which ends every process the turn started, then the household, and only then reads the household's state file and
  * hashes the files that appeared in the writable mounts. A run whose files cannot be read back within the limits ends
  * as a sandbox error, which fails it. The containers, the network and the run's folder are removed afterwards,
- * whatever happened. Every name the run creates starts with `ouro-eval-`.
+ * whatever happened. Every name the run creates starts with `eval-sandbox-`, outside the `ouro-` names the Butler's
+ * tooling owns, and every container and network it creates carries the labels `ouro.eval=1` and `ouro.eval.run=<run>`.
+ *
+ * It refuses to run on a host that has the live Butler's `ouro-butler` container unless the caller holds a host lock
+ * that the Butler's lifecycle honours: on 2026-11-23 an eval container vanishing mid-upgrade broke the Butler's
+ * upgrade and its rollback on the host they shared (#1760).
  */
 import { spawn } from "node:child_process"
 import crypto from "node:crypto"
@@ -38,6 +43,14 @@ import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS,
 
 export const SANDBOX_IMAGE = "ouro-eval-sandbox:local"
 export const HOUSEHOLD_IMAGE = "ouro-eval-household:local"
+/** What every container, network and folder a sandboxed run creates is named after. */
+export const EVAL_RUN_PREFIX = "eval-sandbox-"
+/** The label on everything an eval run creates, so other tooling on the host can tell it is not its own. */
+export const EVAL_LABEL = "ouro.eval=1"
+/** The live Butler's container; a host that has it is the Butler's. */
+export const BUTLER_CONTAINER = "ouro-butler"
+/** A lock on a Butler's host that its lifecycle (upgrade and rollback) honours while an eval run holds it. */
+export type HostLock = { held(): Promise<boolean> }
 export type SandboxImages = { agent: string; household: string }
 export const LIBGEN_MIRRORS = ["libgen.li", "libgen.bz", "libgen.gl", "libgen.la", "libgen.vg"]
 export const POCKETBOOK_ADDRESS = "pocketbook@example.invalid"
@@ -119,6 +132,8 @@ export type SandboxInput = {
    * answer may have several user turns; the first is the job, scored as any run, and the rest come back as `followUps`.
    */
   guest?: { entry: InterviewGuestEntry; turn: unknown }
+  /** Lets the run share a host with the live Butler; without it, such a host is refused. */
+  hostLock?: HostLock
 }
 
 /** The guest entries the agent image keeps besides the Telegram turn's. */
@@ -229,12 +244,17 @@ export function splitTurns(observation: Observation, turns: GuestTurns | undefin
 export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[] }> {
   const docker = input.docker ?? dockerCli()
   const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
-  const runId = `ouro-eval-${crypto.randomBytes(4).toString("hex")}`
+  const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
+  const runLabels = ["--label", EVAL_LABEL, "--label", `ouro.eval.run=${runId}`]
   const last = input.case.prefix.at(-1)
   if (last?.role !== "user") throw new Error(`case ${input.case.id}: the prefix must end with the owner's message`)
   emitNervesEvent({ component: "eval", event: "eval.sandbox_run_start", message: "starting a sandboxed eval run", meta: { caseId: input.case.id, runId } })
 
-  const work = fs.mkdtempSync(path.join(input.workRoot ?? os.tmpdir(), "ouro-eval-"))
+  const butler = await docker.run(["ps", "--all", "--filter", `name=^/?${BUTLER_CONTAINER}$`, "--format", "{{.Names}}"])
+  if (butler.split("\n").includes(BUTLER_CONTAINER) && !(await input.hostLock?.held())) {
+    throw new Error(`refusing to run the eval sandbox on this host: it runs the live Butler (${BUTLER_CONTAINER}), and no host lock that the Butler's upgrade and rollback honour is held`)
+  }
+  const work = fs.mkdtempSync(path.join(input.workRoot ?? os.tmpdir(), EVAL_RUN_PREFIX))
   fs.chmodSync(work, 0o700)
   const bundle = path.join(work, "bundle")
   const fixtures = path.join(work, "fixtures")
@@ -250,7 +270,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
   const reclaim = async (): Promise<void> => {
     reclaimed = true
     await docker.run([
-      "run", "--rm", "--network", "none", "--log-driver", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
+      "run", "--rm", ...runLabels, "--network", "none", "--log-driver", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE",
       "--user", "0:0", "-v", `${work}:/work`, images.household, "sh", "-c", `chown -R ${self} /work && chmod -R u+rwX /work`,
     ])
   }
@@ -258,7 +278,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     const { gaps } = projectBundle({ bundleDir: input.bundleDir, seedBundleDir: input.seedBundleDir, include: input.case.bundle.include, out: bundle })
     fs.writeFileSync(path.join(bundle, "books/credentials.json"), `${JSON.stringify(booksSettings(), null, 1)}\n`)
     for (const dir of [fixtures, tls, household]) fs.mkdirSync(dir)
-    const helper = ["run", "--rm", "--network", "none", "--user", self, ...HARDENING]
+    const helper = ["run", "--rm", ...runLabels, "--network", "none", "--user", self, ...HARDENING]
     const labels = JSON.parse(await docker.run([...helper, "-v", `${fixtures}:/out`, images.household, "python3", "/opt/eval/fakes/fixtures.py", "build", "/out"])) as Record<string, string>
     // A seeded file sits where an earlier `books get` would have left it, so its place does not mark it as seeded.
     const earlier = Math.floor(Date.now() / 1000) - 86_400
@@ -279,13 +299,13 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     fs.chmodSync(household, 0o777)
     for (const entry of WRITABLE) openUp(path.join(bundle, entry))
 
-    await docker.run(["network", "create", "--internal", "--label", "ouro-eval", runId])
+    await docker.run(["network", "create", "--internal", ...runLabels, runId])
     networkMade = true
     started.push(sidecarName)
     // From here a container's user may own files in the run's folder.
     reclaimed = false
     const sidecar = docker.start([
-      "run", "--rm", "--name", sidecarName, "--network", runId, ...ALIASES.flatMap((alias) => ["--network-alias", alias]),
+      "run", "--rm", "--name", sidecarName, ...runLabels, "--network", runId, ...ALIASES.flatMap((alias) => ["--network-alias", alias]),
       "--user", "10002:10002", ...HARDENING, "--tmpfs", "/tmp:rw,size=64m",
       "-v", `${fixtures}:/eval/fixtures:ro`, "-v", `${seedFile}:/eval/seed.json:ro`,
       "-v", `${tls}/server.pem:/eval/tls/server.pem:ro`, "-v", `${tls}/server.key:/eval/tls/server.key:ro`, "-v", `${household}:/eval/state`,
@@ -297,7 +317,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     const before = snapshotFiles(bundle, WRITABLE)
     started.push(agentName)
     const agent = docker.start([
-      "run", "-i", "--rm", "--name", agentName, "--network", runId, "--user", "10001:10001", ...HARDENING,
+      "run", "-i", "--rm", "--name", agentName, ...runLabels, "--network", runId, "--user", "10001:10001", ...HARDENING,
       "--tmpfs", "/tmp:rw,mode=1777,size=256m", "--tmpfs", "/home/ouro:rw,uid=10001,gid=10001,mode=0700,size=256m", "--env", "HOME=/home/ouro",
       "-v", `${bundle}:${BUNDLE}:ro`, ...WRITABLE.flatMap((entry) => ["-v", `${path.join(bundle, entry)}:${BUNDLE}/${entry}`]),
       "-v", `${tls}/ca.pem:/etc/ssl/certs/ca-certificates.crt:ro`, "-v", `${turnFile}:/eval/turn.json:ro`,
