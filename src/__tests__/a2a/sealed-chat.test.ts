@@ -111,6 +111,15 @@ describe("sealed A2A chat between a client and an agent", () => {
     expect(got).not.toContain("heard:")
   })
 
+  it("hands the caller's deadline to the card fetch and the request", async () => {
+    const { client, cardUrl } = await setup()
+    const signals: (AbortSignal | null | undefined)[] = []
+    const fetchImpl: typeof fetch = async (input, init) => { signals.push(init?.signal); return fetch(input, init) }
+    const signal = new AbortController().signal
+    await sendSealedA2AChat({ cardUrl, text: "deadline?", identity: client, sodium, fetchImpl, signal })
+    expect(signals).toEqual([signal, signal])
+  })
+
   it("continues a conversation under the caller's conversation id", async () => {
     const { client, turns, cardUrl } = await setup()
     const first = await sendSealedA2AChat({ cardUrl, text: "one", identity: client, sodium, conversationId: "thread-7" })
