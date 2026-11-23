@@ -1,6 +1,8 @@
 node_modules
 /node_modules.bootstrap/
 dist/
+# The pinned Desk release (desk.lock.json), fetched by the build
+/vendor/desk/
 coverage/
 .DS_Store
 manifest.zip

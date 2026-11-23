@@ -56,6 +56,26 @@ describe("mcpToolsAsDefinitions", () => {
     expect(result[1].mcpServer).toBe("browser")
   })
 
+  it("names the built-in Desk's tools mcp__<server>__<tool>, trusts its read-only hints and marks its writes as desk changes", () => {
+    const mgr = makeMockMcpManager([{
+      server: "desk-ari",
+      source: "desk",
+      tools: [
+        { name: "desk_status", description: "Status", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+        { name: "task_update", description: "Update", inputSchema: { type: "object" } },
+      ],
+    }])
+    const [status, update] = mcpToolsAsDefinitions(mgr)
+    expect(status.tool.function.name).toBe("mcp__desk-ari__desk_status")
+    expect(status.riskProfile).toEqual({ mutates: "none", risk: "low", reason: "read-only tool from the agent's own MCP server" })
+    expect(update.tool.function.name).toBe("mcp__desk-ari__task_update")
+    expect(update.riskProfile).toEqual({
+      mutates: "durable_state_write",
+      risk: "high",
+      reason: "changes a desk through Desk, which commits and pushes the change",
+    })
+  })
+
   it("converts multiple servers' tools, each prefixed with server name", () => {
     const mgr = makeMockMcpManager([
       { server: "browser", tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }] },

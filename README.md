@@ -106,7 +106,7 @@ The canonical bundle shape is enforced by `src/mind/bundle-manifest.ts`. Importa
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
 - `arc/` — live continuity, obligations, claims, and resume state
-- `desk/` — durable work plus the maintained Desk record under `desk/_record/`
+- `desk/` — the agent's Desk: durable work, which the agent changes only through Desk's tools (`mcp__desk__*`), plus the maintained record under `desk/_record/`. Desk is built in: the daemon runs Desk's own MCP server, the one Claude Code, Codex and Copilot run from the Desk plugin, on this desk and on each other desk agent.json's `desks` names (`{ "ari": "~/desk" }` gives `mcp__desk-ari__*`). `desk.lock.json` pins the Desk release; `npm run desk:update` moves the pin.
 - `habits/` — the agent's autonomous rhythms (heartbeat, reflections, check-ins)
 - `friends/`
 - `state/`

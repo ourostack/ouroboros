@@ -54,7 +54,7 @@ export default defineConfig({
       "src/__tests__/senses/cli/*.tsx",
     ],
     maxWorkers: 1,
-    setupFiles: ["src/__tests__/nerves/global-capture.ts", "src/__tests__/test-helpers/isolated-tmpdir.ts", "src/__tests__/test-helpers/trusted-uid.ts"],
+    setupFiles: ["src/__tests__/nerves/global-capture.ts", "src/__tests__/test-helpers/isolated-tmpdir.ts", "src/__tests__/test-helpers/trusted-uid.ts", "src/__tests__/test-helpers/no-built-in-desk.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov", "json-summary"],
@@ -94,11 +94,6 @@ export default defineConfig({
         "src/heart/daemon/doctor-types.ts",
         "src/heart/daemon/daemon-cli.ts",
         "src/heart/attachments/sources/adapter.ts",
-        // W6 Unit 7: synchronous prompt-assembly module with defensive fallback
-        // catches that fire only on transient FS errors. v8 ignore directives
-        // didn't stick reliably in this file across local + CI; followup PR can
-        // either get to 100% via narrower tests or simpler refactoring.
-        "src/mind/desk-section.ts",
         // W6 Unit 8b: bridges manager + scheduler grew new desk-writing /
         // desk-discovery branches that aren't yet exercised. The existing
         // bridge tests inject a writeDeskTask mock, so defaultWriteDeskTask

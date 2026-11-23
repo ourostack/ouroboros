@@ -18,6 +18,8 @@
     "RepairGuide.ouro/",
     "skills/",
     "assets/",
+    "vendor/desk/",
+    "desk.lock.json",
     "deploy/unraid/",
     "npm-shrinkwrap.json",
     "changelog.json"
@@ -50,6 +52,7 @@
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
     "build": "node scripts/build.cjs",
+    "desk:update": "node scripts/desk-vendor.cjs --update",
     "lint": "eslint src/",
     "package:verify-assets": "node scripts/package-assets.cjs",
     "prepack": "npm run build && npm run package:verify-assets",

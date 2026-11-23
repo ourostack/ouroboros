@@ -8,6 +8,11 @@ function npmExecutable(platform = process.platform) {
 function buildSteps(repoRoot, deps = defaultDeps(), options = {}) {
   return [
     {
+      label: "vendor the pinned Desk release",
+      command: deps.execPath,
+      args: [deps.join(repoRoot, "scripts", "desk-vendor.cjs")],
+    },
+    {
       label: "clean dist",
       command: deps.execPath,
       args: [deps.join(repoRoot, "scripts", "clean-dist.cjs")],

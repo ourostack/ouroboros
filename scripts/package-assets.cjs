@@ -51,6 +51,10 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/psyche/LORE.md",
   "deploy/unraid/sanctuary.ouro/psyche/SOUL.md",
   "deploy/unraid/sanctuary.ouro/psyche/TACIT.md",
+  // The built-in Desk (desk.lock.json), which every agent's daemon runs (src/repertoire/desk-mcp.ts).
+  "desk.lock.json",
+  "vendor/desk/.ouro-desk.json",
+  "vendor/desk/mcp/bootstrap.cjs",
 ]
 
 const REQUIRED_PACKAGE_ASSET_SOURCES = {
@@ -72,10 +76,12 @@ const PACKAGE_PAYLOAD_PATH_PREFIXES = [
   "RepairGuide.ouro/",
   "SerpentGuide.ouro/",
   "skills/",
+  "vendor/desk/",
 ]
 
 const PACKAGE_PAYLOAD_FILE_PATHS = [
   "changelog.json",
+  "desk.lock.json",
   "npm-shrinkwrap.json",
   "package.json",
 ]

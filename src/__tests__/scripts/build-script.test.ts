@@ -44,6 +44,11 @@ describe("build script", () => {
     expect(calls).toEqual([
       {
         command: "/node",
+        args: ["/repo/scripts/desk-vendor.cjs"],
+        options: { cwd: "/repo", stdio: "inherit" },
+      },
+      {
+        command: "/node",
         args: ["/repo/scripts/clean-dist.cjs"],
         options: { cwd: "/repo", stdio: "inherit" },
       },
@@ -77,11 +82,12 @@ describe("build script", () => {
   })
 
   it("stops at the first failing step instead of skipping Mailbox UI assets", () => {
-    const { calls, deps, stderr } = makeDeps([0, 0, 0, 7, 0, 0])
+    const { calls, deps, stderr } = makeDeps([0, 0, 0, 0, 7, 0, 0])
 
     expect(runBuildCli([], deps)).toBe(7)
 
     expect(calls.map((call) => call.args.join(" "))).toEqual([
+      "/repo/scripts/desk-vendor.cjs",
       "/repo/scripts/clean-dist.cjs",
       "/repo/node_modules/typescript/bin/tsc",
       "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
@@ -91,11 +97,11 @@ describe("build script", () => {
   })
 
   it("stops when TypeScript compilation fails", () => {
-    const { calls, deps, stderr } = makeDeps([0, 2, 0, 0, 0])
+    const { calls, deps, stderr } = makeDeps([0, 0, 2, 0, 0, 0])
 
     expect(runBuildCli([], deps)).toBe(2)
 
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
     expect(stderr.join("")).toContain("build failed during compile TypeScript with exit code 2")
   })
 
@@ -110,6 +116,7 @@ describe("build script", () => {
     expect(runBuildCli(["--skip-mailbox-ui-install"], deps)).toBe(0)
 
     expect(calls.map((call) => call.args.join(" "))).toEqual([
+      "/repo/scripts/desk-vendor.cjs",
       "/repo/scripts/clean-dist.cjs",
       "/repo/node_modules/typescript/bin/tsc",
       "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
@@ -122,6 +129,7 @@ describe("build script", () => {
     const { deps } = makeDeps()
 
     expect(buildSteps("/repo", deps).map((step: { label: string }) => step.label)).toEqual([
+      "vendor the pinned Desk release",
       "clean dist",
       "compile TypeScript",
       "smoke Sanctuary health acceptance probe entry",

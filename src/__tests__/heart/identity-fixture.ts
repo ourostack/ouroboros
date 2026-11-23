@@ -89,6 +89,8 @@ export const FULL_AGENT_JSON = {
       version: "0.1.0",
     },
   ],
+  // Other desks the agent looks after, each served by its own Desk server.
+  desks: { ari: "~/desk" },
   // A discovered Copilot account pool, billed by quota tranche.
   accountPool: {
     eligible: "work",
