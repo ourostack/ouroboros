@@ -9,7 +9,7 @@ import { shelfClaimError, withShelfDisclosure } from "./shelf-claims";
 import { briefStyleRequested, briefStyleViolation, savedCommunicationPreference } from "./reply-style";
 import { FIND_TOOLS_NAME, buildToolCatalog, formatLoadedDoors, namesLoadedInHistory, partitionCatalog, recordFindTools, searchCatalog } from "../repertoire/tool-catalog";
 import { declaredTools } from "../repertoire/skill-summaries";
-import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { APPROVAL_UNAVAILABLE_REJECTION, classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolResultImage, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { withCode } from "../repertoire/tools-base";
 import { FLOW_TOOL_REFUSALS } from "../repertoire/tools-flow";
@@ -2921,7 +2921,7 @@ export async function runAgent(
         if (protectedCall && protectedCall.policy.kind === "required") {
           if (!options?.approvalCoordinator) {
             streamCallbackBuffer?.discard()
-            const rejection = "rejected: this protected tool requires approval, but the approval coordinator is unavailable; the handler was not invoked."
+            const rejection = APPROVAL_UNAVAILABLE_REJECTION
             rejectToolBatch(msg, [rejection])
             emitNervesEvent({
               level: "warn",

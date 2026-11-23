@@ -35,9 +35,19 @@ function packLocal(cwd, destination, npm) {
   return path.join(destination, filename);
 }
 
-function fetchPublished(spec, destination, npm) {
-  const result = npm(["pack", spec, "--json", "--pack-destination", destination], process.cwd());
-  if (result.status !== 0) throw new Error(`could not download ${spec} from npm: ${result.stderr.trim()}`);
+// Readable version metadata is not a readable tarball: right after a publish, `npm pack <spec>` can still answer
+// ETARGET ("no matching version") while `npm view` already finds it. Only that answer is polled, bounded; any
+// other failure, and an ETARGET that never clears, is an error.
+function fetchPublished(spec, destination, npm, { attempts = 1, intervalMs = 0, sleep = sleepSync } = {}) {
+  let result;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    result = npm(["pack", spec, "--json", "--pack-destination", destination], process.cwd());
+    if (result.status === 0) break;
+    if (!/\bETARGET\b/.test(`${result.stderr}${result.stdout}`) || attempt === attempts) {
+      throw new Error(`could not download ${spec} from npm: ${result.stderr.trim()} (after ${attempt} attempt${attempt === 1 ? "" : "s"})`);
+    }
+    sleep(intervalMs);
+  }
   const [{ filename }] = JSON.parse(result.stdout);
   return path.join(destination, filename);
 }
@@ -128,7 +138,7 @@ function publishPackageIdempotently({ cwd, tag }, npm = runNpm, wait = {}) {
       console.error(`npm publish ${spec} failed, but the registry now holds ${spec}; verifying its contents`);
     }
 
-    const differences = comparePackedTarballs(local, fetchPublished(spec, workspace, npm));
+    const differences = comparePackedTarballs(local, fetchPublished(spec, workspace, npm, { attempts, intervalMs, sleep }));
     if (differences.length > 0) {
       throw new Error(
         `${spec} is already on npm with different contents: ${differences.join("; ")}. ` +

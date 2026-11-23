@@ -29,6 +29,10 @@ describe("shell and web tools' Ouro AX cards", () => {
     expect(shell("shell").ax?.confirm).toBe("Approve shell with exact arguments <the call's arguments as JSON>?")
   })
 
+  it("asks the person the tool's declared confirm question when it has one", () => {
+    expect(formatTelegramApprovalPrompt("share_list", { to: "x" }, "Share your list with x?")).toBe("Share your list with x?")
+  })
+
   it("backs each read card with a profile that changes nothing", () => {
     for (const def of [shell("shell_status"), shell("shell_tail"), webToolDefinitions[0]]) {
       expect(def.ax?.effect).toBe("read")

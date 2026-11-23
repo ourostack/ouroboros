@@ -4,13 +4,15 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { makeMcpView, shutdownMcpFixtures } from "./mcp-fixture"
 
-const nervesEvents: Array<Record<string, unknown>> = []
+// Hoisted: importing the tool registry emits events while the modules load.
+const { nervesEvents } = vi.hoisted(() => ({ nervesEvents: [] as Array<Record<string, unknown>> }))
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => { nervesEvents.push(event) }),
 }))
 
 import { declaredRiskProfile, loadDeclaredTools, parseDeclaredTools } from "../../repertoire/mcp-declared-tools"
 import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
+import { approvalPolicyForToolName, selectToolsForChannel } from "../../repertoire/tools"
 import { McpManager } from "../../repertoire/mcp-manager"
 
 const FIXTURE = path.join(__dirname, "fixtures", "declared-tools", "tools.json")
@@ -133,6 +135,8 @@ describe("declared tools on a bundle's MCP server", () => {
     const share = defs.find((d) => d.tool.function.name === "shop_share_shopping_list")!
     expect(share.ax!.confirm).toBe(fixture.tools[3].ax.confirm)
     expect(share.riskProfile).toMatchObject({ risk: "high", mutates: "external_side_effect" })
+    expect(share.approvalPolicy!({})).toEqual({ kind: "required", policyId: "mcp.declared.consequential.v1", actionClass: "mcp.shop.share_shopping_list", requiresSoleCall: true })
+    expect(get.approvalPolicy).toBeUndefined()
     expect(get.mcpBinding!.surfacedName).toBe("shop_get_shopping_list")
     // A served tool the declaration doesn't name stays as every MCP tool is: the card made from what its server says, high risk.
     const order = defs.find((d) => d.tool.function.name === "shop_place_grocery_order")!
@@ -153,6 +157,35 @@ describe("declared tools on a bundle's MCP server", () => {
     const personOnly = parseDeclaredTools({ tools: [tool("pay", { ...card, effect: "person-only" })] }).tools
     const view = makeMcpView([{ server: "shop", tools: [served("pay")], declared: personOnly } as never])
     expect(mcpToolsAsDefinitions(view)).toEqual([])
+  })
+})
+
+describe("a declared consequential tool asks the person before it runs (ourostack/ouroboros#1694)", () => {
+  const declared = parseDeclaredTools({ tools: [
+    tool("look", { ...card, effect: "read" }),
+    tool("save", { ...card, effect: "write" }),
+    tool("send", { ...card, effect: "consequential", confirm: "Send it to everyone on the list?" }),
+    tool("pay", { ...card, effect: "person-only" }),
+  ] }).tools
+  const view = () => makeMcpView([{ server: "shop", tools: [served("look"), served("save"), served("send"), served("pay"), served("raw")], declared } as never])
+
+  it("takes the harness's approval policy only for the consequential declaration", () => {
+    const defs = new Map(mcpToolsAsDefinitions(view()).map((d) => [d.tool.function.name, d]))
+    expect([...defs.keys()]).toEqual(["shop_look", "shop_save", "shop_send", "shop_raw"])
+    expect(defs.get("shop_send")!.approvalPolicy!({})).toEqual({
+      kind: "required", policyId: "mcp.declared.consequential.v1", actionClass: "mcp.shop.send", requiresSoleCall: true,
+    })
+    // Read and write declarations, and a tool the bundle doesn't declare, behave as before: no approval step.
+    for (const name of ["shop_look", "shop_save", "shop_raw"]) expect(defs.get(name)!.approvalPolicy).toBeUndefined()
+  })
+
+  it("keeps the approval policy through the turn's tool selection, where dispatch classifies the call", () => {
+    const selection = selectToolsForChannel(undefined, undefined, undefined, undefined, view())
+    expect(approvalPolicyForToolName("shop_send", {}, selection)).toMatchObject({ kind: "required", policyId: "mcp.declared.consequential.v1" })
+    expect(approvalPolicyForToolName("shop_look", {}, selection)).toEqual({ kind: "not_required" })
+    expect(approvalPolicyForToolName("shop_save", {}, selection)).toEqual({ kind: "not_required" })
+    expect(approvalPolicyForToolName("shop_pay", {}, selection)).toEqual({ kind: "not_required" })
+    expect(selection.ordinary.map((d) => d.tool.function.name)).not.toContain("shop_pay")
   })
 })
 

@@ -393,6 +393,7 @@ describe("admitDelegatedCommand", () => {
 })
 
 describe("delegatedCommandWasNoticed", () => {
+  const SENT = [{ index: 0, text: "notice", state: "session_recorded" }]
   const record = (root: string, commandId: string, body: unknown) => {
     const key = `owner-notice:delegated:${commandId}`
     const dir = path.join(root, "state", "telegram", "effects")
@@ -405,16 +406,30 @@ describe("delegatedCommandWasNoticed", () => {
 
   it("is true only for the owner's recorded notice of that exact command", () => {
     const agentRoot = root()
-    record(agentRoot, "cmd-1", { idempotencyKey: "owner-notice:delegated:cmd-1", authorClass: "butler", target: { friendId: "owner" } })
+    record(agentRoot, "cmd-1", { idempotencyKey: "owner-notice:delegated:cmd-1", authorClass: "butler", target: { friendId: "owner" }, parts: SENT })
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toBe(true)
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "someone")).toBe(false)
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-2", "owner")).toBe(false)
-    record(agentRoot, "cmd-3", { idempotencyKey: "other", authorClass: "butler", target: { friendId: "owner" } })
-    record(agentRoot, "cmd-4", { idempotencyKey: "owner-notice:delegated:cmd-4", authorClass: "user", target: { friendId: "owner" } })
+    record(agentRoot, "cmd-3", { idempotencyKey: "other", authorClass: "butler", target: { friendId: "owner" }, parts: SENT })
+    record(agentRoot, "cmd-4", { idempotencyKey: "owner-notice:delegated:cmd-4", authorClass: "user", target: { friendId: "owner" }, parts: SENT })
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-3", "owner")).toBe(false)
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-4", "owner")).toBe(false)
-    record(agentRoot, "cmd-5", { idempotencyKey: "owner-notice:delegated:cmd-5", authorClass: "butler" })
+    record(agentRoot, "cmd-5", { idempotencyKey: "owner-notice:delegated:cmd-5", authorClass: "butler", parts: SENT })
     expect(delegatedCommandWasNoticed(agentRoot, "cmd-5", "owner")).toBe(false)
+  })
+
+  // The journal entry is written before the send, so a notice Telegram never accepted doesn't count as the owner being told.
+  it("is false until Telegram accepted every part of the notice", () => {
+    const agentRoot = root()
+    const notice = (parts: unknown) => ({ idempotencyKey: "owner-notice:delegated:cmd-1", authorClass: "butler", target: { friendId: "owner" }, parts })
+    for (const parts of [undefined, [], [{ state: "prepared" }], [{ state: "attempting" }], [{ state: "indeterminate" }], [{ state: "accepted" }, { state: "prepared" }], [null], "accepted"]) {
+      record(agentRoot, "cmd-1", notice(parts))
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toBe(false)
+    }
+    for (const parts of [[{ state: "accepted" }], [{ state: "session_recorded" }, { state: "accepted" }]]) {
+      record(agentRoot, "cmd-1", notice(parts))
+      expect(delegatedCommandWasNoticed(agentRoot, "cmd-1", "owner")).toBe(true)
+    }
   })
 
   it("throws, rather than answering false, when the record cannot be read", () => {

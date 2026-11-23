@@ -69,8 +69,11 @@ export function delegatedCommandWasNoticed(agentRoot: string, commandId: string,
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return delegateFriendId !== undefined && isReplayWindowOpen(agentRoot, delegateFriendId) && replayNoticeRecorded(agentRoot, `delegated:${commandId}`, delegateFriendId)
     throw error
   }
-  const artifact = JSON.parse(raw) as { idempotencyKey?: unknown; authorClass?: unknown; target?: { friendId?: unknown } }
-  return artifact.idempotencyKey === idempotencyKey && artifact.authorClass === "butler" && artifact.target?.friendId === principalFriendId
+  const artifact = JSON.parse(raw) as { idempotencyKey?: unknown; authorClass?: unknown; target?: { friendId?: unknown }; parts?: unknown }
+  // The journal entry is written before the send, so only parts Telegram accepted count as the owner having been told.
+  const delivered = Array.isArray(artifact.parts) && artifact.parts.length > 0
+    && artifact.parts.every((part) => typeof part === "object" && part !== null && ["accepted", "session_recorded"].includes((part as { state?: unknown }).state as string))
+  return delivered && artifact.idempotencyKey === idempotencyKey && artifact.authorClass === "butler" && artifact.target?.friendId === principalFriendId
 }
 
 export interface DelegationRefusalGuidance {
@@ -114,7 +117,7 @@ export function delegationRefusalGuidance(reason: DelegationRefusal, hints: { le
     case "principal_unresolved":
       return { message: "the agent cannot tell whose command this is (its owner record is missing or ambiguous)", next: "Ask the operator to check the owner's friend record on the agent's host.", retry: false }
     case "notice_failed":
-      return { message: "the agent could not tell its owner about this command first, so it did not run it", next: "Retry in a minute. If it keeps failing, the owner's chat channel is down: tell the operator.", retry: true }
+      return { message: "the agent could not tell its owner about this command first, so it did not run it", next: "Retry in a minute. If it keeps failing, the owner can't be told in their own chat right now (it may be handed to someone else, or unreachable): tell the operator.", retry: true }
   }
 }
 
