@@ -10,6 +10,7 @@ import { useMediaQuery } from "@/lib/ouro/use-media-query";
 import { Button } from "@/components/ouro/button/button";
 import { NavigationMenuView } from "@/components/ouro/navigation-menu/navigation-menu";
 import { SheetFrame } from "@/components/ouro/sheet/sheet";
+import { willOverflow } from "./navbar-styles";
 
 /** One link in a Navbar: in the bar, or in a group's panel. */
 export interface NavbarLink {
@@ -279,9 +280,13 @@ export function Navbar(props: NavbarProps): JSX.Element {
   // Before paint, so a client mount never shows a row that does not fit.
   useLayoutEffect(() => {
     const measure = () => {
-      // The room the links would have: the slot, and the menu button's place when it shows.
+      // The room the links would have: the slot, and the menu button's place when it shows. Its own negative
+      // margin (-ms-ouro-2) already gives back the one gap its appearing adds to the row, so its offsetWidth
+      // alone is the room the slot loses when it shows, not offsetWidth plus a gap on top of that.
       const button = menuButton.current!.offsetWidth;
-      setOverflow(list.current!.scrollWidth > slot.current!.clientWidth + (button > 0 ? button + 8 : 0));
+      const room = slot.current!.clientWidth + button;
+      const needed = list.current!.scrollWidth;
+      setOverflow((was) => willOverflow(was, needed, room));
     };
     measure();
     const observer = new ResizeObserver(measure);
