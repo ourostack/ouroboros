@@ -8,10 +8,14 @@
  * (installed as codex skills, each described by its own when-line), the books command line and the household.
  *
  * What the config changes, and why (each is a fidelity flag in the H kit):
- * - no retries: a retried call would be metered twice, and the wire answers every failure with a 400 anyway;
+ * - no retries, unbounded connection retries included: a retried call would be metered twice, and the wire answers
+ *   every failure with a 400 anyway;
  * - no `view_image`: its output is an image, which the wire can't carry;
- * - no web search, no bundled skills, no analytics or telemetry: the container has no route out, and the bundled
- *   skills are about codex itself, not the household.
+ * - no sub-agents: their tools are a namespace, not functions, which the wire can't carry;
+ * - no web search, plugins, apps, bundled skills, analytics or telemetry: the container has no route out, and the
+ *   bundled skills are about codex itself, not the household.
+ * Codex doesn't know the model's name, so it runs as it does for any model it doesn't know: its generic prompt, no
+ * `apply_patch` tool, and a 10,000-byte cut on tool output.
  *
  * Codex runs in a neutral home with the bundle linked at a neutral path, so no path it shows the model carries a
  * brand word, and a path the model writes back still resolves. The job is `codex exec`; each follow-up is
@@ -32,13 +36,18 @@ import { createWire, serveWire } from "./wire"
 /** Runs codex with these arguments and waits for it to end. */
 export type CodexRun = (args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<{ code: number; stdout: string; stderr: string }>
 
-/** Where codex lives in the arm's image: a home with no brand word in its path. */
-export const CODEX_HOME_DIR = "/home/agent"
+/**
+ * Codex's home: a path with no brand word, on the agent container's writable `/tmp` (the container is read-only
+ * otherwise, and its own home's path carries a brand word).
+ */
+export const CODEX_HOME_DIR = "/tmp/agent"
 
 /** The model name codex sends; the wire ignores it, and the host's runtime decides the model. */
 const MODEL = "model"
 
-const toml = (text: string): string => JSON.stringify(text)
+/** A TOML basic string: JSON's escapes, plus the two TOML also forbids raw (DEL, and a lone surrogate's escape). */
+const toml = (text: string): string => JSON.stringify(text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "�"))
+  .replace(/\u007f/g, "\\u007F")
 
 /** Codex's config.toml for one conversation: the wire as its only provider, and nothing the wire can't carry. */
 export function codexConfig(input: { baseUrl: string; developerInstructions: string }): string {
@@ -57,10 +66,14 @@ export function codexConfig(input: { baseUrl: string; developerInstructions: str
     "wire_api = \"responses\"",
     "request_max_retries = 0",
     "stream_max_retries = 0",
-    "stream_idle_timeout_ms = 900000",
+    "stream_idle_timeout_ms = 300000",
     "",
     "[features]",
     "view_image = false",
+    "multi_agent = false",
+    "unbounded_connection_retries = false",
+    "plugins = false",
+    "apps = false",
     "",
     "[skills.bundled]",
     "enabled = false",
@@ -91,7 +104,7 @@ export function installSkills(bundle: string, home: string): string[] {
     const body = end > 0 ? lines.slice(end + 1).join("\n") : markdown
     const description = whenLine(markdown) ?? `The ${name} skill.`
     fs.mkdirSync(path.join(home, ".agents", "skills", name), { recursive: true })
-    fs.writeFileSync(path.join(home, ".agents", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n${body}`)
+    fs.writeFileSync(path.join(home, ".agents", "skills", name, "SKILL.md"), `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n${body}`)
   }
   return names
 }
@@ -116,7 +129,8 @@ const spawnCodex: CodexRun = (args, options) => new Promise((resolve) => {
   let stderr = ""
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8") })
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8") })
-  const timer = setTimeout(() => child.kill("SIGKILL"), 30 * 60_000)
+  // Inside the host's 600-second guest deadline, so a stuck codex ends as this arm's failure, not the guest's.
+  const timer = setTimeout(() => child.kill("SIGKILL"), 540_000)
   child.on("error", (error) => { clearTimeout(timer); resolve({ code: 127, stdout, stderr: `${stderr}${error.message}\n` }) })
   child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 137, stdout, stderr }) })
 })
@@ -139,7 +153,8 @@ export function codexArm(options: { run?: CodexRun; home?: string; workdir?: str
       fs.mkdirSync(codexHome, { recursive: true })
       fs.writeFileSync(path.join(codexHome, "config.toml"), codexConfig({ baseUrl: served.url, developerInstructions: `${personaPrompt(bundle)}\n\n${turn.labelLine}` }))
       const env: NodeJS.ProcessEnv = { HOME: home, CODEX_HOME: codexHome, PATH: process.env.PATH }
-      const flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL]
+      // `-C` keeps the neutral path as codex's cwd; without it codex resolves the link to the bundle's real path.
+      const flags = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", MODEL, "-C", workdir]
       const turns: TelegramTurns = []
       let thread: string | null = null
       for (const [index, text] of [turn.userText, ...turn.followUps].entries()) {

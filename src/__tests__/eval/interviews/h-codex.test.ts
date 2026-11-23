@@ -51,7 +51,9 @@ describe("the codex arm's setup", () => {
     expect(toml).toContain("model_provider = \"eval\"")
     expect(toml).toContain("developer_instructions = \"I am the Butler.\\n\\nSay \\\"hi\\\" \\\\ bye.\"")
     expect(toml).toContain("[model_providers.eval]\nname = \"eval\"\nbase_url = \"http://127.0.0.1:4000/v1\"\nwire_api = \"responses\"\nrequest_max_retries = 0\nstream_max_retries = 0")
-    expect(toml).toContain("[features]\nview_image = false")
+    expect(toml).toContain("[features]\nview_image = false\nmulti_agent = false\nunbounded_connection_retries = false\nplugins = false\napps = false")
+    // TOML forbids a raw DEL and a lone surrogate's escape, both of which JSON allows.
+    expect(codexConfig({ baseUrl: "u", developerInstructions: "a\u007fb\uD800c\uDC00d😀" })).toContain("developer_instructions = \"a\\u007Fb�c�d😀\"")
     expect(toml).toContain("web_search = \"disabled\"")
     expect(toml).toContain("[skills.bundled]\nenabled = false")
     expect(toml).toContain("[analytics]\nenabled = false")
@@ -67,9 +69,9 @@ describe("the codex arm's setup", () => {
     fs.writeFileSync(path.join(bundle, "skills", "README.txt"), "not a skill")
     expect(installSkills(bundle, home)).toEqual(["books", "media", "notes"])
     const skill = (name: string): string => fs.readFileSync(path.join(home, ".agents", "skills", name, "SKILL.md"), "utf8")
-    expect(skill("books")).toBe("---\nname: books\ndescription: \"Use this when the household asks about a book.\"\n---\n# Books\n\nUse this when the household asks about a book.\nRun `books`.\n")
-    expect(skill("media")).toBe("---\nname: media\ndescription: \"Use when a show is asked for.\"\n---\n# Media\nAsk the media tools.\n")
-    expect(skill("notes")).toBe("---\nname: notes\ndescription: \"The notes skill.\"\n---\n# Notes\nNothing says when.\n")
+    expect(skill("books")).toBe("---\nname: \"books\"\ndescription: \"Use this when the household asks about a book.\"\n---\n# Books\n\nUse this when the household asks about a book.\nRun `books`.\n")
+    expect(skill("media")).toBe("---\nname: \"media\"\ndescription: \"Use when a show is asked for.\"\n---\n# Media\nAsk the media tools.\n")
+    expect(skill("notes")).toBe("---\nname: \"notes\"\ndescription: \"The notes skill.\"\n---\n# Notes\nNothing says when.\n")
     // A bundle without skills installs none.
     expect(installSkills(path.join(root, "nowhere"), home)).toEqual([])
   })
@@ -123,8 +125,8 @@ describe("the codex arm", () => {
       turns: [{ start: 0, finalReply: "Removed it.", outcome: "settled", calls: 2 }, { start: 2, finalReply: "6", outcome: "settled", calls: 1 }],
     })
     expect(runs.map((entry) => entry.args)).toEqual([
-      ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "--", "Remove the bad copy."],
-      ["exec", "resume", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "t-1", "--", "How did it go? Rate it 1 to 7."],
+      ["exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "-C", workdir, "--", "Remove the bad copy."],
+      ["exec", "resume", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-m", "model", "-C", workdir, "t-1", "--", "How did it go? Rate it 1 to 7."],
     ])
     expect(runs[0]!.cwd).toBe(workdir)
     expect(fs.realpathSync(workdir)).toBe(fs.realpathSync(bundle))

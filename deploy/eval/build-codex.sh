@@ -3,7 +3,7 @@
 # `codex` arm, and writes the binary to <out>/image/codex. Run it as root in a throwaway Debian bookworm container
 # with <out> mounted, for example on the eval's own agent image:
 #
-#   docker run --rm --user 0:0 -v <dir>:/build -v <this file>:/build-codex.sh:ro <agent image> sh /build-codex.sh /build
+#   docker run --rm --cpus 2 --user 0:0 -v <dir>:/build -v <this file>:/build-codex.sh:ro <agent image> sh /build-codex.sh /build
 #
 # then build deploy/eval/codex.Dockerfile with <dir>/image as its context. Everything it fetches (the toolchain, the
 # sources and V8) stays under <out>. V8 comes as codex's own release builds it: the prebuilt rusty_v8 archive from
@@ -11,10 +11,10 @@
 set -eu
 OUT="${1:?usage: build-codex.sh <out>}"
 COMMIT=227fa4e805d44988b0888390f41afe1358e9d24d
-JOBS="${JOBS:-4}"
+JOBS="${JOBS:-2}"
 
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl git libcap-dev pkg-config python3 >/dev/null
+apt-get install -y -qq --no-install-recommends build-essential ca-certificates curl git libcap-dev libssl-dev pkg-config python3 >/dev/null
 
 export RUSTUP_HOME="$OUT/rustup" CARGO_HOME="$OUT/cargo"
 if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
@@ -48,6 +48,8 @@ curl -fsSL "$base/src_binding_${profile}_${target}.rs" -o "src_binding_${profile
 sha256sum --check --quiet "$sums"
 
 cd "$OUT/codex/codex-rs"
+# The toolchain the commit's rust-toolchain.toml names.
+rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
 # The release profile as committed, without its debug line tables: the same code, a smaller build.
 RUSTY_V8_ARCHIVE="$OUT/v8/librusty_v8_${profile}_${target}.a.gz" RUSTY_V8_SRC_BINDING_PATH="$OUT/v8/src_binding_${profile}_${target}.rs" \
   CARGO_PROFILE_RELEASE_DEBUG=none CARGO_TARGET_DIR="$OUT/target" \

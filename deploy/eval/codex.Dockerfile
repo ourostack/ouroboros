@@ -6,8 +6,5 @@ ARG SANDBOX_IMAGE=ouro-eval-sandbox:local
 FROM ${SANDBOX_IMAGE}
 USER 0:0
 COPY codex /usr/local/bin/codex
-# Codex's home has no brand word in its path; the arm links the mounted bundle under it.
-RUN chmod 0755 /usr/local/bin/codex \
-  && mkdir -p /home/agent/AgentBundles \
-  && chown -R 10001:10001 /home/agent
+RUN chmod 0755 /usr/local/bin/codex
 USER 10001:10001
