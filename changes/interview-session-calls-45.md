@@ -1,0 +1,1 @@
+A blind-interview session now reserves 45 calls before it starts, up from 44. The extra call covers the one nudge the choice question may get, so a session can never use more than it reserved. This follows the pilot amendment of 2026-11-23.

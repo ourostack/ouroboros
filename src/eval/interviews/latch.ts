@@ -16,8 +16,11 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { creditsOf, meteredRuntime, type BudgetLedger, type Cost, type Hold, type Pricing } from "../budget"
 import { brandHits } from "./protocol"
 
-/** A session's most calls: three jobs at 12, three debriefs at 2, the choice and the blinding check at 1 (36 + 6 + 2). */
-export const SESSION_CALLS = 44
+/**
+ * A session's most calls: three jobs at 12, three debriefs at 2, the choice and the blinding check at 1, and the one
+ * nudge the choice may get (36 + 6 + 2 + 1). The pilot amendment of 2026-11-23 reserves the nudge's call too.
+ */
+export const SESSION_CALLS = 45
 
 export type ConversationKind = "job" | "debrief" | "choose" | "identify"
 export const CALL_LIMITS: Readonly<Record<ConversationKind, number>> = { job: 12, debrief: 2, choose: 1, identify: 1 }
