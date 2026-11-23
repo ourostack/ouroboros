@@ -11,12 +11,16 @@ import type { ProviderRuntime } from "../../heart/core"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { Case, Observation } from "../domain/case"
 import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type GuestOutcome, type ProxyMessage } from "../transport/provider-proxy"
+import type { FollowUp, InterviewGuestEntry, SandboxImages } from "./docker"
 
-export type SandboxRun = Observation & { gaps: string[] }
-export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string }
-export type RemoteJob = RemotePaths & { case: Case }
+export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[] }
+/** Where the job's files are on the remote host, and which images there to run (the eval's own tags by default). */
+export type RemotePaths = { bundleDir: string; seedBundleDir: string; workRoot?: string; oracleBooks?: string; images?: SandboxImages }
+/** Another guest than the Telegram turn, as `runSandboxed` takes it. */
+export type GuestChoice = { entry: InterviewGuestEntry; turn: unknown }
+export type RemoteJob = RemotePaths & { case: Case; guest?: GuestChoice }
 export type RemoteProcess = { stdin: Writable; stdout: Readable; exited: Promise<number>; stderr(): string; kill?(): void }
-export type RunCase = (input: { case: Case; host: ProviderRuntime; budget: { take(): boolean } }) => Promise<SandboxRun>
+export type RunCase = (input: { case: Case; host: ProviderRuntime; budget: { take(): boolean }; guest?: GuestChoice }) => Promise<SandboxRun>
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
@@ -58,7 +62,7 @@ function isObservation(value: unknown): value is SandboxRun {
 /** This side: each run starts the remote process, sends the job, serves the model and waits for the observation. */
 export function remoteRunCase(options: { start(): RemoteProcess; paths: RemotePaths; timeoutMs?: number }): RunCase {
   const timeoutMs = options.timeoutMs ?? 900_000
-  return async ({ case: c, host, budget }) => {
+  return async ({ case: c, host, budget, guest }) => {
     emitNervesEvent({ component: "eval", event: "eval.remote_run_start", message: "starting a run on the remote sandbox host", meta: { caseId: c.id } })
     const remote = options.start()
     const channel = createStreamChannel(remote.stdout, remote.stdin)
@@ -67,7 +71,7 @@ export function remoteRunCase(options: { start(): RemoteProcess; paths: RemotePa
       const timer = setTimeout(() => { remote.kill?.(); resolve({ ok: false, error: `the remote run did not finish within ${timeoutMs} ms` }) }, timeoutMs)
       channel.onMessage((msg) => { if (msg.type === "done") { clearTimeout(timer); resolve(msg.outcome) } })
       void remote.exited.then((code) => { clearTimeout(timer); resolve({ ok: false, error: `the remote process exited (${code}) before the run finished: ${remote.stderr().trim()}` }) })
-      channel.send({ type: "job", job: { case: c, ...options.paths } })
+      channel.send({ type: "job", job: { case: c, ...options.paths, ...(guest ? { guest } : {}) } })
     })
     if (!outcome.ok) {
       emitNervesEvent({ component: "eval", level: "error", event: "eval.remote_run_error", message: "the remote sandbox run failed", meta: { caseId: c.id, error: outcome.error } })

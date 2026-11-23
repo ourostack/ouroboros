@@ -66,6 +66,8 @@ export default defineConfig({
         "src/senses/cli/**",
         "src/senses/*-entry.ts",
         "src/eval/*-entry.ts",
+        // Ouro AX v1.3.445, vendored unchanged and tested upstream; the X arm built on it is tested here.
+        "src/eval/interviews/guest/ax/**",
         "src/senses/voice/index.ts",
         "src/senses/voice/types.ts",
         "src/senses/ingress-evidence.ts",
