@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1374",
+      "changes": [
+        "ouro git, ouro git status and ouro git install have Ouro AX cards, so the census finds a card for every ouro command and agent door."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1373",
       "changes": [
         "The Ouro AX census now runs ouro-ui's census from v1.3.448 (scripts/ouro-census) instead of the harness's own copy, and checks booklet words, with the 37 doors that say one today on the baseline; report_failure's description says what a local save means instead of giving a rule."
