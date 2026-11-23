@@ -3,6 +3,7 @@ import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { killProcessTree, listProcesses, processTreeTargets, type ProcessRow } from "./process-tree"
 import type { RuntimeCredentialBootstrapMessage, RuntimeCredentialConfig, RuntimeCredentialItemKind } from "../runtime-credentials"
 import type { ProviderCredentialRecord } from "../provider-credentials"
 
@@ -74,6 +75,11 @@ export interface DaemonProcessManagerOptions {
    *  failed. */
   killTimeoutMs?: number
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
+  /** The process table, read before a worker is sent SIGKILL to find what it started. Defaults to `ps`; when `spawn`
+   *  is injected the workers are not real processes, so it defaults to an empty table. */
+  listProcesses?: () => ProcessRow[]
+  /** Sends a signal to a process, or to a process group when the pid is negative. Defaults to `process.kill`. */
+  killProcess?: (pid: number, signal: NodeJS.Signals) => void
   now?: () => number
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
@@ -162,6 +168,8 @@ export class DaemonProcessManager {
   private readonly initialBackoffMs: number
   private readonly maxBackoffMs: number
   private readonly spawnFn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
+  private readonly listProcessesFn: () => ProcessRow[]
+  private readonly killProcessFn: (pid: number, signal: NodeJS.Signals) => void
   private readonly now: () => number
   private readonly setTimeoutFn: (cb: () => void, delay: number) => unknown
   private readonly clearTimeoutFn: (timer: unknown) => void
@@ -258,6 +266,8 @@ export class DaemonProcessManager {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 4_000
     this.killTimeoutMs = options.killTimeoutMs ?? 2_000
     this.spawnFn = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions))
+    this.listProcessesFn = options.listProcesses ?? (options.spawn ? () => [] : listProcesses)
+    this.killProcessFn = options.killProcess ?? ((pid, signal) => { process.kill(pid, signal) })
     this.now = options.now ?? (() => Date.now())
     this.setTimeoutFn = options.setTimeoutFn ?? ((cb, delay) => setTimeout(cb, delay))
     this.clearTimeoutFn = options.clearTimeoutFn ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
@@ -666,11 +676,26 @@ export class DaemonProcessManager {
         if (settled) return
         // A worker stuck past its own shutdown grace (a turn that never ends, a blocked event loop) would otherwise
         // stay alive with no replacement. SIGKILL ends it; the replacement replays whatever it left pending.
+        // Read what the worker started before it dies: once it is gone its children belong to launchd, and sync's
+        // detached git groups (with their ssh) would outlive it.
+        const tree = childPid === null ? null : processTreeTargets(childPid, this.listProcessesFn())
         let killAccepted = false
         try {
           killAccepted = child.kill("SIGKILL")
         } catch {
           killAccepted = false
+        }
+        if (killAccepted && tree) {
+          const reaped = killProcessTree(tree, childPid!, this.killProcessFn)
+          if (reaped.groups + reaped.processes > 0) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.agent_stop_reaped_children",
+              message: "sent SIGKILL to what the stuck worker started, so none of it outlives the worker",
+              meta: { agent, pid: childPid, groups: reaped.groups, processes: reaped.processes },
+            })
+          }
         }
         emitNervesEvent({
           level: "warn",
