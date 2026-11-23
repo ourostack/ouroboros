@@ -67,6 +67,7 @@ describe("daemon command plane branches", () => {
       socketAnswering?: (socketPath: string) => Promise<boolean>
       externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
       useDefaultExternalEventSourceReadiness?: boolean
+      stateRetention?: () => Promise<unknown>
     },
   ) => {
     const processManager = {
@@ -128,6 +129,7 @@ describe("daemon command plane branches", () => {
       privilegedEventScanner: options?.privilegedEventScanner,
       onStopCommandComplete: options?.onStopCommandComplete,
       orphanStartupDrain: options?.orphanStartupDrain,
+      ...(options?.stateRetention ? { stateRetention: options.stateRetention } : {}),
       ...(options?.socketAnswering ? { socketAnswering: options.socketAnswering } : {}),
       ...(!options?.useDefaultExternalEventSourceReadiness
         ? { externalEventSourceReadiness: options?.externalEventSourceReadiness ?? vi.fn(async () => undefined) }
@@ -135,6 +137,42 @@ describe("daemon command plane branches", () => {
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
+
+  it("runs state retention 10 minutes after start, then daily, and stops with the daemon", async () => {
+    const stateRetention = vi.fn(async () => { throw new Error("one bad pass") })
+    const { daemon } = make(tmpSocketPath("state-retention"), undefined, { stateRetention })
+    await daemon.start()
+    try {
+      const first = (daemon as any).stateRetentionTimer as NodeJS.Timeout & { _idleTimeout: number; _onTimeout(): void }
+      expect(first._idleTimeout).toBe(10 * 60_000)
+      expect(stateRetention).not.toHaveBeenCalled()
+      first._onTimeout()
+      await vi.waitFor(() => expect((daemon as any).stateRetentionTimer).not.toBe(first))
+      expect(stateRetention).toHaveBeenCalledTimes(1)
+      expect((daemon as any).stateRetentionTimer._idleTimeout).toBe(24 * 60 * 60_000)
+    } finally {
+      await daemon.stop()
+    }
+    expect((daemon as any).stateRetentionTimer).toBeNull()
+  })
+
+  it("by default runs state retention over the enabled agents in its bundles root", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "state-retention-bundles-"))
+    const archive = path.join(bundlesRoot, "slugger.ouro", "state", "sessions", "self", "inner", "dialog.archive.ndjson")
+    fs.mkdirSync(path.dirname(archive), { recursive: true })
+    fs.writeFileSync(path.join(bundlesRoot, "slugger.ouro", "agent.json"), JSON.stringify({ enabled: true, vault: { email: "slugger@ouro.bot", serverUrl: "https://vault.example" } }))
+    fs.writeFileSync(archive, "{\"id\":\"evt-1\"}\n")
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60_000)
+    fs.utimesSync(archive, old, old)
+    const { daemon } = make(tmpSocketPath("state-retention-default"), bundlesRoot)
+    try {
+      await (daemon as any).stateRetention()
+      expect(fs.existsSync(`${archive}.gz`)).toBe(true)
+      expect(fs.existsSync(archive)).toBe(false)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
 
   it("serves private lifecycle reads and awaited maintenance quiescence without weakening errors", async () => {
     const { daemon, senseManager } = make(tmpSocketPath("shepherd-maintenance"))
