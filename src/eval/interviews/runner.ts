@@ -25,6 +25,7 @@ import { runFinalConversation, type FinalResult } from "./final"
 import { buildArm, X_ARMS } from "./guest/arms"
 import type { BooksCore } from "./guest/books-core"
 import { messageOf } from "./guest/loop"
+import { U_ARMS } from "./guest/u/arms"
 import { argvOf, commandLine } from "./guest/operations"
 import { createInterviewLatch, guardedRuntime, SESSION_CALLS, type CallRecord, type ConversationKind, type Gate, type SessionLatch } from "./latch"
 import { debriefQuestion, IDENTIFY_QUESTION, labelLine, ratingOf, type Note, type Product } from "./protocol"
@@ -409,8 +410,8 @@ export async function runInterviews(args: InterviewArgs, deps: InterviewDeps): P
   return { exitCode: stopped ? 2 : 0, records }
 }
 
-/** Every X arm, for the parser's check. */
-export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: [], X: X_ARMS }
+/** Every X and U arm, for the parser's check. */
+export const KNOWN_ARMS: Readonly<Record<Product, readonly string[]>> = { H: [], U: U_ARMS, X: X_ARMS }
 
 const STRING_FLAGS = { "--preregistration": "preregistration", "--cases": "cases", "--target": "target", "--credentials-agent": "credentialsAgent", "--output": "output", "--request-log": "requestLog", "--harness-ref": "harnessRef", "--copilot-account": "copilotAccount" } as const
 const NUMBER_FLAGS = { "--budget-premium": "budgetPremium", "--budget-credits": "budgetCredits", "--price-in": "priceIn", "--price-out": "priceOut", "--reserve-credits-per-call": "reserveCreditsPerCall", "--premium-multiplier": "premiumMultiplier" } as const

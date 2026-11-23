@@ -17,6 +17,7 @@ import type { Product } from "../protocol"
 import { buildArm, type Arm } from "./arms"
 import { booksCore, type BooksCore } from "./books-core"
 import { messageOf, runConversation } from "./loop"
+import { buildUArm } from "./u/arms"
 
 export type InterviewTurnFile = {
   product: Product
@@ -53,6 +54,7 @@ export type ArmBuilder = (arm: string, context: ArmContext) => Arm
 /** Each product's arm builder in the guest; a product without one is refused. */
 export const ARM_BUILDERS: Partial<Record<Product, ArmBuilder>> = {
   X: (arm, context) => buildArm(arm, context.core ?? booksCore({ home: path.join(context.bundle, "books") })),
+  U: (arm) => buildUArm(arm),
 }
 
 export async function runInterviewGuest(input: { stdin: Readable; stdout: Writable; turnFile: string; bundle: string; core?: BooksCore; builders?: Partial<Record<Product, ArmBuilder>> }): Promise<GuestOutcome> {
