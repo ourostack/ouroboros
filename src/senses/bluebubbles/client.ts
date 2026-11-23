@@ -10,7 +10,7 @@ import { describeImage } from "../../heart/attachments/understand"
 import { normalizeBlueBubblesEvent, type BlueBubblesChatRef, type BlueBubblesNormalizedEvent } from "./model"
 import { hydrateBlueBubblesAttachments, type VlmDescribeFn } from "./media"
 import { verifyBlueBubblesServerAccount, type BlueBubblesServerFacts } from "./host-account-verifier"
-import { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered } from "./send-health"
+import { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered, type BlueBubblesSendPath } from "./send-health"
 
 export interface BlueBubblesSendTextParams {
   chat: BlueBubblesChatRef
@@ -205,9 +205,9 @@ function isAutomationDenied(responseText: string): boolean {
 function automationDeniedMessage(hostUsername: string | undefined): string {
   const account = hostUsername ? `the "${hostUsername}" macOS account` : "the macOS account BlueBubbles runs under"
   return "BlueBubbles could not send: macOS has not allowed BlueBubbles to control Messages "
-    + "(Not authorized to send Apple events to Messages (-1743)). AppleScript sends will fail until a person fixes it: "
+    + "(Not authorized to send Apple events to Messages (-1743)). Sends through AppleScript will fail until a person fixes it: "
     + `signed in to ${account}, open System Settings → Privacy & Security → Automation → BlueBubbles → Messages and turn it on. `
-    + "Sends through BlueBubbles' Private API helper, when it is connected, do not need it."
+    + "Texts sent through BlueBubbles' Private API helper, while it is connected, do not need it; attachments always do."
 }
 
 function sendTransportErrorCode(error: unknown): string {
@@ -456,7 +456,7 @@ export function createBlueBubblesClient(
     ? hostOptions.hostUsername
     : loadAgentConfig().senses?.bluebubbles.hostUsername
   const recordBlocked = (code: string, detail: string): void => recordBlueBubblesSendBlocked(agentName(), { code, detail }, hostOptions.agentRoot)
-  const recordDelivered = (): void => recordBlueBubblesSendDelivered(agentName(), hostOptions.agentRoot)
+  const recordDelivered = (via: BlueBubblesSendPath): void => recordBlueBubblesSendDelivered(agentName(), via, hostOptions.agentRoot)
   const assertHostAccount = (options: { fresh?: boolean } = {}): Promise<BlueBubblesServerFacts | undefined> => verifyBlueBubblesServerAccount({
     agent: agentName(),
     hostUsername: declaredHostUsername(),
@@ -561,7 +561,7 @@ export function createBlueBubblesClient(
           transportInvoked: true,
         })
       }
-      recordDelivered()
+      recordDelivered(body.method === "private-api" ? "private-api" : "apple-script")
 
       const rawPayload = await response.text()
       let payload: unknown = null
@@ -633,7 +633,8 @@ export function createBlueBubblesClient(
         }
         throw new Error(`BlueBubbles attachment failed (${response.status}): ${errorText || "unknown"}`)
       }
-      recordDelivered()
+      // Attachments always go through AppleScript.
+      recordDelivered("apple-script")
     },
 
     async editMessage(params: BlueBubblesEditMessageParams): Promise<void> {

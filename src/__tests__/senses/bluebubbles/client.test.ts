@@ -3267,7 +3267,7 @@ describe("BlueBubbles client", () => {
 
       await client.sendText({ chat: dmChat, text: "hello" })
 
-      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "/tmp/elsewhere/slugger.ouro")
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "apple-script", "/tmp/elsewhere/slugger.ouro")
     })
 
     it("leaves other server errors as they were and records no block", async () => {
@@ -3286,8 +3286,19 @@ describe("BlueBubbles client", () => {
 
       await client.sendText({ chat: dmChat, text: "hello" })
 
-      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "apple-script", undefined)
       expect(sendHealth.blocked).not.toHaveBeenCalled()
+    })
+
+    it("says a delivered text went through the Private API when it did, so an Automation denial is not taken as fixed", async () => {
+      const verifier = await import("../../../senses/bluebubbles/host-account-verifier")
+      vi.mocked(verifier.verifyBlueBubblesServerAccount).mockResolvedValueOnce({ privateApiReady: true })
+      global.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { guid: "sent-guid" } }), { status: 200 })) as typeof fetch
+      const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
+
+      await createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" }).sendText({ chat: dmChat, text: "hello" })
+
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "private-api", undefined)
     })
 
     it("records for the running agent when the client names none", async () => {
@@ -3296,7 +3307,7 @@ describe("BlueBubbles client", () => {
 
       await createBlueBubblesClient(config, channel).sendText({ chat: dmChat, text: "hello" })
 
-      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "apple-script", undefined)
     })
 
     it("records a delivered attachment, which clears a recorded block", async () => {
@@ -3306,7 +3317,7 @@ describe("BlueBubbles client", () => {
 
       await client.sendAttachment!({ chat: dmChat, file })
 
-      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", undefined)
+      expect(sendHealth.delivered).toHaveBeenCalledWith("slugger", "apple-script", undefined)
       expect(sendHealth.blocked).not.toHaveBeenCalled()
     })
 
@@ -3315,7 +3326,10 @@ describe("BlueBubbles client", () => {
       const { createBlueBubblesClient } = await import("../../../senses/bluebubbles/client")
       const client = createBlueBubblesClient(config, channel, { agent: "slugger", hostUsername: "clawdbot" })
 
-      await expect(client.sendAttachment!({ chat: dmChat, file })).rejects.toThrow("Privacy & Security → Automation → BlueBubbles → Messages")
+      const failure = await client.sendAttachment!({ chat: dmChat, file }).catch((error: unknown) => error as Error)
+      expect(failure.message).toContain("Privacy & Security → Automation → BlueBubbles → Messages")
+      // Attachments never go through the Private API, so the message must not suggest it spares them.
+      expect(failure.message).toContain("attachments always do")
       expect(sendHealth.blocked).toHaveBeenCalledWith("slugger", expect.objectContaining({ code: "host_automation_denied" }), undefined)
     })
   })

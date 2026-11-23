@@ -62,7 +62,7 @@ describe("BlueBubbles send health", () => {
     let now = Date.parse("2026-11-23T03:40:00.000Z")
     recordBlueBubblesSendBlocked("slugger", denied, agentRoot, () => now)
     now += 60_000
-    recordBlueBubblesSendDelivered("slugger", agentRoot, () => now)
+    recordBlueBubblesSendDelivered("slugger", "apple-script", agentRoot, () => now)
     expect(readBlueBubblesSendHealth("slugger", agentRoot)).toEqual({ status: "ok", lastDeliveredAt: "2026-11-23T03:41:00.000Z" })
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_send_unblocked",
@@ -74,8 +74,24 @@ describe("BlueBubbles send health", () => {
     expect(readBlueBubblesSendHealth("slugger", agentRoot)).toMatchObject({ status: "blocked", lastDeliveredAt: "2026-11-23T03:41:00.000Z" })
   })
 
+  it("keeps an Automation denial through a Private API send, which never needed the permission", () => {
+    recordBlueBubblesSendBlocked("slugger", denied, agentRoot)
+    recordBlueBubblesSendDelivered("slugger", "private-api", agentRoot)
+    expect(readBlueBubblesSendHealth("slugger", agentRoot)).toMatchObject({ status: "blocked", code: "host_automation_denied" })
+    expect(emitNervesEvent.mock.calls.filter(([event]) => event.event === "senses.bluebubbles_send_unblocked")).toHaveLength(0)
+  })
+
+  it.each([
+    ["another failure", { code: "other_block", detail: "other" }],
+    ["a failure recorded without a code", { code: "", detail: "other" }],
+  ])("lets a Private API send clear %s", (_label, failure) => {
+    recordBlueBubblesSendBlocked("slugger", failure, agentRoot)
+    recordBlueBubblesSendDelivered("slugger", "private-api", agentRoot)
+    expect(readBlueBubblesSendHealth("slugger", agentRoot)).toMatchObject({ status: "ok" })
+  })
+
   it("writes nothing for a delivered send while nothing is blocked", () => {
-    recordBlueBubblesSendDelivered("slugger", agentRoot)
+    recordBlueBubblesSendDelivered("slugger", "apple-script", agentRoot)
     expect(fs.existsSync(getBlueBubblesSendHealthPath("slugger", agentRoot))).toBe(false)
     expect(emitNervesEvent).not.toHaveBeenCalled()
   })
@@ -114,7 +130,7 @@ describe("BlueBubbles send health", () => {
       const health = await import("../../../senses/bluebubbles/send-health")
       expect(health.getBlueBubblesSendHealthPath("slugger")).toBe(path.join(agentRoot, "slugger.ouro", "state", "senses", "bluebubbles", "send-health.json"))
       health.recordBlueBubblesSendBlocked("slugger", denied)
-      health.recordBlueBubblesSendDelivered("slugger")
+      health.recordBlueBubblesSendDelivered("slugger", "apple-script")
       expect(health.readBlueBubblesSendHealth("slugger")).toMatchObject({ status: "ok" })
     } finally {
       vi.doUnmock("../../../heart/identity")

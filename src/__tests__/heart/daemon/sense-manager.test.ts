@@ -2289,7 +2289,7 @@ describe("daemon sense manager", () => {
       const { recordBlueBubblesSendBlocked, recordBlueBubblesSendDelivered } = await import("../../../senses/bluebubbles/send-health")
       const agentRoot = path.join(bundlesRoot, "slugger.ouro")
       recordBlueBubblesSendBlocked("slugger", { code: "host_automation_denied", detail: sentDetail }, agentRoot, () => Date.parse("2026-11-23T03:47:23.000Z"))
-      if (sendStatus === "ok") recordBlueBubblesSendDelivered("slugger", agentRoot)
+      if (sendStatus === "ok") recordBlueBubblesSendDelivered("slugger", "apple-script", agentRoot)
       blockedDetail = `${sentDetail} (failing since 2026-11-23T03:47:23.000Z)`
     }
 

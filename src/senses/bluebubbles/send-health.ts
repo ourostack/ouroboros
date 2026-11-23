@@ -89,10 +89,26 @@ export function recordBlueBubblesSendBlocked(
   }
 }
 
-/** A send went through: clear a recorded block. Writes only when one was recorded, so healthy sends cost nothing. */
-export function recordBlueBubblesSendDelivered(agentName: string, agentRoot?: string, now: () => number = Date.now): void {
+/** The path a send took: BlueBubbles' AppleScript route into Messages, or its Private API helper inside Messages. */
+export type BlueBubblesSendPath = "apple-script" | "private-api"
+
+/** Only an AppleScript send proves macOS lets BlueBubbles control Messages again; Private API sends never needed it. */
+const BLOCKS_ONLY_APPLESCRIPT_CLEARS = new Set(["host_automation_denied"])
+
+/**
+ * A send went through: clear a recorded block it proves fixed. Writes only when it clears one, so healthy sends cost
+ * nothing. A Private API text leaves an Automation denial standing, since attachments and any send made while the
+ * helper is down still go through AppleScript.
+ */
+export function recordBlueBubblesSendDelivered(
+  agentName: string,
+  via: BlueBubblesSendPath,
+  agentRoot?: string,
+  now: () => number = Date.now,
+): void {
   const previous = readBlueBubblesSendHealth(agentName, agentRoot)
   if (previous?.status !== "blocked") return
+  if (via === "private-api" && previous.code && BLOCKS_ONLY_APPLESCRIPT_CLEARS.has(previous.code)) return
   writeSendHealth(agentName, { status: "ok", lastDeliveredAt: new Date(now()).toISOString() }, agentRoot)
   emitNervesEvent({
     level: "warn",
