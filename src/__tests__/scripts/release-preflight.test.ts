@@ -37,6 +37,7 @@ type ExecResponse = {
   auditOutput?: string
   auditFailureOutput?: string
   versionCommits?: Array<{ sha: string; subject: string; from: string; to: string }>
+  baseNotes?: Record<string, string>
 }
 
 type ReadResponse = {
@@ -51,11 +52,12 @@ type ReadResponse = {
 
 function makeExecSyncImpl(response: ExecResponse = {}) {
   return (command: string): string => {
-    if (command.startsWith('git diff --name-only "') && command.includes("...HEAD")) {
+    // --no-renames: a renamed file is its old path and its new one, so a moved note or README is seen leaving.
+    if (command.startsWith('git diff --name-only --no-renames "') && command.includes("...HEAD")) {
       return (response.changedFiles ?? []).join("\n")
     }
 
-    if (command === "git diff --name-only HEAD") {
+    if (command === "git diff --name-only --no-renames HEAD") {
       return (response.workingTreeChangedFiles ?? []).join("\n")
     }
 
@@ -86,6 +88,9 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
         versions: (response.baseChangelogVersions ?? ["0.1.0-alpha.407"]).map((version) => ({ version, changes: ["x"] })),
       })
     }
+
+    const baseNote = Object.entries(response.baseNotes ?? {}).find(([file]) => command === `git show 'base-sha:${file}'`)
+    if (baseNote) return baseNote[1]
 
     if (command === "git ls-tree -r --name-only 'base-sha' -- changes/") {
       return (response.existingNotes ?? []).join("\n")
@@ -654,6 +659,7 @@ describe("release-preflight", () => {
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("package.json's version moved from 0.1.0-alpha.406 to 0.1.0-alpha.407")
     expect(result.errors[0]).toContain("npm run release:drop-bump")
+    expect(result.errors[0]).toContain("git push --force-with-lease")
   })
 
   it("fails a branch with a commit that changes the version even when a later commit puts it back, since a rebase merge keeps both", () => {
@@ -672,7 +678,35 @@ describe("release-preflight", () => {
     const said = result.errors.join("\n")
     expect(said).toContain("aaaaaaaaaaaa (Release 0.1.0-alpha.408) changes package.json's version from 0.1.0-alpha.407 to 0.1.0-alpha.408")
     expect(said).toContain("bbbbbbbbbbbb (drop the bump)")
-    expect(said).toContain("git reset --soft")
+    // drop-bump itself rebuilds the branch as one commit, so the hint is the same two steps as everywhere else.
+    expect(said).toContain("npm run release:drop-bump")
+    expect(said).toContain("git push --force-with-lease")
+  })
+
+  it("fails a branch that removes changes/README.md, which every release needs", () => {
+    const result = preflight(
+      { changedFiles: ["changes/README.md", "changes/daemon-fix.md", "src/heart/daemon/daemon-cli.ts"], existingNotes: ["changes/README.md"] },
+      { notes: { "changes/daemon-fix.md": "Fix.\n" } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("changes/README.md")
+    expect(result.errors.join("\n")).toContain("restore it")
+  })
+
+  it("does not take a renamed note for a new one", () => {
+    const renamed = { changedFiles: ["changes/old-fix.md", "changes/new-name.md", "src/heart/daemon/daemon-cli.ts"], existingNotes: ["changes/old-fix.md"], baseNotes: { "changes/old-fix.md": "Old fix.\n" } }
+
+    const withCode = preflight(renamed, { notes: { "changes/new-name.md": "Old fix.\n" } })
+    expect(withCode.ok).toBe(false)
+    expect(withCode.errors.join("\n")).toContain("changes/new-name.md is changes/old-fix.md renamed")
+    expect(withCode.errors.join("\n")).toContain("add a change note for src/heart/daemon/daemon-cli.ts")
+
+    const tidy = preflight({ ...renamed, changedFiles: ["changes/old-fix.md", "changes/new-name.md"] }, { notes: { "changes/new-name.md": "Old fix.\n" } })
+    expect(tidy.errors).toEqual([])
+
+    const edited = preflight(renamed, { notes: { "changes/new-name.md": "A new fix.\n" } })
+    expect(edited.errors).toEqual([])
   })
 
   it("lets one commit start the new release line the branch ends on, and nothing else move the version", () => {

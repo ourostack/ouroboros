@@ -87,6 +87,19 @@ function branchWithOldStyleBump(work: string): void {
   git(work, "checkout", "-q", "feature/thing")
 }
 
+// Every commit on the branch whose package.json version differs from its first parent's, as the preflight finds them.
+function versionChangingCommits(work: string, range: string): string[] {
+  return git(work, "log", "-G", '^  "version": ', "--format=%H", range, "--", "package.json").split("\n").filter(Boolean)
+    .filter((sha) => JSON.parse(git(work, "show", `${sha}:package.json`)).version !== JSON.parse(git(work, "show", `${sha}^1:package.json`)).version)
+}
+
+// The branch is one commit on `base`, so a rebase merge replays no version change.
+function expectOneCommitOn(work: string, base: string): void {
+  expect(git(work, "rev-list", "--count", `${base}..HEAD`).trim()).toBe("1")
+  expect(git(work, "rev-parse", "HEAD^1")).toBe(git(work, "rev-parse", base))
+  expect(versionChangingCommits(work, `${base}..HEAD`)).toEqual([])
+}
+
 function expectReleaseFilesMatchMain(work: string): void {
   for (const file of ["package-lock.json", "npm-shrinkwrap.json", "packages/ouro.bot/package.json", "changelog.json", "deploy/unraid/sanctuary.xml", "deploy/unraid/sanctuary.ouro/bundle-meta.json"]) {
     expect(read(work, file), file).toBe(git(work, "show", `origin/main:${file}`))
@@ -113,7 +126,10 @@ describe("scripts/release-drop-bump.cjs", { timeout: 30_000 }, () => {
       "src/thing.ts",
     ])
     expect(result.output).toContain("changes/feature-thing.md")
-    expect(result.output).toContain("git push")
+    expect(result.output).toContain("git push --force-with-lease")
+    // One commit on main, named after the branch's own work, so neither the preflight nor a rebase merge sees a bump.
+    expectOneCommitOn(work, "origin/main")
+    expect(git(work, "log", "-1", "--format=%s").trim()).toBe("mine")
   })
 
   it("is what scripts/rebase-and-rebump.sh now runs", () => {
@@ -138,6 +154,9 @@ describe("scripts/release-drop-bump.cjs", { timeout: 30_000 }, () => {
     expect(read(work, "changes/feature-thing.md")).toBe("Someone else's note.\n")
     expect(read(work, "changes/feature-thing-2.md")).toContain("Mine, the second line.")
     expect(JSON.parse(read(work, "package.json")).version).toBe(BASE)
+    // Without merging main, the branch is one commit on where it started.
+    expectOneCommitOn(work, git(work, "merge-base", "origin/main", "HEAD").trim())
+    expect(git(work, "log", "-1", "--format=%B")).toContain("a note with the same name")
   })
 
   it("skips a note name main already has, even before main is merged in", () => {
@@ -208,6 +227,17 @@ describe("scripts/release-drop-bump.cjs", { timeout: 30_000 }, () => {
 
     expect(result.status).toBe(1)
     expect(result.output).toContain("src/thing.ts")
+    expect(result.output).toContain("run `npm run release:drop-bump` again")
+    expect(read(work, "changes/feature-thing.md")).toContain("Mine, the first line.")
+
+    // Resolving and running it again finishes the job: one commit on main, with no version change in it.
+    write(work, "src/thing.ts", "export const thing = 3\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "--no-edit")
+    const again = run(work, ["node", "scripts/release-drop-bump.cjs"])
+    expect(again.output).toContain("git push --force-with-lease")
+    expectOneCommitOn(work, "origin/main")
+    expect(read(work, "src/thing.ts")).toBe("export const thing = 3\n")
     expect(read(work, "changes/feature-thing.md")).toContain("Mine, the first line.")
   })
 

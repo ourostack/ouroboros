@@ -24,7 +24,7 @@ test("a missing change note is named with its fix and says the cancels are a res
 test("a leftover version bump is named with the drop-bump fix", () => {
   const log = "release preflight: FAIL\npackage.json's version moved from 0.1.0-alpha.1 to 0.1.0-alpha.2, but the release job on main sets the version"
   const { annotation } = buildNotice({ step: "Release preflight", log })
-  assert.match(annotation, /Fix: run `npm run release:drop-bump`, then `git push`/)
+  assert.match(annotation, /Fix: run `npm run release:drop-bump`, then `git push --force-with-lease`/)
 })
 
 test("another failure keeps its own reason and offers no bump hint; empty output says so", () => {

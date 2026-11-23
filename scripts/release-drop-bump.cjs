@@ -2,11 +2,13 @@
 
 // For a branch made while pull requests still bumped the version: moves the changelog.json entries the branch added
 // into a change note under changes/ (keeping any fix it made to an older entry), puts every release file's version
-// back to where the branch started, commits that, and merges main. The release job on main sets the version now (scripts/release-version.cjs), so a branch that still
-// carries a bump conflicts with every other merge.
+// back to where the branch started, merges main, and rebuilds the branch as one commit on main. The release job on
+// main sets the version now (scripts/release-version.cjs), so a branch that still carries a bump conflicts with every
+// other merge, and the preflight refuses any commit that changes the version, even one a later commit undoes, because
+// a rebase merge would replay it on main. The single commit carries none.
 //
-//   npm run release:drop-bump                      (then git push)
-//   npm run release:drop-bump -- --no-merge        (skip merging main)
+//   npm run release:drop-bump                      (then git push --force-with-lease)
+//   npm run release:drop-bump -- --no-merge        (skip merging main; one commit on where the branch started)
 //   npm run release:drop-bump -- --base-ref origin/main
 
 const { execFileSync } = require("child_process")
@@ -63,6 +65,27 @@ function freeNotePath(root, slug, baseNotes) {
   }
 }
 
+// The branch's commits since `base` that change package.json's version, as scripts/release-preflight.cjs finds them.
+function versionChangingCommits(git, base) {
+  const versionAt = (spec) => {
+    try {
+      return JSON.parse(git("show", `${spec}:package.json`)).version
+    } catch {
+      return undefined
+    }
+  }
+  return git("log", "-G", '^  "version": ', "--format=%H", `${base}..HEAD`, "--", "package.json").split("\n").filter(Boolean)
+    .filter((sha) => versionAt(sha) !== versionAt(`${sha}^1`))
+}
+
+// Rebuilds the branch as one commit on `base`, with the same tree, named after the branch's first commit of its own.
+function squashOnto(git, base) {
+  const subjects = git("log", "--reverse", "--no-merges", "--format=%s", `${base}..HEAD`).split("\n").filter(Boolean)
+  const [subject = "This branch's change", ...rest] = subjects
+  git("reset", "-q", "--soft", base)
+  git("commit", "-q", "-m", subject, ...(rest.length > 0 ? ["-m", rest.map((line) => `- ${line}`).join("\n")] : []))
+}
+
 function dropBump(options, deps) {
   const { root, git, say } = deps
   const branch = git("rev-parse", "--abbrev-ref", "HEAD").trim()
@@ -88,7 +111,14 @@ function dropBump(options, deps) {
   const changelogText = JSON.stringify(kept) === JSON.stringify(baseChangelog) ? baseChangelogText : `${JSON.stringify(kept, null, 2)}\n`
 
   if (headVersion === baseVersion && lines.length === 0) {
-    say(`no version bump to drop: this branch keeps ${baseVersion} and adds no changelog.json lines`)
+    // A run that stopped on a merge conflict, resolved and run again, still has its bump in the branch's history.
+    if (versionChangingCommits(git, mergeBase).length === 0) {
+      say(`no version bump to drop: this branch keeps ${baseVersion} and adds no changelog.json lines`)
+      return 0
+    }
+    squashOnto(git, mergeBase)
+    say(`rebuilt the branch as one commit on ${options.baseRef}, so no commit on it changes the version`)
+    say("done; now git push --force-with-lease")
     return 0
   }
 
@@ -115,10 +145,17 @@ function dropBump(options, deps) {
       git("merge", "--no-edit", "-q", options.baseRef)
     } catch {
       const conflicts = git("diff", "--name-only", "--diff-filter=U").trim()
-      throw new Error(`merging ${options.baseRef} left conflicts outside the release files; resolve them, commit, then git push:\n${conflicts}`)
+      throw new Error(
+        `merging ${options.baseRef} left conflicts outside the release files; resolve them, commit, then run ` +
+        `\`npm run release:drop-bump\` again to rebuild the branch as one commit:\n${conflicts}`,
+      )
     }
   }
-  say("done; now git push")
+  // A rebase merge replays every commit, so the bump and its undoing must not stay in the branch's history.
+  const onto = options.merge ? git("merge-base", options.baseRef, "HEAD").trim() : mergeBase
+  squashOnto(git, onto)
+  say(`rebuilt the branch as one commit on ${options.merge ? options.baseRef : "where it started"}, so no commit on it changes the version`)
+  say("done; now git push --force-with-lease")
   return 0
 }
 

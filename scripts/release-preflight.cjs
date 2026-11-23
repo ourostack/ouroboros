@@ -7,6 +7,7 @@ const semver = require("semver")
 
 const { validateChangelog } = require("./changelog-gate.cjs")
 const {
+  NOTES_README,
   isChangeNotePath,
   pathRequiresChangelogFreshness,
   versionBumpRequired,
@@ -123,8 +124,9 @@ function formatPathList(files) {
 }
 
 const DROP_BUMP_HINT =
-  "Run `npm run release:drop-bump` (then `git push`): it moves this branch's changelog.json lines into a change note " +
-  "under changes/, puts the release files back and merges main."
+  "Run `npm run release:drop-bump`, then `git push --force-with-lease`: it moves this branch's changelog.json lines " +
+  "into a change note under changes/, puts the release files back, merges main and rebuilds the branch as one commit " +
+  "on main, so no commit on it changes the version."
 
 // What the branch started from: its merge base's version, changelog versions and change notes, and the notes on the
 // base ref's tip, whose names a new note must not take.
@@ -208,8 +210,7 @@ function assessCommitVersions(input) {
     message:
       `${stray.map((commit) => `${commit.sha.slice(0, 12)} (${commit.subject}) changes package.json's version from ${commit.from} to ${commit.to}`).join("; ")}. ` +
       "A rebase merge puts every commit on main as it is, so the branch must not carry a version change even when a later " +
-      "commit puts the version back. Run `npm run release:drop-bump`, then rebuild the branch as one commit on main " +
-      "(`git reset --soft $(git merge-base origin/main HEAD) && git commit`) and push it with `git push --force-with-lease`.",
+      `commit puts the version back. ${DROP_BUMP_HINT}`,
   }
 }
 
@@ -239,6 +240,13 @@ function assessChangeNote(input) {
       return null
     }
   }
+  // Every release reads changes/README.md to know the history has change notes; without it, no release goes out.
+  if (input.changedFiles.includes(NOTES_README) && read(NOTES_README) === null) {
+    return {
+      ok: false,
+      message: `this branch removes ${NOTES_README}, and the release job stops without it, so nothing would release after this lands; restore it`,
+    }
+  }
   const changedNotes = input.changedFiles.filter(isChangeNotePath)
   const edited = changedNotes.filter((file) => input.existingNotes.has(file) && read(file) !== null)
   if (edited.length > 0) {
@@ -250,10 +258,26 @@ function assessChangeNote(input) {
     }
   }
   const tipNotes = input.tipNotes ?? new Set()
+  // A note moved to a new name, unchanged, already released under its old one: the release job counts it once too.
+  const removedTexts = new Map(changedNotes
+    .filter((file) => input.existingNotes.has(file) && read(file) === null)
+    .flatMap((file) => {
+      try {
+        return [[input.readBaseNote?.(file), file]]
+      } catch {
+        return []
+      }
+    })
+    .filter(([text]) => typeof text === "string"))
+  const renamed = []
   const notes = changedNotes
     .filter((file) => !input.existingNotes.has(file))
     .flatMap((file) => {
       const text = read(file)
+      if (text !== null && removedTexts.has(text)) {
+        renamed.push(`${file} is ${removedTexts.get(text)} renamed, which already released`)
+        return []
+      }
       return text === null ? [] : [{ file, changes: parseChangeNote(text) }]
     })
   const taken = notes.filter((note) => tipNotes.has(note.file))
@@ -298,6 +322,7 @@ function assessChangeNote(input) {
   return {
     ok: false,
     message:
+      (renamed.length > 0 ? `${renamed.join("; ")}; ` : "") +
       `add a change note for ${formatPathList(needsNote)}: a new file changes/<branch-name>.md, named after this ` +
       "branch, saying what changed for the people who use it, one paragraph or bullet per change. The release job adds " +
       "it to changelog.json.",
@@ -306,10 +331,10 @@ function assessChangeNote(input) {
 
 function collectChangedFiles(baseRef, execSyncImpl) {
   const committedFiles = splitLines(
-    execSyncImpl(`git diff --name-only "${baseRef}...HEAD"`, { encoding: "utf-8" }),
+    execSyncImpl(`git diff --name-only --no-renames "${baseRef}...HEAD"`, { encoding: "utf-8" }),
   )
   const workingTreeFiles = splitLines(
-    execSyncImpl("git diff --name-only HEAD", { encoding: "utf-8" }),
+    execSyncImpl("git diff --name-only --no-renames HEAD", { encoding: "utf-8" }),
   )
   const untrackedFiles = splitLines(
     execSyncImpl("git ls-files --others --exclude-standard", { encoding: "utf-8" }),
@@ -553,6 +578,7 @@ function runReleasePreflight(options = {}, deps = {}) {
     baseChangelogVersions: baseState.changelogVersions,
     changelog,
     readNote: (file) => readFileSyncImpl(path.join(packageRoot, file), "utf8"),
+    readBaseNote: (file) => execSyncImpl(`git show ${shellQuote(`${baseState.mergeBase}:${file}`)}`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }),
   })
   if (!changeNoteResult.ok) {
     errors.push(changeNoteResult.message)
