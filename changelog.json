@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1385",
+      "changes": [
+        "A delegated command counts as noticed only once Telegram accepted its audit notice, and its refusal no longer says the owner's chat is down when the chat is only handed to someone else."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1384",
       "changes": [
         "A delegated command's audit notice is sent to the owner's own Telegram chat at once, or the command is refused: it no longer waits on the owner route, quiet hours, the daily cap or a handoff."
