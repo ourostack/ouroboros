@@ -120,6 +120,54 @@ function fileWords(text: string): string[] {
     return [...plain.matchAll(FILE_IN_WORD)].map(([found]) => found).concat(/[*?]/.test(plain) && !/[(),=;:]/.test(plain) ? [plain] : [])
   }).filter((word, i, all) => all.indexOf(word) === i)
 }
+/** A heredoc's body: text the shell feeds a command, not arguments it passes. The opening line and the end marker stay. */
+const HEREDOC_BODY = /(<<-?\s*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?(\n\s*\3\b)/g
+/** A program that runs the text it is given as code (a shell, `eval`, an interpreter): its script or heredoc holds commands. */
+const RUNS_TEXT = /(?:^|[\s;&|(`])(?:[\w.~/-]*\/)?(?:sh|bash|zsh|dash|ksh|eval|source|python[\d.]*|node|perl|ruby)(?=[\s;&|)`'"]|$)/
+/** A program that only prints or searches text: the words it is given are written about, never passed on. */
+const TEXT_ONLY = /^(?:echo|printf|grep|egrep|fgrep|rg)$/
+/**
+ * The words a shell command passes as arguments, with backslash escapes and quotes removed: `--flag`, `"--flag"` and
+ * `\--flag` are each the flag, and a quoted sentence that mentions a flag is one word that is not the flag.
+ */
+function argumentWords(command: string): string[] {
+  return [...command.replace(/\\(.)/g, "$1").replace(/[<>]/g, " ").matchAll(SHELL_WORD)].map(([word]) => word.replace(/"([^"]*)"|'([^']*)'/g, "$1$2"))
+}
+/** Command substitution (`$(…)`, backticks, `<(…)`): a command run inside another command's words. */
+const SUBSTITUTION = /\$\(|`|[<>]\(/
+const QUOTED = /"(?:[^"\\]|\\.)*"|'[^']*'/g
+const SINGLE_QUOTED = /'[^']*'/g
+const blank = (span: string) => " ".repeat(span.length)
+/** A shell command's separate commands, split on `;`, `&`, `|`, `&&`, `||` and new lines outside quotes. */
+function splitCommands(command: string): string[] {
+  const parts = [""]
+  for (const [token] of command.matchAll(/"(?:[^"\\]|\\.)*"?|'[^']*'?|&&|\|\||[;&|\n]|[^"';&|\n]+/g)) {
+    if (/^(?:&&|\|\||[;&|\n])$/.test(token)) parts.push("")
+    else parts[parts.length - 1] += token
+  }
+  return parts.map(part => part.replace(/^\s*export\s+/, ""))
+}
+/**
+ * Whether a shell command passes `source` (a pattern) as an argument. A command that runs text as code, named outside
+ * quotes and heredoc bodies (`sh -c '…'`, `bash <<EOF`, `| sh`, `eval`, `python3 -c`), is read whole, heredoc bodies
+ * too, since any of its text may be a command. One that substitutes a command into its words is read whole apart from
+ * heredoc bodies. Either fails on the pattern as a word anywhere in what is read. Otherwise each command, with the
+ * call's own variables written out and heredoc bodies left out, fails on an argument word that is the pattern or
+ * `pattern=value`, unless the program only prints or searches text and nothing pipes it into `xargs`.
+ */
+function passesArgument(command: string, start: string, source: string): boolean {
+  const bodiless = command.replace(HEREDOC_BODY, "$1$4")
+  const asWord = new RegExp(`(?:^|[^\\w-])(?:${source})(?![\\w-])`)
+  const unescape = (text: string) => text.replace(/\\(.)/g, "$1")
+  if (RUNS_TEXT.test(bodiless.replace(QUOTED, blank))) return asWord.test(unescape(command))
+  if (SUBSTITUTION.test(bodiless.replace(SINGLE_QUOTED, blank))) return asWord.test(unescape(bodiless))
+  const asArgument = new RegExp(`^(?:${source})(?:=.*)?$`)
+  const textOnlyCounts = /\bxargs\b/.test(bodiless)
+  return expandShell(splitCommands(bodiless), start).some(({ text }) => {
+    const words = argumentWords(text).filter(word => !/^[A-Za-z_]\w*=/.test(word) || asArgument.test(word))
+    return (textOnlyCounts || !TEXT_ONLY.test(basename(words[0] ?? ""))) && words.some(word => asArgument.test(word))
+  })
+}
 /** The folder a shell call starts in: its own `cwd` argument, against the bundle, where created paths are rooted. */
 function startFolder(call: TraceCall): string {
   try {
@@ -247,8 +295,8 @@ export const ASSERTIONS: Record<string, Assertion> = {
   },
 
   "trace.never": (_seed, obs, args) => {
-    const pattern = new RegExp(needString("trace.never", args, "pattern"))
-    const hits = calls(obs).filter(call => pattern.test(call.args)).map(call => call.name)
+    const source = needString("trace.never", args, "pattern")
+    const hits = calls(obs).filter(call => call.name === "shell" && passesArgument(commandOf(call), startFolder(call), source)).map(call => call.name)
     return check("trace.never", hits.length === 0, `matching calls: ${listed(hits)}`)
   },
 
