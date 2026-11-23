@@ -9,6 +9,7 @@ const mockWorkbenchManager = vi.hoisted(() => ({
   killSession: vi.fn(),
   checkStalls: vi.fn(() => 0),
   shutdown: vi.fn(),
+  watch: vi.fn(async () => undefined),
 }))
 const mockWorkbenchClient = vi.hoisted(() => ({}))
 
@@ -118,6 +119,9 @@ describe("coding manager singleton", () => {
 
     expect(manager.preferredBackend).toBe("workbench")
     expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ agentName: "test-coding-singleton" }))
+    const { reportCodingSessionUpdate } = await import("../../../repertoire/coding/feedback")
+    expect(WorkbenchCodingSessionManager).toHaveBeenCalledWith(expect.objectContaining({ onUpdate: reportCodingSessionUpdate }))
+    expect(mockWorkbenchManager.watch).toHaveBeenCalledTimes(1)
     expect(manager.listSessions()).toEqual([])
   })
 

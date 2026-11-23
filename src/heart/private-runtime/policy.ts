@@ -177,6 +177,16 @@ async function evaluatePolicy(
     }
   }
   if (
+    request.triggerSource === "delegated-work"
+    && hasNonEmptyOriginRef(originRefs, "delegated-work")
+    && hasNonEmptyOriginRef(originRefs, "delegated-work-status")
+  ) {
+    return {
+      result: "allow",
+      reason: "delegated work changed state",
+    }
+  }
+  if (
     request.triggerSource === "operator-cli"
     && hasOriginRef(originRefs, "cli-command", "ouro msg")
     && hasNonEmptyOriginRef(originRefs, "daemon-receipt")
