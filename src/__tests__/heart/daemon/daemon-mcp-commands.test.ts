@@ -250,6 +250,27 @@ describe("daemon mcp command handlers", () => {
     expect(manager.callTool).not.toHaveBeenCalled()
   })
 
+  it("refuses a declared consequential tool, since ouro mcp call has no one to ask (ourostack/ouroboros#1694)", async () => {
+    const manager = { callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }) }
+    const { parseDeclaredTools } = await import("../../../repertoire/mcp-declared-tools")
+    const entry = (name: string, effect: string) => ({ type: "function", function: { name, description: "Does it.", parameters: { type: "object", properties: {} } }, ax: { group: "turn-shop", when: "Pick this.", effect, confirm: "Share it?", errors: [] } })
+    const declared = parseDeclaredTools({ tools: [entry("share_list", "consequential"), entry("add_item", "write")] }).tools
+    const served = (name: string) => ({ name, description: "served", inputSchema: { type: "object" } })
+    const view = mockView(manager, [{ server: "shop", tools: [served("share_list"), served("add_item")] }])
+    view.entries[0] = { ...view.entries[0]!, declared } as never
+    vi.doMock("../../../repertoire/mcp-manager", () => ({ getSharedMcpManager: vi.fn().mockResolvedValue(view), shutdownSharedMcpManager: vi.fn() }))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(makeDaemonOptions(tmpSocketPath("daemon-mcp-consequential")) as ConstructorParameters<typeof OuroDaemon>[0])
+
+    expect(await daemon.handleCommand({ kind: "mcp.call", server: "shop", tool: "share_list" })).toEqual({
+      ok: false, error: "shop/share_list is declared consequential, so it runs only once the person approves it in a conversation; ouro mcp call can't ask them, so nothing ran.",
+    })
+    expect(manager.callTool).not.toHaveBeenCalled()
+    // A declared write still runs from the command line as before.
+    expect(await daemon.handleCommand({ kind: "mcp.call", server: "shop", tool: "add_item" })).toMatchObject({ ok: true })
+    expect(manager.callTool).toHaveBeenCalledOnce()
+  })
+
   it("serializes MCP reconciliation against another agent turn", async () => {
     const managerEntered = deferred()
     const releaseManager = deferred()

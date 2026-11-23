@@ -23,6 +23,8 @@ import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/to
 import { approvalPolicyForToolName, executeTool, preflightToolCall } from "../../repertoire/tools"
 import { shellToolDefinitions } from "../../repertoire/tools-shell"
 import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
+import { parseDeclaredTools } from "../../repertoire/mcp-declared-tools"
+import { materializeApprovalTerminal } from "../../heart/session-events"
 import type { McpToolBinding } from "../../repertoire/mcp-manager"
 import { makeMcpView, MCP_CONTEXT, shutdownMcpFixtures } from "../repertoire/mcp-fixture"
 import { telegramApprovalDecisionBarrierHooks } from "../../senses/telegram-approval-runtime"
@@ -281,6 +283,66 @@ describe("approval decision and crash-safe execution", () => {
       fixture.approvalStore.close()
     },
   )
+
+  it.each(["approve", "deny"] as const)("runs a bundle's declared consequential MCP tool only once the person approves: %s (ourostack/ouroboros#1694)", async (choice) => {
+    const declared = parseDeclaredTools({ tools: [{
+      type: "function",
+      function: { name: "share_list", description: "Shares the list.", parameters: { type: "object", properties: { item: { type: "string" } }, required: ["item"], additionalProperties: false } },
+      ax: { group: "turn-shop", when: "Pick this to share the list.", effect: "consequential", confirm: "Share the list with everyone?", errors: [] },
+    }] }).tools
+    const view = makeMcpView([{ server: "shop", tools: [{ name: "share_list", description: "served", inputSchema: { type: "object", properties: { item: { type: "string" } } } }], declared } as never])
+    // The real definition, with the approval policy the harness gives it; nothing here overrides it.
+    const definition = mcpToolsAsDefinitions(view)[0]!
+    const policy = definition.approvalPolicy!({})
+    if (policy.kind !== "required") throw new Error("a declared consequential tool must require approval")
+    const args = { item: "milk" }
+    const validated = validateAdvertisedToolArguments(JSON.stringify(args), definition.tool.function.parameters!)
+    if (!validated.ok) throw new Error(validated.reason)
+    const draft = proposal(args)
+    draft.toolName = definition.tool.function.name
+    draft.schemaDigest = validated.value.schemaDigest
+    draft.toolDigest = digestApprovalToolDefinition(definition, draft.schemaDigest, policy.policyId)
+    draft.policyId = policy.policyId
+    draft.policyDigest = digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" })
+    draft.frozenAssistantMessage = {
+      role: "assistant", content: null,
+      tool_calls: [{ id: draft.toolCallId, type: "function", function: { name: draft.toolName, arguments: JSON.stringify(args) } }],
+    }
+    const fixture = ready({ proposalValue: draft })
+    const context = { ...MCP_CONTEXT, toolSelection: { ordinary: [definition], engine: [] } }
+    const execute = vi.fn((name: string, argumentsValue: Record<string, string>) => executeTool(name, argumentsValue, context))
+    // Before any decision the server was never called.
+    expect(view.manager.callTool).not.toHaveBeenCalled()
+
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      decision: decision(fixture.decisionToken, { decision: choice }),
+      resolveTool: () => definition,
+      preflight: async () => {
+        const result = await preflightToolCall(draft.toolName, args, context)
+        return result.kind === "ready" ? { ok: true } : { ok: false, reason: result.text }
+      },
+    }))
+
+    if (choice === "approve") {
+      expect(record).toMatchObject({ state: "succeeded", result: "ok" })
+      expect(view.manager.callTool).toHaveBeenCalledOnce()
+    } else {
+      expect(record).toMatchObject({ state: "denied", attemptedAt: null })
+      expect(execute).not.toHaveBeenCalled()
+      expect(view.manager.callTool).not.toHaveBeenCalled()
+      // The model reads the declined call's stable answer, the one every approval-gated tool gets.
+      const terminal = materializeApprovalTerminal({
+        messages: [{ role: "user", content: "restart calibre-web" }],
+        checkpoint: fixture.checkpoints.read(UUID)!,
+        record,
+        currentSessionRevision: SUSPENDED_REVISION,
+      })
+      expect(terminal.messages.at(-1)).toEqual({
+        role: "tool", tool_call_id: draft.toolCallId, content: "approval-denied: approval denied by requester; the protected action was not executed",
+      })
+    }
+    fixture.approvalStore.close()
+  })
 
   it.each(["guard", "risk"] as const)("rejects definition drift during the asynchronous live %s before canonical preflight", async (phase) => {
     const fixture = ready()

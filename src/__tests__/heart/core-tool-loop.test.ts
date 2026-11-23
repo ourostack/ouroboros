@@ -2359,6 +2359,89 @@ describe("runAgent tool loop guard", () => {
       }))
     })
 
+    describe("a bundle's declared consequential MCP tool (ourostack/ouroboros#1694)", () => {
+      async function shopView() {
+        const { parseDeclaredTools } = await import("../../repertoire/mcp-declared-tools")
+        const { makeMcpView } = await import("../repertoire/mcp-fixture")
+        const entry = (name: string, ax: Record<string, unknown>) => ({ type: "function", function: { name, description: "Does it.", parameters: { type: "object", properties: { item: { type: "string" } } } }, ax })
+        const card = { group: "turn-shop", when: "Pick this for the list.", errors: [] }
+        const declared = parseDeclaredTools({ tools: [
+          entry("share_list", { ...card, effect: "consequential", confirm: "Share the list with everyone in the household?" }),
+          entry("add_item", { ...card, effect: "write" }),
+        ] }).tools
+        const served = (name: string) => ({ name, description: "served", inputSchema: { type: "object", properties: { item: { type: "string" } } } })
+        return makeMcpView([{ server: "shop", tools: [served("share_list"), served("add_item")], declared } as never], undefined, undefined, { agentName: "testagent", agentRoot: "/mock/repo/testagent" })
+      }
+      const toolContext = { agentName: "testagent", agentRoot: "/mock/repo/testagent", signin: async () => undefined }
+
+      it("suspends for the person's approval before the MCP server is called", async () => {
+        mockCreate.mockReturnValueOnce(streamedCall("shop_share_list", JSON.stringify({ item: "milk" }), "call_share"))
+        mockCreate.mockReturnValueOnce(settled("unexpected continuation"))
+        const view = await shopView()
+        const propose = vi.fn().mockResolvedValue({ approvalId: "11111111-1111-4111-8111-111111111111", checkpointDigest: "a".repeat(64), suspendedSessionRevision: "b".repeat(64) })
+        const { runAgent } = await import("../../heart/core")
+
+        const result = await runAgent([{ role: "user", content: "share the list" }], makeCallbacks(), "cli", undefined, {
+          mcpManager: view, toolContext, approvalCoordinator: { propose },
+        } as any)
+
+        expect(result).toMatchObject({ outcome: "suspended", suspension: { toolCallId: "call_share" } })
+        expect(view.manager.callTool).not.toHaveBeenCalled()
+        expect(propose).toHaveBeenCalledOnce()
+        expect(propose).toHaveBeenCalledWith(expect.objectContaining({
+          policyId: "mcp.declared.consequential.v1", actionClass: "mcp.shop.share_list", arguments: { item: "milk" },
+        }))
+      })
+
+      it("fails closed, never calling the MCP server, where no one can be asked", async () => {
+        mockCreate.mockReturnValueOnce(streamedCall("shop_share_list", JSON.stringify({ item: "milk" }), "call_share_unasked"))
+        mockCreate.mockReturnValueOnce(settled("protected call rejected"))
+        const view = await shopView()
+        const messages: any[] = [{ role: "user", content: "share the list" }]
+        const { runAgent } = await import("../../heart/core")
+
+        const result = await runAgent(messages, makeCallbacks(), "cli", undefined, { mcpManager: view, toolContext } as any)
+
+        expect(result.outcome).toBe("settled")
+        expect(view.manager.callTool).not.toHaveBeenCalled()
+        expectProviderOnlyRejection(messages, "call_share_unasked", "approval coordinator is unavailable")
+      })
+
+      it("can't ride along beside another call in one batch", async () => {
+        mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+          { index: 0, id: "call_add", function: { name: "shop_add_item", arguments: JSON.stringify({ item: "eggs" }) } },
+          { index: 1, id: "call_share_batched", function: { name: "shop_share_list", arguments: JSON.stringify({ item: "milk" }) } },
+        ])]))
+        mockCreate.mockReturnValueOnce(settled("batch rejected"))
+        const view = await shopView()
+        const propose = vi.fn()
+        const { runAgent } = await import("../../heart/core")
+
+        await runAgent([{ role: "user", content: "add eggs and share" }], makeCallbacks(), "cli", undefined, {
+          mcpManager: view, toolContext, approvalCoordinator: { propose },
+        } as any)
+
+        expect(view.manager.callTool).not.toHaveBeenCalled()
+        expect(propose).not.toHaveBeenCalled()
+      })
+
+      it("runs a declared write as before, with no approval step", async () => {
+        mockCreate.mockReturnValueOnce(streamedCall("shop_add_item", JSON.stringify({ item: "eggs" }), "call_add_alone"))
+        mockCreate.mockReturnValueOnce(settled("added"))
+        const view = await shopView()
+        const propose = vi.fn()
+        const { runAgent } = await import("../../heart/core")
+
+        const result = await runAgent([{ role: "user", content: "add eggs" }], makeCallbacks(), "cli", undefined, {
+          mcpManager: view, toolContext, approvalCoordinator: { propose },
+        } as any)
+
+        expect(result.outcome).toBe("settled")
+        expect(propose).not.toHaveBeenCalled()
+        expect(view.manager.callTool).toHaveBeenCalledOnce()
+      })
+    })
+
     it("keeps a terminal-answer correction out of an approval suspension checkpoint", async () => {
       const correction = "Use current evidence before proposing an action."
       mockCreate

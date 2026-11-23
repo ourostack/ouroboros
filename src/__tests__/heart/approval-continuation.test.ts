@@ -191,10 +191,25 @@ describe("approval terminal transcript projection", () => {
     expect(revalidate).toHaveBeenCalledOnce()
   })
 
+  it("treats a denial materialized with the earlier wording as already materialized", () => {
+    const materialized = (sessionEvents as any).materializeApprovalTerminal({
+      messages: [
+        ...checkpoint().preCallMessages,
+        assistantMessage(),
+        { role: "tool", tool_call_id: "call_restart", content: "approval denied by requester; the protected action was not executed" },
+      ],
+      checkpoint: checkpoint(),
+      record: record("denied", null),
+      currentSessionRevision: REVISION,
+    })
+    expect(materialized.materialized).toBe(false)
+    expect(materialized.resumeProvider).toBe(true)
+  })
+
   it.each([
     ["succeeded", "restarted", "restarted", true],
     ["failed", "error: restart refused", "error: restart refused", true],
-    ["denied", null, "approval denied by requester; the protected action was not executed", true],
+    ["denied", null, "approval-denied: approval denied by requester; the protected action was not executed", true],
   ] as const)("materializes one exact correlated pair for %s and marks provider resume eligibility", async (state, result, expected, resumeProvider) => {
     const materializeApprovalTerminal = (sessionEvents as any).materializeApprovalTerminal
 

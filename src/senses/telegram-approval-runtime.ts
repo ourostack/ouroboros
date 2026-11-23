@@ -63,10 +63,12 @@ export function approvalContinuationRunAgentOptions(
   return { toolContext: toolContext as ToolContext, approvalCoordinator }
 }
 
-export function formatTelegramApprovalPrompt(toolName: string, args: Record<string, unknown>): string {
+/** The question the person is asked: the tool's declared `confirm` when its card has one, else a generic one with the exact arguments. */
+export function formatTelegramApprovalPrompt(toolName: string, args: Record<string, unknown>, declaredConfirm?: string): string {
   if (toolName === "sanctuary_resume_download_queue") return "Resume household downloads? This can spend prepaid download credit. I’ll verify the queue actually resumed."
   const container = args.container
   if (toolName === "unraid_restart_container" && typeof container === "string" && container.length > 0 && container.length <= 128 && !container.includes("\n")) return `Restart ${container}?`
+  if (declaredConfirm) return declaredConfirm
   return `Approve ${toolName} with exact arguments ${JSON.stringify(args)}?`
 }
 
@@ -366,7 +368,7 @@ export function createTelegramApprovalRuntime(options: {
         preCallMessages: request.preCallMessages,
         hooks: telegramApprovalCommitBarrierHooks(effectBarrier),
       })
-      const prompt = formatTelegramApprovalPrompt(request.toolCall.function.name, request.arguments)
+      const prompt = formatTelegramApprovalPrompt(request.toolCall.function.name, request.arguments, resolveTool(request.toolCall.function.name, request.liveToolContext?.toolSelection)?.ax?.confirm)
       effectBarrier()
       const actionDigest = createHash("sha256").update(JSON.stringify({ toolName: committed.record.toolName, argumentDigest: committed.record.argumentDigest })).digest("hex")
       const targetDigest = createHash("sha256").update(JSON.stringify({ container: committed.record.arguments.container })).digest("hex")
