@@ -8,6 +8,7 @@ import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligat
 import { completePonderPacket } from "../arc/packets";
 import { listSessionActivity } from "../heart/session-activity";
 import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
+import { getProactiveInternalContentBlockReason } from "../senses/proactive-content-guard";
 import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
@@ -286,9 +287,9 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
         deliveryId,
         intent: "generic_outreach",
       })
-      return delivered.status === "delivered_now"
-        ? { status: "delivered", detail: "sent to Telegram now" }
-        : queueToSession(target, detail)
+      if (delivered.status === "delivered_now") return { status: "delivered", detail: "sent to Telegram now" }
+      if (delivered.status === "forwarded") return { status: "forwarded", detail: `handed to the machine that runs Telegram: ${delivered.detail}` }
+      return queueToSession(target, detail)
     }
 
     const deliverTeamsOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
@@ -392,6 +393,11 @@ export async function routeSurfaceToFriend(agentName: string, friendId: string, 
 
     // Priority 2b: spontaneous outreach to a person sends now where it reaches
     // them, never into a session only agents read (MCP) or one they must reopen (CLI).
+    // Text the senses' content guard refuses goes nowhere, whichever chat is newest.
+    const contentBlock = getProactiveInternalContentBlockReason(content)
+    if (contentBlock) {
+      return { status: "failed", detail: withCode(`blocked: this reads as internal status (${contentBlock}), so no chat sends it; rewrite it as plain words for them`, "delivery-blocked") }
+    }
     const outreach = await sendSpontaneousOutreach(friendId, allFriendSessions, spontaneousOutreachSenders(agentName, agentRoot, content, queueItem), Date.now())
     if ("sent" in outreach) return outreach.sent
 

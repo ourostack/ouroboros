@@ -477,7 +477,7 @@ describe("rest tool in runAgent", () => {
   const notSent = "deferred — not sent now; saved for their next message. iMessage did not send (send_error). (code: surface-not-sent)"
 
   it("rest is refused once while this turn's surface to a person came back not sent, then accepted", async () => {
-    // Regression for 2026-11-22: an inner turn surfaced news for a person, got a result
+    // Regression for 2026-11-22: a private turn surfaced news for a person, got a result
     // that did not reach them, and rested in the same turn.
     mockCreate.mockReturnValueOnce(makeStream(toolCallChunks("call_surface", "surface", { content: "Your sign-in is done.", friendId: "friend-1" })))
     mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks())) // refused: the surface was not sent

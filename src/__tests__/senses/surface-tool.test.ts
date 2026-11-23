@@ -1225,7 +1225,7 @@ describe("surface tool", () => {
       expect(result).toBe("deferred — not sent now; saved for their next message. friend-new has no chat session with you yet. (code: surface-not-sent)")
     })
 
-    it("names only routes an inner turn actually has, whatever the friend's sessions or the held return's origin", async () => {
+    it("names only routes a private turn actually has, whatever the friend's sessions or the held return's origin", async () => {
       const { selectToolsForChannel, registeredToolDefinitions } = await import("../../repertoire/tools")
       const { getChannelCapabilities } = await import("@ouro.bot/friends")
       const advertised = new Set(selectToolsForChannel(getChannelCapabilities("inner")).ordinary.map((definition) => definition.tool.function.name))
@@ -1324,18 +1324,28 @@ describe("surface tool", () => {
       const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
       mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
       mockListSessionActivity.mockReturnValue([session("bluebubbles", dm), session("telegram", "telegram_777_42", 1_000)])
-      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toBe(
+      expect(await surfaceToolDefinition.handler({ content: "the build is done", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toBe(
         "failed — blocked: iMessage refused this text as internal (internal_content_blocked), so no chat sends it; rewrite it as plain words for them (code: delivery-blocked)",
       )
 
       mockSendTeamsOffTurn.mockResolvedValue({ delivered: false, reason: "internal_content_blocked" })
       mockListSessionActivity.mockReturnValue([session("teams", "a:chat-1"), session("telegram", "telegram_777_42", 1_000)])
-      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toMatch(/^failed — blocked: Teams refused/u)
+      expect(await surfaceToolDefinition.handler({ content: "the build is done", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toMatch(/^failed — blocked: Teams refused/u)
+      expect(mockSendTelegramAwaitFollowUp).not.toHaveBeenCalled()
+
+      // Text the guard refuses never goes out on a sense without its own guard, or into a saved copy.
+      mockListSessionActivity.mockReturnValue([session("telegram", "telegram_777_42")])
+      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-1" }, { delegatedOrigins: [] } as any)).toBe(
+        "failed — blocked: this reads as internal status (heartbeat_status), so no chat sends it; rewrite it as plain words for them (code: delivery-blocked)",
+      )
+      mockListSessionActivity.mockReturnValue([])
+      expect(await surfaceToolDefinition.handler({ content: "heartbeat check-in: all settled", friendId: "friend-new" }, { delegatedOrigins: [] } as any)).toMatch(/^failed — blocked/u)
       expect(mockSendTelegramAwaitFollowUp).not.toHaveBeenCalled()
       expect(fs.writeFileSync).not.toHaveBeenCalled()
     })
 
-    it("surfaceToolDefinition reports a Telegram hand-off to the machine that runs Telegram as forwarded", async () => {
+    it("surfaceToolDefinition reports a Telegram hand-off to the machine that runs Telegram as forwarded, held returns included", async () => {
+      const fs = await import("fs")
       mockSendTelegramAwaitFollowUp.mockResolvedValue({ status: "forwarded", detail: "mini-host sends it" })
       mockListSessionActivity.mockReturnValue([session("telegram", "telegram_777_42"), session("teams", "a:chat-1", 1_000)])
 
@@ -1343,6 +1353,12 @@ describe("surface tool", () => {
       expect(await surfaceToolDefinition.handler({ content: "over to the mini", friendId: "friend-1" }, { delegatedOrigins: [] } as any))
         .toBe("forwarded — handed to the machine that runs Telegram: mini-host sends it")
       expect(mockSendTeamsOffTurn).not.toHaveBeenCalled()
+
+      const held = await surfaceToolDefinition.handler({ content: "your answer", delegationId: "held-tg" }, {
+        delegatedOrigins: [{ id: "held-tg", friendId: "friend-1", friendName: "Robin", channel: "telegram", key: "telegram_777_42", delegatedContent: "think", source: "drained", timestamp: 1 }],
+      } as any)
+      expect(held).toBe("forwarded — handed to the machine that runs Telegram: mini-host sends it")
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(expect.stringMatching(/\/state\/pending\//u), expect.anything())
     })
 
     it("surfaceToolDefinition keeps the freshest-session queue for an agent friend, whose MCP session is how it reads", async () => {
