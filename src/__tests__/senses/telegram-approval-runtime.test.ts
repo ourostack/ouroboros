@@ -7,6 +7,7 @@ const runtimeMocks = vi.hoisted(() => {
     claimContinuation: vi.fn(),
     close: vi.fn(),
     completeContinuation: vi.fn(),
+    decideRelayed: vi.fn(),
     expire: vi.fn(),
     markContinuationAttempted: vi.fn(),
     markContinuationMaterialized: vi.fn(),
@@ -26,6 +27,7 @@ const runtimeMocks = vi.hoisted(() => {
     listPendingDeliveries: vi.fn(),
     recoverDecisionAttempt: vi.fn(),
     reconcileExpired: vi.fn(),
+    relayDeny: vi.fn(),
     sendApproval: vi.fn(),
     terminalizeOrphaned: vi.fn(),
     terminalizeRecovered: vi.fn(),
@@ -1065,5 +1067,67 @@ describe("Telegram approval runtime orchestration", () => {
 
     await expect(transportOptions.commitAcceptanceEvidence("telegram.unsupported", {}))
       .rejects.toThrow("unsupported")
+  })
+})
+
+describe("a deny relayed through the owner's primary agent", () => {
+  const relay = { senderDid: "did:key:z6MkSyntheticSlugger", envelopeBindingId: "binding-1" }
+  const relayInput = { relayToken: "r".repeat(43), routeDid: relay.senderDid, ...relay }
+
+  it("records a pending approval as denied by owner-via-relay, on the store's own clock", async () => {
+    const effectBarrier = vi.fn()
+    makeRuntime(effectBarrier)
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
+    runtimeMocks.store.decideRelayed.mockReturnValue({ ...baseRecord, state: "denied", relayDecision: { envelopeBindingId: "binding-1" } })
+
+    const decided = await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), decisionAt: 123, relay })
+    expect(decided).toMatchObject({ relayApplied: true })
+
+    expect(effectBarrier).toHaveBeenCalled()
+    expect(runtimeMocks.store.decideRelayed).toHaveBeenCalledWith({
+      approvalId: "approval-1", decisionToken: "t".repeat(43), decision: "deny", ...relay,
+    })
+    expect(runtimeMocks.executeApprovalDecision).not.toHaveBeenCalled()
+    expect(runtimeMocks.resumeApprovalContinuation).toHaveBeenCalled()
+  })
+
+  it.each(["denied", "expired"])("keeps an already %s record, so a retry after a crash finishes the same way", async (state) => {
+    makeRuntime()
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state })
+
+    const decided = await transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), relay })
+
+    // Kept, not decided by this relay: the card must not say this deny applied.
+    expect(decided).toMatchObject({ relayApplied: false })
+    expect(runtimeMocks.store.decideRelayed).not.toHaveBeenCalled()
+    expect(runtimeMocks.resumeApprovalContinuation).toHaveBeenCalled()
+  })
+
+  it.each(["claimed", "attempted", "succeeded"])("never recovers or reuses a %s record for a relay: it was already decided", async (state) => {
+    makeRuntime()
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state })
+
+    await expect(transportOptions().onDecision({ approvalId: "approval-1", decision: "deny", decisionToken: "t".repeat(43), relay }))
+      .resolves.toEqual({ accepted: false, terminalText: "⚠️ Approval was already decided" })
+    expect(runtimeMocks.recoverClaimedApproval).not.toHaveBeenCalled()
+    expect(runtimeMocks.recoverAttemptedApproval).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["denied, by this envelope", { status: "settled", approvalId: "approval-1" }, { ...baseRecord, state: "denied", relayDecision: { envelopeBindingId: "binding-1" } }, "denied"],
+    ["denied, by another answer", { status: "settled", approvalId: "approval-1" }, { ...baseRecord, state: "denied", relayDecision: { envelopeBindingId: "other" } }, "already_decided"],
+    ["denied by a tap", { status: "settled", approvalId: "approval-1" }, { ...baseRecord, state: "denied" }, "already_decided"],
+    ["expired while settling", { status: "settled", approvalId: "approval-1" }, { ...baseRecord, state: "expired" }, "expired"],
+    ["approved before the answer", { status: "settled", approvalId: "approval-1" }, { ...baseRecord, state: "succeeded" }, "already_decided"],
+    ["gone from the store", { status: "settled", approvalId: "approval-1" }, undefined, "already_decided"],
+    ["not waiting", { status: "not_pending" }, undefined, "not_pending"],
+    ["past its expiry", { status: "expired" }, undefined, "expired"],
+  ])("tells the relay %s", async (_label, result, record, answer) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.relayDeny.mockResolvedValue(result)
+    runtimeMocks.store.read.mockReturnValue(record)
+
+    await expect(runtime.relayDeny(relayInput)).resolves.toBe(answer)
+    expect(runtimeMocks.transport.relayDeny).toHaveBeenCalledWith(relayInput)
   })
 })
