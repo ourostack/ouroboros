@@ -77,7 +77,9 @@ function readFrom(handle: ReadHandle, start: number, maxBytes: number, into: str
   // A line longer than a whole part would stop the log for good: skip it as a gap and go on after it.
   const tooLong = used === 0 && bytes.length >= maxBytes
   const offset = start + (tooLong ? bytes.length : used)
-  const headLength = Math.min(HEAD_BYTES, offset)
+  // The head covers the first bytes present, a half-written line included (a log only grows), so a cursor can tell
+  // its file from a new one that reused the inode even before the file has a whole line.
+  const headLength = Math.min(HEAD_BYTES, handle.size)
   const head = hashHead(handle.read(0, headLength), headLength)
   return { cursor: { ino: handle.ino, offset, head, headLength }, more: offset < handle.size && (used > 0 || tooLong), gap: tooLong }
 }
@@ -103,7 +105,7 @@ export function readNewLines(gfs: GuardedFs, active: string, cursor: FileCursor 
 
 function finishGenerationOne(gfs: GuardedFs, active: string, cursor: FileCursor, into: string[]): boolean {
   const generation = readGenerationOne(gfs, active)
-  // A cursor with no head (its first read held no whole line) can't tell one file from another, so it never matches.
+  // A cursor with no head (its file was empty) can't tell one file from another, so it never matches a generation.
   if (generation === null || cursor.headLength === 0 || generation.length < cursor.offset || hashHead(generation, cursor.headLength) !== cursor.head) return false
   into.push(...completeLines(generation.subarray(cursor.offset)).lines)
   return true

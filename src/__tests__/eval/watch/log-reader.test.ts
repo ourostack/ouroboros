@@ -124,13 +124,22 @@ describe("Watch's log reader", () => {
     expect(seen).toContain("next")
   })
 
-  it("never matches a rotated generation to a cursor that has no head", () => {
+  it("tells its file from a new one with the same inode before the file has a whole line", () => {
     fs.writeFileSync(active, "half")
+    const first = readNewLines(gfs, active, undefined)
+    expect(first.cursor?.headLength).toBe(4)
+    fs.writeFileSync(active, "other\n")
+    expect(readNewLines(gfs, active, first.cursor)).toMatchObject({ lines: ["other"], gap: true })
+  })
+
+  it("never matches a rotated generation to a cursor that has no head", () => {
+    fs.writeFileSync(active, "")
     const first = readNewLines(gfs, active, undefined)
     expect(first.cursor?.headLength).toBe(0)
     rotate()
     fs.writeFileSync(active, "z\n")
-    expect(readNewLines(gfs, active, first.cursor)).toMatchObject({ lines: ["z"], gap: true })
+    const stale = { ...first.cursor!, ino: -1 }
+    expect(readNewLines(gfs, active, stale)).toMatchObject({ lines: ["z"], gap: true })
   })
 
   it("treats a file rewritten in place as a new file", () => {
