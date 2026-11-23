@@ -14,6 +14,7 @@ import type { RelayConfig, RelayConfigStore } from "../../a2a/relay-inbox"
 import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { A2AIdentity } from "../../a2a/identity"
+import { openInboundJournal } from "../../senses/inbound-journal"
 
 let sodium: Sodium
 const bundles: TmpBundleHandle[] = []
@@ -205,7 +206,7 @@ describe("A2A relay round trip (two agents, a friends-relay, real HTTP)", () => 
     for (const sealed of [tampered, otherRecipient, otherKind]) expect(ledger.has(sealed.sealed.n)).toBe(false)
   }, 30_000)
 
-  it("marks a relayed message seen once verified, so a turn that fails after that neither runs it again nor leaves it queued", async () => {
+  it("marks a relayed message seen once verified, so a turn that fails after that records the failure and neither runs it again nor leaves it queued", async () => {
     const relay: FakeRelay = await startFakeRelay()
     closers.push(() => relay.close())
     const peerBundle = createTmpBundle({ agentName: "relay-fail-peer" })
@@ -232,8 +233,14 @@ describe("A2A relay round trip (two agents, a friends-relay, real HTTP)", () => 
     const message = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: peer.did })
     await relaySend({ url: relay.url, handle: registration.handle, sendCredential: registration.sendCredential, message })
 
-    expect(await peerServer.relay!.tick()).toBe("backoff")
+    // The failure is the message's recorded outcome, so the pass carries on instead of backing off.
+    expect(await peerServer.relay!.tick()).toBe("ok")
     expect(turns).toBe(1)
+    const journal = openInboundJournal(peerBundle.agentRoot, "a2a")
+    expect(journal.pending()).toEqual([])
+    const outcomesDir = path.join(peerBundle.agentRoot, "state", "senses", "a2a", "inbound-outcomes")
+    const outcomes = fs.readdirSync(outcomesDir).map((name) => JSON.parse(fs.readFileSync(path.join(outcomesDir, name), "utf-8")) as { outcome: string; detail?: string })
+    expect(outcomes).toEqual([expect.objectContaining({ outcome: "failed", detail: "provider down" })])
     // The real seen ledger on disk holds the nonce, and the relay no longer holds the message.
     expect(new FileA2ASeenLedger(peerBundle.agentRoot).has(sealed.sealed.n)).toBe(true)
     expect(relay.inbox.get(registration.handle)).toEqual([])

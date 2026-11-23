@@ -44,6 +44,25 @@ describe("which turns stop waiting in the turn queue when cancelled", { timeout:
 
     await expect(runSenseTurn({ agentName: "contract-agent", signal: controller.signal } as Parameters<typeof runSenseTurn>[0]))
       .rejects.toThrow("no signal reached the turn queue")
-    expect(withTurnExecutionLease).toHaveBeenLastCalledWith(expect.any(Function))
+    expect(withTurnExecutionLease).toHaveBeenLastCalledWith(expect.any(Function), undefined)
+  })
+
+  it("runSenseTurn tells the caller when the turn gets its place in the queue", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    withTurnExecutionLease.mockImplementationOnce(async (work) => work())
+    const onTurnStart = vi.fn(() => { throw new Error("stop here") })
+
+    await expect(runSenseTurn({ agentName: "contract-agent", onTurnStart } as Parameters<typeof runSenseTurn>[0])).rejects.toThrow("stop here")
+    expect(onTurnStart).toHaveBeenCalledTimes(1)
+  })
+
+  it("runSenseTurn passes the signal when the caller asks to stop waiting on abort", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const controller = new AbortController()
+    controller.abort(new Error("a2a turn canceled"))
+
+    await expect(runSenseTurn({ agentName: "contract-agent", signal: controller.signal, stopQueueWaitOnAbort: true } as Parameters<typeof runSenseTurn>[0]))
+      .rejects.toThrow("a2a turn canceled")
+    expect(withTurnExecutionLease).toHaveBeenLastCalledWith(expect.any(Function), controller.signal)
   })
 })
