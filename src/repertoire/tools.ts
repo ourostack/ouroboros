@@ -314,6 +314,18 @@ export async function approvalPolicyForInvocation(name: string, args: Record<str
   return (await classifyApprovalForInvocation(name, args, ctx)).policy
 }
 
+/** What an approval-gated call answers where nothing can ask the person, as in a turn with no approval coordinator: the handler never ran. */
+export const APPROVAL_UNAVAILABLE_REJECTION = "rejected: this protected tool requires approval, but the approval coordinator is unavailable; the handler was not invoked."
+
+/**
+ * For a dispatch path that can't ask the person, such as a voice call: the rejection when this call needs their approval,
+ * else null. Every approval-gated tool, the harness's own and a bundle's declared consequential ones, fails closed there
+ * (ourostack/ouroboros#1694).
+ */
+export async function rejectionWithoutApprover(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<string | null> {
+  return (await approvalPolicyForInvocation(name, args, ctx)).kind === "required" ? APPROVAL_UNAVAILABLE_REJECTION : null
+}
+
 const findDefinition = resolveToolDefinition
 
 /** The flags that print ouro's help or version, which run nothing. */

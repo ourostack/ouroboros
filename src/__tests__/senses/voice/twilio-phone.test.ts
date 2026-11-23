@@ -13,6 +13,8 @@ import { getToolsForChannel, resolveToolDefinition } from "../../../repertoire/t
 import { baseToolDefinitions } from "../../../repertoire/tools-base"
 import * as nerves from "../../../nerves/runtime"
 import { voiceToolDefinitions } from "../../../repertoire/tools-voice"
+import { parseDeclaredTools } from "../../../repertoire/mcp-declared-tools"
+import { makeMcpView } from "../../repertoire/mcp-fixture"
 import {
   computeOpenAIWebhookSignature,
   computeTwilioSignature,
@@ -782,6 +784,36 @@ describe("turn-owned realtime selection", () => {
       pending.resolve(null)
       if (fixture) await fixture.close()
       await manager.shutdown()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports)("refuses a declared consequential MCP tool on a call, where no one can be asked (ourostack/ouroboros#1694): %s", async (transport) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-consequential-"))
+    const entry = (name: string, ax: Record<string, unknown>) => ({ type: "function", function: { name, description: "Does it.", parameters: { type: "object", properties: { item: { type: "string" } }, required: ["item"], additionalProperties: false } }, ax })
+    const card = { group: "turn-shop", when: "Pick this for the list.", errors: [] }
+    const declared = parseDeclaredTools({ tools: [
+      entry("share_list", { ...card, effect: "consequential", confirm: "Share the list with everyone?" }),
+      entry("add_item", { ...card, effect: "write" }),
+    ] }).tools
+    const served = (name: string) => ({ name, description: "served", inputSchema: { type: "object", properties: { item: { type: "string" } } } })
+    let view: mcp.McpTurnView | undefined
+    vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async (owner) => {
+      view ??= makeMcpView([{ server: "shop", tools: [served("share_list"), served("add_item")], declared } as never], undefined, undefined, owner)
+      return view
+    })
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.publications().flat().map((tool) => tool.name)).toContain("shop_share_list"), { timeout: 5_000 })
+      expect(await fixture.call("shop_share_list", { item: "milk" }, "share-on-call")).toContain("approval coordinator is unavailable")
+      expect(view!.manager.callTool).not.toHaveBeenCalled()
+      // A declared write runs on a call as before.
+      expect(await fixture.call("shop_add_item", { item: "eggs" }, "add-on-call")).toBe("ok")
+      expect(view!.manager.callTool).toHaveBeenCalledOnce()
+    } finally {
+      if (fixture) await fixture.close()
       vi.restoreAllMocks()
       await fs.rm(outputDir, { recursive: true, force: true })
     }

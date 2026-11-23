@@ -11,7 +11,7 @@ import { getChannelCapabilities, FriendResolver, FileFriendStore } from "@ouro.b
 import type { FriendRecord, IdentityProvider, ResolvedContext } from "@ouro.bot/friends"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
 import { getSharedMcpManager, type McpOwner, type McpTurnView } from "../../repertoire/mcp-manager"
-import { execTool, selectToolsForChannel } from "../../repertoire/tools"
+import { execTool, rejectionWithoutApprover, selectToolsForChannel } from "../../repertoire/tools"
 import type { ToolContext, ToolSelection } from "../../repertoire/tools-base"
 import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 import type { JsonObject } from "../../heart/approval-store"
@@ -2876,7 +2876,8 @@ export class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStream
         message: "OpenAI Realtime voice tool call started",
         meta: { agentName: this.options.agentName, callSid: safeSegment(this.callSid), tool: name },
       })
-      output = await execTool(name, args, this.toolContext)
+      // A call has no one to approve a protected tool, so it never runs here.
+      output = await rejectionWithoutApprover(name, args, this.toolContext) ?? await execTool(name, args, this.toolContext)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_twilio_realtime_tool_end",
@@ -3998,7 +3999,8 @@ class OpenAISipPhoneSession {
         message: "OpenAI SIP voice tool call started",
         meta: { agentName: this.options.agentName, callId: safeSegment(this.metadata.callId), tool: name },
       })
-      output = await execTool(name, args, this.toolContext)
+      // A call has no one to approve a protected tool, so it never runs here.
+      output = await rejectionWithoutApprover(name, args, this.toolContext) ?? await execTool(name, args, this.toolContext)
       emitNervesEvent({
         component: "senses",
         event: "senses.voice_openai_sip_tool_end",
