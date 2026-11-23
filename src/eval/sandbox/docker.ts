@@ -219,13 +219,16 @@ type GuestTurns = Array<{ start: number } & FollowUp>
 const isTurns = (value: unknown): value is GuestTurns => Array.isArray(value) && value.every((turn: Record<string, unknown> | null) => typeof turn === "object" && turn !== null
   && Number.isInteger(turn.start) && typeof turn.finalReply === "string" && typeof turn.outcome === "string" && Number.isInteger(turn.calls))
 
-function guestTurn(outcome: GuestOutcome): GuestTurn & { turns?: GuestTurns } {
+function guestTurn(outcome: GuestOutcome): GuestTurn & { turns?: GuestTurns; grade?: unknown } {
   if (!outcome.ok) return { timeline: [], finalReply: "", outcome: `sandbox-error: ${outcome.error}` }
-  const result = outcome.result as Partial<GuestTurn> & { turns?: unknown } | null
+  const result = outcome.result as Partial<GuestTurn> & { turns?: unknown; grade?: unknown } | null
   if (!result || !Array.isArray(result.timeline) || typeof result.finalReply !== "string" || typeof result.outcome !== "string" || (result.turns !== undefined && !isTurns(result.turns))) {
     return { timeline: [], finalReply: "", outcome: "sandbox-error: the guest's result is malformed" }
   }
-  return { timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome, ...(result.turns ? { turns: result.turns } : {}) }
+  return {
+    timeline: result.timeline, finalReply: result.finalReply, outcome: result.outcome, ...(result.turns ? { turns: result.turns } : {}),
+    ...(result.grade !== undefined ? { grade: result.grade } : {}),
+  }
 }
 
 /** The job's part of a merged timeline and the later turns, by where the guest said each turn starts. */
@@ -241,7 +244,7 @@ export function splitTurns(observation: Observation, turns: GuestTurns | undefin
   }
 }
 
-export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[] }> {
+export async function runSandboxed(input: SandboxInput): Promise<Observation & { gaps: string[]; followUps?: FollowUp[]; grade?: unknown }> {
   const docker = input.docker ?? dockerCli()
   const images = input.images ?? { agent: SANDBOX_IMAGE, household: HOUSEHOLD_IMAGE }
   const runId = `${EVAL_RUN_PREFIX}${crypto.randomBytes(4).toString("hex")}`
@@ -360,7 +363,11 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
     })
     const { observation, followUps } = splitTurns(assembled, turn.turns)
     emitNervesEvent({ component: "eval", event: "eval.sandbox_run_end", message: "finished a sandboxed eval run", meta: { caseId: input.case.id, runId, outcome: observation.outcome } })
-    return { ...observation, gaps: [...gaps, ...(input.guest ? [] : DECLARED_GAPS)], ...(input.guest ? { followUps } : {}) }
+    // A guest's own grade (a product scored in the container) goes back as it came, only from a turn read back whole.
+    return {
+      ...observation, gaps: [...gaps, ...(input.guest ? [] : DECLARED_GAPS)], ...(input.guest ? { followUps } : {}),
+      ...(input.guest && turn.grade !== undefined ? { grade: turn.grade } : {}),
+    }
   } catch (error) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.sandbox_run_error", message: "a sandboxed eval run failed", meta: { caseId: input.case.id, runId, error: (error as Error).message } })
     throw error

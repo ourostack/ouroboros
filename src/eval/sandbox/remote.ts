@@ -13,7 +13,8 @@ import type { Case, Observation } from "../domain/case"
 import { createProxyRuntime, createStreamChannel, serveProxyRuntime, type GuestOutcome, type ProxyMessage } from "../transport/provider-proxy"
 import type { FollowUp, InterviewGuestEntry, SandboxImages } from "./docker"
 
-export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[] }
+/** `grade` is a guest's own grading, for a product scored in the container; the sandbox passes it on unread. */
+export type SandboxRun = Observation & { gaps: string[]; followUps?: FollowUp[]; grade?: unknown }
 /**
  * Where the job's files are on the remote host, which images there to run (the eval's own tags by default), and the
  * token of the host lock this command holds there, if any.
