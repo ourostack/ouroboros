@@ -794,6 +794,36 @@ describe("Telegram sense", () => {
     }
   })
 
+  it("starts the approval relay door beside the taps and stops it with the poll", async () => {
+    const root = fs.mkdtempSync("/tmp/tgr-")
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(), relayDeny: vi.fn(),
+    }
+    const door = { start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) }
+    const createDoor = vi.fn(() => door)
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
+      _toolContext: {} as never, migrateIdentity: async () => undefined,
+      api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }),
+      approvalRuntime: approvalRuntime as never,
+      _createInteractiveControl: (() => ({ socketPath: path.join(root, "unused.sock"), start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) })) as never,
+      _createApprovalRelayDoor: createDoor as never,
+    })
+    try {
+      expect(createDoor).toHaveBeenCalledWith({ agentName: "sanctuary", agentRoot: root, runtime: approvalRuntime })
+      await app.run(new AbortController().signal)
+      expect(door.start).toHaveBeenCalledOnce()
+      expect(door.stop).toHaveBeenCalled()
+    } finally {
+      await app.stop()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("records authenticated callback recovery settlement in the live chained ledger", async () => {
     const root = fs.mkdtempSync("/tmp/tgr-")
     const scenarioHandleDigest = "a".repeat(64)

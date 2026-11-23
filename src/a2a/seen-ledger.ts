@@ -77,8 +77,10 @@ export class FileA2ASeenLedger implements DurableSeenLedger {
   private readonly now: () => number
   private lastPrunedAt: number
 
-  constructor(agentRoot: string, options: { now?: () => number } = {}) {
-    this.dir = path.join(agentRoot, "state", "a2a", "seen")
+  /** `folder`: where under the bundle the ledger lives, `state/a2a/seen` by default. A process that opens envelopes of its
+   * own (the Telegram sense's approval relay) keeps its own ledger, so two processes never write one. */
+  constructor(agentRoot: string, options: { now?: () => number; folder?: readonly string[] } = {}) {
+    this.dir = path.join(agentRoot, ...(options.folder ?? ["state", "a2a", "seen"]))
     this.now = options.now ?? Date.now
     fs.mkdirSync(this.dir, { recursive: true })
     this.lastPrunedAt = this.now()

@@ -29,6 +29,7 @@ import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
+import { createApprovalRelayDoor, type ApprovalRelayDoor } from "./telegram-approval-relay"
 import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
@@ -532,6 +533,7 @@ export interface CreateTelegramSenseAppOptions {
   _runTurn?: TelegramTurnRunner
   /** Test seam for avoiding a real Unix control socket in lifecycle tests. */
   _createInteractiveControl?: typeof createSanctuaryInteractiveControl
+  _createApprovalRelayDoor?: typeof createApprovalRelayDoor
   /** Revalidates relationship authority immediately before each Telegram effect. */
   authorizeEffect?: (input: TelegramEffectAuthorizationInput) => TelegramEffectAuthorization | Promise<TelegramEffectAuthorization>
   /** Installs the stranger quarantine/admission path. Production supplies this from Friends. */
@@ -1020,6 +1022,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
   let approvalTransport: TelegramApprovalTransport | undefined
   let interactiveControl: ReturnType<typeof createSanctuaryInteractiveControl> | undefined
+  let approvalRelayDoor: ApprovalRelayDoor | undefined
   try {
     toolContext = useSanctuaryRuntime ? (options._toolContext ?? createSanctuaryToolContext(options.agentName)) : undefined
     if (toolContext && options.telegramContactManager) (toolContext as import("../repertoire/tools-base").ToolContext).telegramContactManager = options.telegramContactManager
@@ -1115,6 +1118,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         authorizedChatId,
         runRequest: runWithAcceptanceAuditOwner,
       })
+      : undefined
+    // Ari's deny relayed through his primary agent is decided here, beside the taps, under the same lock.
+    approvalRelayDoor = useSanctuaryRuntime && approvalRuntime
+      ? (options._createApprovalRelayDoor ?? createApprovalRelayDoor)({ agentName: options.agentName, agentRoot, runtime: approvalRuntime })
       : undefined
   } catch (error) {
     releaseAcceptanceAudit(error)
@@ -2040,6 +2047,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     async () => { await runPromise?.catch(() => undefined) },
     async () => { await Promise.all([...approvalReconciliationsInFlight]) },
     async () => { await interactiveControl?.stop() },
+    async () => { await approvalRelayDoor?.stop() },
     () => api.stop(),
     () => approvalRuntime?.close(),
     () => effectJournal?.close(),
@@ -2074,6 +2082,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await rootHostRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
+        await runWithAcceptanceAuditOwner(async () => { await approvalRelayDoor?.start() })
         try {
           await runWithAcceptanceAuditOwner(async () => { await approvalTransport?.reconcileExpired() })
         } catch (error) {
@@ -2121,6 +2130,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             })
           }
           await interactiveControl?.stop()
+          await approvalRelayDoor?.stop()
         }
       })()
       return runPromise
