@@ -61,8 +61,10 @@ export async function forwardApprovalAnswer(input: { socketPath: string; message
     socket.on("close", () => finish(RELAY_UNAVAILABLE))
     socket.on("error", () => finish(RELAY_UNAVAILABLE))
   })
+  // The level is worked out first: the nerves source scanner reads a call's object only up to its first "})".
+  const level = reply === RELAY_UNAVAILABLE || reply === RELAY_TIMED_OUT ? "warn" as const : "info" as const
   emitNervesEvent({
-    ...(reply === RELAY_UNAVAILABLE || reply === RELAY_TIMED_OUT ? { level: "warn" as const } : {}),
+    level,
     component: "channels",
     event: "channel.a2a_approval_answer_forwarded",
     message: "forwarded a relayed approval answer to the Telegram sense",
