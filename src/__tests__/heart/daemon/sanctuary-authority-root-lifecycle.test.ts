@@ -29,7 +29,7 @@ const rollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-exe
 // A bare "timed out in 5000ms" names no phase, so at 4.5s (inside vitest's unchanged 5s limit) this writes the
 // phase marks and the worst event-loop stall seen so far to stderr, then keeps awaiting the body: the test still
 // owns its work, and its budget is unchanged. It records bounded observations only: it cannot attribute a cause
-// and cannot fire if the event loop is blocked synchronously.
+// and cannot fire if the event loop is blocked synchronously; in that case the completion report below says so.
 async function withPhaseReport<T>(label: string, body: (mark: (phase: string) => void) => Promise<T>): Promise<T> {
   const started = performance.now()
   const marks: string[] = []
@@ -37,10 +37,18 @@ async function withPhaseReport<T>(label: string, body: (mark: (phase: string) =>
   let worstStall = 0
   let last = performance.now()
   const sampler = setInterval(() => { const now = performance.now(); worstStall = Math.max(worstStall, now - last - 25); last = now }, 25)
+  let fired = false
   const watchdog = setTimeout(() => {
+    fired = true
     process.stderr.write(`sanctuary lifecycle case still running at 4500ms (${label}); worst event-loop stall ${Math.round(worstStall)}ms; last phases: ${marks.slice(-6).join(", ") || "none"}\n`)
   }, 4_500)
-  try { return await body(mark) } finally { clearInterval(sampler); clearTimeout(watchdog) }
+  try { return await body(mark) } finally {
+    clearInterval(sampler); clearTimeout(watchdog)
+    // The watchdog timer cannot run while the loop is blocked, so a run that blocked and then finished (or failed)
+    // late leaves no 4500ms line; this one is written from the body's own completion instead.
+    const elapsed = Math.round(performance.now() - started)
+    if (elapsed > 4_500 && !fired) process.stderr.write(`sanctuary lifecycle case finished late with no 4500ms report (${label}): ${elapsed}ms; worst event-loop stall ${Math.round(worstStall)}ms; phases: ${marks.join(", ") || "none"}\n`)
+  }
 }
 function alterDocker(mutate: (args: string[], value: string) => string) {
   const original = host.exec.getMockImplementation()!

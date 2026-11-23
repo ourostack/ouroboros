@@ -575,6 +575,8 @@ describe("mailbox direct reads", () => {
     writeAgentConfig(agentRoot)
     scaffoldDeskRecord(agentRoot)
     writeFlightRecorderResume(agentRoot, readyResume())
+    const started = performance.now()
+    const phases: string[] = []
     try {
       for (let index = 1; index <= 22; index += 1) {
         await refreshContextLossSentinel("slugger", agentRoot, {
@@ -585,6 +587,7 @@ describe("mailbox direct reads", () => {
           daemonHealthResults: [],
           gitStatus: () => ({ ok: true, porcelain: "" }),
         })
+        if (index % 5 === 0 || index === 22) phases.push(`refresh-${index}@${Math.round(performance.now() - started)}ms`)
       }
       const paths = contextLossSentinelPaths(agentRoot)
       const pinnedMtime = new Date("2026-06-09T20:11:00.000Z")
@@ -611,7 +614,10 @@ describe("mailbox direct reads", () => {
         Array.from({ length: 20 }, (_, index) => `sentinel-mailbox-${String(index + 3).padStart(2, "0")}`),
       )
       expect(fileStats(paths.rootDir)).toEqual(before)
+      phases.push(`read@${Math.round(performance.now() - started)}ms`)
     } finally {
+      // Observation only: a bare 5s timeout names no phase, so a slow run records where its time went.
+      if (performance.now() - started > 2_000) process.stderr.write(`mailbox sentinel read case slow (${Math.round(performance.now() - started)}ms): ${phases.join(", ") || "none"}\n`)
       fs.rmSync(bundlesRoot, { recursive: true, force: true })
     }
   })
