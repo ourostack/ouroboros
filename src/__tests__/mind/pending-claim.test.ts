@@ -197,6 +197,40 @@ describe("claimPending", () => {
     expect(suffixes(dir)).toEqual([".json"])
   })
 
+  it("puts back a claim held at a failing exit as a counted try", () => {
+    const dir = pendingDir()
+    queuePendingMessage(dir, message("held at a crash exit", 1))
+    const claim = claimPending(dir)
+    expect(claim.messages).toHaveLength(1)
+
+    // An uncaught exception exits with code 1, and the messages may be why.
+    releaseHeldPendingClaimsOnExit(1)
+
+    expect(suffixes(dir)).toEqual([".json"])
+    expect(readStored(dir)).toMatchObject({ content: "held at a crash exit", failedTries: 1 })
+    claim.release({ failed: true })
+    expect(readStored(dir)).toMatchObject({ failedTries: 1 })
+  })
+
+  it("never reads a settled message again in this process when its file could not be deleted, and deletes it later", () => {
+    const dir = pendingDir()
+    queuePendingMessage(dir, message("acted on", 1))
+    const claim = claimPending(dir)
+    expect(claim.messages).toHaveLength(1)
+    fs.chmodSync(dir, 0o500)
+    const events = vi.spyOn(nervesRuntime, "emitNervesEvent")
+
+    claim.settle()
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "mind.pending_settle_error" }))
+    expect(suffixes(dir)).toEqual([".json.claimed"])
+    // Read again, it would repeat whatever the turn's tool did.
+    expect(claimPending(dir).messages).toEqual([])
+
+    fs.chmodSync(dir, 0o700)
+    expect(claimPending(dir).messages).toEqual([])
+    expect(fs.readdirSync(dir)).toEqual([])
+  })
+
   it("claims nothing when the folder cannot be listed", () => {
     const dir = pendingDir()
     const notAFolder = path.join(dir, "file")

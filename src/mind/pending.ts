@@ -5,6 +5,7 @@ import { getAgentRoot } from "../heart/identity"
 import { writeJsonAtomicSync } from "../heart/atomic-file"
 import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
+import { markTerminationGuard, signalHandlersBesidesGuards } from "../heart/termination-guard"
 
 export interface DelegatedFrom {
   friendId: string
@@ -50,17 +51,80 @@ const CLAIMED_SUFFIX = ".json.claimed"
 /** What drainPending renames a message to while it reads it; a crash can leave one behind. */
 const DRAIN_PROCESSING_SUFFIX = ".json.processing"
 
-/** Messages a turn in this process has claimed and not yet settled or released: claimed path to its unclaimed path. */
-const heldClaims = new Map<string, string>()
+interface HeldClaim {
+  unclaimedPath: string
+  message: PendingMessage
+  failedTries: number
+}
+
+/** Messages a turn in this process has claimed and not yet settled or released, by claimed path. */
+const heldClaims = new Map<string, HeldClaim>()
+
+/** Claimed paths a turn in this process settled but could not delete: never read again, deleted when possible. */
+const settledClaims = new Set<string>()
+
+/** Put a claim back for the next turn; `counted` writes the try against it first, so a crash between counts it once. */
+function putBack(claimedPath: string, held: HeldClaim, counted: boolean): void {
+  if (counted) {
+    writeJsonAtomicSync(held.unclaimedPath, { ...held.message, failedTries: held.failedTries + 1 })
+    fs.unlinkSync(claimedPath)
+  } else {
+    fs.renameSync(claimedPath, held.unclaimedPath)
+  }
+}
 
 /**
- * Puts back every claim this process still holds, without counting a try: an exit (a shutdown, process.exit) is
- * not the messages' fault. Only a crash that skips exit handlers leaves claims behind to be counted.
+ * Puts back every claim this process still holds at exit. A clean exit (a shutdown, process.exit(0)) is not the
+ * messages' fault, so it counts no try; a failing exit (an uncaught exception exits 1) may be, so it counts one.
+ * A crash that skips exit handlers leaves its claims behind, and the next claim counts them.
  */
-export function releaseHeldPendingClaimsOnExit(): void {
-  for (const [claimedPath, unclaimedPath] of heldClaims) {
+export function releaseHeldPendingClaimsOnExit(code: number = 0): void {
+  for (const [claimedPath, held] of heldClaims) {
     heldClaims.delete(claimedPath)
-    try { fs.renameSync(claimedPath, unclaimedPath) } catch { /* the next claim reads it as left by a crash */ }
+    try { putBack(claimedPath, held, code !== 0) } catch { /* the next claim reads it as left by a crash */ }
+  }
+}
+
+const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const
+type StopSignal = (typeof STOP_SIGNALS)[number]
+const stopListeners: Record<StopSignal, () => void> = {
+  SIGTERM: markTerminationGuard(() => onStopSignal("SIGTERM")),
+  SIGINT: markTerminationGuard(() => onStopSignal("SIGINT")),
+}
+
+/**
+ * A signal's default action ends the process without running exit handlers, which would leave every held claim to
+ * be counted as a crash. When nothing else handles the signal, put the claims back uncounted and re-raise it. When
+ * the process has its own shutdown, leave the claims to it: its turns may still settle them, and its exit puts back
+ * the rest.
+ */
+function onStopSignal(signal: StopSignal): void {
+  if (signalHandlersBesidesGuards(signal).length > 0) return
+  releaseHeldPendingClaimsOnExit(0)
+  for (const each of STOP_SIGNALS) process.removeListener(each, stopListeners[each])
+  /* v8 ignore next -- re-raising ends the process; pending-signals.test.ts covers it in a child process @preserve */
+  process.kill(process.pid, signal)
+}
+
+function installExitHandlers(): void {
+  if (process.listeners("exit").includes(releaseHeldPendingClaimsOnExit)) return
+  process.on("exit", releaseHeldPendingClaimsOnExit)
+  for (const signal of STOP_SIGNALS) process.prependListener(signal, stopListeners[signal])
+}
+
+/** Delete a settled message's files; true once nothing of it is left. */
+function deleteSettled(pendingDir: string, claimedPath: string, stem: string): boolean {
+  try {
+    fs.rmSync(claimedPath, { force: true })
+    // A copy queued again while the turn held it is the same message.
+    fs.rmSync(path.join(pendingDir, `${stem}.json`), { force: true })
+    fs.rmSync(path.join(pendingDir, `${stem}${DRAIN_PROCESSING_SUFFIX}`), { force: true })
+    settledClaims.delete(claimedPath)
+    return true
+  } catch (error) {
+    settledClaims.add(claimedPath)
+    emitNervesEvent({ level: "warn", event: "mind.pending_settle_error", component: "mind", message: "could not delete a settled pending message; this process will not read it again, and deletes it later", meta: { pendingDir, error: errorMessage(error) } })
+    return false
   }
 }
 
@@ -68,7 +132,8 @@ export function releaseHeldPendingClaimsOnExit(): void {
 const UNREADABLE_GRACE_MS = 60_000
 
 function isUnheldClaim(pendingDir: string, name: string): boolean {
-  return name.endsWith(CLAIMED_SUFFIX) && !heldClaims.has(path.join(pendingDir, name))
+  const claimedPath = path.join(pendingDir, name)
+  return name.endsWith(CLAIMED_SUFFIX) && !heldClaims.has(claimedPath) && !settledClaims.has(claimedPath)
 }
 
 export function hasPendingMessages(pendingDir: string): boolean {
@@ -195,21 +260,16 @@ function pendingStem(name: string): string {
  * MAX_PENDING_FAILED_TRIES failed tries the message is set aside as `.json.failed`, so it cannot fail every later turn.
  */
 export function claimPending(pendingDir: string): PendingClaim {
-  if (!process.listeners("exit").includes(releaseHeldPendingClaimsOnExit)) process.on("exit", releaseHeldPendingClaimsOnExit)
+  installExitHandlers()
   let held: HeldMessage[] = []
   const releaseHeld = (failed: boolean): void => {
     for (const entry of held) {
+      const claim = heldClaims.get(entry.claimedPath)
       // Already put back by the exit hook.
-      if (!heldClaims.delete(entry.claimedPath)) continue
-      const unclaimedPath = path.join(pendingDir, `${entry.stem}.json`)
+      if (!claim) continue
+      heldClaims.delete(entry.claimedPath)
       try {
-        // The counted copy lands before the claim goes, so a crash between the two counts this try once, not twice.
-        if (failed) {
-          writeJsonAtomicSync(unclaimedPath, { ...entry.message, failedTries: entry.failedTries + 1 })
-          fs.unlinkSync(entry.claimedPath)
-        } else {
-          fs.renameSync(entry.claimedPath, unclaimedPath)
-        }
+        putBack(entry.claimedPath, claim, failed)
       } catch (error) {
         emitNervesEvent({ level: "warn", event: "mind.pending_release_error", component: "mind", message: "could not put a claimed pending message back; the next turn reads it as left by a crash", meta: { pendingDir, error: errorMessage(error) } })
       }
@@ -231,6 +291,11 @@ export function claimPending(pendingDir: string): PendingClaim {
       const claimedPath = path.join(pendingDir, `${stem}${CLAIMED_SUFFIX}`)
       // Held by a turn in this process, or a fresh copy of a message that is.
       if (heldClaims.has(claimedPath)) continue
+      // Settled here already: what its turn did must not happen again. Finish deleting it.
+      if (settledClaims.has(claimedPath)) {
+        deleteSettled(pendingDir, claimedPath, stem)
+        continue
+      }
       const leftByCrash = !name.endsWith(".json")
       if (name !== `${stem}${CLAIMED_SUFFIX}`) {
         // A copy of a crash leftover is taken under the leftover's own name.
@@ -278,7 +343,7 @@ export function claimPending(pendingDir: string): PendingClaim {
           // The count did not land, so the next claim counts this try again; better than not reading it now.
         }
       }
-      heldClaims.set(claimedPath, path.join(pendingDir, `${stem}.json`))
+      heldClaims.set(claimedPath, { unclaimedPath: path.join(pendingDir, `${stem}.json`), message, failedTries })
       held.push({ claimedPath, stem, message, failedTries })
     }
     emitNervesEvent({ event: "mind.pending_claimed", component: "mind", message: "pending messages claimed for a turn", meta: { pendingDir, count: held.length } })
@@ -294,14 +359,7 @@ export function claimPending(pendingDir: string): PendingClaim {
       held = held.filter((entry) => !done.includes(entry))
       for (const entry of done) {
         if (!heldClaims.delete(entry.claimedPath)) continue
-        try {
-          fs.unlinkSync(entry.claimedPath)
-          // A copy queued again while the turn held it is the same message.
-          fs.rmSync(path.join(pendingDir, `${entry.stem}.json`), { force: true })
-          fs.rmSync(path.join(pendingDir, `${entry.stem}${DRAIN_PROCESSING_SUFFIX}`), { force: true })
-        } catch (error) {
-          emitNervesEvent({ level: "warn", event: "mind.pending_settle_error", component: "mind", message: "could not delete a settled pending message; the next turn reads it again", meta: { pendingDir, error: errorMessage(error) } })
-        }
+        deleteSettled(pendingDir, entry.claimedPath, entry.stem)
       }
     },
     release(options) {
