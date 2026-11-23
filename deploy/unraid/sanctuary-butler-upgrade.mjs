@@ -1337,6 +1337,10 @@ export async function checkTelegramBeforePause({ journalExists, probe = telegram
 
 async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
+  const hostLock = await loadHostLock()
+  const lockHeld = hostLockWait("the upgrade", { lockModule: hostLock })
+  if (lockHeld) fail(`${lockHeld}; nothing was changed`)
+  const rollbackLock = () => { const held = hostLockWait("the rollback", { lockModule: hostLock }); if (held) fail(`${held}. The Butler is left on the failed upgrade; once the lock is free, run: node ${lifecycle} upgrade-rollback`) }
   if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
   const gated = !rehearse && !noGate
   if (noGate && !rehearse) console.log("\n!! --no-gate: this upgrade will NOT be replay-gated or auto-rolled-back on a behavioural regression")
@@ -1385,6 +1389,7 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
   const planned = Boolean(failure && rehearse && reason.includes(`rehearsal stopped after ${rehearse}`))
   if (failure) {
     console.log(`\n!! ${planned ? "rehearsal stopped as planned" : "upgrade FAILED"}: ${reason}\n!! rolling back to the predecessor`)
+    rollbackLock()
     try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
     catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
   } else if (!gated) { pinTemplate(version); pruneButlerImages() }
@@ -1424,6 +1429,7 @@ async function upgrade(version, rehearse, { noGate = false, plant } = {}) {
         },
         rollback: () => {
           pauseSupervision()
+          rollbackLock()
           try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
           catch (e) { fail(ROLLBACK_FAILED(e, lifecycle)) }
           resumeSupervision()
@@ -1482,6 +1488,37 @@ function verify(withGate = false) {
 }
 
 function fail(m) { console.error(`\nREFUSING: ${m}`); process.exit(1) }
+
+// ---- host lock --------------------------------------------------------------
+// Eval runs hold the host lock (ouro-host-lock.mjs, staged beside this script by butler:ship) while they use this
+// host's Docker; butler:ship holds it for the whole ship and passes its token in OURO_HOST_LOCK_TOKEN. The upgrade
+// and each of its rollbacks wait while anyone else holds it, and never run past it: on 2026-11-23 an eval container
+// vanishing mid-upgrade failed the upgrade and its rollback and left the Butler down (#1760).
+export const HOST_LOCK_DIR = "/var/lock/ouro-host.d"
+
+export async function loadHostLock(url = new URL("./ouro-host-lock.mjs", import.meta.url)) {
+  try { return await import(url.href) } catch { return null }
+}
+
+/** null when the way is clear; otherwise why `what` must not run. Waits up to waitMs while someone else holds the lock. */
+export function hostLockWait(what, {
+  lockModule, dir = HOST_LOCK_DIR, token = process.env.OURO_HOST_LOCK_TOKEN,
+  waitMs = Number(process.env.OURO_HOST_LOCK_WAIT_S || 30 * 60) * 1000, pollMs = 15_000,
+  now = Date.now, sleep = (ms) => sh("/bin/sleep", [String(ms / 1000)]), log = console.log,
+} = {}) {
+  if (!existsSync(dir)) return null
+  if (!lockModule) return `the host lock ${dir} exists and ouro-host-lock.mjs is not beside this script to read it, so ${what} did not run`
+  const start = now()
+  let said = false
+  for (;;) {
+    const owner = lockModule.blocker(dir, token, { now })
+    if (!owner) return null
+    const holder = lockModule.describeOwner(owner)
+    if (now() - start >= waitMs) return `the host lock is held by ${holder}, so ${what} did not run`
+    if (!said) { log(`  waiting: the host lock is held by ${holder}; ${what} waits for it`); said = true }
+    sleep(pollMs)
+  }
+}
 
 // ---- entry ----------------------------------------------------------------
 
