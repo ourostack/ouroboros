@@ -70,6 +70,14 @@ function runSides(options) {
   return [{ name: "baseline", tarball: options.baselineTarball, root: options.baselineRoot, out: options.baselineOut }, current]
 }
 
+/** `<dir>/daemon.sock`, or an error when it is longer than a Unix socket path may be (103 bytes on macOS). */
+function unixSocketPath(dir) {
+  const socket = path.join(dir, "daemon.sock")
+  const bytes = Buffer.byteLength(socket)
+  if (bytes > 103) throw new Error(`socket path is ${bytes} bytes, more than a Unix socket allows (103): ${socket}`)
+  return socket
+}
+
 function median(values) {
   const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b)
   if (sorted.length === 0) return null
@@ -445,7 +453,7 @@ const EXTRA_SOCKET_TAKES = 2
 async function takeTimeToSocket(root, workDir, index) {
   const home = path.join(workDir, `daemon-take-${index}`)
   fs.mkdirSync(home, { recursive: true })
-  const socket = path.join(home, "daemon.sock")
+  const socket = unixSocketPath(home)
   const child = spawn(process.execPath, [path.join(root, "dist", "heart", "daemon", "daemon-entry.js"), "--socket", socket], {
     cwd: home,
     env: benchEnv({ HOME: home }),
@@ -463,7 +471,7 @@ async function takeTimeToSocket(root, workDir, index) {
 async function measureIdleDaemon(root, workDir, idleSeconds) {
   const home = path.join(workDir, "daemon-home")
   fs.mkdirSync(home, { recursive: true })
-  const socket = path.join(workDir, "daemon.sock")
+  const socket = unixSocketPath(workDir)
   const out = path.join(workDir, "daemon.jsonl")
   const started = Date.now()
   const child = spawn(process.execPath, [path.join(root, "dist", "heart", "daemon", "daemon-entry.js"), "--socket", socket], {
@@ -706,7 +714,7 @@ async function measureStack(root, workDir, options) {
     try { return fs.readFileSync(`${statePath}.calls`, "utf8").split("\n").filter(Boolean).length } catch { return 0 }
   }
 
-  const socket = path.join(stackDir, "daemon.sock")
+  const socket = unixSocketPath(stackDir)
   const pidFile = path.join(stackDir, "daemon.pid")
   const out = path.join(stackDir, "stack.jsonl")
   const env = benchEnv({
@@ -803,7 +811,8 @@ async function measureStack(root, workDir, options) {
 
 async function run(options) {
   const sides = runSides(options).map((side) => {
-    const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), `ouro-edge-${side.name}-`))
+    // No side name in the path: a macOS temp dir leaves little room under the Unix socket path limit.
+    const workDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ouro-edge-"))
     const result = { schemaVersion: 1, at: new Date().toISOString(), host: hostInfo(options), errors: [] }
     let root = side.root ? path.resolve(side.root) : null
     if (side.tarball) {
@@ -841,7 +850,7 @@ async function run(options) {
 
   for (const side of sides) {
     fs.writeFileSync(side.out, `${JSON.stringify(side.result, null, 2)}\n`)
-    process.stderr.write(`edge-benchmark: wrote ${side.out} (work dir ${side.workDir})\n`)
+    process.stderr.write(`edge-benchmark: wrote the ${side.name} result to ${side.out} (work dir ${side.workDir})\n`)
   }
   return sides.at(-1).result
 }
@@ -873,4 +882,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { parseArgs, interleaveOrder, runSides, measureCli, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
+module.exports = { parseArgs, interleaveOrder, runSides, measureCli, unixSocketPath, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }

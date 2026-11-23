@@ -199,6 +199,13 @@ describe("edge-benchmark same-runner baseline", () => {
     return root
   }
 
+  it("refuses a socket path too long for macOS, instead of waiting two minutes for a socket that can't open", () => {
+    // A macOS runner's temp dir is 57 characters; a side's name in the work dir pushed a take's socket to 108 (run 45222427891).
+    const macTmp = "/private/var/folders/9d/l02zfgrs7c16twd3wbpdmhkc0000gn/T"
+    expect(bench.unixSocketPath(`${macTmp}/ouro-edge-NxAnQk/daemon-take-1`)).toBe(`${macTmp}/ouro-edge-NxAnQk/daemon-take-1/daemon.sock`)
+    expect(() => bench.unixSocketPath(`${macTmp}/ouro-edge-baseline-NxAnQk/daemon-take-1`)).toThrow("socket path is 108 bytes")
+  })
+
   it("alternates which side goes first, round by round", () => {
     expect(bench.interleaveOrder(0, 2)).toEqual([0, 1])
     expect(bench.interleaveOrder(1, 2)).toEqual([1, 0])
