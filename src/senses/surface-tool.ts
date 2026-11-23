@@ -4,7 +4,11 @@ import { emitNervesEvent } from "../nerves/runtime"
 // ── Routing result ───────────────────────────────────────────────
 
 export interface SurfaceRouteResult {
-  status: "delivered" | "queued" | "deferred" | "failed"
+  /**
+   * forwarded: handed to the machine that runs the sense, which sends it. deferred: not sent, saved for their next message.
+   * unconfirmed: the send failed partway and may have reached them, so nothing else is tried or saved.
+   */
+  status: "delivered" | "forwarded" | "unconfirmed" | "queued" | "deferred" | "failed"
   detail?: string
 }
 

@@ -19,6 +19,7 @@ describe("flow tool cards", () => {
       FLOW_TOOL_REFUSALS.settleHeldWork,
       FLOW_TOOL_REFUSALS.restHeldWork,
       FLOW_TOOL_REFUSALS.restFreshWork,
+      FLOW_TOOL_REFUSALS.restSurfaceNotSent("deferred — not sent now; saved for their next message. (code: surface-not-sent)"),
       FLOW_TOOL_REFUSALS.speakEmpty,
       FLOW_TOOL_REFUSALS.speakNotDelivered("boom"),
       FLOW_TOOL_REFUSALS.ponderCreateIncomplete,
@@ -31,6 +32,9 @@ describe("flow tool cards", () => {
       expect(codes.has(code!), text).toBe(true)
     }
     expect(FLOW_TOOL_REFUSALS.speakNotDelivered("boom")).toContain("speak delivery failed: boom.")
+    expect(FLOW_TOOL_REFUSALS.restSurfaceNotSent("deferred — not sent now; saved for their next message. (code: surface-not-sent)")).toBe(
+      "your surface this turn did not reach them: deferred — not sent now; saved for their next message. reach them another way now if the result names one, or rest again and it waits for their next message. (code: surface-not-sent)",
+    )
   })
 
   it("keeps settle's schema as it was", () => {

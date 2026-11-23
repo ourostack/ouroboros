@@ -1017,8 +1017,8 @@ describe("private-runtime-worker", () => {
           recipient: "ari",
           channel: "cli",
           reason: "status",
-          result: "queued",
-          rawStatus: "queued",
+          result: "delivered",
+          rawStatus: "delivered",
         })
         return { messages: [] }
       })
