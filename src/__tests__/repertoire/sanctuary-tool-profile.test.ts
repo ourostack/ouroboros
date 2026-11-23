@@ -27,7 +27,7 @@ const FILE_TOOLS = ["send_file"]
 // Added to the owner in v19 with the home tools; the agent peer gets fetch_url alone.
 const OWNER_ONLY_HOME_TOOLS = ["ls", "note", "diary_write"]
 // Owner v24 and agent peer v14: the prompt lists the owner's skills and says to load them with load_skill, so the owner has it. It reads
-// only the agent's own skill files, which the owner could already read with read_file.
+// skill markdown the owner could already read with read_file.
 const SKILL_TOOLS = ["load_skill"]
 const withoutMediaMcp = (names: string[]) => names.filter((name) => !SANCTUARY_MEDIA_MCP_TOOLS.includes(name as typeof SANCTUARY_MEDIA_MCP_TOOLS[number]))
 
