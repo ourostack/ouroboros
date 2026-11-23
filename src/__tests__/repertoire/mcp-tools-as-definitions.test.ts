@@ -104,7 +104,7 @@ describe("mcpToolsAsDefinitions", () => {
 
     expect(mgr.manager.callTool).toHaveBeenCalledWith(
       expect.objectContaining({ ...MCP_OWNER, server: "browser", rawName: "navigate", surfacedName: "browser_navigate" }),
-      { url: "https://example.com" }, MCP_OWNER,
+      { url: "https://example.com" }, MCP_OWNER, undefined,
     )
     expect(output).toBe("hello world")
   })
@@ -364,7 +364,7 @@ describe("mcpToolsAsDefinitions", () => {
       // mgr.callTool gets called with the un-prefixed name
       expect(mgr.manager.callTool).toHaveBeenCalledWith(
         expect.objectContaining({ ...MCP_OWNER, server: "desk", rawName: "task_create", source: "plugin" }),
-        {}, MCP_OWNER,
+        {}, MCP_OWNER, undefined,
       )
     })
 

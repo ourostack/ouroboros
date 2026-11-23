@@ -378,6 +378,10 @@ export interface ChannelCallbacks {
   onTextChunk(text: string): void;
   onReasoningChunk(text: string): void;
   onToolStart(name: string, args: Record<string, string>): void;
+  /** Called just before a call reaches its handler (or, for speak and ponder, its engine-side effect). A call
+   *  refused before then (bad arguments, a guard, no approval path) or a find_tools lookup gets onToolStart and
+   *  onToolEnd but never this, so a sense can tell a turn that acted from one that only tried to. */
+  onToolDispatch?(name: string): void;
   onToolEnd(name: string, summary: string, success: boolean): void;
   /** Called after each tool result is pushed to messages. Use for incremental session persistence. */
   onToolResult?(messages: OpenAI.ChatCompletionMessageParam[]): void;
@@ -624,6 +628,7 @@ function continuationCallbacks(callbacks: Partial<ChannelCallbacks>, text: { val
     },
     onReasoningChunk: callbacks.onReasoningChunk ?? noop,
     onToolStart: callbacks.onToolStart ?? noop,
+    ...(callbacks.onToolDispatch ? { onToolDispatch: callbacks.onToolDispatch } : {}),
     onToolEnd: callbacks.onToolEnd ?? noop,
     onError: callbacks.onError ?? noop,
     ...(callbacks.onClearText ? { onClearText: callbacks.onClearText } : {}),
@@ -2000,6 +2005,11 @@ export async function runAgent(
         selectCurrentTools,
       };
   const trustedToolContext = options?.toolContext || turnOrientationFrame || habitSession ? augmentedToolContext : undefined
+  // For one call: executeTool calls beforeHandler only once its guards pass, just before the handler runs.
+  const withDispatchNotice = (context: ToolContext, name: string): ToolContext => ({
+    ...context,
+    beforeHandler: () => callbacks.onToolDispatch?.(name),
+  })
   unresolvedHistoricalEffects = historicalFailedEffectsForExactRepeatedRequest(messages, toolSelection)
 
   // Rebase provider-owned turn state from canonical messages at user-turn start.
@@ -2653,10 +2663,11 @@ export async function runAgent(
           let terminalSucceeded = false
           try {
             if (options?.execTool && !relationship) {
+              callbacks.onToolDispatch?.(soleTerminalCall.name)
               terminalResult = await options.execTool(soleTerminalCall.name, terminalArgs, trustedToolContext)
               terminalSucceeded = true
             } else {
-              const execution = await executeTool(soleTerminalCall.name, terminalArgs, augmentedToolContext, options?.execTool)
+              const execution = await executeTool(soleTerminalCall.name, terminalArgs, withDispatchNotice(augmentedToolContext, soleTerminalCall.name), options?.execTool)
               terminalResult = "error" in execution
                 ? `error: ${execution.error instanceof Error ? execution.error.message : String(execution.error)}`
                 : execution.text
@@ -3092,6 +3103,7 @@ export async function runAgent(
               });
               continue;
             }
+            callbacks.onToolDispatch?.("speak");
             callbacks.onTextChunk(speakMessage);
             let speakDeliveryError: Error | null = null;
             try {
@@ -3129,6 +3141,7 @@ export async function runAgent(
             const parsedArgs = normalizeLegacyPonderArgs(parsePonderPayload(tc.arguments));
             const argSummary = summarizeArgs(tc.name, parsedArgs as Record<string, string>, toolSelection);
             callbacks.onToolStart(tc.name, parsedArgs as Record<string, string>);
+            callbacks.onToolDispatch?.(tc.name);
             let toolResult: string;
             let success = false;
 
@@ -3312,10 +3325,11 @@ export async function runAgent(
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
             if (options?.execTool && !relationship) {
               invoked = true
+              callbacks.onToolDispatch?.(tc.name)
               toolResult = await options.execTool(tc.name, args, withToolImageSink(trustedToolContext))
               success = true
             } else {
-              const execution = await executeTool(tc.name, args, withToolImageSink(executionToolContext), options?.execTool)
+              const execution = await executeTool(tc.name, args, withToolImageSink(withDispatchNotice(executionToolContext, tc.name)), options?.execTool)
               invoked = execution.kind !== "rejected_before_handler"
               success = execution.kind === "handler_succeeded"
               toolResult = "error" in execution ? `error: ${execution.error}` : execution.text

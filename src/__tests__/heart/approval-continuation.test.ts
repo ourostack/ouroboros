@@ -474,17 +474,21 @@ describe("same-loop approval continuation", () => {
         assistantMessage(),
         { role: "tool", tool_call_id: "call_restart", content: "restarted" },
       ])
+      // The sense hears when the resumed turn runs a handler, as it does in any turn.
+      expect(callbacks.onToolDispatch).toBe(dispatchNotice)
       callbacks.onTextChunk("calibre-web is back up")
       messages.push({ role: "assistant", content: "calibre-web is back up" })
       return { outcome: "settled" as const }
     })
     const persist = vi.fn()
     const deliver = vi.fn()
+    const dispatchNotice = vi.fn()
     const callbacks = {
       onTextChunk: vi.fn(),
       onClearText: vi.fn(),
       flushNow: vi.fn(),
       settleOutputMode: vi.fn(),
+      onToolDispatch: dispatchNotice,
     }
 
     const result = await resumeApprovalContinuation({

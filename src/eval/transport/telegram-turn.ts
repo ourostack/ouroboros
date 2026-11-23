@@ -29,15 +29,7 @@
  * message ids are fixed, so a second run on the same bundle fails. Bundle sync is on in `agent.json` and does
  * nothing only because the bundle is not a Git repository; a projection must not carry `.git`.
  *
- * Fidelity gaps:
- * - The message goes straight to the sense's message handler, skipping the long poll's update parsing, its user and
- *   chat filter and the inbox. Friend resolution and relationship authorization still run.
- * - The Sanctuary service answers (containers, storage, disks, media catalog) are synthetic and fixed; a restart and a
- *   download-queue resume are not simulated. The books tools are not covered by this context.
- * - The owner's prompt does not list `skills/`: the relationship prompt has no skills section and `load_skill` is not
- *   in the `sanctuary-owner` profile, so a skill file reaches the model only when the agent reads it with a tool.
- * - Replies are read back as text: Telegram's HTML is decoded, and a message with buttons is not part of the answer.
- *   Files sent with `send_file` appear only as the tool call.
+ * Fidelity gaps: `sandbox/declared-gaps.ts` lists them, so every report does.
  */
 import fs from "node:fs"
 import path from "node:path"

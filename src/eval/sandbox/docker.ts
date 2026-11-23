@@ -32,6 +32,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { Case, Observation, TraceCall } from "../domain/case"
 import { createStreamChannel, serveProxyRuntime, type GuestOutcome } from "../transport/provider-proxy"
 import { recordModelTraffic } from "../transport/telegram-turn"
+import { DECLARED_GAPS } from "./declared-gaps"
 import { projectBundle } from "./projection"
 import { assembleObservation, createdSince, readHouseholdState, SNAPSHOT_LIMITS, snapshotFiles, type GuestTurn, type HouseholdState } from "./readback"
 
@@ -309,7 +310,7 @@ export async function runSandboxed(input: SandboxInput): Promise<Observation & {
       ...(input.oracle ? { oracle: input.oracle } : {}),
     })
     emitNervesEvent({ component: "eval", event: "eval.sandbox_run_end", message: "finished a sandboxed eval run", meta: { caseId: input.case.id, runId, outcome: observation.outcome } })
-    return { ...observation, gaps }
+    return { ...observation, gaps: [...gaps, ...DECLARED_GAPS] }
   } catch (error) {
     emitNervesEvent({ component: "eval", level: "error", event: "eval.sandbox_run_error", message: "a sandboxed eval run failed", meta: { caseId: input.case.id, runId, error: (error as Error).message } })
     throw error
