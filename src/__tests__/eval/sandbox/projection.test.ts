@@ -125,6 +125,24 @@ describe("projectBundle", () => {
     expect(() => projectBundle({ bundleDir, seedBundleDir, include: [include], out })).toThrow(/cannot include/)
   })
 
+  it("leaves the bundle's MCP servers out of agent.json, so the sandbox starts none, and says which", () => {
+    write(bundleDir, "agent.json", JSON.stringify({ name: "sanctuary", mcpServers: { media: { command: "node" }, ouro_workbench: { command: "ouro" } } }))
+    const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["agent.json"], out })
+    expect(JSON.parse(fs.readFileSync(path.join(out, "agent.json"), "utf8"))).toEqual({ name: "sanctuary" })
+    expect(gaps).toContain("agent.json: its MCP servers (media, ouro_workbench) are left out; the sandbox starts no MCP server")
+  })
+
+  it.each([
+    ["no MCP servers", JSON.stringify({ name: "sanctuary", mcpServers: {} })],
+    ["MCP servers that are not a map", JSON.stringify({ name: "sanctuary", mcpServers: "none" })],
+    ["null", "null"],
+  ])("leaves an agent.json with %s as it is", (_what, text) => {
+    write(bundleDir, "agent.json", text)
+    const { gaps } = projectBundle({ bundleDir, seedBundleDir, include: ["agent.json"], out })
+    expect(fs.readFileSync(path.join(out, "agent.json"), "utf8")).toBe(text)
+    expect(gaps.join("\n")).not.toMatch(/MCP servers/)
+  })
+
   it("refuses an output folder that already exists", () => {
     fs.mkdirSync(out)
     expect(() => projectBundle({ bundleDir, seedBundleDir, include: ["agent.json"], out })).toThrow(/already exists/)
