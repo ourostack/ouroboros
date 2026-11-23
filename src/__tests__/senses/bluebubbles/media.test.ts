@@ -236,7 +236,7 @@ describe("BlueBubbles media hydration", () => {
     )
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: hey, can you check the logs?"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): hey, can you check the logs?"],
       notices: [],
     })
   })
@@ -396,7 +396,7 @@ describe("BlueBubbles media hydration", () => {
     expect(transcribeAudio).toHaveBeenCalledOnce()
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: please summarize this note"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): please summarize this note"],
       notices: [],
     })
   })
@@ -471,7 +471,7 @@ describe("BlueBubbles media hydration", () => {
     expect(transcribeAudio).toHaveBeenCalledOnce()
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: extension-based transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): extension-based transcript"],
       notices: [],
     })
   })
@@ -651,6 +651,9 @@ describe("BlueBubbles media hydration", () => {
       }),
     )
     const modelFetchImpl = vi.fn().mockResolvedValue(new Response(Buffer.from("model-bytes"), { status: 200 })) as typeof fetch
+    // The model streams to disk through node:fs, which this test leaves real.
+    const modelsDir = path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models")
+    fs.mkdirSync(modelsDir, { recursive: true })
 
     const { hydrateBlueBubblesAttachments } = await import("../../../senses/bluebubbles/media")
     const result = await hydrateBlueBubblesAttachments(
@@ -693,10 +696,6 @@ describe("BlueBubbles media hydration", () => {
       ),
       Buffer.from("audio-bytes"),
     )
-    expect(writeFile).toHaveBeenCalledWith(
-      path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
-      Buffer.from("model-bytes"),
-    )
     expect(execFile).toHaveBeenCalledWith(
       "ffmpeg",
       expect.arrayContaining(["-i", "/tmp/ouro-bb-audio-123/Voice Note.m4a", "/tmp/ouro-bb-audio-123/audio.wav"]),
@@ -707,18 +706,19 @@ describe("BlueBubbles media hydration", () => {
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
       expect.arrayContaining([
         "-m",
-        path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin"),
+        path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-large-v3-turbo-q5_0.bin"),
         "-f",
         "/tmp/ouro-bb-audio-123/audio.wav",
       ]),
       expect.any(Object),
       expect.any(Function),
     )
+    expect(fs.readFileSync(path.join(modelsDir, "ggml-large-v3-turbo-q5_0.bin.partial"), "utf8")).toBe("model-bytes")
     expect(readFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123/audio.json", "utf8")
     expect(rm).toHaveBeenCalledWith("/tmp/ouro-bb-audio-123", { recursive: true, force: true })
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: transcribed locally"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): transcribed locally"],
       notices: [],
     })
   })
@@ -772,13 +772,13 @@ describe("BlueBubbles media hydration", () => {
     expect(execFile).not.toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(execFile).toHaveBeenCalledWith(
       "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
-      expect.arrayContaining(["-m", path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-base.en.bin")]),
+      expect.arrayContaining(["-m", path.join(testState.agentRoot, "state", "tools", "whisper-cpp", "models", "ggml-large-v3-turbo-q5_0.bin")]),
       expect.any(Object),
       expect.any(Function),
     )
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: preinstalled transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): preinstalled transcript"],
       notices: [],
     })
   })
@@ -835,7 +835,7 @@ describe("BlueBubbles media hydration", () => {
 
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: Hello from Managed Whisper Smoke. Second sentence."],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): Hello from Managed Whisper Smoke. Second sentence."],
       notices: [],
     })
   })
@@ -905,7 +905,7 @@ describe("BlueBubbles media hydration", () => {
     )
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: repaired install transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): repaired install transcript"],
       notices: [],
     })
   })
@@ -965,7 +965,7 @@ describe("BlueBubbles media hydration", () => {
     expect(execFile).toHaveBeenCalledWith("brew", ["install", "whisper-cpp"], expect.any(Object), expect.any(Function))
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: empty prefix transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): empty prefix transcript"],
       notices: [],
     })
   })
@@ -1021,7 +1021,7 @@ describe("BlueBubbles media hydration", () => {
     expect(rm).toHaveBeenCalledWith("/tmp/ouro-bb-audio-cleanup", { recursive: true, force: true })
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: cleanup safe"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): cleanup safe"],
       notices: [],
     })
   })
@@ -1136,7 +1136,7 @@ describe("BlueBubbles media hydration", () => {
     expect(writeFile).toHaveBeenCalledWith("/tmp/ouro-bb-audio-789/Audio Message.caf", Buffer.from("audio-bytes"))
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: caf transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): caf transcript"],
       notices: [],
     })
   })
@@ -1360,7 +1360,7 @@ describe("BlueBubbles media hydration", () => {
     )
     expect(result).toEqual({
       inputParts: [],
-      transcriptAdditions: ["voice note transcript: afconvert transcript"],
+      transcriptAdditions: ["voice note (machine transcript; may mishear words): afconvert transcript"],
       notices: [],
     })
   })
@@ -1874,7 +1874,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
         vlmDescribe: vi.fn(),
       },
     )
-    expect(result.transcriptAdditions).toEqual(["voice note transcript: hello there"])
+    expect(result.transcriptAdditions).toEqual(["voice note (machine transcript; may mishear words): hello there"])
   })
 
   it("mixed attachments (image + audio) with non-vision chat model: both paths fire", async () => {
@@ -1910,7 +1910,7 @@ describe("BlueBubbles media hydration — capability-aware image routing", () =>
     expect(result.inputParts).toEqual([
       { type: "text", text: "[image description: a screenshot]" },
     ])
-    expect(result.transcriptAdditions).toEqual(["voice note transcript: hello"])
+    expect(result.transcriptAdditions).toEqual(["voice note (machine transcript; may mishear words): hello"])
   })
 
   it("per-attachment bluebubbles_media_hydrate event: fires once per attachment with AX-4 meta", async () => {

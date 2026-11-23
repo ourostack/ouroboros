@@ -26,7 +26,7 @@ import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
-import { renderChatInteraction, type ChatInteraction } from "../heart/chat-interaction"
+import { renderChatInteraction, resolveChatInteractionTarget } from "../heart/chat-interaction"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { approvalRelayRequestFor, createApprovalRelayDoor, type ApprovalRelayDoor } from "./telegram-approval-relay"
@@ -2035,13 +2035,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   // Telegram tells the bot which message was reacted to, not what it said. The journal knows the agent's own messages.
-  const nameReactionTarget = (message: TelegramInboundMessage): TelegramInboundMessage => {
+  const nameReactionTarget = async (message: TelegramInboundMessage): Promise<TelegramInboundMessage> => {
     const interaction = message.interaction
-    if (interaction?.kind !== "reaction" || !interaction.target.id) return message
-    const sent = resolveTelegramReply(getEffectJournal(), { messageId: Number(interaction.target.id), friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
-    if (!sent?.text) return message
-    const named: ChatInteraction = { ...interaction, target: { ...interaction.target, text: sent.text, fromAgent: true } }
-    return { ...message, interaction: named, text: renderChatInteraction(named) }
+    if (interaction?.kind !== "reaction") return message
+    const named = await resolveChatInteractionTarget(interaction, (id) => {
+      const sent = resolveTelegramReply(getEffectJournal(), { messageId: Number(id), friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
+      return sent?.text ? { text: sent.text, fromAgent: true } : null
+    })
+    return named === interaction ? message : { ...message, interaction: named, text: renderChatInteraction(named) }
   }
 
   /** Write a message's entry before its turn, or null when it must not run: it has an outcome, or a stopped turn left it unsafe to run again. */
@@ -2153,7 +2154,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessage = (inbound: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
-    const message = nameReactionTarget(inbound)
+    const message = await nameReactionTarget(inbound)
     const turn = beginInbound(inboundIdFor(message.updateId))
     if (!turn) return
     await runInboundTurn(turn, () => handleAuthorizedMessage(message))

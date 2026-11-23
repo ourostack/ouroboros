@@ -10,7 +10,7 @@
 //   turn        one operator message through that stack: time to the first
 //               model request, time until the stack goes quiet, peak memory
 // Every number is "lower is better". The report compares a run with a
-// baseline run (main's latest) and says which numbers moved.
+// baseline (the median of main's last five runs) and says which numbers moved.
 //
 //   node .github/scripts/edge-benchmark.cjs run --tarball <tgz> --out result.json
 //   node .github/scripts/edge-benchmark.cjs run --root <built checkout> --out result.json
@@ -144,6 +144,32 @@ const METRICS = [
   ["turn.peakRssKb", "turn: peak RSS, all processes", "kB"],
   ["turn.peakPssKb", "turn: peak PSS, all processes", "kB"],
 ]
+
+/**
+ * One baseline from several of main's runs: each metric's median across them, so a single fast or slow main run (two
+ * linux-arm64 pushes on 2026-11-23 measured 96 and 102 ms where every other run read 162-184 ms) cannot become the
+ * number every pull request is held to.
+ */
+function medianBaseline(results) {
+  const merged = { host: results[0]?.host }
+  for (const [key] of METRICS) {
+    const value = median(results.map((result) => metricValue(result, key)))
+    if (value === null) continue
+    const parts = key.split(".")
+    let node = merged
+    for (const part of parts.slice(0, -1)) node = node[part] ??= {}
+    node[parts[parts.length - 1]] = value
+  }
+  return merged
+}
+
+function readBaseline(location) {
+  if (!location || !fs.existsSync(location)) return null
+  if (!fs.statSync(location).isDirectory()) return JSON.parse(fs.readFileSync(location, "utf8"))
+  const files = fs.readdirSync(location, { recursive: true }).filter((name) => String(name).endsWith(".json"))
+  if (files.length === 0) return null
+  return medianBaseline(files.map((name) => JSON.parse(fs.readFileSync(path.join(location, String(name)), "utf8"))))
+}
 
 function metricValue(result, key) {
   const value = key.split(".").reduce((node, part) => (node && typeof node === "object" ? node[part] : undefined), result)
@@ -797,7 +823,7 @@ async function run(options) {
 function report(options) {
   if (!options.current) throw new Error("--current is required")
   const current = JSON.parse(fs.readFileSync(options.current, "utf8"))
-  const baseline = options.baseline && fs.existsSync(options.baseline) ? JSON.parse(fs.readFileSync(options.baseline, "utf8")) : null
+  const baseline = readBaseline(options.baseline)
   const violations = options.gate === "on" ? ratchetViolations(current, baseline) : []
   const markdown = renderReport(current, baseline, options.baselineLabel) + (options.gate === "on" ? `\n${renderRatchet(violations, options.accepted)}` : "")
   process.stdout.write(markdown)
@@ -811,7 +837,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.command === "run") await run(options)
   else if (options.command === "report") report(options)
-  else throw new Error("usage: edge-benchmark.cjs run (--tarball <tgz> | --root <dir>) --out <json> | report --current <json> [--baseline <json>] [--summary <file>] [--gate on [--accepted <reason>]]")
+  else throw new Error("usage: edge-benchmark.cjs run (--tarball <tgz> | --root <dir>) --out <json> | report --current <json> [--baseline <json file or directory of them>] [--summary <file>] [--gate on [--accepted <reason>]]")
 }
 
 if (require.main === module) {
@@ -821,4 +847,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { parseArgs, median, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }
+module.exports = { parseArgs, median, medianBaseline, readBaseline, parsePsTable, processRole, treePids, procField, latestSnapshots, topPackages, compare, renderReport, formatValue, metricValue, METRICS, ratchetLimit, ratchetViolations, renderRatchet, report }

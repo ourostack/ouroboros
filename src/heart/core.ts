@@ -101,6 +101,7 @@ import {
 } from "./provider-attempt";
 import type { AgentProviderVisibility } from "./provider-visibility";
 import { refreshOpenAICodexProviderCredentials } from "./providers/openai-codex-token";
+import { TurnTally, emitTurnSummary, tallyToolEnds } from "./turn-summary";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini";
 
@@ -1543,13 +1544,39 @@ function buildAuthFailureGuidance(provider: ProviderId, model: string, agentName
   return lines.join("\n")
 }
 
+type RunAgentResult = { usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }
+
 export async function runAgent(
   messages: OpenAI.ChatCompletionMessageParam[],
   callbacks: ChannelCallbacks,
   channel?: Channel,
   signal?: AbortSignal,
   options?: RunAgentOptions,
-): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }> {
+): Promise<RunAgentResult> {
+  // engine.turn_summary (counts only; see turn-summary.ts) is emitted once however the turn ends, a throw included.
+  const turnTally = new TurnTally();
+  let result: RunAgentResult | undefined;
+  try {
+    result = await runCountedTurn(turnTally, messages, tallyToolEnds(callbacks, turnTally), channel, signal, options);
+    return result;
+  } finally {
+    emitTurnSummary(turnTally, {
+      channel,
+      outcome: result?.outcome ?? "errored",
+      errorClass: result ? result.errorClassification ?? "none" : "unknown",
+      traceId: options?.traceId,
+    });
+  }
+}
+
+async function runCountedTurn(
+  turnTally: TurnTally,
+  messages: OpenAI.ChatCompletionMessageParam[],
+  callbacks: ChannelCallbacks,
+  channel?: Channel,
+  signal?: AbortSignal,
+  options?: RunAgentOptions,
+): Promise<RunAgentResult> {
   const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
   let nextAttemptControls: OpenAI.ChatCompletionMessageParam[] = [];
   let rejectedAttempt: OpenAI.ChatCompletionMessageParam[] = [];
@@ -1567,12 +1594,14 @@ export async function runAgent(
     : undefined
   // Automatic fallback (opt-in via agent.json providerFallback): start on the first chain entry not cooling down.
   let providerRuntime: ProviderRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing, owner);
+  turnTally.route(providerRuntime.id, providerRuntime.model);
   const fallbackChain = options?.providerRuntimeOverride ? [] : resolveTurnFallbackChain(facing, owner);
   let chainIndex = 0;
   const switchToChainEntry = async (from: number, firstCandidate: number | null, reason: { classification: ProviderErrorClassification; error: Error } | null): Promise<boolean> => {
     for (let candidate = firstCandidate; candidate !== null; candidate = nextReadyChainIndex(fallbackChain, candidate)) {
       try {
         providerRuntime = await getChainEntryRuntime(fallbackChain[candidate], owner);
+        turnTally.route(providerRuntime.id, providerRuntime.model);
         chainIndex = candidate;
         emitNervesEvent({
           level: "warn",
@@ -2103,6 +2132,7 @@ export async function runAgent(
       })()
       : ordinaryActiveTools;
     const candidateToolNames = new Set(candidateActiveTools.map((tool) => tool.function.name))
+    turnTally.offer(candidateActiveTools, deferralPool, ordinaryDefinitionsByName)
     budgetNoteToolNames = candidateToolNames
     const unadvertisedRequiredTool = requiredToolCallNames.find((name) => !candidateToolNames.has(name))
     if (unadvertisedRequiredTool) {
@@ -2302,6 +2332,7 @@ export async function runAgent(
       servedByProvider = true;
       nextAttemptControls = [];
       providerIterations += 1
+      turnTally.step(result.usage, providerRuntime.id, providerRuntime.model)
       if (stepReportIteration !== null) {
         // The progress-report call is the last one: it must settle (or rest), or the turn errors.
         const settledReport = result.toolCalls.length === 1 && result.toolCalls[0].name === stepReportTool
@@ -2388,6 +2419,7 @@ export async function runAgent(
           { role: "user", content: wrapUpTool === "settle" ? STEP_BUDGET_REPORT_INSTRUCTION : STEP_BUDGET_REST_INSTRUCTION },
         ])
         callbacks.onClearText?.()
+        turnTally.stepBudgetExhausted()
         emitNervesEvent({ level: "warn", component: "engine", event: "engine.step_budget_exhausted", message: `step budget used up; requesting a ${wrapUpTool}-only progress report`, meta: { stepBudget, providerIterations } })
         continue
       }
@@ -2603,6 +2635,8 @@ export async function runAgent(
               ? withCode(`rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`, "unknown-tool")
               : withCode(`invalid tool arguments: ${detail}`, "invalid-arguments")
             rejections.push(rejection)
+            // A rejected call never reaches onToolEnd; count it as a failed call (a name the turn never offered is "unknown").
+            turnTally.rejected(entry.call.name)
             options?.toolBoundaryObserver?.({
               name: entry.call.name,
               reason: callableToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
@@ -3157,6 +3191,7 @@ export async function runAgent(
             const matched = deferralPool.filter((tool) => matchedNames.includes(tool.function.name))
               .sort((a, b) => matchedNames.indexOf(a.function.name) - matchedNames.indexOf(b.function.name))
             for (const name of matchedNames) if (!loadedDeferredTools.includes(name)) loadedDeferredTools.push(name)
+            turnTally.findTools(matched.map((tool) => tool.function.name))
             // A job a bundle does with a command its skill documents has no door to find; the skill's section answers.
             const skills = findToolsSkillNote(query, activeToolNames)
             if (matched.length > 0 || skills.hits > 0) lastProgressIteration = providerIterations

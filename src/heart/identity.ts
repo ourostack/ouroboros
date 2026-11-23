@@ -140,6 +140,10 @@ export interface AgentConfig {
   shell?: {
     defaultTimeout?: number
   }
+  /** How this agent starts coding agents (coding_spawn). `backend` defaults to orca. */
+  coding?: {
+    backend?: "orca" | "local" | "workbench"
+  }
   phrases: {
     thinking: string[]
     tool: string[]

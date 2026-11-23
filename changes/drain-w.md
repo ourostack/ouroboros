@@ -1,0 +1,1 @@
+- The pull-request benchmark compares against the median of main's last five runs, so one unusually fast main run can no longer fail every pull request on linux-arm64.

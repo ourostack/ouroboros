@@ -18,7 +18,8 @@ import { statusAnswer } from "./app-sessions/digest"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
-import { renderChatInteraction } from "../heart/chat-interaction"
+import { renderChatInteraction, resolveChatMessageRef, type ChatMessageRef } from "../heart/chat-interaction"
+import { recordSentMessage, sentMessageLookup } from "../heart/sent-message-ledger"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "./proactive-content-guard"
 import { createTurnCoordinator, type SteeringFollowUp } from "../heart/turn-coordinator"
 import { getAgentRoot, getAgentName } from "../heart/identity"
@@ -133,8 +134,19 @@ export function sanitizeFeedbackComment(comment: string): string {
 // Teams names its reactions; the agent reads the emoji the person tapped.
 const TEAMS_REACTION_EMOJI: Record<string, string> = { like: "👍", dislike: "👎", heart: "❤️", laugh: "😆", surprised: "😮", sad: "😢", angry: "😠" }
 
-function teamsReaction(type: string, removed: boolean): string {
-  return renderChatInteraction({ kind: "reaction", label: TEAMS_REACTION_EMOJI[type] ?? type, removed, target: { fromAgent: true } })
+function teamsReaction(type: string, removed: boolean, target: ChatMessageRef = { fromAgent: true }): string {
+  return renderChatInteraction({ kind: "reaction", label: TEAMS_REACTION_EMOJI[type] ?? type, removed, target })
+}
+
+/** Where the agent's Teams messages are noted, so a reaction (which carries only the message id) can say what was reacted to. */
+function teamsSentScope(conversationId: string) {
+  return { agentRoot: getAgentRoot(), channel: "teams", conversationId }
+}
+
+/** Note a Teams message the agent sent, from the receipt Teams returned for it. */
+export function noteTeamsSentMessage(conversationId: string, receipt: unknown, text: string): void {
+  const id = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
+  if (id) recordSentMessage(() => teamsSentScope(conversationId), id, text)
 }
 
 // Build synthetic message text from a Teams feedback reaction (the thumbs on an AI-labeled reply).
@@ -144,9 +156,22 @@ export function buildFeedbackSyntheticText(reaction: string, comment?: string): 
 }
 
 // Teams only tells a bot about reactions on the bot's own messages, so the target is always the agent's.
-export function buildReactionSyntheticText(added: ReadonlyArray<{ type: string }> | undefined, removed: ReadonlyArray<{ type: string }> | undefined): string | null {
+export function buildReactionSyntheticText(added: ReadonlyArray<{ type: string }> | undefined, removed: ReadonlyArray<{ type: string }> | undefined, target?: ChatMessageRef): string | null {
   const change = added?.[0] ? { type: added[0].type, removed: false } : removed?.[0] ? { type: removed[0].type, removed: true } : null
-  return change ? `[${teamsReaction(change.type, change.removed)}]` : null
+  return change ? `[${teamsReaction(change.type, change.removed, target)}]` : null
+}
+
+/** A Teams reaction names the message by id (`replyToId`); the shared resolver finds what the agent said in it. */
+export async function resolveTeamsReactionText(activity: {
+  reactionsAdded?: ReadonlyArray<{ type: string }>
+  reactionsRemoved?: ReadonlyArray<{ type: string }>
+  replyToId?: string
+  conversation?: { id?: string }
+}): Promise<string | null> {
+  const conversationId = activity.conversation?.id
+  if (!activity.replyToId || !conversationId) return buildReactionSyntheticText(activity.reactionsAdded, activity.reactionsRemoved)
+  const target = await resolveChatMessageRef({ fromAgent: true }, sentMessageLookup(teamsSentScope(conversationId)), activity.replyToId)
+  return buildReactionSyntheticText(activity.reactionsAdded, activity.reactionsRemoved, target)
 }
 
 export function buildEditSyntheticText(newText: string): string {
@@ -1492,7 +1517,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         }
       }
       const ctxSend = (t: string) => {
-        const sending = noted(t, () => ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } }))
+        const sending = noted(t, async () => noteTeamsSentMessage(convId, await ctx.send({ type: "message", text: t, replyToId: activity.replyToId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } }), t))
         inbound.track(sending)
         return sending
       }
@@ -1528,7 +1553,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
   })
 
   app.on("messageReaction" as any, async (ctx: any) => {
-    const text = buildReactionSyntheticText(ctx.activity.reactionsAdded, ctx.activity.reactionsRemoved)
+    const text = await resolveTeamsReactionText(ctx.activity)
     if (text) await runInteractionTurn(ctx, text, true)
     return undefined
   })
@@ -1584,6 +1609,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       try {
         const receipt = await send({ type: "message", text, replyToId: inboundActivityId, entities: aiLabelEntities() as Entity[], channelData: { feedbackLoopEnabled: true } })
         inbound().noteSent(true)
+        noteTeamsSentMessage(convId, receipt, text)
         const messageId = receipt && typeof receipt === "object" && "id" in receipt && typeof receipt.id === "string" ? receipt.id : undefined
         reportTeamsRequest(messageId ? "replied" : "reply_emitted", convId, requestContext, { delivery: messageId ? "accepted" : "unconfirmed", ...(messageId ? { outboundActivityId: messageId } : {}) })
       } catch (error) {
@@ -2104,6 +2130,7 @@ export async function sendProactiveTeamsMessageToSession(
       meta: { friendId: params.friendId, aadObjectId: aadInfo.aadObjectId, sessionKey: params.sessionKey },
     })
     const messageId = activity && typeof activity === "object" && "id" in activity && typeof activity.id === "string" ? activity.id : undefined
+    noteTeamsSentMessage(conversation.id, activity, params.text)
     // Saved into the conversation it was sent into, so the friend's reply there carries it.
     const origin = params.origin ?? "proactive"
     // Recording never changes the result of a send that already went out.

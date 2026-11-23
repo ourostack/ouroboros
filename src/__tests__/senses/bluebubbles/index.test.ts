@@ -1164,6 +1164,31 @@ describe("BlueBubbles sense runtime", () => {
     expect(firstRunAgentOptions().orientationFrame.source).toMatchObject(want)
   })
 
+  it("names the message a tapback points at from the BlueBubbles server, through the shared reaction resolver (2026-11-23)", async () => {
+    mocks.getRepliedMessage = vi.fn(async () => ({ text: "are voice notes working?", fromMe: true }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload)
+
+    expect(mocks.getRepliedMessage).toHaveBeenCalledWith("CB4EB152-A678-4F0E-8075-1AB09B5496F8")
+    expect(JSON.stringify(mocks.runAgent.mock.calls[0]?.[0])).toContain('loved your message: \\"are voice notes working?\\"')
+  })
+
+  it("falls back to the message text alone, and to saying the tapback's target is unknown (2026-11-23)", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const mutation = { kind: "mutation", mutationType: "reaction", targetMessageGuid: "T1", textForAgent: "loved an unidentified message", reaction: { raw: "love", verb: "loved", noun: "love", action: "add", canonicalValue: "love" } } as any
+    mocks.getMessageText.mockResolvedValueOnce("dinner at 7?")
+    expect((await bluebubbles.nameBlueBubblesReactionTarget(mutation, { getMessageText: mocks.getMessageText })).textForAgent).toBe('loved a message: "dinner at 7?"')
+    expect(await bluebubbles.nameBlueBubblesReactionTarget(mutation, { getMessageText: mocks.getMessageText })).toBe(mutation)
+    expect(await bluebubbles.nameBlueBubblesReactionTarget(mutation, { getMessageText: mocks.getMessageText, getRepliedMessage: async () => null })).toBe(mutation)
+    const edit = { ...mutation, mutationType: "edit" }
+    expect(await bluebubbles.nameBlueBubblesReactionTarget(edit, { getMessageText: mocks.getMessageText })).toBe(edit)
+    const untargeted = { ...mutation, targetMessageGuid: undefined }
+    expect(await bluebubbles.nameBlueBubblesReactionTarget(untargeted, { getMessageText: mocks.getMessageText })).toBe(untargeted)
+    const undecoded = { ...mutation, reaction: undefined }
+    expect(await bluebubbles.nameBlueBubblesReactionTarget(undecoded, { getMessageText: mocks.getMessageText })).toBe(undecoded)
+  })
+
   it("frames no reply when the replied-to message can't be fetched (2026-10-29)", async () => {
     mocks.getRepliedMessage = vi.fn(async () => { throw new Error("offline") })
 

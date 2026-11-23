@@ -52,6 +52,8 @@ export interface CodingSessionManagerOptions {
   mkdirSync?: Mkdir
   pidAlive?: (pid: number) => boolean
   agentName?: string
+  /** Hears every session's updates, including sessions found dead when the manager reloads its state. */
+  onUpdate?: (update: CodingSessionUpdate) => void | Promise<void>
 }
 
 function defaultStateFilePath(agentName: string): string {
@@ -205,9 +207,11 @@ export class CodingSessionManager {
   private readonly mkdirSync: Mkdir
   private readonly pidAlive: (pid: number) => boolean
   private readonly agentName: string
+  private readonly onUpdate?: (update: CodingSessionUpdate) => void | Promise<void>
   private sequence = 0
 
   constructor(options: CodingSessionManagerOptions) {
+    this.onUpdate = options.onUpdate
     this.spawnProcess = options.spawnProcess ?? ((request) => spawnCodingProcess(request))
     this.nowIso = options.nowIso ?? (() => new Date().toISOString())
     this.maxRestarts = options.maxRestarts ?? 1
@@ -569,9 +573,7 @@ export class CodingSessionManager {
   }
 
   private notifyListeners(sessionId: string, update: CodingSessionUpdate): void {
-    const listeners = this.listeners.get(sessionId)
-    if (!listeners || listeners.size === 0) return
-
+    const listeners = [...(this.listeners.get(sessionId) ?? []), ...(this.onUpdate ? [this.onUpdate] : [])]
     for (const listener of listeners) {
       void Promise.resolve(listener(update)).catch((error) => {
         emitNervesEvent({
@@ -634,6 +636,7 @@ export class CodingSessionManager {
     }
 
     this.sequence = Number.isInteger(parsed.sequence) && parsed.sequence >= 0 ? parsed.sequence : 0
+    const foundDead: string[] = []
 
     for (const item of parsed.records) {
       const request = item?.request
@@ -679,6 +682,7 @@ export class CodingSessionManager {
               "process not running during manager restore",
             )
           normalizedSession.pid = null
+          foundDead.push(normalizedSession.id)
         }
       }
 
@@ -703,6 +707,13 @@ export class CodingSessionManager {
       message: "loaded persisted coding sessions",
       meta: { count: this.records.size },
     })
+
+    if (foundDead.length === 0) return
+    // Record the deaths so a later reload doesn't report them again, then tell whoever hears every session.
+    this.persistState()
+    for (const id of foundDead) {
+      this.notifyListeners(id, { kind: "failed", session: cloneSession(this.records.get(id)!.session) })
+    }
   }
 
   private persistState(): void {

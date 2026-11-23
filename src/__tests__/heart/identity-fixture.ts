@@ -66,6 +66,9 @@ export const FULL_AGENT_JSON = {
   shell: {
     defaultTimeout: 60_000,
   },
+  coding: {
+    backend: "orca",
+  },
   phrases: {
     thinking: ["deep in thought"],
     tool: ["using tool"],
