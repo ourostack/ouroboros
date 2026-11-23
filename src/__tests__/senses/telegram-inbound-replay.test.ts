@@ -136,6 +136,20 @@ describe("Telegram messages whose turn a stopped process left", () => {
     expect(store.loadIndeterminate()).toHaveLength(1)
   })
 
+  it("goes on with the rest of the batch when deciding about a redelivered message throws", async () => {
+    const filePath = inboxPath()
+    strandedInbox(filePath)
+    vi.spyOn(nerves, "emitNervesEvent")
+    const next: TelegramUpdate = { ...update, update_id: 22, message: { ...update.message!, message_id: 5 } }
+    const onMessage = vi.fn(async () => undefined)
+    const offset = { value: 0 }
+    await poll({ filePath, offset, onMessage, replayIndeterminate: () => { throw new Error("journal down") }, updates: [update, next] }).pollOnce()
+    expect(onMessage).toHaveBeenCalledTimes(1)
+    expect(offset.value).toBe(23)
+    expect(dropped()).toHaveLength(1)
+    expect(vi.mocked(nerves.emitNervesEvent).mock.calls.filter(([event]) => event.event === "telegram.update_replay_failed")).toHaveLength(1)
+  })
+
   it("reports a stranded message as dropped when Telegram does not send it again, and other stranded updates at once", async () => {
     const filePath = inboxPath()
     strandedInbox(filePath)

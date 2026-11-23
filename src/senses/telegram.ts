@@ -48,6 +48,7 @@ import {
   type TelegramLongPoll,
   type TelegramLongPollOptions,
   type TelegramOffsetStore,
+  telegramUpdateMessageCoordinates,
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
@@ -1766,8 +1767,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           && candidate.role === "user" && candidate.relations.references.includes(input.reference))
         if (!event || typeof event.content !== "string") throw new Error("Telegram admitted work ingress is unavailable")
         const record = admissionStore.read(input.admissionId)
-        await dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
-          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, chatId: record.chatId, orientation: input.orientation })
+        const text = event.content
+        // The newly admitted Friend's first turn answers their message, not the owner's decision that let it run.
+        await telegramInboundTurn.exit(() => dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
+          eventId: input.eventId, reference: input.reference, text, userId: record.userId, chatId: record.chatId, orientation: input.orientation }))
         inboxStore.completeAdmittedWork(input.admissionId)
         return "settled"
       } catch {
@@ -2066,7 +2069,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       try {
         await body()
       } catch (error) {
-        if (turn.id) settleInbound(turn.id, "failed", `the turn stopped with an error (${error instanceof Error ? error.name : "unknown"})`)
+        const stopped = `the turn stopped with an error (${error instanceof Error ? error.name : "unknown"})`
+        if (turn.id) settleInbound(turn.id, "failed", turn.spoke ? `${stopped} after part of the reply went out` : `${stopped}, and no reply reached them`)
         throw error
       }
       if (turn.id) settleInbound(turn.id, turn.failure ? "failed" : turn.spoke ? "answered" : "silent", turn.failure ?? undefined)
@@ -2086,51 +2090,51 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   /**
    * Telegram redelivered a message a stopped process left. It runs again only when nothing went out for it and it
-   * has tries left; otherwise it is recorded as failed. A household Friend's message is known by its reference.
+   * has tries left; otherwise it is recorded as failed, so no message is left pending. A household Friend's message is
+   * known by its reference. Callbacks and strangers' messages never get an entry and keep their own recovery.
    */
   const replayIndeterminate = async (update: TelegramUpdate, reclaim: () => boolean): Promise<boolean> => {
-    const message = update.message
-    // A callback has its own recovery, and a stranger's message stays with the admission gate.
-    if (!message?.from) return false
-    const userId = String(message.from.id)
-    const owner = userId === authorizedUserId && String(message.chat.id) === authorizedChatId
-    let id = inboundIdFor(update.update_id)
-    let firstDelivery = `turn:${subject}:${update.update_id}:delivery:0`
-    if (!owner) {
-      if (!botId || !await options.admission?.resolveApprovedFriend({ botId, userId, chatId: String(message.chat.id) })) return false
-      const reference = telegramHouseholdReference(identityKey, botId, userId, update.update_id, message.message_id)
-      id = householdInboundIdFor(reference)
-      firstDelivery = `relationship-turn:${reference}:delivery:0`
-    }
-    let entry: PendingInbound<TelegramInboundPayload> | null
+    const coordinates = telegramUpdateMessageCoordinates(update)
+    if (!coordinates || coordinates.chatType !== "private") return false
+    const owner = coordinates.userId === authorizedUserId && coordinates.chatId === authorizedChatId
+    // Only a new message reaches a household Friend's turn; their edits and reactions are not run.
+    if (!owner && (!update.message || !botId || !options.admission)) return false
+    const reference = owner ? null : telegramHouseholdReference(identityKey, botId!, coordinates.userId, update.update_id, coordinates.messageId)
+    const id = reference ? householdInboundIdFor(reference) : inboundIdFor(update.update_id)
     try {
-      entry = getInboundJournal().get(id)
+      const entry = getInboundJournal().get(id)
       if (!entry && readInboundOutcome(agentRoot, "telegram", id)) return false
+      if (reference && !await options.admission!.resolveApprovedFriend({ botId: botId!, userId: coordinates.userId, chatId: coordinates.chatId })) {
+        if (entry) failInbound(id, "they are no longer a household Friend, so it is not run again")
+        return false
+      }
+      // With no entry the turn never started, or its entry could not be written; a reply it prepared shows which.
+      const preparedKeys = reference ? [`relationship-turn:${reference}:delivery:0`]
+        : [`turn:${subject}:${update.update_id}:delivery:0`, `turn:${subject}:${update.update_id}:fallback`]
+      const refusal = entry ? telegramReplayRefusal(entry)
+        : preparedKeys.some((key) => getEffectJournal().readByIdempotencyKey(key))
+          ? "a reply was prepared before it stopped, but its record could not be written, so it is not run again"
+          : null
+      if (refusal) {
+        failInbound(id, refusal)
+        return false
+      }
+      if (!reclaim()) {
+        failInbound(id, "it could not be taken back from the update inbox to run again")
+        return false
+      }
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.telegram_inbound_replaying",
+        message: "running a Telegram message again: its turn stopped before anything went out",
+        meta: { agentName: options.agentName, attempts: entry?.attempts ?? 0 },
+      })
+      return true
     } catch (error) {
-      inboundJournalFailed(error)
+      failInbound(id, `deciding whether to run it again failed (${error instanceof Error ? error.name : "unknown"})`)
       return false
     }
-    // With no entry the turn never started, or its entry could not be written; a reply it prepared shows which.
-    const refusal = entry ? telegramReplayRefusal(entry)
-      : [firstDelivery, `turn:${subject}:${update.update_id}:fallback`].some((key) => getEffectJournal().readByIdempotencyKey(key))
-        ? "a reply was prepared before it stopped, but its record could not be written, so it is not run again"
-        : null
-    if (refusal) {
-      failInbound(id, refusal)
-      return false
-    }
-    if (!reclaim()) {
-      failInbound(id, "it could not be taken back from the update inbox to run again")
-      return false
-    }
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.telegram_inbound_replaying",
-      message: "running a Telegram message again: its turn stopped before anything went out",
-      meta: { agentName: options.agentName, attempts: entry?.attempts ?? 0 },
-    })
-    return true
   }
 
   /** A message whose update Telegram no longer redelivers can never be answered now, so it is recorded as failed. */

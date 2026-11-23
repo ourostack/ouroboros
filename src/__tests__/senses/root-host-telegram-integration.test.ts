@@ -163,7 +163,10 @@ describe("root host Telegram production routing", () => {
       const pendingDir = path.join(f.agentRoot, "state", "senses", "telegram", "pending-inbound")
       let notedBeforeCard: boolean | undefined
       f.port.register = vi.fn(async () => {
-        notedBeforeCard = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf8"))).every((entry) => entry.spoke)
+        if (notedBeforeCard !== undefined) return { registrationId: "root" }
+        const entries = fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf8")))
+        expect(entries).toHaveLength(1)
+        notedBeforeCard = entries[0].spoke
         return { registrationId: "root" }
       })
       f.runTurn.mockImplementationOnce(async () => {

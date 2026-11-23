@@ -193,10 +193,17 @@ describe("Telegram admission integration", () => {
     let displayCode = 0
     let approvedFriend = false
     let relationshipActive = true
+    // What a newly admitted Friend's first turn sends answers their message, never the owner's decision that let it run.
+    const ownerNotedDuringAdmittedTurn: boolean[] = []
+    const pendingDir = path.join(root, "state", "senses", "telegram", "pending-inbound")
     const runTurn = vi.fn(async (options: any) => {
       if (options.prepareRunAgentOptions) {
         const prepared = await options.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
         await prepared.toolContext.relationshipAuthorization.authorizeTool("unraid_get_system", {})
+      }
+      if (options.orientationFrame?.source?.routingHint?.includes("brother")) {
+        await options.toolContext.chatActions.react("👍", "24")
+        ownerNotedDuringAdmittedTurn.push(...fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), "utf8")).spoke))
       }
       return { response: "Household response", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
     })
@@ -301,6 +308,7 @@ describe("Telegram admission integration", () => {
     await pollOptions.onMessage({ updateId: 15, messageId: 25, userId: "42", chatId: "42", text: "yes, that's my brother", replyToMessageId: String(secondOwnerCardMessageId) })
     expect(runTurn).toHaveBeenCalledTimes(4)
     expect(runTurn.mock.calls[3]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
+    expect(ownerNotedDuringAdmittedTurn).toEqual([false])
     expect(runTurn.mock.calls[3]![0].orientationFrame.source.routingHint).not.toContain("resend")
     expect(runTurn.mock.calls[3]![0].orientationFrame.source.routingHint).toContain("identified this person as their brother")
     expect(JSON.stringify(runTurn.mock.calls)).not.toContain('"userMessage":"Allow"')

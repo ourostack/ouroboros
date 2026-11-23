@@ -904,11 +904,23 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const inbox = options.inboxStore!
     if (!canReplay || !inbox.loadIndeterminate().some((receipt) => sameReceipt(receipt, updateReceipt(update)))) return false
     let reclaimed = false
-    const decided = await options.replayIndeterminate!(update, () => {
-      reclaimed = inbox.reclaimIndeterminate!(update)
-      return reclaimed
-    })
-    return decided && reclaimed
+    try {
+      const decided = await options.replayIndeterminate!(update, () => {
+        reclaimed = inbox.reclaimIndeterminate!(update)
+        return reclaimed
+      })
+      return decided && reclaimed
+    } catch (error) {
+      // One update the sense could not decide about must not hold up the rest of the batch.
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "telegram.update_replay_failed",
+        message: "could not decide whether to run a redelivered Telegram update again; it is not run",
+        meta: { error: error instanceof Error ? error.name : "unknown" },
+      })
+      return false
+    }
   }
   const warnIndeterminate = (receipt: TelegramUpdateReceipt): void => {
     emitNervesEvent({

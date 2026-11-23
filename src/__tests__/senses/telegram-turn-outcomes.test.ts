@@ -448,6 +448,28 @@ describe("Telegram turn outcomes", () => {
     return recoverTelegramEffectOutbox({ store: effects, execute: vi.fn() }).then((result) => expect(result.attempted).toBe(0))
   })
 
+  it("runs an owner's edit or reaction again when its stopped turn sent nothing", async () => {
+    const root = newRoot()
+    for (const updateId of [50, 51]) {
+      const crashed = butler(root, never)
+      void crashed.onMessage(message(updateId))
+      await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    }
+    const restarted = butler(root, reply("hi"))
+    expect(await restarted.replay({ update_id: 50, edited_message: { message_id: 1050, from: { id: 42 }, chat: { id: 42, type: "private" }, text: "edited" } } as TelegramUpdate)).toBe(true)
+    expect(await restarted.replay({ update_id: 51, message_reaction: { message_id: 1051, user: { id: 42 }, chat: { id: 42, type: "private" }, date: 0, old_reaction: [], new_reaction: [{ type: "emoji", emoji: "👍" }] } } as TelegramUpdate)).toBe(true)
+  })
+
+  it("records a message as failed when taking it back from the inbox throws", async () => {
+    const root = newRoot()
+    const crashed = butler(root, never)
+    void crashed.onMessage(message(52))
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    const restarted = butler(root, reply("hi"))
+    expect(await restarted.replay(redelivered(52), () => { throw new Error("inbox unreadable") })).toBe(false)
+    expect(outcomes(root)).toEqual([expect.objectContaining({ outcome: "failed", detail: "deciding whether to run it again failed (Error)" })])
+  })
+
   it("leaves callbacks, and messages from people it does not know, to their own recovery", async () => {
     const root = newRoot()
     const b = butler(root, reply("hi"))
@@ -465,7 +487,7 @@ describe("Telegram household Friend outcomes", () => {
   const reference = (updateId: number) => `telegram-inbound:${createHmac("sha256", identityKey).update(["777", "888", updateId, updateId + 100].join("\0")).digest("hex")}`
   const householdId = (updateId: number) => `telegram-household:${createHash("sha256").update(reference(updateId)).digest("hex")}`
 
-  function household(agentRoot: string, runTurn: RunTurn, approved: (userId: string) => boolean = (userId) => userId === "888") {
+  function household(agentRoot: string, runTurn: RunTurn, approved: (userId: string) => boolean | Promise<boolean> = (userId) => userId === "888") {
     let pollOptions!: TelegramLongPollOptions
     const api: TelegramBotApi = { request: vi.fn(async (method: string) => method === "sendMessage" ? { message_id: 100 } : true) as TelegramBotApi["request"], stop: vi.fn() }
     const turn = vi.fn(runTurn)
@@ -482,7 +504,7 @@ describe("Telegram household Friend outcomes", () => {
       admission: {
         ownerFriendId: "ari",
         resolveOwner: vi.fn(async () => ({ friendId: "ari" })),
-        resolveApprovedFriend: vi.fn(async ({ userId }: { userId: string }) => approved(userId) ? { friendId: "household" } : null),
+        resolveApprovedFriend: vi.fn(async ({ userId }: { userId: string }) => await approved(userId) ? { friendId: "household" } : null),
         claimFriend: vi.fn(),
         revokeFriend: vi.fn(),
       },
@@ -544,6 +566,49 @@ describe("Telegram household Friend outcomes", () => {
     expect(readInboundOutcome(root, "telegram", householdId(42))).toMatchObject({ outcome: "failed" })
     await crashed.app.stop()
     await restarted.app.stop()
+  })
+
+  it("records a household Friend's turn that threw as failed, even when what it threw was not an Error", async () => {
+    const root = newRoot()
+    const b = household(root, async () => { throw "provider gone" })
+    await expect(b.onUnknownMessage(44)).rejects.toBe("provider gone")
+    expect(readInboundOutcome(root, "telegram", householdId(44))).toMatchObject({ outcome: "failed", detail: "the turn stopped with an error (unknown), and no reply reached them" })
+    await b.app.stop()
+  })
+
+  it("records a household Friend's message as failed when they stopped being one before it came back", async () => {
+    const root = newRoot()
+    const crashed = household(root, never)
+    void crashed.onUnknownMessage(45)
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    const revoked = household(root, reply("hi"), () => false)
+    expect(await revoked.replay(householdUpdate(45))).toBe(false)
+    expect(readInboundOutcome(root, "telegram", householdId(45))).toMatchObject({ outcome: "failed", detail: "they are no longer a household Friend, so it is not run again" })
+    await crashed.app.stop()
+    await revoked.app.stop()
+  })
+
+  it("records a message as failed when deciding whether to run it again throws", async () => {
+    const root = newRoot()
+    const crashed = household(root, never)
+    void crashed.onUnknownMessage(46)
+    await vi.waitFor(() => expect(crashed.runTurn).toHaveBeenCalled())
+    const broken = household(root, reply("hi"), async () => { throw new RangeError("friends store down") })
+    expect(await broken.replay(householdUpdate(46))).toBe(false)
+    expect(readInboundOutcome(root, "telegram", householdId(46))).toMatchObject({ outcome: "failed", detail: "deciding whether to run it again failed (RangeError)" })
+    await crashed.app.stop()
+    await broken.app.stop()
+  })
+
+  it("records a household Friend's turn that threw after a reply went out as failed, saying so", async () => {
+    const root = newRoot()
+    const b = household(root, async (options) => {
+      await options.deliverySink.onDelivery({ kind: "settle", text: "Half an answer" })
+      throw new TypeError("provider exploded")
+    })
+    await expect(b.onUnknownMessage(47)).rejects.toThrow("provider exploded")
+    expect(readInboundOutcome(root, "telegram", householdId(47))).toMatchObject({ outcome: "failed", detail: "the turn stopped with an error (TypeError) after part of the reply went out" })
+    await b.app.stop()
   })
 
   it("leaves a message from someone who is not a household Friend to the admission gate", async () => {
