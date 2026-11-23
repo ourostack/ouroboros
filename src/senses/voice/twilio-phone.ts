@@ -1372,7 +1372,9 @@ export class TwilioMediaStreamSession {
     // A turn with a record always reported its outcome; with none there is nothing to record.
     const played = (this.playbackBytesByGeneration.get(generation) ?? 0) > 0
     if (hold.outcome()?.[0] === "answered" && !played) {
-      record?.settle("failed", this.closed ? "the call ended before the reply was played" : this.playbackStartedBecause.get(generation + 1))
+      record?.settle("failed", this.closed
+        ? "the call ended before the reply was played"
+        : this.playbackStartedBecause.get(generation + 1) ?? "the reply could not be sent down the call")
     } else {
       hold.release()
     }

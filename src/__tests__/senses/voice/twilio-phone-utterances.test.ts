@@ -287,6 +287,21 @@ describe("Twilio Media Stream utterance outcomes", () => {
     }))
   })
 
+  it("records a reply that made no audio as failed, saying it could not be sent down the call", async () => {
+    const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
+    const session = new TwilioMediaStreamSession(fakeSocket().socket, identity(), f.options, new TwilioAudioStreamJobStore())
+    session.attach()
+    session.handleRawMessage(start("CAone", {}))
+    await vi.waitFor(() => expect(f.runSenseTurn).toHaveBeenCalled())
+    vi.mocked(f.options.tts.synthesize).mockImplementation(async (request) => ({
+      utteranceId: request.utteranceId, audio: Buffer.alloc(0), byteLength: 0, chunkCount: 0, modelId: "m", voiceId: "v", mimeType: "audio/x-mulaw",
+    }))
+    speak(session)
+    await vi.waitFor(() => expect(voiceUtterances(f.outputDir).outcome("twilio-CAone-1")).toMatchObject({
+      outcome: "failed", detail: "the reply could not be sent down the call",
+    }))
+  })
+
   it("records an outbound call's utterance as silent when a voicemail menu answered", async () => {
     const f = await fixture({ mediaMinSpeechMs: 20, mediaSilenceEndMs: 40 })
     const fake = fakeSocket()
