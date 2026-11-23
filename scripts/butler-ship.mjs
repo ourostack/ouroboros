@@ -2,7 +2,7 @@
 // One command ships a Butler release through the replay gate. Operator runbook: deploy/unraid/README.txt.
 // Usage: npm run butler:ship -- <version> [--host sanctuary] [--no-gate] [--no-baseline] [--plant <case>] [--dry-run]
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs"
+import { mkdtempSync, readFileSync, writeFileSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -23,6 +23,7 @@ export function realDeps() {
     ssh: (host, cmd) => run("ssh", [...SSH_OPTS, host, cmd]),
     scp: (local, host, remote) => run("scp", [...SSH_OPTS, local, `${host}:${remote}`]),
     writeTemp: (name, content) => { const p = join(dir, name); writeFileSync(p, content); return p },
+    hostLockScript: () => readFileSync(new URL("../deploy/unraid/ouro-host-lock.mjs", import.meta.url), "utf8"),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
     log: (line) => console.log(line),

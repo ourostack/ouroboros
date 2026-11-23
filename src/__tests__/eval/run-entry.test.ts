@@ -7,13 +7,15 @@ const command = vi.hoisted(() => ({ parse: vi.fn(), run: vi.fn() }))
 vi.mock("../../eval/run-command", () => ({ parseEvalArgs: command.parse, runEvalCommand: command.run }))
 vi.mock("../../eval/targets", () => ({ resolveTarget: vi.fn() }))
 vi.mock("../../eval/report", () => ({ writePrivateReport: vi.fn() }))
-const sandbox = vi.hoisted(() => ({ runSandboxed: vi.fn(), dockerOracle: vi.fn(), remoteRunCase: vi.fn() }))
+const sandbox = vi.hoisted(() => ({ runSandboxed: vi.fn(), dockerOracle: vi.fn(), remoteRunCase: vi.fn(), sshNode: vi.fn((host: string, args: string[]) => ({ host, args })) }))
 vi.mock("../../eval/sandbox/docker", () => ({ dockerCli: vi.fn(), HOUSEHOLD_IMAGE: "household", runSandboxed: sandbox.runSandboxed }))
 vi.mock("../../eval/sandbox/oracle", () => ({ dockerOracle: sandbox.dockerOracle }))
-vi.mock("../../eval/sandbox/remote", () => ({ remoteRunCase: sandbox.remoteRunCase, sshStart: vi.fn() }))
+vi.mock("../../eval/sandbox/remote", () => ({ remoteRunCase: sandbox.remoteRunCase, sshStart: vi.fn(), sshNode: sandbox.sshNode }))
+const lock = vi.hoisted(() => ({ holdHostLock: vi.fn(), release: vi.fn() }))
+vi.mock("../../eval/sandbox/host-lock", () => ({ holdHostLock: lock.holdHostLock, HOST_LOCK_TTL_S: 21600, HOST_LOCK_WAIT_S: 1800 }))
 
 const previous = process.exitCode
-afterEach(() => { process.exitCode = previous; vi.resetModules(); vi.restoreAllMocks() })
+afterEach(() => { process.exitCode = previous; vi.resetModules(); vi.restoreAllMocks(); lock.release.mockClear(); lock.holdHostLock.mockReset() })
 
 async function run(): Promise<{ stderr: string[]; exitCode: typeof process.exitCode }> {
   const stderr: string[] = []
@@ -64,4 +66,31 @@ it("runs a local sandbox and its books oracle in the run's own images", async ()
   expect(sandbox.dockerOracle).toHaveBeenCalledWith(expect.objectContaining({ image: images.household, booksLib: "/books" }))
   await runCase({ case: { id: "c" }, host: {}, budget: {} })
   expect(sandbox.runSandboxed).toHaveBeenCalledWith(expect.objectContaining({ images, bundleDir: "/b" }))
+})
+
+it("holds the remote host's lock for the whole command, sends its token with every job, and releases it after", async () => {
+  lock.holdHostLock.mockResolvedValue({ token: "t0k", release: lock.release })
+  await runCaseFor({ sandboxSsh: "sanctuary:/tmp/x", bundle: "/tmp/x/bundle", hostLock: "eval:c17-replay" })
+  expect(lock.holdHostLock).toHaveBeenCalledWith({
+    host: "sanctuary",
+    args: ["/tmp/x/harness/deploy/unraid/ouro-host-lock.mjs", "hold", "--holder", "eval:c17-replay", "--ttl", "21600", "--wait", "1800"],
+  })
+  expect(sandbox.remoteRunCase).toHaveBeenCalledWith(expect.objectContaining({ paths: expect.objectContaining({ hostLockToken: "t0k" }) }))
+  expect(lock.release).toHaveBeenCalledTimes(1)
+})
+
+it("releases the host lock when the command fails", async () => {
+  lock.holdHostLock.mockResolvedValue({ token: "t0k", release: lock.release })
+  command.parse.mockReturnValue({ sandboxSsh: "sanctuary:/tmp/x", hostLock: "eval" })
+  command.run.mockRejectedValue(new Error("the provider broke"))
+  expect((await run()).exitCode).toBe(1)
+  expect(lock.release).toHaveBeenCalledTimes(1)
+})
+
+it("runs nothing when the host lock cannot be taken", async () => {
+  command.parse.mockReturnValue({ sandboxSsh: "sanctuary:/tmp/x", hostLock: "eval" })
+  lock.holdHostLock.mockRejectedValue(new Error("the host lock is held by butler:ship 1.0.0 (on sanctuary) until 2026-11-23T13:00:00.000Z"))
+  command.run.mockClear()
+  expect((await run()).stderr).toContain("eval: the host lock is held by butler:ship 1.0.0 (on sanctuary) until 2026-11-23T13:00:00.000Z\n")
+  expect(command.run).not.toHaveBeenCalled()
 })
