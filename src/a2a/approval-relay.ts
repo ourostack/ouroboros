@@ -19,18 +19,22 @@ import { inspectTrustedJson } from "./trusted-files"
 export const APPROVAL_RELAY_FILE = "approval-relay.json"
 
 const DOMAIN = "ouro.approval-relay.v1\0"
+/** A decision token is 32 random bytes in base64url (43 characters); anything under 32 characters isn't one. */
+export const MIN_RELAY_KEY_LENGTH = 32
 const DID = /^did:[a-z0-9]+:[A-Za-z0-9._:%-]{1,512}$/
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/
 
 /**
  * `HMAC-SHA256(decisionToken, "ouro.approval-relay.v1\0" || approvalId || "\0" || routeDid)`, base64url. The decision
  * token is the approval's own secret, so only the Butler can compute it, and the route DID means an outstanding token
- * stops matching once the route rotates. It refuses to compute with an empty key (a settled approval has no token).
+ * stops matching once the route rotates. It refuses to compute with an empty or short key (a settled approval has no
+ * token, and a short one isn't a decision token).
  * Never log it.
  */
 export function approvalRelayToken(input: { decisionToken: string; approvalId: string; routeDid: string }): string {
   const parts = [input.decisionToken, input.approvalId, input.routeDid]
-  if (parts.some((part) => typeof part !== "string" || part.length === 0 || part.includes("\0"))) {
+  if (parts.some((part) => typeof part !== "string" || part.length === 0 || part.includes("\0"))
+    || input.decisionToken.length < MIN_RELAY_KEY_LENGTH) {
     emitNervesEvent({ level: "warn", component: "senses", event: "senses.approval_relay_token_refused", message: "refused to compute an approval relay token without a decision token, approval id and route DID", meta: { reason: "missing_input" } })
     throw new Error("approval relay token needs a decision token, an approval id and a route DID")
   }
