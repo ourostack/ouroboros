@@ -161,7 +161,12 @@ jobs:
       - name: Build release assets
         if: steps.release-gate.outputs.publish == 'true'
         run: |
-          npm ci
+          # better-sqlite3 compiles with node-gyp, which downloads Node's headers from nodejs.org; run 45210409954
+          # timed out on that one fetch. The Node setup-node installed carries the same headers, so build against
+          # them. A missing header file fails here instead of falling back to the download.
+          NODEDIR="$(dirname "$(dirname "$(command -v node)")")"
+          test -f "$NODEDIR/include/node/node.h"
+          npm ci --nodedir="$NODEDIR"
           test "$(node scripts/release-version.cjs apply --version "$PACKAGE_VERSION" --npm-changelog)" = "$PACKAGE_VERSION"
           node scripts/changelog-gate.cjs
           npm run build

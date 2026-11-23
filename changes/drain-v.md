@@ -1,0 +1,1 @@
+- The container build compiles native dependencies against the Node headers already installed on the runner, so one timed-out download from nodejs.org no longer stops a release.
