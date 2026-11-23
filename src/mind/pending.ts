@@ -102,7 +102,6 @@ function onStopSignal(signal: StopSignal): void {
   if (signalHandlersBesidesGuards(signal).length > 0) return
   releaseHeldPendingClaimsOnExit(0)
   for (const each of STOP_SIGNALS) process.removeListener(each, stopListeners[each])
-  /* v8 ignore next -- re-raising ends the process; pending-signals.test.ts covers it in a child process @preserve */
   process.kill(process.pid, signal)
 }
 

@@ -231,6 +231,54 @@ describe("claimPending", () => {
     expect(fs.readdirSync(dir)).toEqual([])
   })
 
+  describe("at a stop signal", () => {
+    function pendingGuard(): () => void {
+      const guard = process.rawListeners("SIGTERM").find((listener) => (listener as unknown as Record<symbol, unknown>)[Symbol.for("ouro.terminationGuard")] === true)
+      expect(guard).toBeDefined()
+      return guard as () => void
+    }
+
+    it("leaves held claims to the process's own shutdown when it has one", () => {
+      const dir = pendingDir()
+      queuePendingMessage(dir, message("held while stopping", 1))
+      const claim = claimPending(dir)
+      const guard = pendingGuard()
+      vi.spyOn(process, "rawListeners").mockReturnValue([guard, () => undefined])
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true)
+
+      guard()
+
+      expect(suffixes(dir)).toEqual([".json.claimed"])
+      expect(kill).not.toHaveBeenCalled()
+      claim.release()
+    })
+
+    it("puts held claims back uncounted and re-raises when nothing else handles it", () => {
+      const dir = pendingDir()
+      queuePendingMessage(dir, message("held while stopping", 1))
+      claimPending(dir)
+      const guard = pendingGuard()
+      vi.spyOn(process, "rawListeners").mockReturnValue([guard])
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true)
+      try {
+        guard()
+
+        expect(suffixes(dir)).toEqual([".json"])
+        expect(readStored(dir)).not.toHaveProperty("failedTries")
+        expect(kill).toHaveBeenCalledWith(process.pid, "SIGTERM")
+        vi.restoreAllMocks()
+        expect(process.rawListeners("SIGTERM")).not.toContain(guard)
+      } finally {
+        vi.restoreAllMocks()
+        // Put the guard back for later tests, as a fresh process would have it.
+        if (!process.rawListeners("SIGTERM").includes(guard)) {
+          process.removeListener("exit", releaseHeldPendingClaimsOnExit)
+          claimPending(pendingDir()).release()
+        }
+      }
+    })
+  })
+
   it("claims nothing when the folder cannot be listed", () => {
     const dir = pendingDir()
     const notAFolder = path.join(dir, "file")
