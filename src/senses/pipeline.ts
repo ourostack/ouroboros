@@ -1180,11 +1180,12 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ? {
       ...input.callbacks,
       onToolDispatch(name: string) {
+        // The sense's own hook goes first: when it stops the call (it could not note a send), nothing was acted on.
+        input.callbacks.onToolDispatch?.(name)
         if (!turnActed) {
           turnActed = true
           pendingClaim?.settle()
         }
-        input.callbacks.onToolDispatch?.(name)
       },
     }
     : input.callbacks

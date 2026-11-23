@@ -3,6 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { openTurnAttempts } from "../../../senses/turn-attempts"
+
 const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 const mockGetAgentRoot = vi.hoisted(() => vi.fn())
 
@@ -225,6 +227,9 @@ describe("BlueBubbles recovery autonomy budget", () => {
     expect(repairEvent).toHaveBeenCalledTimes(2)
     expect(listPendingBlueBubblesSemanticCaptures("testagent").map((capture) => capture.event.eventGuid))
       .toContain("blocked-release-guid")
+    // A deferral is not an attempt: the message still has all of its tries once the budget allows it.
+    const blocked = listPendingBlueBubblesSemanticCaptures("testagent").find((capture) => capture.event.eventGuid === "blocked-release-guid")!
+    expect(openTurnAttempts(agentRoot, "bluebubbles").get(blocked.keyHash)?.attempts).toBe(0)
   })
 
   it("keeps a storm-breaker-blocked message pending and recovers it after the breaker lifts", async () => {

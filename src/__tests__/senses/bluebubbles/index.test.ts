@@ -14,6 +14,8 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { Readable } from "node:stream"
 import { currentTestObservedNervesEvent } from "../../helpers/current-test-nerves"
+import { openTurnAttempts } from "../../../senses/turn-attempts"
+import { readBlueBubblesOutboundRecord } from "../../../senses/bluebubbles/outbound-state"
 
 // The server-account check has its own tests (host-account-verifier.test.ts);
 // here every server runs under the agent's declared host account unless a test says otherwise.
@@ -2081,6 +2083,135 @@ describe("BlueBubbles sense runtime", () => {
     }))
     expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
     expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("does not replay a turn whose process died after it sent a mid-turn message, and keeps that send's outbound record", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onTextChunk("checking on that now")
+      await input.callbacks.flushNow()
+      // The process dies here, before the turn ends.
+      return new Promise(() => undefined)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    void bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => mocks.sendText.mock.calls.length === 1)
+    const [keyHash] = [...mocks.semanticCaptures.keys()] as string[]
+    const saved = openTurnAttempts(tempAgentRoot, "bluebubbles").get(keyHash!)
+    expect(saved).toMatchObject({ attempts: 1, spoke: [expect.objectContaining({ kind: "speak", outboundRecordId: expect.stringMatching(/^bbout_/) })] })
+    expect(readBlueBubblesOutboundRecord(tempAgentRoot, saved!.spoke[0]!.outboundRecordId!)).toMatchObject({ status: "accepted", textLength: "checking on that now".length })
+
+    // The next process starts fresh: the dead one's claim is gone and nothing it held in memory survives.
+    mocks.semanticClaims.clear()
+    vi.resetModules()
+    const restarted = await import("../../../senses/bluebubbles")
+    await restarted.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
+      outcome: "message_observed",
+      detailCode: "replay_after_visible_speech",
+    }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_turn_abandoned",
+      meta: expect.objectContaining({ reason: "replay", spokeBeforeEnd: true, sends: [expect.objectContaining({ kind: "speak", outboundRecordId: saved!.spoke[0]!.outboundRecordId })] }),
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(openTurnAttempts(tempAgentRoot, "bluebubbles").get(keyHash!)).toBeNull()
+  })
+
+  it("does not replay a turn whose process died after a tool in it messaged someone", async () => {
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    let toolStarted = false
+    mocks.handleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onToolStart("send_message", { friendId: "ari", channel: "telegram", content: "the build is out" })
+      input.callbacks.onToolDispatch("send_message")
+      toolStarted = true
+      return new Promise(() => undefined)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    void bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => toolStarted)
+
+    mocks.semanticClaims.clear()
+    vi.resetModules()
+    const restarted = await import("../../../senses/bluebubbles")
+    await restarted.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
+      outcome: "message_observed",
+      detailCode: "replay_after_visible_speech",
+    }))
+  })
+
+  it("keeps counting attempts across processes that die mid-turn, and records the capture once they are used up", async () => {
+    // Recovery spaces retries of one message by the autonomy budget's 10 minute duplicate window; only the clock moves.
+    vi.useFakeTimers({ toFake: ["Date"] })
+    let now = Date.parse("2026-11-22T10:00:00.000Z")
+    vi.setSystemTime(now)
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.handleInboundTurn.mockImplementation(() => new Promise(() => undefined))
+
+    let current = await import("../../../senses/bluebubbles")
+    void current.handleBlueBubblesEvent(dmTopLevelPayload)
+    await waitFor(() => mocks.handleInboundTurn.mock.calls.length === 1)
+    const [keyHash] = [...mocks.semanticCaptures.keys()] as string[]
+    for (let attempt = 2; attempt <= 3; attempt++) {
+      now += 11 * 60_000
+      vi.setSystemTime(now)
+      mocks.semanticClaims.clear()
+      vi.resetModules()
+      current = await import("../../../senses/bluebubbles")
+      void current.recoverCapturedBlueBubblesInboundMessages()
+      await waitFor(() => mocks.handleInboundTurn.mock.calls.length === attempt)
+      expect(openTurnAttempts(tempAgentRoot, "bluebubbles").get(keyHash!)?.attempts).toBe(attempt)
+    }
+
+    vi.setSystemTime(now + 11 * 60_000)
+    mocks.semanticClaims.clear()
+    vi.resetModules()
+    current = await import("../../../senses/bluebubbles")
+    await current.recoverCapturedBlueBubblesInboundMessages()
+
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(3)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
+      outcome: "message_observed",
+      detailCode: "turn_retries_exhausted",
+    }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("records a turn whose tool messaged someone before the deadline, instead of replaying it", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.handleInboundTurn.mockImplementationOnce((input: any) => {
+      input.callbacks.onToolStart("surface", { content: "ready" })
+      input.callbacks.onToolDispatch("surface")
+      return rejectWhenTurnAborts(input)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmTopLevelPayload)
+    for (let attempt = 0; attempt < 20 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    await vi.advanceTimersByTimeAsync(600_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({ reason: "turn_timeout", spokeBeforeEnd: true }))
+    expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(0)
+    expect(mocks.writeSemanticHandled).toHaveBeenCalledWith("testagent", expect.objectContaining({
+      detailCode: "turn_timeout_after_visible_speech",
+    }))
   })
 
   it("releases the live webhook lane when timeout cleanup transport hangs", async () => {
@@ -5893,6 +6024,9 @@ describe("BlueBubbles sense runtime", () => {
     await expect(bluebubbles.stopBlueBubblesApp(server)).resolves.toBeGreaterThanOrEqual(1)
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.listPendingSemanticCaptures("testagent")).toHaveLength(1)
+    // A clean shutdown gives its attempt back: restarts alone never use up a message.
+    const [pendingCapture] = mocks.listPendingSemanticCaptures("testagent")
+    expect(openTurnAttempts(tempAgentRoot, "bluebubbles").get(pendingCapture.keyHash)?.attempts).toBe(0)
     await expect(bluebubbles.stopBlueBubblesApp(server)).resolves.toBe(0)
   })
 

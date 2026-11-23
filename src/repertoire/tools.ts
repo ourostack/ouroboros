@@ -81,7 +81,7 @@ export const SANCTUARY_OWNER_ADDITIONS: ReadonlySet<string> = new Set([
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
   "web_search", "search_facts", "consult_diary", "consult_notes", "get_friend_note",
   "session_summary", "query_session", "set_reasoning_effort", "restart_runtime", "revive_sense",
-  "ls", "fetch_url", "note", "diary_write",
+  "ls", "fetch_url", "note", "diary_write", "load_skill",
 ])
 
 /** The bundle sync tools, granted to the Sanctuary owner alone. */
