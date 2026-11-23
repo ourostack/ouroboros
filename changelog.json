@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.1385",
+      "changes": [
+        "The Mailbox draws every tab with Ouro HX components: cards, item lists, section and page headers, description lists, a log table, empty states, alerts and loading skeletons, from Ouro UI v1.3.454."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.1384",
       "changes": [
         "A delegated command's audit notice is sent to the owner's own Telegram chat at once, or the command is refused: it no longer waits on the owner route, quiet hours, the daily cap or a handoff."
