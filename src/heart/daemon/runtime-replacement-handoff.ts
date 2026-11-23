@@ -41,9 +41,7 @@ export function isRuntimeReplacementStranded(input: {
   return !input.labelLoaded()
 }
 
-export interface RuntimeReplacementHandoffDeps {
-  platform: NodeJS.Platform
-  env: NodeJS.ProcessEnv
+export interface RuntimeReplacementHandoffDeps extends DaemonJobDetectionDeps {
   execPath: string
   /** The entry script of the running `ouro` command, rerun as the helper. */
   entryPath: string | undefined
@@ -62,13 +60,101 @@ export interface RuntimeReplacementHandoff {
   logPath: string
 }
 
+/** Set in the helper's env so the helper does the replacement instead of handing off again. */
+export const RUNTIME_REPLACEMENT_HELPER_ENV = "OURO_RUNTIME_REPLACEMENT_HELPER"
+
+export type DaemonJobCheckReason =
+  | "not_macos"
+  | "replacement_helper"
+  | "launchd_label"
+  | "daemon_ancestor"
+  | "not_descendant"
+  | "no_daemon_job"
+  | "launchctl_failed"
+  | "process_table_failed"
+
+export interface DaemonJobCheck {
+  inside: boolean
+  reason: DaemonJobCheckReason
+  xpcServiceName: string | null
+  daemonPid: number | null
+  error?: string
+}
+
+export interface DaemonJobDetectionDeps {
+  platform: NodeJS.Platform
+  env: NodeJS.ProcessEnv
+  /** The pid of the command asking. */
+  pid: number
+  /** The daemon job's running pid, or null when the job isn't loaded or has no process. Throws when launchd can't be asked. */
+  readDaemonJobPid: () => number | null
+  /** pid to parent pid for every process. Throws when the table can't be read. */
+  readProcessParents: () => Map<number, number>
+}
+
+/** Parent links are followed at most this many times, so a corrupt table can't loop forever. */
+const MAX_ANCESTRY_DEPTH = 128
+
 /**
- * launchd sets XPC_SERVICE_NAME to a job's label for every process it starts,
- * and children inherit it, so an agent's shell under the daemon carries the
- * daemon's label. Daemons started before this check existed set it too.
+ * Decides whether this command runs inside the daemon's launchd job.
+ *
+ * launchd gives the job's processes XPC_SERVICE_NAME=bot.ouro.daemon, but that
+ * label isn't enough by itself: Apple's /bin/sh, bash and zsh set
+ * XPC_SERVICE_NAME=0 for every child they fork, so an `ouro up` an agent's
+ * shell runs in a pipeline sees "0" (2026-11-22 live test). Being a descendant
+ * of the job's running pid settles it. When launchd or the process table can't
+ * be read the answer is "inside": a needless hand-off costs seconds, and a
+ * missed one strands the daemon.
  */
-export function isInsideDaemonLaunchdJob(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
-  return platform === "darwin" && env.XPC_SERVICE_NAME === DAEMON_PLIST_LABEL
+export function detectDaemonLaunchdJob(deps: DaemonJobDetectionDeps): DaemonJobCheck {
+  const xpcServiceName = deps.env.XPC_SERVICE_NAME ?? null
+  const result = (inside: boolean, reason: DaemonJobCheckReason, daemonPid: number | null = null, error?: string): DaemonJobCheck =>
+    ({ inside, reason, xpcServiceName, daemonPid, ...(error === undefined ? {} : { error }) })
+
+  if (deps.platform !== "darwin") return result(false, "not_macos")
+  if (deps.env[RUNTIME_REPLACEMENT_HELPER_ENV] === "1") return result(false, "replacement_helper")
+  if (xpcServiceName === DAEMON_PLIST_LABEL) return result(true, "launchd_label")
+
+  let daemonPid: number | null
+  try {
+    daemonPid = deps.readDaemonJobPid()
+  } catch (error) {
+    return result(true, "launchctl_failed", null, formatError(error))
+  }
+  if (daemonPid === null) return result(false, "no_daemon_job")
+
+  let parents: Map<number, number>
+  try {
+    parents = deps.readProcessParents()
+  } catch (error) {
+    return result(true, "process_table_failed", daemonPid, formatError(error))
+  }
+  let current: number | undefined = deps.pid
+  for (let depth = 0; current !== undefined && current > 1 && depth < MAX_ANCESTRY_DEPTH; depth++) {
+    if (current === daemonPid) return result(true, "daemon_ancestor", daemonPid)
+    current = parents.get(current)
+  }
+  return result(false, "not_descendant", daemonPid)
+}
+
+/** The running pid from `launchctl print` output, or null when the job has no process. */
+export function parseLaunchctlJobPid(output: string): number | null {
+  const match = /^\s*pid = (\d+)\s*$/m.exec(output)
+  return match ? Number(match[1]) : null
+}
+
+/** pid to parent pid from `ps -axo pid=,ppid=` output. */
+export function parseProcessParents(output: string): Map<number, number> {
+  const parents = new Map<number, number>()
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (match) parents.set(Number(match[1]), Number(match[2]))
+  }
+  return parents
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -78,7 +164,17 @@ export function isInsideDaemonLaunchdJob(env: NodeJS.ProcessEnv, platform: NodeJ
  * this module exists to prevent.
  */
 export function handOffDaemonRuntimeReplacement(deps: RuntimeReplacementHandoffDeps): RuntimeReplacementHandoff | null {
-  if (!isInsideDaemonLaunchdJob(deps.env, deps.platform)) return null
+  const check = detectDaemonLaunchdJob(deps)
+  emitNervesEvent({
+    level: check.error === undefined ? "info" : "warn",
+    component: "daemon",
+    event: "daemon.runtime_replacement_job_check",
+    message: check.inside
+      ? "runtime replacement runs inside the daemon's launchd job"
+      : "runtime replacement runs outside the daemon's launchd job",
+    meta: { ...check },
+  })
+  if (!check.inside) return null
   if (!deps.entryPath) {
     emitNervesEvent({
       level: "warn",
@@ -94,7 +190,7 @@ export function handOffDaemonRuntimeReplacement(deps: RuntimeReplacementHandoffD
     const logFd = deps.openLog(deps.logPath)
     // Without the daemon's label the helper replaces the daemon itself rather
     // than handing off again.
-    const env: NodeJS.ProcessEnv = { ...deps.env, OURO_UNATTENDED: "1" }
+    const env: NodeJS.ProcessEnv = { ...deps.env, OURO_UNATTENDED: "1", [RUNTIME_REPLACEMENT_HELPER_ENV]: "1" }
     delete env.XPC_SERVICE_NAME
     const child = deps.spawn(deps.execPath, [deps.entryPath, "up"], {
       detached: true,
