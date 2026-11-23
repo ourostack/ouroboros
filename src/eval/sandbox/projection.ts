@@ -18,7 +18,8 @@ const FROM_SEED = ["psyche/TACIT.md", "arc", "awaiting", "habits", "tool-profile
 /** Never copied from the bundle under test, wherever they sit in an included path. */
 const PRIVATE = ["friends", "state", "desk", "books/credentials.json", "books/ledger.ndjson", "books/removed", "books/work"]
 /** Folders the turn and the books CLI write, created empty. */
-const EMPTY = ["friends", "state", "desk", "arc", "books/work", "books/removed"]
+// The desk starts without entries but with the `_record` folders a fresh production agent root has (the bundle manifest).
+const EMPTY = ["friends", "state", "desk/_record/diary/daily", "desk/_record/notes", "arc", "books/work", "books/removed"]
 
 export type ProjectionInput = { bundleDir: string; seedBundleDir: string; include: string[]; out: string }
 
