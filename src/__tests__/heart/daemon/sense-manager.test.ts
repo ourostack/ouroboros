@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -1530,10 +1530,11 @@ describe("daemon sense manager", () => {
     })
 
     const probes = manager.listHealthProbes()
-    // No probes registered for BB sense — process supervision catches dead
-    // processes, and `pendingRecoveryCount` / `lastRecoveredAt` in the BB
-    // sense runtime state surface "alive but hung" to the agent's prompt.
-    expect(probes).toHaveLength(0)
+    // No HTTP probe for the BB sense: process supervision catches dead
+    // processes. The one probe reads the listener's proof file and never
+    // calls into the listener, so a busy listener is never killed for it.
+    expect(probes.map((probe) => probe.name)).toEqual(["bluebubbles-proof:slugger"])
+    expect(await probes[0]!.check()).toEqual({ ok: true })
   })
 
   it("skips BlueBubbles health probes when this machine is not attached", async () => {
@@ -4224,5 +4225,106 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "shepherd", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "app-sessions", status: "disabled", detail: "not enabled in agent.json" }),
     ])
+  })
+})
+
+describe("a BlueBubbles listener whose proof stops updating", () => {
+  beforeEach(() => {
+    for (const mocked of ["fs", "os", "../../../nerves/runtime", "../../../heart/runtime-credentials", "../../../heart/daemon/process-manager"]) vi.doUnmock(mocked)
+    vi.resetModules()
+  })
+
+  async function staleProofManager(options: { proofAgeMs?: number; status?: string; runningForMs?: number | null } = {}) {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-stale-proof-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: { cli: { enabled: true }, bluebubbles: { enabled: true, hostUsername: os.userInfo().username } },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
+      bluebubblesChannel: { port: 18888, webhookPath: "/hooks/bb" },
+    })
+    if (options.proofAgeMs !== undefined) {
+      const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+      fs.mkdirSync(runtimeDir, { recursive: true })
+      fs.writeFileSync(path.join(runtimeDir, "runtime.json"), JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        lastCheckedAt: new Date(Date.now() - options.proofAgeMs).toISOString(),
+        proofMethod: "bluebubbles.checkHealth",
+        pendingRecoveryCount: 0,
+      }))
+    }
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    return new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [{
+          name: "slugger:bluebubbles",
+          status: options.status ?? "running",
+          pid: 4242,
+          startedAt: options.runningForMs === null ? null : new Date(Date.now() - (options.runningForMs ?? 60 * 60_000)).toISOString(),
+        }],
+      },
+    })
+  }
+
+  it("reports a running listener with a stale proof as an error, with the proof's age", async () => {
+    const manager = await staleProofManager({ proofAgeMs: 20 * 60_000 })
+    const row = manager.listSenseRows().find((candidate) => candidate.sense === "bluebubbles")
+    expect(row).toEqual(expect.objectContaining({
+      status: "error",
+      lastFailure: "BlueBubbles proof is stale",
+      failureLayer: "proof_freshness",
+      proofMethod: "bluebubbles.checkHealth",
+      lastProofAt: expect.any(String),
+      proofAgeMs: expect.any(Number),
+    }))
+    expect(row!.proofAgeMs!).toBeGreaterThanOrEqual(20 * 60_000)
+  })
+
+  it("restarts a listener whose proof has been stale for ten minutes, and says why", async () => {
+    const emitted = vi.fn()
+    vi.resetModules()
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: emitted }))
+    const manager = await staleProofManager({ proofAgeMs: 11 * 60_000 })
+    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
+    expect(probe?.managedName).toBe("slugger:bluebubbles")
+    const outcome = await probe!.check()
+    expect(outcome.ok).toBe(false)
+    expect(outcome.detail).toMatch(/BlueBubbles proof is 11m old/)
+    expect(emitted).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "daemon.bluebubbles_stale_proof_restart",
+      meta: expect.objectContaining({ agent: "slugger", proofAgeMs: expect.any(Number), lastProofAt: expect.any(String) }),
+    }))
+    vi.doUnmock("../../../nerves/runtime")
+    vi.resetModules()
+  })
+
+  it.each([
+    ["the proof is fresh", { proofAgeMs: 30_000 }],
+    ["the proof is stale but younger than ten minutes", { proofAgeMs: 9 * 60_000 }],
+    ["the listener started less than ten minutes ago", { proofAgeMs: 60 * 60_000, runningForMs: 2 * 60_000 }],
+    ["the listener is not running, which the process manager handles", { proofAgeMs: 60 * 60_000, status: "crashed" }],
+    ["the listener's start time is unknown", { proofAgeMs: 60 * 60_000, runningForMs: null }],
+  ])("leaves the listener alone when %s", async (_case, options) => {
+    const manager = await staleProofManager(options)
+    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
+    expect(await probe!.check()).toEqual({ ok: true })
+  })
+
+  it("restarts a listener that has run ten minutes without ever writing a proof", async () => {
+    const manager = await staleProofManager({ runningForMs: 11 * 60_000 })
+    const probe = manager.listHealthProbes().find((candidate) => candidate.name === "bluebubbles-proof:slugger")
+    const outcome = await probe!.check()
+    expect(outcome.ok).toBe(false)
+    expect(outcome.detail).toMatch(/has written no BlueBubbles proof/)
   })
 })

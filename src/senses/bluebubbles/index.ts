@@ -588,6 +588,13 @@ const defaultDeps: RuntimeDeps = {
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+/** After a failed sync, the next one comes sooner than the interval: 5 s, then 10 s, then 20 s. */
+const BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS = 5_000
+/**
+ * A sync still running this long is abandoned so the next one can start. Its proof was written right after the
+ * probe, so a slow catch-up never leaves the proof older than about this, well inside the daemon's restart threshold.
+ */
+const BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS = 5 * 60_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
 // A turn that is still thinking after this long is treated as hung. It is generous on purpose: a slow reply that
@@ -3712,13 +3719,16 @@ function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now(
   }
 }
 
+/** ok: the probe passed and the state was written. error: an error state was written. aborted: shutdown or abandonment. */
+type BlueBubblesRuntimeSyncOutcome = "ok" | "error" | "aborted"
+
 async function syncBlueBubblesRuntime(
   deps: Partial<RuntimeDeps> = {},
   options: {
     catchUpObservationBatch?: BlueBubblesObservationBatch
     lifecycleSignal?: AbortSignal
   } = {},
-): Promise<void> {
+): Promise<BlueBubblesRuntimeSyncOutcome> {
   options.lifecycleSignal?.throwIfAborted()
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -3734,10 +3744,22 @@ async function syncBlueBubblesRuntime(
   const client = resolvedDeps.createClient()
   const checkedAt = new Date().toISOString()
   const previousState = readBlueBubblesRuntimeState(agentName)
+  let probePassed = false
 
   try {
     await client.checkHealth()
     options.lifecycleSignal?.throwIfAborted()
+    probePassed = true
+    // The listener logs at warn, so a healthy pass is silent; a recovery must not be.
+    if (previousState.upstreamStatus === "error") {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_upstream_recovered",
+        message: "bluebubbles upstream answered again after a failed sync",
+        meta: { previousDetail: previousState.detail, previousCheckedAt: previousState.lastCheckedAt },
+      })
+    }
     const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     const activeBeforeCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
@@ -3776,17 +3798,27 @@ async function syncBlueBubblesRuntime(
       lastRecoveredAt: previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
+    return "ok"
   } catch (error) {
-    if (options.lifecycleSignal?.aborted) return
+    if (options.lifecycleSignal?.aborted) return "aborted"
+    const detail = error instanceof Error ? error.message : String(error)
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_runtime_sync_failed",
+      message: "bluebubbles runtime sync failed; recorded upstream error",
+      meta: { reason: detail, probePassed },
+    })
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "error",
-      detail: error instanceof Error ? error.message : String(error),
+      detail,
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...blueBubblesPendingRecoverySnapshot(agentName),
       ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
       failedRecoveryCount: 0,
     })
+    return "error"
   }
 }
 
@@ -4974,7 +5006,9 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleSignal: lifecycleController.signal,
   }))
   let recoveryPassRunning = false
-  let runtimeSyncRunning = false
+  let runtimeSync: { startedAt: number; controller: AbortController } | null = null
+  let runtimeSyncFailures = 0
+  let runtimeSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
   let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
   let webhookReconciler: ReturnType<typeof createBlueBubblesWebhookReconciler> | null = null
   let closed = false
@@ -5015,17 +5049,56 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     }, BLUEBUBBLES_RECOVERY_PASS_DELAY_MS)
   }
 
+  function scheduleRuntimeSyncRetry(): void {
+    runtimeSyncFailures += 1
+    const delayMs = BLUEBUBBLES_RUNTIME_SYNC_RETRY_BASE_MS * 2 ** (runtimeSyncFailures - 1)
+    // From here the 30 s interval retries soon enough.
+    if (closed || delayMs >= BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS) return
+    runtimeSyncRetryTimer = setTimeout(() => {
+      runtimeSyncRetryTimer = null
+      triggerRuntimeSync()
+    }, delayMs)
+  }
+
   function triggerRuntimeSync(
     catchUpObservationBatch?: BlueBubblesObservationBatch,
   ): void {
-    if (closed || runtimeSyncRunning) return
-    runtimeSyncRunning = true
+    /* v8 ignore next -- close clears the interval and the retry timer; guard covers an already-queued host callback @preserve */
+    if (closed) return
+    if (runtimeSync) {
+      const runningMs = Date.now() - runtimeSync.startedAt
+      if (runningMs < BLUEBUBBLES_RUNTIME_SYNC_TIMEOUT_MS) return
+      // A sync that never finishes must not stop every later one, which would leave the proof to go stale.
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_runtime_sync_timeout",
+        message: "abandoned a bluebubbles runtime sync that did not finish",
+        meta: { runningMs },
+      })
+      runtimeSync.controller.abort(new Error("bluebubbles_runtime_sync_timeout"))
+      runtimeSync = null
+    }
+    if (runtimeSyncRetryTimer !== null) {
+      clearTimeout(runtimeSyncRetryTimer)
+      runtimeSyncRetryTimer = null
+    }
+    const sync = { startedAt: Date.now(), controller: new AbortController() }
+    runtimeSync = sync
     void syncBlueBubblesRuntime(resolvedDeps, {
       ...(catchUpObservationBatch ? { catchUpObservationBatch } : {}),
-      lifecycleSignal: lifecycleController.signal,
+      lifecycleSignal: AbortSignal.any([lifecycleController.signal, sync.controller.signal]),
     })
-      .then(scheduleRecoveryPass)
+      .then((outcome) => {
+        if (runtimeSync !== sync) return
+        runtimeSync = null
+        if (outcome === "error") scheduleRuntimeSyncRetry()
+        else runtimeSyncFailures = 0
+        scheduleRecoveryPass()
+      })
       .catch((error) => {
+        /* v8 ignore next -- defensive: a late rejection from an abandoned sync must not clear the newer sync's slot @preserve */
+        if (runtimeSync === sync) runtimeSync = null
         if (closed) return
         emitNervesEvent({
           level: "warn",
@@ -5034,9 +5107,7 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
           message: "bluebubbles runtime sync failed",
           meta: { reason: error instanceof Error ? error.message : String(error) },
         })
-      })
-      .finally(() => {
-        runtimeSyncRunning = false
+        scheduleRuntimeSyncRetry()
       })
   }
 
@@ -5054,6 +5125,10 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
     lifecycleController.abort(new Error("bluebubbles_runtime_shutdown"))
     clearInterval(runtimeTimer)
     clearInterval(recoveryTimer)
+    if (runtimeSyncRetryTimer !== null) {
+      clearTimeout(runtimeSyncRetryTimer)
+      runtimeSyncRetryTimer = null
+    }
     if (recoveryDelayTimer !== null) {
       clearTimeout(recoveryDelayTimer)
       recoveryDelayTimer = null

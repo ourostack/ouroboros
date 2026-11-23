@@ -6698,6 +6698,141 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
   })
 
+  it("logs a failed runtime sync at warn, retries it with backoff, and logs the recovery", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    mocks.checkHealth
+      .mockRejectedValueOnce(new Error("Cannot reach BlueBubbles"))
+      .mockRejectedValueOnce(new Error("Cannot reach BlueBubbles"))
+      .mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: expect.objectContaining({ reason: "Cannot reach BlueBubbles", probePassed: false }),
+    }))
+    expect(readBlueBubblesRuntimeState("testagent").upstreamStatus).toBe("error")
+
+    // Retries come sooner than the 30 s interval: 5 s, then 10 s.
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await flushAsyncWork()
+
+    expect(readBlueBubblesRuntimeState("testagent").upstreamStatus).toBe("ok")
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_upstream_recovered",
+      meta: expect.objectContaining({ previousDetail: "Cannot reach BlueBubbles" }),
+    }))
+    // Once it has recovered, syncs go back to the 30 s interval, which next fires at 30 s.
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    closableServer.close()
+  })
+
+  it("stops retrying early once backoff reaches the 30 s interval, and lets the interval retry", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.checkHealth.mockRejectedValue(new Error("Cannot reach BlueBubbles"))
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    // Failures at 0 s, 5 s and 15 s; the interval at 30 s replaces the retry due at 35 s.
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(5)
+    closableServer.close()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("logs a runtime sync that fails after its probe passed, which used to be silent", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    const createClient = vi.fn()
+      .mockReturnValueOnce({})
+      .mockReturnValueOnce({ checkHealth: mocks.checkHealth, listRecentMessages: mocks.listRecentMessages })
+      .mockImplementationOnce(() => { throw new Error("catch-up client failed") })
+      .mockReturnValue({ checkHealth: mocks.checkHealth, listRecentMessages: mocks.listRecentMessages })
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp({ createClient } as any)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_failed",
+      meta: expect.objectContaining({ reason: "catch-up client failed", probePassed: true }),
+    }))
+    closableServer.close()
+  })
+
+  it("abandons a runtime sync that never finishes, so later syncs still prove the listener is alive", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    mocks.getAgentRoot.mockReturnValue(tempAgentRoot)
+    mocks.listRecentMessages.mockResolvedValue([])
+    const stuckHealth = createDeferred<void>()
+    mocks.checkHealth.mockReturnValueOnce(stuckHealth.promise).mockResolvedValue(undefined)
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+    const { readBlueBubblesRuntimeState } = await import("../../../senses/bluebubbles/runtime-state")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    // Under five minutes, a slow sync keeps its slot.
+    await vi.advanceTimersByTimeAsync(270_000)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: "senses.bluebubbles_runtime_sync_timeout" }))
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "senses.bluebubbles_runtime_sync_timeout",
+      meta: expect.objectContaining({ runningMs: 300_000 }),
+    }))
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    await flushAsyncWork()
+    const provedAt = new Date(Date.now()).toISOString()
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ upstreamStatus: "ok", lastCheckedAt: provedAt }))
+
+    // The abandoned sync finishing late stops at once and changes nothing.
+    stuckHealth.resolve()
+    await flushAsyncWork()
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+    expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({ upstreamStatus: "ok", lastCheckedAt: provedAt }))
+    closableServer.close()
+  })
+
   it("reports runtime sync setup failures and releases the single-flight slot", async () => {
     vi.useFakeTimers()
     const closableServer = createClosableServer()
@@ -6719,9 +6854,10 @@ describe("BlueBubbles sense runtime", () => {
       event: "senses.bluebubbles_recovery_error",
       meta: { reason: "runtime sync setup failed" },
     }))
+    // The failed sync is retried after 5 s, then the 30 s interval runs one more. Each sync creates two clients.
     await vi.advanceTimersByTimeAsync(30_000)
-    expect(createClient).toHaveBeenCalledTimes(4)
-    expect(mocks.checkHealth).toHaveBeenCalledTimes(1)
+    expect(createClient).toHaveBeenCalledTimes(6)
+    expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
     closableServer.close()
   })
 

@@ -78,7 +78,7 @@ export interface DaemonSenseManagerOptions {
     resetAgentFailureState?(agent: string): void
     stopAll(): Promise<void>
     stopAgent?(agent: string): Promise<void>
-    listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
+    listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null; startedAt?: string | null }>
   }
   /**
    * Whether this machine runs a shared sense under the agent's presence
@@ -127,6 +127,11 @@ const DEFAULT_TEAMS_PORT = 3978
 const DEFAULT_BLUEBUBBLES_PORT = 18790
 const DEFAULT_BLUEBUBBLES_WEBHOOK_PATH = "/bluebubbles-webhook"
 const BLUEBUBBLES_RUNTIME_FRESHNESS_WINDOW_MS = 90_000
+/**
+ * The listener's 30 s sync loop rewrites its proof on every pass, and a pass that hangs is abandoned after
+ * two minutes, so a proof this old means the loop itself has stopped. Busy turns never hold it back.
+ */
+export const BLUEBUBBLES_STALE_PROOF_RESTART_MS = 10 * 60_000
 const SENSE_CONFIG_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const
 const WORKBENCH_RUNTIME_INJECTION_DETAIL = "runtime-injected by Workbench app; no agent.json entry required"
 const WORKBENCH_STALE_BUNDLE_DETAIL = "stale agent.json Workbench entry; run 'ouro connect workbench' to clean it and use runtime injection"
@@ -669,6 +674,16 @@ function readBlueBubblesRuntimeFacts(
     oldestActiveTurnAgeMs: state.oldestActiveTurnAgeMs,
   }
   if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
+    // A running listener that has stopped proving itself is not healthy, whatever its process state says.
+    if (state.lastCheckedAt && snapshot?.runtime === "running") {
+      return {
+        runtime: "error",
+        ...proofFacts,
+        lastFailure: "BlueBubbles proof is stale",
+        failureLayer: "proof_freshness",
+        recoveryAction: `the daemon restarts the BlueBubbles listener once its proof is ${Math.round(BLUEBUBBLES_STALE_PROOF_RESTART_MS / 60_000)}m old`,
+      }
+    }
     return {
       runtime: snapshot?.runtime,
       lastFailure: state.lastCheckedAt ? "BlueBubbles proof is stale" : undefined,
@@ -1129,8 +1144,45 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       // something else triggers a tight respawn cycle for any reason, the
       // guard fires and refuses further restarts after N attempts in M
       // minutes, so we can never re-enter the 2026-05-11 spiral.
+      //
+      // What we do watch is the listener's own proof. Its sync loop rewrites
+      // runtime.json every 30 s on a timer that turns never block, so a proof
+      // ten minutes old means that loop has stopped, not that it is busy. The
+      // probe only reads the file; it never calls into the listener.
+      probes.push(this.blueBubblesProofProbe(agent))
     }
     return probes
+  }
+
+  private blueBubblesProofProbe(agent: string): SenseProbe {
+    const managedName = `${agent}:bluebubbles`
+    return {
+      name: `bluebubbles-proof:${agent}`,
+      managedName,
+      check: async () => {
+        const snapshot = this.processManager.listAgentSnapshots().find((row) => row.name === managedName)
+        if (snapshot?.status !== "running") return { ok: true }
+        const now = Date.now()
+        const startedAtMs = snapshot.startedAt ? Date.parse(snapshot.startedAt) : Number.NaN
+        if (!Number.isFinite(startedAtMs) || now - startedAtMs < BLUEBUBBLES_STALE_PROOF_RESTART_MS) return { ok: true }
+        const runtimePath = path.join(this.bundlesRoot, `${agent}.ouro`, "state", "senses", "bluebubbles", "runtime.json")
+        const lastProofAt = fs.existsSync(runtimePath) ? readBlueBubblesRuntimeJson(runtimePath).lastCheckedAt : undefined
+        const proofMs = lastProofAt ? Date.parse(lastProofAt) : Number.NaN
+        const proofAgeMs = Number.isFinite(proofMs) ? Math.max(0, now - proofMs) : null
+        if (proofAgeMs !== null && proofAgeMs < BLUEBUBBLES_STALE_PROOF_RESTART_MS) return { ok: true }
+        const detail = proofAgeMs === null
+          ? `the BlueBubbles listener has written no BlueBubbles proof in ${Math.round((now - startedAtMs) / 60_000)}m of running; restarting it`
+          : `BlueBubbles proof is ${Math.round(proofAgeMs / 60_000)}m old; restarting the listener`
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.bluebubbles_stale_proof_restart",
+          message: "restarting a BlueBubbles listener whose proof stopped updating",
+          meta: { agent, proofAgeMs, lastProofAt: lastProofAt ?? null, startedAt: snapshot.startedAt },
+        })
+        return { ok: false, detail }
+      },
+    }
   }
 
   async restartSense(managedName: string): Promise<void> {
