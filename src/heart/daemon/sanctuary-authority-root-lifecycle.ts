@@ -1042,11 +1042,23 @@ export class SanctuaryAuthorityRootLifecycle {
     const names = this.#docker(["ps", "-a", "--format", "{{json .}}"]).trim().split("\n").filter(Boolean).map((line) => String(JSON.parse(line).Names))
     return names.filter((name) => ["ouro-butler", "ouro-butler-rollback"].includes(name)).flatMap((name) => JSON.parse(this.#docker(["inspect", name])) as Container[])
   }
+  #runningNames(): string[] {
+    return this.#docker(["ps", "--format", "{{json .}}"]).trim().split("\n").filter(Boolean).map((line) => String(JSON.parse(line).Names))
+  }
   #assertNoForeignPoller(): void {
-    const names = this.#docker(["ps", "--format", "{{json .}}"]).trim().split("\n").filter(Boolean).map((line) => String(JSON.parse(line).Names))
+    const names = this.#runningNames()
     for (const name of names) {
       if (["ouro-butler", "ouro-butler-rollback"].includes(name)) continue
-      const containers = JSON.parse(this.#docker(["inspect", name])) as Container[]
+      let containers: Container[]
+      try {
+        containers = JSON.parse(this.#docker(["inspect", name])) as Container[]
+      } catch (error) {
+        // A container can stop between the listing and its inspect (eval sandboxes come and go); one no longer
+        // running can't be polling, so it is skipped. One still running that can't be read still fails the step.
+        if (this.#runningNames().includes(name)) throw error
+        emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_poller_scan_container_gone", message: "skipped a container that stopped during the direct-poller scan", meta: { name } })
+        continue
+      }
       if (containers.some((container) => container.Mounts.some((mount) => mount.Source === BUNDLE || mount.Source === RUNTIME))) throw new Error("Sanctuary has an unowned possible direct poller")
     }
   }
