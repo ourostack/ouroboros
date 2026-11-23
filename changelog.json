@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.1374",
       "changes": [
-        "Senses: an iMessage turn can no longer wait forever to send; an iMessage turn that ends without a reply stays pending for replay or records a visible failure, and one the friend already heard from is never replayed; SIGTERM stops iMessage and Shepherd within 3 s; ouro status shows a reply stuck waiting to send."
+        "Every agent now loads tools through the Ouro AX tool catalog: eager doors up front and the rest through find_tools (Anthropic loads them natively with tool_reference), cutting tool-definition tokens per request by about 85%. OURO_DEFERRED_TOOLS is gone."
       ]
     },
     {

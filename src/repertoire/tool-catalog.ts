@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { ToolDoorCard } from "./tools-base"
+import type { ToolDefinition, ToolDoorCard } from "./tools-base"
+import { withCode } from "./tool-error-code"
 
 /**
  * The tool catalog: one entry per door a turn may call, read from the door's Ouro AX card (`group`, `when`, `effect`,
@@ -55,7 +56,8 @@ export function catalogDoor(source: CatalogSource): CatalogDoor {
     group: card?.group ?? (source.mcpServer ? `mcp:${source.mcpServer}` : "other"),
     when: card?.when ?? firstSentence(source.tool.function.description ?? ""),
     effect: card?.effect ?? "write",
-    eager: TURN_TOOL_NAMES.has(name) || card?.eager === true,
+    // A door with neither a card nor an MCP server came straight from the caller and can't be described for search.
+    eager: TURN_TOOL_NAMES.has(name) || card?.eager === true || (!card && !source.mcpServer),
   }
 }
 
@@ -140,7 +142,7 @@ function signature(tool: OpenAI.ChatCompletionFunctionTool): string {
 
 /** `find_tools`'s reply: the doors it loaded, one per line, or how to try again. */
 export function formatLoadedDoors(loaded: readonly OpenAI.ChatCompletionFunctionTool[]): string {
-  if (loaded.length === 0) return "no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools."
+  if (loaded.length === 0) return withCode("no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools.", "no-matching-tools")
   return `${LOADED_HEADER}\n${loaded.map((tool) => `- ${tool.function.name}(${signature(tool)}): ${tool.function.description ?? ""}`).join("\n")}`
 }
 
@@ -148,4 +150,101 @@ export function formatLoadedDoors(loaded: readonly OpenAI.ChatCompletionFunction
 export function loadedDoorNames(reply: string): string[] {
   if (!reply.startsWith(LOADED_HEADER)) return []
   return reply.split("\n").slice(1).flatMap((line) => /^- ([A-Za-z0-9_-]+)\(/.exec(line)?.[1] ?? [])
+}
+
+export interface CatalogPartition {
+  readonly active: OpenAI.ChatCompletionFunctionTool[]
+  readonly deferred: OpenAI.ChatCompletionFunctionTool[]
+}
+
+/**
+ * Splits a turn's doors. Eager doors, names in `keep` and doors the catalog doesn't know stay in canonical order;
+ * `find_tools` follows when anything is held back, then loaded doors in the order they were loaded, so the request's
+ * tool list only grows at its end.
+ */
+export function partitionCatalog(
+  tools: readonly OpenAI.ChatCompletionFunctionTool[],
+  catalog: ToolCatalog,
+  loaded: readonly string[],
+  keep: ReadonlySet<string>,
+): CatalogPartition {
+  const doors = new Map(catalog.doors.map((door) => [door.name, door]))
+  const held = (name: string) => !keep.has(name) && doors.get(name)?.eager === false
+  const kept = tools.filter((tool) => !held(tool.function.name))
+  const deferred = tools.filter((tool) => held(tool.function.name))
+  if (deferred.length === 0) return { active: kept, deferred }
+  const loadedTools = loaded.flatMap((name) => deferred.filter((tool) => tool.function.name === name))
+  return { active: [...kept, buildFindToolsSchema(deferred, catalog), ...loadedTools], deferred }
+}
+
+/** `find_tools`'s schema; its description names every held-back door by catalog group, so a select needs no search. */
+export function buildFindToolsSchema(deferred: readonly OpenAI.ChatCompletionFunctionTool[], catalog: ToolCatalog): OpenAI.ChatCompletionFunctionTool {
+  const groupOf = new Map(catalog.doors.map((door) => [door.name, door.group]))
+  const groups = new Map<string, string[]>()
+  for (const tool of deferred) {
+    const group = groupOf.get(tool.function.name) ?? "other"
+    groups.set(group, [...(groups.get(group) ?? []), tool.function.name])
+  }
+  const listing = [...groups.entries()].map(([group, names]) => `${group}: ${names.join(", ")}`).join("; ")
+  return {
+    type: "function",
+    function: {
+      name: FIND_TOOLS_NAME,
+      description: `more tools exist than are listed. call find_tools with a short query (what you need to do) or select:name1,name2 to load them; they become callable on your next step. not loaded now, by group: ${listing}`,
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "what you need, or select:name1,name2" } },
+        required: ["query"],
+      },
+    },
+  }
+}
+
+/** Doors that `find_tools` replies in the conversation loaded, once each, in order. */
+export function doorsFoundInHistory(messages: readonly OpenAI.ChatCompletionMessageParam[]): string[] {
+  return scanHistory(messages, false)
+}
+
+/** Held-back doors the conversation already called or loaded with `find_tools`, so a later turn needn't find them again. */
+export function namesLoadedInHistory(messages: readonly OpenAI.ChatCompletionMessageParam[], pool: ReadonlySet<string>): string[] {
+  return scanHistory(messages, true).filter((name) => pool.has(name))
+}
+
+function scanHistory(messages: readonly OpenAI.ChatCompletionMessageParam[], withCalls: boolean): string[] {
+  const names: string[] = []
+  const add = (name: string) => { if (!names.includes(name)) names.push(name) }
+  const findCalls = new Set<string>()
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls ?? []) {
+        /* v8 ignore next -- type narrowing: the engine only records function tool calls @preserve */
+        if (call.type !== "function") continue
+        if (call.function.name === FIND_TOOLS_NAME) findCalls.add(call.id)
+        else if (withCalls) add(call.function.name)
+      }
+    } else if (message.role === "tool" && findCalls.has(message.tool_call_id) && typeof message.content === "string") {
+      for (const name of loadedDoorNames(message.content)) add(name)
+    }
+  }
+  return names
+}
+
+/** One `find_tools` search, as counts: never the query text, which can carry what the person asked for. */
+export function recordFindTools(search: { query: string; matched: number; deferred: number }): void {
+  emitNervesEvent({
+    component: "repertoire", event: "repertoire.find_tools_searched", message: "find_tools searched the held-back doors",
+    meta: { select: search.query.trim().toLowerCase().startsWith("select:"), matched: search.matched, deferred: search.deferred },
+  })
+}
+
+/**
+ * find_tools's Ouro AX card and risk profile. The engine runs find_tools itself, so this is a declaration rather than
+ * a dispatched definition: loading a door changes only which schemas this turn sends.
+ */
+export const findToolsDefinition: Required<Pick<ToolDefinition, "tool" | "ax" | "riskProfile">> = {
+  tool: buildFindToolsSchema([], { doors: [], groups: [] }),
+  riskProfile: { mutates: "none", risk: "low" },
+  ax: { id: "tool:find_tools", group: "turn-skills", when: "Pick this when the tool you need isn't in your list; it searches the tools held back from this turn and makes the matches callable.", effect: "read", idempotent: true, errors: [
+    { code: "no-matching-tools", means: "No held-back tool matched the query, so nothing was loaded.", fix: "Try other words for the job, or select:name1,name2 with names from the find_tools list." },
+  ] },
 }
