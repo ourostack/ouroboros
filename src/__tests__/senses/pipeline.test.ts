@@ -4021,3 +4021,86 @@ describe("handleInboundTurn", () => {
     })
   })
 })
+
+describe("handleInboundTurn records each watched turn so status can see one stall", () => {
+  beforeEach(() => {
+    mockFindBridgesForSession.mockReset().mockReturnValue([])
+    mockListTargetSessionCandidates.mockReset().mockResolvedValue([])
+    mockListCodingSessions.mockReset().mockReturnValue([])
+    mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
+  })
+
+  function turnRecords(agentRoot: string, sense: string): string[] {
+    const dir = path.join(agentRoot, "state", "senses", sense, "turns-in-flight")
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith(".json")) : []
+  }
+
+  it("keeps a record while a Teams turn runs, counts its callbacks as progress, and removes the record after", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-turn-watch-"))
+    vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+    const callbacks = makeCallbacks()
+    let duringTurn: string[] = []
+    let callbacksDuringTurn: ChannelCallbacks | undefined
+    const input = makeInput({
+      channel: "teams" as Channel,
+      capabilities: makeCapabilities({ channel: "teams" }),
+      callbacks,
+      runAgent: vi.fn(async (_messages: unknown, turnCallbacks: ChannelCallbacks) => {
+        duringTurn = turnRecords(agentRoot, "teams")
+        callbacksDuringTurn = turnCallbacks
+        turnCallbacks.onTextChunk("hello")
+        return { usage: usageData, outcome: "settled" as const }
+      }),
+    })
+    try {
+      await handleInboundTurn(input)
+      expect(duringTurn).toHaveLength(1)
+      expect(callbacksDuringTurn).not.toBe(callbacks)
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith("hello")
+      expect(input.callbacks).toBe(callbacks)
+      expect(turnRecords(agentRoot, "teams")).toEqual([])
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it("removes the record when the turn throws", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-turn-watch-throw-"))
+    vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+    const callbacks = makeCallbacks()
+    const input = makeInput({
+      channel: "telegram" as Channel,
+      capabilities: makeCapabilities({ channel: "telegram" }),
+      callbacks,
+      friendResolver: { resolve: vi.fn().mockRejectedValue(new Error("friend store down")) },
+    })
+    try {
+      await expect(handleInboundTurn(input)).rejects.toThrow("friend store down")
+      expect(turnRecords(agentRoot, "telegram")).toEqual([])
+      expect(input.callbacks).toBe(callbacks)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it("leaves CLI and iMessage turns alone", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-turn-watch-cli-"))
+    vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+    const callbacks = makeCallbacks()
+    let seen: ChannelCallbacks | undefined
+    const input = makeInput({
+      callbacks,
+      runAgent: vi.fn(async (_messages: unknown, turnCallbacks: ChannelCallbacks) => {
+        seen = turnCallbacks
+        return { usage: usageData, outcome: "settled" as const }
+      }),
+    })
+    try {
+      await handleInboundTurn(input)
+      expect(seen).toBe(callbacks)
+      expect(fs.existsSync(path.join(agentRoot, "state", "senses"))).toBe(false)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+})

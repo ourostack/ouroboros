@@ -23,6 +23,7 @@ import { waitingStatusLines } from "../../senses/app-sessions/waiting-status"
 import { DaemonProcessManager } from "./process-manager"
 import { emitOwnershipChange, effectiveOwner, findRosterMachine, isSharedSense, mayRunSense, readLocalPresenceSettings, readPresenceForAgent } from "./presence"
 import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
+import { isWatchedSense, snapshotTurnsInFlight, type TurnsInFlightSnapshot } from "../../senses/turn-watch"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
 import type { SenseProbe } from "./health-monitor"
@@ -796,6 +797,27 @@ function readBlueBubblesRuntimeFacts(
   return { runtime: snapshot?.runtime, ...proofFacts }
 }
 
+/** The row's turn facts for a sense watched by `senses/turn-watch.ts`, and the failure when a turn has stalled. */
+function turnWatchFields(turns: TurnsInFlightSnapshot | undefined): Partial<DaemonSenseRow> {
+  if (!turns) return {}
+  const facts = {
+    activeTurnCount: turns.activeTurnCount,
+    stalledTurnCount: turns.stalledTurnCount,
+    oldestActiveTurnStartedAt: turns.oldestActiveTurnStartedAt,
+    oldestActiveTurnAgeMs: turns.oldestActiveTurnAgeMs,
+  }
+  if (turns.stalledTurnCount === 0) return facts
+  const count = turns.stalledTurnCount
+  const detail = `${count} ${count === 1 ? "turn has" : "turns have"} made no progress for ${Math.floor(Number(turns.longestSilenceMs) / 60_000)}m`
+  return {
+    ...facts,
+    detail,
+    lastFailure: detail,
+    failureLayer: "live_turn_stall",
+    recoveryAction: "look in the sense's log for the turn's last step; restarting the sense ends the turn",
+  }
+}
+
 export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
@@ -1292,12 +1314,17 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()
+    const runningSince = new Map<string, number>()
     for (const snapshot of this.processManager.listAgentSnapshots()) {
       const parsed = parseSenseSnapshotName(snapshot.name)
       if (!parsed) continue
       const current = runtime.get(parsed.agent) ?? {}
       current[parsed.sense] = runtimeInfoFor(snapshot.status)
       runtime.set(parsed.agent, current)
+      if (snapshot.status === "running") {
+        const startedMs = Date.parse(snapshot.startedAt ?? "")
+        runningSince.set(snapshot.name, Number.isFinite(startedMs) ? startedMs : Number.NEGATIVE_INFINITY)
+      }
     }
 
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
@@ -1357,6 +1384,16 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           ...(runtime.get(agent)?.["app-sessions"] ?? {}),
         },
       }
+      // A running turn on a sense that has made no progress for five minutes makes the sense an error.
+      const turns: Partial<Record<SenseName, TurnsInFlightSnapshot>> = {}
+      for (const sense of Object.keys(runtimeInfo) as SenseName[]) {
+        const since = runningSince.get(`${agent}:${sense}`)
+        if (!isWatchedSense(sense) || !context.senses[sense].enabled || since === undefined) continue
+        const snapshot = snapshotTurnsInFlight(path.join(this.bundlesRoot, `${agent}.ouro`), sense, Date.now(), undefined, since)
+        if (snapshot.activeTurnCount === 0) continue
+        turns[sense] = snapshot
+        if (snapshot.stalledTurnCount > 0) runtimeInfo[sense] = { ...runtimeInfo[sense], runtime: "error" }
+      }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)
       return inventory.map((entry): DaemonSenseRow => {
         // A shared sense another machine runs under the presence roster is absent here by design, not broken.
@@ -1408,6 +1445,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           oldestActiveTurnStartedAt: blueBubblesRuntimeFacts.oldestActiveTurnStartedAt,
           oldestActiveTurnAgeMs: blueBubblesRuntimeFacts.oldestActiveTurnAgeMs,
         } : {}),
+        ...turnWatchFields(turns[entry.sense]),
         }
       })
     })
