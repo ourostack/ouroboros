@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { anthropicToolPlan, toAnthropicMessages, toAnthropicTools } from "../../heart/providers/anthropic"
-import { formatLoadedDoors } from "../../repertoire/tool-catalog"
+import { formatFindToolsReply, formatLoadedDoors } from "../../repertoire/tool-catalog"
 
 const tool = (name: string, description = ""): OpenAI.ChatCompletionFunctionTool =>
   ({ type: "function", function: { name, description, parameters: { type: "object", properties: {} } } })
@@ -50,6 +50,18 @@ describe("Anthropic deferred tool loading", () => {
     const converted = toAnthropicMessages(messages, { toolReferences: new Set(["mail_send"]) }).messages
     expect((converted[1]!.content as Array<Record<string, unknown>>)[0]!.content).toEqual([{ type: "tool_reference", tool_name: "mail_send" }])
     expect((converted[3]!.content as Array<Record<string, unknown>>)[0]!.content).toBe(formatLoadedDoors([tool("gone")]))
+  })
+
+  it("keeps a skill note beside the tool_reference blocks, so the referenced doors don't swallow it", () => {
+    const note = "skill shelf-keeping documents this, in \"Removing\" (load_skill shelf-keeping for the whole skill):\n`shelf library remove <id>`"
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: null, tool_calls: [call("c1", "find_tools")] },
+      { role: "tool", tool_call_id: "c1", content: formatFindToolsReply([tool("mail_send")], note) },
+    ]
+    const converted = toAnthropicMessages(messages, { toolReferences: new Set(["mail_send"]) }).messages
+    expect((converted[1]!.content as Array<Record<string, unknown>>)[0]!.content).toEqual([
+      { type: "tool_reference", tool_name: "mail_send" }, { type: "text", text: `skills that document this job:\n${note}` },
+    ])
   })
 
   it("keeps find_tools results as text without the option, as every other provider reads them", () => {

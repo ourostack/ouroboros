@@ -76,7 +76,7 @@ export function buildToolCatalog(sources: readonly CatalogSource[], groups: read
 const STOPWORDS = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "again", "please", "need", "use", "can", "you", "tool", "tools", "pick", "when", "what", "want", "how", "are", "its", "your", "his", "her", "their", "out", "about"])
 
 /** Lower-cased words with stopwords dropped and a light stem, so "downloading", "downloads" and "download" meet. */
-function words(text: string): string[] {
+export function words(text: string): string[] {
   return text.toLowerCase().split(/[^a-z0-9]+/)
     .filter((word) => word.length > 2 && !STOPWORDS.has(word))
     .map(stem)
@@ -144,6 +144,25 @@ function signature(tool: OpenAI.ChatCompletionFunctionTool): string {
 export function formatLoadedDoors(loaded: readonly OpenAI.ChatCompletionFunctionTool[]): string {
   if (loaded.length === 0) return withCode("no matching tools. try different words, or select:name1,name2 using a name from the list in find_tools.", "no-matching-tools")
   return `${LOADED_HEADER}\n${loaded.map((tool) => `- ${tool.function.name}(${signature(tool)}): ${tool.function.description ?? ""}`).join("\n")}`
+}
+
+const SKILL_NOTE_HEADER = "skills that document this job:"
+
+/**
+ * `find_tools`'s whole reply: the doors it loaded, then any skill sections that document the job under their own
+ * header. The loaded-doors header stays first, so `loadedDoorNames` reads the reply back unchanged.
+ */
+export function formatFindToolsReply(loaded: readonly OpenAI.ChatCompletionFunctionTool[], skillNote: string): string {
+  if (!skillNote) return formatLoadedDoors(loaded)
+  const note = `${SKILL_NOTE_HEADER}\n${skillNote}`
+  return loaded.length === 0 ? `no held-back tool matched.\n\n${note}` : `${formatLoadedDoors(loaded)}\n\n${note}`
+}
+
+/** The skill note a `find_tools` reply carries after its loaded doors, header included, or "" when it has none. */
+export function findToolsNote(reply: string): string {
+  if (!reply.startsWith(LOADED_HEADER)) return ""
+  const at = reply.indexOf(`\n\n${SKILL_NOTE_HEADER}\n`)
+  return at >= 0 ? reply.slice(at + 2) : ""
 }
 
 /** The door names a `find_tools` reply loaded, read back from its text so the reply itself stays the record. */
@@ -230,10 +249,10 @@ function scanHistory(messages: readonly OpenAI.ChatCompletionMessageParam[], wit
 }
 
 /** One `find_tools` search, as counts: never the query text, which can carry what the person asked for. */
-export function recordFindTools(search: { query: string; matched: number; deferred: number }): void {
+export function recordFindTools(search: { query: string; matched: number; deferred: number; skills?: number }): void {
   emitNervesEvent({
     component: "repertoire", event: "repertoire.find_tools_searched", message: "find_tools searched the held-back doors",
-    meta: { select: search.query.trim().toLowerCase().startsWith("select:"), matched: search.matched, deferred: search.deferred },
+    meta: { select: search.query.trim().toLowerCase().startsWith("select:"), matched: search.matched, deferred: search.deferred, skills: search.skills ?? 0 },
   })
 }
 

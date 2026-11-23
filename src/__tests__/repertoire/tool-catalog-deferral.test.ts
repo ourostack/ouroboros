@@ -4,8 +4,11 @@ import {
   buildFindToolsSchema,
   buildToolCatalog,
   findToolsDefinition,
+  findToolsNote,
+  formatFindToolsReply,
   formatLoadedDoors,
   doorsFoundInHistory,
+  loadedDoorNames,
   namesLoadedInHistory,
   partitionCatalog,
   recordFindTools,
@@ -79,5 +82,23 @@ describe("catalog deferral", () => {
   it("records a find_tools search as counts only", () => {
     expect(() => recordFindTools({ query: "select:a,b", matched: 2, deferred: 9 })).not.toThrow()
     expect(() => recordFindTools({ query: "send mail", matched: 0, deferred: 9 })).not.toThrow()
+  })
+
+  it("puts a skill note after the loaded doors under its own header, and reads it back", () => {
+    const note = "skill shelf documents this, in \"Removing\" (load_skill shelf for the whole skill):\n`shelf remove <id>`"
+    expect(formatFindToolsReply([tool("mail_send")], "")).toBe(formatLoadedDoors([tool("mail_send")]))
+    expect(formatFindToolsReply([], "")).toBe(formatLoadedDoors([]))
+    const both = formatFindToolsReply([tool("mail_send", "send.\n\nreally")], note)
+    expect(loadedDoorNames(both)).toEqual(["mail_send"])
+    expect(findToolsNote(both)).toBe(`skills that document this job:\n${note}`)
+    const alone = formatFindToolsReply([], note)
+    expect(alone).toBe(`no held-back tool matched.\n\nskills that document this job:\n${note}`)
+    expect(loadedDoorNames(alone)).toEqual([])
+    expect(findToolsNote(alone)).toBe("")
+    expect(findToolsNote(formatLoadedDoors([tool("mail_send", "a\n\nb")]))).toBe("")
+  })
+
+  it("counts the skills a search found", () => {
+    expect(() => recordFindTools({ query: "remove book", matched: 0, deferred: 9, skills: 1 })).not.toThrow()
   })
 })

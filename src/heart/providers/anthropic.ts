@@ -9,7 +9,7 @@ import { finalizeSettleStream, ProviderTextOutput, SettleStreamer } from "../str
 import type { TurnResult } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
-import { FIND_TOOLS_NAME, doorsFoundInHistory, loadedDoorNames } from "../../repertoire/tool-catalog";
+import { FIND_TOOLS_NAME, doorsFoundInHistory, findToolsNote, loadedDoorNames } from "../../repertoire/tool-catalog";
 
 export type AnthropicThinkingBlock =
   | { type: "thinking"; thinking: string; signature: string }
@@ -202,7 +202,13 @@ export function toAnthropicMessages(
           {
             type: "tool_result",
             tool_use_id: tool.tool_call_id,
-            content: references.length > 0 ? references.map((name) => ({ type: "tool_reference", tool_name: name })) : text,
+            // A skill note after the doors is text the model needs; it rides beside the references, not in their place.
+            content: references.length > 0
+              ? [
+                  ...references.map((name) => ({ type: "tool_reference" as const, tool_name: name })),
+                  ...(findToolsNote(text) ? [{ type: "text" as const, text: findToolsNote(text) }] : []),
+                ]
+              : text,
           },
         ],
       });

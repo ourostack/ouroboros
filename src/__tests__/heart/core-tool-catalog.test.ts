@@ -211,6 +211,38 @@ describe("the tool catalog in runAgent", () => {
     expect(toolNames(1)).not.toContain("coding_spawn")
   })
 
+  it("hands back the skill section that documents a job no held-back door does, with how to open the skill", async () => {
+    const skills = await import("../../repertoire/skills")
+    vi.mocked(skills.listSkills).mockReturnValue(["shelf-keeping"])
+    const skillFile = "/mock/repo/testagent/skills/shelf-keeping.md"
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p) === skillFile)
+    vi.mocked(fs.readFileSync).mockImplementation((p: any, e?: any) => String(p) === skillFile
+      ? "# Shelf keeping\n\nUse this when someone asks about the library or an almanac.\n\n```\n/bundle/shelf/shelf <command>\n```\n\n## A bad copy already in the library\n\n`shelf library remove <id>` takes it out, backed up first.\n"
+      : defaultReadFileSync(p, e))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "delete book from library" }, "f1")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "spawn a coding agent, remove from library" }, "f2")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "shelf almanac" }, "f3")))
+    mockCreate.mockReturnValueOnce(makeStream(callChunk("settle", { answer: "ok", intent: "complete" }, "s1")))
+    const messages: any[] = [{ role: "user", content: "get rid of the old copy" }]
+    await run(messages)
+    const alone = messages.find((message) => message.tool_call_id === "f1").content as string
+    expect(alone).not.toContain("no matching tools")
+    expect(alone).toContain("skill shelf-keeping documents this")
+    expect(alone).toContain("shelf library remove <id>")
+    expect(alone).toContain("its commands run as: /bundle/shelf/shelf <command>")
+    // load_skill is offered on this turn, so the reply names it rather than a file path.
+    expect(alone).toContain("load_skill shelf-keeping")
+    const both = messages.find((message) => message.tool_call_id === "f2").content as string
+    expect(both.startsWith("loaded; callable on your next step:")).toBe(true)
+    expect(both).toContain("coding_spawn")
+    expect(both).toContain("skill shelf-keeping documents this")
+    expect(toolNames(2)).toContain("coding_spawn")
+    // No held-back door answers this one at all; the skill still does.
+    const skillOnly = messages.find((message) => message.tool_call_id === "f3").content as string
+    expect(skillOnly.startsWith("no held-back tool matched.")).toBe(true)
+    expect(skillOnly).toContain("skill shelf-keeping documents this")
+  })
+
   it("loads a tool only once across repeated selects", async () => {
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "select:coding_status" }, "f2")))
     mockCreate.mockReturnValueOnce(makeStream(callChunk("find_tools", { query: "select:coding_status" }, "f3")))
