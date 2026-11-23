@@ -23,6 +23,7 @@ export const CHECKER_FILES = [
   "types.mts",
   "walkers/argv-entries.mts",
   "walkers/cli-cards.mts",
+  "walkers/declared-tools.mts",
   "walkers/literals.mts",
   "walkers/mcp-schemas.mts",
   "walkers/registry.mts",

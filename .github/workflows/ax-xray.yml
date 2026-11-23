@@ -44,7 +44,7 @@ jobs:
       # Vendoring a new release updates the files, the manifest and this hash together.
       - name: Ouro AX census matches its release
         env:
-          OURO_CENSUS_CHECKER: 7e7b32a663a58af2a4a0f64d42ebe9c6e82c00e7dce69431d43a2cf44c9caa3b # ouro-ui v1.3.448
+          OURO_CENSUS_CHECKER: 0f532f8125277a88d8219a1b1908c3ab682eb0484e6768d0fcfb58dfd3af7898 # ouro-ui v1.3.465
         run: |
           node -e '
             const fs = require("fs"), crypto = require("crypto"), dir = "scripts/ouro-census/"
@@ -56,7 +56,7 @@ jobs:
             if (checker !== manifest.checker || checker !== process.env.OURO_CENSUS_CHECKER) {
               console.error(`checker ${checker}, manifest says ${manifest.checker}, release is ${process.env.OURO_CENSUS_CHECKER}`); process.exit(1)
             }
-            console.log("scripts/ouro-census matches ouro-ui v1.3.448, checker " + checker)'
+            console.log("scripts/ouro-census matches ouro-ui v1.3.465, checker " + checker)'
 
       # The census counts every agent door it walks and fails when one without a valid card isn't on
       # ax/census.baseline.json, when this pull request adds to the baseline, or when it drops a walker source. It
