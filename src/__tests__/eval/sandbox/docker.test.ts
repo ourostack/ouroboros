@@ -67,8 +67,9 @@ type Behaviour = {
   householdHangs?: boolean
   onNetwork?: () => void
   state?: object
-  /** The host also runs the live Butler's container. */
-  butler?: boolean
+  /** The containers on the host that match the ps filter, as `docker ps --format {{.Names}}` prints them. */
+  butler?: string
+  failPs?: boolean
 }
 
 /**
@@ -92,7 +93,10 @@ function fakeDocker(behaviour: Behaviour = {}) {
         for (const name of ["ca.pem", "server.pem", "server.key"]) fs.writeFileSync(path.join(at.get("/out")!, name), name, { mode: 0o600 })
         return ""
       }
-      if (args[0] === "ps") return behaviour.butler ? "ouro-butler\n" : ""
+      if (args[0] === "ps") {
+        if (behaviour.failPs) throw new Error("Cannot connect to the Docker daemon")
+        return behaviour.butler ?? ""
+      }
       if (args[0] === "network" && args[1] === "create") behaviour.onNetwork?.()
       if (args[0] === "rm" || args[0] === "network" && args[1] === "rm") {
         const hangs = args[2]!.endsWith("-agent") ? behaviour.agentHangs : behaviour.householdHangs
@@ -293,17 +297,35 @@ describe("runSandboxed", () => {
     expect(calls).toEqual([])
   })
 
-  it("refuses to run on the Butler's host without a host lock, before creating anything", async () => {
-    // 2026-11-23: an eval run's vanishing container broke the live Butler's upgrade on the host they shared (#1760).
-    const { docker, calls } = fakeDocker({ butler: true })
-    await expect(runSandboxed(input(docker))).rejects.toThrow(/ouro-butler.*host lock/)
-    expect(calls).toEqual([["ps", "--all", "--filter", "name=^/?ouro-butler$", "--format", "{{.Names}}"]])
-    expect(fs.readdirSync(root).filter((name) => name.startsWith("eval-sandbox-"))).toEqual([])
-    const unlocked = fakeDocker({ butler: true })
+  // 2026-11-23: an eval run's vanishing container broke the live Butler's upgrade on the host they shared (#1760).
+  for (const name of ["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback"]) {
+    it(`refuses a host with the Butler's ${name} container and no host lock, before creating anything`, async () => {
+      const { docker, calls } = fakeDocker({ butler: `${name}\n` })
+      await expect(runSandboxed(input(docker))).rejects.toThrow(new RegExp(`live Butler \\(${name}\\).*host lock`))
+      expect(calls).toEqual([["ps", "--all", "--filter", "name=^/?ouro-butler(-staging|-rollback)?$", "--format", "{{.Names}}"]])
+      expect(fs.readdirSync(root).filter((entry) => entry.startsWith("eval-sandbox-"))).toEqual([])
+    })
+  }
+
+  it("refuses the Butler's host when the host lock is not held, or cannot be read", async () => {
+    const unlocked = fakeDocker({ butler: "ouro-butler\n" })
     await expect(runSandboxed(input(unlocked.docker, { hostLock: { held: async () => false } }))).rejects.toThrow(/host lock/)
-    const locked = fakeDocker({ butler: true })
-    const obs = await runSandboxed(input(locked.docker, { hostLock: { held: async () => true } }))
+    const broken = fakeDocker({ butler: "ouro-butler\n" })
+    await expect(runSandboxed(input(broken.docker, { hostLock: { held: async () => { throw new Error("lock file unreadable") } } }))).rejects.toThrow(/lock file unreadable/)
+    expect(broken.calls.filter((args) => args[0] !== "ps")).toEqual([])
+  })
+
+  it("runs on the Butler's host while the host lock is held", async () => {
+    const { docker } = fakeDocker({ butler: "ouro-butler\n" })
+    const obs = await runSandboxed(input(docker, { hostLock: { held: async () => true } }))
     expect(obs.outcome).toBe("settled")
+  })
+
+  it("creates nothing when Docker cannot list the host's containers", async () => {
+    const { docker, calls } = fakeDocker({ failPs: true })
+    await expect(runSandboxed(input(docker))).rejects.toThrow(/Docker daemon/)
+    expect(calls).toHaveLength(1)
+    expect(fs.readdirSync(root).filter((entry) => entry.startsWith("eval-sandbox-"))).toEqual([])
   })
 
   it("refuses a seeded file that is no fixture, and cleans up without a network to remove", async () => {

@@ -279,8 +279,8 @@ jobs:
       - name: Remove what the run left
         if: ${{ always() }}
         run: |
-          docker ps -aq --filter name=ouro-eval- | xargs -r docker rm --force
-          docker network ls -q --filter name=ouro-eval- | xargs -r docker network rm
+          docker ps -aq --filter label=ouro.eval=1 | xargs -r docker rm --force
+          docker network ls -q --filter label=ouro.eval=1 | xargs -r docker network rm
           docker image rm --force ouro-eval-sandbox:local ouro-eval-household:local 2>/dev/null || true
 
   # `integration` is the required check and stands for both lanes; it runs even
