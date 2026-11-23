@@ -60,8 +60,9 @@ const REQUIRED_PACKAGE_ASSET_SOURCES = {
   "dist/heart/daemon/sanctuary-host-supervisor-entry.js": "src/heart/daemon/sanctuary-host-supervisor-entry.ts",
 }
 
+// Output of the removed Mailbox and Outlook pages. Nothing builds either now, so any of it in a package is stale.
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
-  "dist/mailbox-ui/dist/",
+  "dist/mailbox-ui/",
   "dist/outlook-ui/",
 ]
 

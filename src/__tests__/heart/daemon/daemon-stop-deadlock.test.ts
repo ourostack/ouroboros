@@ -38,7 +38,7 @@ function tmpSocketPath(name: string): string {
 function makeDaemon(
   socketPath: string,
   options?: {
-    mailboxServerFactory?: () => Promise<{ stop: () => Promise<void> }>
+    senseStopAll?: () => Promise<void>
   },
 ) {
   const processManager = {
@@ -61,14 +61,10 @@ function makeDaemon(
   }
   const senseManager = {
     startAutoStartSenses: vi.fn(async () => undefined),
-    stopAll: vi.fn(async () => undefined),
+    stopAll: vi.fn(options?.senseStopAll ?? (async () => undefined)),
     listSenseRows: vi.fn(() => []),
     listManagedPids: vi.fn(() => []),
   }
-  const mailboxServerFactory = vi.fn(async () => ({
-    origin: "http://127.0.0.1:0",
-    stop: vi.fn(async () => undefined),
-  }))
   return new OuroDaemon({
     socketPath,
     processManager,
@@ -76,18 +72,8 @@ function makeDaemon(
     healthMonitor,
     router,
     senseManager,
-    mailboxServerFactory: options?.mailboxServerFactory,
     mode: "dev",
   } as any)
-}
-
-async function waitForSocketPathState(socketPath: string, exists: boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (fs.existsSync(socketPath) === exists) return
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error(`socket path ${exists ? "did not appear" : "did not disappear"} within ${timeoutMs}ms`)
 }
 
 async function sendDaemonCommandOverRealSocket(
@@ -128,11 +114,11 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
 describe("daemon.stop deadlock regression", () => {
   let daemons: OuroDaemon[] = []
   let socketPath: string
-  let releaseBlockedMailboxStop: (() => void) | null = null
+  let releaseBlockedSenseStop: (() => void) | null = null
 
   afterEach(async () => {
-    releaseBlockedMailboxStop?.()
-    releaseBlockedMailboxStop = null
+    releaseBlockedSenseStop?.()
+    releaseBlockedSenseStop = null
     setRuntimeLogger(null)
     vi.restoreAllMocks()
     for (const daemon of daemons.reverse()) {
@@ -202,31 +188,29 @@ describe("daemon.stop deadlock regression", () => {
   it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
-    let markMailboxStopBlocked: (() => void) | null = null
-    const mailboxStopBlocked = new Promise<void>((resolve) => {
-      markMailboxStopBlocked = resolve
+    let markSenseStopBlocked: (() => void) | null = null
+    const senseStopBlocked = new Promise<void>((resolve) => {
+      markSenseStopBlocked = resolve
     })
     const daemonA = makeDaemon(socketPath, {
-      mailboxServerFactory: async () => ({
-        stop: async () => {
-          await new Promise<void>((resolve) => {
-            releaseBlockedMailboxStop = resolve
-            markMailboxStopBlocked?.()
-          })
-        },
-      }),
+      senseStopAll: async () => {
+        await new Promise<void>((resolve) => {
+          releaseBlockedSenseStop = resolve
+          markSenseStopBlocked?.()
+        })
+      },
     })
     daemons.push(daemonA)
     await daemonA.start()
 
     const daemonAStop = daemonA.stop()
-    await mailboxStopBlocked
-    await waitForSocketPathState(socketPath, false, 2_000)
+    await senseStopBlocked
 
-    // The bug is pathname ownership, not socket protocol. Once daemon A has
-    // released the original socket path, any newer entry at the same pathname
+    // The bug is pathname ownership, not socket protocol. While daemon A is
+    // still stopping, a newer daemon takes over the pathname; that newer entry
     // must be preserved. Using a plain file makes the race deterministic while
-    // still proving the old daemon is deleting a path it no longer owns.
+    // still proving the old daemon never deletes a path it no longer owns.
+    fs.unlinkSync(socketPath)
     fs.writeFileSync(socketPath, "replacement-daemon-socket", "utf-8")
     expect(fs.existsSync(socketPath)).toBe(true)
     const replacementStats = fs.lstatSync(socketPath)
@@ -239,8 +223,8 @@ describe("daemon.stop deadlock regression", () => {
       error: vi.fn(),
     })
 
-    releaseBlockedMailboxStop?.()
-    releaseBlockedMailboxStop = null
+    releaseBlockedSenseStop?.()
+    releaseBlockedSenseStop = null
     await daemonAStop
 
     expect(fs.existsSync(socketPath)).toBe(true)

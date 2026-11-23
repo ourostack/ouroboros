@@ -20,8 +20,8 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 
 ## Completion States
 
-- **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and Mailbox read-only views.
-- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and the Mailbox UI.
+- **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and the mail audit tools.
+- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, and tools.
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, verifying the Mail sense, and managing Screener decisions after family authorization.
 - **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the registrar, provider/browser auth, secret entry, and final autonomous-send enablement.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and new DNS/provider changes.
@@ -233,7 +233,7 @@ The agent drives the browser-automation portion when browser MCP is available. T
 Agent step:
 
 - Report the exact delegated alias to the human.
-- After the human confirms forwarding, run a live test message and verify it appears in Ouro Mailbox and `mail_recent`.
+- After the human confirms forwarding, run a live test message and verify it appears in `mail_recent`.
 - Do not change DNS, enable production MX, or claim live forwarding is active until the human confirms the HEY/DNS side.
 
 Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`. A wrong-target probe, especially one delivered to the agent's native `<agent>@ouro.bot` instead of the delegated alias, is recoverable setup friction: the agent should correct HEY to the delegated alias and must not import or label that probe as delegated human mail.
@@ -299,20 +299,6 @@ That binding does not make the referenced vault item an "ACS credential kind." I
 
 Do not enable autonomous native-agent sending without final explicit human confirmation.
 
-## Ouro Mailbox
-
-Ouro Mailbox should feel like logging into the agent's mailbox, not like a debug table.
-
-Expected UI:
-
-- Folder rail: Imbox, Screener, Discarded, Quarantine, Drafts, Sent, and delegated sources.
-- Message list: sender, subject, time, placement, provenance, and source.
-- Reading pane: selected message detail with untrusted-content warning and provenance.
-- Screener section: waiting sender list and safe decision context.
-- Recovery drawer: retained discarded/quarantined messages for audit and remediation.
-- Access audit: recent `mail_*` reads, sends, and decisions.
-- Read-only controls for now; no send/delete/destructive controls in Mailbox.
-
 ## Golden Path Validation
 
 Before calling an Agent Mail rollout complete for an agent, verify these paths:
@@ -320,7 +306,7 @@ Before calling an Agent Mail rollout complete for an agent, verify these paths:
 1. Import a HEY MBOX and use delegated mail to update a real work object, such as travel plans.
 2. Send and receive native agent mail through Screener: unknown sender enters Screener, family authorizes allow/discard, future sender policy behaves correctly, and discarded mail remains recoverable.
 3. React to mail through another sense, for example text the family member on iMessage after an email decision or travel update.
-4. Audit the whole story in Ouro Mailbox: imported mail, native inbound, Screener decisions, outbound draft/send records, and access logs.
+4. Audit the whole story with the mail tools: imported mail, native inbound, Screener decisions, outbound draft/send records, and access logs.
 
 ## Agent-Run Verification
 
@@ -340,13 +326,6 @@ Mail tools to exercise:
 - `mail_thread` for one explicit message body read with a reason.
 - `mail_screener` for waiting senders.
 - `mail_access_log` for audit records.
-
-Human/UI check, guided by the agent:
-
-- Open Ouro Mailbox.
-- Select the agent.
-- Open the Mailbox tab.
-- Confirm the mailbox appears as that agent's mailbox, with Imbox/Screener/source folders and no send/delete controls.
 
 ## Troubleshooting
 

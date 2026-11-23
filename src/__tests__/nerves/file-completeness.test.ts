@@ -230,46 +230,6 @@ const cache = new Map()
       expect(result.exempt).toContain("src/heart/attachments/sources/cli-local-file.ts")
     })
 
-    it("exempts shared mailbox contract helpers whose server/UI callers own observability", () => {
-      const files = new Map<string, string[]>([
-        ["src/heart/mailbox/mailbox-read.ts", ["heart:heart.mailbox_read"]],
-      ])
-      const fileContents = new Map<string, string>([
-        ["src/heart/mailbox/mailbox-read.ts", 'emitNervesEvent({ component: "heart", event: "heart.mailbox_read" })'],
-        ["src/heart/mailbox/mailbox-types.ts", "export function getMailboxTranscriptTimestamp() { return 'now' }"],
-      ])
-
-      const result = checkFileCompleteness(files, fileContents)
-
-      expect(result.status).toBe("pass")
-      expect(result.missing).toHaveLength(0)
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-types.ts")
-    })
-
-    it("exempts Mailbox HTTP helper modules whose server root owns observability", () => {
-      const files = new Map<string, string[]>([
-        ["src/heart/mailbox/mailbox-http.ts", ["daemon:daemon.mailbox_http_started"]],
-      ])
-      const fileContents = new Map<string, string>([
-        ["src/heart/mailbox/mailbox-http.ts", 'emitNervesEvent({ component: "daemon", event: "daemon.mailbox_http_started" })'],
-        ["src/heart/mailbox/mailbox-http-transport.ts", "export function createSseBroadcaster() {}"],
-        ["src/heart/mailbox/mailbox-http-static.ts", "export function serveStaticFile() {}"],
-        ["src/heart/mailbox/mailbox-http-hooks.ts", "export function createMailboxHttpReadHooks() {}"],
-        ["src/heart/mailbox/mailbox-http-routes.ts", "export function createMailboxHttpRequestHandler() {}"],
-        ["src/heart/mailbox/mailbox-http-response.ts", "export function writeJson() {}"],
-      ])
-
-      const result = checkFileCompleteness(files, fileContents)
-
-      expect(result.status).toBe("pass")
-      expect(result.missing).toHaveLength(0)
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-http-transport.ts")
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-http-static.ts")
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-http-hooks.ts")
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-http-routes.ts")
-      expect(result.exempt).toContain("src/heart/mailbox/mailbox-http-response.ts")
-    })
-
     it("exempts pure mail import discovery helpers whose callers own observability", () => {
       const files = new Map<string, string[]>([
         ["src/senses/mail.ts", ["senses:senses.mail_import_discovery_checked"]],

@@ -1,11 +1,7 @@
 const { spawnSync } = require("child_process")
 const path = require("path")
 
-function npmExecutable(platform = process.platform) {
-  return platform === "win32" ? "npm.cmd" : "npm"
-}
-
-function buildSteps(repoRoot, deps = defaultDeps(), options = {}) {
+function buildSteps(repoRoot, deps = defaultDeps()) {
   return [
     {
       label: "clean dist",
@@ -22,28 +18,12 @@ function buildSteps(repoRoot, deps = defaultDeps(), options = {}) {
       command: deps.execPath,
       args: [deps.join(repoRoot, "scripts", "sanctuary-health-acceptance-probe-entry-smoke.cjs")],
     },
-    ...(options.skipMailboxUiInstall ? [] : [{
-      label: "install Mailbox UI dependencies",
-      command: deps.npmExecutable(),
-      args: ["install", "--prefix", "packages/mailbox-ui", "--ignore-scripts"],
-    }]),
-    {
-      label: "build Mailbox UI",
-      command: deps.npmExecutable(),
-      args: ["run", "build", "--prefix", "packages/mailbox-ui"],
-    },
-    {
-      label: "copy Mailbox UI assets",
-      command: deps.execPath,
-      args: [deps.join(repoRoot, "scripts", "copy-mailbox-ui.cjs")],
-    },
   ]
 }
 
 function parseArgs(argv) {
   return {
-    repoRoot: argv.find((arg) => arg !== "--skip-mailbox-ui-install"),
-    skipMailboxUiInstall: argv.includes("--skip-mailbox-ui-install"),
+    repoRoot: argv[0],
   }
 }
 
@@ -62,7 +42,7 @@ function failureSuffix(result) {
 function runBuildCli(argv = process.argv.slice(2), deps = defaultDeps()) {
   const options = parseArgs(argv)
   const repoRoot = deps.resolve(options.repoRoot ?? deps.defaultRepoRoot)
-  for (const step of buildSteps(repoRoot, deps, options)) {
+  for (const step of buildSteps(repoRoot, deps)) {
     const result = deps.spawnSync(step.command, step.args, {
       cwd: repoRoot,
       stdio: "inherit",
@@ -83,7 +63,6 @@ function defaultDeps() {
     defaultRepoRoot: path.resolve(__dirname, ".."),
     execPath: process.execPath,
     join: path.join,
-    npmExecutable,
     resolve: path.resolve,
     resolveTypeScriptTsc: () => require.resolve("typescript/bin/tsc"),
     spawnSync,
@@ -97,7 +76,6 @@ if (require.main === module) {
 
 module.exports = {
   buildSteps,
-  npmExecutable,
   parseArgs,
   runBuildCli,
 }

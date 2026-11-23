@@ -105,7 +105,7 @@ See [Voice Architecture](voice-architecture.md) for the fuller transport model.
   Voice session contract. Browser automation joins the room; it should not
   become a separate conversational sense unless it has a distinct durable
   channel identity.
-- Overview/Ouro Mailbox should show the text transcript. Audio files are
+- Session views should show the text transcript. Audio files are
   playback evidence, not the primary record.
 
 ## Adapter Checklist
