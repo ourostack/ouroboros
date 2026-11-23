@@ -10,7 +10,7 @@ import type { SessionTurnLease } from "../mind/session-transaction"
 import type { PostTurnHooks, SessionContinuityState, UsageData } from "../mind/context"
 import type { Channel, ChannelCapabilities, IdentityProvider, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import type { TrustGateInput, TrustGateResult } from "./trust-gate"
-import type { PendingMessage } from "../mind/pending"
+import type { PendingClaim, PendingMessage } from "../mind/pending"
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -64,6 +64,7 @@ import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flig
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 import { projectCareEvidence, type CareRecord } from "../arc/cares"
 import { withTurnExecutionLease } from "../heart/turn-execution-lease"
+import { beginTurnInFlight, isWatchedSense, watchTurnCallbacks } from "./turn-watch"
 import { parseLinkCode, redeemLinkCode } from "../mind/friend-link-codes"
 
 export interface FailoverState {
@@ -530,6 +531,12 @@ export interface InboundTurnInput {
   // ── Dependency injection for testability ──
   enforceTrustGate: (input: TrustGateInput) => TrustGateResult
   drainPending: (pendingDir: string) => PendingMessage[]
+  /**
+   * When given, pending messages are claimed instead of drained: they stay on disk until a turn has handled them.
+   * A turn handled them when it finished and its postTurn ran, was suspended for approval, or reached a tool call,
+   * even one that was then refused (a retry could repeat what it did). Any other turn puts them back for the next one.
+   */
+  claimPending?: (pendingDir: string) => PendingClaim
   drainDeferredReturns?: (friendId: string) => PendingMessage[]
   runAgent: (
     messages: ChatCompletionMessageParam[],
@@ -759,9 +766,33 @@ export function erroredTurnReply(errorMessage: string | undefined): string {
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
   return withTurnExecutionLease(
-    () => handleInboundTurnExclusive(input),
+    () => handleWatchedInboundTurn(input),
     input.stopQueueWaitOnAbort ? input.signal : undefined,
   )
+}
+
+/**
+ * Records the turn while it runs, so status can show a sense whose turn has stopped moving. The caller's input keeps
+ * its identity (the turn writes back to it); only its callbacks are swapped for the watched ones, and put back after.
+ */
+async function handleWatchedInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  if (!isWatchedSense(input.channel)) return handleInboundTurnExclusive(input)
+  let agentRoot: string
+  try {
+    agentRoot = getAgentRoot()
+  } catch {
+    // No agent named in this process, so there is nowhere to record the turn. Watching must never stop a turn.
+    return handleInboundTurnExclusive(input)
+  }
+  const watch = beginTurnInFlight(agentRoot, input.channel, input.sessionKey ?? "session")
+  const callbacks = input.callbacks
+  input.callbacks = watchTurnCallbacks(callbacks, watch)
+  try {
+    return await handleInboundTurnExclusive(input)
+  } finally {
+    input.callbacks = callbacks
+    watch.finish()
+  }
 }
 
 async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<InboundTurnResult> {
@@ -1037,6 +1068,10 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
   const liveLatencyMode = input.latencyMode === "live"
   let declinedForHome = false
+  let pendingClaim: PendingClaim | undefined
+  let turnActed = false
+  let turnThrew = false
+  let turnFailedOnMessages = false
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
@@ -1123,7 +1158,8 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   const deferredReturns = input.channel === "inner"
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
-  const sessionPending = input.drainPending(input.pendingDir)
+  pendingClaim = input.claimPending?.(input.pendingDir)
+  const sessionPending = pendingClaim ? pendingClaim.messages : input.drainPending(input.pendingDir)
   // A deferred return was saved for the friend's next message, whenever that comes, so a
   // sense's freshness window for its own pending never drops it.
   const pending = [
@@ -1134,6 +1170,24 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
       messages: sessionPending,
     }),
   ]
+  // Expired messages were archived just now; reading them again next turn would archive them again.
+  const expiredPending = sessionPending.filter((message) => !pending.includes(message))
+  if (expiredPending.length > 0) pendingClaim?.settle(expiredPending)
+  // A turn whose tool call reaches its handler may act on its pending messages, so they are settled just before it
+  // runs: a retry in this process or after a crash or shutdown must not read them again and repeat what the tool
+  // did. A call refused before its handler, or a find_tools lookup, has done nothing, so it settles nothing.
+  const turnCallbacks: ChannelCallbacks = pendingClaim
+    ? {
+      ...input.callbacks,
+      onToolDispatch(name: string) {
+        if (!turnActed) {
+          turnActed = true
+          pendingClaim?.settle()
+        }
+        input.callbacks.onToolDispatch?.(name)
+      },
+    }
+    : input.callbacks
 
   const promotedPendingUserMessages = input.channel === "inner"
     ? pending
@@ -1330,7 +1384,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
   try {
     result = await input.runAgent(
       sessionMessages,
-      input.callbacks,
+      turnCallbacks,
       input.channel,
       input.signal,
       runAgentOptions,
@@ -1386,8 +1440,21 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     ...(result.errorClassification ? { errorCode: result.errorClassification } : {}),
   }))
 
+  // The turn reached its end: once postTurn has run, its pending messages are handled. A turn that errored, was
+  // aborted or was superseded (a provider outage, a shutdown, a newer message) never got to them unless it acted.
+  const turnFinished = result.outcome !== "errored" && result.outcome !== "aborted" && result.outcome !== "superseded"
+  // An error the provider did not classify may come from the messages themselves (one too large for the evidence
+  // budget, say), so it counts against them; outages, limits and auth failures do not.
+  turnFailedOnMessages = result.outcome === "errored" && result.errorClassification === "unknown"
+  const persistTurn = async (...args: Parameters<InboundTurnInput["postTurn"]>): Promise<void> => {
+    await input.postTurn(...args)
+    if (turnFinished) pendingClaim?.settle()
+  }
+
   if (result.outcome === "suspended") {
     if (!result.suspension) throw new Error("suspended agent turn omitted durable approval suspension")
+    // The suspension checkpoint holds the turn, pending messages included.
+    pendingClaim?.settle()
     emitNervesEvent({
       component: "senses",
       event: "senses.pipeline_approval_suspended",
@@ -1433,7 +1500,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
         mustResolveBeforeHandoff,
         lastFriendActivityAt,
       })
-      await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, failoverNextState)
+      await persistTurn(sessionMessages, session.sessionPath, result.usage, undefined, failoverNextState)
       try {
         const agentRoot = getAgentRoot()
         const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
@@ -1501,7 +1568,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     mustResolveBeforeHandoff,
     lastFriendActivityAt,
   })
-  await input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+  await persistTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
 
   try {
     const agentRoot = getAgentRoot()
@@ -1561,7 +1628,13 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     // Every chat sense answers an errored turn. The inner channel stays silent, and the CLI keeps showing its operator the raw error.
     ...(result.outcome === "errored" && input.channel !== "inner" && input.channel !== "cli" ? { failoverMessage: erroredTurnReply(result.error?.message) } : {}),
   }
+  } catch (error) {
+    turnThrew = true
+    throw error
   } finally {
+    // Pending messages a turn did not handle go back for the next turn; a throw or an unclassified error counts
+    // against them. After the first tool start the claim holds nothing, so this is a no-op.
+    pendingClaim?.release({ failed: turnThrew || turnFailedOnMessages })
     // Step 6b: Post-turn sync (opt-in). The commit is synchronous, so the
     // turn's edits are recorded before the reply goes out; the push runs on
     // without being awaited, holding the lock, and records its own failure.

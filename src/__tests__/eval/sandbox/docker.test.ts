@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { DECLARED_GAPS } from "../../../eval/sandbox/declared-gaps"
 import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ProviderRuntime } from "../../../heart/core"
@@ -195,6 +196,8 @@ describe("runSandboxed", () => {
     expect(obs.oracle).toEqual({ [sha("C")]: true })
     expect(seenPaths).toEqual([path.join(work.household, "library", "189.epub")])
     expect(obs.gaps).toEqual(expect.arrayContaining([expect.stringMatching(/TACIT\.md/), expect.stringMatching(/^friends/), expect.stringMatching(/^state/)]))
+    // What the sandbox itself fakes or leaves out is declared, so every report lists it beside the projection's gaps.
+    expect(obs.gaps).toEqual(expect.arrayContaining([...DECLARED_GAPS]))
 
     const network = calls.find((args) => args[0] === "network" && args[1] === "create")!
     expect(network).toEqual(["network", "create", "--internal", "--label", "ouro-eval", expect.stringMatching(/^ouro-eval-[0-9a-f]{8}$/)])

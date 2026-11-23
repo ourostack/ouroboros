@@ -192,7 +192,8 @@ export class McpManager {
     }))
   }
 
-  async callTool(binding: McpToolBinding, args: Record<string, unknown>, ownerInput: McpOwner): Promise<ToolResult> {
+  /** `beforeCall` runs once the binding is current and its server connected, just before the call goes to the server. */
+  async callTool(binding: McpToolBinding, args: Record<string, unknown>, ownerInput: McpOwner, beforeCall?: () => void): Promise<ToolResult> {
     const owner = captureOwner(ownerInput)
     const call = await this.enqueue(async () => {
       let entry = this.currentBinding(binding, owner)
@@ -201,6 +202,7 @@ export class McpManager {
         entry = this.currentBinding(binding, owner)
         if (!entry.client.isConnected()) throw new McpCallRejectedError(`Server "${entry.name}" is disconnected`)
       }
+      beforeCall?.()
       return { entry, result: entry.client.callTool(binding.rawName, args) }
     })
     try {

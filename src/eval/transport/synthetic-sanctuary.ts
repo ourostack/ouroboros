@@ -16,6 +16,8 @@ import {
   SANCTUARY_NOTIFICATIONS_QUERY,
   SANCTUARY_STORAGE_QUERY,
 } from "../../repertoire/tools-unraid"
+import { annotateContainers, serviceContainers } from "../../repertoire/sanctuary-container-policy"
+import type { StewardPolicyRecord } from "../../heart/steward-policy"
 import { normalizeSanctuaryMediaText } from "../../senses/sanctuary-media-optimization"
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -24,11 +26,18 @@ type SanctuaryContext = NonNullable<ToolContext["sanctuary"]>
 const OBSERVED_AT = "2026-01-15T12:00:00.000Z"
 const SERVER_ID = "eval:server"
 
+const BOOKS_CONTAINER = "calibre-web"
+// Only what annotateContainers reads of the steward policy.
+const POLICY = { desiredStates: { "container:calibre": { value: "off" } } } as unknown as Pick<StewardPolicyRecord, "desiredStates">
+
 const CONTAINERS = [
   { id: "eval:jellyfin", names: ["/jellyfin"], state: "RUNNING", status: "Up 3 days", autoStart: true },
   { id: "eval:sabnzbd", names: ["/sabnzbd"], state: "RUNNING", status: "Up 3 days", autoStart: true },
   { id: "eval:unmanic", names: ["/unmanic"], state: "RUNNING", status: "Up 3 days", autoStart: true },
+  // As on the household: the calibre desktop app is kept stopped on purpose (POLICY), and calibre-web, which the fake
+  // household serves to the books cases, is Books.
   { id: "eval:calibre", names: ["/calibre"], state: "EXITED", status: "Exited (0) 2 days ago", autoStart: false },
+  { id: "eval:calibre-web", names: ["/calibre-web"], state: "RUNNING", status: "Up 3 days", autoStart: true },
 ]
 
 const CATALOG = [
@@ -73,7 +82,7 @@ export function createSyntheticSanctuary(): SanctuaryContext {
   emitNervesEvent({ component: "eval", event: "eval.synthetic_sanctuary_create", message: "creating synthetic Sanctuary service context" })
   const reads = createUnraidReadTools({ read: syntheticRead as never })
   return {
-    listContainers: () => reads.listContainers(),
+    listContainers: async () => annotateContainers(await reads.listContainers(), POLICY, Date.parse(OBSERVED_AT), serviceContainers({ booksContainer: BOOKS_CONTAINER })),
     getContainerLogs: (args) => reads.getContainerLogs(args),
     getStorage: () => reads.getStorage(),
     getDisks: () => reads.getDisks(),
@@ -85,7 +94,10 @@ export function createSyntheticSanctuary(): SanctuaryContext {
     }),
     checkServices: async () => ({
       ok: true,
-      data: { observedAt: OBSERVED_AT, services: [{ name: "jellyfin", container: "jellyfin", ok: true, status: 200 }], degraded: false },
+      data: { observedAt: OBSERVED_AT, services: [
+        { name: "books", container: BOOKS_CONTAINER, url: "https://books.eval.invalid", ok: true, status: 200 },
+        { name: "jellyfin", url: "https://jellyfin.eval.invalid", ok: true, status: 200 },
+      ], degraded: false },
     }),
     getDownloadQueue: async () => ({ paused: false, status: "Idle", queuedJobs: 0, observedAt: OBSERVED_AT, stateDigest: "eval" }),
     getMediaOptimization: async () => ({

@@ -1753,6 +1753,37 @@ describe("deferPostTurnPersist return value", () => {
   })
 })
 
+describe("deferPostTurnPersistOrThrow", () => {
+  it("rejects when the persist fails, and logs it like the lenient persist", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      throw new Error("disk failure")
+    })
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersistOrThrow, postTurnTrim } = await import("../../mind/context")
+    const prepared = postTurnTrim([{ role: "system", content: "sys" }, { role: "user", content: "hello" }] as any[])
+
+    await expect(deferPostTurnPersistOrThrow("/tmp/sess-strict.json", prepared)).rejects.toThrow("disk failure")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "mind.deferred_persist_error" }))
+  })
+
+  it("resolves with the saved events when the persist works", async () => {
+    vi.resetModules()
+    vi.mocked(fs.writeFileSync).mockImplementation(() => undefined)
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersistOrThrow, postTurnTrim } = await import("../../mind/context")
+    const prepared = postTurnTrim([{ role: "system", content: "sys" }, { role: "user", content: "hello" }] as any[])
+
+    expect(Array.isArray(await deferPostTurnPersistOrThrow("/tmp/sess-strict-ok.json", prepared))).toBe(true)
+  })
+})
+
 describe("deferPostTurnPersist concurrency", () => {
   // Real corruption was found in slugger.ouro/state/sessions where two BB
   // webhooks for the same chat racing through deferPostTurnPersist each loaded
