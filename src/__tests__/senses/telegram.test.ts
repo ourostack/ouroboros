@@ -2069,17 +2069,17 @@ describe("Telegram sense", () => {
       // A held notice already speaks for the rest of its batch.
       await expect(f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 9, relatedEvents: [{ source: "sanctuary-health", eventId: "endpoint:media", generation: 23 }], text: "Books is down too." })).resolves.toMatchObject({ status: "covered" })
       await f.app.sendProactive("Self-recovered; the shelf was down for about 15 minutes.")
-      await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
-      await f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })
+      // A delegated command's notice can't wait and can't go to Sam, so it is refused, and so is the command.
+      await expect(f.app.sendOwnerNotice({ noticeId: "delegated:task-9", text: "Delegated command ran." })).rejects.toThrow("handed to someone else")
       expect(sends()).toEqual([])
       // Sam's next message gets its reply, and the notices keep waiting.
       await f.getOnMessage()({ updateId: 90, messageId: "91", userId: "42", chatId: "42", text: "something silly please" })
       expect(sends()).toEqual(["All systems nominal."])
-      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(3)
+      expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toHaveLength(2)
 
       vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000 + 1)
       await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "endpoint:books", generation: 1, text: "Books is back." })
-      expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Delegated command ran.", "Books is back."])
+      expect(sends()).toEqual(["All systems nominal.", "The shelf is down.", "Self-recovered; the shelf was down for about 15 minutes.", "Books is back."])
       expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json"), "utf8"))).toEqual([])
     } finally {
       vi.useRealTimers()
@@ -2129,26 +2129,73 @@ describe("Telegram sense", () => {
     const sends = (f: ReturnType<typeof fixture>) => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body.text)
     const heldPath = (f: ReturnType<typeof fixture>) => path.join(f.agentRoot, "state", "telegram", "held-owner-notices.json")
 
-    // A delegated command's audit notice is the owner's record of what a peer did in their name. The route would hand it to
-    // that same peer, so it never goes there.
-    it("sends a delegated command's audit notice to Telegram silently, never to the primary agent", async () => {
-      const ownerRoute = vi.fn(async () => ({ status: "delivered" as const }))
-      const f = fixture({ ownerRoute })
-      await f.app.sendOwnerNotice({ noticeId: "delegated:cmd-1", text: "Slugger asked me, on your behalf, to restart Plex.", signal: new AbortController().signal })
-      expect(ownerRoute).not.toHaveBeenCalled()
-      const sent = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body)
-      expect(sent).toEqual([expect.objectContaining({ text: "Slugger asked me, on your behalf, to restart Plex.", disable_notification: true })])
-      // Any other owner notice still goes to the primary agent.
-      await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
-      expect(ownerRoute).toHaveBeenCalledTimes(1)
-    })
+    // A delegated command runs with the owner's authority, and it runs only once this notice has reached the owner's own chat
+    // (delegated-command.ts). So the notice skips the route (which would hand it to the peer that sent the command) and every
+    // hold, and a notice that can't be sent throws, so the command is refused.
+    describe("a delegated command's audit notice", () => {
+      const bodies = (f: ReturnType<typeof fixture>) => f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, body]: [string, any]) => body)
 
-    it("sends a delegated command's audit notice to Telegram as before when there is no route", async () => {
-      const f = fixture({})
-      await f.app.sendOwnerNotice({ noticeId: "delegated:cmd-2", text: "A peer asked me to restart Plex." })
-      const [body] = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage").map(([, b]: [string, any]) => b)
-      expect(body).toMatchObject({ text: "A peer asked me to restart Plex." })
-      expect(body).not.toHaveProperty("disable_notification")
+      it("goes to Telegram silently, never to the primary agent", async () => {
+        const ownerRoute = vi.fn(async () => ({ status: "delivered" as const }))
+        const f = fixture({ ownerRoute })
+        await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cmd-1", text: "Slugger asked me, on your behalf, to restart Plex.", signal: new AbortController().signal })
+        expect(ownerRoute).not.toHaveBeenCalled()
+        expect(bodies(f)).toEqual([expect.objectContaining({ text: "Slugger asked me, on your behalf, to restart Plex.", disable_notification: true })])
+        // Any other owner notice still goes to the primary agent.
+        await f.app.sendOwnerNotice({ noticeId: "failure-fixed:7", text: "Plex is back up." })
+        expect(ownerRoute).toHaveBeenCalledTimes(1)
+      })
+
+      it("is sent, not held, while the primary agent can't be reached", async () => {
+        const ownerRoute = vi.fn(async () => ({ status: "unreachable" as const, detail: "connect ECONNREFUSED" }))
+        const f = fixture({ ownerRoute })
+        await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cmd-2", text: "A peer asked me to restart Plex." })
+        expect(ownerRoute).not.toHaveBeenCalled()
+        expect(bodies(f)).toEqual([expect.objectContaining({ text: "A peer asked me to restart Plex.", disable_notification: true })])
+        expect(fs.existsSync(heldPath(f))).toBe(false)
+      })
+
+      it("is sent in quiet hours (silently) and past the daily cap, with no route", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] })
+        vi.setSystemTime(Date.parse("2026-10-20T07:00:00.000Z")) // midnight in Los Angeles
+        try {
+          const f = fixture({ proactivePacing: { timeZone: "America/Los_Angeles" } })
+          await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:night", text: "At midnight a peer asked me to restart Plex." })
+          vi.setSystemTime(Date.parse("2026-10-20T17:00:00.000Z")) // 10am
+          for (const n of [1, 2, 3]) await f.app.sendProactive(`Note ${n}.`)
+          await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cap", text: "A fourth message: a peer asked me to restart Sonarr." })
+          expect(bodies(f).map((body) => [body.text, body.disable_notification])).toEqual([
+            ["At midnight a peer asked me to restart Plex.", true], ["Note 1.", undefined], ["Note 2.", undefined], ["Note 3.", undefined],
+            ["A fourth message: a peer asked me to restart Sonarr.", undefined],
+          ])
+          expect(fs.existsSync(heldPath(f))).toBe(false)
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it("is sent with sound in the day when there is no route", async () => {
+        const f = fixture({})
+        await f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cmd-3", text: "A peer asked me to restart Plex." })
+        const [body] = bodies(f)
+        expect(body).toMatchObject({ text: "A peer asked me to restart Plex." })
+        expect(body).not.toHaveProperty("disable_notification")
+      })
+
+      it("throws when Telegram refuses it, so the command is refused", async () => {
+        const f = fixture({ api: { request: vi.fn(async () => { throw new Error("Bad Gateway") }) } as any })
+        await expect(f.app.sendDelegatedAuditNotice({ noticeId: "delegated:cmd-4", text: "A peer asked me to restart Plex." })).rejects.toThrow()
+      })
+
+      it("takes the same path when it comes in as an owner notice", async () => {
+        const ownerRoute = vi.fn(async () => ({ status: "unreachable" as const, detail: "down" }))
+        const f = fixture({ ownerRoute })
+        await f.app.sendOwnerNotice({ noticeId: "delegated:cmd-5", text: "A peer asked me to restart Plex." })
+        expect(ownerRoute).not.toHaveBeenCalled()
+        expect(bodies(f)).toEqual([expect.objectContaining({ disable_notification: true })])
+        await expect(f.app.sendDelegatedAuditNotice({ noticeId: " ", text: "x" })).rejects.toThrow()
+        await expect(f.app.sendDelegatedAuditNotice({ noticeId: "failure-fixed:1", text: "x" })).rejects.toThrow("delegated")
+      })
     })
 
     it("sends what it starts itself to the primary agent, and keeps replies on Telegram", async () => {

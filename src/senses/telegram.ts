@@ -200,6 +200,13 @@ export interface TelegramSenseApp {
   /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
   sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
   /**
+   * Posts a delegated command's audit notice (`delegated:<commandId>`) to the owner's own chat, now. It never goes to the owner
+   * route, which could hand it to the peer that sent the command, and never waits for quiet hours, the daily cap or a handoff:
+   * it is silent when the owner route or quiet hours mean the owner's phone shouldn't buzz, and it throws when it can't be sent
+   * (including while the chat is handed to someone else), so the command is refused.
+   */
+  sendDelegatedAuditNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
+  /**
    * One check of the owner's primary agent (run every five minutes while the sense runs). After three failed checks in a row it
    * tells the owner once on Telegram, the one Telegram path for while that agent is down, and once, silently, when it is back.
    */
@@ -1186,13 +1193,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     onMessageDelivered?: (messageId: number, chunk: string) => void,
     exactDownloadCreditQuestion = false,
     replyToMessageId?: number,
+    silent = false,
   ): Promise<TelegramEffectArtifact> => {
     const presentedText = presentSanctuaryDownloadCreditReply(options.agentName, exactDownloadCreditQuestion, text)
     return executeAuthorizedEffect({
       idempotencyKey,
       target: configuredOwnerTarget(),
       authorClass: "butler",
-      effect: { kind: "text", text: presentedText, ...(replyToMessageId ? { replyToMessageId } : {}) },
+      effect: { kind: "text", text: presentedText, ...(replyToMessageId ? { replyToMessageId } : {}), ...(silent ? { silent: true as const } : {}) },
       ...(signal ? { signal } : {}),
       ...(onMessageDelivered ? { onMessageDelivered } : {}),
     })
@@ -2182,24 +2190,33 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     async sendOwnerNotice(input) {
       const noticeId = requiredText(input.noticeId, "owner notice id")
       if (Buffer.byteLength(noticeId) > 512) throw new Error("Telegram owner notice id is invalid")
+      if (noticeId.startsWith("delegated:")) return this.sendDelegatedAuditNotice({ ...input, noticeId })
       await runWithAcceptanceAuditOwner(async () => {
         const text = requiredText(input.text, "owner notice")
-        // A delegated command's audit notice tells the owner what a peer is doing in their name. The owner route would hand it
-        // to that same peer, so it goes to Telegram instead: silently when there is a route (the peer is the voice that buzzes).
-        const delegatedAudit = noticeId.startsWith("delegated:")
-        const telegramText = delegatedAudit ? text : await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
+        const telegramText = await routeSelfStarted(text, `owner-notice:${noticeId}`, undefined, input.signal)
         if (telegramText === null) return
         if (holdNoticeDuringHandoff(telegramText, `owner-notice:${noticeId}`)) return
         await releaseHeldNotices(input.signal)
-        const quietAudit = delegatedAudit && options.ownerRoute !== undefined
-        if (quietAudit) emitNervesEvent({ component: "senses", event: "senses.telegram_delegated_notice_off_route", message: "sent a delegated command's audit notice to Telegram silently, not to the owner route", meta: { agentName: options.agentName } })
-        const effect = quietAudit
-          ? await executeAuthorizedEffect({
-            idempotencyKey: `owner-notice:${noticeId}`, target: configuredOwnerTarget(), authorClass: "butler",
-            effect: { kind: "text", text: telegramText, silent: true }, ...(input.signal ? { signal: input.signal } : {}),
-          })
-          : await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
+        const effect = await deliverButlerEffect(telegramText, `owner-notice:${noticeId}`, input.signal)
         countProactiveSend()
+        const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+        await recordAcceptedEffects(sessionPath, [effect])
+      })
+    },
+    async sendDelegatedAuditNotice(input) {
+      const noticeId = requiredText(input.noticeId, "delegated audit notice id")
+      if (!noticeId.startsWith("delegated:") || Buffer.byteLength(noticeId) > 512) throw new Error("Telegram delegated audit notice id is invalid")
+      const key = `owner-notice:${noticeId}`
+      await runWithAcceptanceAuditOwner(async () => {
+        const text = requiredText(input.text, "delegated audit notice")
+        if (ownerChatIsHandedOff()) {
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.telegram_delegated_notice_refused", message: "refused a delegated command's audit notice while the owner's chat is handed to someone else", meta: { agentName: options.agentName, reason: "handed_off" } })
+          throw new Error("the owner's Telegram chat is handed to someone else, so a delegated command's notice can't be sent")
+        }
+        const pacingReason = options.proactivePacing ? proactiveHoldReason(proactiveLedgerPath, new Date(), options.proactivePacing) : null
+        const silent = options.ownerRoute !== undefined || pacingReason === "quiet_hours"
+        const effect = await deliverButlerEffect(text, key, input.signal, undefined, false, undefined, silent)
+        emitNervesEvent({ component: "senses", event: "senses.telegram_delegated_notice_sent", message: "sent a delegated command's audit notice to the owner's Telegram chat", meta: { agentName: options.agentName, silent } })
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
@@ -2497,6 +2514,16 @@ export async function sendTelegramExternalEventDecision(
   const app = await startTelegramSenseApp(agentName)
   try {
     return await app.sendExternalEventDecision(input)
+  } finally {
+    await app.stop()
+  }
+}
+
+/** Sends a delegated command's audit notice; see `sendDelegatedAuditNotice`. Throws when it can't be sent. */
+export async function sendTelegramDelegatedAuditNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void> {
+  const app = await startTelegramSenseApp(agentName)
+  try {
+    await app.sendDelegatedAuditNotice(input)
   } finally {
     await app.stop()
   }
