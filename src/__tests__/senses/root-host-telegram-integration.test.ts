@@ -55,7 +55,9 @@ async function fixture(enabled = true, duringCreate?: (options: Parameters<typeo
     createLongPoll: (input: any) => { handlers = input; return { run: vi.fn(async () => undefined), stop: vi.fn(), pollOnce: vi.fn() } },
     migrateIdentity: async () => undefined,
   })
-  const message = () => handlers.onMessage({ updateId: 10, messageId: "110", userId: "42", chatId: "42", text: "run id", authority: observation })
+  // Each call is a new Telegram message; one update that already has an outcome is not run again.
+  let nextUpdateId = 10
+  const message = () => { const updateId = nextUpdateId++; return handlers.onMessage({ updateId, messageId: String(updateId + 100), userId: "42", chatId: "42", text: "run id", authority: observation }) }
   return { app, handlers, create, host, port, transport, ordinary, message, observation, friend, friends, agentRoot, api, runTurn, hostPropose, ordinaryPropose, prepared: () => prepared, turn: () => turn }
 }
 

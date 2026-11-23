@@ -297,7 +297,7 @@ describe("Telegram admission integration", () => {
       .map((name) => JSON.parse(fs.readFileSync(path.join(root, "state", "telegram", "effects", name), "utf8")) as any)
       .filter((artifact) => artifact.authorClass === "control" && artifact.effect.kind === "card")
       .flatMap((artifact) => artifact.parts.map((part: any) => part.messageId).filter(Number.isSafeInteger)))
-    await expect(pollOptions.onMessage({ updateId: 15, messageId: 25, userId: "999", chatId: "42", text: "Allow", replyToMessageId: String(secondOwnerCardMessageId) })).rejects.toThrow("owner decision identity is invalid")
+    await expect(pollOptions.onMessage({ updateId: 150, messageId: 250, userId: "999", chatId: "42", text: "Allow", replyToMessageId: String(secondOwnerCardMessageId) })).rejects.toThrow("owner decision identity is invalid")
     await pollOptions.onMessage({ updateId: 15, messageId: 25, userId: "42", chatId: "42", text: "yes, that's my brother", replyToMessageId: String(secondOwnerCardMessageId) })
     expect(runTurn).toHaveBeenCalledTimes(4)
     expect(runTurn.mock.calls[3]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
